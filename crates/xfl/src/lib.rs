@@ -8,7 +8,8 @@
 
 pub mod edges;
 pub mod import;
-pub mod xml;
+/// The shared XML reader (`anicraft-xml`), under its old path.
+pub use anicraft_xml as xml;
 pub mod zip;
 
 pub use import::{Report, XflError, import_path, import_with};

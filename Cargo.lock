@@ -250,7 +250,15 @@ version = "0.1.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
+ "anicraft-xml",
  "miniz_oxide 0.8.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "anicraft-xml"
+version = "0.1.0"
+dependencies = [
  "thiserror 2.0.21",
 ]
 
