@@ -103,7 +103,7 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
 pub use history::{Snapshot, StateId};
 
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
-pub const MAX_FRAME: u32 = 100_000;
+pub const MAX_FRAME: u32 = anicraft_doc::MAX_FRAME;
 
 /// Drawing defaults used by the drawing commands when params omit colours.
 #[derive(Clone, Copy, Debug)]

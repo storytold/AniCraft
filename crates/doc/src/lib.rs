@@ -569,6 +569,19 @@ impl Default for Stage {
 /// Largest stage edge accepted from files and commands.
 pub const MAX_STAGE_EDGE: u32 = 16_384;
 
+/// Last addressable frame (0-based); about 70 minutes at 24 fps.
+pub const MAX_FRAME: u32 = 100_000;
+
+/// Drops keyframes past [`MAX_FRAME`] and trims durations to it (files skip command checks).
+fn clamp_frames(l: &mut Layer) {
+    l.keyframes.retain(|k| k.start <= MAX_FRAME);
+    for k in &mut l.keyframes {
+        if k.end() > MAX_FRAME + 1 {
+            Arc::make_mut(k).duration = MAX_FRAME + 1 - k.start;
+        }
+    }
+}
+
 /// A whole AniCraft document: a persistent (structurally shared) tree.
 ///
 /// `clone()` is O(layers + symbols) pointer copies, which makes undo snapshots and render-thread
@@ -638,6 +651,7 @@ impl Document {
             }
         };
         for l in &mut self.timeline.layers {
+            clamp_frames(Arc::make_mut(l));
             Arc::make_mut(l).normalize();
             scan(l, &mut max_id);
         }
@@ -646,6 +660,7 @@ impl Document {
             max_id = max_id.max(sym.id.0);
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {
+                clamp_frames(Arc::make_mut(l));
                 Arc::make_mut(l).normalize();
                 scan(l, &mut max_id);
             }
@@ -733,7 +748,9 @@ mod tests {
         d.stage.width = 0;
         d.stage.fps = f32::NAN;
         d.next_id = 0;
+        Arc::make_mut(&mut d.timeline.layers[0]).keyframes = [Keyframe::new(0, u32::MAX), Keyframe::new(u32::MAX - 1, 5)].map(Arc::new).to_vec();
         d.sanitize();
+        assert_eq!(d.frame_count(), MAX_FRAME + 1, "frames past the limit are dropped or trimmed");
         assert_eq!(d.stage.width, 1);
         assert_eq!(d.stage.fps, 24.0);
         assert!(d.next_id > d.timeline.layers[0].id.0);
