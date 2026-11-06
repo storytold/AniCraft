@@ -7,6 +7,10 @@ use std::sync::Arc;
 
 /// Symbols nested deeper than this are not drawn (guards cyclic libraries).
 pub const MAX_SYMBOL_DEPTH: usize = 32;
+/// Elements (shapes and symbol instances) visited per evaluation, at most. The depth cap alone
+/// still lets a symbol holding two instances of itself expand 2^32 times (a hostile file hangs
+/// and exhausts memory).
+pub const MAX_EVAL_ELEMENTS: usize = 1_000_000;
 
 /// One shape to draw, fully resolved to stage space.
 #[derive(Clone, Debug)]
@@ -70,7 +74,8 @@ impl DisplayList {
 pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
     let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None };
-    eval_timeline(doc, &doc.timeline, frame, &cx, &mut out);
+    let mut budget = MAX_EVAL_ELEMENTS;
+    eval_timeline(doc, &doc.timeline, frame, &cx, &mut budget, &mut out);
     out
 }
 
@@ -136,7 +141,7 @@ struct Ctx {
     masks: Option<u32>,
 }
 
-fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut DisplayList) {
+fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, budget: &mut usize, out: &mut DisplayList) {
     if cx.depth > MAX_SYMBOL_DEPTH {
         return;
     }
@@ -162,6 +167,8 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let Some((kf_start, elements)) = evaluate_layer_elements(layer, frame) else { continue };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
         for el in elements.iter() {
+            let Some(left) = budget.checked_sub(1) else { return };
+            *budget = left;
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
             let xf = cx.xf.mul(&el.transform);
             let color = cx.color.concat(&el.color);
@@ -183,7 +190,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     let Some(sym) = doc.symbol(*symbol) else { continue };
                     let local = loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, sym.timeline.frame_count());
                     let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks };
-                    eval_timeline(doc, &sym.timeline, local, &inner, out);
+                    eval_timeline(doc, &sym.timeline, local, &inner, budget, out);
                 }
             }
         }
