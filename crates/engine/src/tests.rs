@@ -939,6 +939,35 @@ fn opening_an_xfl_folder_imports_it_untitled() {
 }
 
 #[test]
+fn opening_an_svg_imports_editable_shapes_untitled() {
+    let dir = std::env::temp_dir().join(format!("anicraft-open-svg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("art.svg");
+    std::fs::write(
+        &path,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 32 24">
+          <g transform="translate(2 3)" fill="#ff8800"><path d="M0 0h10v10z"/><circle cx="15" cy="10" r="4"/></g>
+          <text>unsupported</text>
+        </svg>"##,
+    )
+    .unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.open", json!({"path": path.display().to_string()}));
+    assert_eq!((s.doc.stage.width, s.doc.stage.height), (320, 240));
+    assert_eq!(s.doc.timeline.layers[0].name, "SVG Artwork");
+    assert_eq!(s.doc.timeline.layers[0].keyframes[0].elements.len(), 2);
+    assert!(v["report"].as_str().unwrap().contains("1 text elements"), "{v}");
+    assert!(s.path.is_none(), "imported SVGs stay untitled so saving cannot overwrite the source");
+    assert!(!s.display_list().items.is_empty(), "imported vectors render");
+    let imported = s.doc.clone();
+    let invalid = dir.join("invalid.svg");
+    std::fs::write(&invalid, "<svg><path d='broken'/></svg>").unwrap();
+    assert!(s.execute("file.open", &json!({"path": invalid.display().to_string()})).is_err());
+    assert_eq!(s.doc, imported, "a failed import leaves the current document intact");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn animate_default_keys_map_to_the_same_commands() {
     // Muscle memory: Animate's default keys (as its documentation lists them) do the same here.
     let expected = [

@@ -100,6 +100,15 @@ pub fn is_animate(path: &std::path::Path) -> bool {
 
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+        let (doc, report) = crate::svg_import::import_path(&path).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+        s.replace_document(doc, None);
+        let mut info = s.info();
+        info["imported"] = json!(path.display().to_string());
+        info["report"] = json!(report.summary());
+        info["skipped"] = json!(report.skipped);
+        return Ok(info);
+    }
     if is_animate(&path) {
         // Imported, not adopted: the document is untitled, so Save asks for a new .anicraft
         // name and never writes over the Animate file.

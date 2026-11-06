@@ -59,6 +59,8 @@ struct P<'a> {
     s: &'a [u8],
     i: usize,
     count: usize,
+    max_depth: usize,
+    max_elements: usize,
 }
 
 impl P<'_> {
@@ -117,11 +119,11 @@ impl P<'_> {
         }
     }
     fn element(&mut self, depth: usize) -> Result<Element, XmlError> {
-        if depth > MAX_DEPTH {
+        if depth > self.max_depth {
             return Err(XmlError::TooDeep);
         }
         self.count += 1;
-        if self.count > MAX_ELEMENTS {
+        if self.count > self.max_elements {
             return Err(XmlError::TooMany);
         }
         if self.peek() != Some(b'<') {
@@ -237,12 +239,17 @@ fn unescape(s: &str) -> String {
 
 /// Parses a document and returns its root element.
 pub fn parse(src: &[u8]) -> Result<Element, XmlError> {
-    if src.len() > MAX_INPUT {
+    parse_limited(src, MAX_INPUT, MAX_DEPTH, MAX_ELEMENTS)
+}
+
+/// Parses XML with caller-provided resource limits.
+pub fn parse_limited(src: &[u8], max_input: usize, max_depth: usize, max_elements: usize) -> Result<Element, XmlError> {
+    if src.len() > max_input {
         return Err(XmlError::TooLarge);
     }
     // A UTF-8 byte-order mark is allowed.
     let src = src.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(src);
-    let mut p = P { s: src, i: 0, count: 0 };
+    let mut p = P { s: src, i: 0, count: 0, max_depth, max_elements };
     p.skip_misc()?;
     if p.peek().is_none() {
         return p.err("no root element");
@@ -281,5 +288,12 @@ mod tests {
         let deep = "<a>".repeat(400) + &"</a>".repeat(400);
         assert_eq!(parse(deep.as_bytes()).unwrap_err(), XmlError::TooDeep);
         assert_eq!(unescape("a &unknown; b &amp c"), "a &unknown; b &amp c");
+    }
+
+    #[test]
+    fn parser_limits_are_enforced() {
+        assert_eq!(parse_limited(b"<a/>", 3, 10, 10).unwrap_err(), XmlError::TooLarge);
+        assert_eq!(parse_limited(b"<a><b/></a>", 100, 0, 10).unwrap_err(), XmlError::TooDeep);
+        assert_eq!(parse_limited(b"<a><b/></a>", 100, 10, 1).unwrap_err(), XmlError::TooMany);
     }
 }

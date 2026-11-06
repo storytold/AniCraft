@@ -122,8 +122,8 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_png" => ("PNG image", &["png"]),
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" => ("SVG image", &["svg"]),
-        // Opening also imports .fla archives and .xfl packages.
-        "file.open" => ("Documents", &["anicraft", "fla", "xfl"]),
+        // Opening also imports .svg, .fla archives and .xfl packages.
+        "file.open" => ("Documents", &["anicraft", "svg", "fla", "xfl"]),
         _ => ("AniCraft document", &["anicraft"]),
     }
 }
@@ -152,6 +152,11 @@ mod tests {
         assert_eq!(shortcut_label_for(Os::Mac, "Delete", true), "⌫");
         assert_eq!(shortcut_label_for(Os::Mac, "F6", true), "F6");
         assert_eq!(shortcut_label_for(Os::Mac, "Ctrl++", true), "⌘+");
+    }
+
+    #[test]
+    fn open_dialog_includes_svg_import() {
+        assert!(filters("file.open").1.contains(&"svg"));
     }
 
     #[test]
