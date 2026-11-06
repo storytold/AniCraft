@@ -295,6 +295,26 @@ fn align_and_distribute() {
 }
 
 #[test]
+fn svg_frame_export_writes_vectors_and_asks_before_replacing() {
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("frame.svg");
+    let _ = std::fs::remove_file(&path);
+    let mut s = Session::new(sample::demo());
+    let p = json!({"path": path.display().to_string(), "frame": 10});
+    let v = run(&mut s, "file.export_svg", p.clone());
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(v["bytes"].as_u64().unwrap() as usize, text.len());
+    assert!(text.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1280\" height=\"720\""));
+    assert!(text.contains("radialGradient") || text.contains("linearGradient"), "the sample's gradients stay vector");
+    assert_eq!(text, crate::cmds_file::frame_svg(&s.doc, 10));
+    assert!(s.execute("file.export_svg", &p).is_err(), "replacing a file needs consent");
+    run(&mut s, "file.export_svg", json!({"path": path.display().to_string(), "frame": 10, "confirm": true}));
+    assert!(s.execute("file.export_svg", &json!({"path": dir.join("x.svg").display().to_string(), "frame": 9999})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn animated_gif_export() {
     let dir = std::env::temp_dir().join(format!("anicraft-gif-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

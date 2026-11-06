@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+* **SVG export** (File › Export › Export Frame as SVG…, `file.export_svg`): any frame as a
+  standalone vector SVG, matching the stage. Shapes, strokes, solid and gradient fills, opacity
+  and tint, masks (as clip paths, nested inside symbols) and outline-mode layers all come
+  across. Replacing an existing file asks first.
+
 ## 0.1.0 (2026-11-05): early alpha
 
 The first version: milestones M0 (foundations) and M1 (authoring core) are complete. The

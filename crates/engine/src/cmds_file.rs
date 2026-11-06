@@ -27,6 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
             },
         },
         CommandSpec { id: "file.export_png", label: "Export Frame as PNG…", menu: "File/Export", shortcut: None, params: "{path, frame?, scale?}", mutates: false, run: export_png },
+        CommandSpec { id: "file.export_svg", label: "Export Frame as SVG…", menu: "File/Export", shortcut: None, params: "{path, frame?, confirm?}", mutates: false, run: export_svg },
         CommandSpec {
             id: "file.export_png_sequence",
             label: "Export PNG Sequence…",
@@ -147,6 +148,22 @@ fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = render_png(&s.doc, frame, scale_param(p)?)?;
     std::fs::write(&path, &bytes)?;
     Ok(json!({"written": path.display().to_string(), "bytes": bytes.len(), "frame": frame}))
+}
+
+/// A frame as a standalone SVG document (vectors, gradients and masks kept).
+pub fn frame_svg(doc: &Document, frame: u32) -> String {
+    anicraft_render::svg::to_svg(&anicraft_doc::evaluate(doc, frame), &doc.stage)
+}
+
+fn export_svg(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let frame = opt_u32(p, "frame")?.unwrap_or(s.frame);
+    if frame >= s.frame_count() {
+        return Err(EngineError::Param(format!("frame {} is past the end (the timeline has {} frames)", frame + 1, s.frame_count())));
+    }
+    let svg = frame_svg(&s.doc, frame);
+    std::fs::write(&path, svg.as_bytes())?;
+    Ok(json!({"written": path.display().to_string(), "bytes": svg.len(), "frame": frame}))
 }
 
 fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {
