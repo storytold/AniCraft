@@ -234,3 +234,24 @@ fn shape_tweens_morph_between_different_shapes_and_classic_ones_hold() {
     assert_eq!(t.kind, TweenKind::Shape);
     assert_eq!(serde_json::from_str::<Tween>(r#"{"easing":"Linear"}"#).unwrap().kind, TweenKind::Classic);
 }
+
+#[test]
+fn symbols_that_branch_into_themselves_stay_bounded() {
+    // 50 shapes and two instances of itself: the depth cap alone would expand it 2^32 times.
+    let mut d = Document::default();
+    let sid = SymbolId(99);
+    let inst = |id| Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0 } };
+    let mut layer = Layer::new(LayerId(50), "s");
+    for i in 0..50 {
+        push(&mut layer, 0, shape_el(100 + i, 0.0));
+    }
+    push(&mut layer, 0, inst(52));
+    push(&mut layer, 0, inst(53));
+    let tl = Timeline { layers: vec![Arc::new(layer)] };
+    d.library.push(Arc::new(Symbol { id: sid, name: "fork".into(), kind: SymbolKind::Graphic, timeline: tl }));
+    push(layer0(&mut d), 0, inst(60));
+    let n = evaluate(&d, 0).items.len();
+    assert!(n > MAX_SYMBOL_DEPTH && n <= MAX_EVAL_ELEMENTS, "{n} items");
+    // Selection bounds walk the same tree.
+    assert!(!d.timeline.layers[0].keyframes[0].elements[0].bounds(&d).is_empty());
+}

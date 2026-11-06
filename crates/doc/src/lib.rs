@@ -258,18 +258,22 @@ pub struct Element {
 impl Element {
     /// Local-space bounds (control-point bounds for shapes, `None` for symbols).
     pub fn local_bounds(&self, doc: &Document) -> Rect {
-        element_bounds(doc, self, &Affine::IDENTITY, 0)
+        let mut budget = eval::MAX_EVAL_ELEMENTS;
+        element_bounds(doc, self, &Affine::IDENTITY, 0, &mut budget)
     }
     /// Bounds in the parent's space.
     pub fn bounds(&self, doc: &Document) -> Rect {
-        element_bounds(doc, self, &self.transform, 0)
+        let mut budget = eval::MAX_EVAL_ELEMENTS;
+        element_bounds(doc, self, &self.transform, 0, &mut budget)
     }
 }
 
-fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Rect {
+fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize, budget: &mut usize) -> Rect {
     if depth > MAX_SYMBOL_DEPTH {
         return Rect::EMPTY;
     }
+    let Some(left) = budget.checked_sub(1) else { return Rect::EMPTY };
+    *budget = left;
     match &el.kind {
         ElementKind::Shape(s) => {
             let pad = s.stroke.map_or(0.0, |st| st.width * 0.5);
@@ -282,7 +286,7 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
                 if let Some(kf) = layer.keyframes.first() {
                     for child in &kf.elements {
                         let m = xf.mul(&child.transform);
-                        r = r.union(&element_bounds(doc, child, &m, depth + 1));
+                        r = r.union(&element_bounds(doc, child, &m, depth + 1, budget));
                     }
                 }
             }
