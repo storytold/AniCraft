@@ -46,6 +46,11 @@ cargo deny check advisories              # RustSec security advisories (needs ne
 
 ## 3. Fonts, graphics and other assets
 
+Bitmap import (M5, 2026-11-06) adds `base64` (MIT OR Apache-2.0) for embedded PNGs and uses
+the existing permissive `png`, `zune-core` and `zune-jpeg` dependencies for decoding. All
+licences are already allowed by `deny.toml`; no policy exception is needed. Screenshot and
+codec fixtures are generated from original code, with no third-party image assets bundled.
+
 * **Fonts**: only the four fonts embedded by egui (`epaint_default_fonts`): Ubuntu Light
   (Ubuntu Font Licence 1.0), Hack (MIT + Bitstream Vera), Noto Emoji (OFL 1.1) and
   emoji-icon-font (MIT). All permit embedding and redistribution in commercial and

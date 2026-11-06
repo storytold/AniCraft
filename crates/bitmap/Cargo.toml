@@ -1,0 +1,21 @@
+[package]
+name = "anicraft-bitmap"
+description = "AniCraft L0: bounded PNG/JPEG decoding and immutable RGBA bitmap assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+png.workspace = true
+serde.workspace = true
+base64.workspace = true
+zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
+zune-core = "0.5"
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

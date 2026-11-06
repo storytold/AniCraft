@@ -144,7 +144,7 @@ fn path_bytes(e: &Element) -> usize {
     }
 }
 
-fn element_bytes(e: &Element, shared_paths: &HashSet<usize>) -> usize {
+fn element_bytes(e: &Element, shared_paths: &HashSet<usize>, shared_images: &mut HashSet<usize>) -> usize {
     let mut b = size_of::<Element>() + e.name.len();
     if let ElementKind::Shape(s) = &e.kind {
         if !shared_paths.contains(&ptr(&s.path)) {
@@ -153,11 +153,17 @@ fn element_bytes(e: &Element, shared_paths: &HashSet<usize>) -> usize {
         if let Some(anicraft_doc::Paint::Linear { stops, .. } | anicraft_doc::Paint::Radial { stops, .. }) = &s.fill {
             b += stops.len() * size_of::<anicraft_doc::GradientStop>();
         }
+        if let Some(anicraft_doc::Paint::Bitmap { image, .. }) = &s.fill
+            && shared_images.insert(ptr(image))
+        { b += image.bytes(); }
     }
     b
 }
 
-fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>) -> usize {
+fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>, images: &mut HashSet<usize>) -> usize {
+    images.extend(other.into_iter().flat_map(|o| o.elements.iter()).filter_map(|e| {
+        if let ElementKind::Shape(s) = &e.kind && let Some(anicraft_doc::Paint::Bitmap { image, .. }) = &s.fill { Some(ptr(image)) } else { None }
+    }));
     let shared_els: HashSet<usize> = other.map(|o| o.elements.iter().map(ptr).collect()).unwrap_or_default();
     let shared_paths: HashSet<usize> = other
         .map(|o| {
@@ -173,13 +179,13 @@ fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>) -> usize {
     let mut b = size_of::<Keyframe>() + k.label.len() + k.elements.len() * size_of::<usize>();
     for e in &k.elements {
         if !shared_els.contains(&ptr(e)) {
-            b += element_bytes(e, &shared_paths);
+            b += element_bytes(e, &shared_paths, images);
         }
     }
     b
 }
 
-fn layer_bytes(l: &Layer, other: Option<&Layer>) -> usize {
+fn layer_bytes(l: &Layer, other: Option<&Layer>, images: &mut HashSet<usize>) -> usize {
     let shared: HashSet<usize> = other.map(|o| o.keyframes.iter().map(ptr).collect()).unwrap_or_default();
     let mut b = size_of::<Layer>() + l.name.len() + l.keyframes.len() * size_of::<usize>();
     for k in &l.keyframes {
@@ -187,18 +193,18 @@ fn layer_bytes(l: &Layer, other: Option<&Layer>) -> usize {
             continue;
         }
         let peer = other.and_then(|o| o.keyframes.iter().find(|p| p.start == k.start)).map(|p| &**p);
-        b += keyframe_bytes(k, peer);
+        b += keyframe_bytes(k, peer, images);
     }
     b
 }
 
-fn symbol_bytes(s: &Symbol, other: Option<&Symbol>) -> usize {
+fn symbol_bytes(s: &Symbol, other: Option<&Symbol>, images: &mut HashSet<usize>) -> usize {
     let shared: HashSet<usize> = other.map(|o| o.timeline.layers.iter().map(ptr).collect()).unwrap_or_default();
     let mut b = size_of::<Symbol>() + s.name.len();
     for l in &s.timeline.layers {
         if !shared.contains(&ptr(l)) {
             let peer = other.and_then(|o| o.timeline.layers.iter().find(|p| p.id == l.id)).map(|p| &**p);
-            b += layer_bytes(l, peer);
+            b += layer_bytes(l, peer, images);
         }
     }
     b
@@ -207,19 +213,23 @@ fn symbol_bytes(s: &Symbol, other: Option<&Symbol>) -> usize {
 /// Estimated bytes reachable from `old` that are not shared with `new`. Costs O(changed) after
 /// an O(layers + symbols) pointer scan.
 pub fn unique_bytes(old: &Document, new: &Document) -> usize {
+    // Bitmap library entries retain their shared pixels even when instances are deleted or
+    // broken apart. Scan these small asset timelines, not every frame in the document.
+    let assets = Document { stage: new.stage, timeline: Default::default(), library: new.library.iter().filter(|s| s.kind == anicraft_doc::SymbolKind::Bitmap).cloned().collect(), next_id: new.next_id };
+    let mut images: HashSet<usize> = anicraft_doc::bitmap_table::build_table(&assets).iter().map(ptr).collect();
     let mut b = size_of::<Snapshot>() + (old.timeline.layers.len() + old.library.len()) * size_of::<usize>();
     let shared_layers: HashSet<usize> = new.timeline.layers.iter().map(ptr).collect();
     for l in &old.timeline.layers {
         if !shared_layers.contains(&ptr(l)) {
             let peer = new.timeline.layers.iter().find(|p| p.id == l.id).map(|p| &**p);
-            b += layer_bytes(l, peer);
+            b += layer_bytes(l, peer, &mut images);
         }
     }
     let shared_syms: HashSet<usize> = new.library.iter().map(ptr).collect();
     for s in &old.library {
         if !shared_syms.contains(&ptr(s)) {
             let peer = new.library.iter().find(|p| p.id == s.id).map(|p| &**p);
-            b += symbol_bytes(s, peer);
+            b += symbol_bytes(s, peer, &mut images);
         }
     }
     b

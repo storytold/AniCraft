@@ -605,6 +605,22 @@ mod tests {
     }
 
     #[test]
+    fn bitmap_rotation_and_mask_match_analytic_pixels() {
+        let image = std::sync::Arc::new(anicraft_doc::Bitmap::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 128]).unwrap());
+        let mut bitmap = item(Path::rect(0.0, 0.0, 2.0, 1.0), Paint::Bitmap { image, transform: Affine::IDENTITY });
+        bitmap.transform = Affine { m: [0.0, 1.0, -1.0, 0.0, 2.0, 1.0] };
+        let mut mask = item(Path::rect(1.0, 2.0, 1.0, 1.0), Paint::Solid(Rgba::WHITE));
+        mask.masks = Some(0);
+        let pixels = render(&list(vec![bitmap.clone()]), &view(4, 4)).unwrap().0;
+        assert_eq!(pixels.pixel(1, 1).unwrap(), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(pixels.to_rgba8()[(2 * 4 + 1) * 4..(2 * 4 + 2) * 4], [0, 255, 0, 128]);
+        bitmap.clip = Some(0);
+        let pixels = render(&DisplayList { items: vec![bitmap, mask], clip_parents: vec![None] }, &view(4, 4)).unwrap().0;
+        assert_eq!(pixels.pixel(1, 1).unwrap(), [0.0; 4]);
+        assert!(pixels.pixel(1, 2).unwrap()[3] > 0.5);
+    }
+
+    #[test]
     fn huge_surface_is_refused() {
         assert!(matches!(Pixmap::new(100_000, 100_000), Err(RenderError::TooLarge(..))));
     }

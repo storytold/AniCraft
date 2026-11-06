@@ -15,6 +15,10 @@
 use anicraft_doc::{ColorEffect, DisplayItem, DisplayList, Paint, Rgba, Stage};
 use anicraft_geom::{Affine, FillRule};
 use std::fmt::Write;
+use std::collections::HashMap;
+
+type Images = HashMap<(usize, [u32; 6]), String>;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Writes `dl` as a standalone SVG document the size of `stage`, with its background.
 pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
@@ -22,6 +26,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
     let mut defs = String::new();
     let mut body = String::new();
     let mut grad = 0usize;
+    let mut images = Images::new();
 
     // Clips, in order (a parent always precedes its children; anything else clips all).
     for (i, parent) in dl.clip_parents.iter().enumerate() {
@@ -51,9 +56,20 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
             continue;
         }
         if let Some(fill) = &item.fill
-            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad)
+            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad, &mut images)
         {
+            let bounded = if let Paint::Bitmap { image, transform } = fill {
+                let m = item.transform.mul(transform);
+                if !m.is_finite() { continue }
+                let id = format!("bd{grad}");
+                grad += 1;
+                let domain = anicraft_geom::Path::rect(0.0, 0.0, image.width() as f32, image.height() as f32).transformed(&m).to_svg();
+                let _ = write!(defs, "<clipPath id=\"{id}\" clipPathUnits=\"userSpaceOnUse\"><path d=\"{domain}\"/></clipPath>");
+                let _ = write!(body, "<g clip-path=\"url(#{id})\">");
+                true
+            } else { false };
             let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
+            if bounded { body.push_str("</g>"); }
         }
         if let Some(st) = item.stroke {
             let width = st.width * item.transform.mean_scale();
@@ -122,11 +138,35 @@ fn color_attrs(attr: &str, c: Rgba) -> String {
 
 /// The fill attribute for `paint`, defining a gradient in `defs` when needed. `None` when the
 /// paint draws nothing.
-fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize) -> Option<String> {
+fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize, images: &mut Images) -> Option<String> {
     let stops = match paint {
         Paint::Solid(c) => {
             let c = fx.apply(*c).sanitized();
             return (c.a > 0.0).then(|| color_attrs("fill", c));
+        }
+        Paint::Bitmap { image, transform } => {
+            // A non-repeating image in a pattern follows the path's transform, like gradients.
+            // Bake colour effects into pixels so the SVG is self-contained.
+            let key = (std::sync::Arc::as_ptr(image) as usize, [fx.alpha.to_bits(), fx.tint.r.to_bits(), fx.tint.g.to_bits(), fx.tint.b.to_bits(), fx.tint.a.to_bits(), fx.tint_amount.to_bits()]);
+            let image_id = if let Some(id) = images.get(&key) { id.clone() } else {
+                let mut rgba = Vec::with_capacity(image.bytes());
+                for p in image.rgba().chunks_exact(4) {
+                    let c = fx.apply(Rgba::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0)).sanitized();
+                    for v in [c.r, c.g, c.b, c.a] { rgba.push((v * 255.0 + 0.5) as u8); }
+                }
+                let png = crate::encode_png(image.width(), image.height(), &rgba).ok()?;
+                let id = format!("img{}", images.len());
+                let data = STANDARD.encode(png);
+                let _ = write!(defs, "<image id=\"{id}\" width=\"{}\" height=\"{}\" href=\"data:image/png;base64,{data}\"/>", image.width(), image.height());
+                images.insert(key, id.clone());
+                id
+            };
+            let id = format!("b{n}");
+            *n += 1;
+            let m = xf.mul(transform).m;
+            let (w, h) = (image.width(), image.height());
+            let _ = write!(defs, "<pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" width=\"{w}\" height=\"{h}\" patternTransform=\"matrix({} {} {} {} {} {})\"><use href=\"#{image_id}\"/></pattern>", num(m[0]), num(m[1]), num(m[2]), num(m[3]), num(m[4]), num(m[5]));
+            return Some(format!(" fill=\"url(#{id})\""));
         }
         Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => stops,
     };
@@ -146,7 +186,7 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
         Paint::Radial { center, radius, .. } => {
             let _ = write!(defs, "<radialGradient id=\"{id}\"{gt} cx=\"{}\" cy=\"{}\" r=\"{}\">", num(center.x), num(center.y), num(radius.max(0.0)));
         }
-        Paint::Solid(_) => return None,
+        Paint::Solid(_) | Paint::Bitmap { .. } => return None,
     }
     for s in &sorted {
         let c = fx.apply(s.color).sanitized();

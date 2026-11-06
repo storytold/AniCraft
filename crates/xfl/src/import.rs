@@ -6,7 +6,8 @@
 //! linear and radial fills, solid strokes), groups (flattened), rectangle and oval
 //! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
-//! depth. Everything else (bitmaps, text, sound, masks, motion tweens with property curves,
+//! depth, and bitmap instances backed by standard PNG/JPEG media. Everything else (proprietary
+//! bitmap encodings, text, sound, motion tweens with property curves,
 //! filters) is counted in the report instead of guessed at.
 
 use crate::edges::{self, Edge};
@@ -176,7 +177,7 @@ impl<'a> Builder<'a> {
 
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
         let Some(&symbol) = el.attr("libraryItemName").and_then(|n| self.ids.get(n)) else {
-            self.report.skip("instances of missing symbols");
+            self.report.skip(if el.name == "DOMBitmapInstance" { "bitmaps" } else { "instances of missing symbols" });
             return;
         };
         let loop_mode = match el.attr("loop") {
@@ -208,9 +209,8 @@ impl<'a> Builder<'a> {
                     let m = parent.mul(&matrix(el));
                     self.elements(el.list("members"), &m, out, depth + 1);
                 }
-                "DOMSymbolInstance" => self.instance(el, parent, out),
+                "DOMSymbolInstance" | "DOMBitmapInstance" => self.instance(el, parent, out),
                 "DOMRectangleObject" | "DOMOvalObject" => self.primitive(el, parent, out),
-                "DOMBitmapInstance" => self.report.skip("bitmaps"),
                 "DOMStaticText" | "DOMDynamicText" | "DOMInputText" => self.report.skip("text fields"),
                 "DOMVideoInstance" => self.report.skip("videos"),
                 _ => self.report.skip("other elements"),
@@ -310,6 +310,38 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    /// Standard PNG/JPEG media only. Proprietary bitmapDataHRef encodings stay reported.
+    fn register_bitmaps(&mut self, root: &X) -> Result<(), XflError> {
+        let mut total = 0usize;
+        for media in root.list("media").iter().filter(|m| m.name == "DOMBitmapItem").take(4096) {
+            let Some(name) = media.attr("name") else { self.report.skip("unnamed bitmaps"); continue };
+            let mut image = None;
+            for key in ["href", "bitmapDataHRef"] {
+                let Some(href) = media.attr(key) else { continue };
+                let prefix = if key == "bitmapDataHRef" { "bin" } else { "LIBRARY" };
+                // Paths are always resolved inside the package, never via external source paths.
+                if href.starts_with('/') || href.contains(['\\', ':']) || href.split('/').any(|c| c == ".." || c.is_empty()) { continue }
+                for candidate in [format!("{prefix}/{href}"), href.to_string()] {
+                    if let Some(bytes) = (self.read)(&candidate)?
+                        && let Ok(decoded) = anicraft_bitmap::decode(&bytes)
+                    { image = Some(Arc::new(decoded)); break }
+                }
+                if image.is_some() { break }
+            }
+            let Some(image) = image else { self.report.skip("missing or unsupported bitmap assets"); continue };
+            total += image.bytes();
+            if total > 256 * 1024 * 1024 { self.report.skip("bitmap assets beyond memory limit"); break }
+            let (w, h) = (image.width() as f32, image.height() as f32);
+            let id = SymbolId(self.doc.alloc_id());
+            let mut layer = Layer::new(LayerId(self.doc.alloc_id()), "Bitmap");
+            let el = self.element(ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, w, h), Paint::Bitmap { image, transform: Affine::IDENTITY })), Affine::IDENTITY, ColorEffect::default());
+            if let Some(k) = layer.keyframe_mut(0) { k.elements.push(el); }
+            self.ids.insert(name.to_string(), id);
+            self.doc.library.push(Arc::new(Symbol { id, name: name.to_string(), kind: SymbolKind::Bitmap, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
+        }
+        Ok(())
+    }
+
     fn build_symbols(&mut self) {
         for (id, name, kind, item) in std::mem::take(&mut self.pending) {
             let timeline = match item.child("timeline").and_then(|t| t.child("DOMTimeline")) {
@@ -338,6 +370,7 @@ pub fn import_with(read: &Reader<'_>) -> Result<(Document, Report), XflError> {
         fps: root.f32("frameRate").unwrap_or(24.0).clamp(1.0, 120.0),
         background: color(&root, "backgroundColor", "__none"),
     };
+    b.register_bitmaps(&root)?;
     b.register_symbols(&root)?;
     b.build_symbols();
     let scenes: Vec<&X> = root.list("timelines").iter().filter(|t| t.name == "DOMTimeline").collect();
@@ -365,18 +398,26 @@ pub fn import_path(path: &std::path::Path) -> Result<(Document, Report), XflErro
         return import_with(&read);
     }
     let dir = if meta.is_dir() { path.to_path_buf() } else { path.parent().map(std::path::Path::to_path_buf).unwrap_or_default() };
+    let dir = dir.canonicalize()?;
     let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
         // Only plain relative paths inside the package.
         if p.split('/').any(|c| c == ".." || c.is_empty()) || p.contains(':') {
             return Ok(None);
         }
-        let full = dir.join(p);
-        match std::fs::read(&full) {
-            Ok(b) if b.len() <= xml::MAX_INPUT => Ok(Some(b)),
-            Ok(_) => Err(XflError::NotXfl(format!("{p} is too large"))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        let full = match dir.join(p).canonicalize() {
+            Ok(full) if full.starts_with(&dir) => full,
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        use std::io::Read;
+        let file = std::fs::File::open(full)?;
+        let limit = anicraft_bitmap::MAX_INPUT_BYTES as u64;
+        if file.metadata()?.len() > limit { return Err(XflError::NotXfl(format!("{p} is too large"))) }
+        let mut bytes = Vec::new();
+        file.take(limit + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit { return Err(XflError::NotXfl(format!("{p} is too large"))) }
+        Ok(Some(bytes))
     };
     import_with(&read)
 }

@@ -12,6 +12,7 @@ anicraft-geom.workspace = true
 anicraft-doc.workspace = true
 anicraft-render.workspace = true
 anicraft-xfl.workspace = true
+anicraft-bitmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

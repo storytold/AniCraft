@@ -119,6 +119,7 @@ pub fn forced_renderer(arg: Option<&str>) -> Option<eframe::Renderer> {
 /// File type filters per command.
 pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
     match cmd {
+        "file.import_bitmap" => ("Bitmap images", &["png", "jpg", "jpeg"]),
         "file.export_png" => ("PNG image", &["png"]),
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" => ("SVG image", &["svg"]),
@@ -134,7 +135,7 @@ pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf
     let (label, exts) = filters(cmd);
     let d = rfd::FileDialog::new().set_title(title);
     match cmd {
-        "file.open" => d.add_filter(label, exts).pick_file(),
+        "file.open" | "file.import_bitmap" => d.add_filter(label, exts).pick_file(),
         "file.export_png_sequence" => d.pick_folder(),
         _ => d.add_filter(label, exts).set_file_name(default_name).save_file(),
     }

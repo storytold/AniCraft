@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 anicraft-geom.workspace = true
 anicraft-doc.workspace = true
+anicraft-bitmap.workspace = true
 # Inflate for .fla (zip) archives; already in the tree through png (MIT OR Zlib OR Apache-2.0).
 miniz_oxide = "0.8"
 thiserror.workspace = true

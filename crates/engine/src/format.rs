@@ -1,14 +1,14 @@
 //! The `.anicraft` native format: a versioned JSON envelope around the document.
 
 use crate::EngineError;
-use anicraft_doc::{Document, path_table};
+use anicraft_doc::{Document, Bitmap, path_table, bitmap_table};
 use anicraft_geom::Path;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub const FORMAT_NAME: &str = "anicraft";
-/// v1: inline tagged paths. v2: SVG path strings, shared paths stored once in `paths`.
-pub const FORMAT_VERSION: u32 = 2;
+/// v1: inline paths. v2: shared SVG paths. v3: shared embedded PNG bitmaps.
+pub const FORMAT_VERSION: u32 = 3;
 /// Largest file we will parse.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Files smaller than this (compact) are pretty-printed for humans and diffs.
@@ -22,6 +22,7 @@ struct EnvelopeOut<'a> {
     version: u32,
     generator: String,
     paths: &'a [Arc<Path>],
+    bitmaps: &'a [Arc<Bitmap>],
     document: &'a Document,
 }
 
@@ -43,6 +44,8 @@ impl<'de> Deserialize<'de> for EnvelopeIn {
             fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<EnvelopeIn, A::Error> {
                 let (mut format, mut version, mut document) = (None, None, None);
                 let mut _scope = None;
+                let mut _bitmaps = Some(bitmap_table::begin_read(Vec::new()));
+                let mut seen_bitmaps = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "format" => format = Some(map.next_value::<String>()?),
@@ -52,6 +55,15 @@ impl<'de> Deserialize<'de> for EnvelopeIn {
                             _scope = Some(path_table::begin_read(paths.into_iter().map(Arc::new).collect()));
                         }
                         "document" => document = Some(map.next_value::<Document>()?),
+                        "bitmaps" => {
+                            if seen_bitmaps { return Err(serde::de::Error::custom("duplicate bitmap table")); }
+                            seen_bitmaps = true;
+                            #[derive(Deserialize)]
+                            struct Table(#[serde(deserialize_with = "bitmap_table::read_table")] Vec<Arc<Bitmap>>);
+                            let Table(images) = map.next_value::<Table>()?;
+                            _bitmaps.take();
+                            _bitmaps = Some(bitmap_table::begin_read(images));
+                        }
                         _ => {
                             map.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -70,10 +82,11 @@ impl<'de> Deserialize<'de> for EnvelopeIn {
 
 pub fn to_json(doc: &Document) -> Result<String, EngineError> {
     let paths = path_table::build_table(doc);
-    let env = EnvelopeOut { format: FORMAT_NAME, version: FORMAT_VERSION, generator: format!("AniCraft {}", env!("CARGO_PKG_VERSION")), paths: &paths, document: doc };
-    let compact = path_table::write_with_paths(&paths, || serde_json::to_string(&env)).map_err(|e| EngineError::Format(e.to_string()))?;
+    let bitmaps = bitmap_table::build_table(doc);
+    let env = EnvelopeOut { format: FORMAT_NAME, version: FORMAT_VERSION, generator: format!("AniCraft {}", env!("CARGO_PKG_VERSION")), paths: &paths, bitmaps: &bitmaps, document: doc };
+    let compact = path_table::write_with_paths(&paths, || bitmap_table::write_with_images(&bitmaps, || serde_json::to_string(&env))).map_err(|e| EngineError::Format(e.to_string()))?;
     if compact.len() < PRETTY_LIMIT {
-        return path_table::write_with_paths(&paths, || serde_json::to_string_pretty(&env)).map_err(|e| EngineError::Format(e.to_string()));
+        return path_table::write_with_paths(&paths, || bitmap_table::write_with_images(&bitmaps, || serde_json::to_string_pretty(&env))).map_err(|e| EngineError::Format(e.to_string()));
     }
     Ok(compact)
 }
@@ -125,7 +138,7 @@ mod tests {
         let d = anicraft_doc::sample::stress(2, 40, 48); // 4 keyframes per element share a path
         let json = to_json(&d).unwrap();
         let env: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(env["version"], 2);
+        assert_eq!(env["version"], 3);
         assert_eq!(env["paths"].as_array().unwrap().len(), 80, "one entry per distinct path");
         let back = from_json(&json).unwrap();
         assert_eq!(d, back);
@@ -141,6 +154,15 @@ mod tests {
         let d = from_json(v1).unwrap();
         assert_eq!(d.frame_count(), 2);
         assert_eq!(anicraft_doc::evaluate(&d, 1).items.len(), 1);
+    }
+
+    #[test]
+    fn v2_documents_load_and_bad_bitmap_tables_are_errors() {
+        assert!(from_json(r#"{"format":"anicraft","version":2,"paths":[],"document":{}}"#).is_ok());
+        assert!(from_json(r#"{"format":"anicraft","version":3,"bitmaps":["garbage"],"document":{}}"#).is_err());
+        assert!(from_json(r#"{"format":"anicraft","version":3,"bitmaps":[],"bitmaps":[],"document":{}}"#).is_err());
+        let bad = r#"{"format":"anicraft","version":3,"paths":["M0 0L1 0L1 1Z"],"bitmaps":[],"document":{"timeline":{"layers":[{"id":1,"name":"L","keyframes":[{"start":0,"duration":1,"elements":[{"id":2,"kind":{"Shape":{"path":0,"fill":{"Bitmap":{"image":4,"transform":{"m":[1,0,0,1,0,0]}}}}}}]}]}]}}}"#;
+        assert!(from_json(bad).is_err());
     }
 
     #[test]

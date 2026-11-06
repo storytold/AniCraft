@@ -476,16 +476,21 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
     if s.doc.symbol(sym).is_none() {
         return Err(EngineError::State(format!("no symbol with id {}", sym.0)));
     }
+    let bitmap = s.doc.symbol(sym).is_some_and(|s| s.kind == SymbolKind::Bitmap);
     let x = opt_f32(p, "x")?.unwrap_or(s.doc.stage.width as f32 / 2.0);
     let y = opt_f32(p, "y")?.unwrap_or(s.doc.stage.height as f32 / 2.0);
     let id = ElementId(s.doc.alloc_id());
-    let el = Element {
+    let mut el = Element {
         id,
         name: String::new(),
         transform: Affine::translate(x, y),
         color: ColorEffect::default(),
         kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0 },
     };
+    if bitmap {
+        let centre = el.local_bounds(&s.doc).center();
+        el.transform = Affine::translate(x - centre.x, y - centre.y);
+    }
     s.editable_keyframe()?.elements.push(Arc::new(el));
     s.selection = vec![id];
     Ok(json!({"element": id.0}))

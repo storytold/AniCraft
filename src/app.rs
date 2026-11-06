@@ -183,6 +183,8 @@ pub struct App {
     pub onion: bool,
     pub status: Option<Status>,
     pub prompt: Option<Prompt>,
+    pub bitmap_job: Option<crate::bitmap_import::Job>,
+    pub document_generation: u64,
     pub show_about: bool,
     pub show_files: bool,
     pub show_licenses: bool,
@@ -272,6 +274,8 @@ impl App {
             onion: false,
             status: None,
             prompt: None,
+            bitmap_job: None,
+            document_generation: 0,
             show_about: false,
             show_files: false,
             show_licenses: false,
@@ -422,6 +426,7 @@ impl App {
     pub fn open_panel(&mut self, which: Option<&str>) {
         match which {
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
+            Some("bitmap") => crate::bitmap_import::preview(self),
             Some("shortcuts") => self.show_shortcuts = true,
             Some("files") => self.show_files = true,
             Some("licenses") => self.show_licenses = true,
@@ -529,10 +534,15 @@ impl App {
 
     /// Runs a command and reports the outcome; routine destructive edits say how to undo.
     pub fn perform(&mut self, id: &str, params: Value) -> Option<Value> {
+        if id == "file.import_bitmap" && self.s.prepared_bitmap.is_none() {
+            crate::bitmap_import::start(self, params);
+            return None;
+        }
         let selected = self.s.selection.len();
         let v = self.run(id, params)?;
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
+                self.document_generation = self.document_generation.wrapping_add(1);
                 self.view.fit = true;
                 self.library_sel = (!self.s.doc.library.is_empty()).then_some(0);
                 match v.get("report").and_then(Value::as_str) {
@@ -547,6 +557,11 @@ impl App {
                 if self.close_after_save {
                     self.allow_close = true;
                 }
+            }
+            "file.import_bitmap" => {
+                self.library_sel = self.s.doc.library.len().checked_sub(1);
+                let undo = platform::shortcut_label(self.keymap.primary("edit.undo").unwrap_or("Ctrl+Z"));
+                self.status_ok(format!("Imported {} — {} × {} px · {undo} to undo", v.get("name").and_then(Value::as_str).unwrap_or("bitmap"), v.get("width").and_then(Value::as_u64).unwrap_or(0), v.get("height").and_then(Value::as_u64).unwrap_or(0)));
             }
             "file.export_png" | "file.export_png_sequence" | "file.export_gif" | "file.export_svg" => self.status_ok(format!("Exported {}", v.get("written").or_else(|| v.get("dir")).and_then(Value::as_str).unwrap_or(""))),
             "edit.undo" => self.status_ok(format!("Undid {}", v["undone"].as_str().unwrap_or(""))),
@@ -600,6 +615,7 @@ impl App {
         }
         let prompt = match id {
             "file.open" => Some(("Open document", "path", "animation.anicraft".to_string())),
+            "file.import_bitmap" => Some(("Import bitmap", "path", "image.png".to_string())),
             "file.save" if self.s.path.is_none() => Some(("Save document as", "path", "animation.anicraft".to_string())),
             "file.save_as" => Some(("Save document as", "path", self.s.path.as_ref().map_or_else(|| "animation.anicraft".to_string(), |p| p.display().to_string()))),
             "layer.rename" => Some(("Rename layer", "name", self.s.active_layer().map_or_else(String::new, |l| l.name.clone()))),
@@ -938,6 +954,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
+        crate::bitmap_import::poll(self, &ctx);
         if self.glyph_check {
             // Fonts installed last frame are live now: can they draw the macOS key symbols?
             let ok = ctx.fonts_mut(|f| f.has_glyphs(&theme::font(theme::Type::Key), "⌘⇧⌥"));

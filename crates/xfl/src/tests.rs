@@ -70,6 +70,32 @@ fn import(files: &HashMap<&'static str, &'static str>) -> Result<(anicraft_doc::
 }
 
 #[test]
+fn png_bitmap_instances_import_with_transforms_and_unsupported_assets_are_reported() {
+    let document = r#"<DOMDocument width="16" height="16">
+      <media><DOMBitmapItem name="art.png" href="art.png"/><DOMBitmapItem name="unsupported" bitmapDataHRef="raw.dat"/></media>
+      <timelines><DOMTimeline><layers><DOMLayer><frames><DOMFrame index="0"><elements>
+        <DOMBitmapInstance libraryItemName="art.png"><matrix><Matrix a="2" d="2" tx="4" ty="6"/></matrix><color><Color alphaMultiplier="0.5"/></color></DOMBitmapInstance>
+      </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#;
+    let png = anicraft_bitmap::Bitmap::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 128]).unwrap().encode_png().unwrap();
+    let reads = std::cell::RefCell::new(Vec::new());
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
+        reads.borrow_mut().push(p.to_string());
+        Ok(match p { "DOMDocument.xml" => Some(document.as_bytes().to_vec()), "LIBRARY/art.png" => Some(png.clone()), "bin/raw.dat" => Some(vec![1, 2, 3]), _ => None })
+    };
+    let (doc, report) = import_with(&read).unwrap();
+    assert_eq!(doc.library.len(), 1);
+    assert_eq!(doc.library[0].kind, SymbolKind::Bitmap);
+    let dl = evaluate(&doc, 0);
+    assert_eq!(dl.items.len(), 1);
+    assert_eq!(dl.items[0].transform.m, [2.0, 0.0, 0.0, 2.0, 4.0, 6.0]);
+    assert_eq!(dl.items[0].color.alpha, 0.5);
+    let Some(Paint::Bitmap { image, .. }) = &dl.items[0].fill else { panic!("bitmap fill missing") };
+    assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
+    assert_eq!(report.skipped.get("missing or unsupported bitmap assets"), Some(&1));
+    assert!(reads.borrow().iter().all(|p| !p.starts_with('/') && !p.contains("..")));
+}
+
+#[test]
 fn stage_layers_frames_and_tweens() {
     let (doc, report) = import(&package()).unwrap();
     assert_eq!((doc.stage.width, doc.stage.height, doc.stage.fps), (640, 360, 30.0));

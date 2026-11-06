@@ -8,6 +8,7 @@ is written **AniCraft**; machine names are lowercase (`anicraft-*`). Read `docs/
 
 ```text
 crates/geom     L0  Vec2, Affine (decompose/compose), Rect, Path, flattening, hit testing
+crates/bitmap   L0  Immutable RGBA assets, bounded PNG/JPEG decoding and PNG serialization
 crates/doc      L1  Document model, easing, timeline evaluation, sample scene
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)

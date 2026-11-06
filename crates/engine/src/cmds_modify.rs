@@ -5,7 +5,7 @@ use crate::{CommandSpec, EngineError, Result, Session};
 use anicraft_doc::{Element, ElementId, ElementKind, Symbol, SymbolId};
 use anicraft_geom::{Affine, Rect, Vec2};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -113,11 +113,12 @@ fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
     if s.clipboard.is_empty() {
         return Err(EngineError::State("the clipboard is empty".into()));
     }
-    import_symbols(s, &s.clipboard.symbols.clone());
+    let symbols = import_symbols(s, &s.clipboard.symbols.clone());
     let mut fresh = Vec::new();
     let mut out = Vec::new();
     for e in s.clipboard.elements.clone() {
         let mut e = e;
+        remap_symbol(&mut e, &symbols);
         e.id = ElementId(s.doc.alloc_id());
         e.transform = Affine::translate(offset.x, offset.y).mul(&e.transform);
         fresh.push(e.id);
@@ -128,29 +129,52 @@ fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
         return Err(EngineError::State("too many elements on this keyframe".into()));
     }
     kf.elements.extend(out);
+    crate::cmds_bitmap::validate_document(&s.doc)?;
     s.selection = fresh.clone();
     Ok(json!({"pasted": fresh.iter().map(|e| e.0).collect::<Vec<_>>()}))
 }
 
-/// Adds the symbols this document lacks (from a clipboard, maybe another document's) and
-/// moves the id counter past every id they use, so new ids stay unique.
-pub(crate) fn import_symbols(s: &mut Session, symbols: &[Arc<Symbol>]) {
-    let mut max_id = 0u64;
-    for sym in symbols.iter().cloned() {
-        if s.doc.symbol(sym.id).is_none() {
-            max_id = max_id.max(sym.id.0);
-            for l in &sym.timeline.layers {
-                max_id = max_id.max(l.id.0);
-                for k in &l.keyframes {
-                    for e in &k.elements {
-                        max_id = max_id.max(e.id.0);
-                    }
-                }
-            }
-            s.doc.library.push(sym);
+/// Import a clipboard's symbol graph with fresh ids on cross-document collisions.
+/// Reusing only identical Arc instances also avoids mistaking equal parent timelines for
+/// equal graphs when a nested symbol with the same source id has different artwork.
+pub(crate) fn import_symbols(s: &mut Session, symbols: &[Arc<Symbol>]) -> HashMap<SymbolId, SymbolId> {
+    let mut ids = HashMap::new();
+    let mut pending = Vec::new();
+    for sym in symbols {
+        if s.doc.library.iter().any(|p| Arc::ptr_eq(p, sym)) {
+            ids.insert(sym.id, sym.id);
+        } else {
+            let id = SymbolId(s.doc.alloc_id());
+            ids.insert(sym.id, id);
+            pending.push((id, sym));
         }
     }
-    s.doc.next_id = s.doc.next_id.max(max_id.saturating_add(1));
+    for (id, original) in pending {
+        let mut sym = (**original).clone();
+        sym.id = id;
+        let layers: HashMap<_, _> = sym.timeline.layers.iter().map(|l| (l.id, anicraft_doc::LayerId(s.doc.alloc_id()))).collect();
+        let mut elements = HashMap::new();
+        for layer in &mut sym.timeline.layers {
+            let layer = Arc::make_mut(layer);
+            layer.id = layers.get(&layer.id).copied().unwrap_or(layer.id);
+            layer.parent = layer.parent.and_then(|p| layers.get(&p).copied());
+            for key in &mut layer.keyframes {
+                for el in &mut Arc::make_mut(key).elements {
+                    let el = Arc::make_mut(el);
+                    el.id = *elements.entry(el.id).or_insert_with(|| ElementId(s.doc.alloc_id()));
+                    remap_symbol(el, &ids);
+                }
+            }
+        }
+        s.doc.library.push(Arc::new(sym));
+    }
+    ids
+}
+
+pub(crate) fn remap_symbol(el: &mut Element, ids: &HashMap<SymbolId, SymbolId>) {
+    if let ElementKind::Symbol { symbol, .. } = &mut el.kind {
+        *symbol = ids.get(symbol).copied().unwrap_or(*symbol);
+    }
 }
 
 fn paste(s: &mut Session, p: &Value) -> Result<Value> {

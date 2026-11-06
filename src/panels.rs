@@ -104,6 +104,10 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
 
 pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
+        if app.bitmap_job.is_some() {
+            ui.spinner();
+            ui.label(text(Type::Label, "Importing bitmap…"));
+        }
         let now = ui.input(|i| i.time);
         let msg = app.status.as_ref().filter(|s| s.error || now - s.at < 8.0 || s.at == 0.0);
         match msg {
@@ -479,7 +483,7 @@ fn ease_curve(ui: &mut egui::Ui, e: anicraft_engine::doc::Easing) {
 fn library(app: &mut App, ui: &mut egui::Ui) {
     let lib = app.s.doc.library.clone();
     if lib.is_empty() {
-        ui.label(text(Type::Caption, "No symbols yet. Select artwork and press F8."));
+        ui.label(text(Type::Caption, "Import a bitmap, or select artwork and press F8."));
         return;
     }
     ui.label(text(Type::Caption, format!("{} items", lib.len())));
@@ -496,6 +500,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             let icon = Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0));
             let kind_color = match sym.kind {
                 SymbolKind::Graphic => T.kind_graphic,
+                SymbolKind::Bitmap => T.kind_graphic,
                 SymbolKind::MovieClip => T.kind_movie_clip,
                 SymbolKind::Button => T.kind_button,
             };
@@ -505,7 +510,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             ui.painter().text(
                 r.right_center() - vec2(8.0, 0.0),
                 Align2::RIGHT_CENTER,
-                format!("{:?} · {}f", sym.kind, sym.timeline.frame_count()),
+                if sym.kind == SymbolKind::Bitmap { "Bitmap".to_string() } else { format!("{:?} · {}f", sym.kind, sym.timeline.frame_count()) },
                 font(Type::Caption),
                 color(Type::Caption),
             );
