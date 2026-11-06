@@ -1,4 +1,8 @@
-# AniCraft
+<p align="center">
+  <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.anicraft.png" width="128" height="128" alt="AniCraft mouse icon">
+</p>
+
+<h1 align="center">AniCraft</h1>
 
 An open-source, native 2D vector animation studio in the class of Adobe Animate, written in
 Rust. It's a clean-room implementation, part of the `{Function}Craft` family (PhotoCraft,
