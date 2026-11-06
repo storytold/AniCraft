@@ -315,6 +315,36 @@ fn svg_frame_export_writes_vectors_and_asks_before_replacing() {
 }
 
 #[test]
+fn animated_svg_export_uses_every_frame_and_document_fps() {
+    let dir = std::env::temp_dir().join(format!("anicraft-animated-svg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("animation.svg");
+    let mut s = Session::new(sample::demo());
+    let p = json!({"path": path.display().to_string()});
+    let v = run(&mut s, "file.export_animated_svg", p.clone());
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(v["frames"], 48);
+    assert_eq!(v["bytes"].as_u64().unwrap() as usize, text.len());
+    assert!(
+        text.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1280\" height=\"720\"")
+    );
+    assert!(text.contains("animation:a0 2.00000000s steps(1,end) infinite"));
+    assert!(
+        text.matches("<g class=\"f").count() == 48,
+        "all frames are embedded"
+    );
+    assert!(
+        text.contains("f0_g0") && text.contains("f1_g0"),
+        "frame-local vector ids do not collide"
+    );
+    assert!(text.contains("@keyframes a47"));
+    assert!(s.execute("file.export_animated_svg", &p).is_err(), "replacing a file needs consent");
+    assert!(s.confirmation("file.export_animated_svg", &p).is_some());
+    run(&mut s, "file.export_animated_svg", json!({"path": path.display().to_string(), "confirm": true}));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn svg_round_trip_looks_the_same_and_imports_as_one_undo_step() {
     let dir = std::env::temp_dir().join(format!("anicraft-svg-rt-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

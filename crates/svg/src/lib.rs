@@ -610,8 +610,8 @@ impl<'a> Builder<'a> {
             "polyline" | "polygon" => {
                 let n = numbers(el.attr("points").unwrap_or(""));
                 let mut p = Path::new();
-                for (i, xy) in n.chunks_exact(2).enumerate() {
-                    let q = Vec2::new(xy.first().copied().unwrap_or(0.0), xy.get(1).copied().unwrap_or(0.0));
+                for (i, xy) in n.as_chunks::<2>().0.iter().enumerate() {
+                    let q = Vec2::new(xy[0], xy[1]);
                     if i == 0 { p.move_to(q) } else { p.line_to(q) };
                 }
                 if name == "polygon" && !p.is_empty() {
