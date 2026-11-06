@@ -968,6 +968,60 @@ fn opening_an_svg_imports_editable_shapes_untitled() {
 }
 
 #[test]
+fn importing_svg_adds_a_new_layer_without_replacing_the_document() {
+    let dir = std::env::temp_dir().join(format!("anicraft-import-svg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("art.svg");
+    std::fs::write(
+        &path,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24">
+          <rect x="1" y="2" width="10" height="8" fill="#ff8800"/>
+        </svg>"##,
+    )
+    .unwrap();
+    let mut doc = Document::default();
+    if let Some(layer) = doc.timeline.layers.first_mut()
+        && let Some(keyframe) = std::sync::Arc::make_mut(layer).keyframe_mut(0)
+    {
+        keyframe.duration = 5;
+    }
+    let mut s = Session::new(doc);
+    run(&mut s, "draw.rect", json!({"x": 20, "y": 20, "w": 10, "h": 10}));
+    let original_layer = s.doc.timeline.layers[0].id;
+    let original_shape = s.visible_elements()[0].id;
+    let original_stage = s.doc.stage;
+    s.set_frame(3);
+
+    let result = run(
+        &mut s,
+        "file.import_svg",
+        json!({"path": path.display().to_string()}),
+    );
+    assert_eq!(s.doc.stage, original_stage);
+    assert_eq!(s.doc.timeline.layers.len(), 2);
+    assert_eq!(s.doc.timeline.layers[1].id, original_layer);
+    assert_eq!(s.doc.timeline.layers[1].keyframes[0].elements[0].id, original_shape);
+    let imported_layer = &s.doc.timeline.layers[0];
+    assert_eq!(imported_layer.name, "SVG Artwork");
+    assert_eq!(imported_layer.keyframes[0].duration, 5);
+    assert_eq!(imported_layer.keyframes[0].elements.len(), 1);
+    assert_eq!(s.layer, imported_layer.id);
+    assert_eq!(s.selection, vec![imported_layer.keyframes[0].elements[0].id]);
+    assert_eq!(result["shapes"], 1);
+    assert_eq!(s.path, None, "importing keeps the current document path");
+    assert_eq!(s.frame, 3);
+    assert_eq!(s.display_list().items.len(), 2, "the imported layer is visible across the timeline");
+
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.timeline.layers.len(), 1);
+    assert_eq!(s.doc.timeline.layers[0].id, original_layer);
+    assert_eq!(s.visible_elements()[0].id, original_shape);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.timeline.layers.len(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn animate_default_keys_map_to_the_same_commands() {
     // Muscle memory: Animate's default keys (as its documentation lists them) do the same here.
     let expected = [

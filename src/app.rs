@@ -542,6 +542,12 @@ impl App {
                     None => self.status_ok(if id == "file.open" { "Opened" } else { "New document" }),
                 }
             }
+            "file.import_svg" => {
+                let shapes = v["shapes"].as_u64().unwrap_or(0);
+                let report = v["report"].as_str().unwrap_or("SVG imported.");
+                let noun = if shapes == 1 { "shape" } else { "shapes" };
+                self.status_ok(format!("{report} Added {shapes} {noun} on a new layer — Ctrl+Z to undo."));
+            }
             "file.save" | "file.save_as" => {
                 self.status_ok(format!("Saved {}", v["saved"].as_str().unwrap_or("")));
                 if self.close_after_save {
@@ -600,6 +606,7 @@ impl App {
         }
         let prompt = match id {
             "file.open" => Some(("Open document", "path", "animation.anicraft".to_string())),
+            "file.import_svg" => Some(("Import SVG into current document", "path", "artwork.svg".to_string())),
             "file.save" if self.s.path.is_none() => Some(("Save document as", "path", "animation.anicraft".to_string())),
             "file.save_as" => Some(("Save document as", "path", self.s.path.as_ref().map_or_else(|| "animation.anicraft".to_string(), |p| p.display().to_string()))),
             "layer.rename" => Some(("Rename layer", "name", self.s.active_layer().map_or_else(String::new, |l| l.name.clone()))),

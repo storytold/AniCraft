@@ -122,6 +122,7 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_png" => ("PNG image", &["png"]),
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" => ("SVG image", &["svg"]),
+        "file.import_svg" => ("SVG image", &["svg"]),
         // Opening also imports .svg, .fla archives and .xfl packages.
         "file.open" => ("Documents", &["anicraft", "svg", "fla", "xfl"]),
         _ => ("AniCraft document", &["anicraft"]),
@@ -134,7 +135,7 @@ pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf
     let (label, exts) = filters(cmd);
     let d = rfd::FileDialog::new().set_title(title);
     match cmd {
-        "file.open" => d.add_filter(label, exts).pick_file(),
+        "file.open" | "file.import_svg" => d.add_filter(label, exts).pick_file(),
         "file.export_png_sequence" => d.pick_folder(),
         _ => d.add_filter(label, exts).set_file_name(default_name).save_file(),
     }
@@ -157,6 +158,7 @@ mod tests {
     #[test]
     fn open_dialog_includes_svg_import() {
         assert!(filters("file.open").1.contains(&"svg"));
+        assert_eq!(filters("file.import_svg").1, &["svg"]);
     }
 
     #[test]

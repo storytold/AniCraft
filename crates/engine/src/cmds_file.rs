@@ -2,17 +2,19 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session, format};
-use anicraft_doc::{Document, MAX_STAGE_EDGE, Stage, sample};
+use anicraft_doc::{Document, ElementId, LayerId, MAX_STAGE_EDGE, Stage, sample};
 use anicraft_render::{View, render};
 use rayon::prelude::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
         CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{}", mutates: false, run: new_sample },
         CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path}", mutates: false, run: open },
+        CommandSpec { id: "file.import_svg", label: "Import SVG…", menu: "File", shortcut: None, params: "{path}", mutates: true, run: import_svg },
         CommandSpec { id: "file.save", label: "Save", menu: "File", shortcut: Some("Ctrl+S"), params: "{path?, confirm?}", mutates: false, run: save },
         CommandSpec {
             id: "file.save_as",
@@ -123,6 +125,48 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = format::load(&path)?;
     s.replace_document(doc, Some(path));
     Ok(s.info())
+}
+
+fn import_svg(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
+        return Err(EngineError::Param("file.import_svg requires an .svg file".into()));
+    }
+    if s.doc.timeline.layers.len() >= 1000 {
+        return Err(EngineError::State("too many layers (limit 1000)".into()));
+    }
+    let (imported, report) = crate::svg_import::import_path(&path)
+        .map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    let Some(imported_layer) = imported.timeline.layers.first() else {
+        return Err(EngineError::Format("SVG import produced no artwork layer".into()));
+    };
+    let mut layer = (**imported_layer).clone();
+    let layer_id = LayerId(s.doc.alloc_id());
+    layer.id = layer_id;
+    layer.name = "SVG Artwork".into();
+    layer.parent = None;
+    let duration = s.doc.frame_count().max(1);
+    let mut selected = Vec::new();
+    for keyframe in &mut layer.keyframes {
+        let keyframe = Arc::make_mut(keyframe);
+        keyframe.duration = duration;
+        for element in &mut keyframe.elements {
+            let element = Arc::make_mut(element);
+            element.id = ElementId(s.doc.alloc_id());
+            selected.push(element.id);
+        }
+    }
+    layer.normalize();
+    s.doc.timeline.layers.insert(0, Arc::new(layer));
+    s.layer = layer_id;
+    s.selection = selected;
+    Ok(json!({
+        "imported": path.display().to_string(),
+        "layer": layer_id.0,
+        "shapes": s.selection.len(),
+        "report": report.summary(),
+        "skipped": report.skipped
+    }))
 }
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
