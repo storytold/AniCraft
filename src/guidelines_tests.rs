@@ -78,9 +78,9 @@ fn palette_meets_contrast_and_target_minimums() {
     assert!(contrast(Color32::WHITE, T.accent) >= 4.5, "white on accent: {:.2}", contrast(Color32::WHITE, T.accent));
     assert!(contrast(Color32::WHITE, T.danger) >= 4.5);
     // Marks on timeline blocks, and the blocks against the grid (non-text: 3:1).
-    assert!(contrast(T.ink, T.span) >= 4.5 && contrast(T.ink, T.tween) >= 4.5, "ink on blocks");
+    assert!(contrast(T.ink, T.span) >= 4.5 && contrast(T.ink, T.tween) >= 4.5 && contrast(T.ink, T.tween_shape) >= 4.5, "ink on blocks");
     assert!(contrast(T.text, T.span_empty) >= 4.5);
-    assert!(contrast(T.span, T.panel) >= 3.0 && contrast(T.tween, T.panel) >= 3.0);
+    assert!(contrast(T.span, T.panel) >= 3.0 && contrast(T.tween, T.panel) >= 3.0 && contrast(T.tween_shape, T.panel) >= 3.0);
     // Focus and selection outlines, and checkbox edges, stand out from the panels (WCAG 1.4.11).
     assert!(contrast(T.control_edge, T.panel_alt) >= 3.0 && contrast(T.control_edge, T.panel) >= 3.0, "control edges");
     assert!(contrast(T.accent, T.panel) >= 3.0, "accent on panel: {:.2}", contrast(T.accent, T.panel));

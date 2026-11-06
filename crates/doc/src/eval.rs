@@ -1,6 +1,6 @@
 //! Timeline evaluation: `(document, frame) -> DisplayList`. Pure, deterministic, no caching.
 
-use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, Timeline};
+use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, Timeline, TweenKind};
 use anicraft_geom::{Affine, FillRule, Path};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -85,15 +85,24 @@ pub fn evaluate_layer_elements(layer: &Layer, frame: u32) -> Option<(u32, Cow<'_
         return Some((kf.start, Cow::Borrowed(&kf.elements)));
     }
     let t = tween.easing.apply((frame - kf.start) as f32 / kf.duration.max(1) as f32);
-    let els = kf.elements.iter().enumerate().map(|(i, a)| next.elements.get(i).and_then(|b| interpolate(a, b, t)).map_or_else(|| a.clone(), Arc::new)).collect();
+    let morph = tween.kind == TweenKind::Shape;
+    let els = kf.elements.iter().enumerate().map(|(i, a)| next.elements.get(i).and_then(|b| interpolate(a, b, t, morph)).map_or_else(|| a.clone(), Arc::new)).collect();
     Some((kf.start, Cow::Owned(els)))
 }
 
-/// Interpolates two compatible elements; `None` when they cannot tween.
-fn interpolate(a: &Element, b: &Element, t: f32) -> Option<Element> {
+/// Interpolates two elements; `None` when they cannot tween. With `morph` (a shape tween),
+/// shapes of different structure blend through [`anicraft_geom::morph`]; otherwise a shape
+/// changes only when both keyframes share its structure.
+fn interpolate(a: &Element, b: &Element, t: f32, morph: bool) -> Option<Element> {
     let kind = match (&a.kind, &b.kind) {
         (ElementKind::Shape(sa), ElementKind::Shape(sb)) => {
-            let path = if Arc::ptr_eq(&sa.path, &sb.path) { sa.path.clone() } else { sa.path.lerp(&sb.path, t).map(Arc::new).unwrap_or_else(|| sa.path.clone()) };
+            let path = if Arc::ptr_eq(&sa.path, &sb.path) {
+                sa.path.clone()
+            } else if morph {
+                anicraft_geom::morph::morph(&sa.path, &sb.path, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
+            } else {
+                sa.path.lerp(&sb.path, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
+            };
             let fill = match (&sa.fill, &sb.fill) {
                 (Some(x), Some(y)) => Some(x.lerp(y, t)),
                 (x, _) => x.clone(),

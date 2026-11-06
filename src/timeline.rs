@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::icons::{self, Icon};
 use crate::menus;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, to_color32, with_type};
-use anicraft_engine::doc::{Easing, Layer, LayerId, LayerKind};
+use anicraft_engine::doc::{Easing, Layer, LayerId, LayerKind, TweenKind};
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 use std::sync::Arc;
@@ -186,9 +186,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             }
                         }
                     });
-                    cmd(app, ui, "Remove Tween", "Remove the classic tween from this span", "timeline.remove_tween");
+                    // The tween's kind: classic ⇄ shape (keeping the easing), or none.
+                    let shape = tw.kind == TweenKind::Shape;
+                    egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text(if shape { "Shape tween" } else { "Classic tween" }).show_ui(ui, |ui| {
+                        if ui.selectable_label(!shape, "Classic tween").on_hover_text("Moves, scales, rotates and recolours").clicked() && shape {
+                            app.run("timeline.create_tween", json!({}));
+                        }
+                        if ui.selectable_label(shape, "Shape tween").on_hover_text("Also morphs one shape into another").clicked() && !shape {
+                            app.run("timeline.create_shape_tween", json!({}));
+                        }
+                        ui.separator();
+                        if ui.selectable_label(false, "Remove tween").clicked() {
+                            app.invoke("timeline.remove_tween");
+                        }
+                    });
                 }
-                None => cmd(app, ui, "Create Tween", "Create a classic tween to the next keyframe", "timeline.create_tween"),
+                None => {
+                    cmd(app, ui, "Create Tween", "Create a classic tween to the next keyframe", "timeline.create_tween");
+                    cmd(app, ui, "Shape Tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween");
+                }
             }
             // Frame zoom, at the right end of the header.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -437,7 +453,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let tweened = k.tween.is_some() && next_adjacent;
             let empty = k.elements.is_empty();
             let fill = if tweened {
-                T.tween
+                if k.tween.is_some_and(|t| t.kind == TweenKind::Shape) { T.tween_shape } else { T.tween }
             } else if empty {
                 T.span_empty
             } else {
@@ -660,6 +676,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let tween = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).and_then(|k| k.tween);
             match tween {
                 Some(t) => {
+                    menus::cmd_item(app, ui, if t.kind == TweenKind::Shape { "timeline.create_tween" } else { "timeline.create_shape_tween" });
                     menus::cmd_item(app, ui, "timeline.remove_tween");
                     ui.menu_button("Ease", |ui| {
                         for (name, e) in Easing::PRESETS {
@@ -670,7 +687,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                 }
-                None => menus::cmd_item(app, ui, "timeline.create_tween"),
+                None => {
+                    menus::cmd_item(app, ui, "timeline.create_tween");
+                    menus::cmd_item(app, ui, "timeline.create_shape_tween");
+                }
             }
         });
         painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, T.separator));

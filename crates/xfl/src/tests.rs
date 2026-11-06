@@ -176,3 +176,28 @@ fn hostile_packages_fail_cleanly() {
     assert!(matches!(import(&files), Err(XflError::Xml(_))));
     assert!(import(&HashMap::new()).is_err(), "no DOMDocument.xml");
 }
+
+#[test]
+fn shape_tweens_come_across_as_shape_tweens() {
+    let shape = |edges: &str| {
+        format!(r##"<DOMShape><fills><FillStyle index="1"><SolidColor color="#3366FF"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="{edges}"/></edges></DOMShape>"##)
+    };
+    let doc = format!(
+        r#"<DOMDocument width="400" height="200"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Morph"><frames>
+          <DOMFrame index="0" duration="10" tweenType="shape" acceleration="40"><elements>{}</elements></DOMFrame>
+          <DOMFrame index="10"><elements>{}</elements></DOMFrame>
+        </frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#,
+        shape("!0 0|2000 0|2000 2000|0 2000|0 0"),
+        shape("!4000 0|6000 1000|4000 2000|4000 0"),
+    );
+    let doc: &'static str = Box::leak(doc.into_boxed_str());
+    let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
+    let k = &d.timeline.layers[0].keyframes[0];
+    let t = k.tween.expect("a tween");
+    assert_eq!(t.kind, anicraft_doc::TweenKind::Shape);
+    assert!(matches!(t.easing, anicraft_doc::Easing::Classic(a) if a == 40.0));
+    assert!(report.skipped.keys().all(|s| !s.contains("shape tween")), "{:?}", report.skipped);
+    // Halfway, the square has morphed towards the triangle.
+    let mid = evaluate(&d, 5).items[0].path.bounds();
+    assert!(mid.max.x > 110.0 && mid.min.x > 10.0, "{mid:?}");
+}

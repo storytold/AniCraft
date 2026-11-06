@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
-use anicraft_doc::{Keyframe, Layer, LayerId, LayerKind, Tween, evaluate_layer_elements};
+use anicraft_doc::{Keyframe, Layer, LayerId, LayerKind, Tween, TweenKind, evaluate_layer_elements};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -16,6 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("timeline.clear_keyframe", "Clear Keyframe", "Insert/Timeline", Some("Shift+F6"), "{layer? | layers?: [..], frame?, count?}", true, clear_keyframe),
         c("timeline.move_keyframes", "Move Keyframes", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}", true, move_keyframes),
         c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_tween),
+        c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_shape_tween),
         c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?}", true, remove_tween),
         c("timeline.set_easing", "Set Tween Easing", "", None, "{easing, layer?, frame?}", true, set_easing),
         c("timeline.set_label", "Frame Label", "", None, "{label, layer?, frame?}", true, set_label),
@@ -466,10 +467,24 @@ fn keyframe_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Keyframe> {
 }
 
 fn create_tween(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing(p, "easing")?.unwrap_or_default();
+    tween_of_kind(s, p, TweenKind::Classic)
+}
+
+/// Create Shape Tween: like a classic tween, and shapes of any structure morph into each other.
+fn create_shape_tween(s: &mut Session, p: &Value) -> Result<Value> {
+    tween_of_kind(s, p, TweenKind::Shape)
+}
+
+fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
     let k = keyframe_mut(s, p)?;
-    k.tween = Some(Tween { easing });
-    Ok(json!({"tween": k.start, "easing": easing.label()}))
+    // Switching kinds keeps the easing the span already had, unless one is given.
+    let easing = match opt_easing(p, "easing")? {
+        Some(e) => e,
+        None => k.tween.map(|t| t.easing).unwrap_or_default(),
+    };
+    k.tween = Some(Tween { easing, kind });
+    let kind = if kind == TweenKind::Shape { "shape" } else { "classic" };
+    Ok(json!({"tween": k.start, "easing": easing.label(), "kind": kind}))
 }
 
 fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {

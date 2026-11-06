@@ -1140,3 +1140,24 @@ fn mask_layers_reveal_hide_pick_and_move_as_a_group() {
     run(&mut s, "layer.delete", json!({"layer": mask.0, "confirm": true}));
     assert!(s.doc.timeline.layers.iter().all(|l| l.parent.is_none()));
 }
+#[test]
+fn create_shape_tween_morphs_and_keeps_the_easing() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
+    run(&mut s, "timeline.goto", json!({"frame": 9}));
+    run(&mut s, "timeline.insert_blank_keyframe", json!({}));
+    run(&mut s, "draw.star", json!({"cx": 300, "cy": 50, "outer": 50, "inner": 20, "points": 5}));
+    run(&mut s, "timeline.goto", json!({"frame": 0}));
+    run(&mut s, "timeline.create_tween", json!({"easing": "ease-in"}));
+    let v = run(&mut s, "timeline.create_shape_tween", json!({}));
+    assert_eq!(v["kind"], "shape");
+    let t = s.active_layer().unwrap().keyframes[0].tween.unwrap();
+    assert_eq!(t.kind, anicraft_doc::TweenKind::Shape);
+    assert_ne!(t.easing, anicraft_doc::Easing::Linear, "switching kinds keeps the easing");
+    // Midway the shape has moved off the square.
+    let item = &anicraft_doc::evaluate(&s.doc, 5).items[0];
+    let mid = item.path.bounds().transformed(&item.transform);
+    assert!(mid.max.x > 110.0, "{mid:?}");
+    s.undo().unwrap();
+    assert_eq!(s.active_layer().unwrap().keyframes[0].tween.unwrap().kind, anicraft_doc::TweenKind::Classic);
+}
