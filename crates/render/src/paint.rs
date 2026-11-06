@@ -2,6 +2,7 @@
 
 use anicraft_doc::{ColorEffect, GradientStop, Paint, Rgba};
 use anicraft_geom::{Affine, Vec2};
+use std::sync::Arc;
 
 /// Premultiplied RGBA.
 pub type Premul = [f32; 4];
@@ -15,6 +16,7 @@ const LUT: usize = 256;
 
 pub enum Shader {
     Solid(Premul),
+    Bitmap { image: Arc<anicraft_doc::Bitmap>, inv: Affine, fx: ColorEffect },
     Linear { inv: Affine, start: Vec2, dir: Vec2, lut: Box<[Premul; LUT]> },
     Radial { inv: Affine, center: Vec2, inv_radius: f32, lut: Box<[Premul; LUT]> },
 }
@@ -52,6 +54,10 @@ impl Shader {
         let inv = to_pixel.inverse();
         match (paint, inv) {
             (Paint::Solid(c), _) => Shader::Solid(premultiply(fx.apply(*c))),
+            (Paint::Bitmap { image, transform }, _) => match to_pixel.mul(transform).inverse() {
+                Some(inv) => Shader::Bitmap { image: image.clone(), inv, fx: *fx },
+                None => Shader::Solid([0.0; 4]),
+            },
             (Paint::Linear { start, end, stops }, Some(inv)) => {
                 let d = *end - *start;
                 let len2 = d.dot(d);
@@ -88,6 +94,24 @@ impl Shader {
         };
         match self {
             Shader::Solid(c) => *c,
+            Shader::Bitmap { image, inv, fx } => {
+                let p = inv.apply(p);
+                if !p.is_finite() || p.x < 0.0 || p.y < 0.0 || p.x >= image.width() as f32 || p.y >= image.height() as f32 {
+                    return [0.0; 4];
+                }
+                // Bilinear in premultiplied space prevents dark fringes at transparent pixels.
+                let (x, y) = (p.x - 0.5, p.y - 0.5);
+                let (x0, y0) = (x.floor(), y.floor());
+                let (tx, ty) = (x - x0, y - y0);
+                let sample = |dx: f32, dy: f32| {
+                    let x = (x0 + dx).clamp(0.0, image.width() as f32 - 1.0) as u32;
+                    let y = (y0 + dy).clamp(0.0, image.height() as f32 - 1.0) as u32;
+                    let [r, g, b, a] = image.pixel(x, y);
+                    premultiply(fx.apply(Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0)))
+                };
+                let (a, b, c, d) = (sample(0.0, 0.0), sample(1.0, 0.0), sample(0.0, 1.0), sample(1.0, 1.0));
+                std::array::from_fn(|i| (a[i] * (1.0 - tx) + b[i] * tx) * (1.0 - ty) + (c[i] * (1.0 - tx) + d[i] * tx) * ty)
+            }
             Shader::Linear { inv, start, dir, lut } => lookup(lut, (inv.apply(p) - *start).dot(*dir)),
             Shader::Radial { inv, center, inv_radius, lut } => lookup(lut, (inv.apply(p) - *center).length() * inv_radius),
         }
@@ -112,6 +136,18 @@ mod tests {
         // gradient follows the transform
         let s2 = Shader::new(&paint, &Affine::scale(2.0, 1.0), &ColorEffect::default());
         assert!((s2.at(99, 0)[0] - 0.5).abs() < 0.02);
+    }
+
+    #[test]
+    fn bitmap_sampling_uses_premultiplied_interpolation_and_colour_effects() {
+        let image = Arc::new(anicraft_doc::Bitmap::new(2, 1, vec![255, 0, 0, 255, 0, 0, 0, 0]).unwrap());
+        let p = Paint::Bitmap { image, transform: Affine::IDENTITY };
+        let shader = Shader::new(&p, &Affine::scale(2.0, 2.0), &ColorEffect::default());
+        assert_eq!(shader.at(0, 0), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(shader.at(1, 0), [0.75, 0.0, 0.0, 0.75], "no dark halo at transparent pixels");
+        assert_eq!(shader.at(4, 0), [0.0; 4], "no repeating outside the image");
+        let shader = Shader::new(&p, &Affine::IDENTITY, &ColorEffect { alpha: 0.5, tint: Rgba::WHITE, tint_amount: 1.0 });
+        assert_eq!(shader.at(0, 0), [0.5; 4]);
     }
 
     #[test]

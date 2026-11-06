@@ -42,6 +42,7 @@ The `serve` protocol takes one request per line,
 * [`docs/requirements.md`](docs/requirements.md): scope, functional and non-functional requirements, technology choices
 * [`docs/architecture.md`](docs/architecture.md): philosophy, crate map, document model, renderer, engine, testing
 * [`docs/roadmap.md`](docs/roadmap.md): honest status and milestones M0–M8
+* [`docs/bitmap-import.md`](docs/bitmap-import.md): bitmap import, limits and native embedding
 * [`AGENTS.md`](AGENTS.md): rules for contributors and AI agents
 
 ## License

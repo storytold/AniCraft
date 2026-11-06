@@ -6,7 +6,7 @@
 cargo build                                   # app + CLI (debug)
 cargo run                                     # desktop app with the sample
 cargo run -- --screenshot shots/now.png       # draw ~120 frames, save the window, exit
-cargo run -- --open <panel> --screenshot x.png  # palette|shortcuts|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom
+cargo run -- --open <panel> --screenshot x.png  # palette|shortcuts|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom|bitmap
 cargo test                                    # every crate
 cargo clippy --all-targets -- -D warnings
 cargo deny check licenses bans sources

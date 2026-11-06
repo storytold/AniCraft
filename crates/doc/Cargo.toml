@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 anicraft-geom.workspace = true
+anicraft-bitmap.workspace = true
 serde = { workspace = true, features = ["rc"] }
 
 [dev-dependencies]

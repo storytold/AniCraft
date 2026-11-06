@@ -189,6 +189,7 @@ impl Entry {
 
 /// Commands the palette can run without extra input (everything optional, or prompted).
 fn runnable(c: &CommandSpec) -> bool {
+    if c.id == "file.import_bitmap" { return true; }
     if matches!(c.id, "file.open" | "file.save_as" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename") {
         return true;
     }

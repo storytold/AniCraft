@@ -7,6 +7,7 @@
 
 mod cmds_draw;
 mod cmds_file;
+pub mod cmds_bitmap;
 mod cmds_frames;
 mod cmds_modify;
 mod cmds_paint;
@@ -79,6 +80,7 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(cmds_bitmap::specs());
     v.extend(cmds_timeline::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
@@ -123,6 +125,8 @@ impl Default for ToolStyle {
 
 /// An open document plus everything the editor tracks about it.
 pub struct Session {
+    /// A background decode waiting to be consumed by `file.import_bitmap`.
+    pub prepared_bitmap: Option<cmds_bitmap::Prepared>,
     /// The document: a persistent tree, so cloning it (undo, render thread) is cheap.
     pub doc: Document,
     /// Playhead (0-based).
@@ -165,6 +169,7 @@ impl Session {
         let layer = doc.timeline.layers.first().map_or(LayerId(0), |l| l.id);
         let state = history::fresh_state();
         Session {
+            prepared_bitmap: None,
             doc,
             frame: 0,
             layer,
@@ -507,7 +512,11 @@ impl Session {
 pub fn element_label(doc: &Document, e: &Element) -> String {
     let kind = match &e.kind {
         ElementKind::Shape(_) => "Shape".to_string(),
-        ElementKind::Symbol { symbol, .. } => format!("Graphic: {}", doc.symbol(*symbol).map_or("missing", |s| s.name.as_str())),
+        ElementKind::Symbol { symbol, .. } => match doc.symbol(*symbol) {
+            Some(s) if s.kind == anicraft_doc::SymbolKind::Bitmap => "Bitmap".into(),
+            Some(s) => format!("Graphic: {}", s.name),
+            None => "Graphic: missing".into(),
+        },
     };
     if e.name.is_empty() { kind } else { format!("{} ({kind})", e.name) }
 }

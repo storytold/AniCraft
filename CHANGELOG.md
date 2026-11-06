@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **Bitmap import** (File › Import › Import Bitmap…, Ctrl+R, `file.import_bitmap`): PNG/JPEG
+  images in the Library and stage, with shared pixels, transforms, classic tweens and undo.
+  Background decoding, PNG transparency and JPEG EXIF orientation; self-contained `.anicraft`
+  v3 files with one embedded PNG per shared image (v1/v2 still load). Standard PNG/JPEG bitmap
+  instances also import from XFL. PNG/GIF/SVG exports include the artwork.
 * **SVG export** (File › Export › Export Frame as SVG…, `file.export_svg`): any frame as a
   standalone vector SVG, matching the stage. Shapes, strokes, solid and gradient fills, opacity
   and tint, masks (as clip paths, nested inside symbols) and outline-mode layers all come

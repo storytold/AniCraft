@@ -12,7 +12,7 @@
 //!   one paste so tweens between pasted keys still pair up, and symbols they need come along
 //!   (also from another document).
 
-use crate::cmds_modify::{collect_symbols, import_symbols};
+use crate::cmds_modify::{collect_symbols, import_symbols, remap_symbol};
 use crate::cmds_timeline::{count_param, insert_keyframe_at, remove_frame, shift_after, target, target_layers};
 use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
 use anicraft_doc::{Element, ElementId, Keyframe, Layer, LayerId, Symbol};
@@ -116,7 +116,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::State("the timeline would grow past its maximum length".into()));
     }
     let mut row = s.doc.timeline.layers.iter().position(|l| l.id == top).ok_or_else(|| EngineError::State(format!("no layer with id {}", top.0)))?;
-    import_symbols(s, &clip.symbols);
+    let symbols = import_symbols(s, &clip.symbols);
     let mut remap: HashMap<ElementId, ElementId> = HashMap::new();
     let mut pasted = Vec::new();
     for sl in &clip.layers {
@@ -140,7 +140,9 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
             for e in &mut k.elements {
                 let old = e.id;
                 let new = *remap.entry(old).or_insert_with(|| ElementId(s.doc.alloc_id()));
-                Arc::make_mut(e).id = new;
+                let e = Arc::make_mut(e);
+                e.id = new;
+                remap_symbol(e, &symbols);
             }
             keys.push(Arc::new(k));
         }
@@ -155,5 +157,6 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
         row += 1;
     }
     s.selection.clear();
+    crate::cmds_bitmap::validate_document(&s.doc)?;
     Ok(json!({"pasted": clip.count, "layers": pasted}))
 }

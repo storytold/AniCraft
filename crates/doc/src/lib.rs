@@ -7,9 +7,11 @@
 mod easing;
 mod eval;
 pub mod path_table;
+pub mod bitmap_table;
 pub mod sample;
 
 pub use easing::Easing;
+pub use anicraft_bitmap::Bitmap;
 pub use eval::{DisplayItem, DisplayList, MAX_SYMBOL_DEPTH, evaluate, evaluate_layer_elements};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
@@ -77,6 +79,12 @@ pub struct GradientStop {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Paint {
     Solid(Rgba),
+    Bitmap {
+        #[serde(with = "bitmap_table")]
+        image: Arc<Bitmap>,
+        /// Image pixels → shape-local coordinates.
+        transform: Affine,
+    },
     Linear { start: Vec2, end: Vec2, stops: Vec<GradientStop> },
     Radial { center: Vec2, radius: f32, stops: Vec<GradientStop> },
 }
@@ -86,6 +94,7 @@ impl Paint {
     pub fn primary_color(&self) -> Rgba {
         match self {
             Paint::Solid(c) => *c,
+            Paint::Bitmap { .. } => Rgba::TRANSPARENT,
             Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => stops.first().map_or(Rgba::BLACK, |s| s.color),
         }
     }
@@ -518,6 +527,7 @@ impl Timeline {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SymbolKind {
+    Bitmap,
     #[default]
     Graphic,
     MovieClip,

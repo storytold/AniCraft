@@ -28,6 +28,7 @@
 ```text
 app/                         workspace root; the root package is the desktop app (`anicraft`)
   crates/
+    bitmap    L0  Immutable RGBA assets, bounded PNG/JPEG decoding, lossless PNG serialization
     geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
@@ -40,7 +41,8 @@ app/                         workspace root; the root package is the desktop app
 | Layer | Crate | May depend on |
 |---|---|---|
 | L0 | `anicraft-geom` | std, serde |
-| L1 | `anicraft-doc` | geom |
+| L0 | `anicraft-bitmap` | png, serde, base64, zune-core, zune-jpeg |
+| L1 | `anicraft-doc` | geom, bitmap |
 | L2 | `anicraft-render` | geom, doc, rayon, png |
 | L3 | `anicraft-engine` | geom, doc, render, serde_json |
 | L4 | `anicraft-cli` | engine (+ lower) |
@@ -138,9 +140,10 @@ coverage multiplication.
 * `CommandSpec { id, label, menu, shortcut, params, run }`. `run(&mut Session, &Value) ->
   Result<Value, EngineError>`. The registry (`commands()`) is the single list the shell, CLI and
   agents read. `Session::execute(id, params)` handles undo snapshots for mutating commands.
-* **File format** `.anicraft` v2: JSON `{ "format", "version": 2, "paths": [svg…], "document" }`
+* **File format** `.anicraft` v3: JSON `{ "format", "version": 3, "paths": [svg…], "bitmaps": [base64_png…], "document" }`
   with paths as SVG path strings, shared paths written once and streamed back as shared `Arc`s.
-  v1 files still load; unknown fields are ignored and missing fields default. See
+  Bitmap Library entries share immutable RGBA pixels through bitmap paints. Tables restore image
+  sharing on load and keep media self-contained (ADR 0012). v1/v2 files still load; unknown fields are ignored and missing fields default. See
   [ADR 0003](adr/0003-file-format-v2.md).
 
 ## 6. Headless and agents (`anicraft-cli`)

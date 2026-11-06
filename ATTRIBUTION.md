@@ -24,6 +24,7 @@ shaders or SDK code).
 | Library symbol-kind marks, selection handles, timeline marks | UI | AniCraft contributors | Original work, drawn in code (`src/panels.rs`, `src/timeline.rs`, `src/stage.rs`) | MIT OR Apache-2.0 |
 | Sample animation (ball, star, sun, hills, sky) | First launch, tests, CLI `--sample` | AniCraft contributors | Original work, generated in code (`crates/doc/src/sample.rs`) | MIT OR Apache-2.0 |
 | Colour theme | UI | AniCraft contributors | Original work (`src/theme.rs`) | MIT OR Apache-2.0 |
+| Bitmap colour study and codec fixtures | Screenshot check and bitmap tests | AniCraft contributors | Original procedural pixels and minimal JPEG, generated in `src/bitmap_import.rs` and `crates/bitmap/src/lib.rs`; no external image files | MIT OR Apache-2.0 ([licence text](LICENSE-MIT)) |
 
 ### Optional build input: craft-fonts (not files in this repo)
 
