@@ -1,0 +1,17 @@
+[package]
+name = "anicraft-svg"
+description = "AniCraft SVG import: shapes, groups, transforms, styles and gradients into editable vector shapes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anicraft-geom.workspace = true
+anicraft-doc.workspace = true
+anicraft-xml.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

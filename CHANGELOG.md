@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* **Import to Stage** (File › Import, **Ctrl+R** as in Animate; `file.import`): SVG drawings
+  come in as editable shapes on a new layer named after the file, at the playhead, centred
+  and selected, as one undo step. Supported: paths and basic shapes, groups, `use` and
+  symbols, transforms, `viewBox`, inline and attribute styles, opacity, and linear and radial
+  gradients. Anything not supported yet (text, images, filters, clip paths, dashes…) is listed
+  in the status bar.
+
 * **SVG export** (File › Export › Export Frame as SVG…, `file.export_svg`): any frame as a
   standalone vector SVG, matching the stage. Shapes, strokes, solid and gradient fills, opacity
   and tint, masks (as clip paths, nested inside symbols) and outline-mode layers all come

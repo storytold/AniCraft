@@ -28,6 +28,15 @@ pub fn specs() -> Vec<CommandSpec> {
             },
         },
         CommandSpec { id: "file.export_png", label: "Export Frame as PNG…", menu: "File/Export", shortcut: None, params: "{path, frame?, scale?}", mutates: false, run: export_png },
+        CommandSpec {
+            id: "file.import",
+            label: "Import to Stage…",
+            menu: "File/Import",
+            shortcut: Some("Ctrl+R"),
+            params: "{path (.svg), x?, y? (top-left on the stage; default: centred)}",
+            mutates: true,
+            run: import_to_stage,
+        },
         CommandSpec { id: "file.export_svg", label: "Export Frame as SVG…", menu: "File/Export", shortcut: None, params: "{path, frame?, confirm?}", mutates: false, run: export_svg },
         CommandSpec { id: "file.export_animated_svg", label: "Export Animated SVG…", menu: "File/Export", shortcut: None, params: "{path, confirm?}", mutates: false, run: export_animated_svg },
         CommandSpec {
@@ -150,6 +159,68 @@ fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = render_png(&s.doc, frame, scale_param(p)?)?;
     std::fs::write(&path, &bytes)?;
     Ok(json!({"written": path.display().to_string(), "bytes": bytes.len(), "frame": frame}))
+}
+
+/// Largest file Import to Stage reads.
+const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Import to Stage: the drawing's shapes become editable shapes on a new layer named after the
+/// file, in a keyframe at the playhead, selected, as one undo step. Centred on the stage unless
+/// `x`/`y` give its top-left corner.
+fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    if ext.as_deref() != Some("svg") {
+        return Err(EngineError::Param("Import to Stage reads SVG drawings (.svg) so far".into()));
+    }
+    let size = std::fs::metadata(&path)?.len();
+    if size > MAX_IMPORT_BYTES {
+        return Err(EngineError::Format(format!("{} is too large to import", path.display())));
+    }
+    let bytes = std::fs::read(&path)?;
+    let drawing = anicraft_svg::import(&bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    if drawing.shapes.is_empty() {
+        return Err(EngineError::State(format!("{} has no shapes AniCraft can import yet. {}", path.display(), drawing.report.summary())));
+    }
+    let stage = s.doc.stage;
+    let x = opt_f32(p, "x")?.unwrap_or((stage.width as f32 - drawing.width) * 0.5);
+    let y = opt_f32(p, "y")?.unwrap_or((stage.height as f32 - drawing.height) * 0.5);
+    if !(x.is_finite() && y.is_finite()) {
+        return Err(EngineError::Param("'x' and 'y' must be numbers".into()));
+    }
+    let place = anicraft_geom::Affine::translate(x, y);
+    let name: String = path.file_stem().map_or_else(|| "Imported".into(), |n| n.to_string_lossy().chars().take(128).collect());
+    crate::cmds_timeline::new_layer(s, &json!({"name": name}))?;
+    let frame = s.frame;
+    let end = s.doc.frame_count().max(frame + 1);
+    let mut elements = Vec::with_capacity(drawing.shapes.len());
+    for sh in drawing.shapes {
+        let id = anicraft_doc::ElementId(s.doc.alloc_id());
+        elements.push(std::sync::Arc::new(anicraft_doc::Element {
+            id,
+            name: sh.name,
+            transform: place.mul(&sh.transform),
+            color: anicraft_doc::ColorEffect { alpha: sh.alpha, ..Default::default() },
+            kind: anicraft_doc::ElementKind::Shape(sh.shape),
+        }));
+    }
+    let ids: Vec<anicraft_doc::ElementId> = elements.iter().map(|e| e.id).collect();
+    let layer = s.layer_mut(None)?;
+    // Empty before the playhead, the drawing from the playhead to the end of the timeline.
+    let mut key = anicraft_doc::Keyframe::new(frame, end - frame);
+    key.elements = elements;
+    layer.keyframes = if frame == 0 { vec![std::sync::Arc::new(key)] } else { vec![std::sync::Arc::new(anicraft_doc::Keyframe::new(0, frame)), std::sync::Arc::new(key)] };
+    layer.normalize();
+    let layer_id = layer.id;
+    s.selection = ids.clone();
+    Ok(json!({
+        "layer": layer_id.0,
+        "elements": ids.len(),
+        "width": drawing.width,
+        "height": drawing.height,
+        "report": drawing.report.summary(),
+        "skipped": drawing.report.skipped,
+    }))
 }
 
 /// A frame as a standalone SVG document (vectors, gradients and masks kept).
