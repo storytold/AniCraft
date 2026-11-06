@@ -370,7 +370,8 @@ pub fn import_path(path: &std::path::Path) -> Result<(Document, Report), XflErro
     let dir = if meta.is_dir() { path.to_path_buf() } else { path.parent().map(std::path::Path::to_path_buf).unwrap_or_default() };
     let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
         // Only plain relative paths inside the package.
-        if p.split('/').any(|c| c == ".." || c.is_empty()) || p.contains(':') {
+        // Backslash too: Windows treats it as a separator, so `..\x` would leave the package.
+        if p.split(['/', '\\']).any(|c| c == ".." || c.is_empty()) || p.contains(':') {
             return Ok(None);
         }
         let full = dir.join(p);

@@ -201,3 +201,16 @@ fn shape_tweens_come_across_as_shape_tweens() {
     let mid = evaluate(&d, 5).items[0].path.bounds();
     assert!(mid.max.x > 110.0 && mid.min.x > 10.0, "{mid:?}");
 }
+
+#[test]
+fn folder_packages_refuse_backslash_paths_that_leave_the_package() {
+    let dir = std::env::temp_dir().join(format!("anicraft-xfl-escape-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("LIBRARY")).unwrap();
+    std::fs::write(dir.join("DOMDocument.xml"), r#"<DOMDocument><symbols><Include href="..\Ball.xml"/></symbols></DOMDocument>"#).unwrap();
+    // On Windows this lands outside LIBRARY; elsewhere it is a file named `..\Ball.xml`.
+    std::fs::write(dir.join("LIBRARY/..\\Ball.xml"), BALL).unwrap();
+    let (doc, report) = crate::import_path(&dir).unwrap();
+    assert!(doc.library.is_empty(), "the escaping path was read");
+    assert_eq!(report.skipped.get("missing library files"), Some(&1));
+    std::fs::remove_dir_all(&dir).ok();
+}
