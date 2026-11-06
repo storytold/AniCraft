@@ -7,12 +7,14 @@ use anicraft_render::{View, render};
 use rayon::prelude::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
         CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{}", mutates: false, run: new_sample },
         CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path}", mutates: false, run: open },
+        CommandSpec { id: "file.import_svg", label: "Import SVG…", menu: "File", shortcut: None, params: "{path}", mutates: true, run: import_svg },
         CommandSpec { id: "file.save", label: "Save", menu: "File", shortcut: Some("Ctrl+S"), params: "{path?, confirm?}", mutates: false, run: save },
         CommandSpec {
             id: "file.save_as",
@@ -109,6 +111,15 @@ pub fn is_animate(path: &std::path::Path) -> bool {
 
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+        let (doc, report) = crate::svg_import::import_path(&path).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+        s.replace_document(doc, None);
+        let mut info = s.info();
+        info["imported"] = json!(path.display().to_string());
+        info["report"] = json!(report.summary());
+        info["skipped"] = json!(report.skipped);
+        return Ok(info);
+    }
     if is_animate(&path) {
         // Imported, not adopted: the document is untitled, so Save asks for a new .anicraft
         // name and never writes over the Animate file.
@@ -123,6 +134,43 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = format::load(&path)?;
     s.replace_document(doc, Some(path));
     Ok(s.info())
+}
+
+fn import_svg(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
+        return Err(EngineError::Param("file.import_svg requires an .svg file".into()));
+    }
+    if s.doc.timeline.layers.len() >= 1000 {
+        return Err(EngineError::State("too many layers (limit 1000)".into()));
+    }
+    let (mut imported, report) = crate::svg_import::import_path(&path)
+        .map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    let mut layer = crate::svg_import::move_into_document(&mut imported, &mut s.doc)
+        .map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    let layer_id = layer.id;
+    layer.name = "SVG Artwork".into();
+    layer.parent = None;
+    let duration = s.doc.frame_count().max(1);
+    let mut selected = Vec::new();
+    for keyframe in &mut layer.keyframes {
+        let keyframe = Arc::make_mut(keyframe);
+        keyframe.duration = duration;
+        for element in &mut keyframe.elements {
+            selected.push(element.id);
+        }
+    }
+    layer.normalize();
+    s.doc.timeline.layers.insert(0, Arc::new(layer));
+    s.layer = layer_id;
+    s.selection = selected;
+    Ok(json!({
+        "imported": path.display().to_string(),
+        "layer": layer_id.0,
+        "shapes": s.selection.len(),
+        "report": report.summary(),
+        "skipped": report.skipped
+    }))
 }
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
