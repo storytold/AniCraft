@@ -291,11 +291,27 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
     }
 }
 
+/// What a tween interpolates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TweenKind {
+    /// Transform, colour effect and same-structure shape edits (symbols, moved points).
+    #[default]
+    Classic,
+    /// Also morphs between shapes of any structure (a square into a star).
+    Shape,
+}
+
 /// A tween from a keyframe to the next one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tween {
     #[serde(default)]
     pub easing: Easing,
+    #[serde(default, skip_serializing_if = "is_classic")]
+    pub kind: TweenKind,
+}
+
+fn is_classic(k: &TweenKind) -> bool {
+    *k == TweenKind::Classic
 }
 
 /// A keyframe and the span of frames it covers.

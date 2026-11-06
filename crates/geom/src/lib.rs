@@ -6,6 +6,7 @@
 
 mod affine;
 pub mod edit;
+pub mod morph;
 mod fit;
 mod path;
 pub mod svg;

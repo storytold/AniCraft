@@ -392,12 +392,28 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                                 }
                             });
                         });
+                        let shape = t.kind == anicraft_engine::doc::TweenKind::Shape;
+                        row_prose(ui, "Kind", |ui| {
+                            egui::ComboBox::from_id_salt("prop_kind").width(150.0).selected_text(if shape { "Shape" } else { "Classic" }).show_ui(ui, |ui| {
+                                if ui.selectable_label(!shape, "Classic").clicked() && shape {
+                                    app.run("timeline.create_tween", json!({}));
+                                }
+                                if ui.selectable_label(shape, "Shape").on_hover_text("Morphs one shape into another").clicked() && !shape {
+                                    app.run("timeline.create_shape_tween", json!({}));
+                                }
+                            });
+                        });
                         ease_curve(ui, t.easing);
                     }
                     None => {
-                        if ui.button("Create Classic Tween").clicked() {
-                            app.run("timeline.create_tween", json!({}));
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Create Classic Tween").clicked() {
+                                app.run("timeline.create_tween", json!({}));
+                            }
+                            if ui.button("Create Shape Tween").on_hover_text("Morph this keyframe's shapes into the next keyframe's").clicked() {
+                                app.run("timeline.create_shape_tween", json!({}));
+                            }
+                        });
                     }
                 }
             }

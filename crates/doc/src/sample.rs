@@ -35,7 +35,7 @@ fn layer(id: u64, name: &str, color: u32, keyframes: Vec<Keyframe>) -> Arc<Layer
 fn key(start: u32, duration: u32, elements: Vec<Arc<Element>>, tween: Option<Easing>) -> Keyframe {
     let mut k = Keyframe::new(start, duration);
     k.elements = elements;
-    k.tween = tween.map(|easing| Tween { easing });
+    k.tween = tween.map(|easing| Tween { easing, ..Default::default() });
     k
 }
 

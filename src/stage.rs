@@ -455,7 +455,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
             ui.separator();
-            for id in ["timeline.insert_keyframe", "timeline.create_tween", "edit.deselect"] {
+            for id in ["timeline.insert_keyframe", "timeline.create_tween", "timeline.create_shape_tween", "edit.deselect"] {
                 crate::menus::cmd_item(app, ui, id);
             }
         }

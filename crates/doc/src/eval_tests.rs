@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween};
+use crate::{Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
 
 fn shape_el(id: u64, x: f32) -> Element {
     Element {
@@ -23,7 +23,7 @@ fn tween_doc(easing: Easing) -> Document {
     let mut d = Document::default();
     let mut k0 = Keyframe::new(0, 10);
     k0.elements.push(Arc::new(shape_el(10, 0.0)));
-    k0.tween = Some(Tween { easing });
+    k0.tween = Some(Tween { easing, ..Default::default() });
     let mut k1 = Keyframe::new(10, 1);
     k1.elements.push(Arc::new(shape_el(10, 100.0)));
     layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
@@ -197,4 +197,40 @@ fn layer_order_is_back_to_front() {
     let dl = evaluate(&d, 0);
     assert_eq!(dl.items[0].element, ElementId(2));
     assert_eq!(dl.items[1].element, ElementId(1));
+}
+
+#[test]
+fn shape_tweens_morph_between_different_shapes_and_classic_ones_hold() {
+    // A square at frame 0 becomes a circle at frame 10.
+    let mut d = Document::default();
+    let shape = |id, path: Path| Element {
+        id: ElementId(id),
+        name: String::new(),
+        transform: Affine::IDENTITY,
+        color: ColorEffect::default(),
+        kind: ElementKind::Shape(Shape::filled(path, Paint::Solid(Rgba::BLACK))),
+    };
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(shape(1, Path::rect(0.0, 0.0, 100.0, 100.0))));
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(shape(1, Path::ellipse(250.0, 50.0, 50.0, 50.0))));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    let path_at = |d: &Document, f| evaluate(d, f).items[0].path.clone();
+
+    // Classic tween: incompatible shapes hold the first one until the next keyframe.
+    layer0(&mut d).keyframe_mut(0).unwrap().tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Classic });
+    assert_eq!(*path_at(&d, 5), Path::rect(0.0, 0.0, 100.0, 100.0));
+    // Shape tween: halfway, the shape sits between the two and is neither of them.
+    layer0(&mut d).keyframe_mut(0).unwrap().tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Shape });
+    let mid = path_at(&d, 5);
+    let c = mid.bounds().center();
+    assert!((c.x - 150.0).abs() < 1.0 && (c.y - 50.0).abs() < 1.0, "{c:?}");
+    assert_ne!(*mid, Path::rect(0.0, 0.0, 100.0, 100.0));
+    // Keyframes themselves show exactly what was drawn.
+    assert_eq!(*path_at(&d, 0), Path::rect(0.0, 0.0, 100.0, 100.0));
+    assert_eq!(*path_at(&d, 10), Path::ellipse(250.0, 50.0, 50.0, 50.0));
+    // The kind survives a save (and older files without it read as classic).
+    let t: Tween = serde_json::from_str(&serde_json::to_string(&Tween { easing: Easing::Linear, kind: TweenKind::Shape }).unwrap()).unwrap();
+    assert_eq!(t.kind, TweenKind::Shape);
+    assert_eq!(serde_json::from_str::<Tween>(r#"{"easing":"Linear"}"#).unwrap().kind, TweenKind::Classic);
 }

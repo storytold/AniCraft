@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* **Shape tweens** (Insert › Create Shape Tween, the timeline's Shape Tween button and
+  right-click menus): one shape morphs into another between two keyframes, even with a
+  different structure (a square into a star, one blob into two). Shape tweens show amber on the
+  timeline; switch a span between classic and shape tween from the timeline's tween menu or
+  Properties › Kind, and the easing is kept. Animate documents' shape tweens now import as
+  shape tweens.
+
 * **Import to Stage** (File › Import, **Ctrl+R** as in Animate; `file.import`): SVG drawings
   come in as editable shapes on a new layer named after the file, at the playhead, centred
   and selected, as one undo step. Supported: paths and basic shapes, groups, `use` and
