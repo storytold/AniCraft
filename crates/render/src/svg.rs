@@ -18,6 +18,11 @@ use std::fmt::Write;
 
 /// Writes `dl` as a standalone SVG document the size of `stage`, with its background.
 pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
+    to_svg_with_id_prefix(dl, stage, "")
+}
+
+/// Writes an SVG with a prefix for generated ids, so multiple outputs can share one document.
+pub fn to_svg_with_id_prefix(dl: &DisplayList, stage: &Stage, id_prefix: &str) -> String {
     let (w, h) = (stage.width, stage.height);
     let mut defs = String::new();
     let mut body = String::new();
@@ -27,9 +32,9 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
     for (i, parent) in dl.clip_parents.iter().enumerate() {
         let parent = parent.filter(|&p| (p as usize) < i);
         let malformed = dl.clip_parents.get(i).copied().flatten().is_some() && parent.is_none();
-        let _ = write!(defs, "<clipPath id=\"c{i}\" clipPathUnits=\"userSpaceOnUse\"");
+        let _ = write!(defs, "<clipPath id=\"{id_prefix}c{i}\" clipPathUnits=\"userSpaceOnUse\"");
         if let Some(p) = parent {
-            let _ = write!(defs, " clip-path=\"url(#c{p})\"");
+            let _ = write!(defs, " clip-path=\"url(#{id_prefix}c{p})\"");
         }
         defs.push('>');
         if !malformed {
@@ -44,14 +49,14 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
 
     for item in dl.items.iter().filter(|it| it.masks.is_none()) {
         let Some(d) = stage_path(item) else { continue };
-        let clip = item.clip.filter(|&c| (c as usize) < dl.clip_parents.len()).map(|c| format!(" clip-path=\"url(#c{c})\"")).unwrap_or_default();
+        let clip = item.clip.filter(|&c| (c as usize) < dl.clip_parents.len()).map(|c| format!(" clip-path=\"url(#{id_prefix}c{c})\"")).unwrap_or_default();
         if let Some(color) = item.outline {
             // Outline mode: a hairline in the layer colour, no fill.
             let _ = write!(body, "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"1\"{clip}/>", color_attrs("stroke", color));
             continue;
         }
         if let Some(fill) = &item.fill
-            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad)
+            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad, id_prefix)
         {
             let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
         }
@@ -122,7 +127,7 @@ fn color_attrs(attr: &str, c: Rgba) -> String {
 
 /// The fill attribute for `paint`, defining a gradient in `defs` when needed. `None` when the
 /// paint draws nothing.
-fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize) -> Option<String> {
+fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize, id_prefix: &str) -> Option<String> {
     let stops = match paint {
         Paint::Solid(c) => {
             let c = fx.apply(*c).sanitized();
@@ -135,7 +140,7 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
         return None;
     }
     sorted.sort_by(|a, b| a.offset.total_cmp(&b.offset));
-    let id = format!("g{n}");
+    let id = format!("{id_prefix}g{n}");
     *n += 1;
     let m = xf.m;
     let gt = format!(" gradientUnits=\"userSpaceOnUse\" gradientTransform=\"matrix({} {} {} {} {} {})\"", num(m[0]), num(m[1]), num(m[2]), num(m[3]), num(m[4]), num(m[5]));
@@ -212,12 +217,22 @@ mod tests {
         outer.masks = Some(0);
         let mut inner = item(Path::ellipse(25.0, 25.0, 10.0, 10.0), Some(Paint::Solid(Rgba::BLACK)));
         inner.masks = Some(1);
-        let svg = to_svg(&DisplayList { items: vec![g, outer, inner], clip_parents: vec![None, Some(0)] }, &stage());
+        let dl = DisplayList { items: vec![g, outer, inner], clip_parents: vec![None, Some(0)] };
+        let svg = to_svg(&dl, &stage());
         assert!(svg.contains("gradientTransform=\"matrix(1 0 0 1 20 0)\" x1=\"0\" y1=\"0\" x2=\"10\" y2=\"0\""), "{svg}");
         assert!(svg.contains("<stop offset=\"1\" stop-color=\"#ffffff\" stop-opacity=\"0.25\"/>"));
         assert!(svg.contains("<clipPath id=\"c1\" clipPathUnits=\"userSpaceOnUse\" clip-path=\"url(#c0)\">"), "nested clip");
         assert!(svg.contains("clip-path=\"url(#c1)\"/>"), "the masked shape is clipped");
         assert_eq!(svg.matches("<path").count(), 3, "mask artwork is only in the clip paths");
+        let prefixed = to_svg_with_id_prefix(&dl, &stage(), "frame_2_");
+        assert!(
+            prefixed.contains("id=\"frame_2_c1\"") && prefixed.contains("url(#frame_2_c0)"),
+            "{prefixed}"
+        );
+        assert!(
+            prefixed.contains("id=\"frame_2_g0\"") && prefixed.contains("url(#frame_2_g0)"),
+            "{prefixed}"
+        );
     }
 
     #[test]

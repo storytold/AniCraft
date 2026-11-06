@@ -6,6 +6,7 @@ use anicraft_doc::{Document, MAX_STAGE_EDGE, Stage, sample};
 use anicraft_render::{View, render};
 use rayon::prelude::*;
 use serde_json::{Value, json};
+use std::fmt::Write;
 use std::path::PathBuf;
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -28,6 +29,7 @@ pub fn specs() -> Vec<CommandSpec> {
         },
         CommandSpec { id: "file.export_png", label: "Export Frame as PNG…", menu: "File/Export", shortcut: None, params: "{path, frame?, scale?}", mutates: false, run: export_png },
         CommandSpec { id: "file.export_svg", label: "Export Frame as SVG…", menu: "File/Export", shortcut: None, params: "{path, frame?, confirm?}", mutates: false, run: export_svg },
+        CommandSpec { id: "file.export_animated_svg", label: "Export Animated SVG…", menu: "File/Export", shortcut: None, params: "{path, confirm?}", mutates: false, run: export_animated_svg },
         CommandSpec {
             id: "file.export_png_sequence",
             label: "Export PNG Sequence…",
@@ -164,6 +166,54 @@ fn export_svg(s: &mut Session, p: &Value) -> Result<Value> {
     let svg = frame_svg(&s.doc, frame);
     std::fs::write(&path, svg.as_bytes())?;
     Ok(json!({"written": path.display().to_string(), "bytes": svg.len(), "frame": frame}))
+}
+
+/// A full-timeline SVG animation using discrete CSS keyframes at the document frame rate.
+pub fn animated_svg(doc: &Document) -> String {
+    let frames = doc.frame_count().max(1);
+    let fps = if doc.stage.fps.is_finite() && doc.stage.fps > 0.0 {
+        f64::from(doc.stage.fps)
+    } else {
+        24.0
+    };
+    let duration = f64::from(frames) / fps;
+    let mut out = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\"><style>",
+        doc.stage.width, doc.stage.height, doc.stage.width, doc.stage.height
+    );
+    for frame in 0..frames {
+        let start = f64::from(frame) * 100.0 / f64::from(frames);
+        let end = f64::from(frame + 1) * 100.0 / f64::from(frames);
+        let _ = write!(
+            out,
+            ".f{frame}{{visibility:hidden;animation:a{frame} {duration:.8}s steps(1,end) infinite}}@keyframes a{frame}{{"
+        );
+        if frame > 0 {
+            let _ = write!(out, "0%{{visibility:hidden}}");
+        }
+        let _ = write!(
+            out,
+            "{start:.8}%{{visibility:visible}}{end:.8}%{{visibility:hidden}}}}"
+        );
+    }
+    out.push_str("</style>");
+    for frame in 0..frames {
+        let dl = anicraft_doc::evaluate(doc, frame);
+        let svg =
+            anicraft_render::svg::to_svg_with_id_prefix(&dl, &doc.stage, &format!("f{frame}_"));
+        let _ = write!(out, "<g class=\"f{frame}\">{svg}</g>");
+    }
+    out.push_str("</svg>\n");
+    out
+}
+
+fn export_animated_svg(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let svg = animated_svg(&s.doc);
+    std::fs::write(&path, svg.as_bytes())?;
+    Ok(
+        json!({"written": path.display().to_string(), "bytes": svg.len(), "frames": s.frame_count()}),
+    )
 }
 
 fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {
