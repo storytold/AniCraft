@@ -1,0 +1,33 @@
+AniCraft
+Copyright (c) 2026 ArtCraft Team and the AniCraft contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE). Contributions are accepted under the same terms; the Apache
+License 2.0 includes an express patent licence from contributors (section 3).
+
+Trademarks
+
+Adobe, Adobe Animate and Flash are trademarks of Adobe Inc. AniCraft is an independent,
+clean-room project. It is not affiliated with, endorsed by or derived from Adobe. Those names
+appear only in documentation, to describe compatibility. The ArtCraft name and marks belong to
+the ArtCraft Team and are not covered by the licences above.
+
+Third-party material
+
+This product bundles third-party material under its own licences. The per-item list (author,
+source, licence) is in ATTRIBUTION.md, the dependency policy and audit are in
+docs/legal/compliance.md, and the licence texts that must ship with the fonts are in licenses/.
+
+UI fonts, embedded through the egui crate `epaint_default_fonts`:
+  Ubuntu Light: Ubuntu Font Licence 1.0. See licenses/fonts/UFL-1.0-Ubuntu-font.txt.
+  Hack Regular: MIT, with Bitstream Vera licence portions. See licenses/fonts/LICENSE-Hack.txt.
+  Noto Emoji: SIL Open Font License 1.1. See licenses/fonts/OFL-1.1-NotoEmoji.txt.
+  emoji-icon-font: MIT. See licenses/fonts/LICENSE-emoji-icon-font.txt.
+
+Official builds also embed, from the shared craft-fonts build input (CRAFT_FONTS_DIR):
+  Inter Regular and JetBrains Mono Regular: SIL Open Font License 1.1. Their licence texts ship
+  with the package as OFL-Inter.txt and OFL-JetBrainsMono.txt.
+
+Rust crates (about 420 across all platforms) are permissively licensed (MIT, Apache-2.0, BSD,
+ISC, Zlib, BSL-1.0, Unicode-3.0, Unlicense, 0BSD). Where a crate offers a copyleft alternative,
+AniCraft uses it under its permissive licence. Binary releases ship the full licence texts of
+all crates (see docs/legal/compliance.md, "Release checklist").

@@ -1,0 +1,22 @@
+[package]
+name = "anicraft-engine"
+description = "AniCraft L3: session, undo history, command registry and the .anicraft file format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anicraft-geom.workspace = true
+anicraft-doc.workspace = true
+anicraft-render.workspace = true
+anicraft-xfl.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rayon.workspace = true
+gif.workspace = true
+
+[lints]
+workspace = true

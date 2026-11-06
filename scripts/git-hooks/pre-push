@@ -1,0 +1,29 @@
+#!/bin/sh
+# AniCraft pre-push guard (docs/release.md, "How changes land").
+#  * `main` changes only through pull requests: pushing to the remote `main` is refused.
+#    (The one-time first publish of `main` sets ANICRAFT_FIRST_PUBLISH=1.)
+#  * Branches listed in the local git config as hidden (`git config --add anicraft.hidden <b>`)
+#    never leave this machine, nor does anything built on them.
+zero=0000000000000000000000000000000000000000
+hidden=$(git config --get-all anicraft.hidden 2>/dev/null)
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue   # deleting a remote ref
+  if [ "$remote_ref" = "refs/heads/main" ] && [ "$ANICRAFT_FIRST_PUBLISH" != "1" ]; then
+    echo "AniCraft: push blocked - main changes only through pull requests. Push a topic branch and open a PR." >&2
+    exit 1
+  fi
+  commit=$(git rev-parse "$local_sha^{commit}" 2>/dev/null) || continue
+  for b in $hidden; do
+    if [ "$local_ref" = "refs/heads/$b" ]; then
+      echo "AniCraft: push blocked - $b is a hidden local branch." >&2
+      exit 1
+    fi
+    for root in $(git rev-list --max-parents=0 "refs/heads/$b" 2>/dev/null); do
+      if git merge-base --is-ancestor "$root" "$commit" 2>/dev/null; then
+        echo "AniCraft: push blocked - $local_ref contains commits of the hidden branch $b." >&2
+        exit 1
+      fi
+    done
+  done
+done
+exit 0

@@ -1,0 +1,69 @@
+# AniCraft roadmap
+
+Principle: **infrastructure first, then high-traffic parity, then the long tail.** Every
+milestone ends with a green tree: build, tests, clippy, a `--screenshot` check and an updated
+"Honest status" section below.
+
+## Honest status (2026-11-05, v0.1.0 early alpha)
+
+| Dimension | Status |
+|---|---|
+| Architecture | M0 skeleton in place: geom → doc → render → engine → cli → shell, layering by convention (an xtask check is planned). |
+| Rendering | CPU oracle with analytic AA, non-zero/even-odd, solid + linear/radial gradients, round-join strokes. **Mask clipping**: the display list carries nested clips; a clip is the anti-aliased union of its mask fills (strokes and opacity ignored), intersected with any enclosing clip, computed once per render band; an empty mask hides everything under it. No GPU path, filters or text yet. |
+| Timeline | **Frame selection**: click, Shift-click or drag across frames and layers; F5/Shift+F5, F6/F7 and Shift+F6 (keys, buttons and right-click menu) act on the whole selection; drag selected keyframes left or right to move them, and up or down onto other layers (the source keeps empty frames, as in Animate) (with a drop outline; one undo step; keys they land on are replaced, and spans fill the frames left behind); removing or clearing selected frames that hold artwork asks first. **Cut/Copy/Paste Frames** (Ctrl+Alt+X/C/V, and plain Ctrl+X/C/V after clicking the timeline): own clipboard, copies cut exactly at the selection edges (mid-tween state kept), paste inserts like Animate, several layers paste onto the layers below (missing ones are created), fresh element ids, symbols travel with them. **Span length by dragging its end** (resize cursor, live outline with the length in frames and seconds; later frames move with it). Headless: `layers`/`count` on the frame commands, `timeline.move_keyframes`, `timeline.cut_frames/copy_frames/paste_frames`. Layers (show/lock/outline), keyframes, blank keyframes, insert/remove frames, classic tweens with 8 easing presets + curve preview, auto-key when editing inside a tween, frame labels, graphic-symbol nesting with loop modes, onion skin (±2 frames), looping playback. **Mask layers**: right-click a layer › Mask turns it into a mask over the layer below (Masked adds more layers to it); masked layers are indented under a stencil icon; the mask applies on the stage and in every export alike, and while the mask layer is unlocked its edge shows in the layer colour so it can be picked and reshaped; masked-away parts cannot be picked; layers moved in under a mask join it, moved out leave it, and a mask moves with its whole group; masks inside symbols nest. Headless: `layer.toggle_mask`, `layer.set_type`. No scenes, folders, motion editor; guide layers are hidden but do not guide yet. |
+| Drawing | Selection (click, shift-add, marquee, drag-move, arrow nudge), **Free Transform (Q)**: scale from corner/edge handles (Shift proportional, Alt from centre), rotate outside corners (Shift snaps 15°), move; one undo step per drag. Rectangle (corner radius), oval, PolyStar, line (45° snap), hand, zoom. **Pen (P)**: click for corners, drag for smooth handles (Alt breaks them), close on the first point, Enter/Esc/last-point click finishes, Backspace takes back a point; one undo step per path. **Pencil (Shift+Y)**: Smooth (Schneider curve fitting with corner detection), Straighten and Ink modes, smoothing relative to the screen. **Subselection (A)**: anchors and handles on selected shapes, drag points/handles (anchors bring their handles; one undo step per drag), point marquee, double-click an edge to add a point, Delete removes points, right-click Make Smooth/Corner; closed shapes' start point and closing edge edit like any other. **Cut/Copy/Paste in Center/Paste in Place** (the clipboard carries symbols across documents). **Rotate 90° CW/CCW, Flip H/V. Align** left/centre/right/top/middle/bottom (Ctrl+Alt+1…6; a single element aligns to the stage) and distribute. Convert to symbol / break apart; arrange; duplicate. Headless: `draw.path`, `draw.freehand`, `path.move_points/add_point/delete_points/convert_point`. **Paint Bucket (K)**: click a fill to recolour it, or inside an outline (one shape or several) to fill the enclosed area; gap size None/Small/Medium/Large closes openings; the fill is traced and curve-fitted into a new shape placed under its lines; open areas say so instead of flooding. **Ink Bottle (S)**: gives the clicked shape the current stroke. Headless: `paint.bucket`, `paint.ink`. Tool options show first in Properties while a drawing tool is active. No brush or merge drawing yet. |
+| Headless | CLI: info, render, render-seq, **gif**, commands, exec, run, serve (JSON-lines). No MCP yet. |
+| Files | `.anicraft` JSON load/save (v2), PNG frame and sequence export, **animated GIF export** (parallel render and quantize, exact frame timing, looping). **Opens Animate documents** (`.fla`, `.xfl`, XFL folders; ADR 0009): stage, first scene, layers, keyframes, labels, classic tweens with ease, shapes (solid/linear/radial fills, strokes), groups, primitives, symbol instances (matrix, alpha, tint, loop), library symbols and **mask layers** (including masks in folders); imported files are untitled so Save never overwrites them; what isn't supported yet is reported after opening. No bitmaps, text, motion/shape tweens or extra scenes from XFL yet; no SVG/Lottie/video. |
+| Tests | 133 tests (adds point editing, closed-path anchors, curve fitting, pen/pencil/subselection commands, the Pen's path data, frame ranges, keyframe moves, range confirmations, frame selection and the frame clipboard): unit, analytic render, band/determinism, robustness fuzz over all commands, round trip (v1 and v2 files), structural sharing and history budget, render-service equivalence, confirmations, clipboard, transforms and align, GIF decode and timing, free-transform maths, UI-guideline enforcement, CLI. |
+| Ease of use & safety | **Visual language** (ADR 0008, revised): graphite palette, corners by role (square structure, softened controls, rounder menus and dialogs with soft depth), borders only between layout regions, flat buttons with a visible focus ring, vibrant timeline blocks (mint artwork, violet tweens), sentence-case headings, **collapsible sections with rules** (Preferences, Properties, dock, shortcut sheet), **Lucide icons** stroked as vectors via a new full SVG path reader; click targets ≥ 28 px (tools 40, rows 28, toggles 24); palette contrast, target sizes and "no raw colours or radii" are enforced by tests. Product principles written (`docs/product-principles.md`). Tiered destructive-action confirmations, enforced in the engine (ADR 0004). Unsaved-changes guard on close/new/open. Overwrite checks for saves and exports. "Ctrl+Z to undo" hints. Command palette (Ctrl+K). Shortcut sheet (F1). Right-click menus on stage, frames and layers. Save As (Ctrl+Shift+S). **Shortcut editor** (F1): every menu command, tool and view key can be rebound, given extra keys or unbound; recording asks before taking a key from another action, reserved keys (palette, editor, Preferences, quit, play, Esc, Space, Tab) stay fixed, per-action and global reset; only the changes are saved in preferences, so untouched actions follow new defaults; menus, tooltips and the palette show the keys in effect. |
+| Platforms & preferences | ADR 0006 platform layer: ⌘ shortcut labels and an AniCraft app menu with a unified title bar on macOS; Exit and Preferences (Ctrl+U) on Windows and Linux; native file dialogs (XDG portal on Linux, with a fallback switch); wgpu with automatic OpenGL fallback; per-OS settings folder. **Preferences** window: interface and data fonts (bundled default or any installed font), interface scale, stage render mode, file dialogs, reset confirmations. Edits render live (fixed the missing-repaint bug). Not yet: native macOS NSMenu, macOS/Linux CI runners. Verified on Windows only so far. |
+| Stage rendering & build | **Tiled stage** (ADR 0007): 512 px cached tiles, batched per frame with one scene evaluation per frame, look-ahead ring and playback prefetch, scaled older tiles instead of blank areas, pixel-aligned (no seams). **Space-biased build**: debug build 6.9 GB → 1.04 GB, fresh build 44 s, edit rebuild 4–6 s (`docs/development.md`). |
+| Scale & performance | Pulled forward from M2: persistent document with snapshot undo (memory-budgeted history, save-point dirty tracking, History panel), background render worker with frame cache and playback look-ahead, band-parallel renderer with culling, compact streaming file format v2, `anicraft-cli bench`. Measured numbers are in `docs/performance.md`. Budgets are not yet CI-enforced. |
+
+## Milestones
+
+| M | Theme | Exit criteria |
+|---|---|---|
+| **M0** | Foundations *(this version)* | Workspace + layering; document model; timeline evaluation with classic tweens and easing; CPU oracle renderer; command registry with undo; `.anicraft`; CLI render + JSON-lines; egui shell with stage, tools, timeline, properties, library; `--screenshot`. |
+| **M1** | Authoring core ✅ *(v0.1.0)* | ~~Free transform tool with handles~~ ✅; ~~subselection and Bézier point editing~~ ✅; ~~Pen and Pencil~~ ✅; ~~Paint bucket / Ink bottle~~ ✅; ~~copy/paste~~ ✅, ~~duplicate, arrange~~ ✅, ~~align~~ ✅ (commands and menus; and the dock's Align panel ✅); ~~onion skin~~ ✅ (basic); ~~frame selection ranges in the timeline (multi-frame insert/remove/move keyframes by drag)~~ ✅ (including between layers); ~~PNG sequence + animated GIF export~~ ✅; ~~keyboard shortcut map editor~~ ✅. |
+| **M2** | Model at scale | ~~`Arc` structural sharing (O(changed) undo)~~ done early (ADR 0001); scenes; layer folders, guide layers; ~~mask layers~~ ✅; Movie Clip and Button behaviours; group alpha / offscreen compositing; shape tween with shape hints; motion tween + Motion Editor curves; MCP server; perf budgets (criterion) with CI enforcement; `xtask layers`. |
+| **M3** | GPU stage | wgpu renderer (sparse-strip coverage, tile binning, gradient ramps in a texture atlas) behind a feature flag; per-pixel parity tests vs the CPU oracle; becomes the default stage renderer once parity ≤ 1/255 mean error; 4K playback at 60 fps for 1,000 shapes. |
+| **M4** | Interchange *(in progress)* | **XFL import** (DOMDocument.xml, symbols, edges/fill styles decoded from the public format descriptions) with a corpus of self-authored files: first slice ✅ (see Files above); SVG import/export; Lottie export; sprite sheet + JSON; MP4/WebM via ffmpeg pipe. |
+| **M5** | Rich media | Text engine (shaping via rustybuzz, glyph atlas); bitmap import and bitmap fills; audio layers (symphonia + cpal), waveform display, stream sync; filters (blur, drop shadow, glow, colour matrix) and blend modes on Movie Clips. |
+| **M6** | Interactivity & extensibility | **Plug-ins: the Craft-family WebAssembly system** (same host model as PhotoCraft: `wasmi` sandbox, `plugin.*` commands; AniCraft ABI for vector/timeline operations and exporters); frame scripts on the same sandbox; HTML canvas runtime export; button states in test-movie preview; command macros. |
+| **M7** | Advanced animation | Bone/IK tool; camera layer with depth; variable-width strokes and brush library; asset warp; graph-based easing presets library. |
+| **M8** | Release quality | Installers and signing for Windows/macOS/Linux; web build (wasm) of the editor; localisation; accessibility audit; crash-recovery autosave; documentation book. |
+
+## Releases
+
+**v0.1.0 (early alpha)** marks M0 + M1 complete (see `CHANGELOG.md`). `main` starts with
+that one commit; publishing it follows the checklist in `docs/release.md`.
+
+## Current focus (after M0 + scale foundations)
+
+The person confirmed that opening Animate files (XFL) is the first interchange priority. The
+undo/performance foundations it needs are in place, so XFL import (M4) can move up once the
+authoring core below is solid.
+
+Landed in M1 so far: Free Transform, clipboard, rotate/flip, align/distribute, GIF export, and
+now Subselection, Pen and Pencil on a path-editing model in the engine (points addressed by
+command and slot, so XFL edge data can map onto it). The Pen's interaction and the Pencil's
+curve fitter were borrowed from PhotoCraft and reviewed before porting (see
+`src/pathtools.rs` and `crates/geom/src/fit.rs` for what changed and why). PolyStar no longer
+has a key (P is the Pen, as in Animate).
+
+Next, in order:
+
+1. M4 **XFL import, next slices**: ~~masks (with M2 mask layers)~~ ✅, motion tweens and shape
+   tweens, more scenes, bitmaps and text (with M5), and a larger self-authored corpus checked
+   by render tests.
+2. SVG import (the full SVG path reader is in place) and export.
+
+## Risks
+
+| Risk | Mitigation |
+|---|---|
+| GPU and CPU renderers drift apart | Golden parity tests in CI; CPU stays the oracle. |
+| XFL edge encoding is under-documented | Build a self-authored corpus; unknown elements kept verbatim; fail with readable errors. |
+| egui immediate-mode cost with big timelines | Virtualise the frame grid (paint only visible cells); cache layer row summaries per revision. |
+| Snapshot undo memory | `Arc` structural sharing in M2; history size cap with a preference. |

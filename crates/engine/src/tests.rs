@@ -1,0 +1,1054 @@
+use super::*;
+use anicraft_doc::sample;
+use serde_json::json;
+
+fn run(s: &mut Session, id: &str, p: Value) -> Value {
+    match s.execute(id, &p) {
+        Ok(v) => v,
+        Err(e) => panic!("{id} {p}: {e}"),
+    }
+}
+
+#[test]
+fn command_ids_are_unique_and_well_formed() {
+    let cmds = commands();
+    let mut ids: Vec<&str> = cmds.iter().map(|c| c.id).collect();
+    ids.sort_unstable();
+    let n = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "duplicate command ids");
+    for c in &cmds {
+        assert!(c.id.contains('.'), "{}", c.id);
+        assert!(!c.label.is_empty());
+    }
+}
+
+#[test]
+fn draw_undo_redo() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 100, "h": 50}));
+    assert_eq!(s.visible_elements().len(), 1);
+    assert_eq!(s.selection.len(), 1);
+    let rev = s.revision;
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.visible_elements().is_empty());
+    assert!(s.revision > rev);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.visible_elements().len(), 1);
+}
+
+#[test]
+fn gestures_coalesce_into_one_undo_step() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    let steps = s.history_len();
+    s.begin_gesture("Move");
+    for _ in 0..30 {
+        run(&mut s, "element.translate", json!({"dx": 1, "dy": 0}));
+    }
+    s.end_gesture();
+    assert_eq!(s.history_len(), steps + 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.visible_elements()[0].transform.translation().x, 5.0);
+}
+
+#[test]
+fn undo_step_in_a_large_document_costs_only_what_changed() {
+    // 20 layers × 500 shapes × 120 frames: 200k element instances.
+    let mut s = Session::new(sample::stress(20, 500, 120));
+    let total = history::document_bytes(&s.doc);
+    run(&mut s, "layer.select", json!({"index": 3}));
+    s.set_frame(30);
+    let id = s.visible_elements()[0].id.0;
+    run(&mut s, "element.select", json!({"ids": [id]}));
+    run(&mut s, "element.translate", json!({"dx": 5, "dy": 0}));
+    let step = s.history().bytes();
+    assert!(step * 100 < total, "one edit kept {step} bytes of a {total}-byte document");
+    // Untouched layers are shared with the undo snapshot, pointer-for-pointer.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    let before = s.doc.clone();
+    run(&mut s, "element.translate", json!({"dx": 1, "dy": 0}));
+    let shared = before.timeline.layers.iter().zip(&s.doc.timeline.layers).filter(|(a, b)| std::sync::Arc::ptr_eq(a, b)).count();
+    assert_eq!(shared, 19);
+}
+
+#[test]
+fn dirty_tracks_the_save_point_through_undo() {
+    let mut s = Session::default();
+    assert!(!s.is_dirty());
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    assert!(s.is_dirty());
+    run(&mut s, "edit.undo", json!({}));
+    assert!(!s.is_dirty(), "undoing back to the saved state is clean");
+    run(&mut s, "edit.redo", json!({}));
+    assert!(s.is_dirty());
+    s.mark_saved();
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.is_dirty());
+}
+
+#[test]
+fn state_ids_identify_content() {
+    let mut s = Session::default();
+    let a = s.state;
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    let b = s.state;
+    assert_ne!(a, b);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.state, a, "undo returns to the earlier state id (render cache hit)");
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.state, b);
+    // a no-op command keeps the state
+    let _ = s.execute("timeline.goto", &json!({"frame": 0}));
+    assert_eq!(s.state, b);
+}
+
+#[test]
+fn history_is_bounded_by_memory() {
+    let mut s = Session::default();
+    s.set_history_budget(64 * 1024);
+    for i in 0..400 {
+        run(&mut s, "draw.rect", json!({"x": i, "y": 0, "w": 10, "h": 10}));
+    }
+    assert!(s.history().bytes() <= 64 * 1024 + 8 * 1024, "{}", s.history().bytes());
+    assert!(s.history().evicted > 0);
+    assert!(s.can_undo());
+}
+
+#[test]
+fn travel_to_moves_through_history() {
+    let mut s = Session::default();
+    for i in 0..5 {
+        run(&mut s, "draw.rect", json!({"x": i * 20, "y": 0, "w": 10, "h": 10}));
+    }
+    s.travel_to(2).unwrap();
+    assert_eq!(s.visible_elements().len(), 2);
+    assert_eq!(s.history().redo_len(), 3);
+    s.travel_to(5).unwrap();
+    assert_eq!(s.visible_elements().len(), 5);
+}
+
+#[test]
+fn display_list_cache_follows_state_and_frame() {
+    let mut s = Session::new(sample::demo());
+    let a = s.display_list();
+    assert!(std::sync::Arc::ptr_eq(&a, &s.display_list()), "same state+frame is cached");
+    s.set_frame(5);
+    let b = s.display_list();
+    assert!(!std::sync::Arc::ptr_eq(&a, &b));
+    run(&mut s, "layer.toggle_visible", json!({}));
+    assert_ne!(s.display_list().items.len(), b.items.len());
+}
+
+#[test]
+fn parallel_sequence_export_matches_single_frames() {
+    let dir = std::env::temp_dir().join(format!("anicraft-seq-{}", std::process::id()));
+    let mut s = Session::new(sample::demo());
+    run(&mut s, "file.export_png_sequence", json!({"dir": dir.display().to_string(), "from": 0, "to": 5, "scale": 0.2}));
+    for f in 0..=5u32 {
+        let on_disk = std::fs::read(dir.join(format!("frame_{:05}.png", f + 1))).unwrap();
+        assert_eq!(on_disk, cmds_file::render_png(&s.doc, f, 0.2).unwrap());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discarding_unsaved_work_needs_confirmation() {
+    let mut s = Session::default();
+    // clean document: no confirmation
+    assert!(s.confirmation("file.new", &json!({})).is_none());
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    let c = s.confirmation("file.new", &json!({})).unwrap();
+    assert!(c.irreversible);
+    // refused without consent, document untouched
+    let err = s.execute("file.new", &json!({})).unwrap_err();
+    assert!(matches!(err, EngineError::NeedsConfirmation(_)));
+    assert_eq!(s.visible_elements().len(), 1);
+    assert!(s.execute("file.new_sample", &json!({})).is_err());
+    // explicit consent proceeds
+    run(&mut s, "file.new", json!({"confirm": true}));
+    assert!(s.visible_elements().is_empty());
+}
+
+#[test]
+fn overwriting_files_needs_confirmation() {
+    let dir = std::env::temp_dir().join(format!("anicraft-confirm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("f.png");
+    let mut s = Session::new(sample::demo());
+    let p = json!({"path": png.display().to_string(), "scale": 0.1});
+    assert!(s.confirmation("file.export_png", &p).is_none());
+    run(&mut s, "file.export_png", p.clone());
+    assert!(s.confirmation("file.export_png", &p).unwrap().irreversible);
+    assert!(s.execute("file.export_png", &p).is_err());
+    run(&mut s, "file.export_png", json!({"path": png.display().to_string(), "scale": 0.1, "confirm": true}));
+    // saving over the document's own file is a normal save
+    let doc = dir.join("d.anicraft");
+    run(&mut s, "file.save_as", json!({"path": doc.display().to_string()}));
+    assert!(s.confirmation("file.save", &json!({"path": doc.display().to_string()})).is_none());
+    let mut t = Session::default();
+    assert!(t.execute("file.save_as", &json!({"path": doc.display().to_string()})).is_err(), "another document must not silently replace it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undoable_bulk_deletions_ask_but_are_not_blocked() {
+    let mut s = Session::new(sample::demo());
+    let c = s.confirmation("layer.delete", &json!({})).unwrap();
+    assert!(!c.irreversible);
+    assert!(c.message.contains("Ball"));
+    // headless callers may proceed without consent; undo restores
+    run(&mut s, "layer.delete", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.timeline.layers.len(), 5);
+    // empty layer: no question
+    run(&mut s, "layer.new", json!({}));
+    assert!(s.confirmation("layer.delete", &json!({})).is_none());
+    // clearing a keyframe with artwork asks; routine element delete does not
+    run(&mut s, "layer.select", json!({"index": 1}));
+    assert!(s.confirmation("timeline.clear_keyframe", &json!({"frame": 0})).is_some());
+    assert!(s.confirmation("edit.delete", &json!({})).is_none());
+}
+
+#[test]
+fn copy_paste_cut_and_paste_in_place() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 20, "h": 20}));
+    let orig = s.selection[0];
+    run(&mut s, "edit.copy", json!({}));
+    run(&mut s, "edit.paste", json!({}));
+    let els = s.visible_elements();
+    assert_eq!(els.len(), 2);
+    assert_ne!(s.selection[0], orig, "pasted elements get fresh ids");
+    let pasted = els.iter().find(|e| e.id == s.selection[0]).unwrap();
+    assert_eq!(pasted.transform.translation(), Vec2::new(30.0, 30.0));
+    run(&mut s, "edit.paste_in_place", json!({}));
+    let last = s.visible_elements().into_iter().find(|e| e.id == s.selection[0]).unwrap();
+    assert_eq!(last.transform.translation(), Vec2::new(20.0, 20.0));
+    // paste centred on a point
+    run(&mut s, "edit.paste", json!({"x": 500, "y": 400}));
+    assert_eq!(s.selection_bounds().center(), Vec2::new(500.0, 400.0));
+    // cut removes, undo restores
+    run(&mut s, "edit.cut", json!({}));
+    assert_eq!(s.visible_elements().len(), 3);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.visible_elements().len(), 4);
+    assert!(Session::default().execute("edit.paste", &json!({})).is_err(), "empty clipboard");
+}
+
+#[test]
+fn clipboard_carries_symbols_into_another_document() {
+    let mut s = Session::new(sample::demo());
+    run(&mut s, "layer.select", json!({"index": 0}));
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "edit.copy", json!({}));
+    run(&mut s, "file.new", json!({"confirm": true}));
+    assert!(s.doc.library.is_empty());
+    run(&mut s, "edit.paste_in_place", json!({}));
+    assert_eq!(s.doc.library.len(), 1, "the Ball symbol came along");
+    assert!(!anicraft_doc::evaluate(&s.doc, 0).items.is_empty(), "and it renders");
+    let ids: Vec<u64> = s.doc.library.iter().map(|x| x.id.0).collect();
+    assert!(s.doc.next_id > *ids.iter().max().unwrap());
+}
+
+#[test]
+fn rotate_flip_and_free_transform() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 20}));
+    let b0 = s.selection_bounds();
+    run(&mut s, "modify.rotate_cw", json!({}));
+    let b1 = s.selection_bounds();
+    assert!((b1.width() - b0.height()).abs() < 0.5 && (b1.height() - b0.width()).abs() < 0.5, "{b1:?}");
+    assert!(b1.center().distance(b0.center()) < 0.01, "rotates about the centre");
+    run(&mut s, "modify.rotate_ccw", json!({}));
+    run(&mut s, "modify.flip_h", json!({}));
+    run(&mut s, "modify.flip_h", json!({}));
+    let t = s.visible_elements()[0].transform;
+    assert!((t.m[0] - 1.0).abs() < 1e-4 && t.m[1].abs() < 1e-4, "{t:?}");
+    run(&mut s, "modify.transform", json!({"a": 2, "b": 0, "c": 0, "d": 1, "e": 5, "f": 0}));
+    assert!((s.selection_bounds().width() - 2.0 * b0.width()).abs() < 1.0);
+    assert!(s.execute("modify.transform", &json!({"a": 0, "b": 0, "c": 0, "d": 0, "e": 0, "f": 0})).is_err(), "degenerate");
+    assert!(s.execute("modify.transform", &json!({"a": 1e6, "b": 0, "c": 0, "d": 1e6, "e": 0, "f": 0})).is_err(), "absurd scale");
+}
+
+#[test]
+fn align_and_distribute() {
+    let mut s = Session::default();
+    for (x, y) in [(10, 50), (200, 10), (90, 120)] {
+        run(&mut s, "draw.rect", json!({"x": x, "y": y, "w": 20, "h": 20, "stroke": null}));
+    }
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "align.left", json!({}));
+    let lefts: Vec<f32> = s.selection.iter().map(|id| s.element_bounds(*id).min.x).collect();
+    assert!(lefts.iter().all(|x| (x - 10.0).abs() < 1e-3), "{lefts:?}");
+    run(&mut s, "align.distribute_v", json!({}));
+    let mut ys: Vec<f32> = s.selection.iter().map(|id| s.element_bounds(*id).center().y).collect();
+    ys.sort_by(f32::total_cmp);
+    assert!(((ys[1] - ys[0]) - (ys[2] - ys[1])).abs() < 1e-3, "{ys:?}");
+    // a single element aligns to the stage
+    run(&mut s, "edit.deselect", json!({}));
+    let id = s.visible_elements()[0].id.0;
+    run(&mut s, "element.select", json!({"ids": [id]}));
+    run(&mut s, "align.right", json!({}));
+    assert!((s.selection_bounds().max.x - s.doc.stage.width as f32).abs() < 1e-3);
+}
+
+#[test]
+fn animated_gif_export() {
+    let dir = std::env::temp_dir().join(format!("anicraft-gif-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ball.gif");
+    let mut s = Session::new(sample::demo());
+    let v = run(&mut s, "file.export_gif", json!({"path": path.display().to_string(), "scale": 0.125}));
+    assert_eq!(v["frames"], 48);
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(&bytes[..6], b"GIF89a");
+    // decode: 48 frames, 160×90, total delay ≈ 2 s at 24 fps
+    let mut opts = gif::DecodeOptions::new();
+    opts.set_color_output(gif::ColorOutput::Indexed);
+    let mut dec = opts.read_info(std::fs::File::open(&path).unwrap()).unwrap();
+    assert_eq!((dec.width(), dec.height()), (160, 90));
+    let (mut n, mut total) = (0, 0u32);
+    while let Some(f) = dec.read_next_frame().unwrap() {
+        n += 1;
+        total += u32::from(f.delay);
+    }
+    assert_eq!(n, 48);
+    assert_eq!(total, 200, "delays sum to exactly 2 s");
+    // overwriting asks; absurd sizes are refused
+    assert!(s.execute("file.export_gif", &json!({"path": path.display().to_string()})).is_err());
+    assert!(s.execute("file.export_gif", &json!({"path": dir.join("big.gif").display().to_string(), "scale": 8})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gif_delays_are_exact_on_average() {
+    let d = cmds_file::gif_delays(30, 30.0);
+    assert_eq!(d.iter().map(|&x| u32::from(x)).sum::<u32>(), 100);
+    assert!(d.iter().all(|&x| x == 3 || x == 4));
+    assert!(cmds_file::gif_delays(5, f32::NAN).iter().all(|&x| x >= 2));
+}
+
+#[test]
+fn failed_command_is_atomic() {
+    let mut s = Session::default();
+    let before = s.doc.clone();
+    assert!(s.execute("draw.rect", &json!({"x": 0, "y": 0, "w": 10})).is_err());
+    assert_eq!(s.doc, before);
+    assert!(!s.can_undo());
+}
+
+#[test]
+fn keyframes_and_tween_from_commands() {
+    let mut s = Session::default();
+    run(&mut s, "draw.ellipse", json!({"x": 0, "y": 0, "w": 20, "h": 20}));
+    run(&mut s, "timeline.goto", json!({"frame": 10}));
+    run(&mut s, "timeline.insert_keyframe", json!({}));
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "element.translate", json!({"dx": 100, "dy": 0}));
+    run(&mut s, "timeline.goto", json!({"frame": 0}));
+    run(&mut s, "timeline.create_tween", json!({"easing": "Linear"}));
+    assert_eq!(s.frame_count(), 11);
+    s.set_frame(5);
+    let el = &s.visible_elements()[0];
+    assert!((el.transform.translation().x - 60.0).abs() < 1e-3, "{:?}", el.transform);
+    // F6 inside the tween keeps the motion unchanged.
+    run(&mut s, "timeline.insert_keyframe", json!({}));
+    let el2 = &s.visible_elements()[0];
+    assert!((el2.transform.translation().x - 60.0).abs() < 1e-3);
+    s.set_frame(7);
+    assert!((s.visible_elements()[0].transform.translation().x - 80.0).abs() < 1e-3);
+}
+
+#[test]
+fn editing_inside_tween_auto_keys() {
+    let mut s = Session::new(sample::demo());
+    let ball = s.doc.timeline.layers[0].id;
+    run(&mut s, "layer.select", json!({"layer": ball.0}));
+    s.set_frame(6);
+    run(&mut s, "edit.select_all", json!({}));
+    let keys_before = s.active_layer().map_or(0, |l| l.keyframes.len());
+    run(&mut s, "element.translate", json!({"dx": 0, "dy": -50}));
+    assert_eq!(s.active_layer().map_or(0, |l| l.keyframes.len()), keys_before + 1);
+}
+
+#[test]
+fn insert_and_remove_frames() {
+    let mut s = Session::default();
+    run(&mut s, "timeline.insert_frame", json!({"frame": 9}));
+    assert_eq!(s.frame_count(), 10);
+    run(&mut s, "timeline.insert_frame", json!({"frame": 3}));
+    assert_eq!(s.frame_count(), 11);
+    run(&mut s, "timeline.remove_frame", json!({"frame": 0}));
+    assert_eq!(s.frame_count(), 10);
+    assert!(s.execute("timeline.remove_frame", &json!({"frame": 50})).is_err());
+}
+
+#[test]
+fn layers() {
+    let mut s = Session::default();
+    run(&mut s, "layer.new", json!({"name": "Top"}));
+    assert_eq!(s.doc.timeline.layers[0].name, "Top");
+    run(&mut s, "layer.toggle_lock", json!({}));
+    assert!(s.execute("draw.rect", &json!({"x": 0, "y": 0, "w": 10, "h": 10})).is_err());
+    run(&mut s, "layer.delete", json!({}));
+    assert!(s.execute("layer.delete", &json!({})).is_err(), "last layer must stay");
+}
+
+#[test]
+fn convert_to_symbol_and_break_apart_preserve_pixels() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 60, "h": 40, "fill": "#ff0000"}));
+    run(&mut s, "draw.ellipse", json!({"x": 50, "y": 30, "w": 60, "h": 60, "fill": "#00ff00"}));
+    let before = commands_png(&s);
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Thing"}));
+    assert_eq!(s.doc.library.len(), 1);
+    assert_eq!(s.visible_elements().len(), 1);
+    assert_eq!(commands_png(&s), before, "converting must not move anything");
+    run(&mut s, "modify.break_apart", json!({}));
+    assert_eq!(s.visible_elements().len(), 2);
+    assert_eq!(commands_png(&s), before);
+}
+
+fn commands_png(s: &Session) -> Vec<u8> {
+    match anicraft_render::render_frame(&s.doc, s.frame, 0.25) {
+        Ok(p) => p.to_rgba8(),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[test]
+fn pick_selects_topmost() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
+    let a = s.selection[0];
+    run(&mut s, "draw.rect", json!({"x": 50, "y": 50, "w": 100, "h": 100}));
+    let b = s.selection[0];
+    run(&mut s, "element.pick", json!({"x": 75, "y": 75}));
+    assert_eq!(s.selection, vec![b]);
+    run(&mut s, "element.pick", json!({"x": 10, "y": 10}));
+    assert_eq!(s.selection, vec![a]);
+    run(&mut s, "element.pick", json!({"x": 500, "y": 500}));
+    assert!(s.selection.is_empty());
+}
+
+#[test]
+fn save_load_round_trip() {
+    let dir = std::env::temp_dir().join(format!("anicraft-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("demo.anicraft");
+    let mut s = Session::new(sample::demo());
+    run(&mut s, "file.save", json!({"path": path.display().to_string()}));
+    let mut t = Session::default();
+    run(&mut t, "file.open", json!({"path": path.display().to_string()}));
+    assert_eq!(s.doc, t.doc);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Adversarial params for every command: must return Ok or Err, never panic.
+#[test]
+fn panic_hunt_every_command() {
+    let hostile: Vec<Value> = vec![
+        Value::Null,
+        json!({}),
+        json!([]),
+        json!("x"),
+        json!({"x": null, "y": "a", "w": -1e30, "h": f64::MAX}),
+        json!({"x": 1e300, "y": -1e300, "w": 0, "h": 0}),
+        json!({"x": 0, "y": 0, "w": 1e7, "h": 1e7, "fill": "#zzzzzz"}),
+        json!({"x": 1, "y": 1, "w": 10, "h": 10, "radius": -5, "stroke_width": 1e9}),
+        json!({"frame": u64::MAX, "layer": u64::MAX}),
+        json!({"frame": 99_999, "layer": 0}),
+        json!({"frame": -1, "index": 1e9}),
+        json!({"ids": [1, 2, 3, u64::MAX], "add": "yes"}),
+        json!({"ids": "nope"}),
+        json!({"dx": f64::MIN_POSITIVE, "dy": 1e-30, "alpha": 2.0}),
+        json!({"sx": 0, "sy": 1e9, "rotation": 1e9}),
+        json!({"easing": {"bezier": [1, 2]}, "label": ""}),
+        json!({"easing": {"classic": "a"}}),
+        json!({"easing": 7}),
+        json!({"cx": 0, "cy": 0, "outer": 1e9, "points": 2}),
+        json!({"cx": 0, "cy": 0, "outer": 10, "inner": -10, "points": 64}),
+        json!({"x0": 0, "y0": 0, "x1": 0, "y1": 0}),
+        json!({"name": "", "symbol": 0}),
+        json!({"color": null, "width": -1}),
+        json!({"width": 0, "height": 999_999, "fps": 0}),
+        json!({"background": "#12345"}),
+        json!({"layers": [1, 2, 3], "from": 0, "to": 100, "by": -5, "layer_by": -9999999}),
+        json!({"from": 0, "to": 50, "by": 2, "layer_by": 1}),
+        json!({"x": 0, "y": 0, "gap": 1e9, "color": "#zz", "width": 0}),
+        json!({"x": 50, "y": 50, "gap": 999, "width": 999}),
+        json!({"layers": [0, 1, 2, u64::MAX], "frame": 3, "count": 10_000, "from": 0, "to": 100_000, "by": -100_000}),
+        json!({"layers": [], "from": 99_999, "by": 1e30, "count": 0}),
+        json!({"d": "M0 0 L1e30 1e30 Z", "points": [[0, 0], [1e30, 1]], "mode": "ink"}),
+        json!({"d": "M 0 0 C", "points": [[0, 0]], "mode": "straighten", "tolerance": 0}),
+        json!({"id": 3, "points": [[0, 0], [99, 9], [1, 2]], "dx": 1e30, "dy": 0, "cmds": [0, 1, 2, 3, 4, 5, 99], "cmd": 0, "smooth": true}),
+        json!({"id": 5, "points": [[1, 1]], "dx": 3, "dy": 4, "x": 0, "y": 0, "slop": 1e9, "cmds": [1, 1, 0], "cmd": 1, "smooth": false}),
+    ];
+    // File commands are exercised separately (they touch the disk).
+    let skip = |id: &str| id.starts_with("file.");
+    for start in [Session::default(), Session::new(sample::demo())] {
+        let mut s = start;
+        for spec in commands().iter().filter(|c| !skip(c.id)) {
+            for p in &hostile {
+                let _ = s.execute(spec.id, p);
+            }
+            // and with a selection present
+            let _ = s.execute("edit.select_all", &json!({}));
+            for p in &hostile {
+                let _ = s.execute(spec.id, p);
+            }
+        }
+        // The document must still evaluate and render.
+        for f in [0, 1, 5, 47, 1000] {
+            let _ = anicraft_render::render_frame(&s.doc, f, 0.1);
+        }
+    }
+}
+
+#[test]
+fn file_commands_reject_bad_params() {
+    let mut s = Session::default();
+    for id in ["file.open", "file.save", "file.export_png", "file.export_png_sequence"] {
+        assert!(s.execute(id, &json!({"path": 5, "dir": []})).is_err(), "{id}");
+    }
+    assert!(s.execute("file.open", &json!({"path": "/definitely/not/here.anicraft"})).is_err());
+    assert!(s.execute("file.new", &json!({"width": 0})).is_err());
+    assert!(s.execute("no.such.command", &json!({})).is_err());
+}
+
+
+// ----- paths: pen, pencil, point editing ---------------------------------------------------
+
+fn shape_path(s: &Session, id: u64) -> anicraft_geom::Path {
+    let el = s.visible_elements().into_iter().find(|e| e.id.0 == id).expect("element");
+    match &el.kind {
+        ElementKind::Shape(sh) => (*sh.path).clone(),
+        _ => panic!("not a shape"),
+    }
+}
+
+fn stage_anchor(s: &Session, id: u64, cmd: usize) -> Vec2 {
+    let el = s.visible_elements().into_iter().find(|e| e.id.0 == id).expect("element");
+    el.transform.apply(shape_path(s, id).point(cmd, 0).expect("anchor"))
+}
+
+#[test]
+fn pen_paths_are_centred_and_closed_explicitly() {
+    let mut s = Session::default();
+    let id = run(&mut s, "draw.path", json!({"d": "M 100 100 L 200 100 C 220 150 180 200 150 200 Z"}))["element"].as_u64().unwrap();
+    let el = s.visible_elements().into_iter().find(|e| e.id.0 == id).unwrap();
+    let b = s.element_bounds(el.id);
+    assert!((b.min.x - 99.0).abs() < 1.5 && (b.max.y - 201.0).abs() < 1.5, "{b:?}");
+    let p = shape_path(&s, id);
+    assert!(p.bounds().center().length() < 1e-3, "local origin is the centre");
+    assert_eq!(p.editable_anchors().len(), 3, "the closing edge is a segment, the start is one anchor");
+    // Open paths have no fill.
+    let open = run(&mut s, "draw.path", json!({"d": "M 0 0 L 50 50 L 100 0"}))["element"].as_u64().unwrap();
+    let el = s.visible_elements().into_iter().find(|e| e.id.0 == open).unwrap();
+    assert!(matches!(&el.kind, ElementKind::Shape(sh) if sh.fill.is_none() && sh.stroke.is_some()));
+    for bad in ["", "M 0 0", "M 0 0 L 0.1 0.1", "nonsense"] {
+        assert!(s.execute("draw.path", &json!({"d": bad})).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn moving_an_anchor_brings_its_handles_and_is_one_undo_step_in_a_gesture() {
+    let mut s = Session::default();
+    let id = run(&mut s, "draw.path", json!({"d": "M 0 0 C 10 -20 30 -20 40 0 C 50 20 70 20 80 0"}))["element"].as_u64().unwrap();
+    let before = shape_path(&s, id);
+    let a0 = stage_anchor(&s, id, 1);
+    let steps = s.history_len();
+    s.begin_gesture("Move Points");
+    for _ in 0..5 {
+        run(&mut s, "path.move_points", json!({"id": id, "points": [[1, 0]], "dx": 2, "dy": 1}));
+    }
+    s.end_gesture();
+    assert_eq!(s.history_len(), steps + 1, "one undo step");
+    let a1 = stage_anchor(&s, id, 1);
+    assert!((a1 - a0 - Vec2::new(10.0, 5.0)).length() < 1e-3);
+    let after = shape_path(&s, id);
+    for (cmd, slot) in [(1usize, 2u8), (2, 1)] {
+        let d = after.point(cmd, slot).unwrap() - before.point(cmd, slot).unwrap();
+        assert!((d - Vec2::new(10.0, 5.0)).length() < 1e-3, "handle ({cmd},{slot}) moved with the anchor");
+    }
+    assert_eq!(after.point(1, 1), before.point(1, 1), "the far handle stays");
+    // A handle alone moves alone.
+    run(&mut s, "path.move_points", json!({"id": id, "points": [[2, 2]], "dx": 0, "dy": 7}));
+    assert_eq!(shape_path(&s, id).point(2, 0), after.point(2, 0));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(shape_path(&s, id), before);
+    assert!(s.execute("path.move_points", &json!({"id": id, "points": [[0, 2]], "dx": 1, "dy": 1})).is_err(), "MoveTo has no handles");
+}
+
+#[test]
+fn moves_follow_the_element_transform() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
+    let id = s.selection[0].0;
+    run(&mut s, "element.set_transform", json!({"sx": 2, "rotation": 90}));
+    let a0 = stage_anchor(&s, id, 0);
+    run(&mut s, "path.move_points", json!({"id": id, "points": [[0, 0]], "dx": 10, "dy": 0}));
+    assert!((stage_anchor(&s, id, 0) - a0 - Vec2::new(10.0, 0.0)).length() < 1e-3, "the point follows the pointer in stage space");
+}
+
+#[test]
+fn add_delete_and_convert_points() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
+    let id = s.selection[0].0;
+    let area = |s: &Session| shape_path(s, id).flatten(&anicraft_geom::Affine::IDENTITY, 0.1)[0].points.len();
+    let n0 = shape_path(&s, id).editable_anchors().len();
+    // The closing edge (left side, x = 0) can take a point too.
+    let r = run(&mut s, "path.add_point", json!({"id": id, "x": 0.5, "y": 50}));
+    assert!(r["cmd"].is_u64());
+    assert_eq!(shape_path(&s, id).editable_anchors().len(), n0 + 1);
+    assert!(s.execute("path.add_point", &json!({"id": id, "x": 50, "y": 50})).is_err(), "nowhere near an edge");
+    let cmd = r["cmd"].as_u64().unwrap();
+    run(&mut s, "path.convert_point", json!({"id": id, "cmd": cmd, "smooth": true}));
+    run(&mut s, "path.move_points", json!({"id": id, "points": [[cmd, 0]], "dx": -30, "dy": 0}));
+    assert!(area(&s) > 8, "the edge is now a curve");
+    run(&mut s, "path.convert_point", json!({"id": id, "cmd": cmd, "smooth": false}));
+    run(&mut s, "path.delete_points", json!({"id": id, "cmds": [cmd]}));
+    assert_eq!(shape_path(&s, id).editable_anchors().len(), n0);
+    // Deleting all but two works; the last two stay.
+    let all: Vec<u64> = shape_path(&s, id).editable_anchors().iter().map(|(i, _)| *i as u64).collect();
+    let r = run(&mut s, "path.delete_points", json!({"id": id, "cmds": all}));
+    assert_eq!(r["deleted"].as_u64(), Some(n0 as u64 - 2));
+    assert!(s.execute("path.delete_points", &json!({"id": id, "cmds": [0]})).is_err());
+    // Symbols are not point-editable.
+    run(&mut s, "modify.convert_to_symbol", json!({}));
+    let inst = s.selection[0].0;
+    assert!(s.execute("path.add_point", &json!({"id": inst, "x": 0, "y": 0})).is_err());
+}
+
+#[test]
+fn pencil_modes() {
+    let mut s = Session::default();
+    let wave: Vec<[f32; 2]> = (0..=200).map(|i| [100.0 + i as f32, 100.0 + (i as f32 * 0.05).sin() * 30.0]).collect();
+    let count = |s: &mut Session, mode: &str| {
+        let id = run(s, "draw.freehand", json!({"points": wave, "mode": mode, "tolerance": 1.0}))["element"].as_u64().unwrap();
+        let el = s.visible_elements().into_iter().find(|e| e.id.0 == id).unwrap();
+        let ElementKind::Shape(sh) = &el.kind else { panic!() };
+        assert!(sh.fill.is_none() && sh.stroke.is_some(), "a pencil stroke is a line");
+        sh.path.cmds.len()
+    };
+    let smooth = count(&mut s, "smooth");
+    let ink = count(&mut s, "ink");
+    let straight = count(&mut s, "straighten");
+    assert!(smooth < 16, "smooth: {smooth}");
+    assert!(straight < ink, "straighten {straight} < ink {ink}");
+    assert!(s.execute("draw.freehand", &json!({"points": wave, "mode": "felt"})).is_err());
+    assert!(s.execute("draw.freehand", &json!({"points": [[0, 0], [0, 0]]})).is_err());
+}
+
+// ----- timeline frame ranges ---------------------------------------------------------------
+
+fn starts(s: &Session, layer: anicraft_doc::LayerId) -> Vec<(u32, u32)> {
+    s.doc.timeline.layer(layer).unwrap().keyframes.iter().map(|k| (k.start, k.duration)).collect()
+}
+
+#[test]
+fn range_insert_and_remove_frames_across_layers() {
+    let mut s = Session::default();
+    let a = s.layer;
+    run(&mut s, "timeline.insert_frame", json!({"frame": 0, "count": 9}));
+    let b = anicraft_doc::LayerId(run(&mut s, "layer.new", json!({}))["layer"].as_u64().unwrap());
+    assert_eq!(starts(&s, b), vec![(0, 10)], "a new layer spans the timeline");
+    run(&mut s, "timeline.insert_keyframe", json!({"layers": [a.0, b.0], "frame": 4}));
+    assert_eq!(starts(&s, a), vec![(0, 4), (4, 6)]);
+    assert_eq!(starts(&s, b), vec![(0, 4), (4, 6)]);
+    // F5 over frames 2�4 of both layers: three frames each, keys after move right.
+    run(&mut s, "timeline.insert_frame", json!({"layers": [a.0, b.0], "frame": 1, "count": 3}));
+    assert_eq!(starts(&s, a), vec![(0, 7), (7, 6)]);
+    assert_eq!(starts(&s, b), starts(&s, a));
+    // Shift+F5 takes them out again; one undo step restores both layers.
+    let before = starts(&s, a);
+    run(&mut s, "timeline.remove_frame", json!({"layers": [a.0, b.0], "frame": 1, "count": 3}));
+    assert_eq!(starts(&s, a), vec![(0, 4), (4, 6)]);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(starts(&s, a), before);
+    // Removing more frames than a layer has stops at its last frame instead of failing.
+    let r = run(&mut s, "timeline.remove_frame", json!({"layers": [a.0], "frame": 0, "count": 500}));
+    assert!(r["removed"].as_u64().unwrap() >= 12);
+    assert!(!starts(&s, a).is_empty());
+    assert!(s.execute("timeline.insert_frame", &json!({"layers": [], "frame": 0})).is_err());
+    assert!(s.execute("timeline.insert_frame", &json!({"layers": [u64::MAX], "frame": 0})).is_err());
+    assert!(s.execute("timeline.insert_frame", &json!({"count": 0})).is_err());
+}
+
+#[test]
+fn range_clear_removes_every_key_in_the_span() {
+    let mut s = Session::default();
+    let a = s.layer;
+    run(&mut s, "timeline.insert_frame", json!({"frame": 0, "count": 19}));
+    for f in [5, 8, 12] {
+        run(&mut s, "timeline.insert_keyframe", json!({"frame": f}));
+    }
+    run(&mut s, "timeline.clear_keyframe", json!({"frame": 4, "count": 6}));
+    assert_eq!(starts(&s, a), vec![(0, 12), (12, 8)], "keys at 5 and 8 merged into the span before");
+    assert!(s.execute("timeline.clear_keyframe", &json!({"frame": 1, "count": 3})).is_err(), "nothing to clear");
+}
+
+#[test]
+fn moving_keyframes_by_drag() {
+    let mut s = Session::default();
+    let a = s.layer;
+    run(&mut s, "timeline.insert_frame", json!({"frame": 0, "count": 19}));
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 20, "h": 20}));
+    run(&mut s, "timeline.insert_keyframe", json!({"frame": 5}));
+    run(&mut s, "timeline.insert_keyframe", json!({"frame": 10}));
+    // Right: the span before grows into the frames left behind; the layer keeps its length.
+    run(&mut s, "timeline.move_keyframes", json!({"from": 5, "by": 3}));
+    assert_eq!(starts(&s, a), vec![(0, 8), (8, 2), (10, 10)]);
+    // Onto another key: that key is replaced.
+    run(&mut s, "timeline.move_keyframes", json!({"from": 8, "by": 2}));
+    assert_eq!(starts(&s, a), vec![(0, 10), (10, 10)]);
+    // A range moves together, left; nothing is lost at the end.
+    run(&mut s, "timeline.insert_keyframe", json!({"frame": 14}));
+    run(&mut s, "timeline.move_keyframes", json!({"from": 10, "to": 14, "by": -4}));
+    assert_eq!(starts(&s, a), vec![(0, 6), (6, 4), (10, 10)]);
+    assert_eq!(s.doc.frame_count(), 20);
+    // Content travels with its key.
+    s.set_frame(6);
+    assert_eq!(s.visible_elements().len(), 1);
+    assert!(s.execute("timeline.move_keyframes", &json!({"from": 0, "by": -1})).is_err(), "not before frame 1");
+    assert!(s.execute("timeline.move_keyframes", &json!({"from": 5, "to": 2, "by": 1})).is_err());
+    assert_eq!(run(&mut s, "timeline.move_keyframes", json!({"from": 1, "to": 3, "by": 2}))["moved"], 0);
+}
+
+#[test]
+fn range_deletions_ask_when_artwork_would_go() {
+    let mut s = Session::default();
+    run(&mut s, "timeline.insert_frame", json!({"frame": 0, "count": 9}));
+    run(&mut s, "timeline.insert_blank_keyframe", json!({"frame": 3}));
+    s.set_frame(3);
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    run(&mut s, "timeline.insert_blank_keyframe", json!({"frame": 5}));
+    // Frames 4–5 hold the key 3..5 entirely: removing them deletes its artwork.
+    let c = s.confirmation("timeline.remove_frame", &json!({"frame": 3, "count": 2})).expect("asks");
+    assert!(!c.irreversible && c.action == "Remove Frames", "{c:?}");
+    assert!(s.confirmation("timeline.remove_frame", &json!({"frame": 3, "count": 1})).is_none(), "the key keeps a frame");
+    assert!(s.confirmation("timeline.clear_keyframe", &json!({"frame": 0, "count": 10})).is_some());
+    assert!(s.confirmation("timeline.clear_keyframe", &json!({"frame": 5, "count": 5})).is_none(), "only empty keys");
+}
+
+// ----- frame clipboard ---------------------------------------------------------------------
+
+#[test]
+fn copy_and_paste_frames_inserts_and_cuts_at_the_selection_edges() {
+    let mut s = Session::default();
+    let a = s.layer;
+    run(&mut s, "timeline.insert_frame", json!({"frame": 0, "count": 9}));
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    run(&mut s, "timeline.insert_keyframe", json!({"frame": 9}));
+    run(&mut s, "element.translate", json!({"dx": 90, "dy": 0}));
+    s.set_frame(0);
+    run(&mut s, "timeline.create_tween", json!({}));
+    // Frames 4–6, mid-tween: the copy starts with the tweened state at frame 4.
+    run(&mut s, "timeline.copy_frames", json!({"frame": 3, "count": 3}));
+    let clip = s.frame_clipboard.clone();
+    assert_eq!(clip.count, 3);
+    assert_eq!(clip.layers[0].keys.len(), 1);
+    assert_eq!((clip.layers[0].keys[0].start, clip.layers[0].keys[0].duration), (0, 3));
+    let x_at_3 = { s.set_frame(3); s.visible_elements()[0].transform.translation().x };
+    let copied_x = clip.layers[0].keys[0].elements[0].transform.translation().x;
+    assert!((copied_x - x_at_3).abs() < 1e-3, "{copied_x} vs {x_at_3}");
+    // Paste at frame 1: inserts three frames, later keys move right, ids are fresh.
+    let before = s.doc.frame_count();
+    let old_ids: Vec<u64> = s.doc.timeline.layer(a).unwrap().keyframes.iter().flat_map(|k| k.elements.iter().map(|e| e.id.0)).collect();
+    run(&mut s, "timeline.paste_frames", json!({"frame": 0}));
+    assert_eq!(s.doc.frame_count(), before + 3);
+    let l = s.doc.timeline.layer(a).unwrap();
+    assert_eq!(l.keyframes[0].start, 0);
+    assert!(l.keyframe_starting_at(12).is_some(), "the key at frame 10 moved to frame 13");
+    assert!(!old_ids.contains(&l.keyframes[0].elements[0].id.0), "fresh ids");
+    // One undo step.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.frame_count(), before);
+    // Cut removes what it copied.
+    run(&mut s, "timeline.cut_frames", json!({"frame": 0, "count": 2}));
+    assert_eq!(s.doc.frame_count(), before - 2);
+    assert!(s.execute("timeline.copy_frames", &json!({"frame": 500})).is_err(), "nothing there");
+}
+
+#[test]
+fn pasting_several_layers_fills_the_layers_below_and_creates_missing_ones() {
+    let mut s = Session::new(anicraft_doc::sample::demo());
+    let layers: Vec<u64> = s.doc.timeline.layers.iter().map(|l| l.id.0).collect();
+    let n = layers.len();
+    run(&mut s, "timeline.copy_frames", json!({"layers": [layers[1], layers[0]], "frame": 0, "count": 5}));
+    assert_eq!(s.frame_clipboard.layers.len(), 2);
+    assert_eq!(s.frame_clipboard.layers[0].name, s.doc.timeline.layers[0].name, "kept top to bottom");
+    // Onto the bottom layer: the second copied layer needs a new layer under it.
+    run(&mut s, "timeline.paste_frames", json!({"layer": layers[n - 1], "frame": 0}));
+    assert_eq!(s.doc.timeline.layers.len(), n + 1);
+    let fresh = s.doc.timeline.layers.last().unwrap();
+    assert_eq!(fresh.keyframes.first().map(|k| k.start), Some(0));
+    assert!(s.doc.frame_count() >= 5);
+    // Every element id in the document stays unique per layer.
+    for l in &s.doc.timeline.layers {
+        let mut ids: Vec<u64> = l.keyframes.iter().filter(|k| k.start == 0).flat_map(|k| k.elements.iter().map(|e| e.id.0)).collect();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), before);
+    }
+    let empty = Session::default().execute("timeline.paste_frames", &json!({}));
+    assert!(empty.is_err(), "nothing copied");
+}
+
+// ----- paint bucket / ink bottle -----------------------------------------------------------
+
+fn shapes_on_layer(s: &Session) -> Vec<(u64, Option<anicraft_doc::Paint>, Option<anicraft_doc::Stroke>)> {
+    s.visible_elements()
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Shape(sh) => Some((e.id.0, sh.fill.clone(), sh.stroke)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn bucket_recolours_a_fill_and_fills_a_closed_outline_underneath() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 50, "h": 50, "fill": "#ff0000"}));
+    let r = run(&mut s, "paint.bucket", json!({"x": 25, "y": 25, "color": "#00ff00"}));
+    assert!(r["recolored"].is_u64());
+    assert!(matches!(shapes_on_layer(&s)[0].1, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0x00ff00)));
+    // An outline with no fill (a closed pen path): the bucket adds a fill below it.
+    run(&mut s, "draw.path", json!({"d": "M 100 100 L 200 100 L 200 180 L 100 180 Z", "fill": null, "stroke": "#000000", "stroke_width": 2}));
+    let r = run(&mut s, "paint.bucket", json!({"x": 150, "y": 140, "color": "#0000ff"}));
+    let id = r["element"].as_u64().expect("a new fill");
+    let first = s.visible_elements()[0].clone();
+    assert_eq!(first.id.0, id, "inserted at the bottom of the layer");
+    let b = s.element_bounds(first.id);
+    assert!((b.min.x - 100.0).abs() < 2.5 && (b.max.x - 200.0).abs() < 2.5 && (b.min.y - 100.0).abs() < 2.5 && (b.max.y - 180.0).abs() < 2.5, "fills the inside, tucked under the line: {b:?}");
+    let ElementKind::Shape(sh) = &first.kind else { panic!() };
+    assert!(sh.stroke.is_none());
+    // One undo step removes it.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.visible_elements().iter().all(|e| e.id.0 != id));
+}
+
+#[test]
+fn bucket_closes_small_gaps_only_when_asked() {
+    let mut s = Session::default();
+    // Four separate lines forming a square with a 4 px opening in the top edge.
+    for (x0, y0, x1, y1) in [(0, 0, 48, 0), (52, 0, 100, 0), (100, 0, 100, 100), (100, 100, 0, 100), (0, 100, 0, 0)] {
+        run(&mut s, "draw.line", json!({"x0": x0 + 100, "y0": y0 + 100, "x1": x1 + 100, "y1": y1 + 100, "stroke_width": 2}));
+    }
+    let n = s.visible_elements().len();
+    let e = s.execute("paint.bucket", &json!({"x": 150, "y": 150}));
+    assert!(e.is_err() && e.unwrap_err().to_string().contains("isn't closed"), "open without a gap size");
+    assert_eq!(s.visible_elements().len(), n, "nothing added");
+    run(&mut s, "paint.bucket", json!({"x": 150, "y": 150, "gap": 8}));
+    assert_eq!(s.visible_elements().len(), n + 1, "a larger gap size closes it");
+    // Outside everything: not enclosed.
+    assert!(s.execute("paint.bucket", &json!({"x": 10, "y": 10})).is_err());
+}
+
+#[test]
+fn ink_bottle_strokes_the_clicked_shape() {
+    let mut s = Session::default();
+    run(&mut s, "draw.ellipse", json!({"x": 0, "y": 0, "w": 40, "h": 40, "stroke": null}));
+    assert!(shapes_on_layer(&s)[0].2.is_none());
+    run(&mut s, "paint.ink", json!({"x": 20, "y": 20, "color": "#123456", "width": 4}));
+    let st = shapes_on_layer(&s)[0].2.expect("stroked");
+    assert_eq!((st.color, st.width), (anicraft_doc::Rgba::hex(0x123456), 4.0));
+    assert!(s.execute("paint.ink", &json!({"x": 300, "y": 300})).is_err(), "nothing there");
+    // Symbols keep their colours.
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "modify.convert_to_symbol", json!({}));
+    assert!(s.execute("paint.ink", &json!({"x": 20, "y": 20})).is_err());
+}
+
+#[test]
+fn dragging_keyframes_onto_another_layer() {
+    let mut s = Session::default();
+    let a = s.layer;
+    run(&mut s, "timeline.insert_frame", json!({"frame": 0, "count": 19}));
+    s.set_frame(5);
+    run(&mut s, "timeline.insert_blank_keyframe", json!({"frame": 5}));
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    run(&mut s, "timeline.insert_blank_keyframe", json!({"frame": 10}));
+    let b = anicraft_doc::LayerId(run(&mut s, "layer.new", json!({}))["layer"].as_u64().unwrap());
+    // New layers go above the active one: b is row 0, a is row 1. Drag a's frames 6–10 up a row.
+    let content = |s: &Session, l| s.doc.timeline.layer(l).unwrap().keyframe_at(5).map_or(0, |k| k.elements.len());
+    assert_eq!((content(&s, a), content(&s, b)), (1, 0));
+    run(&mut s, "timeline.move_keyframes", json!({"layers": [a.0], "from": 5, "to": 9, "by": 0, "layer_by": -1}));
+    assert_eq!((content(&s, a), content(&s, b)), (0, 1), "the artwork moved up");
+    assert_eq!(s.doc.timeline.layer(a).unwrap().end_frame(), 20, "the source keeps its frames, now empty");
+    assert!(s.doc.timeline.layer(b).unwrap().keyframe_at(12).is_some(), "the target keeps the frames after the landing range");
+    // One undo step puts it all back.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!((content(&s, a), content(&s, b)), (1, 0));
+    // With a frame shift too, and no layer there: an error, nothing changes.
+    run(&mut s, "timeline.move_keyframes", json!({"layers": [a.0], "from": 5, "to": 9, "by": 3, "layer_by": -1}));
+    assert!(s.doc.timeline.layer(b).unwrap().keyframe_starting_at(8).is_some_and(|i| !s.doc.timeline.layer(b).unwrap().keyframes[i].elements.is_empty()));
+    assert!(s.execute("timeline.move_keyframes", &json!({"layers": [b.0], "from": 0, "to": 30, "by": 0, "layer_by": -1})).is_err());
+    assert!(s.execute("timeline.move_keyframes", &json!({"layers": [a.0], "from": 0, "by": 0, "layer_by": "x"})).is_err());
+}
+
+#[test]
+fn opening_an_xfl_folder_imports_it_untitled() {
+    let dir = std::env::temp_dir().join(format!("anicraft-open-xfl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("DOMDocument.xml"),
+        r##"<DOMDocument width="320" height="240" frameRate="12"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Art"><frames><DOMFrame index="0" duration="6"><elements>
+        <DOMShape><fills><FillStyle index="1"><SolidColor color="#FF8800"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="!0 0|2000 0|2000 2000|0 2000|0 0"/></edges></DOMShape>
+        <DOMStaticText/></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"##,
+    )
+    .unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.open", json!({"path": dir.display().to_string()}));
+    assert_eq!((s.doc.stage.width, s.doc.stage.fps), (320, 12.0));
+    assert_eq!(s.doc.timeline.layers[0].name, "Art");
+    assert_eq!(s.doc.frame_count(), 6);
+    assert!(v["report"].as_str().unwrap().contains("1 text fields"), "{v}");
+    assert!(s.path.is_none(), "imported documents are untitled: Save never writes over the original");
+    assert!(s.execute("file.save", &json!({})).is_err());
+    // It renders.
+    let dl = s.display_list();
+    assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0xff8800))));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn animate_default_keys_map_to_the_same_commands() {
+    // Muscle memory: Animate's default keys (as its documentation lists them) do the same here.
+    let expected = [
+        ("Ctrl+Z", "edit.undo"),
+        ("Ctrl+Y", "edit.redo"),
+        ("Ctrl+X", "edit.cut"),
+        ("Ctrl+C", "edit.copy"),
+        ("Ctrl+V", "edit.paste"),
+        ("Ctrl+Shift+V", "edit.paste_in_place"),
+        ("Ctrl+D", "edit.duplicate"),
+        ("Ctrl+A", "edit.select_all"),
+        ("Ctrl+Shift+A", "edit.deselect"),
+        ("Delete", "edit.delete"),
+        ("Backspace", "edit.delete"),
+        ("F5", "timeline.insert_frame"),
+        ("Shift+F5", "timeline.remove_frame"),
+        ("F6", "timeline.insert_keyframe"),
+        ("Shift+F6", "timeline.clear_keyframe"),
+        ("F7", "timeline.insert_blank_keyframe"),
+        ("Ctrl+Alt+X", "timeline.cut_frames"),
+        ("Ctrl+Alt+C", "timeline.copy_frames"),
+        ("Ctrl+Alt+V", "timeline.paste_frames"),
+        (".", "timeline.next_frame"),
+        (",", "timeline.prev_frame"),
+        ("Shift+,", "timeline.first_frame"),
+        ("Shift+.", "timeline.last_frame"),
+        ("F8", "modify.convert_to_symbol"),
+        ("Ctrl+B", "modify.break_apart"),
+        ("Ctrl+Shift+Z", "modify.remove_transform"),
+        ("Ctrl+Shift+9", "modify.rotate_cw"),
+        ("Ctrl+Shift+7", "modify.rotate_ccw"),
+        ("Ctrl+Shift+Up", "arrange.bring_to_front"),
+        ("Ctrl+Up", "arrange.bring_forward"),
+        ("Ctrl+Down", "arrange.send_backward"),
+        ("Ctrl+Shift+Down", "arrange.send_to_back"),
+        ("Ctrl+Alt+1", "align.left"),
+        ("Ctrl+Alt+2", "align.hcenter"),
+        ("Ctrl+Alt+3", "align.right"),
+        ("Ctrl+Alt+4", "align.top"),
+        ("Ctrl+Alt+5", "align.vcenter"),
+        ("Ctrl+Alt+6", "align.bottom"),
+        ("Ctrl+N", "file.new"),
+        ("Ctrl+O", "file.open"),
+        ("Ctrl+S", "file.save"),
+        ("Ctrl+Shift+S", "file.save_as"),
+    ];
+    let cmds = commands();
+    for (keys, id) in expected {
+        let c = cmds.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} missing"));
+        let alias = SHORTCUT_ALIASES.iter().any(|(k, i)| *k == keys && *i == id);
+        assert!(c.shortcut == Some(keys) || alias, "{id}: {:?}, expected {keys}", c.shortcut);
+    }
+    // No chord does two things.
+    let mut all: Vec<&str> = cmds.iter().filter_map(|c| c.shortcut).chain(SHORTCUT_ALIASES.iter().map(|(k, _)| *k)).collect();
+    all.sort_unstable();
+    let n = all.len();
+    all.dedup();
+    assert_eq!(all.len(), n, "a key chord is bound twice");
+}
+
+#[test]
+fn bring_forward_send_backward_and_remove_transform() {
+    let mut s = Session::default();
+    let ids: Vec<u64> = (0..3).map(|i| run(&mut s, "draw.rect", json!({"x": i * 10, "y": 0, "w": 50, "h": 50}))["element"].as_u64().unwrap()).collect();
+    let order = |s: &Session| s.visible_elements().iter().map(|e| e.id.0).collect::<Vec<_>>();
+    run(&mut s, "element.select", json!({"ids": [ids[0]]}));
+    run(&mut s, "arrange.bring_forward", json!({}));
+    assert_eq!(order(&s), vec![ids[1], ids[0], ids[2]], "one step up");
+    run(&mut s, "arrange.bring_forward", json!({}));
+    run(&mut s, "arrange.bring_forward", json!({}));
+    assert_eq!(order(&s), vec![ids[1], ids[2], ids[0]], "stops at the top");
+    run(&mut s, "arrange.send_backward", json!({}));
+    assert_eq!(order(&s), vec![ids[1], ids[0], ids[2]]);
+    // Remove Transform keeps the position, drops scale and rotation.
+    run(&mut s, "element.set_transform", json!({"sx": 2, "rotation": 30}));
+    let before = s.visible_elements().iter().find(|e| e.id.0 == ids[0]).unwrap().transform.translation();
+    run(&mut s, "modify.remove_transform", json!({}));
+    let t = s.visible_elements().iter().find(|e| e.id.0 == ids[0]).unwrap().transform;
+    assert_eq!(t.m[..4], [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(t.translation(), before);
+}
+
+#[test]
+fn mask_layers_reveal_hide_pick_and_move_as_a_group() {
+    let mut s = Session::default();
+    let art = s.layer;
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 200}));
+    let mask = run(&mut s, "layer.new", json!({"name": "Mask"}))["layer"].as_u64().map(LayerId).unwrap();
+    run(&mut s, "draw.rect", json!({"x": 50, "y": 50, "w": 20, "h": 20}));
+    let r = run(&mut s, "layer.toggle_mask", json!({}));
+    assert_eq!(r["type"], "mask");
+    assert_eq!(s.doc.timeline.layer(art).unwrap().parent, Some(mask), "the layer under it is masked");
+
+    // Only the mask's area shows, and only it can be picked.
+    let px = |s: &Session, x, y| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(x, y).unwrap();
+    let bg = px(&s, 500, 500);
+    assert_eq!(px(&s, 10, 10), bg, "masked away");
+    assert_ne!(px(&s, 60, 60), bg, "revealed");
+    run(&mut s, "layer.toggle_lock", json!({"layer": mask.0}));
+    assert_eq!(s.hit_test(Vec2::new(10.0, 10.0), 0.0), None);
+    assert_eq!(s.hit_test(Vec2::new(60.0, 60.0), 0.0).map(|(l, _)| l), Some(art));
+
+    // A layer added above a masked layer is masked too; the mask moves with its group.
+    run(&mut s, "layer.select", json!({"layer": art.0}));
+    let extra = run(&mut s, "layer.new", json!({}))["layer"].as_u64().map(LayerId).unwrap();
+    assert_eq!(s.doc.timeline.layer(extra).unwrap().parent, Some(mask));
+    let top = run(&mut s, "layer.new", json!({"name": "Top"}))["layer"].as_u64().map(LayerId).unwrap();
+    run(&mut s, "layer.move_up", json!({"layer": top.0}));
+    let names = |s: &Session| s.doc.timeline.layers.iter().map(|l| l.id).collect::<Vec<_>>();
+    // `Top` was added inside the group too (above `extra`); moving it up leaves the group.
+    assert_eq!(s.doc.timeline.layer(top).unwrap().parent, None);
+    assert_eq!(names(&s), vec![top, mask, extra, art]);
+    run(&mut s, "layer.move_up", json!({"layer": mask.0}));
+    assert_eq!(names(&s), vec![mask, extra, art, top], "the whole group moved above Top");
+    run(&mut s, "layer.move_down", json!({"layer": mask.0}));
+    assert_eq!(names(&s), vec![top, mask, extra, art]);
+    // Moving the last masked layer up past its mask frees it; undo puts it back.
+    run(&mut s, "layer.move_up", json!({"layer": extra.0}));
+    assert_eq!(s.doc.timeline.layer(extra).unwrap().parent, None);
+    s.undo().unwrap();
+    assert_eq!(s.doc.timeline.layer(extra).unwrap().parent, Some(mask));
+
+    // `masked` needs a mask above; unknown types are refused.
+    assert!(s.execute("layer.set_type", &json!({"type": "masked", "layer": top.0})).is_err());
+    assert!(s.execute("layer.set_type", &json!({"type": "wobbly"})).is_err());
+    // Turning the mask off frees its layers; deleting a mask does the same.
+    run(&mut s, "layer.toggle_mask", json!({"layer": mask.0}));
+    assert!(s.doc.timeline.layers.iter().all(|l| l.parent.is_none()));
+    assert_ne!(px(&s, 10, 10), bg, "everything shows again");
+    s.undo().unwrap();
+    run(&mut s, "layer.delete", json!({"layer": mask.0, "confirm": true}));
+    assert!(s.doc.timeline.layers.iter().all(|l| l.parent.is_none()));
+}

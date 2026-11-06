@@ -1,0 +1,18 @@
+[package]
+name = "anicraft-xfl"
+description = "AniCraft XFL/FLA import: Animate documents (DOMDocument.xml, library symbols, shape edges) into the AniCraft document model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anicraft-geom.workspace = true
+anicraft-doc.workspace = true
+# Inflate for .fla (zip) archives; already in the tree through png (MIT OR Zlib OR Apache-2.0).
+miniz_oxide = "0.8"
+thiserror.workspace = true
+
+[lints]
+workspace = true

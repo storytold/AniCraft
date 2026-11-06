@@ -1,0 +1,17 @@
+[package]
+name = "anicraft-geom"
+description = "AniCraft L0: points, affine transforms, Bezier paths, flattening and hit testing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

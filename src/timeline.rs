@@ -1,0 +1,824 @@
+//! Timeline panel: transport, layer list and a virtualised frame grid.
+
+use crate::app::App;
+use crate::icons::{self, Icon};
+use crate::menus;
+use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, to_color32, with_type};
+use anicraft_engine::doc::{Easing, Layer, LayerId, LayerKind};
+use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use serde_json::json;
+use std::sync::Arc;
+
+const LAYER_W: f32 = 252.0;
+/// Rows are click targets (≥ `theme::TARGET`).
+const ROW_H: f32 = TARGET;
+const RULER_H: f32 = 24.0;
+/// Frame cell width at 100 % zoom, and the zoom range (Ctrl+wheel over the frames, or the
+/// slider in the timeline header).
+pub const CELL_DEFAULT: f32 = 12.0;
+pub const CELL_RANGE: std::ops::RangeInclusive<f32> = 3.0..=48.0;
+/// Width of the playhead's number flag (wider only for long frame numbers).
+const HEAD_W: f32 = 22.0;
+
+/// Room before frame 1: what the playhead's flag needs when centred on frame 1, plus `extra`
+/// points. Fixed on screen: it shrinks to a hairline once frames are wider than the flag, and
+/// never grows with the zoom.
+fn start_pad(cell_w: f32, extra: f32) -> f32 {
+    (HEAD_W * 0.5 - cell_w * 0.5).max(0.0) + 1.0 + extra
+}
+
+/// The pixel column through the middle of a frame whose cell starts at `cell_left`: ruler
+/// ticks, their numbers and the playhead line all use it, so they always line up.
+fn frame_center(cell_left: f32, cell_w: f32) -> f32 {
+    (cell_left + cell_w * 0.5).round() + 0.5
+}
+const FOOTER_H: f32 = 38.0;
+/// Eye / lock / outline toggles: square targets in each layer row.
+const TOGGLE: f32 = 24.0;
+
+/// A rectangle of frames: the layers between the anchor's and the head's rows (in the
+/// current layer order) by the frames between them. View state: commands get explicit ranges.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameSel {
+    pub anchor: (LayerId, u32),
+    pub head: (LayerId, u32),
+}
+
+impl FrameSel {
+    pub fn cell(layer: LayerId, frame: u32) -> FrameSel {
+        FrameSel { anchor: (layer, frame), head: (layer, frame) }
+    }
+    /// First and last selected frame.
+    pub fn frames(&self) -> (u32, u32) {
+        (self.anchor.1.min(self.head.1), self.anchor.1.max(self.head.1))
+    }
+    /// Selected rows (indices into the layer list), or `None` when a layer went away.
+    fn rows(&self, layers: &[Arc<Layer>]) -> Option<(usize, usize)> {
+        let a = layers.iter().position(|l| l.id == self.anchor.0)?;
+        let h = layers.iter().position(|l| l.id == self.head.0)?;
+        Some((a.min(h), a.max(h)))
+    }
+    pub fn layers(&self, layers: &[Arc<Layer>]) -> Vec<LayerId> {
+        self.rows(layers).map(|(a, b)| layers.iter().skip(a).take(b - a + 1).map(|l| l.id).collect()).unwrap_or_default()
+    }
+    fn contains(&self, layers: &[Arc<Layer>], row: usize, frame: u32) -> bool {
+        let (f0, f1) = self.frames();
+        self.rows(layers).is_some_and(|(a, b)| row >= a && row <= b) && frame >= f0 && frame <= f1
+    }
+    /// Whether any selected layer has a keyframe starting in the selected frames.
+    pub fn has_keys(&self, layers: &[Arc<Layer>]) -> bool {
+        let (f0, f1) = self.frames();
+        let ids = self.layers(layers);
+        layers.iter().filter(|l| ids.contains(&l.id)).any(|l| l.keyframes.iter().any(|k| k.start >= f0 && k.start <= f1))
+    }
+}
+
+/// In-progress pointer gesture on the frame grid.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TlDrag {
+    #[default]
+    None,
+    /// Dragging out a frame selection.
+    Select,
+    /// Dragging the selected keyframes: grabbed at frame `grab`, currently `by` frames away.
+    Move { grab: u32, by: i64, grab_row: usize, rows_by: i64 },
+    /// Dragging the end of the span `start..end` on `layer` to `to`.
+    Span { layer: LayerId, start: u32, end: u32, to: u32 },
+}
+
+/// Range params for the frame commands when frames are selected: `{layers, frame, count}`.
+pub fn range_params(app: &App) -> Option<serde_json::Value> {
+    let sel = app.frame_sel?;
+    let layers = sel.layers(&app.s.doc.timeline.layers);
+    if layers.is_empty() {
+        return None;
+    }
+    let (f0, f1) = sel.frames();
+    let ids: Vec<u64> = layers.iter().map(|l| l.0).collect();
+    Some(json!({"layers": ids, "frame": f0, "count": f1 - f0 + 1}))
+}
+
+/// Frame commands that act on the frame selection.
+pub const RANGE_COMMANDS: [&str; 7] = ["timeline.insert_frame", "timeline.remove_frame", "timeline.insert_keyframe", "timeline.insert_blank_keyframe", "timeline.clear_keyframe", "timeline.copy_frames", "timeline.cut_frames"];
+
+/// Params for Paste Frames: the selection's top layer and first frame.
+pub fn paste_params(app: &App) -> Option<serde_json::Value> {
+    let sel = app.frame_sel?;
+    let top = *sel.layers(&app.s.doc.timeline.layers).first()?;
+    Some(json!({"layer": top.0, "frame": sel.frames().0}))
+}
+
+/// An icon button: a full-size target around a Lucide glyph. `active` marks a toggle that is on.
+fn icon_button(ui: &mut egui::Ui, tip: &str, active: bool, icon: Icon) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(TARGET + 4.0, TARGET), Sense::click());
+    // Same language as the tools: a toggle that is on is a lighter gray block, icon white.
+    let bg = if active {
+        T.active
+    } else if resp.hovered() {
+        T.header
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, T.rc(), bg);
+    icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, if active || resp.hovered() { Color32::WHITE } else { T.icon });
+    resp.on_hover_text(tip)
+}
+
+fn transport(app: &mut App, ui: &mut egui::Ui) {
+    if icon_button(ui, "First frame (Home)", false, Icon::First).clicked() {
+        app.run("timeline.first_frame", json!({}));
+    }
+    if icon_button(ui, "Previous frame (,)", false, Icon::Prev).clicked() {
+        app.run("timeline.prev_frame", json!({}));
+    }
+    let playing = app.playing;
+    if icon_button(ui, "Play / Stop (Enter)", playing, if playing { Icon::Pause } else { Icon::Play }).clicked() {
+        app.toggle_play();
+    }
+    if icon_button(ui, "Next frame (.)", false, Icon::Next).clicked() {
+        app.run("timeline.next_frame", json!({}));
+    }
+    if icon_button(ui, "Last frame (End)", false, Icon::Last).clicked() {
+        app.run("timeline.last_frame", json!({}));
+    }
+    let looping = app.looping;
+    if icon_button(ui, "Loop playback", looping, Icon::Loop).clicked() {
+        app.looping = !app.looping;
+    }
+    let onion = app.onion;
+    if icon_button(ui, "Onion skin", onion, Icon::Onion).clicked() {
+        app.onion = !app.onion;
+    }
+}
+
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    // ---- header ---------------------------------------------------------------------------
+    egui::Frame::NONE.fill(T.panel_alt).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(text(Type::Heading, "Timeline"));
+            ui.add_space(8.0);
+            transport(app, ui);
+            ui.add_space(8.0);
+            let fps = app.s.doc.stage.fps;
+            let f = app.s.frame;
+            // Fixed-width readouts: digits stay put while the playhead moves.
+            let digits = app.s.frame_count().max(f + 1).to_string().len().max(3);
+            ui.label(text(Type::DataLarge, format!("{:>digits$}", f + 1)).color(T.accent)).on_hover_text("Current frame");
+            ui.label(text(Type::Data, format!("{fps:.2} fps")).color(T.text_dim)).on_hover_text("Frame rate");
+            ui.label(text(Type::Data, format!("{:>7.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text("Time at the playhead");
+            ui.separator();
+            // Through `invoke`, so the buttons act on the frame selection like the keys do.
+            let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
+                if ui.button(label).on_hover_text(tip).clicked() {
+                    app.invoke(id);
+                }
+            };
+            cmd(app, ui, "Frame", "Insert frame (F5)", "timeline.insert_frame");
+            cmd(app, ui, "Keyframe", "Insert keyframe (F6)", "timeline.insert_keyframe");
+            cmd(app, ui, "Blank", "Insert blank keyframe (F7)", "timeline.insert_blank_keyframe");
+            let in_tween = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).and_then(|k| k.tween);
+            match in_tween {
+                Some(tw) => {
+                    egui::ComboBox::from_id_salt("tl_ease").width(150.0).selected_text(tw.easing.label()).show_ui(ui, |ui| {
+                        for (name, e) in Easing::PRESETS {
+                            if ui.selectable_label(tw.easing == e, name).clicked() {
+                                app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
+                            }
+                        }
+                    });
+                    cmd(app, ui, "Remove Tween", "Remove the classic tween from this span", "timeline.remove_tween");
+                }
+                None => cmd(app, ui, "Create Tween", "Create a classic tween to the next keyframe", "timeline.create_tween"),
+            }
+            // Frame zoom, at the right end of the header.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
+                let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
+                let r = with_type(ui, Type::Data, |ui| ui.add(egui::Slider::new(&mut pct, lo..=hi).logarithmic(true).max_decimals(0).suffix(" %")));
+                if r.on_hover_text("Frame width (Ctrl+wheel over the frames)").changed() {
+                    app.tl_cell_w = (pct / 100.0 * CELL_DEFAULT).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
+                }
+                ui.label(text(Type::Label, "Zoom"));
+            });
+        });
+    });
+
+    // A frame selection lives while the playhead is inside it and its layers exist.
+    if let Some(sel) = app.frame_sel {
+        let (f0, f1) = sel.frames();
+        let gone = sel.layers(&app.s.doc.timeline.layers).is_empty();
+        if gone || app.playing || (app.tl_drag == TlDrag::None && !(f0..=f1).contains(&app.s.frame)) {
+            app.frame_sel = None;
+        }
+    }
+
+    // ---- body -----------------------------------------------------------------------------
+    let body = ui.available_rect_before_wrap();
+    ui.allocate_rect(body, Sense::hover());
+    let painter = ui.painter_at(body);
+    painter.rect_filled(body, 0.0, T.panel);
+
+    let grid = Rect::from_min_max(pos2(body.left() + LAYER_W, body.top()), body.right_bottom());
+    let frames_total = app.s.frame_count();
+    app.tl_cell_w = app.tl_cell_w.clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
+    // Ctrl+wheel (or pinch) over the frames zooms about the pointer: the frame under it stays put.
+    // Room before frame 1: exactly what the playhead's flag needs to be drawn whole when it
+    // sits on frame 1 (the flag is centred on the frame), plus an optional extra gap in points
+    // (a preference). Fixed on screen: it does not grow with the zoom.
+    let pad_for = |cw: f32| start_pad(cw, app.prefs.timeline_start_gap);
+    if ui.rect_contains_pointer(body) {
+        let (zoom, hover) = ui.input(|i| (i.zoom_delta(), i.pointer.hover_pos()));
+        if (zoom - 1.0).abs() > 1e-4
+            && let Some(h) = hover.filter(|h| h.x >= grid.left())
+        {
+            let old = app.tl_cell_w;
+            let new = (old * zoom).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
+            let under = (h.x - grid.left() - pad_for(old)) / old + app.tl_scroll;
+            app.tl_cell_w = new;
+            app.tl_scroll = (under - (h.x - grid.left() - pad_for(new)) / new).max(0.0);
+        }
+    }
+    let cell_w = app.tl_cell_w;
+    // Dead space before frame 1 (a preference): the playhead's flag never touches the edge.
+    let pad = pad_for(cell_w);
+    let visible_cols = ((grid.width() / cell_w).ceil() as u32).max(1);
+    // Scrolling, as in a web browser: the wheel scrolls the layers up and down; Shift+wheel and
+    // sideways wheels / trackpad swipes scroll the frames (egui turns Shift+wheel into a
+    // horizontal delta). Anywhere over the timeline, rows and cells included. Only visible
+    // rows and columns are painted, so cost is independent of document size.
+    let n_layers = app.s.doc.timeline.layers.len();
+    let rows_visible = ((body.height() - RULER_H - FOOTER_H) / ROW_H).floor().max(1.0) as usize;
+    if ui.rect_contains_pointer(body) {
+        let d = ui.input(|i| i.smooth_scroll_delta);
+        if d.x != 0.0 {
+            app.tl_scroll = (app.tl_scroll - d.x / cell_w).max(0.0);
+        }
+        if d.y != 0.0 {
+            app.tl_vscroll = (app.tl_vscroll - d.y / ROW_H).max(0.0);
+        }
+    }
+    app.tl_vscroll = app.tl_vscroll.min(n_layers.saturating_sub(rows_visible) as f32);
+    if app.tl_last_layer != Some(app.s.layer)
+        && let Some(ai) = app.s.active_layer_index()
+    {
+        // the active layer changed (e.g. picked on the stage): bring its row into view
+        if (ai as f32) < app.tl_vscroll {
+            app.tl_vscroll = ai as f32;
+        } else if ai >= app.tl_vscroll as usize + rows_visible {
+            app.tl_vscroll = (ai + 1 - rows_visible) as f32;
+        }
+        app.tl_last_layer = Some(app.s.layer);
+    }
+    let first_row = app.tl_vscroll.floor() as usize;
+    let max_scroll = (frames_total + 30).saturating_sub(visible_cols) as f32;
+    app.tl_scroll = app.tl_scroll.min(max_scroll.max(0.0));
+    // keep the playhead visible while playing
+    if app.playing {
+        let f = app.s.frame as f32;
+        if f < app.tl_scroll || f >= app.tl_scroll + visible_cols as f32 - 2.0 {
+            app.tl_scroll = (f - 2.0).max(0.0);
+        }
+    }
+    let scroll = app.tl_scroll;
+    let first = scroll.floor() as u32;
+    let x_of = |f: u32| grid.left() + pad + (f as f32 - scroll) * cell_w;
+    // The padding is dead space: a click there means frame 1, never a frame before it.
+    let frame_at = |x: f32| ((x - grid.left() - pad) / cell_w + scroll).floor().max(0.0) as u32;
+    let gp = painter.with_clip_rect(grid);
+
+    // ruler: numbers every `step` frames, chosen so labels never collide at any zoom
+    let ruler = Rect::from_min_max(grid.left_top(), pos2(grid.right(), grid.top() + RULER_H));
+    painter.rect_filled(ruler, 0.0, T.panel_alt);
+    painter.rect_filled(Rect::from_min_max(body.left_top(), pos2(grid.left(), ruler.bottom())), 0.0, T.panel_alt);
+    painter.text(pos2(body.left() + 10.0, ruler.center().y), Align2::LEFT_CENTER, "Layers", font(Type::Heading), color(Type::Heading));
+    let step = [1u32, 2, 5, 10, 20, 50, 100, 200, 500].into_iter().find(|s| *s as f32 * cell_w >= 28.0).unwrap_or(1000);
+    let minor = if cell_w >= 6.0 { 1 } else { step / 5 }.max(1);
+    for f in first..first + visible_cols + 1 {
+        let x = x_of(f);
+        let n = f + 1;
+        // Ticks and numbers sit on the frame's centre, where the playhead line and the
+        // keyframe dots are, so "1" is exactly under the playhead on frame 1 at any zoom.
+        let cx = frame_center(x, cell_w);
+        if n % step == 0 || n == 1 {
+            gp.line_segment([pos2(cx, ruler.bottom() - 6.0), pos2(cx, ruler.bottom())], Stroke::new(1.0, T.text_faint));
+            gp.text(pos2(cx, ruler.top() + 3.0), Align2::CENTER_TOP, n.to_string(), font(Type::DataSmall), color(Type::DataSmall));
+        } else if n % minor == 0 {
+            gp.line_segment([pos2(cx, ruler.bottom() - 3.0), pos2(cx, ruler.bottom())], Stroke::new(1.0, T.border));
+        }
+    }
+    let ruler_resp = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
+    if (ruler_resp.clicked() || ruler_resp.dragged())
+        && let Some(p) = ruler_resp.interact_pointer_pos() {
+            app.playing = false;
+            app.run("timeline.goto", json!({"frame": frame_at(p.x)}));
+        }
+
+    // rows
+    let layers = app.s.doc.timeline.layers.clone();
+    let active = app.s.layer;
+    let rows_top = ruler.bottom();
+    let rows_bottom = body.bottom() - FOOTER_H;
+    for (i, layer) in layers.iter().enumerate().skip(first_row) {
+        let y = rows_top + (i - first_row) as f32 * ROW_H;
+        // Whole rows only: a cut-off row would sit under the footer (scroll for the rest).
+        if y + ROW_H > rows_bottom + 0.5 {
+            break;
+        }
+        let row = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), ROW_H));
+        let left = Rect::from_min_max(row.left_top(), pos2(grid.left(), row.bottom()));
+        let is_active = layer.id == active;
+        painter.rect_filled(left, 0.0, if is_active { T.accent_dim } else if i % 2 == 0 { T.panel } else { T.panel_alt });
+        // The layer's colour as a full-height edge bar.
+        painter.rect_filled(Rect::from_min_size(left.left_top(), vec2(4.0, ROW_H)), 0.0, to_color32(layer.color));
+        // Mask layers carry a stencil glyph; the layers they mask are indented under them.
+        let name_color = if layer.visible { T.text } else { T.text_faint };
+        let type_icon = |x: f32, icon: Icon| icons::paint(&painter, Rect::from_center_size(pos2(x, left.center().y), vec2(14.0, 14.0)), icon, name_color);
+        let name_x = match (layer.kind, layer.parent) {
+            (LayerKind::Mask, _) => {
+                type_icon(left.left() + 19.0, Icon::Mask);
+                left.left() + 32.0
+            }
+            (LayerKind::Normal, Some(_)) => {
+                type_icon(left.left() + 33.0, Icon::Masked);
+                left.left() + 46.0
+            }
+            _ => left.left() + 16.0,
+        };
+        painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
+
+        // eye / lock / outline toggles: 24 × 24 targets with a hover fill
+        let toggle = |k: f32| Rect::from_center_size(pos2(left.right() - 16.0 - k * (TOGGLE + 2.0), left.center().y), vec2(TOGGLE, TOGGLE));
+        let (eye, lock, outl) = (toggle(2.0), toggle(1.0), toggle(0.0));
+        let hover = ui.input(|inp| inp.pointer.hover_pos());
+        for r in [eye, lock, outl] {
+            if hover.is_some_and(|h| r.contains(h)) {
+                painter.rect_filled(r, T.rc(), T.hover);
+            }
+        }
+        let c_on = T.text;
+        let c_off = T.text_faint;
+        // eye and lock (state shows in the glyph and its brightness)
+        let glyph = |r: Rect| Rect::from_center_size(r.center(), vec2(15.0, 15.0));
+        icons::paint(&painter, glyph(eye), if layer.visible { Icon::Eye } else { Icon::EyeOff }, if layer.visible { c_on } else { c_off });
+        icons::paint(&painter, glyph(lock), if layer.locked { Icon::Lock } else { Icon::Unlock }, if layer.locked { c_on } else { c_off });
+        // outline swatch
+        let sw = Rect::from_center_size(outl.center(), vec2(10.0, 10.0));
+        if layer.outline {
+            painter.rect_stroke(sw, 0.0, Stroke::new(1.5, to_color32(layer.color)), StrokeKind::Inside);
+        } else {
+            painter.rect_filled(sw, 0.0, to_color32(layer.color));
+        }
+        for (r, id, salt) in [(eye, "layer.toggle_visible", "eye"), (lock, "layer.toggle_lock", "lock"), (outl, "layer.toggle_outline", "outline")] {
+            let rr = ui.interact(r, ui.id().with((salt, layer.id.0)), Sense::click());
+            if rr.clicked() {
+                app.run(id, json!({"layer": layer.id.0}));
+            }
+        }
+        let name_rect = Rect::from_min_max(left.left_top(), pos2(eye.left() - 4.0, left.bottom()));
+        let nr = ui.interact(name_rect, ui.id().with(("lname", layer.id.0)), Sense::click());
+        if nr.clicked() {
+            app.run("layer.select", json!({"layer": layer.id.0}));
+        }
+        if nr.secondary_clicked() && app.s.layer != layer.id {
+            app.run("layer.select", json!({"layer": layer.id.0}));
+        }
+        if nr.double_clicked() {
+            app.invoke("layer.rename");
+        }
+        nr.context_menu(|ui| {
+            ui.set_min_width(200.0);
+            for id in ["layer.rename", "layer.new", "layer.delete"] {
+                menus::cmd_item(app, ui, id);
+            }
+            ui.separator();
+            for id in ["layer.toggle_visible", "layer.toggle_lock", "layer.toggle_outline"] {
+                menus::cmd_item(app, ui, id);
+            }
+            ui.separator();
+            // Layer type, as check items: Mask (masks the layer below) and Masked.
+            if menus::check_item(ui, "Mask", layer.kind == LayerKind::Mask, true) {
+                app.run("layer.toggle_mask", json!({"layer": layer.id.0}));
+            }
+            let can_mask = layer.kind == LayerKind::Normal && app.s.doc.timeline.mask_above(i).is_some();
+            if menus::check_item(ui, "Masked", layer.parent.is_some(), can_mask || layer.parent.is_some()) {
+                let ty = if layer.parent.is_some() { "normal" } else { "masked" };
+                app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));
+            }
+            ui.separator();
+            for id in ["layer.move_up", "layer.move_down"] {
+                menus::cmd_item(app, ui, id);
+            }
+        });
+
+        // frame cells
+        let cells = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + ROW_H));
+        let cp = painter.with_clip_rect(cells);
+        cp.rect_filled(cells, 0.0, if is_active { T.row_active } else { T.panel });
+        for f in first..first + visible_cols + 1 {
+            let x = x_of(f);
+            if (f + 1) % 5 == 0 && cell_w >= 6.0 {
+                cp.rect_filled(Rect::from_min_size(pos2(x, y), vec2(cell_w, ROW_H)), 0.0, Color32::from_white_alpha(6));
+            }
+            // Cell lines thin out with the ruler when zoomed out, so rows never turn to hatching.
+            if (f + 1) % minor == 0 {
+                cp.line_segment([pos2(x + cell_w - 0.5, y), pos2(x + cell_w - 0.5, y + ROW_H)], Stroke::new(1.0, T.separator));
+            }
+        }
+        // Spans are solid square blocks, separated by a one-pixel gap rather than outlines:
+        // mint holds artwork, violet tweens, graphite is empty. Marks on them are ink.
+        for (ki, k) in layer.keyframes.iter().enumerate() {
+            if k.end() < first || k.start > first + visible_cols {
+                continue;
+            }
+            let x0 = x_of(k.start);
+            let x1 = x_of(k.end());
+            let span = Rect::from_min_max(pos2(x0, y + 3.0), pos2(x1 - 1.0, y + ROW_H - 3.0));
+            let next_adjacent = layer.keyframes.get(ki + 1).is_some_and(|n| n.start == k.end());
+            let tweened = k.tween.is_some() && next_adjacent;
+            let empty = k.elements.is_empty();
+            let fill = if tweened {
+                T.tween
+            } else if empty {
+                T.span_empty
+            } else {
+                T.span
+            };
+            let mark = if empty && !tweened { T.text } else { T.ink };
+            cp.rect_filled(span, SQUARE, fill);
+            let kc = pos2(x0 + cell_w * 0.5, y + ROW_H * 0.5);
+            if tweened && k.duration > 1 {
+                let end = pos2(x1 - cell_w * 0.5 - 4.0, kc.y);
+                cp.line_segment([kc + vec2(5.0, 0.0), end], Stroke::new(1.5, T.tween_line));
+                cp.add(egui::Shape::convex_polygon(vec![end + vec2(0.0, -3.5), end + vec2(5.0, 0.0), end + vec2(0.0, 3.5)], T.tween_line, Stroke::NONE));
+            } else if k.tween.is_some() && !next_adjacent && k.duration > 1 {
+                // broken tween: dashed line
+                let mut x = kc.x + 6.0;
+                while x < x1 - 6.0 {
+                    cp.line_segment([pos2(x, kc.y), pos2((x + 3.0).min(x1 - 6.0), kc.y)], Stroke::new(1.5, mark));
+                    x += 6.0;
+                }
+            } else if k.duration > 1 {
+                let er = Rect::from_center_size(pos2(x1 - cell_w * 0.5 - 1.0, kc.y + 2.0), vec2(5.0, 7.0));
+                cp.rect_stroke(er, 0.0, Stroke::new(1.2, mark), StrokeKind::Inside);
+            }
+            if empty {
+                cp.circle_stroke(kc, 3.5, Stroke::new(1.5, mark));
+            } else {
+                cp.circle_filled(kc, 4.0, mark);
+            }
+            if !k.label.is_empty() {
+                cp.text(kc + vec2(8.0, -1.0), Align2::LEFT_CENTER, &k.label, font(Type::Caption), mark);
+            }
+        }
+        // Selected frames, and where a keyframe drag would drop them.
+        if let Some(sel) = app.frame_sel
+            && sel.rows(&layers).is_some_and(|(a, b)| i >= a && i <= b)
+        {
+            let (f0, f1) = sel.frames();
+            let r = Rect::from_min_max(pos2(x_of(f0), y + 1.0), pos2(x_of(f1 + 1) - 1.0, y + ROW_H - 1.0));
+            cp.rect_filled(r, SQUARE, T.selection.gamma_multiply(0.28));
+            cp.rect_stroke(r, SQUARE, Stroke::new(2.0, T.selection), StrokeKind::Inside);
+        }
+        // Where a keyframe drag would drop them: shifted in time and, across rows, onto this row.
+        if let (TlDrag::Move { by, rows_by, .. }, Some(sel)) = (app.tl_drag, app.frame_sel)
+            && (by != 0 || rows_by != 0)
+            && let Some((a, b)) = sel.rows(&layers)
+            && let Some(src) = i64::try_from(i).ok().map(|r| r - rows_by)
+            && src >= a as i64
+            && src <= b as i64
+        {
+            let (f0, f1) = sel.frames();
+            let g = Rect::from_min_max(pos2(x_of(f0), y + 1.0), pos2(x_of(f1 + 1) - 1.0, y + ROW_H - 1.0)).translate(vec2(by as f32 * cell_w, 0.0));
+            cp.rect_stroke(g, SQUARE, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+        }
+        // Span length being dragged on this row: the new end line and its length readout.
+        if let TlDrag::Span { layer: lid, start, end, to } = app.tl_drag
+            && lid == layer.id
+        {
+            // The frames gained (or given up), so the change reads as part of the span.
+            let (a, b) = (x_of(end.min(to)), x_of(end.max(to)));
+            let changed = Rect::from_min_max(pos2(a, y + 2.0), pos2(b - 1.0, y + ROW_H - 2.0));
+            cp.rect_filled(changed, SQUARE, if to > end { T.selection.gamma_multiply(0.35) } else { Color32::from_black_alpha(120) });
+            let x = x_of(to);
+            cp.line_segment([pos2(x, y + 1.0), pos2(x, y + ROW_H - 1.0)], Stroke::new(2.0, Color32::WHITE));
+            let n = to - start;
+            let secs = n as f32 / app.s.doc.stage.fps.max(1.0);
+            let label = format!("{n} {} · {secs:.2} s", if n == 1 { "frame" } else { "frames" });
+            let at = pos2(x + 6.0, y + ROW_H * 0.5);
+            let galley = painter.layout_no_wrap(label, font(Type::DataSmall), Color32::WHITE);
+            let (w, h) = (galley.rect.width(), galley.rect.height());
+            let bg = Rect::from_min_size(at - vec2(3.0, h * 0.5 + 2.0), vec2(w + 6.0, h + 4.0));
+            painter.rect_filled(bg, T.rc(), T.chrome);
+            painter.rect_stroke(bg, T.rc(), Stroke::new(1.0, T.border), StrokeKind::Inside);
+            painter.galley(bg.min + vec2(3.0, 2.0), galley, Color32::WHITE);
+        }
+        let cr = ui.interact(cells, ui.id().with(("cells", layer.id.0)), Sense::click_and_drag());
+        let shift = ui.input(|inp| inp.modifiers.shift);
+        if cr.clicked() || cr.drag_started() || cr.secondary_clicked() {
+            app.timeline_focus = true;
+        }
+        // The right edge of a span is a handle: drag it to make the span longer or shorter
+        // (later frames move with it, as with F5 / Shift+F5).
+        let span_end_at = |px: f32| layer.keyframes.iter().find(|k| k.end() > first && k.start <= first + visible_cols && (x_of(k.end()) - px).abs() <= 4.0).map(|k| (k.start, k.end()));
+        if cr.hovered() && app.tl_drag == TlDrag::None && cr.hover_pos().and_then(|p| span_end_at(p.x)).is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        if matches!(app.tl_drag, TlDrag::Span { .. }) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        if cr.drag_started()
+            && let Some(p) = ui.input(|inp| inp.pointer.press_origin())
+            && let Some((start, end)) = span_end_at(p.x)
+        {
+            app.playing = false;
+            app.tl_drag = TlDrag::Span { layer: layer.id, start, end, to: end };
+        }
+        let select_here = |app: &mut App, frame: u32| {
+            app.playing = false;
+            if app.s.layer != layer.id {
+                app.run("layer.select", json!({"layer": layer.id.0}));
+            }
+            app.run("timeline.goto", json!({"frame": frame}));
+        };
+        // Press on selected frames that hold keyframes: drag them. Elsewhere: select a range.
+        if cr.drag_started()
+            && app.tl_drag == TlDrag::None
+            && let Some(p) = ui.input(|inp| inp.pointer.press_origin())
+        {
+            let f = frame_at(p.x);
+            let grab = app.frame_sel.filter(|s| s.contains(&layers, i, f) && s.has_keys(&layers));
+            if grab.is_some() {
+                app.tl_drag = TlDrag::Move { grab: f, by: 0, grab_row: i, rows_by: 0 };
+            } else {
+                app.frame_sel = Some(FrameSel::cell(layer.id, f));
+                app.tl_drag = TlDrag::Select;
+                select_here(app, f);
+            }
+        }
+        if cr.dragged()
+            && let Some(p) = cr.interact_pointer_pos()
+        {
+            let f = frame_at(p.x);
+            match (app.tl_drag, app.frame_sel.as_mut()) {
+                (TlDrag::Select, Some(sel)) => {
+                    let r = ((p.y - rows_top) / ROW_H).floor().max(0.0) as usize + first_row;
+                    let row = r.min(layers.len().saturating_sub(1));
+                    if let Some(l) = layers.get(row) {
+                        sel.head = (l.id, f);
+                    }
+                }
+                (TlDrag::Move { grab, grab_row, .. }, Some(sel)) => {
+                    // Never before frame 1, and only onto layers that exist.
+                    let by = (i64::from(f) - i64::from(grab)).max(-i64::from(sel.frames().0));
+                    let row = ((p.y - rows_top) / ROW_H).floor() as i64 + first_row as i64;
+                    let rows_by = match sel.rows(&layers) {
+                        Some((a, b)) => (row - grab_row as i64).clamp(-(a as i64), layers.len() as i64 - 1 - b as i64),
+                        None => 0,
+                    };
+                    app.tl_drag = TlDrag::Move { grab, by, grab_row, rows_by };
+                }
+                (TlDrag::Span { layer: lid, start, end, .. }, _) => {
+                    // Snap to the nearest frame boundary; a span keeps at least one frame.
+                    let b = ((p.x - grid.left() - pad) / cell_w + scroll).round().max(0.0) as u32;
+                    app.tl_drag = TlDrag::Span { layer: lid, start, end, to: b.max(start + 1) };
+                }
+                _ => {}
+            }
+        }
+        if cr.drag_stopped()
+            && let TlDrag::Span { layer: lid, start: _, end, to } = app.tl_drag
+        {
+            let lid = lid.0;
+            if to > end {
+                app.request("timeline.insert_frame", json!({"layer": lid, "frame": end - 1, "count": to - end}));
+            } else if to < end {
+                app.request("timeline.remove_frame", json!({"layer": lid, "frame": to, "count": end - to}));
+            }
+            app.tl_drag = TlDrag::None;
+        }
+        if cr.drag_stopped() {
+            if let (TlDrag::Move { by, rows_by, .. }, Some(sel)) = (app.tl_drag, app.frame_sel)
+                && (by != 0 || rows_by != 0)
+            {
+                let (f0, f1) = sel.frames();
+                let ids: Vec<u64> = sel.layers(&layers).iter().map(|l| l.0).collect();
+                if app.run("timeline.move_keyframes", json!({"layers": ids, "from": f0, "to": f1, "by": by, "layer_by": rows_by})).is_some() {
+                    // The selection follows the frames: shifted in time and onto the target rows.
+                    let shift_by = |f: u32| (i64::from(f) + by).max(0) as u32;
+                    let row_of = |id: LayerId| layers.iter().position(|l| l.id == id).and_then(|r| layers.get((r as i64 + rows_by).max(0) as usize)).map_or(id, |l| l.id);
+                    app.frame_sel = Some(FrameSel { anchor: (row_of(sel.anchor.0), shift_by(sel.anchor.1)), head: (row_of(sel.head.0), shift_by(sel.head.1)) });
+                    let n = f1 - f0 + 1;
+                    let what = format!("{n} {}", if n == 1 { "frame" } else { "frames" });
+                    app.status_ok(match rows_by {
+                        0 => format!("Moved {what} by {by:+} — Ctrl+Z to undo"),
+                        r => format!("Moved {what} {} {} {} — Ctrl+Z to undo", r.abs(), if r.abs() == 1 { "layer" } else { "layers" }, if r < 0 { "up" } else { "down" }),
+                    });
+                    app.run("timeline.goto", json!({"frame": shift_by(app.s.frame)}));
+                    if rows_by != 0
+                        && let Some(&top) = sel.layers(&layers).first()
+                    {
+                        let target = row_of(top);
+                        app.run("layer.select", json!({"layer": target.0}));
+                    }
+                }
+            }
+            app.tl_drag = TlDrag::None;
+        }
+        if cr.clicked()
+            && let Some(p) = cr.interact_pointer_pos()
+        {
+            let f = frame_at(p.x);
+            match app.frame_sel.as_mut() {
+                Some(sel) if shift => sel.head = (layer.id, f),
+                _ => app.frame_sel = Some(FrameSel::cell(layer.id, f)),
+            }
+            select_here(app, f);
+        }
+        // Right-click: keep a selection under the pointer, else select that frame; then offer
+        // the frame actions (which act on the selection).
+        if cr.secondary_clicked()
+            && let Some(p) = cr.interact_pointer_pos()
+        {
+            let f = frame_at(p.x);
+            if !app.frame_sel.is_some_and(|s| s.contains(&layers, i, f)) {
+                app.frame_sel = Some(FrameSel::cell(layer.id, f));
+                select_here(app, f);
+            } else {
+                app.playing = false;
+            }
+        }
+        cr.context_menu(|ui| {
+            ui.set_min_width(220.0);
+            for id in ["timeline.insert_frame", "timeline.remove_frame", "timeline.insert_keyframe", "timeline.insert_blank_keyframe", "timeline.clear_keyframe"] {
+                menus::cmd_item(app, ui, id);
+            }
+            ui.separator();
+            for id in ["timeline.cut_frames", "timeline.copy_frames", "timeline.paste_frames"] {
+                menus::cmd_item(app, ui, id);
+            }
+            ui.separator();
+            let tween = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).and_then(|k| k.tween);
+            match tween {
+                Some(t) => {
+                    menus::cmd_item(app, ui, "timeline.remove_tween");
+                    ui.menu_button("Ease", |ui| {
+                        for (name, e) in Easing::PRESETS {
+                            if ui.selectable_label(t.easing == e, name).clicked() {
+                                app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+                None => menus::cmd_item(app, ui, "timeline.create_tween"),
+            }
+        });
+        painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, T.separator));
+    }
+    // Layout lines: layer list | frame grid, and the header above.
+    painter.line_segment([pos2(grid.left(), body.top()), pos2(grid.left(), body.bottom())], Stroke::new(1.0, T.border));
+    painter.line_segment([body.left_top(), body.right_top()], Stroke::new(1.0, T.border));
+
+    // end-of-timeline marker
+    let end_x = x_of(frames_total);
+    if end_x > grid.left() && end_x < grid.right() {
+        painter.line_segment([pos2(end_x, rows_top), pos2(end_x, body.bottom())], Stroke::new(1.0, T.text_faint.gamma_multiply(0.5)));
+    }
+
+    // playhead
+    let px = x_of(app.s.frame);
+    if px + cell_w > grid.left() && px < grid.right() {
+        // The same pixel as the ruler tick for this frame.
+        let cx = frame_center(px, cell_w);
+        // The flag fits its number; it never grows with the zoom.
+        let label = (app.s.frame + 1).to_string();
+        let tw = painter.layout_no_wrap(label.clone(), font(Type::DataSmall), Color32::WHITE).rect.width();
+        let head = Rect::from_center_size(pos2(cx, ruler.center().y), vec2((tw + 8.0).max(HEAD_W), RULER_H - 4.0));
+        // The frame's band, centred on the same pixel column as the line and the flag: an odd
+        // whole-pixel width around a half-pixel centre puts both edges on pixel boundaries,
+        // equally far from the line.
+        let band = (cell_w.round() as i32 | 1) as f32;
+        painter.with_clip_rect(grid).rect_filled(Rect::from_min_max(pos2(cx - band * 0.5, rows_top), pos2(cx + band * 0.5, body.bottom())), 0.0, T.playhead.gamma_multiply(0.12));
+        painter.with_clip_rect(grid).line_segment([pos2(cx, ruler.bottom()), pos2(cx, body.bottom())], Stroke::new(1.5, T.playhead));
+        painter.with_clip_rect(grid).rect_filled(head, T.rc(), T.playhead);
+        painter.with_clip_rect(grid).text(head.center(), Align2::CENTER_CENTER, label, font(Type::DataSmall), Color32::WHITE);
+    }
+
+    // footer buttons for layers
+    let footer = Rect::from_min_max(pos2(body.left(), body.bottom() - FOOTER_H), pos2(grid.left(), body.bottom()));
+    if n_layers > rows_visible {
+        let more = format!("{}–{} of {} layers", first_row + 1, (first_row + rows_visible).min(n_layers), n_layers);
+        painter.text(pos2(grid.left() - 8.0, footer.top() - 4.0), Align2::RIGHT_BOTTOM, more, font(Type::Caption), color(Type::Caption));
+    }
+    {
+        painter.rect_filled(footer, 0.0, T.panel_alt);
+        painter.line_segment([footer.left_top(), footer.right_top()], Stroke::new(1.0, T.border));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(footer.shrink2(vec2(8.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        if child.button("+ Layer").on_hover_text("New layer").clicked() {
+            app.run("layer.new", json!({}));
+        }
+        if child.add_enabled(layers.len() > 1, egui::Button::new("Delete")).on_hover_text("Delete the active layer").clicked() {
+            app.request("layer.delete", json!({}));
+        }
+        if child.button("Up").clicked() {
+            app.run("layer.move_up", json!({}));
+        }
+        if child.button("Down").clicked() {
+            app.run("layer.move_down", json!({}));
+        }
+    }
+
+    // Horizontal scrollbar under the frames: the thumb is the visible part of the timeline.
+    let bar = Rect::from_min_max(pos2(grid.left(), body.bottom() - FOOTER_H), body.right_bottom());
+    painter.rect_filled(bar, 0.0, T.panel_alt);
+    painter.line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, T.border));
+    let track = bar.shrink2(vec2(10.0, (FOOTER_H - 12.0) * 0.5));
+    let content = (frames_total + 30).max(visible_cols) as f32;
+    let frac = (visible_cols as f32 / content).clamp(0.05, 1.0);
+    let thumb_w = (track.width() * frac).max(TARGET);
+    let travel = (track.width() - thumb_w).max(1.0);
+    let max_s = (content - visible_cols as f32).max(0.0);
+    let t = if max_s > 0.0 { (app.tl_scroll / max_s).clamp(0.0, 1.0) } else { 0.0 };
+    let thumb = Rect::from_min_size(pos2(track.left() + t * travel, track.top()), vec2(thumb_w, track.height()));
+    let sr = ui.interact(bar, ui.id().with("tl_hscroll"), Sense::click_and_drag());
+    if sr.dragged() && max_s > 0.0 {
+        app.tl_scroll = (app.tl_scroll + sr.drag_delta().x / travel * max_s).clamp(0.0, max_s);
+    } else if sr.clicked()
+        && let Some(p) = sr.interact_pointer_pos()
+        && max_s > 0.0
+    {
+        // A click on the track pages to that spot.
+        app.tl_scroll = (((p.x - track.left() - thumb_w * 0.5) / travel) * max_s).clamp(0.0, max_s);
+    }
+    painter.rect_filled(track, T.rc(), T.field);
+    painter.rect_filled(thumb, T.rc(), if sr.hovered() || sr.dragged() { T.control_edge } else { T.hover });
+    sr.on_hover_text("Scroll the timeline (or Shift+wheel anywhere over it)");
+}
+
+/// Engine param for an easing preset.
+pub fn easing_param(e: Easing) -> serde_json::Value {
+    match e {
+        Easing::Linear => json!("Linear"),
+        Easing::QuadIn => json!("QuadIn"),
+        Easing::QuadOut => json!("QuadOut"),
+        Easing::QuadInOut => json!("QuadInOut"),
+        Easing::CubicIn => json!("CubicIn"),
+        Easing::CubicOut => json!("CubicOut"),
+        Easing::CubicInOut => json!("CubicInOut"),
+        Easing::Classic(s) => json!({"classic": s}),
+        Easing::CubicBezier(a, b, c, d) => json!({"bezier": [a, b, c, d]}),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layers(n: u64) -> Vec<Arc<Layer>> {
+        (1..=n).map(|i| Arc::new(Layer::new(LayerId(i), format!("L{i}")))).collect()
+    }
+
+    #[test]
+    fn the_playhead_flag_fits_at_frame_one_at_every_zoom_and_padding_stays_small() {
+        let left = 100.0;
+        let mut cw = *CELL_RANGE.start();
+        while cw <= *CELL_RANGE.end() {
+            let pad = start_pad(cw, 0.0);
+            // Frame 1's centre, as the ruler and the playhead draw it.
+            let c = frame_center(left + pad, cw);
+            assert!(c - HEAD_W * 0.5 >= left - 0.5, "flag clipped at cell width {cw}: centre {c}");
+            // The padding is room for the flag, not a frame's worth that grows with the zoom.
+            assert!(pad <= HEAD_W * 0.5 + 1.0, "pad {pad} at cell width {cw}");
+            cw += 0.5;
+        }
+        assert_eq!(start_pad(48.0, 0.0), 1.0, "wide frames need only a hairline");
+        assert_eq!(start_pad(48.0, 10.0), 11.0, "the preference adds points");
+    }
+
+    #[test]
+    fn ticks_and_the_playhead_share_a_pixel_column() {
+        // Same cell, same column, whatever the fractional position or width.
+        for (x, cw) in [(100.3, 12.0), (99.9, 7.5), (250.49, 3.0), (10.0, 47.25)] {
+            let c = frame_center(x, cw);
+            assert_eq!(c.fract(), 0.5, "centred on a pixel");
+            assert!((c - (x + cw * 0.5)).abs() <= 1.0);
+        }
+    }
+
+    #[test]
+    fn a_selection_spans_rows_and_frames_in_either_direction() {
+        let ls = layers(4);
+        // Dragged up and to the left.
+        let sel = FrameSel { anchor: (LayerId(3), 9), head: (LayerId(2), 4) };
+        assert_eq!(sel.frames(), (4, 9));
+        assert_eq!(sel.layers(&ls), vec![LayerId(2), LayerId(3)]);
+        assert!(sel.contains(&ls, 1, 4) && sel.contains(&ls, 2, 9));
+        assert!(!sel.contains(&ls, 0, 5) && !sel.contains(&ls, 1, 10));
+        // Each new layer has one keyframe at frame 0.
+        assert!(!sel.has_keys(&ls));
+        assert!(FrameSel::cell(LayerId(1), 0).has_keys(&ls));
+        // A deleted layer invalidates the selection.
+        assert!(FrameSel { anchor: (LayerId(9), 0), head: (LayerId(1), 0) }.layers(&ls).is_empty());
+    }
+}

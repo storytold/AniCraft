@@ -1,0 +1,9 @@
+# Normalise line endings in the repository; check out with the platform's native endings.
+* text=auto
+*.rs text diff=rust
+*.toml text
+*.md text
+*.json text
+*.png binary
+# shell hooks must keep LF endings or /bin/sh rejects them
+scripts/git-hooks/* text eol=lf

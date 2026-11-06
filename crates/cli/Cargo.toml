@@ -1,0 +1,25 @@
+[package]
+name = "anicraft-cli"
+description = "AniCraft L4: headless CLI and JSON-lines control channel for agents and pipelines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "anicraft-cli"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anicraft-doc.workspace = true
+anicraft-engine.workspace = true
+anicraft-render.workspace = true
+anicraft-geom.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

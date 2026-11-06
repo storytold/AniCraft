@@ -1,0 +1,149 @@
+//! Which commands need the user's confirmation, and why (ADR 0004).
+//!
+//! The rules live in the engine so every front end (desktop, CLI, agents) is equally safe:
+//! irreversible actions are refused unless the params carry `"confirm": true`.
+
+use crate::Session;
+use anicraft_doc::{Keyframe, Layer, LayerId};
+use serde_json::Value;
+use std::path::Path;
+
+/// A confirmation the user must give before a command runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Confirmation {
+    pub title: String,
+    pub message: String,
+    /// Label for the destructive button, e.g. "Delete Layer".
+    pub action: String,
+    /// True when undo cannot bring the loss back (unsaved work, files on disk).
+    pub irreversible: bool,
+}
+
+/// Whether the params carry an explicit confirmation.
+pub fn confirmed(p: &Value) -> bool {
+    p.get("confirm").and_then(Value::as_bool) == Some(true)
+}
+
+fn doc_name(s: &Session) -> String {
+    s.path.as_ref().and_then(|p| p.file_name()).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+fn layer_content(l: &Layer) -> (usize, usize) {
+    let keys = l.keyframes.iter().filter(|k| !k.elements.is_empty()).count();
+    let elements = l.keyframes.iter().map(|k| k.elements.len()).sum();
+    (keys, elements)
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
+}
+
+fn target_layer<'a>(s: &'a Session, p: &Value) -> Option<&'a Layer> {
+    let id = p.get("layer").and_then(Value::as_u64).map_or(s.layer, LayerId);
+    s.doc.timeline.layer(id)
+}
+
+fn target_frame(s: &Session, p: &Value) -> u32 {
+    p.get("frame").and_then(Value::as_u64).and_then(|f| u32::try_from(f).ok()).unwrap_or(s.frame)
+}
+
+fn target_count(p: &Value) -> u32 {
+    p.get("count").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()).unwrap_or(1).max(1)
+}
+
+/// Keyframes with artwork that `hit` selects on the target layers (`layers` or `layer`), as
+/// `(layer name, element count)`.
+fn lost_keys(s: &Session, p: &Value, hit: impl Fn(&Keyframe) -> bool) -> Vec<(String, usize)> {
+    let ids: Vec<LayerId> = match p.get("layers").and_then(Value::as_array) {
+        Some(v) => v.iter().filter_map(Value::as_u64).map(LayerId).take(1000).collect(),
+        None => vec![p.get("layer").and_then(Value::as_u64).map_or(s.layer, LayerId)],
+    };
+    ids.iter()
+        .filter_map(|id| s.doc.timeline.layer(*id))
+        .flat_map(|l| l.keyframes.iter().filter(|k| !k.elements.is_empty() && hit(k)).map(|k| (l.name.clone(), k.elements.len())))
+        .collect()
+}
+
+fn overwrite(path: &Path, what: &str) -> Confirmation {
+    Confirmation {
+        title: "Replace existing file?".into(),
+        message: format!("{} already exists. {what} will replace it; this cannot be undone.", path.display()),
+        action: "Replace".into(),
+        irreversible: true,
+    }
+}
+
+/// The confirmation `id` with `p` needs right now, if any.
+pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
+    match id {
+        "file.new" | "file.new_sample" | "file.open" if s.is_dirty() => Some(Confirmation {
+            title: "Discard unsaved changes?".into(),
+            message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
+            action: "Discard Changes".into(),
+            irreversible: true,
+        }),
+        "file.save" | "file.save_as" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            let same = s.path.as_deref() == Some(path);
+            (!same && path.exists()).then(|| overwrite(path, "Saving"))
+        }
+        "file.export_png" | "file.export_gif" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            path.exists().then(|| overwrite(path, "Exporting"))
+        }
+        "file.export_png_sequence" => {
+            let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
+            let has_frames = std::fs::read_dir(dir).ok()?.take(10_000).flatten().any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with("frame_") && n.ends_with(".png")
+            });
+            has_frames.then(|| Confirmation {
+                title: "Replace exported frames?".into(),
+                message: format!("{} already contains exported frames. Matching files will be replaced; this cannot be undone.", dir.display()),
+                action: "Replace".into(),
+                irreversible: true,
+            })
+        }
+        "layer.delete" => {
+            let l = target_layer(s, p)?;
+            let (keys, elements) = layer_content(l);
+            (elements > 0).then(|| Confirmation {
+                title: "Delete layer?".into(),
+                message: format!("Layer “{}” has {} with {}. You can undo this.", l.name, plural(keys, "keyframe"), plural(elements, "element")),
+                action: "Delete Layer".into(),
+                irreversible: false,
+            })
+        }
+        "timeline.clear_keyframe" => {
+            let (f, n) = (target_frame(s, p), target_count(p));
+            let lost = lost_keys(s, p, |k| k.start >= f && k.start - f < n);
+            let (keys, elements) = (lost.len(), lost.iter().map(|(_, e)| e).sum::<usize>());
+            (elements > 0).then(|| Confirmation {
+                title: if keys == 1 { "Clear keyframe?".into() } else { "Clear keyframes?".into() },
+                message: match lost.as_slice() {
+                    [(name, e)] if n == 1 => format!("The keyframe at frame {} on “{name}” holds {}. You can undo this.", f + 1, plural(*e, "element")),
+                    _ => format!("The selected frames hold {} with {}. You can undo this.", plural(keys, "keyframe"), plural(elements, "element")),
+                },
+                action: if keys == 1 { "Clear Keyframe".into() } else { "Clear Keyframes".into() },
+                irreversible: false,
+            })
+        }
+        "timeline.remove_frame" => {
+            // A keyframe whose whole span is removed takes its artwork with it.
+            let (f, n) = (target_frame(s, p), target_count(p));
+            let lost = lost_keys(s, p, |k| k.start >= f && k.end() <= f.saturating_add(n));
+            let (keys, elements) = (lost.len(), lost.iter().map(|(_, e)| e).sum::<usize>());
+            (elements > 0).then(|| Confirmation {
+                title: if n == 1 { "Remove frame?".into() } else { "Remove frames?".into() },
+                message: match lost.as_slice() {
+                    [(name, e)] if n == 1 => format!("Frame {} is a one-frame keyframe on “{name}” with {}; removing it deletes that artwork. You can undo this.", f + 1, plural(*e, "element")),
+                    _ => format!("Removing these frames deletes {} with {}. You can undo this.", plural(keys, "keyframe"), plural(elements, "element")),
+                },
+                action: if n == 1 { "Remove Frame".into() } else { "Remove Frames".into() },
+                irreversible: false,
+            })
+        }
+        _ => None,
+    }
+}

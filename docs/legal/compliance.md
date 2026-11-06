@@ -1,0 +1,110 @@
+# Legal compliance: licences, dependencies, assets, patents and trademarks
+
+> This is an engineering compliance record, not legal advice. Before the first public release,
+> have counsel review it, especially the patent and format sections and the open items at the
+> end.
+
+## 1. Our licence
+
+AniCraft is **MIT OR Apache-2.0**, the same as its sibling PhotoCraft (`LICENSE-MIT`,
+`LICENSE-APACHE`, `NOTICE`; every crate declares `license.workspace = true`).
+
+* Dual licensing is the Rust-ecosystem norm. It is compatible with GPLv2 users (MIT) and
+  provides an **express patent licence and patent-retaliation clause** (Apache-2.0 §3) from
+  every contributor.
+* Contributions are inbound = outbound (accepted under the same dual licence; see
+  `docs/contributing.md` when it lands). A CLA is not needed for this model.
+* All crates are `publish = false` until publishing is approved.
+
+## 2. Dependency policy (enforced)
+
+Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD, BSL-1.0,
+Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
+`epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
+"source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed
+(no unknown registries or git).
+
+```sh
+cargo deny check licenses bans sources   # policy in deny.toml; must pass before every commit
+cargo deny check advisories              # RustSec security advisories (needs network)
+```
+
+### Audit result, 2026-10-28 (Cargo.lock at this commit)
+
+* **licenses ok, bans ok, sources ok**: about 420 crates across Windows, macOS, Linux, Android
+  and wasm targets.
+* Every crate is permissive. Crates that *offer* a copyleft alternative are used under the
+  permissive one:
+
+| Crate | Declared | Elected |
+|---|---|---|
+| `self_cell` 1.3 | Apache-2.0 OR GPL-2.0-only | Apache-2.0 |
+| `r-efi` 5.3 / 6.0 (UEFI target only, never compiled for our platforms) | MIT OR Apache-2.0 OR LGPL-2.1-or-later | MIT |
+
+* Full per-crate list: [`third-party-inventory.txt`](third-party-inventory.txt) (regenerate when
+  `Cargo.lock` changes).
+
+## 3. Fonts, graphics and other assets
+
+* **Fonts**: only the four fonts embedded by egui (`epaint_default_fonts`): Ubuntu Light
+  (Ubuntu Font Licence 1.0), Hack (MIT + Bitstream Vera), Noto Emoji (OFL 1.1) and
+  emoji-icon-font (MIT). All permit embedding and redistribution in commercial and
+  non-commercial software. Restrictions apply only to *modifying and renaming the fonts*,
+  which we do not do. Their licence texts ship in `licenses/fonts/`.
+  * Primary UI typefaces (ADR 0005): Inter and JetBrains Mono, SIL OFL 1.1, embedded from the
+    shared `craft-fonts` build input (`CRAFT_FONTS_DIR`), as in PhotoCraft. Font rule: fonts must
+    be permissive in use (OFL, MIT, Apache, UFL-style), bundled rather than relying on system
+    fonts, and small (≤ 2.5 MB embedded in total). **No font files are committed to this
+    repository.**
+* **User-selected system fonts** (Preferences › Appearance) are read at runtime from the user's
+  own OS installation and never bundled or redistributed by AniCraft, so their licences do not
+  bind our distribution. Enumeration uses `fontdb` (MIT).
+* **Platform crates** added for ADR 0006: `rfd` (MIT, native file dialogs), eframe's `glow`
+  OpenGL fallback (`glow`, `glutin`: MIT OR Apache-2.0). The `directories` crate was rejected
+  because its dependency `option-ext` is MPL-2.0; the settings folder is resolved in our own
+  code.
+* **Icons and UI graphics**: drawn in code by AniCraft contributors (no icon packs, no
+  vendor-derived glyphs).
+* **Sample content**: generated in code. Screenshots in docs contain only our UI and sample.
+* **Never** commit Adobe material: icons, workspace layouts copied pixel-for-pixel, preset
+  files, sample `.fla`, brushes or fonts.
+
+## 4. Patents and file formats
+
+| Area | Assessment | Policy |
+|---|---|---|
+| Rendering algorithms (coverage accumulation, Bézier flattening, Porter–Duff, gradients) | Decades-old published techniques. The coverage approach is from Apache-2.0 open source (font-rs), whose licence includes a patent grant. | Implement from public papers and permissively licensed references only; credit them in `ATTRIBUTION.md`. |
+| Animation features (keyframes, classic tweens, easing, onion skin, symbols) | Long-standing prior art in animation software since the 1990s. | No feature copies a specific proprietary implementation. |
+| GPU renderer (M3) | Planned design follows published, Apache/MIT-licensed work (e.g. Vello's sparse strips). | Same rule: public papers and permissive code only. |
+| PNG, GIF, SVG, WebP | Royalty-free (GIF's LZW patents expired in 2003–2004). | OK to implement. |
+| **Video export** | H.264/HEVC/AAC are covered by patent pools. VP9, AV1 and Opus are royalty-free. | **Never bundle encoders for patent-pool codecs.** MP4/H.264 only by piping to a user-installed ffmpeg. Default to WebM (VP9/AV1). |
+| **XFL / FLA import** (M4) | Adobe's proprietary formats, without a public specification. | Clean room: work only from files users or we author, public community docs and observation. Never use Adobe code, SDKs or decompiled software. Interoperability-focused (generally protected in EU Software Directive art. 6 and US DMCA §1201(f)); **confirm with counsel before shipping**. |
+| SWF export (optional) | Adobe published the SWF specification and lifted its use restrictions in 2009 (Open Screen Project). | Allowed, low priority. |
+| Lottie | Open specification (Lottie Animation Community, Linux Foundation). | Allowed. |
+
+## 5. Trademarks
+
+* "Adobe", "Animate" and "Flash" are Adobe trademarks. We use them only *nominatively* in docs
+  ("compatible with…", "competitor to…") and in the non-affiliation disclaimer of the legal
+  notices (`NOTICE`, Help › Licenses & Notices). Never in the product name, feature UI, icons
+  or marketing imagery, and never implying endorsement.
+* "AniCraft": a trademark clearance search has not been done yet (open item below).
+
+## 6. Release checklist (before any public binary)
+
+1. `cargo deny check licenses bans sources advisories` passes.
+2. Generate the full third-party licence texts for the shipped binary (for example with
+   `cargo about generate`; the tool is not yet installed here) and ship them as
+   `THIRD_PARTY_LICENSES.html` next to `LICENSE-*`, `NOTICE` and `licenses/`.
+3. Help › Licenses & Notices in the app shows the same information (already present).
+4. Re-check `ATTRIBUTION.md` against every asset in the build.
+5. Counsel sign-off on the open items.
+
+## 7. Open items
+
+| Item | Status |
+|---|---|
+| Counsel review of this document (patents, XFL interoperability) | Open, before the first public release |
+| "AniCraft" trademark clearance | Open |
+| Freedom-to-operate patent search for core animation features | Open (recommended before 1.0) |
+| Full licence-text bundle generation (`cargo about`) in the release pipeline | Open (M8) |

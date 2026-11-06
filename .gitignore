@@ -1,0 +1,14 @@
+# build output
+/target/
+
+# generated screenshots and exports (regenerate with --screenshot / anicraft-cli)
+/shots/
+/frames/
+*.anicraft.tmp
+
+# editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

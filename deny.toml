@@ -1,0 +1,49 @@
+# cargo-deny policy: every dependency must be permissively licensed, come from crates.io and
+# carry no copyleft obligation on AniCraft. Run:  cargo deny check licenses bans sources
+# (and `cargo deny check advisories` when online). See docs/legal/compliance.md.
+
+[graph]
+# Check every platform we ship (Windows, macOS, Linux, wasm), not just the host.
+all-features = false
+
+[licenses]
+# Permissive licenses only. Where a crate offers a choice ("MIT OR GPL"), cargo-deny picks the
+# permissive one; nothing in our tree is accepted under a copyleft term.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.93
+
+# Font licenses are allowed only for the crate that embeds egui's default UI fonts.
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]
+
+[licenses.private]
+# Our own workspace crates are MIT OR Apache-2.0 (checked by `cargo deny` like any other crate).
+ignore = false
+
+[bans]
+multiple-versions = "allow"
+# Path dependencies inside the workspace have no version; that is fine for unpublished crates.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+# Fetched from the RustSec database when online.
+yanked = "warn"
