@@ -89,7 +89,7 @@ pub enum TlDrag {
 /// Range params for the frame commands when frames are selected: `{layers, frame, count}`.
 pub fn range_params(app: &App) -> Option<serde_json::Value> {
     let sel = app.frame_sel?;
-    let layers = sel.layers(&app.s.doc.timeline.layers);
+    let layers = sel.layers(&app.s.doc.timeline(app.s.scene).layers);
     if layers.is_empty() {
         return None;
     }
@@ -104,7 +104,7 @@ pub const RANGE_COMMANDS: [&str; 7] = ["timeline.insert_frame", "timeline.remove
 /// Params for Paste Frames: the selection's top layer and first frame.
 pub fn paste_params(app: &App) -> Option<serde_json::Value> {
     let sel = app.frame_sel?;
-    let top = *sel.layers(&app.s.doc.timeline.layers).first()?;
+    let top = *sel.layers(&app.s.doc.timeline(app.s.scene).layers).first()?;
     Some(json!({"layer": top.0, "frame": sel.frames().0}))
 }
 
@@ -222,7 +222,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // A frame selection lives while the playhead is inside it and its layers exist.
     if let Some(sel) = app.frame_sel {
         let (f0, f1) = sel.frames();
-        let gone = sel.layers(&app.s.doc.timeline.layers).is_empty();
+        let gone = sel.layers(&app.s.doc.timeline(app.s.scene).layers).is_empty();
         if gone || app.playing || (app.tl_drag == TlDrag::None && !(f0..=f1).contains(&app.s.frame)) {
             app.frame_sel = None;
         }
@@ -262,7 +262,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // sideways wheels / trackpad swipes scroll the frames (egui turns Shift+wheel into a
     // horizontal delta). Anywhere over the timeline, rows and cells included. Only visible
     // rows and columns are painted, so cost is independent of document size.
-    let n_layers = app.s.doc.timeline.layers.len();
+    let n_layers = app.s.doc.timeline(app.s.scene).layers.len();
     let rows_visible = ((body.height() - RULER_H - FOOTER_H) / ROW_H).floor().max(1.0) as usize;
     if ui.rect_contains_pointer(body) {
         let d = ui.input(|i| i.smooth_scroll_delta);
@@ -330,7 +330,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
 
     // rows
-    let layers = app.s.doc.timeline.layers.clone();
+    let layers = app.s.doc.timeline(app.s.scene).layers.clone();
     let active = app.s.layer;
     let rows_top = ruler.bottom();
     let rows_bottom = body.bottom() - FOOTER_H;
@@ -415,7 +415,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if menus::check_item(ui, "Mask", layer.kind == LayerKind::Mask, true) {
                 app.run("layer.toggle_mask", json!({"layer": layer.id.0}));
             }
-            let can_mask = layer.kind == LayerKind::Normal && app.s.doc.timeline.mask_above(i).is_some();
+            let can_mask = layer.kind == LayerKind::Normal && app.s.doc.timeline(app.s.scene).mask_above(i).is_some();
             if menus::check_item(ui, "Masked", layer.parent.is_some(), can_mask || layer.parent.is_some()) {
                 let ty = if layer.parent.is_some() { "normal" } else { "masked" };
                 app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));

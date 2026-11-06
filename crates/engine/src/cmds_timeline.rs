@@ -50,11 +50,11 @@ pub fn specs() -> Vec<CommandSpec> {
 /// mask back into a normal layer (its masked layers become normal too).
 fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let is_mask = s.doc.timeline.layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?.kind == LayerKind::Mask;
+    let is_mask = s.doc.timeline(s.scene).layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?.kind == LayerKind::Mask;
     let ty = if is_mask { "normal" } else { "mask" };
     set_type(s, id, ty)?;
     if !is_mask {
-        let tl = &mut s.doc.timeline;
+        let tl = s.doc.timeline_mut(s.scene);
         if let Some(i) = tl.layers.iter().position(|l| l.id == id)
             && let Some(below) = tl.layers.get_mut(i + 1)
             && below.kind == LayerKind::Normal
@@ -73,7 +73,7 @@ fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
-    let tl = &mut s.doc.timeline;
+    let tl = s.doc.timeline_mut(s.scene);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let (kind, parent) = match ty {
         "normal" => (LayerKind::Normal, None),
@@ -93,7 +93,7 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
 }
 
 fn layer_type_json(s: &Session, id: LayerId) -> Value {
-    let Some(l) = s.doc.timeline.layer(id) else { return json!({}) };
+    let Some(l) = s.doc.timeline(s.scene).layer(id) else { return json!({}) };
     let ty = match (l.kind, l.parent) {
         (LayerKind::Mask, _) => "mask",
         (LayerKind::Guide, _) => "guide",
@@ -121,7 +121,7 @@ pub(crate) fn target_layers(s: &Session, p: &Value) -> Result<Vec<LayerId>> {
     };
     let mut out: Vec<LayerId> = Vec::with_capacity(ids.len());
     for id in ids {
-        if s.doc.timeline.layer(id).is_none() {
+        if s.doc.timeline(s.scene).layer(id).is_none() {
             return Err(EngineError::State(format!("no layer with id {}", id.0)));
         }
         if !out.contains(&id) {
@@ -210,7 +210,7 @@ pub(crate) fn remove_frame(s: &mut Session, p: &Value) -> Result<Value> {
     }
     match (removed, first_err) {
         (0, Some(e)) => Err(e),
-        _ => Ok(json!({"removed": removed, "frames": s.doc.frame_count()})),
+        _ => Ok(json!({"removed": removed, "frames": s.frame_count()})),
     }
 }
 
@@ -351,7 +351,7 @@ fn move_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
 /// keep their content. Lifting everything before placing anything makes overlapping row
 /// ranges (dragging two rows down by one) come out right.
 fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, layer_by: i64) -> Result<Value> {
-    let order: Vec<LayerId> = s.doc.timeline.layers.iter().map(|l| l.id).collect();
+    let order: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).collect();
     let mut rows: Vec<usize> = target_layers(s, p)?.iter().filter_map(|id| order.iter().position(|o| o == id)).collect();
     rows.sort_unstable();
     let mut plan = Vec::with_capacity(rows.len());
@@ -522,23 +522,23 @@ fn step(s: &mut Session, d: i64) -> Result<Value> {
 }
 
 pub(crate) fn new_layer(s: &mut Session, p: &Value) -> Result<Value> {
-    let n = s.doc.timeline.layers.len() + 1;
+    let n = s.doc.timeline(s.scene).layers.len() + 1;
     let name = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| format!("Layer {n}"));
-    if s.doc.timeline.layers.len() >= 1000 {
+    if s.doc.timeline(s.scene).layers.len() >= 1000 {
         return Err(EngineError::State("too many layers (limit 1000)".into()));
     }
     let id = LayerId(s.doc.alloc_id());
     let mut layer = Layer::new(id, name);
     // Match the timeline length so the new layer spans the existing frames.
     if let Some(k) = layer.keyframe_mut(0) {
-        k.duration = s.doc.frame_count().max(1);
+        k.duration = s.frame_count().max(1);
     }
     let palette = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
     layer.color = anicraft_doc::Rgba::hex(palette[n % palette.len()]);
     let at = s.active_layer_index().unwrap_or(0);
     // Added above a masked layer, it lands inside the mask's group, so it is masked too.
-    layer.parent = s.doc.timeline.layers.get(at).and_then(|l| l.parent);
-    s.doc.timeline.layers.insert(at, Arc::new(layer));
+    layer.parent = s.doc.timeline(s.scene).layers.get(at).and_then(|l| l.parent);
+    s.doc.timeline_mut(s.scene).layers.insert(at, Arc::new(layer));
     s.layer = id;
     s.selection.clear();
     Ok(json!({"layer": id.0}))
@@ -546,16 +546,16 @@ pub(crate) fn new_layer(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    if s.doc.timeline.layers.len() <= 1 {
+    if s.doc.timeline(s.scene).layers.len() <= 1 {
         return Err(EngineError::State("a document needs at least one layer".into()));
     }
-    let i = s.doc.timeline.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
-    s.doc.timeline.layers.remove(i);
+    let i = s.doc.timeline(s.scene).layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+    s.doc.timeline_mut(s.scene).layers.remove(i);
     // Layers masked by a deleted mask become normal layers.
-    s.doc.timeline.repair_masks();
+    s.doc.timeline_mut(s.scene).repair_masks();
     if s.layer == id {
-        let j = i.min(s.doc.timeline.layers.len() - 1);
-        s.layer = s.doc.timeline.layers.get(j).map_or(LayerId(0), |l| l.id);
+        let j = i.min(s.doc.timeline(s.scene).layers.len() - 1);
+        s.layer = s.doc.timeline(s.scene).layers.get(j).map_or(LayerId(0), |l| l.id);
         s.selection.clear();
     }
     Ok(json!({"deleted": id.0}))
@@ -583,11 +583,11 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = if let Some(id) = opt_u64(p, "layer")? {
         LayerId(id)
     } else if let Some(i) = opt_u64(p, "index")? {
-        usize::try_from(i).ok().and_then(|i| s.doc.timeline.layers.get(i)).map(|l| l.id).ok_or_else(|| EngineError::Param("layer index out of range".into()))?
+        usize::try_from(i).ok().and_then(|i| s.doc.timeline(s.scene).layers.get(i)).map(|l| l.id).ok_or_else(|| EngineError::Param("layer index out of range".into()))?
     } else {
         return Err(EngineError::Param("pass {\"layer\": id} or {\"index\": n}".into()));
     };
-    if s.doc.timeline.layer(id).is_none() {
+    if s.doc.timeline(s.scene).layer(id).is_none() {
         return Err(EngineError::State(format!("no layer with id {}", id.0)));
     }
     if s.layer != id {
@@ -603,7 +603,7 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
 /// frees it.
 fn move_layer(s: &mut Session, p: &Value, d: i64) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = &mut s.doc.timeline;
+    let tl = s.doc.timeline_mut(s.scene);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let n = tl.layers.len();
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Mask) {

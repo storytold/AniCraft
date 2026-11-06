@@ -81,11 +81,11 @@ fn copy_frames(s: &mut Session, p: &Value) -> Result<Value> {
     let count = count_param(p)?;
     let mut ids = target_layers(s, p)?;
     // Top to bottom, whatever order the params gave.
-    let order: Vec<LayerId> = s.doc.timeline.layers.iter().map(|l| l.id).collect();
+    let order: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).collect();
     ids.sort_by_key(|id| order.iter().position(|o| o == id));
     let mut layers = Vec::with_capacity(ids.len());
     for id in ids {
-        let l = s.doc.timeline.layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+        let l = s.doc.timeline(s.scene).layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
         layers.push(FrameSlice { name: l.name.clone(), keys: slice(l, frame, count)? });
     }
     let clip = FrameClipboard { layers, count, symbols: Vec::new() };
@@ -112,17 +112,17 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
     let (top, frame) = target(s, p)?;
     let top = top.unwrap_or(s.layer);
     let clip = s.frame_clipboard.clone();
-    if frame.saturating_add(clip.count) > MAX_FRAME || s.doc.frame_count().saturating_add(clip.count) > MAX_FRAME {
+    if frame.saturating_add(clip.count) > MAX_FRAME || s.frame_count().saturating_add(clip.count) > MAX_FRAME {
         return Err(EngineError::State("the timeline would grow past its maximum length".into()));
     }
-    let mut row = s.doc.timeline.layers.iter().position(|l| l.id == top).ok_or_else(|| EngineError::State(format!("no layer with id {}", top.0)))?;
+    let mut row = s.doc.timeline(s.scene).layers.iter().position(|l| l.id == top).ok_or_else(|| EngineError::State(format!("no layer with id {}", top.0)))?;
     import_symbols(s, &clip.symbols);
     let mut remap: HashMap<ElementId, ElementId> = HashMap::new();
     let mut pasted = Vec::new();
     for sl in &clip.layers {
         // Missing layers below are created, named after the copied ones.
-        if s.doc.timeline.layers.get(row).is_none() {
-            if s.doc.timeline.layers.len() >= 1000 {
+        if s.doc.timeline(s.scene).layers.get(row).is_none() {
+            if s.doc.timeline(s.scene).layers.len() >= 1000 {
                 return Err(EngineError::State("too many layers (limit 1000)".into()));
             }
             let id = LayerId(s.doc.alloc_id());
@@ -131,7 +131,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
                 // The pasted keys are its frames (no stray blank frame at 1).
                 l.keyframes.clear();
             }
-            s.doc.timeline.layers.push(Arc::new(l));
+            s.doc.timeline_mut(s.scene).layers.push(Arc::new(l));
         }
         let mut keys = Vec::with_capacity(sl.keys.len());
         for k in &sl.keys {
@@ -144,7 +144,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
             }
             keys.push(Arc::new(k));
         }
-        let Some(layer) = s.doc.timeline.layers.get_mut(row).map(Arc::make_mut) else { continue };
+        let Some(layer) = s.doc.timeline_mut(s.scene).layers.get_mut(row).map(Arc::make_mut) else { continue };
         if layer.keyframe_index_at(frame).is_some() {
             insert_keyframe_at(layer, frame, true)?;
         }

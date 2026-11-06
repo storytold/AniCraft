@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* **Scenes** (Insert › Scene; the scene menu at the top left of the stage): a movie is now a
+  list of scenes that play in order, each with its own timeline. Switch scenes from the menu
+  or with Shift+Page Up / Shift+Page Down. Add, duplicate, rename, reorder and delete scenes
+  there or under Modify › Scene; deleting a scene with artwork asks first, and undo brings it
+  back. PNG sequences and GIFs export the whole movie; single-frame exports use the scene
+  you're in. Animate documents now import every scene, not just the first. Files are saved as
+  format v3, and older files open as one scene.
+
 * **Shape tweens** (Insert › Create Shape Tween, the timeline's Shape Tween button and
   right-click menus): one shape morphs into another between two keyframes, even with a
   different structure (a square into a star, one blob into two). Shape tweens show amber on the

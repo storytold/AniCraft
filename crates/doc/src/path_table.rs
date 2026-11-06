@@ -31,12 +31,12 @@ impl Drop for Guard {
     }
 }
 
-/// Every distinct path of `doc` (main timeline and library), in first-use order. Walking the
+/// Every distinct path of `doc` (scenes and library), in first-use order. Walking the
 /// tree up front lets a writer emit the table *before* the document, so readers can stream.
 pub fn build_table(doc: &Document) -> Vec<Arc<Path>> {
     let mut seen: HashMap<usize, ()> = HashMap::new();
     let mut out = Vec::new();
-    let timelines = std::iter::once(&doc.timeline).chain(doc.library.iter().map(|s| &s.timeline));
+    let timelines = doc.timelines();
     for tl in timelines {
         for layer in &tl.layers {
             for k in &layer.keyframes {

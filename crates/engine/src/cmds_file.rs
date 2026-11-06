@@ -26,7 +26,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 save(s, p)
             },
         },
-        CommandSpec { id: "file.export_png", label: "Export Frame as PNG…", menu: "File/Export", shortcut: None, params: "{path, frame?, scale?}", mutates: false, run: export_png },
+        CommandSpec { id: "file.export_png", label: "Export Frame as PNG…", menu: "File/Export", shortcut: None, params: "{path, frame? (in the current scene), scale?}", mutates: false, run: export_png },
         CommandSpec {
             id: "file.import",
             label: "Import to Stage…",
@@ -36,13 +36,13 @@ pub fn specs() -> Vec<CommandSpec> {
             mutates: true,
             run: import_to_stage,
         },
-        CommandSpec { id: "file.export_svg", label: "Export Frame as SVG…", menu: "File/Export", shortcut: None, params: "{path, frame?, confirm?}", mutates: false, run: export_svg },
+        CommandSpec { id: "file.export_svg", label: "Export Frame as SVG…", menu: "File/Export", shortcut: None, params: "{path, frame? (in the current scene), confirm?}", mutates: false, run: export_svg },
         CommandSpec {
             id: "file.export_png_sequence",
             label: "Export PNG Sequence…",
             menu: "File/Export",
             shortcut: None,
-            params: "{dir, from?, to?, scale?}",
+            params: "{dir, from?, to? (movie frames: every scene in order), scale?}",
             mutates: false,
             run: export_sequence,
         },
@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Export Animated GIF…",
             menu: "File/Export",
             shortcut: None,
-            params: "{path, from?, to?, scale?, loop?, confirm?}",
+            params: "{path, from?, to? (movie frames: every scene in order), scale?, loop?, confirm?}",
             mutates: false,
             run: export_gif,
         },
@@ -144,7 +144,7 @@ fn scale_param(p: &Value) -> Result<f32> {
     }
 }
 
-/// Renders a frame of the session's document to PNG bytes.
+/// Renders movie frame `frame` (scenes in order) of `doc` to PNG bytes.
 pub fn render_png(doc: &Document, frame: u32, scale: f32) -> Result<Vec<u8>> {
     let dl = anicraft_doc::evaluate(doc, frame);
     let (pm, _) = render(&dl, &View::stage(doc, scale))?;
@@ -154,7 +154,8 @@ pub fn render_png(doc: &Document, frame: u32, scale: f32) -> Result<Vec<u8>> {
 fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     let frame = opt_u32(p, "frame")?.unwrap_or(s.frame);
-    let bytes = render_png(&s.doc, frame, scale_param(p)?)?;
+    // `frame` is within the current scene; the renderer takes movie frames.
+    let bytes = render_png(&s.doc, s.doc.scene_start(s.scene).saturating_add(frame), scale_param(p)?)?;
     std::fs::write(&path, &bytes)?;
     Ok(json!({"written": path.display().to_string(), "bytes": bytes.len(), "frame": frame}))
 }
@@ -190,7 +191,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     let name: String = path.file_stem().map_or_else(|| "Imported".into(), |n| n.to_string_lossy().chars().take(128).collect());
     crate::cmds_timeline::new_layer(s, &json!({"name": name}))?;
     let frame = s.frame;
-    let end = s.doc.frame_count().max(frame + 1);
+    let end = s.frame_count().max(frame + 1);
     let mut elements = Vec::with_capacity(drawing.shapes.len());
     for sh in drawing.shapes {
         let id = anicraft_doc::ElementId(s.doc.alloc_id());
@@ -221,7 +222,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
-/// A frame as a standalone SVG document (vectors, gradients and masks kept).
+/// Movie frame `frame` as a standalone SVG document (vectors, gradients and masks kept).
 pub fn frame_svg(doc: &Document, frame: u32) -> String {
     anicraft_render::svg::to_svg(&anicraft_doc::evaluate(doc, frame), &doc.stage)
 }
@@ -232,14 +233,15 @@ fn export_svg(s: &mut Session, p: &Value) -> Result<Value> {
     if frame >= s.frame_count() {
         return Err(EngineError::Param(format!("frame {} is past the end (the timeline has {} frames)", frame + 1, s.frame_count())));
     }
-    let svg = frame_svg(&s.doc, frame);
+    let svg = frame_svg(&s.doc, s.doc.scene_start(s.scene).saturating_add(frame));
     std::fs::write(&path, svg.as_bytes())?;
     Ok(json!({"written": path.display().to_string(), "bytes": svg.len(), "frame": frame}))
 }
 
 fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = PathBuf::from(str_req(p, "dir")?);
-    let last = s.frame_count().saturating_sub(1);
+    // The whole movie: every scene in order.
+    let last = s.doc.frame_count().saturating_sub(1);
     let from = opt_u32(p, "from")?.unwrap_or(0).min(last);
     let to = opt_u32(p, "to")?.unwrap_or(last).min(last);
     if to < from {
@@ -279,7 +281,8 @@ pub fn gif_delays(frames: usize, fps: f32) -> Vec<u16> {
 
 fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
-    let last = s.frame_count().saturating_sub(1);
+    // The whole movie: every scene in order.
+    let last = s.doc.frame_count().saturating_sub(1);
     let from = opt_u32(p, "from")?.unwrap_or(0).min(last);
     let to = opt_u32(p, "to")?.unwrap_or(last).min(last);
     if to < from {

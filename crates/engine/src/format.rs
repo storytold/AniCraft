@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 pub const FORMAT_NAME: &str = "anicraft";
 /// v1: inline tagged paths. v2: SVG path strings, shared paths stored once in `paths`.
-pub const FORMAT_VERSION: u32 = 2;
+/// v3: `scenes` (a list of named timelines) instead of one `timeline`; v1/v2 files load as one
+/// scene.
+pub const FORMAT_VERSION: u32 = 3;
 /// Largest file we will parse.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Files smaller than this (compact) are pretty-printed for humans and diffs.
@@ -125,11 +127,11 @@ mod tests {
         let d = anicraft_doc::sample::stress(2, 40, 48); // 4 keyframes per element share a path
         let json = to_json(&d).unwrap();
         let env: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(env["version"], 2);
+        assert_eq!(env["version"], 3);
         assert_eq!(env["paths"].as_array().unwrap().len(), 80, "one entry per distinct path");
         let back = from_json(&json).unwrap();
         assert_eq!(d, back);
-        let l = &back.timeline.layers[0];
+        let l = &back.timeline(0).layers[0];
         let (anicraft_doc::ElementKind::Shape(a), anicraft_doc::ElementKind::Shape(b)) = (&l.keyframes[0].elements[0].kind, &l.keyframes[3].elements[0].kind) else { panic!() };
         assert!(Arc::ptr_eq(&a.path, &b.path), "sharing restored on load");
     }

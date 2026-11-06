@@ -11,6 +11,7 @@ mod cmds_frames;
 mod cmds_modify;
 mod cmds_paint;
 mod cmds_path;
+mod cmds_scene;
 mod cmds_timeline;
 pub mod confirm;
 pub mod format;
@@ -18,7 +19,7 @@ pub mod history;
 pub mod render_service;
 pub mod params;
 
-use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, evaluate, evaluate_layer_elements};
+use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, evaluate_layer_elements, evaluate_scene};
 use anicraft_geom::{Rect, Vec2};
 use serde_json::{Value, json};
 use history::History;
@@ -80,6 +81,7 @@ pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
     v.extend(cmds_timeline::specs());
+    v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
     v.extend(cmds_modify::specs());
@@ -122,10 +124,15 @@ impl Default for ToolStyle {
 }
 
 /// An open document plus everything the editor tracks about it.
+/// A display list and the `(state, scene, frame)` it was evaluated for.
+type CachedList = (StateId, usize, u32, Arc<DisplayList>);
+
 pub struct Session {
     /// The document: a persistent tree, so cloning it (undo, render thread) is cheap.
     pub doc: Document,
-    /// Playhead (0-based).
+    /// The scene being edited (index into `doc.scenes`).
+    pub scene: usize,
+    /// Playhead within the scene (0-based).
     pub frame: u32,
     /// Active layer.
     pub layer: LayerId,
@@ -141,8 +148,8 @@ pub struct Session {
     history: History,
     /// Open gesture (e.g. a drag): commands inside it coalesce into one undo step.
     gesture: Option<Snapshot>,
-    /// Display list of `(state, frame)`, shared by hit testing, bounds and overlays.
-    dl_cache: RefCell<Option<(StateId, u32, Arc<DisplayList>)>>,
+    /// Display list of `(state, scene, frame)`, shared by hit testing, bounds and overlays.
+    dl_cache: RefCell<Option<CachedList>>,
     /// Copied elements (and the symbols they use), outside the document so undo leaves it alone.
     pub clipboard: cmds_modify::Clipboard,
     /// Copied frames (Copy Frames), separate from copied artwork as in Animate.
@@ -158,14 +165,18 @@ impl Default for Session {
 impl Session {
     pub fn new(mut doc: Document) -> Session {
         doc.sanitize();
-        if doc.timeline.layers.is_empty() {
-            let id = LayerId(doc.alloc_id());
-            doc.timeline.layers.push(Arc::new(Layer::new(id, "Layer 1")));
+        // Every scene has at least one layer to draw on.
+        for i in 0..doc.scenes.len() {
+            if doc.timeline(i).layers.is_empty() {
+                let id = LayerId(doc.alloc_id());
+                doc.timeline_mut(i).layers.push(Arc::new(Layer::new(id, "Layer 1")));
+            }
         }
-        let layer = doc.timeline.layers.first().map_or(LayerId(0), |l| l.id);
+        let layer = doc.timeline(0).layers.first().map_or(LayerId(0), |l| l.id);
         let state = history::fresh_state();
         Session {
             doc,
+            scene: 0,
             frame: 0,
             layer,
             selection: Vec::new(),
@@ -282,12 +293,13 @@ impl Session {
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
-        Snapshot { label: label.to_string(), doc: self.doc.clone(), state: self.state, frame: self.frame, layer: self.layer, selection: self.selection.clone(), bytes: 0 }
+        Snapshot { label: label.to_string(), doc: self.doc.clone(), state: self.state, scene: self.scene, frame: self.frame, layer: self.layer, selection: self.selection.clone(), bytes: 0 }
     }
 
     fn restore(&mut self, s: Snapshot) {
         self.doc = s.doc;
         self.state = s.state;
+        self.scene = s.scene;
         self.frame = s.frame;
         self.layer = s.layer;
         self.selection = s.selection;
@@ -346,27 +358,28 @@ impl Session {
     // ----- queries ---------------------------------------------------------------------------
 
     pub fn frame_count(&self) -> u32 {
-        self.doc.frame_count()
+        self.doc.timeline(self.scene).frame_count()
     }
 
     pub fn active_layer(&self) -> Option<&Layer> {
-        self.doc.timeline.layer(self.layer)
+        self.doc.timeline(self.scene).layer(self.layer)
     }
 
     pub fn active_layer_index(&self) -> Option<usize> {
-        self.doc.timeline.layers.iter().position(|l| l.id == self.layer)
+        self.doc.timeline(self.scene).layers.iter().position(|l| l.id == self.layer)
     }
 
-    /// The evaluated frame at the playhead, cached per `(state, frame)`.
+    /// The current scene evaluated at the playhead, cached per `(state, scene, frame)`.
     pub fn display_list(&self) -> Arc<DisplayList> {
-        if let Some((s, f, dl)) = &*self.dl_cache.borrow()
+        if let Some((s, sc, f, dl)) = &*self.dl_cache.borrow()
             && *s == self.state
+            && *sc == self.scene
             && *f == self.frame
         {
             return dl.clone();
         }
-        let dl = Arc::new(evaluate(&self.doc, self.frame));
-        self.dl_cache.replace(Some((self.state, self.frame, dl.clone())));
+        let dl = Arc::new(evaluate_scene(&self.doc, self.scene, self.frame));
+        self.dl_cache.replace(Some((self.state, self.scene, self.frame, dl.clone())));
         dl
     }
 
@@ -386,7 +399,7 @@ impl Session {
             if !bounds.contains(p) {
                 continue;
             }
-            let Some(layer) = self.doc.timeline.layer(item.layer) else { continue };
+            let Some(layer) = self.doc.timeline(self.scene).layer(item.layer) else { continue };
             if layer.locked {
                 continue;
             }
@@ -419,8 +432,9 @@ impl Session {
 
     /// Drops selected ids that no longer exist on the active layer at the playhead.
     pub fn fix_selection(&mut self) {
-        if self.doc.timeline.layer(self.layer).is_none() {
-            self.layer = self.doc.timeline.layers.first().map_or(LayerId(0), |l| l.id);
+        self.scene = self.scene.min(self.doc.scenes.len().saturating_sub(1));
+        if self.doc.timeline(self.scene).layer(self.layer).is_none() {
+            self.layer = self.doc.timeline(self.scene).layers.first().map_or(LayerId(0), |l| l.id);
         }
         if self.selection.is_empty() {
             return;
@@ -438,7 +452,7 @@ impl Session {
 
     pub(crate) fn layer_mut(&mut self, id: Option<LayerId>) -> Result<&mut Layer> {
         let id = id.unwrap_or(self.layer);
-        self.doc.timeline.layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
+        self.doc.timeline_mut(self.scene).layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
     }
 
     /// The keyframe on the active layer that edits at the playhead should change. Creates a
@@ -476,7 +490,7 @@ impl Session {
     pub fn info(&self) -> Value {
         let layers: Vec<Value> = self
             .doc
-            .timeline
+            .timeline(self.scene)
             .layers
             .iter()
             .map(|l| {
@@ -491,6 +505,9 @@ impl Session {
             "stage": {"width": self.doc.stage.width, "height": self.doc.stage.height, "fps": self.doc.stage.fps, "background": self.doc.stage.background.to_hex()},
             "frames": self.frame_count(),
             "frame": self.frame,
+            "scene": self.scene,
+            "scenes": self.doc.scenes.iter().map(|s| json!({"name": s.name, "frames": s.timeline.frame_count()})).collect::<Vec<_>>(),
+            "movie_frames": self.doc.frame_count(),
             "layer": self.layer.0,
             "selection": self.selection.iter().map(|e| e.0).collect::<Vec<_>>(),
             "layers": layers,

@@ -74,21 +74,24 @@ fn stage_layers_frames_and_tweens() {
     let (doc, report) = import(&package()).unwrap();
     assert_eq!((doc.stage.width, doc.stage.height, doc.stage.fps), (640, 360, 30.0));
     assert_eq!(doc.stage.background, Rgba::hex(0x336699));
-    let names: Vec<&str> = doc.timeline.layers.iter().map(|l| l.name.as_str()).collect();
+    let names: Vec<&str> = doc.timeline(0).layers.iter().map(|l| l.name.as_str()).collect();
     assert_eq!(names, ["Ball", "Ground", "Notes"], "folders are flattened away, order kept (top first)");
-    let ball = &doc.timeline.layers[0];
+    let ball = &doc.timeline(0).layers[0];
     assert_eq!(ball.keyframes.len(), 2);
     assert_eq!((ball.keyframes[0].start, ball.keyframes[0].duration), (0, 10));
     assert_eq!(ball.keyframes[0].label, "start");
     assert!(matches!(ball.keyframes[0].tween.map(|t| t.easing), Some(anicraft_doc::Easing::Classic(e)) if e == -50.0));
-    assert!(doc.timeline.layers[1].locked);
-    assert_eq!(doc.timeline.layers[2].kind, LayerKind::Guide);
-    assert_eq!(doc.frame_count(), 15);
+    assert!(doc.timeline(0).layers[1].locked);
+    assert_eq!(doc.timeline(0).layers[2].kind, LayerKind::Guide);
+    assert_eq!(doc.timeline(0).frame_count(), 15);
+    assert_eq!(doc.frame_count(), 16, "the movie: scene 1, then the one-frame scene 2");
     // What couldn't come across is reported, not guessed.
     assert_eq!(report.skipped.get("text fields"), Some(&1));
     assert_eq!(report.skipped.get("bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
-    assert!(report.summary().contains("scenes after the first (1 more)"));
+    // Every scene comes across, in order.
+    assert_eq!(doc.scenes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Scene 1", "Scene 2"]);
+    assert_eq!(doc.timeline(1).layers.len(), 1, "an empty scene gets a layer to draw on");
 }
 
 #[test]
@@ -107,7 +110,7 @@ fn mask_layers_mask_the_layers_that_point_at_them() {
     );
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
-    let l = &d.timeline.layers;
+    let l = &d.timeline(0).layers;
     assert_eq!(l.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["Spot", "Ball", "Ring", "Sky"]);
     assert_eq!(l[0].kind, LayerKind::Mask);
     assert_eq!((l[1].parent, l[2].parent, l[3].parent), (Some(l[0].id), Some(l[0].id), None), "in the folder, not masked");
@@ -124,7 +127,7 @@ fn symbols_instances_and_the_tween_between_them() {
     assert_eq!(doc.library.len(), 1);
     let sym = &doc.library[0];
     assert_eq!((sym.name.as_str(), sym.kind), ("Ball", SymbolKind::MovieClip));
-    let inst = &doc.timeline.layers[0].keyframes[0].elements[0];
+    let inst = &doc.timeline(0).layers[0].keyframes[0].elements[0];
     let ElementKind::Symbol { symbol, loop_mode, first_frame } = &inst.kind else { panic!("an instance") };
     assert_eq!((*symbol, *loop_mode, *first_frame), (sym.id, LoopMode::PlayOnce, 2));
     assert_eq!(inst.transform.m, [2.0, 0.0, 0.0, 2.0, 100.0, 50.0]);
@@ -139,7 +142,7 @@ fn symbols_instances_and_the_tween_between_them() {
 #[test]
 fn shapes_become_fills_and_strokes() {
     let (doc, _) = import(&package()).unwrap();
-    let els = &doc.timeline.layers[1].keyframes[0].elements;
+    let els = &doc.timeline(0).layers[1].keyframes[0].elements;
     assert_eq!(els.len(), 2, "one fill (style 2 has no edges), one stroke");
     let ElementKind::Shape(fill) = &els[0].kind else { panic!() };
     assert_eq!(fill.fill, Some(Paint::Solid(Rgba::hex(0x00aa00))));
@@ -158,7 +161,7 @@ fn a_fla_archive_imports_the_same() {
     let fla = dir.join("scene.fla");
     std::fs::write(&fla, &z).unwrap();
     let (doc, _) = crate::import_path(&fla).unwrap();
-    assert_eq!(doc.timeline.layers.len(), 3);
+    assert_eq!(doc.timeline(0).layers.len(), 3);
     assert_eq!(doc.library.len(), 1);
     std::fs::remove_file(&fla).ok();
     std::fs::remove_dir(&dir).ok();
@@ -192,7 +195,7 @@ fn shape_tweens_come_across_as_shape_tweens() {
     );
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
-    let k = &d.timeline.layers[0].keyframes[0];
+    let k = &d.timeline(0).layers[0].keyframes[0];
     let t = k.tween.expect("a tween");
     assert_eq!(t.kind, anicraft_doc::TweenKind::Shape);
     assert!(matches!(t.easing, anicraft_doc::Easing::Classic(a) if a == 40.0));
