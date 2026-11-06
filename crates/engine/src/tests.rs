@@ -955,10 +955,10 @@ fn opening_an_svg_imports_editable_shapes_untitled() {
     let v = run(&mut s, "file.open", json!({"path": path.display().to_string()}));
     assert_eq!((s.doc.stage.width, s.doc.stage.height), (320, 240));
     assert_eq!(s.doc.timeline.layers[0].name, "SVG Artwork");
-    assert_eq!(s.doc.timeline.layers[0].keyframes[0].elements.len(), 2);
+    assert_eq!(s.doc.timeline.layers[0].keyframes[0].elements.len(), 1);
     assert!(v["report"].as_str().unwrap().contains("1 text elements"), "{v}");
     assert!(s.path.is_none(), "imported SVGs stay untitled so saving cannot overwrite the source");
-    assert!(!s.display_list().items.is_empty(), "imported vectors render");
+    assert_eq!(s.display_list().items.len(), 2, "grouped imported vectors render");
     let imported = s.doc.clone();
     let invalid = dir.join("invalid.svg");
     std::fs::write(&invalid, "<svg><path d='broken'/></svg>").unwrap();
@@ -975,7 +975,7 @@ fn importing_svg_adds_a_new_layer_without_replacing_the_document() {
     std::fs::write(
         &path,
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24">
-          <rect x="1" y="2" width="10" height="8" fill="#ff8800"/>
+          <g id="outer"><g id="inner"><rect x="1" y="2" width="10" height="8" fill="#ff8800"/></g></g>
         </svg>"##,
     )
     .unwrap();
@@ -1005,6 +1005,34 @@ fn importing_svg_adds_a_new_layer_without_replacing_the_document() {
     assert_eq!(imported_layer.name, "SVG Artwork");
     assert_eq!(imported_layer.keyframes[0].duration, 5);
     assert_eq!(imported_layer.keyframes[0].elements.len(), 1);
+    assert_eq!(s.doc.library.len(), 2, "nested SVG groups are retained as symbols");
+    let mut ids = std::collections::BTreeSet::new();
+    for layer in &s.doc.timeline.layers {
+        assert!(ids.insert(layer.id.0));
+        for keyframe in &layer.keyframes {
+            for element in &keyframe.elements {
+                assert!(ids.insert(element.id.0));
+            }
+        }
+    }
+    for symbol in &s.doc.library {
+        assert!(ids.insert(symbol.id.0));
+        for layer in &symbol.timeline.layers {
+            assert!(ids.insert(layer.id.0));
+            for keyframe in &layer.keyframes {
+                for element in &keyframe.elements {
+                    assert!(ids.insert(element.id.0));
+                }
+            }
+        }
+    }
+    let ElementKind::Symbol {
+        symbol: outer_symbol, ..
+    } = &imported_layer.keyframes[0].elements[0].kind
+    else {
+        panic!("top-level SVG group is an editable symbol instance")
+    };
+    assert!(s.doc.symbol(*outer_symbol).is_some());
     assert_eq!(s.layer, imported_layer.id);
     assert_eq!(s.selection, vec![imported_layer.keyframes[0].elements[0].id]);
     assert_eq!(result["shapes"], 1);
@@ -1018,6 +1046,7 @@ fn importing_svg_adds_a_new_layer_without_replacing_the_document() {
     assert_eq!(s.visible_elements()[0].id, original_shape);
     run(&mut s, "edit.redo", json!({}));
     assert_eq!(s.doc.timeline.layers.len(), 2);
+    assert_eq!(s.doc.library.len(), 2);
     std::fs::remove_dir_all(&dir).ok();
 }
 

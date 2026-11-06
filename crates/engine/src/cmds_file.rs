@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session, format};
-use anicraft_doc::{Document, ElementId, LayerId, MAX_STAGE_EDGE, Stage, sample};
+use anicraft_doc::{Document, MAX_STAGE_EDGE, Stage, sample};
 use anicraft_render::{View, render};
 use rayon::prelude::*;
 use serde_json::{Value, json};
@@ -135,14 +135,11 @@ fn import_svg(s: &mut Session, p: &Value) -> Result<Value> {
     if s.doc.timeline.layers.len() >= 1000 {
         return Err(EngineError::State("too many layers (limit 1000)".into()));
     }
-    let (imported, report) = crate::svg_import::import_path(&path)
+    let (mut imported, report) = crate::svg_import::import_path(&path)
         .map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
-    let Some(imported_layer) = imported.timeline.layers.first() else {
-        return Err(EngineError::Format("SVG import produced no artwork layer".into()));
-    };
-    let mut layer = (**imported_layer).clone();
-    let layer_id = LayerId(s.doc.alloc_id());
-    layer.id = layer_id;
+    let mut layer = crate::svg_import::move_into_document(&mut imported, &mut s.doc)
+        .map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    let layer_id = layer.id;
     layer.name = "SVG Artwork".into();
     layer.parent = None;
     let duration = s.doc.frame_count().max(1);
@@ -151,8 +148,6 @@ fn import_svg(s: &mut Session, p: &Value) -> Result<Value> {
         let keyframe = Arc::make_mut(keyframe);
         keyframe.duration = duration;
         for element in &mut keyframe.elements {
-            let element = Arc::make_mut(element);
-            element.id = ElementId(s.doc.alloc_id());
             selected.push(element.id);
         }
     }

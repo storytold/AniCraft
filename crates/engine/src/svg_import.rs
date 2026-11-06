@@ -1,18 +1,19 @@
 //! Static SVG import into editable AniCraft shapes.
 
 use anicraft_doc::{
-    ColorEffect, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, Paint, Rgba,
-    Shape, Stage, Stroke,
+    ColorEffect, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LoopMode,
+    Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId, SymbolKind, Timeline,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2, svg::parse_path_data};
 use anicraft_xfl::xml::{self, Element as XmlElement};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 
 const MAX_SVG_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_IMPORTED_SHAPES: usize = 100_000;
+const MAX_IMPORTED_GROUPS: usize = 100_000;
 const MAX_XML_ELEMENTS: usize = 200_000;
 const MAX_GEOMETRY_VALUES: usize = 200_000;
 const MAX_IMPORT_DEPTH: usize = 128;
@@ -90,6 +91,7 @@ struct Builder {
     doc: Document,
     report: Report,
     shapes: usize,
+    groups: usize,
 }
 
 fn local_name(name: &str) -> &str {
@@ -507,8 +509,81 @@ fn geometry(node: &XmlElement, tag: &str) -> Result<Option<Path>, SvgImportError
 }
 
 impl Builder {
+    fn add_element(
+        &mut self,
+        parent: Option<SymbolId>,
+        element: Element,
+    ) -> Result<(), SvgImportError> {
+        let timeline = if let Some(parent) = parent {
+            let symbol = self
+                .doc
+                .library
+                .iter_mut()
+                .find(|symbol| symbol.id == parent)
+                .ok_or_else(|| SvgImportError::Invalid("an SVG group is missing".into()))?;
+            &mut Arc::make_mut(symbol).timeline
+        } else {
+            &mut self.doc.timeline
+        };
+        let layer = timeline
+            .layers
+            .first_mut()
+            .ok_or_else(|| SvgImportError::Invalid("an SVG group has no layer".into()))?;
+        let keyframe = Arc::make_mut(layer)
+            .keyframe_mut(0)
+            .ok_or_else(|| SvgImportError::Invalid("an SVG group has no keyframe".into()))?;
+        keyframe.elements.push(Arc::new(element));
+        Ok(())
+    }
+
+    fn add_group(
+        &mut self,
+        parent: Option<SymbolId>,
+        name: &str,
+        transform: Affine,
+    ) -> Result<SymbolId, SvgImportError> {
+        if self.groups >= MAX_IMPORTED_GROUPS {
+            return Err(SvgImportError::Invalid(format!(
+                "the SVG contains more than {MAX_IMPORTED_GROUPS} groups"
+            )));
+        }
+        self.groups += 1;
+        let symbol_id = SymbolId(self.doc.alloc_id());
+        let layer_id = LayerId(self.doc.alloc_id());
+        let instance_id = ElementId(self.doc.alloc_id());
+        let layer = Layer::new(layer_id, "SVG Group");
+        self.doc.library.push(Arc::new(Symbol {
+            id: symbol_id,
+            name: if name.is_empty() {
+                "SVG Group".into()
+            } else {
+                name.chars().take(128).collect()
+            },
+            kind: SymbolKind::Graphic,
+            timeline: Timeline {
+                layers: vec![Arc::new(layer)],
+            },
+        }));
+        self.add_element(
+            parent,
+            Element {
+                id: instance_id,
+                name: name.chars().take(128).collect(),
+                transform,
+                color: ColorEffect::default(),
+                kind: ElementKind::Symbol {
+                    symbol: symbol_id,
+                    loop_mode: LoopMode::SingleFrame,
+                    first_frame: 0,
+                },
+            },
+        )?;
+        Ok(symbol_id)
+    }
+
     fn add_shape(
         &mut self,
+        parent: Option<SymbolId>,
         path: Path,
         transform: Affine,
         style: &Style,
@@ -573,20 +648,17 @@ impl Builder {
             },
             kind: ElementKind::Shape(shape),
         };
-        if let Some(layer) = self.doc.timeline.layers.first_mut()
-            && let Some(keyframe) = Arc::make_mut(layer).keyframe_mut(0)
-        {
-            keyframe.elements.push(Arc::new(element));
-        }
-        Ok(())
+        self.add_element(parent, element)
     }
 
     fn walk(
         &mut self,
         node: &XmlElement,
+        parent_symbol: Option<SymbolId>,
         parent_transform: &Affine,
         parent_style: &Style,
         depth: usize,
+        group_depth: usize,
     ) -> Result<(), SvgImportError> {
         if depth > MAX_IMPORT_DEPTH {
             return Err(SvgImportError::Invalid(
@@ -632,9 +704,51 @@ impl Builder {
             self.report.skip("nested SVG viewports");
             return Ok(());
         }
-        if matches!(tag, "svg" | "g") {
+        if tag == "g" {
+            let group_name = node
+                .attr("id")
+                .or_else(|| node.attr("aria-label"))
+                .unwrap_or("");
+            if group_depth >= anicraft_doc::MAX_SYMBOL_DEPTH {
+                let note = "groups beyond the symbol nesting limit were flattened";
+                if !self.report.notes.iter().any(|existing| existing == note) {
+                    self.report.notes.push(note.into());
+                }
+                for child in &node.children {
+                    self.walk(
+                        child,
+                        parent_symbol,
+                        &transform,
+                        &style,
+                        depth + 1,
+                        group_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            let symbol = self.add_group(parent_symbol, group_name, transform)?;
             for child in &node.children {
-                self.walk(child, &transform, &style, depth + 1)?;
+                self.walk(
+                    child,
+                    Some(symbol),
+                    &Affine::IDENTITY,
+                    &style,
+                    depth + 1,
+                    group_depth + 1,
+                )?;
+            }
+            return Ok(());
+        }
+        if tag == "svg" {
+            for child in &node.children {
+                self.walk(
+                    child,
+                    parent_symbol,
+                    &transform,
+                    &style,
+                    depth + 1,
+                    group_depth,
+                )?;
             }
             return Ok(());
         }
@@ -643,7 +757,7 @@ impl Builder {
             "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon"
         ) {
             if let Some(path) = geometry(node, tag)? {
-                self.add_shape(path, transform, &style)?;
+                self.add_shape(parent_symbol, path, transform, &style)?;
             }
             return Ok(());
         }
@@ -804,6 +918,7 @@ pub fn import_bytes(bytes: &[u8]) -> Result<(Document, Report), SvgImportError> 
         doc,
         report,
         shapes: 0,
+        groups: 0,
     };
     let root_style = styled(&Style::default(), &root)?;
     let root_local = root
@@ -812,7 +927,7 @@ pub fn import_bytes(bytes: &[u8]) -> Result<(Document, Report), SvgImportError> 
         .unwrap_or(Ok(Affine::IDENTITY))?;
     let root_transform = root_transform.mul(&root_local);
     for child in &root.children {
-        builder.walk(child, &root_transform, &root_style, 1)?;
+        builder.walk(child, None, &root_transform, &root_style, 1, 0)?;
     }
     Ok((builder.doc, builder.report))
 }
@@ -833,6 +948,75 @@ pub fn import_path(path: &FsPath) -> Result<(Document, Report), SvgImportError> 
         .take(MAX_SVG_BYTES + 1)
         .read_to_end(&mut bytes)?;
     import_bytes(&bytes)
+}
+
+pub fn move_into_document(
+    imported: &mut Document,
+    destination: &mut Document,
+) -> Result<Layer, SvgImportError> {
+    let mut ids = Vec::new();
+    collect_timeline_ids(&imported.timeline, &mut ids);
+    for symbol in &imported.library {
+        ids.push(symbol.id.0);
+        collect_timeline_ids(&symbol.timeline, &mut ids);
+    }
+    let remap: HashMap<u64, u64> = ids
+        .into_iter()
+        .map(|id| (id, destination.alloc_id()))
+        .collect();
+    remap_timeline_ids(&mut imported.timeline, &remap)?;
+    for symbol in &mut imported.library {
+        let symbol = Arc::make_mut(symbol);
+        symbol.id = SymbolId(mapped_id(&remap, symbol.id.0)?);
+        remap_timeline_ids(&mut symbol.timeline, &remap)?;
+    }
+    let layer = imported
+        .timeline
+        .layers
+        .first()
+        .map(|layer| (**layer).clone())
+        .ok_or_else(|| SvgImportError::Invalid("SVG import produced no artwork layer".into()))?;
+    destination.library.append(&mut imported.library);
+    Ok(layer)
+}
+
+fn collect_timeline_ids(timeline: &Timeline, ids: &mut Vec<u64>) {
+    for layer in &timeline.layers {
+        ids.push(layer.id.0);
+        for keyframe in &layer.keyframes {
+            for element in &keyframe.elements {
+                ids.push(element.id.0);
+            }
+        }
+    }
+}
+
+fn mapped_id(remap: &HashMap<u64, u64>, id: u64) -> Result<u64, SvgImportError> {
+    remap
+        .get(&id)
+        .copied()
+        .ok_or_else(|| SvgImportError::Invalid("an SVG element has an invalid id".into()))
+}
+
+fn remap_timeline_ids(
+    timeline: &mut Timeline,
+    remap: &HashMap<u64, u64>,
+) -> Result<(), SvgImportError> {
+    for layer in &mut timeline.layers {
+        let layer = Arc::make_mut(layer);
+        layer.id = LayerId(mapped_id(remap, layer.id.0)?);
+        for keyframe in &mut layer.keyframes {
+            let keyframe = Arc::make_mut(keyframe);
+            for element in &mut keyframe.elements {
+                let element = Arc::make_mut(element);
+                element.id = ElementId(mapped_id(remap, element.id.0)?);
+                if let ElementKind::Symbol { symbol, .. } = &mut element.kind {
+                    *symbol = SymbolId(mapped_id(remap, symbol.0)?);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -858,38 +1042,83 @@ mod tests {
         assert_eq!(doc.frame_count(), 1);
         let layer = doc.timeline.layers.first().expect("an import layer");
         let key = layer.keyframes.first().expect("a first keyframe");
-        assert_eq!(key.elements.len(), 7);
+        assert_eq!(key.elements.len(), 1, "the SVG group remains one grouped instance");
         assert!(report.summary().contains("1 text elements"));
-        let first = key.elements.first().expect("rectangle");
+        let ElementKind::Symbol { symbol, .. } = &key.elements[0].kind else {
+            panic!("SVG group remains a symbol")
+        };
+        let group = doc.symbol(*symbol).expect("group symbol");
+        assert_eq!(group.timeline.layers[0].keyframes[0].elements.len(), 7);
+        let display = anicraft_doc::evaluate(&doc, 0);
+        assert_eq!(display.items.len(), 7);
+        let first = &display.items[0];
         assert_eq!(
             first.transform.apply(Vec2::new(0.0, 0.0)),
             Vec2::new(-10.0, -34.0)
         );
         assert_eq!(first.color.alpha, 0.5);
-        let ElementKind::Shape(rect) = &first.kind else {
-            panic!("imported shapes stay editable")
-        };
-        assert!(matches!(rect.fill, Some(Paint::Solid(c)) if c == Rgba::hex(0xff0000)));
+        assert!(matches!(first.fill, Some(Paint::Solid(c)) if c == Rgba::hex(0xff0000)));
         assert_eq!(
-            rect.stroke,
+            first.stroke,
             Some(Stroke {
                 color: Rgba::hex(0x0000ff),
                 width: 2.0
             })
         );
-        let second = key.elements.get(1).expect("path");
-        let ElementKind::Shape(path) = &second.kind else {
-            panic!("imported path stays editable")
-        };
-        assert_eq!(path.fill, None);
+        let second = &display.items[1];
+        assert_eq!(second.fill, None);
         assert_eq!(
-            path.stroke,
+            second.stroke,
             Some(Stroke {
                 color: Rgba::hex(0x00ff00),
                 width: 4.0
             })
         );
-        assert_eq!(path.fill_rule, FillRule::EvenOdd);
+        assert_eq!(second.fill_rule, FillRule::EvenOdd);
+    }
+
+    #[test]
+    fn keeps_nested_svg_groups_as_nested_symbols() {
+        let src = br#"<svg width="100" height="100">
+          <g id="outer" transform="translate(5 6)">
+            <path d="M0 0h10v10z"/>
+            <g id="inner" transform="scale(2)">
+              <rect x="1" y="2" width="3" height="4"/>
+            </g>
+          </g>
+        </svg>"#;
+        let (doc, _) = import_bytes(src).expect("valid grouped SVG imports");
+        assert_eq!(doc.timeline.layers[0].keyframes[0].elements.len(), 1);
+        assert_eq!(doc.library.len(), 2);
+        let ElementKind::Symbol {
+            symbol: outer_id, ..
+        } = &doc.timeline.layers[0].keyframes[0].elements[0].kind
+        else {
+            panic!("outer SVG group should be an instance")
+        };
+        let outer = doc.symbol(*outer_id).expect("outer group symbol");
+        assert_eq!(outer.name, "outer");
+        let outer_elements = &outer.timeline.layers[0].keyframes[0].elements;
+        assert_eq!(outer_elements.len(), 2);
+        assert!(matches!(outer_elements[0].kind, ElementKind::Shape(_)));
+        let ElementKind::Symbol {
+            symbol: inner_id, ..
+        } = &outer_elements[1].kind
+        else {
+            panic!("inner SVG group should remain nested")
+        };
+        let inner = doc.symbol(*inner_id).expect("inner group symbol");
+        assert_eq!(inner.name, "inner");
+        assert!(matches!(
+            inner.timeline.layers[0].keyframes[0].elements[0].kind,
+            ElementKind::Shape(_)
+        ));
+        let display = anicraft_doc::evaluate(&doc, 0);
+        assert_eq!(display.items.len(), 2);
+        assert_eq!(
+            display.items[1].transform.apply(Vec2::new(1.0, 2.0)),
+            Vec2::new(7.0, 10.0)
+        );
     }
 
     #[test]
