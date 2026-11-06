@@ -7,6 +7,7 @@
 pub mod paint;
 pub mod raster;
 pub mod stroke;
+pub mod svg;
 
 use anicraft_doc::{ColorEffect, DisplayItem, DisplayList, Document, Paint, Rgba, evaluate};
 use anicraft_geom::{Affine, FillRule, Rect, Vec2};
