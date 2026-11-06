@@ -12,6 +12,7 @@ crates/xml      L0  Bounded XML element reader shared by the importers (XFL, SVG
 crates/doc      L1  Document model, easing, timeline evaluation, sample scene
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
+crates/svg      L2  SVG import: shapes, groups, use, styles, transforms, gradients → shapes
 crates/engine   L3  Session, undo (with gesture coalescing), command registry, .anicraft format
 crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve
 src/            L5  egui shell (app, menus, stage, timeline, panels, theme)

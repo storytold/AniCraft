@@ -315,6 +315,44 @@ fn svg_frame_export_writes_vectors_and_asks_before_replacing() {
 }
 
 #[test]
+fn svg_round_trip_looks_the_same_and_imports_as_one_undo_step() {
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-rt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("scene.svg");
+    let _ = std::fs::remove_file(&svg);
+    let mut src = Session::new(sample::demo());
+    run(&mut src, "file.export_svg", json!({"path": svg.display().to_string(), "frame": 10}));
+
+    // Import it into an empty document of the same size, at the playhead (frame 3).
+    let mut s = Session::default();
+    run(&mut s, "timeline.insert_frame", json!({"count": 5}));
+    run(&mut s, "timeline.goto", json!({"frame": 3}));
+    let layers_before = s.doc.timeline.layers.len();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string()}));
+    assert!(v["elements"].as_u64().unwrap() >= 5);
+    assert_eq!(s.doc.timeline.layers.len(), layers_before + 1);
+    assert_eq!(s.active_layer().unwrap().name, "scene");
+    assert_eq!(s.selection.len() as u64, v["elements"].as_u64().unwrap(), "the imported shapes are selected");
+    assert!(anicraft_doc::evaluate(&s.doc, 2).items.is_empty(), "nothing before the playhead");
+
+    // Pixel for pixel (nearly): the same picture comes back.
+    let a = anicraft_render::render_frame(&src.doc, 10, 0.25).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&s.doc, 3, 0.25).unwrap().to_rgba8();
+    let diff = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs() as f64).sum::<f64>() / a.len() as f64;
+    assert!(diff < 1.0, "mean difference {diff:.3} of 255");
+
+    // One undo step removes the whole import.
+    s.undo().unwrap();
+    assert_eq!(s.doc.timeline.layers.len(), layers_before);
+    // Anything but SVG, or a file that is not SVG, is refused cleanly.
+    assert!(s.execute("file.import", &json!({"path": dir.join("x.png").display().to_string()})).is_err());
+    let fake = dir.join("fake.svg");
+    std::fs::write(&fake, "<html/>").unwrap();
+    assert!(s.execute("file.import", &json!({"path": fake.display().to_string()})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn animated_gif_export() {
     let dir = std::env::temp_dir().join(format!("anicraft-gif-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

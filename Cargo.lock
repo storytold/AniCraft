@@ -217,6 +217,7 @@ dependencies = [
  "anicraft-doc",
  "anicraft-geom",
  "anicraft-render",
+ "anicraft-svg",
  "anicraft-xfl",
  "gif",
  "rayon",
@@ -241,6 +242,16 @@ dependencies = [
  "anicraft-geom",
  "png 0.17.16",
  "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "anicraft-svg"
+version = "0.1.0"
+dependencies = [
+ "anicraft-doc",
+ "anicraft-geom",
+ "anicraft-xml",
  "thiserror 2.0.21",
 ]
 

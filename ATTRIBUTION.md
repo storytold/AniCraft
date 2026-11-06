@@ -57,6 +57,7 @@ OR Apache-2.0) is noted in the table.
 | ZIP archive reading (`.fla`) | `crates/xfl/src/zip.rs` | PKWARE APPNOTE.TXT (published ZIP specification); inflate by `miniz_oxide` (MIT OR Zlib OR Apache-2.0) | Stored and deflate entries; no ZIP64 or encryption. |
 | XFL document structure and shape edges | `crates/xfl/src/` | The publicly documented XFL package structure (`DOMDocument.xml`, `LIBRARY/*.xml`, edge strings) | Clean room: no Animate or third-party converter code (ADR 0009). |
 | Full SVG path data and elliptical-arc to Bézier conversion | `crates/geom/src/svg.rs` | W3C SVG 1.1 §8.3 and Appendix F.6 (implementation notes) | W3C Royalty-Free Patent Policy. |
+| SVG document import: shapes, styling and inheritance, transforms, viewBox and preserveAspectRatio, paint servers (gradients), `use` | `crates/svg` | W3C SVG 1.1 (§5, §6, §7, §9, §13) and SVG 2; CSS Color Module Level 3 (colour syntax and names) | W3C Royalty-Free Patent Policy. |
 | Affine QR decomposition for tweening | `crates/geom/src/affine.rs` | Standard linear algebra | |
 | Least-squares cubic Bézier curve fitting (Pencil "Smooth") | `crates/geom/src/fit.rs` | P. J. Schneider, *An Algorithm for Automatically Fitting Digitized Curves*, Graphics Gems (1990) | Ported from PhotoCraft's mask tracer and adapted for open strokes. Published algorithm. |
 | De Casteljau subdivision, Ramer–Douglas–Peucker simplification | `crates/geom/src/edit.rs` | Public mathematical results (de Casteljau 1959; Ramer 1972; Douglas & Peucker 1973) | |

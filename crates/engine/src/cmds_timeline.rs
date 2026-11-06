@@ -506,7 +506,7 @@ fn step(s: &mut Session, d: i64) -> Result<Value> {
     Ok(json!({"frame": s.frame}))
 }
 
-fn new_layer(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn new_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let n = s.doc.timeline.layers.len() + 1;
     let name = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| format!("Layer {n}"));
     if s.doc.timeline.layers.len() >= 1000 {
