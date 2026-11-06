@@ -17,6 +17,7 @@ pub mod format;
 pub mod history;
 pub mod render_service;
 pub mod params;
+pub mod sprite_sheet;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, evaluate, evaluate_layer_elements};
 use anicraft_geom::{Rect, Vec2};

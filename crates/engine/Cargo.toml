@@ -18,5 +18,8 @@ thiserror.workspace = true
 rayon.workspace = true
 gif.workspace = true
 
+[dev-dependencies]
+png.workspace = true
+
 [lints]
 workspace = true

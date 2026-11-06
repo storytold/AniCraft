@@ -6,12 +6,15 @@
 cargo build                                   # app + CLI (debug)
 cargo run                                     # desktop app with the sample
 cargo run -- --screenshot shots/now.png       # draw ~120 frames, save the window, exit
-cargo run -- --open <panel> --screenshot x.png  # palette|shortcuts|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom
+cargo run -- --open <panel> --screenshot x.png  # palette|shortcuts|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom|sprites
 cargo test                                    # every crate
 cargo clippy --all-targets -- -D warnings
 cargo deny check licenses bans sources
 cargo run --release -p anicraft-cli -- bench  # performance probe
+cargo run -p anicraft-cli -- sprite-sheet --sample --out /tmp/sprites.png --scale 0.25
 ```
+
+Sprite sheet export options and the versioned JSON format: [`sprite-sheets.md`](sprite-sheets.md).
 
 Fonts: builds embed Inter and JetBrains Mono when `CRAFT_FONTS_DIR` points at a craft-fonts
 checkout, or when one is found next to the repository (ADR 0005). Otherwise they use the

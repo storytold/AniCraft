@@ -38,6 +38,15 @@ pub fn specs() -> Vec<CommandSpec> {
             run: export_sequence,
         },
         CommandSpec {
+            id: "file.export_sprite_sheet",
+            label: "Export Sprite Sheet + JSON…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path: PNG, from?, to?, scale?, columns?, transparent?: true, confirm?} (frames are 0-based, inclusive; sibling JSON)",
+            mutates: false,
+            run: crate::sprite_sheet::export,
+        },
+        CommandSpec {
             id: "file.export_gif",
             label: "Export Animated GIF…",
             menu: "File/Export",
@@ -127,7 +136,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"saved": path.display().to_string()}))
 }
 
-fn scale_param(p: &Value) -> Result<f32> {
+pub(crate) fn scale_param(p: &Value) -> Result<f32> {
     match opt_f32(p, "scale")? {
         None => Ok(1.0),
         Some(v) if v > 0.0 && v <= 8.0 => Ok(v),

@@ -104,6 +104,10 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
 
 pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
+        if app.sprite_job.is_some() {
+            ui.spinner();
+            ui.label(text(Type::Label, "Exporting sprite sheet…"));
+        }
         let now = ui.input(|i| i.time);
         let msg = app.status.as_ref().filter(|s| s.error || now - s.at < 8.0 || s.at == 0.0);
         match msg {

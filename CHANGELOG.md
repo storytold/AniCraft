@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* **Sprite sheet + JSON export** (File › Export, CLI `sprite-sheet`): fixed grid with frame
+  range, scale, automatic or explicit columns, and transparent or stage background. Includes
+  source-frame rectangles and fps-based timing in versioned JSON. Desktop size preview and
+  background export, bounded memory, and confirmation before replacing either output file.
 * **SVG export** (File › Export › Export Frame as SVG…, `file.export_svg`): any frame as a
   standalone vector SVG, matching the stage. Shapes, strokes, solid and gradient fills, opacity
   and tint, masks (as clip paths, nested inside symbols) and outline-mode layers all come
