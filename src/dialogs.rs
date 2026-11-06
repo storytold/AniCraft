@@ -189,7 +189,7 @@ impl Entry {
 
 /// Commands the palette can run without extra input (everything optional, or prompted).
 fn runnable(c: &CommandSpec) -> bool {
-    if matches!(c.id, "file.open" | "file.import_svg" | "file.save_as" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename") {
+    if matches!(c.id, "file.open" | "file.import_svg" | "file.import" | "file.save_as" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename") {
         return true;
     }
     let inner = c.params.trim().trim_start_matches('{').trim_end_matches('}');

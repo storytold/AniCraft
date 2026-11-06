@@ -1,10 +1,11 @@
-//! A small, strict-enough XML reader for XFL documents.
+//! AniCraft XML (layer L0): a small, strict-enough XML element reader shared by the importers.
 //!
-//! XFL stores everything that matters in elements and attributes (even shape geometry is an
-//! attribute), so the reader builds a tree of elements with attributes and ignores text.
-//! It handles the prolog, comments, CDATA, doctype, processing instructions, the five
-//! standard entities and numeric character references. Limits on input size, depth and
+//! XFL and SVG keep everything that matters in elements and attributes (XFL even stores shape
+//! geometry as an attribute), so the reader builds a tree of elements with attributes and
+//! ignores text. It handles the prolog, comments, CDATA, doctype, processing instructions, the
+//! five standard entities and numeric character references. Limits on input size, depth and
 //! element count keep a hostile file from exhausting memory or the stack. Never panics.
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::collections::HashMap;
 
