@@ -47,7 +47,9 @@ pub struct Tokens {
     pub span_empty: Color32,
     /// Timeline: frame cells of the active layer.
     pub row_active: Color32,
+    /// Timeline: classic tween span (violet) and shape tween span (amber).
     pub tween: Color32,
+    pub tween_shape: Color32,
     pub tween_line: Color32,
     pub playhead: Color32,
     pub selection: Color32,
@@ -101,6 +103,7 @@ pub const T: Tokens = Tokens {
     span_empty: Color32::from_rgb(0x2e, 0x2e, 0x35),
     row_active: Color32::from_rgb(0x24, 0x27, 0x33),
     tween: Color32::from_rgb(0x8a, 0x5c, 0xff),
+    tween_shape: Color32::from_rgb(0xf2, 0xa1, 0x3b),
     tween_line: Color32::from_rgb(0x0e, 0x0e, 0x10),
     playhead: Color32::from_rgb(0xff, 0x4d, 0x3d),
     selection: Color32::from_rgb(0x2e, 0x66, 0xf0),

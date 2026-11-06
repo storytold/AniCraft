@@ -13,7 +13,7 @@ use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
     ColorEffect, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    SymbolKind, Timeline, Tween,
+    SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -253,12 +253,15 @@ impl<'a> Builder<'a> {
                 let mut k = Keyframe::new(start, duration);
                 k.label = f.attr("name").unwrap_or("").chars().take(256).collect();
                 match f.attr("tweenType") {
-                    Some("motion") => {
+                    Some(t @ ("motion" | "shape")) => {
                         let acc = f.f32("acceleration").unwrap_or(0.0).clamp(-100.0, 100.0);
-                        k.tween = Some(Tween { easing: if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) } });
+                        let kind = if t == "shape" { TweenKind::Shape } else { TweenKind::Classic };
+                        k.tween = Some(Tween { easing: if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) }, kind });
+                        if t == "shape" && f.child("shapeHints").is_some_and(|h| !h.children.is_empty()) {
+                            self.report.skip("shape hints (the tween morphs without them)");
+                        }
                     }
                     Some("motion object") => self.report.skip("motion tweens (kept as keyframes)"),
-                    Some("shape") => self.report.skip("shape tweens (kept as keyframes)"),
                     _ => {}
                 }
                 let mut els = Vec::new();
