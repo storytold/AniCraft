@@ -87,6 +87,15 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && path.exists()).then(|| overwrite(path, "Saving"))
         }
+        "file.export_sprite_sheet" => {
+            let (png, json) = crate::sprite_sheet::output_paths(p).ok()?;
+            (png.exists() || json.exists()).then(|| Confirmation {
+                title: "Replace sprite sheet export?".into(),
+                message: format!("Exporting will write {} and {}. Existing files will be replaced; this cannot be undone.", png.display(), json.display()),
+                action: "Replace".into(),
+                irreversible: true,
+            })
+        }
         "file.export_png" | "file.export_gif" | "file.export_svg" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             path.exists().then(|| overwrite(path, "Exporting"))

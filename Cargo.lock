@@ -219,6 +219,7 @@ dependencies = [
  "anicraft-render",
  "anicraft-xfl",
  "gif",
+ "png 0.17.16",
  "rayon",
  "serde",
  "serde_json",

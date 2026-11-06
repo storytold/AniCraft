@@ -119,7 +119,7 @@ pub fn forced_renderer(arg: Option<&str>) -> Option<eframe::Renderer> {
 /// File type filters per command.
 pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
     match cmd {
-        "file.export_png" => ("PNG image", &["png"]),
+        "file.export_png" | "file.export_sprite_sheet" => ("PNG image", &["png"]),
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" => ("SVG image", &["svg"]),
         // Opening also imports .fla archives and .xfl packages.

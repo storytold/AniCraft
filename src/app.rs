@@ -183,6 +183,8 @@ pub struct App {
     pub onion: bool,
     pub status: Option<Status>,
     pub prompt: Option<Prompt>,
+    pub sprite_options: Option<crate::sprite_export::Options>,
+    pub sprite_job: Option<crate::sprite_export::Job>,
     pub show_about: bool,
     pub show_files: bool,
     pub show_licenses: bool,
@@ -272,6 +274,8 @@ impl App {
             onion: false,
             status: None,
             prompt: None,
+            sprite_options: None,
+            sprite_job: None,
             show_about: false,
             show_files: false,
             show_licenses: false,
@@ -422,6 +426,7 @@ impl App {
     pub fn open_panel(&mut self, which: Option<&str>) {
         match which {
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
+            Some("sprites") => self.invoke("file.export_sprite_sheet"),
             Some("shortcuts") => self.show_shortcuts = true,
             Some("files") => self.show_files = true,
             Some("licenses") => self.show_licenses = true,
@@ -511,7 +516,7 @@ impl App {
 
     /// Any modal (prompt, confirmation, close guard) is open: global shortcuts pause.
     pub fn modal_open(&self) -> bool {
-        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog
+        self.prompt.is_some() || self.sprite_options.is_some() || self.confirm.is_some() || self.close_dialog
     }
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
@@ -529,6 +534,20 @@ impl App {
 
     /// Runs a command and reports the outcome; routine destructive edits say how to undo.
     pub fn perform(&mut self, id: &str, params: Value) -> Option<Value> {
+        if id == "file.export_sprite_sheet" {
+            if self.sprite_job.is_some() {
+                self.status_err("A sprite sheet export is already running.");
+                return None;
+            }
+            match crate::sprite_export::Job::start(self.s.doc.clone(), params) {
+                Ok(job) => {
+                    self.sprite_job = Some(job);
+                    self.status_ok("Exporting sprite sheet and JSON…");
+                }
+                Err(e) => self.status_err(e),
+            }
+            return None;
+        }
         let selected = self.s.selection.len();
         let v = self.run(id, params)?;
         match id {
@@ -578,6 +597,15 @@ impl App {
     /// Invokes a command from a menu, shortcut, palette or context menu, asking for a path or
     /// name first when it needs one.
     pub fn invoke(&mut self, id: &'static str) {
+        if id == "file.export_sprite_sheet" {
+            if self.sprite_job.is_some() {
+                self.status_err("A sprite sheet export is already running.");
+            } else {
+                self.playing = false;
+                self.sprite_options = Some(crate::sprite_export::Options::new(&self.s));
+            }
+            return;
+        }
         // Ctrl+X/C/V act on frames when the timeline was used last and has frames to act on
         // (Animate's Ctrl+Alt+X/C/V work anywhere).
         let id: &'static str = match id {
@@ -938,6 +966,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
+        crate::sprite_export::poll(self, &ctx);
         if self.glyph_check {
             // Fonts installed last frame are live now: can they draw the macOS key symbols?
             let ok = ctx.fonts_mut(|f| f.has_glyphs(&theme::font(theme::Type::Key), "⌘⇧⌥"));
@@ -972,6 +1001,7 @@ impl eframe::App for App {
         self.prompt_window(&ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
+        crate::sprite_export::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {

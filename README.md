@@ -28,6 +28,7 @@ cargo test                        # all crates
 cargo run -p anicraft-cli -- info --sample
 cargo run -p anicraft-cli -- render --sample --frame 12 --out frame12.png
 cargo run -p anicraft-cli -- render-seq --sample --out-dir frames --scale 0.5
+cargo run -p anicraft-cli -- sprite-sheet --sample --out sprites.png --scale 0.25
 cargo run -p anicraft-cli -- commands                 # the registry as JSON
 cargo run -p anicraft-cli -- exec --sample draw.rect '{"x":10,"y":10,"w":80,"h":40}' --save out.anicraft
 cargo run -p anicraft-cli -- serve --sample           # JSON-lines on stdin/stdout
@@ -42,6 +43,7 @@ The `serve` protocol takes one request per line,
 * [`docs/requirements.md`](docs/requirements.md): scope, functional and non-functional requirements, technology choices
 * [`docs/architecture.md`](docs/architecture.md): philosophy, crate map, document model, renderer, engine, testing
 * [`docs/roadmap.md`](docs/roadmap.md): honest status and milestones M0–M8
+* [`docs/sprite-sheets.md`](docs/sprite-sheets.md): sprite sheet export and JSON metadata
 * [`AGENTS.md`](AGENTS.md): rules for contributors and AI agents
 
 ## License

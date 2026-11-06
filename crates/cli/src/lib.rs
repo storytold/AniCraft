@@ -16,6 +16,7 @@ USAGE:
   anicraft-cli render <file|--sample> --out <frame.png> [--frame N] [--scale S]
   anicraft-cli render-seq <file|--sample> --out-dir <dir> [--from A] [--to B] [--scale S]
   anicraft-cli gif <file|--sample> --out <anim.gif> [--from A] [--to B] [--scale S] [--overwrite yes]
+  anicraft-cli sprite-sheet <file|--sample> --out <sheet.png> [--from A] [--to B] [--scale S] [--columns N] [--transparent true|false] [--overwrite yes]
   anicraft-cli commands
   anicraft-cli run <file|--sample> <script.json> [--save <out.anicraft>]
   anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]
@@ -122,9 +123,9 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             }
             exec(&mut s, "file.export_png_sequence", &p).map(|v| v.to_string())
         }
-        "gif" => {
-            let mut s = open_session(Some(src.ok_or("gif needs a file or --sample")?))?;
-            let out = a.flag("out").ok_or("gif needs --out <anim.gif>")?;
+        "gif" | "sprite-sheet" => {
+            let mut s = open_session(Some(src.ok_or_else(|| format!("{cmd} needs a file or --sample"))?))?;
+            let out = a.flag("out").ok_or_else(|| format!("{cmd} needs --out <file>"))?;
             let mut p = json!({"path": out});
             if let Some(f) = one_based(&a, "from")? {
                 p["from"] = json!(f);
@@ -138,7 +139,18 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             if a.flag("overwrite").is_some_and(|v| v == "yes" || v == "true") {
                 p["confirm"] = json!(true);
             }
-            exec(&mut s, "file.export_gif", &p).map(|v| v.to_string())
+            let id = if cmd == "sprite-sheet" {
+                if let Some(columns) = a.num::<u32>("columns")? {
+                    p["columns"] = json!(columns);
+                }
+                if let Some(transparent) = a.flag("transparent") {
+                    p["transparent"] = json!(transparent.parse::<bool>().map_err(|_| "--transparent expects true or false")?);
+                }
+                "file.export_sprite_sheet"
+            } else {
+                "file.export_gif"
+            };
+            exec(&mut s, id, &p).map(|v| v.to_string())
         }
         "new" => {
             let mut s = Session::default();
@@ -361,6 +373,27 @@ mod tests {
         assert_eq!(&bytes[1..4], b"PNG");
         assert!(run(&["render".into(), "--sample".into(), "--frame".into(), "0".into(), "--out".into(), "x.png".into()]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sprite_sheet_cli_range_columns_and_overwrite() {
+        let dir = std::env::temp_dir().join(format!("anicraft-cli-sprites-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("walk.png");
+        let mut argv: Vec<String> = ["sprite-sheet", "--sample", "--from", "2", "--to", "4", "--columns", "2", "--scale", "0.01", "--transparent", "false", "--out", out.to_str().unwrap()].iter().map(|s| s.to_string()).collect();
+        let result: Value = serde_json::from_str(&run(&argv).unwrap()).unwrap();
+        assert_eq!(result["frames"], 3);
+        let metadata: Value = serde_json::from_slice(&std::fs::read(out.with_extension("json")).unwrap()).unwrap();
+        assert_eq!(metadata["frames"][0]["frame"], 1, "CLI frames are 1-based, metadata is 0-based");
+        assert_eq!(metadata["frames"][2]["frame"], 3);
+        assert_eq!(metadata["columns"], 2);
+        assert!(run(&argv).is_err());
+        argv.extend(["--overwrite".into(), "yes".into()]);
+        run(&argv).unwrap();
+        argv.extend(["--from".into(), "0".into()]);
+        assert!(run(&argv).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
