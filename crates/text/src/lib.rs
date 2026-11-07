@@ -158,9 +158,53 @@ impl Fonts {
             style: if style.italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
         };
         let id = self.db.query(&q).ok_or(TextError::NoFonts)?;
-        let laid = self.db.with_face_data(id, |data, index| lay_out(data, index, text, style)).flatten().ok_or(TextError::NoFonts)?;
+        let face = |id| self.db.with_face_data(id, |data, index| (data.to_vec(), index));
+        let mut faces = vec![face(id).ok_or(TextError::NoFonts)?];
+        // Characters the face doesn't have (Arabic in Inter, say) come from the first fallback
+        // family that has them; everything else stays in the chosen face.
+        let charmap_lacks = |f: &(Vec<u8>, u32), c: char| skrifa::FontRef::from_index(&f.0, f.1).ok().is_none_or(|font| font.charmap().map(c).is_none());
+        let mut missing: Vec<char> = text.chars().filter(|c| needs_glyph(*c)).collect();
+        missing.sort_unstable();
+        missing.dedup();
+        missing.retain(|c| faces.first().is_none_or(|f| charmap_lacks(f, *c)));
+        for fallback in FALLBACK_FAMILIES {
+            if missing.is_empty() || faces.len() >= MAX_FACES {
+                break;
+            }
+            let Some(fid) = self.db.query(&fontdb::Query { families: &[fontdb::Family::Name(fallback)], ..q }).filter(|f| *f != id) else { continue };
+            let Some(f) = face(fid) else { continue };
+            let before = missing.len();
+            missing.retain(|c| charmap_lacks(&f, *c));
+            if missing.len() < before {
+                faces.push(f);
+            }
+        }
+        let laid = lay_out(&faces, text, style).ok_or(TextError::NoFonts)?;
         Ok(Layout { family, ..laid })
     }
+}
+
+/// Families tried, in order, for characters the chosen face doesn't have: faces with wide
+/// coverage that come with Windows, macOS and common Linux desktops, then Noto's script families.
+pub const FALLBACK_FAMILIES: &[&str] = &[
+    "Segoe UI",
+    "Arial",
+    "Tahoma",
+    "Geeza Pro",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+    "Noto Sans",
+    "Noto Sans Arabic",
+    "Noto Naskh Arabic",
+    "Noto Sans Hebrew",
+];
+
+/// Most faces one text block draws with (the chosen face and its fallbacks).
+const MAX_FACES: usize = 6;
+
+/// A character that is drawn (not a space, a line break or another control).
+fn needs_glyph(c: char) -> bool {
+    !c.is_control() && !c.is_whitespace()
 }
 
 /// Clamps a style to sane ranges (sizes from 1 to 2000 px, spacing within ±1000 px).
@@ -175,8 +219,10 @@ pub fn sanitize(style: &Style) -> Style {
     }
 }
 
-/// One shaped glyph: id, where its pen position starts, its offsets and advance (pixels).
+/// One shaped glyph: the face it comes from, its id, the byte it starts at in its paragraph, its
+/// offsets and advance (pixels).
 struct Glyph {
+    face: usize,
     id: skrifa::GlyphId,
     cluster: usize,
     x_offset: f32,
@@ -184,20 +230,22 @@ struct Glyph {
     advance: f32,
 }
 
-fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout> {
+/// Lays `text` out with `faces`: the chosen face first (its metrics set the lines), then the
+/// fallbacks for characters it doesn't have.
+fn lay_out(faces: &[(Vec<u8>, u32)], text: &str, style: &Style) -> Option<Layout> {
     let style = sanitize(style);
-    let font = skrifa::FontRef::from_index(data, index).ok()?;
+    let fonts: Vec<skrifa::FontRef> = faces.iter().filter_map(|(data, index)| skrifa::FontRef::from_index(data, *index).ok()).collect();
     let size = skrifa::instance::Size::new(style.size);
-    let metrics = font.metrics(size, skrifa::instance::LocationRef::default());
-    let upem = f32::from(metrics.units_per_em.max(1));
-    let scale = style.size / upem;
+    let metrics = fonts.first()?.metrics(size, skrifa::instance::LocationRef::default());
     let ascent = metrics.ascent;
     let line_height = (metrics.ascent - metrics.descent + metrics.leading).max(style.size * 0.5) + style.line_spacing;
-    let shaper_data = harfrust::ShaperData::new(&font);
-    let shaper = shaper_data.shaper(&font).build();
-    let glyphs = font.outline_glyphs();
-    let charmap = font.charmap();
-    let missing = text.chars().filter(|c| !c.is_control() && !c.is_whitespace() && charmap.map(*c).is_none()).count();
+    let shaper_data: Vec<harfrust::ShaperData> = fonts.iter().map(harfrust::ShaperData::new).collect();
+    let shapers: Vec<harfrust::Shaper> = fonts.iter().zip(&shaper_data).map(|(f, d)| d.shaper(f).build()).collect();
+    let scales: Vec<f32> = fonts.iter().map(|f| style.size / f32::from(f.metrics(size, skrifa::instance::LocationRef::default()).units_per_em.max(1))).collect();
+    let outlines: Vec<_> = fonts.iter().map(|f| f.outline_glyphs()).collect();
+    let charmaps: Vec<_> = fonts.iter().map(|f| f.charmap()).collect();
+    let has = |face: usize, c: char| charmaps.get(face).is_some_and(|m| m.map(c).is_some());
+    let missing = text.chars().filter(|c| needs_glyph(*c) && !(0..fonts.len()).any(|f| has(f, *c))).count();
 
     // Lines: paragraphs at line breaks, each wrapped at spaces to the width if there is one. Text
     // that mixes directions follows the Unicode bidi algorithm (UAX #9): a paragraph's lines are
@@ -208,7 +256,35 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
     for para in text.split('\n') {
         let para = para.strip_suffix('\r').unwrap_or(para);
         let bidi = unicode_bidi::ParagraphBidiInfo::new(para, None);
-        let shape_run = |run: std::ops::Range<usize>, rtl: bool| para.get(run).map_or_else(Vec::new, |s| shape(&shaper, s, rtl, scale, style.letter_spacing));
+        // The face drawing each byte: the chosen one where it has the character, else the first
+        // fallback that does. Spaces and marks stay with what comes before them, so a letter and
+        // its harakat are shaped together.
+        let mut face_of = vec![0usize; para.len()];
+        let mut current = 0;
+        for (i, c) in para.char_indices() {
+            let joins = !needs_glyph(c) || matches!(unicode_bidi::bidi_class(c), unicode_bidi::BidiClass::NSM | unicode_bidi::BidiClass::BN);
+            if !joins || !has(current, c) {
+                current = (0..fonts.len()).find(|f| has(*f, c)).unwrap_or(if joins { current } else { 0 });
+            }
+            face_of.iter_mut().skip(i).take(c.len_utf8()).for_each(|f| *f = current);
+        }
+        // A run shaped in one direction, split where the face changes; glyphs in visual order.
+        let shape_run = |run: std::ops::Range<usize>, rtl: bool| {
+            let mut parts: Vec<Vec<Glyph>> = Vec::new();
+            let mut start = run.start;
+            while start < run.end {
+                let face = face_of.get(start).copied().unwrap_or(0);
+                let end = (start..run.end).find(|i| face_of.get(*i).copied().unwrap_or(0) != face).unwrap_or(run.end);
+                if let (Some(s), Some(shaper)) = (para.get(start..end), shapers.get(face)) {
+                    parts.push(shape(shaper, face, s, start, rtl, scales.get(face).copied().unwrap_or(1.0), style.letter_spacing));
+                }
+                start = end;
+            }
+            if rtl {
+                parts.reverse();
+            }
+            parts.into_iter().flatten().collect::<Vec<_>>()
+        };
         // Each byte's share of the width (a cluster's advance on its first byte), run by run.
         let mut advance = vec![0.0f32; para.len()];
         let mut start = 0;
@@ -216,7 +292,7 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
             let level = bidi.levels.get(start).copied();
             let end = (start..para.len()).find(|i| bidi.levels.get(*i).copied() != level).unwrap_or(para.len());
             for g in shape_run(start..end, level.is_some_and(|l| l.is_rtl())) {
-                if let Some(a) = advance.get_mut(start + g.cluster) {
+                if let Some(a) = advance.get_mut(g.cluster) {
                     *a += g.advance;
                 }
             }
@@ -250,7 +326,7 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
         };
         let baseline = ascent + row as f32 * line_height;
         for (g, gx) in line {
-            let Some(glyph) = glyphs.get(g.id) else { continue };
+            let Some(glyph) = outlines.get(g.face).and_then(|o| o.get(g.id)) else { continue };
             let mut pen = Pen { cmds: &mut outline.cmds, x: shift + gx + g.x_offset, y: baseline - g.y_offset };
             let settings = skrifa::outline::DrawSettings::unhinted(size, skrifa::instance::LocationRef::default());
             let _ = glyph.draw(settings, &mut pen);
@@ -260,9 +336,9 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
     Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing })
 }
 
-/// Shapes `text` in one direction. Glyphs come back in visual order (left to right), clusters
-/// counted in bytes from the start of `text`.
-fn shape(shaper: &harfrust::Shaper<'_>, text: &str, rtl: bool, scale: f32, letter_spacing: f32) -> Vec<Glyph> {
+/// Shapes `text` (which starts at byte `at` of its paragraph) with one face in one direction.
+/// Glyphs come back in visual order (left to right), clusters counted from the paragraph's start.
+fn shape(shaper: &harfrust::Shaper<'_>, face: usize, text: &str, at: usize, rtl: bool, scale: f32, letter_spacing: f32) -> Vec<Glyph> {
     let mut buffer = harfrust::UnicodeBuffer::new();
     buffer.push_str(text);
     buffer.set_direction(if rtl { harfrust::Direction::RightToLeft } else { harfrust::Direction::LeftToRight });
@@ -273,8 +349,9 @@ fn shape(shaper: &harfrust::Shaper<'_>, text: &str, rtl: bool, scale: f32, lette
         .iter()
         .zip(shaped.glyph_positions())
         .map(|(info, pos)| Glyph {
+            face,
             id: skrifa::GlyphId::new(info.glyph_id),
-            cluster: info.cluster as usize,
+            cluster: at + info.cluster as usize,
             x_offset: pos.x_offset as f32 * scale,
             y_offset: pos.y_offset as f32 * scale,
             advance: pos.x_advance as f32 * scale + letter_spacing,
@@ -423,6 +500,31 @@ mod tests {
         let wrapped = lay("بيت جديد", Some(first.width + 1.0));
         assert!(wrapped.height > first.height * 1.8, "two lines: {}", wrapped.height);
         assert!(wrapped.outline.cmds.starts_with(&first.outline.cmds));
+    }
+
+    #[test]
+    fn letters_the_font_lacks_come_from_a_fallback_face() {
+        let Some(fonts) = fonts() else { return };
+        let has = |family: &str, c: char| {
+            let q = fontdb::Query { families: &[fontdb::Family::Name(family)], ..fontdb::Query::default() };
+            fonts.db.query(&q).and_then(|id| fonts.db.with_face_data(id, |d, i| skrifa::FontRef::from_index(d, i).is_ok_and(|f| f.charmap().map(c).is_some()))).unwrap_or(false)
+        };
+        // A family with Latin letters and no Arabic ones, and a fallback that has Arabic.
+        let Some(latin) = fonts.families().iter().find(|f| has(f, 'a') && !has(f, 'ب')) else { return };
+        if !FALLBACK_FAMILIES.iter().any(|f| has(f, 'ب')) {
+            eprintln!("no fallback family with Arabic letters here: fallback test skipped");
+            return;
+        }
+        let lay = |t: &str| fonts.layout(t, &Style { family: latin.clone(), ..style(40.0) }).unwrap();
+        let arabic = lay("بيت");
+        assert_eq!((arabic.missing, arabic.family.as_str()), (0, latin.as_str()), "the block keeps its family");
+        assert!(!arabic.outline.cmds.is_empty());
+        // The Latin letters are still drawn in the chosen face, the Arabic ones after them.
+        let mixed = lay("ab بيت");
+        assert!(mixed.outline.cmds.starts_with(&lay("ab").outline.cmds));
+        assert!(mixed.outline.cmds.len() > lay("ab").outline.cmds.len());
+        // A character no font has is counted, so the command can say so.
+        assert_eq!(lay("a\u{10FFFD}").missing, 1);
     }
 
     #[test]

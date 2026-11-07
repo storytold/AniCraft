@@ -105,7 +105,17 @@ pub(crate) fn lay_out(text: &str, style: &TextStyle, width: Option<f32>) -> Resu
             },
         )
         .map_err(|e| EngineError::State(format!("can't lay out text: {e}")))?;
-    let note = (!style.font.trim().is_empty() && !layout.family.eq_ignore_ascii_case(style.font.trim())).then(|| format!("“{}” isn't installed on this computer; used {}", style.font.trim(), layout.family));
+    let mut notes = Vec::new();
+    if !style.font.trim().is_empty() && !layout.family.eq_ignore_ascii_case(style.font.trim()) {
+        notes.push(format!("“{}” isn't installed on this computer; used {}", style.font.trim(), layout.family));
+    }
+    // Letters no installed font has (after the fallbacks) would otherwise show as boxes unsaid.
+    match layout.missing {
+        0 => {}
+        1 => notes.push("1 character isn't in any font on this computer and shows as a box".to_string()),
+        n => notes.push(format!("{n} characters aren't in any font on this computer and show as boxes")),
+    }
+    let note = (!notes.is_empty()).then(|| notes.join("; "));
     let block = TextBlock {
         text: text.to_string(),
         font: layout.family,
