@@ -324,7 +324,22 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 live(app, "Alpha", "element.set_alpha", json!({"alpha": alpha / 100.0}));
             }
         });
-        if let ElementKind::Symbol { symbol, loop_mode, first_frame } = &e.kind
+        // Blending, on movie clips and buttons as in Animate.
+        if let ElementKind::Symbol { symbol, blend, .. } = &e.kind
+            && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
+        {
+            let current = *blend;
+            row_prose(ui, "Blending", |ui| {
+                egui::ComboBox::from_id_salt("prop_blend").selected_text(current.label()).show_ui(ui, |ui| {
+                    for m in anicraft_engine::doc::BlendMode::ALL {
+                        if ui.selectable_label(m == current, m.label()).clicked() && m != current {
+                            app.run("element.set_blend", json!({"mode": m.key()}));
+                        }
+                    }
+                });
+            });
+        }
+        if let ElementKind::Symbol { symbol, loop_mode, first_frame, .. } = &e.kind
             && let Some(sym) = app.s.doc.symbol(*symbol).map(|s| (s.kind, s.timeline.frame_count()))
         {
             use anicraft_engine::doc::LoopMode;

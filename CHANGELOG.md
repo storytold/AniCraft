@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* **Blend modes** (Properties › Blending, on movie clip and button instances as in Animate):
+  Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract,
+  Difference, Invert, Alpha and Erase. The instance is composited on its own and then blended
+  with what is below, on the stage and in every export. SVG export writes the CSS blend modes
+  it has, and Lottie export sets each shape's blend mode. Animate documents keep their
+  instances' blend modes. Headless: `element.set_blend`.
+
 * **Text** (the Text tool, **T**). Click on the stage and type; Esc or a click elsewhere
   finishes, and Enter starts a new line. Click text with the Text tool, or double-click it with
   the Selection tool, to edit it. Properties sets the font (any font on your computer), size,

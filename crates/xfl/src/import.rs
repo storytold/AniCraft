@@ -14,7 +14,7 @@
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Bitmap, BitmapId, ColorEffect, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Bitmap, BitmapId, BlendMode, ColorEffect, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
@@ -221,7 +221,9 @@ impl<'a> Builder<'a> {
             }
         }
         let m = parent.mul(&matrix(el));
-        out.push(self.element(ElementKind::Symbol { symbol, loop_mode, first_frame }, m, fx));
+        // Blend modes by Animate's names; unknown ones stay Normal.
+        let blend = el.attr("blendMode").and_then(BlendMode::from_key).unwrap_or_default();
+        out.push(self.element(ElementKind::Symbol { symbol, loop_mode, first_frame, blend }, m, fx));
     }
 
     fn elements(&mut self, list: &[X], parent: &Affine, out: &mut Vec<Arc<Element>>, depth: usize) {

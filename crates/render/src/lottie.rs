@@ -151,11 +151,13 @@ struct Key {
     layer: u64,
     element: u64,
     occurrence: u32,
-    shape: Vec<(bool, usize)>,
+    shape: Structure,
     fill: u8,
     stops: usize,
     stroke: bool,
-    masks: Vec<(bool, usize)>,
+    masks: Structure,
+    /// Lottie layer blend mode (`bm`).
+    blend: u8,
 }
 
 struct Track {
@@ -297,11 +299,16 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
                 }
             };
             let mut opacity = 1.0;
+            let mut blend_mode = anicraft_doc::BlendMode::Normal;
             let mut g = item.group;
             let mut depth = 0;
             while let Some(gi) = g {
                 let Some(group) = dl.groups.get(gi as usize) else { break };
                 opacity *= group.alpha.clamp(0.0, 1.0);
+                if blend_mode.is_normal() && !matches!(group.blend, anicraft_doc::BlendMode::Normal | anicraft_doc::BlendMode::Layer) {
+                    // The innermost blending group decides.
+                    blend_mode = group.blend;
+                }
                 g = group.parent.filter(|&p| p < gi);
                 depth += 1;
                 if depth > 64 {
@@ -311,6 +318,11 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
             if opacity < 1.0 {
                 flags.insert("symbol fades (faded shape by shape)");
             }
+            let blend = lottie_blend(blend_mode);
+            if !blend_mode.is_normal() {
+                flags.insert(if blend.is_some() { "blend modes (applied shape by shape)" } else { "Subtract, Invert, Alpha and Erase blending (Lottie has no equivalent; drawn normally)" });
+            }
+            let blend = blend.unwrap_or(0);
             let Some(s) = sample(item, opacity, masks, &mut flags) else {
                 // Not exported: counted by element (ids above every track index).
                 record(&mut notes, flags, usize::MAX - (item.element.0 as usize).min(usize::MAX / 2));
@@ -338,6 +350,7 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
                 },
                 stroke: s.stroke.is_some(),
                 masks: s.masks.iter().map(|b| (b.closed, b.v.len())).collect(),
+                blend,
             };
             let ti = match open.get(&key).copied().filter(|&ti| tracks.get(ti).is_some_and(|tr| tr.last + 1 == t)) {
                 Some(ti) => ti,
@@ -429,6 +442,23 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
     LottieExport { json: root.to_string(), layers: shape_layers, report }
 }
 
+/// Lottie's layer blend mode for ours, where it has one.
+fn lottie_blend(m: anicraft_doc::BlendMode) -> Option<u8> {
+    use anicraft_doc::BlendMode as B;
+    Some(match m {
+        B::Normal | B::Layer => 0,
+        B::Multiply => 1,
+        B::Screen => 2,
+        B::Overlay => 3,
+        B::Darken => 4,
+        B::Lighten => 5,
+        B::HardLight => 8,
+        B::Difference => 10,
+        B::Add => 16,
+        B::Subtract | B::Invert | B::Alpha | B::Erase => return None,
+    })
+}
+
 fn record(notes: &mut HashMap<&'static str, HashSet<usize>>, flags: HashSet<&'static str>, track: usize) {
     for f in flags {
         notes.entry(f).or_default().insert(track);
@@ -497,7 +527,7 @@ fn layer(tr: &Track, ind: usize) -> Value {
     items.push(json!({"ty": "tr", "p": {"a": 0, "k": [0, 0]}, "a": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [100, 100]}, "r": {"a": 0, "k": 0}, "o": prop(&opacity), "sk": {"a": 0, "k": 0}, "sa": {"a": 0, "k": 0}}));
     let mut out = json!({
         "ddd": 0, "ind": ind, "ty": 4, "nm": tr.name, "sr": 1, "ks": static_ks(), "ao": 0,
-        "ip": tr.first, "op": tr.last + 1, "st": 0, "bm": 0,
+        "ip": tr.first, "op": tr.last + 1, "st": 0, "bm": tr.key.blend,
         "shapes": [{"ty": "gr", "nm": "Artwork", "it": items}]
     });
     let masks = f.first().map_or(0, |(_, s)| s.masks.len());

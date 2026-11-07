@@ -57,7 +57,16 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
         }
         for &g in want.iter().skip(keep) {
             let a = dl.groups.get(g as usize).map_or(1.0, |x| x.alpha.clamp(0.0, 1.0));
-            let _ = write!(body, "<g opacity=\"{}\">", num(a));
+            let style = match dl.groups.get(g as usize).map(|x| x.blend) {
+                // CSS has these; Layer is the isolated group itself. The rest have no SVG
+                // equivalent and draw normally.
+                Some(m @ (anicraft_doc::BlendMode::Multiply | anicraft_doc::BlendMode::Screen | anicraft_doc::BlendMode::Overlay | anicraft_doc::BlendMode::Darken | anicraft_doc::BlendMode::Lighten | anicraft_doc::BlendMode::HardLight | anicraft_doc::BlendMode::Difference)) => {
+                    format!(" style=\"mix-blend-mode:{}\"", if m == anicraft_doc::BlendMode::HardLight { "hard-light" } else { m.key() })
+                }
+                Some(anicraft_doc::BlendMode::Add) => " style=\"mix-blend-mode:plus-lighter\"".to_string(),
+                _ => String::new(),
+            };
+            let _ = write!(body, "<g opacity=\"{}\"{style}>", num(a));
             open.push(g);
         }
         let clip = item.clip.filter(|&c| (c as usize) < dl.clip_parents.len()).map(|c| format!(" clip-path=\"url(#c{c})\"")).unwrap_or_default();
@@ -322,7 +331,7 @@ mod group_tests {
             group: g,
             image: None,
         };
-        let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5 }, Group { parent: Some(0), alpha: 0.25 }] };
+        let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default() }, Group { parent: Some(0), alpha: 0.25, blend: Default::default() }] };
         let svg = to_svg(&dl, &Stage { width: 4, height: 4, fps: 24.0, background: Rgba::WHITE });
         assert!(svg.contains("<g opacity=\"0.5\">") && svg.contains("<g opacity=\"0.25\">"), "{svg}");
         assert_eq!(svg.matches("<g ").count(), svg.matches("</g>").count(), "balanced");
