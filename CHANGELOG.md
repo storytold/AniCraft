@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* **Movie clips and buttons behave like themselves.** A movie clip instance plays its own
+  timeline on a loop from when it appears, and keeps playing across keyframes that hold the
+  same instance. A graphic keeps step with the timeline it's on. A button shows its Up frame.
+  Properties now sets a selected instance's symbol **Type**, and a graphic's **Looping**
+  (loop, play once, single frame) and **First frame** (`symbol.set_kind`, `element.set_loop`).
+
 * **Symbols fade as one.** A symbol instance below full opacity now composites its contents
   first and then fades the result, as in Animate, so overlapping parts no longer show through
   each other. This applies on the stage and in PNG, GIF, sprite sheet and SVG exports (SVG
