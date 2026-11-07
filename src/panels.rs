@@ -1,6 +1,6 @@
 //! Tools bar, edit bar, status bar, Properties and Library panels.
 
-use crate::app::{App, Tool};
+use crate::app::{App, LibraryItem, Tool};
 use crate::icons::{self, Icon};
 use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, font, section, text, to_color32, with_type};
 use anicraft_engine::doc::{ElementKind, Paint, Rgba, SymbolKind, evaluate_layer_elements};
@@ -584,15 +584,31 @@ fn ease_curve(ui: &mut egui::Ui, e: anicraft_engine::doc::Easing) {
 }
 
 fn library(app: &mut App, ui: &mut egui::Ui) {
-    let lib = app.s.doc.library.clone();
-    if lib.is_empty() {
-        ui.label(text(Type::Caption, "No symbols yet. Select artwork and press F8."));
+    let doc = &app.s.doc;
+    let rows: Vec<LibraryRow> = doc
+        .library
+        .iter()
+        .map(|sym| LibraryRow {
+            item: LibraryItem::Symbol(sym.id),
+            name: sym.name.clone(),
+            detail: format!("{:?} · {}f", sym.kind, sym.timeline.frame_count()),
+            kind: Some(sym.kind),
+        })
+        .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: format!("Bitmap · {}×{}", b.width, b.height), kind: None }))
+        .collect();
+    if rows.is_empty() {
+        let key = |id: &str| app.keymap.primary(id).map(crate::platform::shortcut_label).unwrap_or_default();
+        ui.label(text(Type::Caption, format!("No symbols or images yet. Select artwork and press {} to make a symbol, or import an image with {}.", key("modify.convert_to_symbol"), key("file.import"))));
         return;
     }
-    ui.label(text(Type::Caption, format!("{} items", lib.len())));
+    ui.label(text(Type::Caption, format!("{} {}", rows.len(), if rows.len() == 1 { "item" } else { "items" })));
+    let place = |app: &mut App, item: LibraryItem| match item {
+        LibraryItem::Symbol(id) => app.run("library.place", json!({"symbol": id.0})),
+        LibraryItem::Bitmap(id) => app.run("library.place", json!({"bitmap": id.0})),
+    };
     egui::ScrollArea::vertical().id_salt("lib").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
-        for (i, sym) in lib.iter().enumerate() {
-            let selected = app.library_sel == Some(i);
+        for row in &rows {
+            let selected = app.library_sel == Some(row.item);
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), TARGET), Sense::click());
             if selected || resp.hovered() {
                 ui.painter().rect_filled(r, T.rc(), if selected { T.accent_dim } else { T.hover });
@@ -601,33 +617,40 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
                 ui.painter().rect_filled(Rect::from_min_size(r.left_top(), vec2(3.0, r.height())), 0.0, T.accent);
             }
             let icon = Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0));
-            let kind_color = match sym.kind {
-                SymbolKind::Graphic => T.kind_graphic,
-                SymbolKind::MovieClip => T.kind_movie_clip,
-                SymbolKind::Button => T.kind_button,
-            };
-            ui.painter().rect_stroke(icon, 2.0, Stroke::new(1.5, kind_color), StrokeKind::Inside);
-            ui.painter().circle_filled(icon.center(), 2.5, kind_color);
-            ui.painter().text(r.left_center() + vec2(30.0, 0.0), Align2::LEFT_CENTER, &sym.name, font(Type::Body), color(Type::Body));
-            ui.painter().text(
-                r.right_center() - vec2(8.0, 0.0),
-                Align2::RIGHT_CENTER,
-                format!("{:?} · {}f", sym.kind, sym.timeline.frame_count()),
-                font(Type::Caption),
-                color(Type::Caption),
-            );
+            match row.kind {
+                Some(kind) => {
+                    let kind_color = match kind {
+                        SymbolKind::Graphic => T.kind_graphic,
+                        SymbolKind::MovieClip => T.kind_movie_clip,
+                        SymbolKind::Button => T.kind_button,
+                    };
+                    ui.painter().rect_stroke(icon, 2.0, Stroke::new(1.5, kind_color), StrokeKind::Inside);
+                    ui.painter().circle_filled(icon.center(), 2.5, kind_color);
+                }
+                None => icons::paint(ui.painter(), icon.expand(1.0), Icon::Image, color(Type::Body)),
+            }
+            ui.painter().text(r.left_center() + vec2(30.0, 0.0), Align2::LEFT_CENTER, &row.name, font(Type::Body), color(Type::Body));
+            ui.painter().text(r.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &row.detail, font(Type::Caption), color(Type::Caption));
             if resp.clicked() {
-                app.library_sel = Some(i);
+                app.library_sel = Some(row.item);
             }
             if resp.double_clicked() {
-                app.run("library.place", json!({"symbol": sym.id.0}));
+                place(app, row.item);
             }
         }
     });
     ui.add_space(4.0);
-    let can_place = app.library_sel.and_then(|i| lib.get(i)).map(|s| s.id.0);
-    if ui.add_enabled(can_place.is_some(), egui::Button::new("Place on stage")).on_hover_text("Adds an instance at the stage centre (or double-click an item)").clicked()
-        && let Some(id) = can_place {
-            app.run("library.place", json!({"symbol": id}));
+    let can_place = app.library_sel.filter(|sel| rows.iter().any(|r| r.item == *sel));
+    if ui.add_enabled(can_place.is_some(), egui::Button::new("Place on stage")).on_hover_text("Adds it at the stage centre (or double-click an item)").clicked()
+        && let Some(item) = can_place {
+            place(app, item);
         }
+}
+
+/// One Library row: a symbol (with its kind) or a bitmap.
+struct LibraryRow {
+    item: LibraryItem,
+    name: String,
+    detail: String,
+    kind: Option<SymbolKind>,
 }

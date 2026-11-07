@@ -195,10 +195,11 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Format(format!("{} is too large to import", path.display())));
     }
     let bytes = std::fs::read(&path)?;
-    let drawing = if ext.as_deref() == Some("svg") {
-        anicraft_svg::import(&bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?
+    let (drawing, bitmap) = if ext.as_deref() == Some("svg") {
+        (anicraft_svg::import(&bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?, None)
     } else {
-        import_image(s, &path, bytes)?
+        let drawing = import_image(s, &path, bytes)?;
+        (drawing, s.doc.bitmaps.last().map(|b| b.id.0))
     };
     if drawing.shapes.is_empty() {
         return Err(EngineError::State(format!("{} has no shapes AniCraft can import yet. {}", path.display(), drawing.report.summary())));
@@ -237,6 +238,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({
         "layer": layer_id.0,
         "elements": ids.len(),
+        "bitmap": bitmap,
         "width": drawing.width,
         "height": drawing.height,
         "report": drawing.report.summary(),

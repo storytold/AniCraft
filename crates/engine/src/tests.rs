@@ -1468,3 +1468,31 @@ fn images_import_as_bitmaps_render_save_and_export() {
     assert!(s.execute("file.import", &json!({"path": dir.join("fake.png").display().to_string()})).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn library_bitmaps_place_centred_on_the_stage() {
+    let dir = std::env::temp_dir().join(format!("anicraft-libbitmap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png_path = dir.join("dot.png");
+    std::fs::write(&png_path, anicraft_render::encode_png(6, 4, &[0, 128, 0, 255].repeat(24)).unwrap()).unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.import", json!({"path": png_path.display().to_string()}));
+    let bitmap = v["bitmap"].as_u64().expect("the new bitmap's id");
+    assert_eq!(s.doc.bitmaps[0].id.0, bitmap);
+    // Placing it again from the Library adds a second picture, centred, on the current layer.
+    let v = run(&mut s, "library.place", json!({"bitmap": bitmap, "x": 100, "y": 50}));
+    let id = anicraft_doc::ElementId(v["element"].as_u64().unwrap());
+    assert_eq!(s.selection, vec![id]);
+    let el = s.active_layer().unwrap().keyframe_at(s.frame).unwrap().elements.iter().find(|e| e.id == id).unwrap().clone();
+    assert_eq!(el.name, "dot.png");
+    assert_eq!(el.transform.apply(anicraft_geom::Vec2::new(3.0, 2.0)), anicraft_geom::Vec2::new(100.0, 50.0), "centred on x/y");
+    match &el.kind {
+        anicraft_doc::ElementKind::Shape(sh) => assert_eq!(sh.fill, Some(anicraft_doc::Paint::Bitmap { bitmap: anicraft_doc::BitmapId(bitmap), repeat: false })),
+        k => panic!("{k:?}"),
+    }
+    assert_eq!(s.doc.bitmaps.len(), 1, "placing shares the bitmap");
+    // Unknown bitmaps and missing params are refused.
+    assert!(s.execute("library.place", &json!({"bitmap": 999_999})).is_err());
+    assert!(s.execute("library.place", &json!({})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
