@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* **Export Lottie Animation** (File › Export, `file.export_lottie`): the movie, or a range of
+  its frames, as a Lottie animation (JSON) for websites and apps. Every frame matches AniCraft:
+  shapes, strokes, solid and gradient fills, colour effects, opacity and masks come across,
+  each piece of artwork as its own layer that changes exactly where it changes in the movie.
+  Transparent by default, or with the stage colour behind. Anything that can't come across
+  exactly (images, masks inside masks, symbols fading as one, stretched round gradients) is
+  named in the status bar.
+
 * **AniCraft for AI assistants** (`anicraft-cli mcp`): a Model Context Protocol server, so an
   assistant can open a document, draw, animate, look at frames and export, through the same
   commands as the app, with undo and the same "are you sure" rules. See `docs/mcp.md`.
