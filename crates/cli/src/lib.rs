@@ -23,6 +23,8 @@ USAGE:
   anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]
   anicraft-cli new --out <file.anicraft> [--width W] [--height H] [--fps F]
   anicraft-cli bench [--layers N] [--shapes N] [--frames N]   performance probe (use --release)
+  anicraft-cli bench --check yes         the default scenario against the budgets in
+                                         docs/performance.md; fails when one is missed
   anicraft-cli serve [file|--sample]     JSON-lines on stdin/stdout:
         {\"id\":1,\"cmd\":\"draw.rect\",\"params\":{\"x\":10,\"y\":10,\"w\":50,\"h\":50}}
   anicraft-cli mcp [file|--sample]       Model Context Protocol server on stdin/stdout,
@@ -220,9 +222,53 @@ fn round(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
 
+/// Timing budgets for the default `bench` scenario (50 layers × 200 shapes × 240 frames,
+/// 200k element instances), in release builds: `(key in the bench output, what, limit)`.
+/// Keep in step with the table in `docs/performance.md`. Budgets that don't depend on the
+/// machine (memory, sharing, file size, culling) are tests instead, run on every PR.
+pub const TIME_BUDGETS: &[(&str, &str, f64)] = &[
+    ("edit_command_ms", "edit command (ms)", 1.0),
+    ("undo_ms", "undo (ms)", 1.0),
+    ("snapshot_clone_us", "document snapshot (µs)", 50.0),
+    ("evaluate_ms_per_frame", "evaluate a frame (ms)", 4.0),
+    ("render_1080p_ms_per_frame", "render 1080p (ms)", 16.7),
+    ("render_zoom400_ms_per_frame", "render at 400% (ms)", 16.7),
+    ("hit_test_us", "hit test (µs)", 200.0),
+    ("file.save_ms", "save the 65 MB file (ms)", 500.0),
+    ("file.load_ms", "load the 65 MB file (ms)", 500.0),
+];
+
+/// Compares bench output with [`TIME_BUDGETS`]: one row per budget, and the ones missed.
+pub fn check_budgets(out: &Value) -> (Vec<Value>, Vec<String>) {
+    let mut rows = Vec::new();
+    let mut missed = Vec::new();
+    for (key, what, limit) in TIME_BUDGETS {
+        let value = key.split('.').try_fold(out, |v, k| v.get(k)).and_then(Value::as_f64);
+        let ok = value.is_some_and(|v| v <= *limit);
+        if !ok {
+            missed.push(match value {
+                Some(v) => format!("{what}: {v} (budget {limit})"),
+                None => format!("{what}: not measured"),
+            });
+        }
+        rows.push(json!({"budget": what, "limit": limit, "measured": value, "ok": ok}));
+    }
+    (rows, missed)
+}
+
 /// Performance probe on a generated stress document. Run in release for meaningful numbers:
-/// `cargo run --release -p anicraft-cli -- bench`.
+/// `cargo run --release -p anicraft-cli -- bench`. With `--check yes`, the default scenario
+/// is compared with [`TIME_BUDGETS`] and a missed budget is an error.
 pub fn bench(a: &Args) -> Result<String, String> {
+    let check = a.flag("check").is_some_and(|v| v == "yes" || v == "true");
+    if check {
+        if cfg!(debug_assertions) {
+            return Err("bench --check needs a release build: cargo run --release -p anicraft-cli -- bench --check yes".into());
+        }
+        if ["layers", "shapes", "frames"].iter().any(|k| a.flag(k).is_some()) {
+            return Err("the budgets are for the default scenario; leave out --layers, --shapes and --frames with --check".into());
+        }
+    }
     use anicraft_doc::{evaluate, sample};
     use anicraft_engine::history::document_bytes;
     use anicraft_render::{View, render};
@@ -295,7 +341,16 @@ pub fn bench(a: &Args) -> Result<String, String> {
         "threads": std::thread::available_parallelism().map_or(1, |n| n.get()),
         "build": if cfg!(debug_assertions) { "debug (use --release for real numbers)" } else { "release" },
     });
-    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+    if !check {
+        return serde_json::to_string_pretty(&out).map_err(|e| e.to_string());
+    }
+    let (rows, missed) = check_budgets(&out);
+    let report = serde_json::to_string_pretty(&json!({"measured": out, "budgets": rows})).map_err(|e| e.to_string())?;
+    if missed.is_empty() {
+        Ok(report)
+    } else {
+        Err(format!("{report}\n\nover budget: {}", missed.join("; ")))
+    }
 }
 
 /// Answers one JSON request.
@@ -372,6 +427,62 @@ mod tests {
         assert_eq!(&bytes[1..4], b"PNG");
         assert!(run(&["render".into(), "--sample".into(), "--frame".into(), "0".into(), "--out".into(), "x.png".into()]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The budgets in docs/performance.md that don't depend on the machine, checked on every
+    /// build. (Timing budgets are `bench --check yes`, on a known machine.)
+    #[test]
+    fn machine_independent_budgets() {
+        use anicraft_doc::{evaluate, sample};
+        use anicraft_engine::history::document_bytes;
+        // 20 layers × 500 shapes × 120 frames: 100k element instances.
+        let doc = sample::stress(20, 500, 120);
+        let instances: usize = doc.timeline(0).layers.iter().flat_map(|l| l.keyframes.iter()).map(|k| k.elements.len()).sum();
+        assert_eq!(instances, 100_000);
+
+        // A snapshot (for undo, the render worker, autosave) shares everything: O(1).
+        let snap = doc.clone();
+        assert!(snap.scenes.iter().zip(&doc.scenes).all(|(a, b)| std::sync::Arc::ptr_eq(a, b)));
+
+        // Undo memory per small edit < 16 KB, however large the document.
+        let mut s = Session::new(doc);
+        s.execute("layer.select", &json!({"index": 3})).unwrap();
+        s.set_frame(30);
+        let id = s.visible_elements()[0].id.0;
+        s.execute("element.select", &json!({"ids": [id]})).unwrap();
+        s.execute("element.translate", &json!({"dx": 5, "dy": 0})).unwrap();
+        let step = s.history().bytes();
+        assert!(step < 16 * 1024, "one edit kept {step} bytes of undo history (budget 16 KB)");
+        assert!(step * 1000 < document_bytes(&s.doc), "an edit keeps what changed, not the document");
+
+        // File size: < 400 bytes per element instance (shared paths are written once).
+        let small = sample::stress(10, 100, 48);
+        let n: usize = small.timeline(0).layers.iter().flat_map(|l| l.keyframes.iter()).map(|k| k.elements.len()).sum();
+        let bytes = format::to_json(&small).unwrap().len();
+        assert!(bytes < n * 400, "{} bytes per instance (budget 400)", bytes / n.max(1));
+
+        // At 400% zoom on the stage centre, off-screen shapes are culled: at most 1/8 drawn.
+        let dl = evaluate(&small, 5);
+        let view = anicraft_render::View::stage(&small, 1.0);
+        let zoomed = anicraft_render::View { transform: anicraft_geom::Affine::translate(-2880.0, -1620.0).mul(&anicraft_geom::Affine::scale(4.0, 4.0)), ..view };
+        let (_, st) = anicraft_render::render(&dl, &zoomed).unwrap();
+        assert!(st.items >= 1000 && st.drawn * 8 <= st.items, "{} of {} shapes drawn at 400%", st.drawn, st.items);
+    }
+
+    #[test]
+    fn budget_check_reads_bench_output() {
+        let mut out = json!({"edit_command_ms": 0.01, "undo_ms": 0.01, "snapshot_clone_us": 0.4, "evaluate_ms_per_frame": 1.5,
+            "render_1080p_ms_per_frame": 20.0, "render_zoom400_ms_per_frame": 10.0, "hit_test_us": 50.0, "file": {"save_ms": 100.0}});
+        let (rows, missed) = check_budgets(&out);
+        assert_eq!(rows.len(), TIME_BUDGETS.len());
+        assert_eq!(missed, ["render 1080p (ms): 20 (budget 16.7)", "load the 65 MB file (ms): not measured"]);
+        out["render_1080p_ms_per_frame"] = json!(16.0);
+        out["file"]["load_ms"] = json!(120.0);
+        assert!(check_budgets(&out).1.is_empty());
+        // Debug builds and custom sizes can't be checked against the budgets.
+        if cfg!(debug_assertions) {
+            assert!(run(&["bench".into(), "--check".into(), "yes".into()]).unwrap_err().contains("release"));
+        }
     }
 
     #[test]
