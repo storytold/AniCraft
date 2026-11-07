@@ -22,6 +22,8 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
     let mut defs = String::new();
     let mut body = String::new();
     let mut grad = 0usize;
+    // Each bitmap is embedded once (by its pixels), then used by every fill that shows it.
+    let mut images: Vec<(usize, String)> = Vec::new();
 
     // Clips, in order (a parent always precedes its children; anything else clips all).
     for (i, parent) in dl.clip_parents.iter().enumerate() {
@@ -65,7 +67,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
             continue;
         }
         if let Some(fill) = &item.fill
-            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad)
+            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad, item.image.as_ref(), &mut images)
         {
             let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
         }
@@ -139,13 +141,46 @@ fn color_attrs(attr: &str, c: Rgba) -> String {
 
 /// The fill attribute for `paint`, defining a gradient in `defs` when needed. `None` when the
 /// paint draws nothing.
-fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize) -> Option<String> {
+fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize, image: Option<&std::sync::Arc<anicraft_doc::Pixels>>, images: &mut Vec<(usize, String)>) -> Option<String> {
     let stops = match paint {
         Paint::Solid(c) => {
             let c = fx.apply(*c).sanitized();
             return (c.a > 0.0).then(|| color_attrs("fill", c));
         }
         Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => stops,
+        Paint::Bitmap { .. } => {
+            // A pattern of the bitmap at its own pixel size, placed by the shape's transform.
+            // (Opacity comes across; tint has no SVG equivalent and is left out.)
+            let px = image?;
+            let key = std::sync::Arc::as_ptr(px) as usize;
+            let img_id = match images.iter().find(|(k, _)| *k == key) {
+                Some((_, id)) => id.clone(),
+                None => {
+                    let png = crate::encode_png(px.width, px.height, &px.rgba).ok()?;
+                    let id = format!("img{}", images.len());
+                    let _ = write!(defs, "<image id=\"{id}\" width=\"{}\" height=\"{}\" href=\"data:image/png;base64,{}\"/>", px.width, px.height, anicraft_doc::base64_encode(&png));
+                    images.push((key, id.clone()));
+                    id
+                }
+            };
+            let id = format!("p{n}");
+            *n += 1;
+            let m = xf.m;
+            let _ = write!(
+                defs,
+                "<pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" patternTransform=\"matrix({} {} {} {} {} {})\" width=\"{}\" height=\"{}\"><use href=\"#{img_id}\"/></pattern>",
+                num(m[0]),
+                num(m[1]),
+                num(m[2]),
+                num(m[3]),
+                num(m[4]),
+                num(m[5]),
+                px.width,
+                px.height
+            );
+            let a = fx.alpha.clamp(0.0, 1.0);
+            return Some(if a < 1.0 { format!(" fill=\"url(#{id})\" fill-opacity=\"{}\"", num(a)) } else { format!(" fill=\"url(#{id})\"") });
+        }
     };
     let mut sorted: Vec<_> = stops.iter().filter(|s| s.offset.is_finite()).copied().collect();
     if sorted.is_empty() {
@@ -163,7 +198,7 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
         Paint::Radial { center, radius, .. } => {
             let _ = write!(defs, "<radialGradient id=\"{id}\"{gt} cx=\"{}\" cy=\"{}\" r=\"{}\">", num(center.x), num(center.y), num(radius.max(0.0)));
         }
-        Paint::Solid(_) => return None,
+        Paint::Solid(_) | Paint::Bitmap { .. } => return None,
     }
     for s in &sorted {
         let c = fx.apply(s.color).sanitized();
@@ -199,6 +234,7 @@ mod tests {
             masks: None,
             guide: false,
             group: None,
+            image: None,
         }
     }
 
@@ -283,6 +319,7 @@ mod group_tests {
             masks: None,
             guide: false,
             group: g,
+            image: None,
         };
         let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5 }, Group { parent: Some(0), alpha: 0.25 }] };
         let svg = to_svg(&dl, &Stage { width: 4, height: 4, fps: 24.0, background: Rgba::WHITE });

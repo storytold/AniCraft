@@ -4,11 +4,13 @@
 //! a flat [`DisplayList`], which renderers draw. Nothing here mutates during playback.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod bitmap;
 mod easing;
 mod eval;
 pub mod path_table;
 pub mod sample;
 
+pub use bitmap::{Bitmap, BitmapId, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png};
 pub use easing::Easing;
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
 
@@ -79,6 +81,13 @@ pub enum Paint {
     Solid(Rgba),
     Linear { start: Vec2, end: Vec2, stops: Vec<GradientStop> },
     Radial { center: Vec2, radius: f32, stops: Vec<GradientStop> },
+    /// A bitmap, its pixel (x, y) at local (x, y); `repeat` tiles it, otherwise it shows once
+    /// (an imported image is a rectangle of exactly its size).
+    Bitmap {
+        bitmap: BitmapId,
+        #[serde(default)]
+        repeat: bool,
+    },
 }
 
 impl Paint {
@@ -87,6 +96,7 @@ impl Paint {
         match self {
             Paint::Solid(c) => *c,
             Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => stops.first().map_or(Rgba::BLACK, |s| s.color),
+            Paint::Bitmap { .. } => Rgba::hex(0x808080),
         }
     }
 
@@ -721,6 +731,9 @@ pub struct Document {
     pub stage: Stage,
     pub scenes: Vec<Arc<Scene>>,
     pub library: Vec<Arc<Symbol>>,
+    /// Images, shown through [`Paint::Bitmap`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bitmaps: Vec<Arc<Bitmap>>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
 }
@@ -736,6 +749,8 @@ struct DocumentFile {
     timeline: Option<Timeline>,
     #[serde(default)]
     library: Vec<Arc<Symbol>>,
+    #[serde(default)]
+    bitmaps: Vec<Arc<Bitmap>>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -746,7 +761,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
         }
-        Document { stage: f.stage, scenes, library: f.library, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, next_id: f.next_id }
     }
 }
 
@@ -759,13 +774,13 @@ static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library)
+        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -778,6 +793,9 @@ impl Document {
         let id = self.next_id.max(1);
         self.next_id = id.saturating_add(1);
         id
+    }
+    pub fn bitmap(&self, id: BitmapId) -> Option<&Bitmap> {
+        self.bitmaps.iter().find(|b| b.id == id).map(|b| &**b)
     }
     pub fn symbol(&self, id: SymbolId) -> Option<&Symbol> {
         self.library.iter().find(|s| s.id == id).map(|s| &**s)
@@ -863,6 +881,9 @@ impl Document {
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
+        }
+        for b in &self.bitmaps {
+            max_id = max_id.max(b.id.0);
         }
         self.next_id = self.next_id.max(max_id.saturating_add(1));
     }

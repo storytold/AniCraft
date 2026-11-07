@@ -1404,3 +1404,67 @@ fn video_export_streams_frames_to_ffmpeg_or_explains_how_to_get_it() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An 8×8 solid red JPEG (made with ffmpeg for this test).
+const TINY_JPEG_HEX: &str = "ffd8ffe000104a46494600010200000100010000fffe000f4c61766336332e322e31303000ffdb0043000804040404040505050505050606060606060606060606060607070708080807070706060707080808080909090808080809090a0a0a0c0c0b0b0e0e0e111114ffc4004c0001010000000000000000000000000000000601010100000000000000000000000000000607100100000000000000000000000000000000110100000000000000000000000000000000ffc00011080008000803012200021100031100ffda000c03010002110311003f008b004d7f7fffd9";
+
+#[test]
+fn images_import_as_bitmaps_render_save_and_export() {
+    let dir = std::env::temp_dir().join(format!("anicraft-bitmap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A 4×2 PNG: left half red, right half translucent blue.
+    let mut rgba = Vec::new();
+    for _y in 0..2 {
+        for x in 0..4 {
+            rgba.extend_from_slice(if x < 2 { &[255, 0, 0, 255] } else { &[0, 0, 255, 128] });
+        }
+    }
+    let png_path = dir.join("tile.png");
+    std::fs::write(&png_path, anicraft_render::encode_png(4, 2, &rgba).unwrap()).unwrap();
+    let jpg_path = dir.join("red.jpg");
+    let jpg: Vec<u8> = (0..TINY_JPEG_HEX.len()).step_by(2).map(|i| u8::from_str_radix(&TINY_JPEG_HEX[i..i + 2], 16).unwrap()).collect();
+    std::fs::write(&jpg_path, jpg).unwrap();
+
+    let mut s = Session::default();
+    let v = run(&mut s, "file.import", json!({"path": png_path.display().to_string(), "x": 10, "y": 20}));
+    assert_eq!((v["width"].as_f64(), v["height"].as_f64()), (Some(4.0), Some(2.0)));
+    assert_eq!(s.doc.bitmaps.len(), 1);
+    // Scaled up 10× the left half renders red and the right half translucent blue over white.
+    run(&mut s, "element.set_transform", json!({"sx": 10, "sy": 10}));
+    let px = |s: &Session, x, y| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(x, y).unwrap();
+    let left = px(&s, 15, 25);
+    assert!(left[0] > 0.99 && left[1] < 0.01 && left[2] < 0.01, "{left:?}");
+    let right = px(&s, 45, 25);
+    assert!((right[0] - 0.5).abs() < 0.05 && (right[2] - 1.0).abs() < 0.05, "half blue over white: {right:?}");
+    assert_eq!(px(&s, 5, 5), [1.0, 1.0, 1.0, 1.0], "outside the image is untouched");
+
+    // A JPEG imports too (kept as PNG).
+    let v = run(&mut s, "file.import", json!({"path": jpg_path.display().to_string()}));
+    assert_eq!(v["width"].as_f64(), Some(8.0));
+    assert_eq!(s.doc.bitmaps.len(), 2);
+    assert!(s.doc.bitmaps[1].png.starts_with(b"\x89PNG"));
+    let c = s.doc.bitmaps[1].pixels().unwrap().at(4, 4);
+    assert!(c[0] > 0.9 && c[1] < 0.1, "red: {c:?}");
+
+    // Bitmaps save and load, and SVG export embeds each image once.
+    let doc_path = dir.join("pics.anicraft");
+    run(&mut s, "file.save", json!({"path": doc_path.display().to_string()}));
+    let back = crate::format::load(&doc_path).unwrap();
+    assert_eq!(back.bitmaps.len(), 2);
+    assert_eq!(back.bitmaps[0].pixels().unwrap().rgba, rgba);
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "edit.duplicate", json!({}));
+    let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+    // Two images, three instances (the JPEG one was duplicated): each image is embedded once.
+    assert_eq!(svg.matches("data:image/png;base64,").count(), 2);
+    assert_eq!(svg.matches("<pattern ").count(), 3);
+    // Undo takes an import back, bitmap and all.
+    let n = s.doc.bitmaps.len();
+    s.undo().unwrap();
+    s.undo().unwrap();
+    assert!(s.doc.bitmaps.len() < n);
+    // Anything else is refused cleanly.
+    std::fs::write(dir.join("fake.png"), b"not an image").unwrap();
+    assert!(s.execute("file.import", &json!({"path": dir.join("fake.png").display().to_string()})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
