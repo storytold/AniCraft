@@ -199,64 +199,45 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
     let charmap = font.charmap();
     let missing = text.chars().filter(|c| !c.is_control() && !c.is_whitespace() && charmap.map(*c).is_none()).count();
 
-    // Lines: paragraphs at line breaks, each wrapped at spaces to the width if there is one.
+    // Lines: paragraphs at line breaks, each wrapped at spaces to the width if there is one. Text
+    // that mixes directions follows the Unicode bidi algorithm (UAX #9): a paragraph's lines are
+    // found in reading order, then each line's runs are shaped in their own direction and placed
+    // in visual order, so a number or a Latin word inside Arabic reads the right way round, and a
+    // wrapped Arabic paragraph starts on the first line.
     let mut lines: Vec<(f32, Vec<(Glyph, f32)>)> = Vec::new();
     for para in text.split('\n') {
         let para = para.strip_suffix('\r').unwrap_or(para);
-        let mut buffer = harfrust::UnicodeBuffer::new();
-        buffer.push_str(para);
-        buffer.guess_segment_properties();
-        let shaped = shaper.shape(buffer, harfrust::ShapeOptions::new());
-        let run: Vec<Glyph> = shaped
-            .glyph_infos()
-            .iter()
-            .zip(shaped.glyph_positions())
-            .map(|(info, pos)| Glyph {
-                id: skrifa::GlyphId::new(info.glyph_id),
-                cluster: info.cluster as usize,
-                x_offset: pos.x_offset as f32 * scale,
-                y_offset: pos.y_offset as f32 * scale,
-                advance: pos.x_advance as f32 * scale + style.letter_spacing,
-            })
-            .collect();
-        let is_space = |g: &Glyph| para.get(g.cluster..).and_then(|s| s.chars().next()).is_some_and(char::is_whitespace);
-        let mut line: Vec<(Glyph, f32)> = Vec::new();
-        let mut x = 0.0f32;
-        // Where the current line could break: after its last space.
-        let mut break_at: Option<usize> = None;
-        for g in run {
-            let space = is_space(&g);
-            if let Some(w) = style.width
-                && !space
-                && x + g.advance > w
-                && !line.is_empty()
-            {
-                // Wrap: at the last space if there is one (dropping trailing spaces), else here.
-                let rest = match break_at {
-                    Some(b) => line.split_off(b),
-                    None => Vec::new(),
-                };
-                while line.last().is_some_and(|(g, _)| is_space(g)) {
-                    line.pop();
+        let bidi = unicode_bidi::ParagraphBidiInfo::new(para, None);
+        let shape_run = |run: std::ops::Range<usize>, rtl: bool| para.get(run).map_or_else(Vec::new, |s| shape(&shaper, s, rtl, scale, style.letter_spacing));
+        // Each byte's share of the width (a cluster's advance on its first byte), run by run.
+        let mut advance = vec![0.0f32; para.len()];
+        let mut start = 0;
+        while start < para.len() {
+            let level = bidi.levels.get(start).copied();
+            let end = (start..para.len()).find(|i| bidi.levels.get(*i).copied() != level).unwrap_or(para.len());
+            for g in shape_run(start..end, level.is_some_and(|l| l.is_rtl())) {
+                if let Some(a) = advance.get_mut(start + g.cluster) {
+                    *a += g.advance;
                 }
-                let width = line.last().map_or(0.0, |(g, gx)| gx + g.advance);
-                lines.push((width, std::mem::take(&mut line)));
-                let shift = rest.first().map_or(0.0, |(_, gx)| *gx);
-                line = rest.into_iter().map(|(g, gx)| (g, gx - shift)).collect();
-                x = line.last().map_or(0.0, |(g, gx)| gx + g.advance);
-                break_at = None;
             }
-            line.push((g, x));
-            x += line.last().map_or(0.0, |(g, _)| g.advance);
-            if space {
-                break_at = Some(line.len());
+            start = end;
+        }
+        for range in break_lines(para, &advance, style.width) {
+            let mut line: Vec<(Glyph, f32)> = Vec::new();
+            let mut x = 0.0f32;
+            if !range.is_empty() {
+                let (levels, runs) = bidi.visual_runs(range);
+                for run in runs {
+                    let rtl = levels.get(run.start).is_some_and(|l| l.is_rtl());
+                    for g in shape_run(run, rtl) {
+                        let a = g.advance;
+                        line.push((g, x));
+                        x += a;
+                    }
+                }
             }
+            lines.push((x, line));
         }
-        while line.last().is_some_and(|(g, _)| is_space(g)) {
-            line.pop();
-        }
-        let width = line.last().map_or(0.0, |(g, gx)| gx + g.advance);
-        lines.push((width, line));
     }
 
     let box_width = style.width.unwrap_or_else(|| lines.iter().map(|(w, _)| *w).fold(0.0, f32::max));
@@ -277,6 +258,58 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
     }
     let height = (lines.len().max(1) as f32 - 1.0) * line_height + (metrics.ascent - metrics.descent);
     Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing })
+}
+
+/// Shapes `text` in one direction. Glyphs come back in visual order (left to right), clusters
+/// counted in bytes from the start of `text`.
+fn shape(shaper: &harfrust::Shaper<'_>, text: &str, rtl: bool, scale: f32, letter_spacing: f32) -> Vec<Glyph> {
+    let mut buffer = harfrust::UnicodeBuffer::new();
+    buffer.push_str(text);
+    buffer.set_direction(if rtl { harfrust::Direction::RightToLeft } else { harfrust::Direction::LeftToRight });
+    buffer.guess_segment_properties();
+    let shaped = shaper.shape(buffer, harfrust::ShapeOptions::new());
+    shaped
+        .glyph_infos()
+        .iter()
+        .zip(shaped.glyph_positions())
+        .map(|(info, pos)| Glyph {
+            id: skrifa::GlyphId::new(info.glyph_id),
+            cluster: info.cluster as usize,
+            x_offset: pos.x_offset as f32 * scale,
+            y_offset: pos.y_offset as f32 * scale,
+            advance: pos.x_advance as f32 * scale + letter_spacing,
+        })
+        .collect()
+}
+
+/// A paragraph's lines as byte ranges in reading order, given each byte's share of the width:
+/// wrapped after the last space before `width` is passed (or within a word wider than the line),
+/// with the spaces at a line's end left out.
+fn break_lines(para: &str, advance: &[f32], width: Option<f32>) -> Vec<std::ops::Range<usize>> {
+    let trimmed = |start: usize, end: usize| start..para.get(start..end).map_or(start, |s| start + s.trim_end().len());
+    let mut lines = Vec::new();
+    let (mut start, mut x, mut break_at) = (0usize, 0.0f32, None::<usize>);
+    for (i, c) in para.char_indices() {
+        let a = advance.get(i).copied().unwrap_or(0.0);
+        let space = c.is_whitespace();
+        if let Some(w) = width
+            && !space
+            && x + a > w
+            && i > start
+        {
+            let end = break_at.unwrap_or(i);
+            lines.push(trimmed(start, end));
+            start = end;
+            x = advance.get(start..i).map_or(0.0, |s| s.iter().sum());
+            break_at = None;
+        }
+        x += a;
+        if space {
+            break_at = Some(i + c.len_utf8());
+        }
+    }
+    lines.push(trimmed(start, para.len()));
+    lines
 }
 
 /// Draws glyph outlines (font space, y up) into a path (pixels, y down) at a pen position.
@@ -369,6 +402,27 @@ mod tests {
         assert!(boxed(Align::Left).max.x < 20.0);
         assert!((140.0..160.0).contains(&boxed(Align::Center).center().x), "{:?}", boxed(Align::Center));
         assert!(boxed(Align::Right).min.x > 280.0);
+    }
+
+    #[test]
+    fn mixed_directions_read_the_right_way_round() {
+        // Lines are found in reading order: after the last space that fits, or within a word.
+        assert_eq!(break_lines("ab cd ef", &[1.0; 8], Some(5.0)), vec![0..5, 6..8]);
+        assert_eq!(break_lines("abcdefgh", &[1.0; 8], Some(3.0)), vec![0..3, 3..6, 6..8]);
+        let Some(fonts) = fonts() else { return };
+        let lay = |t: &str, width| fonts.layout(t, &Style { width, ..style(40.0) }).unwrap();
+        let arabic = lay("مرحبا 2026", None);
+        if arabic.missing > 0 {
+            eprintln!("{} has no Arabic letters: right-to-left layout test skipped", arabic.family);
+            return;
+        }
+        // A number inside Arabic keeps its digits in order, at the line's left end ...
+        assert!(arabic.outline.cmds.starts_with(&lay("2026", None).outline.cmds));
+        // ... and a wrapped Arabic paragraph starts with its first word, on the first line.
+        let first = lay("بيت", None);
+        let wrapped = lay("بيت جديد", Some(first.width + 1.0));
+        assert!(wrapped.height > first.height * 1.8, "two lines: {}", wrapped.height);
+        assert!(wrapped.outline.cmds.starts_with(&first.outline.cmds));
     }
 
     #[test]

@@ -14,6 +14,8 @@ fontdb.workspace = true
 # Shaping (a HarfBuzz port) and outlines/metrics: both already in the tree through egui.
 harfrust = "0.12"
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
+# The Unicode bidi algorithm (UAX #9), for text that mixes right-to-left and left-to-right runs.
+unicode-bidi = "0.3"
 
 [lints]
 workspace = true
