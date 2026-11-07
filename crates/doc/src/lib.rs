@@ -5,11 +5,13 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod bitmap;
+mod filter;
 mod easing;
 mod eval;
 pub mod path_table;
 pub mod sample;
 
+pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
@@ -221,6 +223,9 @@ pub enum ElementKind {
         /// How the instance blends with what is below it (movie clips and buttons).
         #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
         blend: BlendMode,
+        /// Filters, applied in order (movie clips and buttons).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        filters: Vec<Filter>,
     },
     /// A block of text (ADR 0012).
     Text(Arc<TextBlock>),

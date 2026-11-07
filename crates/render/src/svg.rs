@@ -66,7 +66,8 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
                 Some(anicraft_doc::BlendMode::Add) => " style=\"mix-blend-mode:plus-lighter\"".to_string(),
                 _ => String::new(),
             };
-            let _ = write!(body, "<g opacity=\"{}\"{style}>", num(a));
+            let filter = dl.groups.get(g as usize).and_then(|x| svg_filter(&x.filters, &mut defs, &mut grad)).map_or_else(String::new, |id| format!(" filter=\"url(#{id})\""));
+            let _ = write!(body, "<g opacity=\"{}\"{style}{filter}>", num(a));
             open.push(g);
         }
         let clip = item.clip.filter(|&c| (c as usize) < dl.clip_parents.len()).map(|c| format!(" clip-path=\"url(#c{c})\"")).unwrap_or_default();
@@ -146,6 +147,53 @@ fn hex(c: Rgba) -> String {
 fn color_attrs(attr: &str, c: Rgba) -> String {
     let c = c.sanitized();
     if c.a >= 1.0 { format!(" {attr}=\"{}\"", hex(c)) } else { format!(" {attr}=\"{}\" {attr}-opacity=\"{}\"", hex(c), num(c.a)) }
+}
+
+/// An SVG `<filter>` for `filters` in `defs`, and its id; `None` when nothing carries across.
+/// Blur becomes a Gaussian of the same spread as the box-blur passes; outer drop shadows and
+/// glows become `feDropShadow`; Adjust Color becomes its colour matrix. Inner and knockout
+/// shadows and glows have no simple SVG equivalent and are left out.
+fn svg_filter(filters: &[anicraft_doc::Filter], defs: &mut String, n: &mut usize) -> Option<String> {
+    use anicraft_doc::Filter;
+    // A box of width b has variance (b² − 1) / 12; passes add.
+    let sigma = |b: f32, q: u8| ((f32::from(q) * (b * b - 1.0).max(0.0)) / 12.0).sqrt();
+    let mut prims = String::new();
+    for f in filters.iter().map(Filter::sanitized) {
+        match f {
+            Filter::Blur { blur_x, blur_y, quality } => {
+                let _ = write!(prims, "<feGaussianBlur stdDeviation=\"{} {}\"/>", num(sigma(blur_x, quality)), num(sigma(blur_y, quality)));
+            }
+            Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner: false, knockout: false, hide_object: false } => {
+                let a = angle.to_radians();
+                let _ = write!(
+                    prims,
+                    "<feDropShadow dx=\"{}\" dy=\"{}\" stdDeviation=\"{} {}\" flood-color=\"{}\" flood-opacity=\"{}\"/>",
+                    num(distance * a.cos()),
+                    num(distance * a.sin()),
+                    num(sigma(blur_x, quality)),
+                    num(sigma(blur_y, quality)),
+                    hex(color),
+                    num((color.a * strength).clamp(0.0, 1.0))
+                );
+            }
+            Filter::Glow { blur_x, blur_y, strength, quality, color, inner: false, knockout: false } => {
+                let _ = write!(prims, "<feDropShadow dx=\"0\" dy=\"0\" stdDeviation=\"{} {}\" flood-color=\"{}\" flood-opacity=\"{}\"/>", num(sigma(blur_x, quality)), num(sigma(blur_y, quality)), hex(color), num((color.a * strength).clamp(0.0, 1.0)));
+            }
+            Filter::AdjustColor { brightness, contrast, saturation, hue } => {
+                let m = crate::filters::color_matrix(brightness, contrast, saturation, hue);
+                let values: Vec<String> = m.iter().flatten().map(|v| num(*v)).collect();
+                let _ = write!(prims, "<feColorMatrix type=\"matrix\" values=\"{}\"/>", values.join(" "));
+            }
+            Filter::DropShadow { .. } | Filter::Glow { .. } => {}
+        }
+    }
+    if prims.is_empty() {
+        return None;
+    }
+    let id = format!("f{n}");
+    *n += 1;
+    let _ = write!(defs, "<filter id=\"{id}\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\" color-interpolation-filters=\"sRGB\">{prims}</filter>");
+    Some(id)
 }
 
 /// The fill attribute for `paint`, defining a gradient in `defs` when needed. `None` when the
@@ -331,7 +379,7 @@ mod group_tests {
             group: g,
             image: None,
         };
-        let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default() }, Group { parent: Some(0), alpha: 0.25, blend: Default::default() }] };
+        let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };
         let svg = to_svg(&dl, &Stage { width: 4, height: 4, fps: 24.0, background: Rgba::WHITE });
         assert!(svg.contains("<g opacity=\"0.5\">") && svg.contains("<g opacity=\"0.25\">"), "{svg}");
         assert_eq!(svg.matches("<g ").count(), svg.matches("</g>").count(), "balanced");
