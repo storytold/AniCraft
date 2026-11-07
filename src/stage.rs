@@ -479,8 +479,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let visible = tiles_for(z, stage_px, px, 0, bg);
         let onion = app.onion && !app.playing;
         let state = app.s.state;
+        // Render jobs take movie frames: the current scene starts at `start`.
+        let start = app.s.doc.scene_start(app.s.scene);
         let frame = app.s.frame;
-        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job(state, &app.s.doc, frame, t.view, onion); (t, j) }).collect();
+        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job(state, &app.s.doc, start + frame, t.view, onion); (t, j) }).collect();
         let keys: Vec<u64> = jobs.iter().map(|(_, j)| j.key).collect();
         let missing: Vec<usize> = (0..jobs.len()).filter(|&i| !app.stage_cache.has(keys[i])).collect();
 
@@ -542,10 +544,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let n = app.s.frame_count().max(1);
                 for d in 1..=LOOKAHEAD.min(n - 1) {
                     let f = (frame + d) % n;
-                    ahead.extend(jobs.iter().map(|(t, _)| make_job(state, &app.s.doc, f, t.view, false)));
+                    ahead.extend(jobs.iter().map(|(t, _)| make_job(state, &app.s.doc, start + f, t.view, false)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job(state, &app.s.doc, frame, t.view, onion)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job(state, &app.s.doc, start + frame, t.view, onion)));
             }
             svc.prefetch(ahead);
         }
@@ -591,7 +593,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
         let dl = app.s.display_list();
         for item in dl.items.iter().filter(|i| i.masks.is_some()).take(2_000) {
-            let Some(layer) = app.s.doc.timeline.layer(item.layer).filter(|l| !l.locked) else { continue };
+            let Some(layer) = app.s.doc.timeline(app.s.scene).layer(item.layer).filter(|l| !l.locked) else { continue };
             let stroke = Stroke::new(1.5, to_color32(layer.color));
             for pl in item.path.flatten(&to_px.mul(&item.transform), 0.5) {
                 let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();

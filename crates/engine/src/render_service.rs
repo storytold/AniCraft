@@ -9,7 +9,7 @@
 //! already rendered is a cache hit.
 
 use crate::history::StateId;
-use anicraft_doc::{ColorEffect, DisplayList, Document, Rgba, evaluate};
+use anicraft_doc::{ColorEffect, DisplayList, Document, Rgba, evaluate_scene};
 use anicraft_render::{RenderStats, View, render};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -71,24 +71,26 @@ pub fn make_job(state: StateId, doc: &Document, frame: u32, view: View, onion: b
     FrameJob { key: frame_key(state, frame, &view, onion), scene: scene_key(state, frame, onion), doc: doc.clone(), frame, view, onion }
 }
 
-/// The frame's display list, with ±2 onion-skin frames (tinted red before, green after) underneath.
+/// Movie frame `frame`'s display list, with ±2 onion-skin frames (tinted red before, green after)
+/// underneath, taken from the same scene only.
 pub fn display_list_with_onion(doc: &Document, frame: u32, onion: bool) -> DisplayList {
     let mut dl = DisplayList::default();
+    let (scene, local) = doc.locate(frame);
     if onion {
-        let n = i64::from(doc.frame_count());
+        let n = i64::from(doc.timeline(scene).frame_count());
         for (off, tint, alpha) in [(-2i64, 0xff5a5a, 0.12f32), (2, 0x4cd07d, 0.12), (-1, 0xff5a5a, 0.25), (1, 0x4cd07d, 0.25)] {
-            let f = i64::from(frame) + off;
+            let f = i64::from(local) + off;
             if f < 0 || f >= n {
                 continue;
             }
-            let mut ghost = evaluate(doc, f as u32);
+            let mut ghost = evaluate_scene(doc, scene, f as u32);
             for item in &mut ghost.items {
                 item.color = item.color.concat(&ColorEffect { alpha, tint: Rgba::hex(tint), tint_amount: 1.0 });
             }
             dl.append(ghost);
         }
     }
-    dl.append(evaluate(doc, frame));
+    dl.append(evaluate_scene(doc, scene, local));
     dl
 }
 

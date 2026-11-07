@@ -222,7 +222,7 @@ pub fn bench(a: &Args) -> Result<String, String> {
     let t = Instant::now();
     let doc = sample::stress(layers, shapes, frames);
     let build_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let instances: usize = doc.timeline.layers.iter().flat_map(|l| l.keyframes.iter()).map(|k| k.elements.len()).sum();
+    let instances: usize = doc.timeline(0).layers.iter().flat_map(|l| l.keyframes.iter()).map(|k| k.elements.len()).sum();
 
     let mut json_text = String::new();
     let save_ms = avg_ms(1, |_| json_text = format::to_json(&doc).unwrap_or_default());

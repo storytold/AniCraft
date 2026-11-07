@@ -423,6 +423,10 @@ impl App {
         match which {
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
             Some("shortcuts") => self.show_shortcuts = true,
+            Some("lastscene") => {
+                let last = self.s.doc.scenes.len().saturating_sub(1);
+                self.run("scene.select", json!({"scene": last}));
+            }
             Some("files") => self.show_files = true,
             Some("licenses") => self.show_licenses = true,
             Some("zoom") => {
@@ -455,7 +459,7 @@ impl App {
             Some("frames") => {
                 // Frames 8–20 selected on the top three layers, with a keyframe drag in progress:
                 // 6 frames later and one layer down.
-                let layers = &self.s.doc.timeline.layers;
+                let layers = &self.s.doc.timeline(self.s.scene).layers;
                 if let (Some(a), Some(b)) = (layers.first(), layers.get(2)) {
                     self.frame_sel = Some(timeline::FrameSel { anchor: (a.id, 7), head: (b.id, 19) });
                     self.tl_drag = timeline::TlDrag::Move { grab: 10, by: 6, grab_row: 0, rows_by: 1 };
@@ -490,7 +494,7 @@ impl App {
             }
             Some("span") => {
                 // Stretching the Star layer's span by its end, with the length readout.
-                if let Some(l) = self.s.doc.timeline.layers.get(1)
+                if let Some(l) = self.s.doc.timeline(self.s.scene).layers.get(1)
                     && let Some(k) = l.keyframes.first()
                 {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
@@ -558,6 +562,18 @@ impl App {
             "edit.redo" => self.status_ok(format!("Redid {}", v["redone"].as_str().unwrap_or(""))),
             "edit.delete" => self.status_ok(format!("Deleted {} {} — Ctrl+Z to undo", selected, if selected == 1 { "element" } else { "elements" })),
             "layer.delete" => self.status_ok("Deleted layer — Ctrl+Z to undo"),
+            "scene.delete" => {
+                self.frame_sel = None;
+                self.status_ok("Deleted scene — Ctrl+Z to undo");
+            }
+            "scene.new" | "scene.duplicate" | "scene.select" | "scene.next" | "scene.prev" => {
+                // Another scene's timeline: frame selections and scroll belong to the old one.
+                self.frame_sel = None;
+                self.tl_scroll = 0.0;
+                self.playing = false;
+                let (n, of) = (v["scene"].as_u64().unwrap_or(0) + 1, v["scenes"].as_u64().unwrap_or(1));
+                self.status_ok(format!("{} (scene {n} of {of})", v["name"].as_str().unwrap_or("")));
+            }
             "timeline.clear_keyframe" => {
                 let n = v["cleared"].as_u64().unwrap_or(1);
                 self.status_ok(format!("Cleared {} — Ctrl+Z to undo", if n == 1 { "keyframe".to_string() } else { format!("{n} keyframes") }));
@@ -608,6 +624,7 @@ impl App {
             "file.save" if self.s.path.is_none() => Some(("Save document as", "path", "animation.anicraft".to_string())),
             "file.save_as" => Some(("Save document as", "path", self.s.path.as_ref().map_or_else(|| "animation.anicraft".to_string(), |p| p.display().to_string()))),
             "layer.rename" => Some(("Rename layer", "name", self.s.active_layer().map_or_else(String::new, |l| l.name.clone()))),
+            "scene.rename" => Some(("Rename scene", "name", self.s.doc.scenes.get(self.s.scene).map_or_else(String::new, |s| s.name.clone()))),
             "file.export_png" => Some(("Export frame as PNG", "path", format!("frame_{:04}.png", self.s.frame + 1))),
             "file.export_png_sequence" => Some(("Export PNG sequence to folder", "dir", "frames".to_string())),
             "file.export_gif" => Some(("Export animated GIF", "path", "animation.gif".to_string())),
@@ -753,7 +770,7 @@ impl App {
                     self.status_ok(if self.align_to_stage { "Align: to stage" } else { "Align: to the selection" });
                 }
                 "view.select_all_frames" => {
-                    let layers = &self.s.doc.timeline.layers;
+                    let layers = &self.s.doc.timeline(self.s.scene).layers;
                     if let (Some(a), Some(b)) = (layers.first(), layers.last()) {
                         let last = self.s.frame_count().saturating_sub(1);
                         self.frame_sel = Some(timeline::FrameSel { anchor: (a.id, 0), head: (b.id, last) });

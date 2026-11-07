@@ -10,7 +10,7 @@ pub mod path_table;
 pub mod sample;
 
 pub use easing::Easing;
-pub use eval::{DisplayItem, DisplayList, MAX_SYMBOL_DEPTH, evaluate, evaluate_layer_elements};
+pub use eval::{DisplayItem, DisplayList, MAX_SYMBOL_DEPTH, evaluate, evaluate_layer_elements, evaluate_scene};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use serde::{Deserialize, Serialize};
@@ -569,38 +569,81 @@ impl Default for Stage {
 /// Largest stage edge accepted from files and commands.
 pub const MAX_STAGE_EDGE: u32 = 16_384;
 
-/// A whole AniCraft document: a persistent (structurally shared) tree.
-///
-/// `clone()` is O(layers + symbols) pointer copies, which makes undo snapshots and render-thread
-/// hand-off cheap, and `==` costs O(changed) because shared subtrees compare by pointer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Document {
-    #[serde(default)]
-    pub stage: Stage,
+/// A scene: one part of the movie with its own main timeline. Scenes play in order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Scene {
+    pub name: String,
     #[serde(default)]
     pub timeline: Timeline,
-    #[serde(default)]
+}
+
+impl Scene {
+    pub fn new(name: impl Into<String>) -> Scene {
+        Scene { name: name.into(), timeline: Timeline::default() }
+    }
+}
+
+/// Most scenes in a document.
+pub const MAX_SCENES: usize = 1_000;
+
+/// A whole AniCraft document: a persistent (structurally shared) tree.
+///
+/// `clone()` is O(scenes + layers + symbols) pointer copies, which makes undo snapshots and
+/// render-thread hand-off cheap, and `==` costs O(changed) because shared subtrees compare by
+/// pointer. There is always at least one scene ([`Document::sanitize`] keeps it so).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "DocumentFile")]
+pub struct Document {
+    pub stage: Stage,
+    pub scenes: Vec<Arc<Scene>>,
     pub library: Vec<Arc<Symbol>>,
     /// Next free id for layers, elements and symbols.
-    #[serde(default = "first_id")]
     pub next_id: u64,
+}
+
+/// What a document file may hold: `scenes`, or (files before scenes) a single `timeline`.
+#[derive(Deserialize)]
+struct DocumentFile {
+    #[serde(default)]
+    stage: Stage,
+    #[serde(default)]
+    scenes: Vec<Arc<Scene>>,
+    #[serde(default)]
+    timeline: Option<Timeline>,
+    #[serde(default)]
+    library: Vec<Arc<Symbol>>,
+    #[serde(default = "first_id")]
+    next_id: u64,
+}
+
+impl From<DocumentFile> for Document {
+    fn from(f: DocumentFile) -> Document {
+        let mut scenes = f.scenes;
+        if let Some(tl) = f.timeline {
+            scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
+        }
+        Document { stage: f.stage, scenes, library: f.library, next_id: f.next_id }
+    }
 }
 
 fn first_id() -> u64 {
     1
 }
 
+/// What `timeline(i)` returns for a scene that does not exist (never for a sanitized document).
+static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
+
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && self.timeline == o.timeline && arcs_eq(&self.library, &o.library)
+        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), timeline: Timeline::default(), library: Vec::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), next_id: 1 };
         let id = LayerId(d.alloc_id());
-        d.timeline.layers.push(Arc::new(Layer::new(id, "Layer 1")));
+        d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
     }
 }
@@ -615,8 +658,44 @@ impl Document {
     pub fn symbol(&self, id: SymbolId) -> Option<&Symbol> {
         self.library.iter().find(|s| s.id == id).map(|s| &**s)
     }
+    /// Scene `i`'s main timeline (an empty one when there is no such scene).
+    pub fn timeline(&self, i: usize) -> &Timeline {
+        self.scenes.get(i).map_or(&NO_TIMELINE, |s| &s.timeline)
+    }
+    /// Scene `i`'s main timeline, copy-on-write; the last scene when `i` is out of range (and a
+    /// first scene is created if there is none).
+    pub fn timeline_mut(&mut self, i: usize) -> &mut Timeline {
+        if self.scenes.is_empty() {
+            self.scenes.push(Arc::new(Scene::new("Scene 1")));
+        }
+        // In range: the list is non-empty and `i` is clamped to its last index.
+        let i = i.min(self.scenes.len() - 1);
+        &mut Arc::make_mut(&mut self.scenes[i]).timeline
+    }
+    /// The whole movie's length: every scene, one after the other.
     pub fn frame_count(&self) -> u32 {
-        self.timeline.frame_count()
+        self.scenes.iter().map(|s| s.timeline.frame_count()).fold(0u32, u32::saturating_add).max(1)
+    }
+    /// Which scene a movie frame falls in, and the frame within that scene.
+    pub fn locate(&self, movie_frame: u32) -> (usize, u32) {
+        let mut f = movie_frame;
+        for (i, s) in self.scenes.iter().enumerate() {
+            let n = s.timeline.frame_count();
+            if f < n {
+                return (i, f);
+            }
+            f -= n;
+        }
+        let last = self.scenes.len().saturating_sub(1);
+        (last, self.timeline(last).frame_count().saturating_sub(1))
+    }
+    /// The movie frame where scene `i` starts.
+    pub fn scene_start(&self, i: usize) -> u32 {
+        self.scenes.iter().take(i).map(|s| s.timeline.frame_count()).fold(0u32, u32::saturating_add)
+    }
+    /// Every timeline: the scenes', then the library symbols'.
+    pub fn timelines(&self) -> impl Iterator<Item = &Timeline> {
+        self.scenes.iter().map(|s| &s.timeline).chain(self.library.iter().map(|s| &s.timeline))
     }
     /// Repairs a loaded document: ids, sizes and keyframe order.
     pub fn sanitize(&mut self) {
@@ -637,11 +716,21 @@ impl Document {
                 }
             }
         };
-        for l in &mut self.timeline.layers {
-            Arc::make_mut(l).normalize();
-            scan(l, &mut max_id);
+        if self.scenes.is_empty() {
+            self.scenes.push(Arc::new(Scene::new("Scene 1")));
         }
-        self.timeline.repair_masks();
+        self.scenes.truncate(MAX_SCENES);
+        for (i, scene) in self.scenes.iter_mut().enumerate() {
+            if scene.name.trim().is_empty() || scene.name.len() > 256 {
+                Arc::make_mut(scene).name = format!("Scene {}", i + 1);
+            }
+            let tl = &mut Arc::make_mut(scene).timeline;
+            for l in &mut tl.layers {
+                Arc::make_mut(l).normalize();
+                scan(l, &mut max_id);
+            }
+            tl.repair_masks();
+        }
         for sym in &mut self.library {
             max_id = max_id.max(sym.id.0);
             let tl = &mut Arc::make_mut(sym).timeline;
@@ -702,15 +791,15 @@ mod tests {
     fn clones_share_structure_and_edits_copy_only_their_path() {
         let a = sample::demo();
         let mut b = a.clone();
-        assert!(a.timeline.layers.iter().zip(&b.timeline.layers).all(|(x, y)| Arc::ptr_eq(x, y)));
+        assert!(a.timeline(0).layers.iter().zip(&b.timeline(0).layers).all(|(x, y)| Arc::ptr_eq(x, y)));
         // Edit one element on the top layer.
-        let layer = Arc::make_mut(&mut b.timeline.layers[0]);
+        let layer = Arc::make_mut(&mut b.timeline_mut(0).layers[0]);
         let kf = layer.keyframe_mut(1).unwrap();
         Arc::make_mut(&mut kf.elements[0]).name = "edited".into();
-        assert!(!Arc::ptr_eq(&a.timeline.layers[0], &b.timeline.layers[0]));
+        assert!(!Arc::ptr_eq(&a.timeline(0).layers[0], &b.timeline(0).layers[0]));
         // siblings stay shared
-        assert!(Arc::ptr_eq(&a.timeline.layers[0].keyframes[0], &b.timeline.layers[0].keyframes[0]));
-        assert!(a.timeline.layers[1..].iter().zip(&b.timeline.layers[1..]).all(|(x, y)| Arc::ptr_eq(x, y)));
+        assert!(Arc::ptr_eq(&a.timeline(0).layers[0].keyframes[0], &b.timeline(0).layers[0].keyframes[0]));
+        assert!(a.timeline(0).layers[1..].iter().zip(&b.timeline(0).layers[1..]).all(|(x, y)| Arc::ptr_eq(x, y)));
         assert!(a.library.iter().zip(&b.library).all(|(x, y)| Arc::ptr_eq(x, y)));
         assert_ne!(a, b);
         // Equal content in fresh allocations still compares equal.
@@ -722,9 +811,9 @@ mod tests {
     fn normalize_does_not_unshare_valid_keyframes() {
         let a = sample::demo();
         let mut b = a.clone();
-        let layer = Arc::make_mut(&mut b.timeline.layers[0]);
+        let layer = Arc::make_mut(&mut b.timeline_mut(0).layers[0]);
         layer.normalize();
-        assert!(a.timeline.layers[0].keyframes.iter().zip(&layer.keyframes).all(|(x, y)| Arc::ptr_eq(x, y)));
+        assert!(a.timeline(0).layers[0].keyframes.iter().zip(&layer.keyframes).all(|(x, y)| Arc::ptr_eq(x, y)));
     }
 
     #[test]
@@ -736,6 +825,6 @@ mod tests {
         d.sanitize();
         assert_eq!(d.stage.width, 1);
         assert_eq!(d.stage.fps, 24.0);
-        assert!(d.next_id > d.timeline.layers[0].id.0);
+        assert!(d.next_id > d.timeline(0).layers[0].id.0);
     }
 }

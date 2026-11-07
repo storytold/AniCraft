@@ -41,7 +41,7 @@ fn key(start: u32, duration: u32, elements: Vec<Arc<Element>>, tween: Option<Eas
 
 /// Builds the demo document: a bouncing ball, a spinning star, a pulsing sun over hills.
 pub fn demo() -> Document {
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, timeline: Timeline::default(), library: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), next_id: 1 };
     let (w, h) = (1280.0, 720.0);
 
     // --- library -------------------------------------------------------------------------
@@ -138,7 +138,7 @@ pub fn demo() -> Document {
     let mut sky = layer(sky_id, "Sky", 0x7e57c2, vec![key(0, LEN, vec![sky_el], None)]);
     Arc::make_mut(&mut sky).locked = true;
 
-    d.timeline.layers = vec![ball, star, sun, hills, sky];
+    d.timeline_mut(0).layers = vec![ball, star, sun, hills, sky];
     d
 }
 
@@ -146,7 +146,7 @@ pub fn demo() -> Document {
 /// `shapes` shapes each, keyed every 12 frames over `frames` frames with classic tweens.
 /// Every element keeps one `Arc<Path>` across its keyframes, as a real tweened shape does.
 pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
-    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, timeline: Timeline::default(), library: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), next_id: 1 };
     let (layers, shapes, frames) = (layers.clamp(1, 1000), shapes.clamp(1, 100_000), frames.clamp(1, 10_000));
     let mut seed = 0x2545_f491_u32;
     let mut rnd = move || {
@@ -191,7 +191,7 @@ pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
             keys.push(key(start, dur, elements, (start + dur < frames).then_some(Easing::QuadInOut)));
             start += dur;
         }
-        d.timeline.layers.push(layer(lid, &format!("Layer {}", li + 1), 0x4fa3ff, keys));
+        d.timeline_mut(0).layers.push(layer(lid, &format!("Layer {}", li + 1), 0x4fa3ff, keys));
     }
     d
 }
@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(d.frame_count(), 48);
         let before = d.clone();
         d.sanitize();
-        assert_eq!(d.timeline, before.timeline, "demo must already satisfy invariants");
+        assert_eq!(d.scenes, before.scenes, "demo must already satisfy invariants");
         let items = crate::evaluate(&d, 10).items.len();
         assert!(items >= 7, "{items}");
     }
@@ -214,11 +214,11 @@ mod tests {
     #[test]
     fn stress_shape() {
         let d = stress(3, 50, 30);
-        assert_eq!(d.timeline.layers.len(), 3);
+        assert_eq!(d.timeline(0).layers.len(), 3);
         assert_eq!(d.frame_count(), 30);
         assert_eq!(crate::evaluate(&d, 7).items.len(), 150);
         // paths are shared across keyframes
-        let l = &d.timeline.layers[0];
+        let l = &d.timeline(0).layers[0];
         let (ElementKind::Shape(a), ElementKind::Shape(b)) = (&l.keyframes[0].elements[0].kind, &l.keyframes[1].elements[0].kind) else { panic!() };
         assert!(Arc::ptr_eq(&a.path, &b.path));
     }

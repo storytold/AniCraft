@@ -40,7 +40,7 @@ fn plural(n: usize, word: &str) -> String {
 
 fn target_layer<'a>(s: &'a Session, p: &Value) -> Option<&'a Layer> {
     let id = p.get("layer").and_then(Value::as_u64).map_or(s.layer, LayerId);
-    s.doc.timeline.layer(id)
+    s.doc.timeline(s.scene).layer(id)
 }
 
 fn target_frame(s: &Session, p: &Value) -> u32 {
@@ -59,7 +59,7 @@ fn lost_keys(s: &Session, p: &Value, hit: impl Fn(&Keyframe) -> bool) -> Vec<(St
         None => vec![p.get("layer").and_then(Value::as_u64).map_or(s.layer, LayerId)],
     };
     ids.iter()
-        .filter_map(|id| s.doc.timeline.layer(*id))
+        .filter_map(|id| s.doc.timeline(s.scene).layer(*id))
         .flat_map(|l| l.keyframes.iter().filter(|k| !k.elements.is_empty() && hit(k)).map(|k| (l.name.clone(), k.elements.len())))
         .collect()
 }
@@ -112,6 +112,17 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 title: "Delete layer?".into(),
                 message: format!("Layer “{}” has {} with {}. You can undo this.", l.name, plural(keys, "keyframe"), plural(elements, "element")),
                 action: "Delete Layer".into(),
+                irreversible: false,
+            })
+        }
+        "scene.delete" => {
+            let i = crate::cmds_scene::target_scene(s, p).ok()?;
+            let sc = s.doc.scenes.get(i)?;
+            let (keys, elements) = sc.timeline.layers.iter().map(|l| layer_content(l)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+            (elements > 0 && s.doc.scenes.len() > 1).then(|| Confirmation {
+                title: "Delete scene?".into(),
+                message: format!("Scene “{}” has {} with {}. You can undo this.", sc.name, plural(keys, "keyframe"), plural(elements, "element")),
+                action: "Delete Scene".into(),
                 irreversible: false,
             })
         }

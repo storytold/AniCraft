@@ -12,7 +12,7 @@ fn shape_el(id: u64, x: f32) -> Element {
 }
 
 fn layer0(d: &mut Document) -> &mut Layer {
-    Arc::make_mut(&mut d.timeline.layers[0])
+    Arc::make_mut(&mut d.timeline_mut(0).layers[0])
 }
 
 fn push(layer: &mut Layer, kf: usize, e: Element) {
@@ -49,7 +49,7 @@ fn eased_tween_differs_from_linear() {
 #[test]
 fn static_frames_share_elements_with_the_document() {
     let d = tween_doc(Easing::Linear);
-    let (_, els) = evaluate_layer_elements(&d.timeline.layers[0], 10).unwrap();
+    let (_, els) = evaluate_layer_elements(&d.timeline(0).layers[0], 10).unwrap();
     assert!(matches!(els, Cow::Borrowed(_)), "a non-tweened frame must not copy elements");
 }
 
@@ -104,13 +104,13 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
 
 /// Layers top to bottom: mask (id 1), masked (2), masked (3), plain (4).
 fn mask_doc() -> Document {
-    let mut d = Document { timeline: Timeline::default(), ..Document::default() };
+    let mut d = Document { scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], ..Document::default() };
     for (id, kind, parent) in [(1, LayerKind::Mask, None), (2, LayerKind::Normal, Some(1)), (3, LayerKind::Normal, Some(1)), (4, LayerKind::Normal, None)] {
         let mut l = Layer::new(LayerId(id), format!("L{id}"));
         l.kind = kind;
         l.parent = parent.map(LayerId);
         push(&mut l, 0, shape_el(10 + id, 0.0));
-        d.timeline.layers.push(Arc::new(l));
+        d.timeline_mut(0).layers.push(Arc::new(l));
     }
     d
 }
@@ -126,7 +126,7 @@ fn mask_layers_clip_the_layers_they_mask() {
     assert_eq!(by(11).masks, Some(0), "the mask layer's artwork forms the clip");
     // A hidden mask masks nothing; its layers draw normally.
     let mut h = d.clone();
-    Arc::make_mut(&mut h.timeline.layers[0]).visible = false;
+    Arc::make_mut(&mut h.timeline_mut(0).layers[0]).visible = false;
     let dl = evaluate(&h, 0);
     assert!(dl.items.iter().all(|i| i.clip.is_none() && i.masks.is_none()) && dl.items.len() == 3);
 }
@@ -136,7 +136,7 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
     // The main timeline's masked layer holds an instance of a symbol that has its own mask.
     let mut d = mask_doc();
     let sid = SymbolId(99);
-    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, timeline: mask_doc().timeline }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, timeline: mask_doc().timeline(0).clone() }));
     let inst = Element {
         id: ElementId(60),
         name: String::new(),
@@ -144,7 +144,7 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
         color: ColorEffect::default(),
         kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0 },
     };
-    push(Arc::make_mut(&mut d.timeline.layers[1]), 0, inst);
+    push(Arc::make_mut(&mut d.timeline_mut(0).layers[1]), 0, inst);
     let dl = evaluate(&d, 0);
     assert_eq!(dl.clip_parents, vec![None, Some(0)]);
     let inner: Vec<_> = dl.items.iter().filter(|i| i.element == ElementId(60)).map(|i| (i.clip, i.masks)).collect();
@@ -166,25 +166,25 @@ fn appending_lists_renumbers_clips() {
 #[test]
 fn mask_links_must_stay_directly_under_their_mask() {
     let mut d = mask_doc();
-    d.timeline.repair_masks();
-    assert_eq!(d.timeline.layers.iter().map(|l| l.parent).collect::<Vec<_>>(), vec![None, Some(LayerId(1)), Some(LayerId(1)), None]);
-    assert_eq!(d.timeline.group_range(0), 0..3);
-    assert_eq!(d.timeline.mask_above(3), Some(LayerId(1)), "a layer under the group would join it");
+    d.timeline_mut(0).repair_masks();
+    assert_eq!(d.timeline(0).layers.iter().map(|l| l.parent).collect::<Vec<_>>(), vec![None, Some(LayerId(1)), Some(LayerId(1)), None]);
+    assert_eq!(d.timeline(0).group_range(0), 0..3);
+    assert_eq!(d.timeline(0).mask_above(3), Some(LayerId(1)), "a layer under the group would join it");
     // The plain layer moved between the masked ones breaks the run: the lower one lets go.
-    d.timeline.layers.swap(2, 3);
-    d.timeline.repair_masks();
-    assert_eq!(d.timeline.layers[3].parent, None);
-    assert_eq!(d.timeline.layers[1].parent, Some(LayerId(1)));
+    d.timeline_mut(0).layers.swap(2, 3);
+    d.timeline_mut(0).repair_masks();
+    assert_eq!(d.timeline(0).layers[3].parent, None);
+    assert_eq!(d.timeline(0).layers[1].parent, Some(LayerId(1)));
     // A masked layer above its mask, or a mask that is no longer a mask, lets go too.
     let mut e = mask_doc();
-    e.timeline.layers.swap(0, 1);
-    e.timeline.repair_masks();
-    assert_eq!(e.timeline.layers[0].parent, None);
-    assert_eq!(e.timeline.layers[2].parent, Some(LayerId(1)), "still directly under the mask");
+    e.timeline_mut(0).layers.swap(0, 1);
+    e.timeline_mut(0).repair_masks();
+    assert_eq!(e.timeline(0).layers[0].parent, None);
+    assert_eq!(e.timeline(0).layers[2].parent, Some(LayerId(1)), "still directly under the mask");
     let mut f = mask_doc();
-    Arc::make_mut(&mut f.timeline.layers[0]).kind = LayerKind::Normal;
+    Arc::make_mut(&mut f.timeline_mut(0).layers[0]).kind = LayerKind::Normal;
     f.sanitize();
-    assert!(f.timeline.layers.iter().all(|l| l.parent.is_none()));
+    assert!(f.timeline(0).layers.iter().all(|l| l.parent.is_none()));
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn layer_order_is_back_to_front() {
     push(layer0(&mut d), 0, shape_el(1, 0.0));
     let mut bottom = Layer::new(LayerId(7), "bottom");
     push(&mut bottom, 0, shape_el(2, 0.0));
-    d.timeline.layers.push(Arc::new(bottom));
+    d.timeline_mut(0).layers.push(Arc::new(bottom));
     let dl = evaluate(&d, 0);
     assert_eq!(dl.items[0].element, ElementId(2));
     assert_eq!(dl.items[1].element, ElementId(1));

@@ -76,7 +76,30 @@ pub fn tools(app: &mut App, ui: &mut egui::Ui) {
 
 pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
-        ui.label(text(Type::Body, "Scene 1").strong());
+        // The scene being edited; the menu switches scenes and manages them.
+        let name = app.s.doc.scenes.get(app.s.scene).map_or_else(|| "Scene".to_string(), |s| s.name.clone());
+        egui::ComboBox::from_id_salt("scene").selected_text(text(Type::Body, name).strong()).height(480.0).show_ui(ui, |ui| {
+            ui.set_min_width(240.0);
+            let scenes: Vec<(String, u32)> = app.s.doc.scenes.iter().map(|s| (s.name.clone(), s.timeline.frame_count())).collect();
+            for (i, (n, frames)) in scenes.iter().enumerate() {
+                let r = ui.horizontal(|ui| {
+                    let r = ui.selectable_label(i == app.s.scene, n.as_str());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(text(Type::DataSmall, format!("{frames} f")).color(T.text_faint));
+                    });
+                    r
+                });
+                if r.inner.clicked() && i != app.s.scene {
+                    app.playing = false;
+                    app.frame_sel = None;
+                    app.run("scene.select", serde_json::json!({"scene": i}));
+                }
+            }
+            ui.separator();
+            for id in ["scene.new", "scene.duplicate", "scene.rename", "scene.delete", "scene.move_up", "scene.move_down"] {
+                crate::menus::cmd_item(app, ui, id);
+            }
+        });
         ui.label(text(Type::Caption, "›"));
         let layer = app.s.active_layer().map_or("—".to_string(), |l| l.name.clone());
         ui.label(text(Type::Body, layer).color(T.text_dim));

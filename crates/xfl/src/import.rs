@@ -13,7 +13,7 @@ use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
     ColorEffect, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    SymbolKind, Timeline, Tween, TweenKind,
+    Scene, SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -334,7 +334,7 @@ pub fn import_with(read: &Reader<'_>) -> Result<(Document, Report), XflError> {
     }
     let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), report: Report::default() };
     b.doc.library.clear();
-    b.doc.timeline.layers.clear();
+    b.doc.scenes.clear();
     b.doc.stage = Stage {
         width: root.f32("width").unwrap_or(550.0).clamp(1.0, 8192.0) as u32,
         height: root.f32("height").unwrap_or(400.0).clamp(1.0, 8192.0) as u32,
@@ -343,13 +343,16 @@ pub fn import_with(read: &Reader<'_>) -> Result<(Document, Report), XflError> {
     };
     b.register_symbols(&root)?;
     b.build_symbols();
-    let scenes: Vec<&X> = root.list("timelines").iter().filter(|t| t.name == "DOMTimeline").collect();
-    if scenes.len() > 1 {
-        b.report.notes.push(format!("scenes after the first ({} more)", scenes.len() - 1));
+    // Every DOMTimeline is a scene, in order.
+    let scenes: Vec<&X> = root.list("timelines").iter().filter(|t| t.name == "DOMTimeline").take(anicraft_doc::MAX_SCENES).collect();
+    for (i, tl) in scenes.iter().enumerate() {
+        let name: String = tl.attr("name").filter(|n| !n.trim().is_empty()).map_or_else(|| format!("Scene {}", i + 1), |n| n.chars().take(256).collect());
+        let timeline = b.timeline(tl);
+        b.doc.scenes.push(Arc::new(Scene { name, timeline }));
     }
-    match scenes.first() {
-        Some(tl) => b.doc.timeline = b.timeline(tl),
-        None => b.doc.timeline = Timeline { layers: vec![Arc::new(Layer::new(LayerId(b.doc.alloc_id()), "Layer 1"))] },
+    if b.doc.scenes.is_empty() {
+        let timeline = Timeline { layers: vec![Arc::new(Layer::new(LayerId(b.doc.alloc_id()), "Layer 1"))] };
+        b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline }));
     }
     Ok((b.doc, b.report))
 }

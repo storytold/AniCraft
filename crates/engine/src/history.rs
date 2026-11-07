@@ -27,6 +27,7 @@ pub struct Snapshot {
     pub label: String,
     pub doc: Document,
     pub state: StateId,
+    pub scene: usize,
     pub frame: u32,
     pub layer: LayerId,
     pub selection: Vec<ElementId>,
@@ -207,11 +208,12 @@ fn symbol_bytes(s: &Symbol, other: Option<&Symbol>) -> usize {
 /// Estimated bytes reachable from `old` that are not shared with `new`. Costs O(changed) after
 /// an O(layers + symbols) pointer scan.
 pub fn unique_bytes(old: &Document, new: &Document) -> usize {
-    let mut b = size_of::<Snapshot>() + (old.timeline.layers.len() + old.library.len()) * size_of::<usize>();
-    let shared_layers: HashSet<usize> = new.timeline.layers.iter().map(ptr).collect();
-    for l in &old.timeline.layers {
+    let layers = |d: &Document| d.scenes.iter().map(|s| s.timeline.layers.len()).sum::<usize>();
+    let mut b = size_of::<Snapshot>() + (old.scenes.len() + layers(old) + old.library.len()) * size_of::<usize>();
+    let shared_layers: HashSet<usize> = new.scenes.iter().flat_map(|s| s.timeline.layers.iter().map(ptr)).collect();
+    for l in old.scenes.iter().flat_map(|s| s.timeline.layers.iter()) {
         if !shared_layers.contains(&ptr(l)) {
-            let peer = new.timeline.layers.iter().find(|p| p.id == l.id).map(|p| &**p);
+            let peer = new.scenes.iter().flat_map(|s| s.timeline.layers.iter()).find(|p| p.id == l.id).map(|p| &**p);
             b += layer_bytes(l, peer);
         }
     }
@@ -227,6 +229,6 @@ pub fn unique_bytes(old: &Document, new: &Document) -> usize {
 
 /// Estimated total bytes of a document (as if nothing were shared). Used for reporting.
 pub fn document_bytes(doc: &Document) -> usize {
-    let empty = Document { stage: doc.stage, timeline: Default::default(), library: Vec::new(), next_id: doc.next_id };
+    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), next_id: doc.next_id };
     unique_bytes(doc, &empty)
 }

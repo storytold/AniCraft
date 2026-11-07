@@ -66,11 +66,17 @@ impl DisplayList {
     }
 }
 
-/// Evaluates the main timeline at `frame` (0-based).
+/// Evaluates movie frame `frame` (0-based): the scenes play one after the other.
 pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
+    let (scene, local) = doc.locate(frame);
+    evaluate_scene(doc, scene, local)
+}
+
+/// Evaluates scene `scene`'s timeline at its own `frame` (what the stage shows while editing).
+pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
     let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None };
-    eval_timeline(doc, &doc.timeline, frame, &cx, &mut out);
+    eval_timeline(doc, doc.timeline(scene), frame, &cx, &mut out);
     out
 }
 

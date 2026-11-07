@@ -202,8 +202,8 @@ fn num(tag: &str, name: &str) -> f32 {
 fn points(tag: &str, close: bool) -> Option<Path> {
     let v: Vec<f32> = attr(tag, "points")?.split(|c: char| c.is_whitespace() || c == ',').filter_map(|t| t.parse().ok()).collect();
     let mut p = Path::new();
-    for (i, xy) in v.chunks_exact(2).enumerate() {
-        let q = Vec2::new(xy[0], xy[1]);
+    for (i, &[x, y]) in v.as_chunks::<2>().0.iter().enumerate() {
+        let q = Vec2::new(x, y);
         if i == 0 {
             p.move_to(q);
         } else {
