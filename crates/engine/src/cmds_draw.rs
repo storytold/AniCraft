@@ -29,6 +29,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?}", true, set_stroke),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, set_alpha),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, set_blend),
+        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them)", true, set_filters),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, set_loop),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
         c("element.rename", "Instance Name", "", None, "{name}", true, rename),
@@ -307,6 +308,46 @@ fn set_alpha(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"alpha": a}))
 }
 
+/// Most filters on one instance.
+const MAX_FILTERS: usize = 16;
+
+/// Filters for the selected movie clip and button instances (Animate offers them on those only).
+fn set_filters(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut list = p.get("filters").cloned().ok_or_else(|| EngineError::Param("param 'filters' is required (a list; [] removes them)".into()))?;
+    // Colours may be written "#rrggbb" (or "#rrggbbaa"), as everywhere in commands.
+    for f in list.as_array_mut().into_iter().flatten() {
+        if f.get("color").is_some_and(Value::is_string) {
+            let c = opt_color(f, "color")?.unwrap_or(anicraft_doc::Rgba::BLACK);
+            f["color"] = json!({"r": c.r, "g": c.g, "b": c.b, "a": c.a});
+        }
+    }
+    let filters: Vec<anicraft_doc::Filter> = serde_json::from_value(list).map_err(|e| EngineError::Param(format!("'filters' must be a list of {{type: blur|drop_shadow|glow|adjust_color, …}}: {e}")))?;
+    if filters.len() > MAX_FILTERS {
+        return Err(EngineError::Param(format!("at most {MAX_FILTERS} filters per instance")));
+    }
+    let filters: Vec<anicraft_doc::Filter> = filters.iter().map(anicraft_doc::Filter::sanitized).collect();
+    let kinds: std::collections::HashMap<SymbolId, SymbolKind> = s.doc.library.iter().map(|x| (x.id, x.kind)).collect();
+    let (mut set, mut graphics) = (0, 0);
+    for e in s.selected_elements_mut()? {
+        if let ElementKind::Symbol { symbol, filters: f, .. } = &mut e.kind {
+            if kinds.get(symbol) == Some(&SymbolKind::Graphic) {
+                graphics += 1;
+                continue;
+            }
+            f.clone_from(&filters);
+            set += 1;
+        }
+    }
+    if set == 0 {
+        return Err(EngineError::State(if graphics > 0 {
+            "filters apply to movie clip and button instances, as in Animate; set the symbol's Type to Movie Clip first".into()
+        } else {
+            "select a movie clip or button instance".into()
+        }));
+    }
+    Ok(json!({"filters": filters.len(), "set": set}))
+}
+
 /// Blending for the selected movie clip and button instances (Animate offers it on those only).
 fn set_blend(s: &mut Session, p: &Value) -> Result<Value> {
     let key = str_req(p, "mode")?;
@@ -510,7 +551,7 @@ fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(center.x, center.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sym_id, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal },
+        kind: ElementKind::Symbol { symbol: sym_id, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new() },
     };
     let mut elements = rest;
     elements.insert(first_pos.min(elements.len()), Arc::new(instance));
@@ -594,7 +635,7 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(x, y),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal },
+        kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new() },
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
     s.selection = vec![id];
