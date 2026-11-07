@@ -104,3 +104,5 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod guidelines_tests;
+#[cfg(test)]
+mod architecture_tests;
