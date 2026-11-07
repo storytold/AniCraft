@@ -1,6 +1,8 @@
-//! AniCraft headless front end: argument parsing and the JSON-lines `serve` loop.
-//! Every operation goes through the engine's command registry.
+//! AniCraft headless front end: argument parsing, the JSON-lines `serve` loop and the MCP
+//! server (`mcp`). Every operation goes through the engine's command registry.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+pub mod mcp;
 
 use anicraft_engine::{Session, commands, format};
 use serde_json::{Value, json};
@@ -23,6 +25,8 @@ USAGE:
   anicraft-cli bench [--layers N] [--shapes N] [--frames N]   performance probe (use --release)
   anicraft-cli serve [file|--sample]     JSON-lines on stdin/stdout:
         {\"id\":1,\"cmd\":\"draw.rect\",\"params\":{\"x\":10,\"y\":10,\"w\":50,\"h\":50}}
+  anicraft-cli mcp [file|--sample]       Model Context Protocol server on stdin/stdout,
+                                         for AI assistants (see docs/mcp.md)
 
 Frames on the command line are 1-based, as in the timeline.";
 
@@ -191,6 +195,13 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             let stdin = std::io::stdin();
             let mut stdout = std::io::stdout();
             serve(&mut s, stdin.lock(), &mut stdout).map_err(|e| e.to_string())?;
+            Ok(String::new())
+        }
+        "mcp" => {
+            let mut s = open_session(src)?;
+            let stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            mcp::serve(&mut s, stdin.lock(), &mut stdout).map_err(|e| e.to_string())?;
             Ok(String::new())
         }
         other => Err(format!("unknown subcommand '{other}'\n\n{USAGE}")),

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* **AniCraft for AI assistants** (`anicraft-cli mcp`): a Model Context Protocol server, so an
+  assistant can open a document, draw, animate, look at frames and export, through the same
+  commands as the app, with undo and the same "are you sure" rules. See `docs/mcp.md`.
+
 * **Images in Animate documents.** Opening a `.fla` or XFL now brings its bitmaps into the
   Library, with bitmap instances on the stage and bitmap fills on shapes (placed, scaled and
   tiled as in the file). Images are read when the document keeps them as PNG or JPEG (XFL
