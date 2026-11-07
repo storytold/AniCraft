@@ -7,6 +7,7 @@
 pub mod paint;
 pub mod raster;
 pub mod stroke;
+mod filters;
 pub mod lottie;
 pub mod svg;
 
@@ -149,14 +150,28 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
     let background = view.background.map(premultiply);
     let surface = IRect { x0: 0, y0: 0, x1: view.width as i32, y1: view.height as i32 };
 
+    // Filtered groups are drawn on their own, filtered, and come back as one image each.
+    let runs = filtered_runs(dl);
+    let mut in_run = vec![false; dl.items.len()];
+    for r in &runs {
+        for f in in_run.iter_mut().take(r.end).skip(r.start) {
+            *f = true;
+        }
+    }
+
     // Phase 1 (parallel over items): cull, flatten, stroke and build shaders. Output keeps
     // display-list order.
-    let prepared: Vec<Vec<Prepared>> = dl.items.par_iter().map(|item| prepare(item, &view.transform, surface)).collect();
+    let mut prepared: Vec<Vec<Prepared>> = dl.items.par_iter().zip(&in_run).map(|(item, &skip)| if skip { Vec::new() } else { prepare(item, &view.transform, surface) }).collect();
+    for r in &runs {
+        if let (Some(op), Some(slot)) = (filtered_group(dl, r, view, surface)?, prepared.get_mut(r.start)) {
+            slot.push(op);
+        }
+    }
     let mut stats = RenderStats { items: dl.items.len(), ..Default::default() };
     let mut ops: Vec<Prepared> = Vec::with_capacity(prepared.len());
     let mut mask_ops: Vec<Prepared> = Vec::new();
-    for p in prepared {
-        if p.is_empty() {
+    for (i, p) in prepared.into_iter().enumerate() {
+        if p.is_empty() && !in_run.get(i).copied().unwrap_or(false) {
             stats.culled += 1;
         }
         for op in p {
@@ -227,6 +242,89 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
     // critical path (it cost about 2 ms at 1080p).
     rayon::spawn(move || drop((ops, clips)));
     Ok((pm, stats))
+}
+
+/// A run of items inside a filtered group that has no filtered group around it.
+struct FilteredRun {
+    group: u32,
+    start: usize,
+    end: usize,
+}
+
+fn filtered_runs(dl: &DisplayList) -> Vec<FilteredRun> {
+    if dl.groups.iter().all(|g| g.filters.is_empty()) {
+        return Vec::new();
+    }
+    let chains = group_chains(&dl.groups);
+    let top = |i: usize| -> Option<u32> {
+        let g = dl.items.get(i)?.group?;
+        chains.get(g as usize)?.iter().copied().find(|&c| dl.groups.get(c as usize).is_some_and(|x| !x.filters.is_empty()))
+    };
+    let mut out: Vec<FilteredRun> = Vec::new();
+    for i in 0..dl.items.len() {
+        match (top(i), out.last_mut()) {
+            (Some(g), Some(last)) if last.group == g && last.end == i => last.end = i + 1,
+            (Some(g), _) => out.push(FilteredRun { group: g, start: i, end: i + 1 }),
+            (None, _) => {}
+        }
+    }
+    out
+}
+
+/// Largest buffer a filtered group is drawn into (pixels).
+const MAX_FILTER_PIXELS: i64 = 64 * 1024 * 1024;
+
+/// Draws a filtered group's items on their own (the group neutral, clips from outside it
+/// left for later), applies its filters, and returns the result as one image op in the group,
+/// clipped by the clip in force where the instance is.
+fn filtered_group(dl: &DisplayList, run: &FilteredRun, view: &View, surface: IRect) -> Result<Option<Prepared>, RenderError> {
+    let Some(group) = dl.groups.get(run.group as usize) else { return Ok(None) };
+    let items = dl.items.get(run.start..run.end).unwrap_or(&[]);
+    let scale = view.transform.mean_scale();
+    let margin = (group.filters.iter().map(anicraft_doc::Filter::margin).sum::<f32>() * scale).ceil() + 2.0;
+    // Where it can draw: its artwork's bounds, grown by how far the filters spread.
+    let mut r = Rect::EMPTY;
+    for it in items.iter().filter(|i| i.masks.is_none() && !i.guide) {
+        let pad = it.stroke.map_or(0.0, |s| s.width * 0.5) + 1.0;
+        r = r.union(&it.path.bounds().inflate(pad).transformed(&view.transform.mul(&it.transform)));
+    }
+    if r.is_empty() || !r.min.x.is_finite() || !r.max.y.is_finite() {
+        return Ok(None);
+    }
+    let reach = margin as i32;
+    let limit = IRect { x0: surface.x0 - reach, y0: surface.y0 - reach, x1: surface.x1 + reach, y1: surface.y1 + reach };
+    let b = IRect { x0: r.min.x.floor() as i32 - reach, y0: r.min.y.floor() as i32 - reach, x1: r.max.x.ceil() as i32 + reach, y1: r.max.y.ceil() as i32 + reach }.intersect(&limit);
+    if b.is_empty() || (b.width() as i64) * (b.height() as i64) > MAX_FILTER_PIXELS {
+        return Ok(None);
+    }
+    // The group's own clips (masks inside the symbol) apply before filtering; others after.
+    let inner: std::collections::HashSet<u32> = items.iter().filter_map(|i| i.masks).collect();
+    let mut groups = dl.groups.clone();
+    if let Some(g) = groups.get_mut(run.group as usize) {
+        *g = anicraft_doc::Group { parent: None, alpha: 1.0, blend: BlendMode::Normal, filters: Default::default(), clip: None };
+    }
+    let sub = DisplayList {
+        items: items.iter().map(|i| DisplayItem { clip: i.clip.filter(|c| inner.contains(c)), ..i.clone() }).collect(),
+        clip_parents: dl.clip_parents.iter().map(|p| p.filter(|c| inner.contains(c))).collect(),
+        groups,
+    };
+    let sub_view = View { transform: Affine::translate(-b.x0 as f32, -b.y0 as f32).mul(&view.transform), width: b.width() as u32, height: b.height() as u32, background: None };
+    let (mut pm, _) = render(&sub, &sub_view)?;
+    filters::apply(&mut pm.data, b.width(), b.height(), &group.filters, scale);
+    let shown = b.intersect(&surface);
+    if shown.is_empty() {
+        return Ok(None);
+    }
+    let (x0, y0, x1, y1) = (shown.x0 as f32, shown.y0 as f32, shown.x1 as f32, shown.y1 as f32);
+    Ok(Some(Prepared {
+        polys: vec![vec![Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]],
+        rule: FillRule::NonZero,
+        shader: Shader::Image { data: std::sync::Arc::new(pm.data), x0: b.x0, y0: b.y0, w: b.width() },
+        bounds: shown,
+        clip: group.clip,
+        masks: None,
+        group: Some(run.group),
+    }))
 }
 
 /// A group being composited in one band: its own buffer (laid out like the band's rows) and
@@ -636,7 +734,7 @@ mod tests {
         let mut blue = item(Path::rect(4.0, 0.0, 8.0, 4.0), Paint::Solid(Rgba::new(0.0, 0.0, 1.0, 1.0)));
         red.group = Some(0);
         blue.group = Some(0);
-        let grouped = DisplayList { items: vec![red.clone(), blue.clone()], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5, blend: Default::default() }] };
+        let grouped = DisplayList { items: vec![red.clone(), blue.clone()], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }] };
         let (pm, _) = render(&grouped, &white).unwrap();
         let near = |p: Premul, q: [f32; 4]| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 1e-4);
         // In the overlap only the top square shows through: half blue, half white, no red.
@@ -655,7 +753,7 @@ mod tests {
         let nested = DisplayList {
             items: vec![inner],
             clip_parents: vec![],
-            groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5, blend: Default::default() }, anicraft_doc::Group { parent: Some(0), alpha: 0.5, blend: Default::default() }],
+            groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, anicraft_doc::Group { parent: Some(0), alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }],
         };
         let (n, _) = render(&nested, &white).unwrap();
         assert!(near(n.pixel(3, 2).unwrap(), [0.75, 0.75, 0.75, 1.0]), "{:?}", n.pixel(3, 2));
@@ -666,7 +764,7 @@ mod tests {
         // Spanning several render bands changes nothing.
         let mut tall = item(Path::rect(0.0, 0.0, 4.0, 100.0), Paint::Solid(Rgba::BLACK));
         tall.group = Some(0);
-        let (t, _) = render(&DisplayList { items: vec![tall], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.25, blend: Default::default() }] }, &View { background: Some(Rgba::WHITE), ..view(4, 100) }).unwrap();
+        let (t, _) = render(&DisplayList { items: vec![tall], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] }, &View { background: Some(Rgba::WHITE), ..view(4, 100) }).unwrap();
         assert!((0..100).all(|y| near(t.pixel(1, y).unwrap(), [0.75, 0.75, 0.75, 1.0])));
     }
 
@@ -832,7 +930,7 @@ mod tests {
         let bg = item(Path::rect(0.0, 0.0, 20.0, 10.0), Paint::Solid(Rgba::new(0.5, 0.5, 1.0, 1.0)));
         let mut top = item(Path::rect(0.0, 0.0, 10.0, 10.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0)));
         top.group = Some(0);
-        let dl = DisplayList { items: vec![bg, top], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 1.0, blend: BlendMode::Multiply }] };
+        let dl = DisplayList { items: vec![bg, top], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 1.0, blend: BlendMode::Multiply, filters: Default::default(), clip: None }] };
         let (pm, _) = render(&dl, &View { background: Some(Rgba::WHITE), ..view(20, 10) }).unwrap();
         let p = pm.pixel(5, 5).unwrap();
         assert!((p[0] - 0.5).abs() < 1e-3 && p[1].abs() < 1e-3 && p[2].abs() < 1e-3, "red × lavender: {p:?}");

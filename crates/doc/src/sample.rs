@@ -18,7 +18,7 @@ fn el(doc: &mut Document, name: &str, transform: Affine, kind: ElementKind) -> A
 }
 
 fn instance(symbol: SymbolId) -> ElementKind {
-    ElementKind::Symbol { symbol, loop_mode: LoopMode::Loop, first_frame: 0, blend: crate::BlendMode::Normal }
+    ElementKind::Symbol { symbol, loop_mode: LoopMode::Loop, first_frame: 0, blend: crate::BlendMode::Normal, filters: Vec::new() }
 }
 
 fn pose(tx: f32, ty: f32, sx: f32, sy: f32, rotation_deg: f32) -> Affine {
