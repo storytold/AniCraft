@@ -171,6 +171,20 @@ pub struct Shot {
 
 pub const SHOT_FRAMES: u32 = 120;
 
+/// The item picked in the Library panel (view state).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LibraryItem {
+    Symbol(anicraft_engine::doc::SymbolId),
+    Bitmap(anicraft_engine::doc::BitmapId),
+}
+
+impl LibraryItem {
+    /// The first item in the Library: its first symbol, else its first bitmap.
+    pub fn first(doc: &anicraft_engine::doc::Document) -> Option<LibraryItem> {
+        doc.library.first().map(|s| LibraryItem::Symbol(s.id)).or_else(|| doc.bitmaps.first().map(|b| LibraryItem::Bitmap(b.id)))
+    }
+}
+
 pub struct App {
     pub s: Session,
     pub tool: Tool,
@@ -196,7 +210,7 @@ pub struct App {
     pub tl_last_layer: Option<anicraft_engine::doc::LayerId>,
     /// Folders shown closed on the timeline (view state: not saved, not undoable).
     pub tl_collapsed: HashSet<anicraft_engine::doc::LayerId>,
-    pub library_sel: Option<usize>,
+    pub library_sel: Option<LibraryItem>,
     pub star_points: u32,
     pub rect_radius: f32,
     /// Pen path being drawn (view state until it is committed as one command).
@@ -262,6 +276,7 @@ impl App {
         let prefs = if shot_mode { prefs::Prefs::default() } else { prefs::Prefs::load() };
         let keymap = keymap::Keymap::new(&prefs.shortcuts);
         let shortcuts = keymap.table();
+        let library_sel = LibraryItem::first(&session.doc);
         let mut app = App {
             s: session,
             tool: Tool::Select,
@@ -284,7 +299,7 @@ impl App {
             tl_vscroll: 0.0,
             tl_last_layer: None,
             tl_collapsed: HashSet::new(),
-            library_sel: Some(0),
+            library_sel,
             star_points: 5,
             rect_radius: 0.0,
             pen: None,
@@ -546,7 +561,7 @@ impl App {
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
-                self.library_sel = (!self.s.doc.library.is_empty()).then_some(0);
+                self.library_sel = LibraryItem::first(&self.s.doc);
                 match v.get("report").and_then(Value::as_str) {
                     // An imported file: say what came across and what didn't, and that saving
                     // makes a new .anicraft document.
@@ -561,6 +576,9 @@ impl App {
                 }
             }
             "file.import" => {
+                if let Some(b) = self.s.doc.bitmaps.last().filter(|b| v["bitmap"].as_u64() == Some(b.id.0)) {
+                    self.library_sel = Some(LibraryItem::Bitmap(b.id));
+                }
                 let n = v["elements"].as_u64().unwrap_or(0);
                 let report = v["report"].as_str().unwrap_or("");
                 self.status_ok(format!("{n} {} on a new layer. {report} Ctrl+Z to undo.", if n == 1 { "shape" } else { "shapes" }));

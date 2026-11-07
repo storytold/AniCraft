@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("arrange.send_to_back", "Send to Back", "Modify/Arrange", Some("Ctrl+Shift+Down"), "{}", true, |s, _| arrange(s, false)),
         c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name?}", true, convert_to_symbol),
         c("modify.break_apart", "Break Apart", "Modify", Some("Ctrl+B"), "{}", true, break_apart),
-        c("library.place", "Place Instance", "", None, "{symbol, x?, y?}", true, place),
+        c("library.place", "Place Instance", "", None, "{symbol | bitmap, x?, y?}", true, place),
     ]
 }
 
@@ -534,8 +534,13 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"created": fresh_ids.len()}))
 }
 
+/// Places a Library item centred on `x`/`y` (default: the stage centre): an instance of
+/// `symbol`, or a rectangle of `bitmap`'s size showing it, in the current keyframe, selected.
 fn place(s: &mut Session, p: &Value) -> Result<Value> {
-    let sym = SymbolId(opt_u64(p, "symbol")?.ok_or_else(|| EngineError::Param("param 'symbol' is required".into()))?);
+    if let Some(bitmap) = opt_u64(p, "bitmap")? {
+        return place_bitmap(s, p, anicraft_doc::BitmapId(bitmap));
+    }
+    let sym = SymbolId(opt_u64(p, "symbol")?.ok_or_else(|| EngineError::Param("param 'symbol' or 'bitmap' is required".into()))?);
     if s.doc.symbol(sym).is_none() {
         return Err(EngineError::State(format!("no symbol with id {}", sym.0)));
     }
@@ -548,6 +553,31 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
         transform: Affine::translate(x, y),
         color: ColorEffect::default(),
         kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0 },
+    };
+    s.editable_keyframe()?.elements.push(Arc::new(el));
+    s.selection = vec![id];
+    Ok(json!({"element": id.0}))
+}
+
+fn place_bitmap(s: &mut Session, p: &Value, bitmap: anicraft_doc::BitmapId) -> Result<Value> {
+    let (name, w, h) = match s.doc.bitmap(bitmap) {
+        Some(b) => (b.name.clone(), b.width as f32, b.height as f32),
+        None => return Err(EngineError::State(format!("no bitmap with id {}", bitmap.0))),
+    };
+    let x = opt_f32(p, "x")?.unwrap_or(s.doc.stage.width as f32 / 2.0);
+    let y = opt_f32(p, "y")?.unwrap_or(s.doc.stage.height as f32 / 2.0);
+    let id = ElementId(s.doc.alloc_id());
+    let el = Element {
+        id,
+        name,
+        transform: Affine::translate(x - w / 2.0, y - h / 2.0),
+        color: ColorEffect::default(),
+        kind: ElementKind::Shape(Shape {
+            path: Arc::new(Path::rect(0.0, 0.0, w, h)),
+            fill: Some(Paint::Bitmap { bitmap, repeat: false }),
+            stroke: None,
+            fill_rule: anicraft_geom::FillRule::NonZero,
+        }),
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
     s.selection = vec![id];

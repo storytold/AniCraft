@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **Images in the Library.** Imported images are listed in the Library with their size, next
+  to symbols, and the newest is picked. Double-click one, or press Place on stage, to add
+  another copy centred on the stage; copies share the one image (`library.place` takes
+  `bitmap` as well as `symbol`).
+
 * **Images.** Import to Stage (Ctrl+R) now takes **PNG** and **JPEG** too. An image arrives on
   its own layer, centred and selected, and can be moved, scaled, rotated, faded, tweened and
   masked like any artwork. It renders smoothly at every size, on the stage and in every export
