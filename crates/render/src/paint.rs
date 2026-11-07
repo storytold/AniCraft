@@ -70,9 +70,12 @@ impl Shader {
                 }
                 Shader::Radial { inv, center: *center, inv_radius: 1.0 / radius, lut: build_lut(stops, fx) }
             }
-            (Paint::Bitmap { repeat, .. }, Some(inv)) => match image {
-                Some(px) => Shader::Bitmap { inv, pixels: px.clone(), repeat: *repeat, fx: *fx },
-                None => Shader::Solid(premultiply(fx.apply(paint.primary_color()))),
+            (Paint::Bitmap { repeat, matrix, .. }, Some(inv)) => match (image, matrix.inverse()) {
+                // Pixel → shape space → image pixels.
+                (Some(px), Some(to_image)) => Shader::Bitmap { inv: to_image.mul(&inv), pixels: px.clone(), repeat: *repeat, fx: *fx },
+                // A collapsed image matrix shows nothing.
+                (Some(_), None) => Shader::Solid([0.0; 4]),
+                (None, _) => Shader::Solid(premultiply(fx.apply(paint.primary_color()))),
             },
             (p, None) => Shader::Solid(premultiply(fx.apply(p.primary_color()))),
         }
@@ -159,19 +162,27 @@ mod tests {
     fn bitmaps_sample_bilinear_once_or_tiled() {
         // 2×1: black, white.
         let px = Arc::new(Pixels { width: 2, height: 1, rgba: vec![0, 0, 0, 255, 255, 255, 255, 255] });
-        let once = Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false }, &Affine::scale(10.0, 10.0), &ColorEffect::default(), Some(&px));
+        let once = Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false, matrix: Affine::IDENTITY }, &Affine::scale(10.0, 10.0), &ColorEffect::default(), Some(&px));
         let r = |s: &Shader, x| s.at(x, 3)[0];
         assert!(r(&once, 0) < 0.01, "the black pixel");
         assert!(r(&once, 19) > 0.99, "the white pixel");
         assert!((r(&once, 9) - 0.45).abs() < 0.06, "blended across the seam: {}", r(&once, 9));
         assert_eq!(once.at(25, 3), [0.0; 4], "nothing past the edge");
-        let tiled = Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true }, &Affine::scale(10.0, 10.0), &ColorEffect::default(), Some(&px));
+        let tiled = Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::IDENTITY }, &Affine::scale(10.0, 10.0), &ColorEffect::default(), Some(&px));
         assert!(r(&tiled, 25) < 0.2 && r(&tiled, 35) > 0.8, "tiles repeat");
         assert!(r(&tiled, 21) > 0.2, "and blend across the wrap-around seam");
         // Opacity applies, premultiplied; a missing image is grey, not a crash.
-        let half = Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false }, &Affine::scale(10.0, 10.0), &ColorEffect { alpha: 0.5, ..Default::default() }, Some(&px));
+        let half = Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false, matrix: Affine::IDENTITY }, &Affine::scale(10.0, 10.0), &ColorEffect { alpha: 0.5, ..Default::default() }, Some(&px));
         assert!((half.at(19, 3)[3] - 0.5).abs() < 1e-3 && (half.at(19, 3)[0] - 0.5).abs() < 1e-2);
-        assert!(Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(9), repeat: false }, &Affine::IDENTITY, &ColorEffect::default(), None).is_solid().is_some());
+        assert!(Shader::new(&Paint::Bitmap { bitmap: anicraft_doc::BitmapId(9), repeat: false, matrix: Affine::IDENTITY }, &Affine::IDENTITY, &ColorEffect::default(), None).is_solid().is_some());
+        // The fill's image matrix places the image inside the shape: here 10× larger, from x = 40.
+        let placed = Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false, matrix: Affine { m: [10.0, 0.0, 0.0, 10.0, 40.0, 0.0] } };
+        let placed = Shader::new(&placed, &Affine::IDENTITY, &ColorEffect::default(), Some(&px));
+        assert_eq!(placed.at(30, 3), [0.0; 4], "before the image");
+        assert!(r(&placed, 42) < 0.01 && r(&placed, 57) > 0.99, "black then white, 10 px each");
+        // A collapsed image matrix shows nothing rather than dividing by zero.
+        let flat = Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine { m: [0.0; 6] } };
+        assert_eq!(Shader::new(&flat, &Affine::IDENTITY, &ColorEffect::default(), Some(&px)).at(3, 3), [0.0; 4]);
     }
 
     #[test]

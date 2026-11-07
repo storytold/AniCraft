@@ -209,6 +209,7 @@ dependencies = [
  "png 0.17.16",
  "serde",
  "serde_json",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -226,7 +227,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -266,6 +266,7 @@ dependencies = [
  "anicraft-geom",
  "anicraft-xml",
  "miniz_oxide 0.8.9",
+ "png 0.17.16",
  "thiserror 2.0.21",
 ]
 

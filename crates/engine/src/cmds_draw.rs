@@ -574,7 +574,7 @@ fn place_bitmap(s: &mut Session, p: &Value, bitmap: anicraft_doc::BitmapId) -> R
         color: ColorEffect::default(),
         kind: ElementKind::Shape(Shape {
             path: Arc::new(Path::rect(0.0, 0.0, w, h)),
-            fill: Some(Paint::Bitmap { bitmap, repeat: false }),
+            fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }),
             stroke: None,
             fill_rule: anicraft_geom::FillRule::NonZero,
         }),

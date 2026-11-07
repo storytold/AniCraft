@@ -6,13 +6,15 @@
 //! linear and radial fills, solid strokes), groups (flattened), rectangle and oval
 //! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
-//! depth. Everything else (bitmaps, text, sound, masks, motion tweens with property curves,
-//! filters) is counted in the report instead of guessed at.
+//! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
+//! JPEG in the package. Everything else (text, sound, motion tweens with property curves,
+//! filters, bitmaps kept only in Animate's own storage) is counted in the report instead of
+//! guessed at.
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    ColorEffect, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Bitmap, BitmapId, ColorEffect, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
@@ -59,6 +61,10 @@ pub type Reader<'a> = dyn Fn(&str) -> Result<Option<Vec<u8>>, XflError> + 'a;
 const MAX_SYMBOLS: usize = 20_000;
 const MAX_LAYERS: usize = 5_000;
 const MAX_FRAME: u32 = 100_000;
+const MAX_BITMAPS: usize = 10_000;
+
+/// Bitmap fill matrices scale image pixels by twips (1/20 px): `a = 20` is one pixel per pixel.
+const TWIPS: f32 = 20.0;
 
 struct Builder<'a> {
     doc: Document,
@@ -68,6 +74,8 @@ struct Builder<'a> {
     ids: HashMap<String, SymbolId>,
     /// Parsed symbol files waiting to be built.
     pending: Vec<(SymbolId, String, SymbolKind, X)>,
+    /// Library item name → bitmap id, for the bitmaps that could be read.
+    bitmaps: HashMap<String, BitmapId>,
     report: Report,
 }
 
@@ -85,8 +93,9 @@ fn matrix(el: &X) -> Affine {
 /// Half the side of the square XFL gradients are defined on, in pixels (16384 twips / 20).
 const GRADIENT_HALF: f32 = 819.2;
 
-/// A fill definition (`SolidColor`, `LinearGradient`, `RadialGradient`) as a paint.
-fn paint(def: &X, report: &mut Report) -> Option<Paint> {
+/// A fill definition (`SolidColor`, `LinearGradient`, `RadialGradient`, `BitmapFill`) as a
+/// paint.
+fn paint(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> Option<Paint> {
     match def.name.as_str() {
         "SolidColor" => Some(Paint::Solid(color(def, "color", "alpha"))),
         "LinearGradient" | "RadialGradient" => {
@@ -104,15 +113,22 @@ fn paint(def: &X, report: &mut Report) -> Option<Paint> {
             })
         }
         "BitmapFill" => {
-            report.skip("bitmap fills");
-            None
+            let Some(&bitmap) = def.attr("bitmapPath").and_then(|n| bitmaps.get(n)) else {
+                report.skip("bitmap fills of missing bitmaps");
+                return None;
+            };
+            let m = matrix(def).m;
+            let matrix = Affine { m: [m[0] / TWIPS, m[1] / TWIPS, m[2] / TWIPS, m[3] / TWIPS, m[4], m[5]] };
+            // Animate repeats a bitmap fill unless it is clipped (then the edge pixels extend,
+            // which AniCraft draws as the image shown once).
+            Some(Paint::Bitmap { bitmap, repeat: !def.bool("bitmapIsClipped").unwrap_or(false), matrix })
         }
         _ => None,
     }
 }
 
 /// A stroke definition (`SolidStroke` and friends) as a stroke: weight and its fill colour.
-fn stroke(def: &X, report: &mut Report) -> Option<Stroke> {
+fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> Option<Stroke> {
     if !matches!(def.name.as_str(), "SolidStroke" | "DashedStroke" | "DottedStroke" | "RaggedStroke" | "StippleStroke" | "HatchedStroke") {
         return None;
     }
@@ -121,7 +137,7 @@ fn stroke(def: &X, report: &mut Report) -> Option<Stroke> {
     }
     let width = def.f32("weight").unwrap_or(1.0).clamp(0.05, 1000.0);
     let fill = def.child("fill").and_then(|f| f.children.first());
-    let c = fill.map_or(Rgba::BLACK, |f| if f.name == "SolidColor" { color(f, "color", "alpha") } else { paint(f, report).map_or(Rgba::BLACK, |p| p.primary_color()) });
+    let c = fill.map_or(Rgba::BLACK, |f| if f.name == "SolidColor" { color(f, "color", "alpha") } else { paint(f, bitmaps, report).map_or(Rgba::BLACK, |p| p.primary_color()) });
     Some(Stroke { color: c, width })
 }
 
@@ -134,8 +150,8 @@ impl<'a> Builder<'a> {
     /// shape per stroke style, as Animate draws them.
     fn shape(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
         let m = parent.mul(&matrix(el));
-        let fills: Vec<(u32, Option<Paint>)> = el.list("fills").iter().map(|f| (f.u32("index").unwrap_or(0), f.children.first().and_then(|d| paint(d, &mut self.report)))).collect();
-        let strokes: Vec<(u32, Option<Stroke>)> = el.list("strokes").iter().map(|s| (s.u32("index").unwrap_or(0), s.children.first().and_then(|d| stroke(d, &mut self.report)))).collect();
+        let fills: Vec<(u32, Option<Paint>)> = el.list("fills").iter().map(|f| (f.u32("index").unwrap_or(0), f.children.first().and_then(|d| paint(d, &self.bitmaps, &mut self.report)))).collect();
+        let strokes: Vec<(u32, Option<Stroke>)> = el.list("strokes").iter().map(|s| (s.u32("index").unwrap_or(0), s.children.first().and_then(|d| stroke(d, &self.bitmaps, &mut self.report)))).collect();
         let edges: Vec<Edge> = el
             .list("edges")
             .iter()
@@ -166,12 +182,23 @@ impl<'a> Builder<'a> {
             return;
         }
         let path = if el.name == "DOMOvalObject" { Path::ellipse(x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0) } else { Path::rounded_rect(x, y, w, h, el.f32("topLeftRadius").unwrap_or(0.0).max(0.0)) };
-        let fill = el.child("fill").and_then(|f| f.children.first()).and_then(|d| paint(d, &mut self.report));
-        let stroke = el.child("stroke").and_then(|s| s.children.first()).and_then(|d| stroke(d, &mut self.report));
+        let fill = el.child("fill").and_then(|f| f.children.first()).and_then(|d| paint(d, &self.bitmaps, &mut self.report));
+        let stroke = el.child("stroke").and_then(|s| s.children.first()).and_then(|d| stroke(d, &self.bitmaps, &mut self.report));
         if fill.is_some() || stroke.is_some() {
             let m = parent.mul(&matrix(el));
             out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill, stroke, fill_rule: FillRule::NonZero }), m, ColorEffect::default()));
         }
+    }
+
+    /// A bitmap instance: a rectangle of the image's size showing it, as Import to Stage makes.
+    fn bitmap_instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
+        let found = el.attr("libraryItemName").and_then(|n| self.bitmaps.get(n)).and_then(|&id| self.doc.bitmap(id).map(|b| (id, b.width as f32, b.height as f32)));
+        let Some((bitmap, w, h)) = found else {
+            self.report.skip("instances of missing bitmaps");
+            return;
+        };
+        let shape = Shape { path: Arc::new(Path::rect(0.0, 0.0, w, h)), fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }), stroke: None, fill_rule: FillRule::NonZero };
+        out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)), ColorEffect::default()));
     }
 
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
@@ -210,7 +237,7 @@ impl<'a> Builder<'a> {
                 }
                 "DOMSymbolInstance" => self.instance(el, parent, out),
                 "DOMRectangleObject" | "DOMOvalObject" => self.primitive(el, parent, out),
-                "DOMBitmapInstance" => self.report.skip("bitmaps"),
+                "DOMBitmapInstance" => self.bitmap_instance(el, parent, out),
                 "DOMStaticText" | "DOMDynamicText" | "DOMInputText" => self.report.skip("text fields"),
                 "DOMVideoInstance" => self.report.skip("videos"),
                 _ => self.report.skip("other elements"),
@@ -288,6 +315,44 @@ impl<'a> Builder<'a> {
         tl
     }
 
+    /// Reads the document's bitmap library items. Each one's image is looked for as the
+    /// original file in `LIBRARY/` (XFL folders keep it there) and then as its data file in
+    /// `bin/`; either is used when it is a PNG or JPEG. Animate's own encodings of the data
+    /// file are not public, so those bitmaps are reported instead.
+    fn register_bitmaps(&mut self, root: &X) -> Result<(), XflError> {
+        for item in root.list("media").iter().filter(|i| i.name == "DOMBitmapItem").take(MAX_BITMAPS) {
+            let Some(name) = item.attr("name").filter(|n| !self.bitmaps.contains_key(*n)) else { continue };
+            let mut candidates = Vec::new();
+            if let Some(href) = item.attr("href") {
+                candidates.push(format!("LIBRARY/{href}"));
+            }
+            if let Some(data) = item.attr("bitmapDataHRef") {
+                candidates.push(format!("bin/{data}"));
+            }
+            let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(256).collect();
+            let mut found_data = false;
+            let mut bitmap = None;
+            for path in candidates {
+                let Some(bytes) = (self.read)(&path)? else { continue };
+                found_data = true;
+                if let Ok(b) = Bitmap::from_image(BitmapId(0), short.clone(), bytes) {
+                    bitmap = Some(b);
+                    break;
+                }
+            }
+            match bitmap {
+                Some(mut b) => {
+                    b.id = BitmapId(self.doc.alloc_id());
+                    self.bitmaps.insert(name.to_string(), b.id);
+                    self.doc.bitmaps.push(Arc::new(b));
+                }
+                None if found_data => self.report.skip("bitmaps stored in Animate's own format"),
+                None => self.report.skip("missing bitmap files"),
+            }
+        }
+        Ok(())
+    }
+
     /// Allocates ids for every symbol the document lists, parsing their files.
     fn register_symbols(&mut self, root: &X) -> Result<(), XflError> {
         let mut seen = HashSet::new();
@@ -336,7 +401,7 @@ pub fn import_with(read: &Reader<'_>) -> Result<(Document, Report), XflError> {
     if root.name != "DOMDocument" {
         return Err(XflError::NotXfl(format!("the root element is <{}>", root.name)));
     }
-    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), report: Report::default() };
+    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), bitmaps: HashMap::new(), report: Report::default() };
     b.doc.library.clear();
     b.doc.scenes.clear();
     b.doc.stage = Stage {
@@ -345,6 +410,7 @@ pub fn import_with(read: &Reader<'_>) -> Result<(Document, Report), XflError> {
         fps: root.f32("frameRate").unwrap_or(24.0).clamp(1.0, 120.0),
         background: color(&root, "backgroundColor", "__none"),
     };
+    b.register_bitmaps(&root)?;
     b.register_symbols(&root)?;
     b.build_symbols();
     // Every DOMTimeline is a scene, in order.
