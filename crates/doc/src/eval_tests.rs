@@ -100,7 +100,9 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
     let dl = evaluate(&d, 0);
     assert_eq!(dl.items.len(), MAX_SYMBOL_DEPTH);
     assert_eq!(dl.items[0].transform.translation().x, 100.0);
-    assert_eq!(dl.items[0].color.alpha, 0.5);
+    // The instance's opacity is its group's: it fades as one.
+    assert_eq!((dl.items[0].color.alpha, dl.effective_alpha(&dl.items[0])), (1.0, 0.5));
+    assert_eq!(dl.groups.len(), 1);
     assert!(dl.items.iter().all(|i| i.element == ElementId(60)));
 }
 

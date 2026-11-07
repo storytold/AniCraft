@@ -179,26 +179,99 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
     // it, in order, into its own rows. A row is owned by exactly one band, so the result is
     // identical to a serial render whatever the thread count.
     let w = view.width as usize;
+    let chains = group_chains(&dl.groups);
     pm.data.par_chunks_mut(BAND_ROWS * w.max(1)).enumerate().for_each(|(bi, rows)| {
         let y0 = (bi * BAND_ROWS) as i32;
         let band = IRect { x0: 0, y0, x1: surface.x1, y1: (y0 + BAND_ROWS as i32).min(surface.y1) };
         let mut cov = Coverage::new(IRect { x0: 0, y0: 0, x1: 0, y1: 0 });
         let mut row = Vec::new();
         let mut band_clips = BandClips::default();
+        // Open groups, outermost first: each composites into its own band buffer, which blends
+        // into the one below at the group's alpha when the group's run of ops ends.
+        let mut open: Vec<OpenGroup> = Vec::new();
         for op in &ops {
             let b = IRect { x0: op.bounds.x0, y0: op.bounds.y0.max(band.y0), x1: op.bounds.x1, y1: op.bounds.y1.min(band.y1) };
             if b.is_empty() {
                 continue;
+            }
+            let want = op.group.and_then(|g| chains.get(g as usize)).map_or(&[][..], Vec::as_slice);
+            let keep = open.iter().zip(want).take_while(|(o, g)| o.id == **g).count();
+            while open.len() > keep {
+                close_group(&mut open, rows, &dl.groups, band.y0, w);
+            }
+            for &g in want.iter().skip(keep) {
+                open.push(OpenGroup { id: g, buf: vec![[0.0; 4]; rows.len()], dirty: NO_PIXELS });
             }
             let mask = op.clip.map(|c| band_clips.get(&clips, c, band, w, &mut cov, &mut row));
             cov.reset(b);
             for poly in &op.polys {
                 cov.add_polygon(poly);
             }
-            composite(&cov, op, b, band.y0, w, rows, &mut row, mask.as_deref().map(Vec::as_slice));
+            match open.last_mut() {
+                Some(top) => {
+                    top.dirty = top.dirty.union(&b);
+                    composite(&cov, op, b, band.y0, w, &mut top.buf, &mut row, mask.as_deref().map(Vec::as_slice));
+                }
+                None => composite(&cov, op, b, band.y0, w, rows, &mut row, mask.as_deref().map(Vec::as_slice)),
+            }
+        }
+        while !open.is_empty() {
+            close_group(&mut open, rows, &dl.groups, band.y0, w);
         }
     });
     Ok((pm, stats))
+}
+
+/// A group being composited in one band: its own buffer (laid out like the band's rows) and
+/// the part of it drawn into.
+struct OpenGroup {
+    id: u32,
+    buf: Vec<Premul>,
+    dirty: IRect,
+}
+
+/// Each group's chain of groups, outermost first. A malformed parent link (not earlier in the
+/// list) is treated as no parent.
+pub(crate) fn group_chains(groups: &[anicraft_doc::Group]) -> Vec<Vec<u32>> {
+    let mut out: Vec<Vec<u32>> = Vec::with_capacity(groups.len());
+    for (i, g) in groups.iter().enumerate() {
+        let mut chain = g.parent.filter(|&p| (p as usize) < i).and_then(|p| out.get(p as usize)).cloned().unwrap_or_default();
+        chain.push(i as u32);
+        out.push(chain);
+    }
+    out
+}
+
+/// Blends the innermost open group into what is below it, at the group's alpha.
+fn close_group(open: &mut Vec<OpenGroup>, rows: &mut [Premul], groups: &[anicraft_doc::Group], band_y0: i32, w: usize) {
+    let Some(g) = open.pop() else { return };
+    let alpha = groups.get(g.id as usize).map_or(1.0, |x| if x.alpha.is_finite() { x.alpha.clamp(0.0, 1.0) } else { 1.0 });
+    let dst: &mut [Premul] = match open.last_mut() {
+        Some(below) => {
+            below.dirty = below.dirty.union(&g.dirty);
+            &mut below.buf
+        }
+        None => rows,
+    };
+    let d = g.dirty;
+    if d.is_empty() || alpha <= 0.0 {
+        return;
+    }
+    for py in d.y0..d.y1 {
+        let start = (py - band_y0) as usize * w + d.x0 as usize;
+        let (Some(src), Some(out)) = (g.buf.get(start..start + d.width()), dst.get_mut(start..start + d.width())) else { continue };
+        for (o, s) in out.iter_mut().zip(src) {
+            let sa = s[3] * alpha;
+            if sa <= 0.0 {
+                continue;
+            }
+            let inv = 1.0 - sa;
+            o[0] = s[0] * alpha + o[0] * inv;
+            o[1] = s[1] * alpha + o[1] * inv;
+            o[2] = s[2] * alpha + o[2] * inv;
+            o[3] = sa + o[3] * inv;
+        }
+    }
 }
 
 /// Rows per parallel band.
@@ -214,6 +287,8 @@ struct Prepared {
     clip: Option<u32>,
     /// Mask artwork for this clip (not drawn).
     masks: Option<u32>,
+    /// Composited inside this group (and its parents).
+    group: Option<u32>,
 }
 
 /// The clips of a display list: their mask artwork and where each can be non-zero.
@@ -336,13 +411,13 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
     if lines.is_empty() {
         return out;
     }
-    let (clip, masks) = (item.clip, item.masks);
+    let (clip, masks, group) = (item.clip, item.masks, item.group);
     let mut push = |polys: Vec<Vec<Vec2>>, rule, shader: Shader| {
         if shader.is_solid().is_some_and(|c| c[3] <= 0.0) {
             return;
         }
         if let Some(b) = pixel_bounds(&polys, surface) {
-            out.push(Prepared { polys, rule, shader, bounds: b, clip, masks });
+            out.push(Prepared { polys, rule, shader, bounds: b, clip, masks, group });
         }
     };
 
@@ -449,11 +524,12 @@ mod tests {
             clip: None,
             masks: None,
             guide: false,
+            group: None,
         }
     }
 
     fn list(items: Vec<DisplayItem>) -> DisplayList {
-        DisplayList { items, clip_parents: Vec::new() }
+        DisplayList { items, clip_parents: Vec::new(), groups: Vec::new() }
     }
 
     #[test]
@@ -465,7 +541,7 @@ mod tests {
         let mut mask = item(Path::ellipse(20.0, 20.0, 10.0, 10.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 0.2)));
         mask.masks = Some(0);
         mask.stroke = Some(anicraft_doc::Stroke { color: Rgba::BLACK, width: 8.0 });
-        let dl = DisplayList { items: vec![square, mask], clip_parents: vec![None] };
+        let dl = DisplayList { items: vec![square, mask], clip_parents: vec![None], groups: Vec::new() };
         let (pm, _) = render(&dl, &view(40, 40)).unwrap();
         // Pixel for pixel, the same as the circle drawn in the square's colour.
         let circle = item(Path::ellipse(20.0, 20.0, 10.0, 10.0), Paint::Solid(Rgba::new(0.0, 0.0, 1.0, 1.0)));
@@ -486,6 +562,48 @@ mod tests {
     }
 
     #[test]
+    fn groups_fade_as_one() {
+        // A red square under a blue one, overlapping, in a group at 50% over white.
+        let white = View { background: Some(Rgba::WHITE), ..view(12, 4) };
+        let mut red = item(Path::rect(0.0, 0.0, 8.0, 4.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0)));
+        let mut blue = item(Path::rect(4.0, 0.0, 8.0, 4.0), Paint::Solid(Rgba::new(0.0, 0.0, 1.0, 1.0)));
+        red.group = Some(0);
+        blue.group = Some(0);
+        let grouped = DisplayList { items: vec![red.clone(), blue.clone()], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5 }] };
+        let (pm, _) = render(&grouped, &white).unwrap();
+        let near = |p: Premul, q: [f32; 4]| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 1e-4);
+        // In the overlap only the top square shows through: half blue, half white, no red.
+        assert!(near(pm.pixel(6, 1).unwrap(), [0.5, 0.5, 1.0, 1.0]), "{:?}", pm.pixel(6, 1));
+        assert!(near(pm.pixel(1, 1).unwrap(), [1.0, 0.5, 0.5, 1.0]));
+        // Fading each square on its own would let the red show through the blue.
+        let (mut r2, mut b2) = (red, blue);
+        (r2.group, b2.group) = (None, None);
+        r2.color.alpha = 0.5;
+        b2.color.alpha = 0.5;
+        let (each, _) = render(&list(vec![r2, b2]), &white).unwrap();
+        assert!(each.pixel(6, 1).unwrap()[0] > 0.2, "per-shape fading mixes in red");
+        // Nested groups multiply; a group with a bad parent link is a top-level group.
+        let mut inner = item(Path::rect(0.0, 0.0, 12.0, 4.0), Paint::Solid(Rgba::BLACK));
+        inner.group = Some(1);
+        let nested = DisplayList {
+            items: vec![inner],
+            clip_parents: vec![],
+            groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5 }, anicraft_doc::Group { parent: Some(0), alpha: 0.5 }],
+        };
+        let (n, _) = render(&nested, &white).unwrap();
+        assert!(near(n.pixel(3, 2).unwrap(), [0.75, 0.75, 0.75, 1.0]), "{:?}", n.pixel(3, 2));
+        let mut bad = nested.clone();
+        bad.groups[1].parent = Some(7);
+        let (b, _) = render(&bad, &white).unwrap();
+        assert!(near(b.pixel(3, 2).unwrap(), [0.5, 0.5, 0.5, 1.0]));
+        // Spanning several render bands changes nothing.
+        let mut tall = item(Path::rect(0.0, 0.0, 4.0, 100.0), Paint::Solid(Rgba::BLACK));
+        tall.group = Some(0);
+        let (t, _) = render(&DisplayList { items: vec![tall], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.25 }] }, &View { background: Some(Rgba::WHITE), ..view(4, 100) }).unwrap();
+        assert!((0..100).all(|y| near(t.pixel(1, y).unwrap(), [0.75, 0.75, 0.75, 1.0])));
+    }
+
+    #[test]
     fn guide_artwork_never_renders() {
         let mut g = item(Path::rect(0.0, 0.0, 8.0, 8.0), Paint::Solid(Rgba::BLACK));
         g.guide = true;
@@ -498,7 +616,7 @@ mod tests {
         let mut clipped = item(Path::rect(0.0, 0.0, 8.0, 8.0), Paint::Solid(Rgba::BLACK));
         clipped.clip = Some(0);
         let free = item(Path::rect(0.0, 0.0, 2.0, 2.0), Paint::Solid(Rgba::BLACK));
-        let (pm, st) = render(&DisplayList { items: vec![clipped, free.clone()], clip_parents: vec![None] }, &view(8, 8)).unwrap();
+        let (pm, st) = render(&DisplayList { items: vec![clipped, free.clone()], clip_parents: vec![None], groups: Vec::new() }, &view(8, 8)).unwrap();
         assert_eq!(st.drawn, 1);
         assert_eq!(pm, render(&list(vec![free]), &view(8, 8)).unwrap().0);
     }
@@ -513,11 +631,11 @@ mod tests {
         inner.masks = Some(1);
         let items = vec![fill, outer, inner];
         // Clip 1 lies inside clip 0: a 32 × 32 square across two render bands survives.
-        let (pm, _) = render(&DisplayList { items: items.clone(), clip_parents: vec![None, Some(0)] }, &view(64, 64)).unwrap();
+        let (pm, _) = render(&DisplayList { items: items.clone(), clip_parents: vec![None, Some(0)], groups: Vec::new() }, &view(64, 64)).unwrap();
         assert!((alpha_sum(&pm) - 32.0 * 32.0).abs() < 1e-2, "{}", alpha_sum(&pm));
         // A parent link pointing forward (malformed) or out of range masks everything out.
         for parents in [vec![Some(1), Some(1)], vec![None, Some(9)]] {
-            let (pm, _) = render(&DisplayList { items: items.clone(), clip_parents: parents }, &view(64, 64)).unwrap();
+            let (pm, _) = render(&DisplayList { items: items.clone(), clip_parents: parents, groups: Vec::new() }, &view(64, 64)).unwrap();
             assert_eq!(alpha_sum(&pm), 0.0);
         }
     }

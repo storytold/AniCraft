@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **Symbols fade as one.** A symbol instance below full opacity now composites its contents
+  first and then fades the result, as in Animate, so overlapping parts no longer show through
+  each other. This applies on the stage and in PNG, GIF, sprite sheet and SVG exports (SVG
+  uses `<g opacity>`). Fully opaque instances render exactly as before.
+
 * **Export Sprite Sheet** (File › Export, `file.export_sprite_sheet`): movie frames in a grid
   on one PNG, plus a JSON frame map beside it in the common "JSON hash" layout, with frame
   rectangles, sizes and per-frame durations, ready for game engines. Choose the frame range,

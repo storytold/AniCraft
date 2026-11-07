@@ -10,7 +10,7 @@ pub mod path_table;
 pub mod sample;
 
 pub use easing::Easing;
-pub use eval::{DisplayItem, DisplayList, MAX_SYMBOL_DEPTH, evaluate, evaluate_layer_elements, evaluate_scene};
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use serde::{Deserialize, Serialize};
