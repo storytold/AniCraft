@@ -230,11 +230,18 @@ pub type UserFont = (String, Vec<u8>, u32);
 
 /// Installs the UI typefaces (ADR 0005). Order in each family: the user's system font (from
 /// Preferences), then the craft-fonts pair (when embedded at build time), then egui's bundled
-/// fonts, which stay as fallbacks for glyph coverage.
+/// fonts, which stay as fallbacks for glyph coverage, then Noto Sans Arabic for the Arabic
+/// letters none of them has (ADR 0013).
 pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&UserFont>, data_font: Option<&UserFont>) {
     use egui::{FontData, FontDefinitions, FontFamily};
     use std::sync::Arc;
     let mut defs = FontDefinitions::default();
+    if let Some(b) = craft_fonts::ARABIC_FONT {
+        defs.font_data.insert("craft-noto-arabic".to_owned(), Arc::new(FontData::from_static(b)));
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            defs.families.entry(family).or_default().push("craft-noto-arabic".to_owned());
+        }
+    }
     for (bytes, name, family) in [(craft_fonts::UI_FONT, "craft-inter", FontFamily::Proportional), (craft_fonts::MONO_FONT, "craft-jetbrains-mono", FontFamily::Monospace)] {
         if let Some(b) = bytes {
             defs.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(b)));
@@ -353,7 +360,7 @@ pub fn form_row<R>(ui: &mut egui::Ui, label_w: f32, label: &str, add: impl FnOnc
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(egui::vec2(label_w, TARGET), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_min_size(egui::vec2(label_w, TARGET));
-            ui.label(text(Type::Label, label));
+            ui.label(text(Type::Label, crate::i18n::t(label)));
         });
         add(ui)
     })

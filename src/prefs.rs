@@ -52,6 +52,8 @@ pub struct Prefs {
     /// Keyboard shortcuts the user changed: action id → its full list of keys (empty =
     /// unbound). Actions not listed keep their defaults (`keymap`).
     pub shortcuts: std::collections::BTreeMap<String, Vec<String>>,
+    /// Interface language: a craft-i18n code (`en`, `ar`), or `auto` for the system's (`i18n`).
+    pub language: String,
 }
 
 impl Default for Prefs {
@@ -64,6 +66,7 @@ impl Default for Prefs {
             native_dialogs: true,
             timeline_start_gap: 0.0,
             shortcuts: Default::default(),
+            language: crate::i18n::AUTO.to_string(),
         }
     }
 }
@@ -87,6 +90,11 @@ impl Prefs {
             }
         }
         self.shortcuts = crate::keymap::sanitize(std::mem::take(&mut self.shortcuts));
+        // A code is short; anything else came from a broken file. An unknown code is kept (a newer
+        // version's language) and shows the system's language meanwhile.
+        if self.language.trim().is_empty() || self.language.len() > 32 {
+            self.language = crate::i18n::AUTO.to_string();
+        }
         self
     }
 

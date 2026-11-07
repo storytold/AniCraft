@@ -2,6 +2,7 @@
 
 use crate::app::App;
 use crate::platform::{self, Os};
+use crate::i18n::{self, tl};
 use crate::theme::{Type, text};
 use anicraft_engine::{CommandSpec, commands};
 
@@ -31,7 +32,7 @@ pub fn bar(app: &mut App, ui: &mut egui::Ui) {
         }
         // Windows and Linux: no name before the menus; the window title already shows it.
         for top in TOP_MENUS {
-            ui.menu_button(top, |ui| {
+            ui.menu_button(tl!(top), |ui| {
                 ui.set_min_width(230.0);
                 menu_contents(app, ui, top, &cmds);
             });
@@ -60,8 +61,8 @@ fn enabled(app: &App, id: &str) -> bool {
 
 fn item(app: &mut App, ui: &mut egui::Ui, spec: &CommandSpec) {
     let label = match spec.id {
-        "edit.undo" => app.s.undo_label().map_or_else(|| "Undo".to_string(), |l| format!("Undo {l}")),
-        _ => spec.label.to_string(),
+        "edit.undo" => app.s.undo_label().map_or_else(|| tl!("Undo").to_string(), |l| i18n::fmt("Undo {action}", &[("action", tl!(&l))])),
+        _ => i18n::t_id(spec.id, spec.label).to_string(),
     };
     let button = egui::Button::new(label).shortcut_text(text(Type::Key, platform::shortcut_label(app.keymap.primary(spec.id).unwrap_or(""))));
     if ui.add_enabled(enabled(app, spec.id), button).clicked() {
@@ -80,6 +81,7 @@ pub fn cmd_item(app: &mut App, ui: &mut egui::Ui, id: &str) {
 
 /// A check item for state that is not a registry command's own (context menus).
 pub fn check_item(ui: &mut egui::Ui, label: &str, checked: bool, enabled: bool) -> bool {
+    let label = tl!(label);
     let label = if checked { format!("✔ {label}") } else { format!("   {label}") };
     let clicked = ui.add_enabled(enabled, egui::Button::new(label)).clicked();
     if clicked {
@@ -89,6 +91,7 @@ pub fn check_item(ui: &mut egui::Ui, label: &str, checked: bool, enabled: bool) 
 }
 
 fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) -> bool {
+    let label = tl!(label);
     let label_text = match checked {
         Some(true) => format!("✔ {label}"),
         Some(false) => format!("   {label}"),
@@ -116,7 +119,7 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
     }
     for sub in subs {
         let path = format!("{top}/{sub}");
-        ui.menu_button(sub, |ui| {
+        ui.menu_button(tl!(sub), |ui| {
             ui.set_min_width(220.0);
             for spec in cmds.iter().filter(|c| c.menu == path) {
                 item(app, ui, spec);
@@ -159,7 +162,7 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
                 app.onion = !app.onion;
             }
-            ui.menu_button("Stage Rendering", |ui| {
+            ui.menu_button(tl!("Stage Rendering"), |ui| {
                 for (mode, name, tip) in crate::prefs::RenderMode::ALL {
                     if ui_item(ui, name, "", Some(app.prefs.render_mode == mode)) {
                         let mut p = app.prefs.clone();
@@ -167,7 +170,7 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
                         let ctx = ui.ctx().clone();
                         app.set_prefs(&ctx, p);
                     }
-                    ui.label(text(Type::Caption, tip));
+                    ui.label(text(Type::Caption, tl!(tip)));
                 }
             });
         }
@@ -184,7 +187,7 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
                 app.onion = !app.onion;
             }
-            ui.label(text(Type::Caption, "Panels are docked: Tools, Stage, Timeline, Properties, Library"));
+            ui.label(text(Type::Caption, tl!("Panels are docked: Tools, Stage, Timeline, Properties, Library")));
         }
         "Help" => {
             if ui_item(ui, "Command Palette…", "Ctrl+K", None) {
@@ -203,7 +206,7 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             if ui_item(ui, "About AniCraft", "", None) {
                 app.show_about = true;
             }
-            ui.label(text(Type::Caption, format!("{} commands are scriptable via anicraft-cli", cmds.len())));
+            ui.label(text(Type::Caption, i18n::fmt("{n} commands are scriptable via anicraft-cli", &[("n", &cmds.len().to_string())])));
         }
         _ => {}
     }

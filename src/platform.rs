@@ -136,6 +136,7 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
 /// `None` when cancelled.
 pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf> {
     let (label, exts) = filters(cmd);
+    let label = crate::i18n::t(label);
     let d = rfd::FileDialog::new().set_title(title);
     match cmd {
         "file.open" => d.add_filter(label, exts).pick_file(),
