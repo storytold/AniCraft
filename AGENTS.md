@@ -19,6 +19,8 @@ src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
 ```
 
 A crate depends only on lower layers. Nothing below `src/` may use egui, eframe or winit.
+`src/architecture_tests.rs` enforces both, and that this map lists every crate with its layer:
+a new crate needs a row here and in its `LAYERS` table.
 
 ## Standing rules (read `docs/product-principles.md`)
 
