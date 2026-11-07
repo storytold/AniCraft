@@ -15,6 +15,7 @@ pub enum Tool {
     Subselect,
     Transform,
     Pen,
+    Text,
     Pencil,
     Rect,
     Oval,
@@ -58,7 +59,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Pen, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 14] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -66,6 +67,7 @@ impl Tool {
             Tool::Subselect => "Subselection",
             Tool::Transform => "Free Transform",
             Tool::Pen => "Pen",
+            Tool::Text => "Text",
             Tool::Pencil => "Pencil",
             Tool::Rect => "Rectangle",
             Tool::Oval => "Oval",
@@ -84,6 +86,7 @@ impl Tool {
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
             Tool::Pen => Some("P"),
+            Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
             Tool::Rect => Some("R"),
             Tool::Oval => Some("O"),
@@ -100,6 +103,7 @@ impl Tool {
             Tool::Select => "Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection.",
             Tool::Subselect => "Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner.",
             Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
+            Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
             Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
             Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
@@ -112,6 +116,19 @@ impl Tool {
             Tool::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere.",
         }
     }
+}
+
+/// Text being typed on the stage (view state until it is committed as one command).
+pub struct TextEditing {
+    /// Top-left of the text box, in stage space.
+    pub at: egui::Pos2,
+    /// The text element being edited, or `None` for new text.
+    pub element: Option<anicraft_engine::doc::ElementId>,
+    pub text: String,
+    /// The text when editing started (unchanged text commits nothing).
+    pub original: String,
+    /// Focus the field on its first frame.
+    pub focus: bool,
 }
 
 /// Stage camera.
@@ -211,6 +228,10 @@ pub struct App {
     /// Folders shown closed on the timeline (view state: not saved, not undoable).
     pub tl_collapsed: HashSet<anicraft_engine::doc::LayerId>,
     pub library_sel: Option<LibraryItem>,
+    /// Text being typed on the stage.
+    pub text_edit: Option<TextEditing>,
+    /// Font families on this computer, listed once on first need.
+    pub font_families: Option<Vec<String>>,
     pub star_points: u32,
     pub rect_radius: f32,
     /// Pen path being drawn (view state until it is committed as one command).
@@ -277,6 +298,12 @@ impl App {
         let keymap = keymap::Keymap::new(&prefs.shortcuts);
         let shortcuts = keymap.table();
         let library_sel = LibraryItem::first(&session.doc);
+        // Text lays out with the fonts on this computer plus the embedded interface font (so new
+        // text has the same default everywhere). Scan them now, off the UI thread.
+        anicraft_engine::text::Fonts::register(crate::theme::embedded_fonts());
+        std::thread::spawn(|| {
+            let _ = anicraft_engine::text::Fonts::get();
+        });
         let mut app = App {
             s: session,
             tool: Tool::Select,
@@ -300,6 +327,8 @@ impl App {
             tl_last_layer: None,
             tl_collapsed: HashSet::new(),
             library_sel,
+            text_edit: None,
+            font_families: None,
             star_points: 5,
             rect_radius: 0.0,
             pen: None,

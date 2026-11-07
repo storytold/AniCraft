@@ -61,6 +61,7 @@ fn element_shape_mut(s: &mut Session, id: ElementId) -> Result<&mut Shape> {
     match &mut el.kind {
         ElementKind::Shape(sh) => Ok(sh),
         ElementKind::Symbol { .. } => Err(EngineError::State("symbol instances keep their own colours; break it apart (Ctrl+B) or edit the symbol to paint it".into())),
+        ElementKind::Text(_) => Err(EngineError::State("text has its own colour (Properties); break it apart (Ctrl+B) to paint it as a shape".into())),
     }
 }
 

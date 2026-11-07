@@ -220,6 +220,7 @@ dependencies = [
  "anicraft-geom",
  "anicraft-render",
  "anicraft-svg",
+ "anicraft-text",
  "anicraft-xfl",
  "gif",
  "png 0.17.16",
@@ -257,6 +258,16 @@ dependencies = [
  "anicraft-geom",
  "anicraft-xml",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "anicraft-text"
+version = "0.1.0"
+dependencies = [
+ "anicraft-geom",
+ "fontdb",
+ "harfrust",
+ "skrifa",
 ]
 
 [[package]]

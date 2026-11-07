@@ -231,6 +231,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle => CursorIcon::Crosshair,
+            Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
                     CursorIcon::ZoomOut
@@ -297,7 +298,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
                 }
-                Tool::Pen | Tool::PaintBucket | Tool::InkBottle => Drag::None,
+                Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle => Drag::None,
                 Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => Drag::Shape { start: sp, cur: sp },
                 Tool::Hand => Drag::Pan,
                 Tool::Zoom => Drag::None,
@@ -388,6 +389,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Tool::InkBottle if !panning => {
                     app.run("paint.ink", json!({"x": sp.x, "y": sp.y, "slop": 4.0 / zoom.max(1e-3)}));
                 }
+                Tool::Text if !panning => {
+                    commit_text(app);
+                    if !open_text_at(app, sp, 3.0 / zoom.max(1e-3)) {
+                        app.text_edit = Some(crate::app::TextEditing { at: sp, element: None, text: String::new(), original: String::new(), focus: true });
+                    }
+                }
                 Tool::Select | Tool::Transform if !panning => {
                     app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                 }
@@ -409,6 +416,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if under.is_none_or(|e| !app.s.selection.contains(&e)) {
             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": false}));
         }
+    }
+    // Double-clicking text with the Selection tool edits it, as in Animate.
+    if app.tool == Tool::Select
+        && resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        commit_text(app);
+        open_text_at(app, to_stage(p), 3.0 / zoom.max(1e-3));
     }
     if app.tool == Tool::Subselect
         && resp.double_clicked()
@@ -674,9 +689,70 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         _ => {}
     }
 
+    text_editor(app, ui, to_screen(Vec2::new(0.0, 0.0)), zoom);
+
     // zoom badge
     let badge = format!("{:.0}%", zoom * 100.0);
     painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
+}
+
+// ----- text ----------------------------------------------------------------------------------------
+
+/// Starts editing the text element under stage point `sp`, if there is one.
+fn open_text_at(app: &mut App, sp: Pos2, tolerance: f32) -> bool {
+    let Some((_, id)) = app.s.hit_test(to_v(sp), tolerance) else { return false };
+    let found = app.s.visible_elements().into_iter().find(|e| e.id == id).and_then(|e| match &e.kind {
+        anicraft_engine::doc::ElementKind::Text(t) => Some((e.transform.apply(Vec2::ZERO), t.text.clone())),
+        _ => None,
+    });
+    let Some((at, text)) = found else { return false };
+    app.run("element.select", json!({"ids": [id.0]}));
+    app.text_edit = Some(crate::app::TextEditing { at: pos2(at.x, at.y), element: Some(id), original: text.clone(), text, focus: true });
+    true
+}
+
+/// Commits the text being typed: new text is created, edited text replaced (one undo step
+/// each); emptied text is deleted, and unchanged text commits nothing.
+pub fn commit_text(app: &mut App) {
+    let Some(te) = app.text_edit.take() else { return };
+    match te.element {
+        None if te.text.trim().is_empty() => {}
+        None => {
+            app.run("text.create", json!({"text": te.text, "x": te.at.x, "y": te.at.y}));
+        }
+        Some(_) if te.text == te.original => {}
+        Some(id) => {
+            app.run("element.select", json!({"ids": [id.0]}));
+            if te.text.trim().is_empty() {
+                app.run("edit.delete", json!({}));
+            } else {
+                app.run("text.edit", json!({"text": te.text}));
+            }
+        }
+    }
+}
+
+/// The field text is typed in, over the stage at the text's top-left corner. Esc or a click
+/// elsewhere finishes; Enter starts a new line.
+fn text_editor(app: &mut App, ui: &mut egui::Ui, stage_origin: Pos2, zoom: f32) {
+    let Some(te) = app.text_edit.as_mut() else { return };
+    let at = stage_origin + vec2(te.at.x * zoom, te.at.y * zoom);
+    let size = (app.s.text_style.size * zoom).clamp(12.0, 64.0);
+    let mut done = false;
+    egui::Area::new(egui::Id::new("stage_text_edit")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+        egui::Frame::new().fill(T.panel).stroke(Stroke::new(1.0, T.selection)).inner_margin(4.0).show(ui, |ui| {
+            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text("Type text"));
+            if te.focus {
+                r.request_focus();
+                te.focus = false;
+            } else if r.lost_focus() {
+                done = true;
+            }
+        });
+    });
+    if done {
+        commit_text(app);
+    }
 }
 
 // ----- free transform ---------------------------------------------------------------------------

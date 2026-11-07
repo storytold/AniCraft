@@ -141,6 +141,7 @@ fn ptr<T>(a: &Arc<T>) -> usize {
 fn path_bytes(e: &Element) -> usize {
     match &e.kind {
         ElementKind::Shape(s) => size_of::<anicraft_geom::Path>() + s.path.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
+        ElementKind::Text(t) => size_of::<anicraft_geom::Path>() + t.outline.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
         ElementKind::Symbol { .. } => 0,
     }
 }
@@ -155,6 +156,12 @@ fn element_bytes(e: &Element, shared_paths: &HashSet<usize>) -> usize {
             b += stops.len() * size_of::<anicraft_doc::GradientStop>();
         }
     }
+    if let ElementKind::Text(t) = &e.kind {
+        b += size_of::<anicraft_doc::TextBlock>() + t.text.len() + t.font.len();
+        if !shared_paths.contains(&ptr(&t.outline)) {
+            b += path_bytes(e);
+        }
+    }
     b
 }
 
@@ -166,6 +173,7 @@ fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>) -> usize {
                 .iter()
                 .filter_map(|e| match &e.kind {
                     ElementKind::Shape(s) => Some(ptr(&s.path)),
+                    ElementKind::Text(t) => Some(ptr(&t.outline)),
                     ElementKind::Symbol { .. } => None,
                 })
                 .collect()

@@ -17,6 +17,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Subselect => Icon::Subselect,
         Tool::Transform => Icon::Transform,
         Tool::Pen => Icon::Pen,
+        Tool::Text => Icon::Type,
         Tool::Pencil => Icon::Pencil,
         Tool::Rect => Icon::Rect,
         Tool::Oval => Icon::Oval,
@@ -275,7 +276,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     let sel: Vec<_> = elements.iter().filter(|e| app.s.selection.contains(&e.id)).cloned().collect();
 
     // ---- tool options first while a drawing tool is in hand: they're what you reach for ----
-    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle) {
+    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle) {
         let title = format!("{} tool", app.tool.label());
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
     }
@@ -372,6 +373,20 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 ui.label(text(Type::Caption, format!("Plays its {frames}-frame timeline on a loop from when it appears.")));
             }
         }
+        if let ElementKind::Text(t) = &e.kind {
+            ui.add_space(4.0);
+            let mut st = anicraft_engine::cmds_text::TextStyle { font: t.font.clone(), size: t.size, bold: t.bold, italic: t.italic, color: t.color, align: t.align, letter_spacing: t.letter_spacing, line_spacing: t.line_spacing };
+            let mut width = t.width;
+            if let Some((label, p)) = text_style_rows(app, ui, &mut st, Some(&mut width)) {
+                live(app, label, "text.edit", p);
+            }
+            row_prose(ui, "Text", |ui| {
+                if ui.button("Edit Text").on_hover_text("Type on the stage (or double-click the text)").clicked() {
+                    let at = e.transform.apply(anicraft_engine::geom::Vec2::ZERO);
+                    app.text_edit = Some(crate::app::TextEditing { at: pos2(at.x, at.y), element: Some(e.id), text: t.text.clone(), original: t.text.clone(), focus: true });
+                }
+            });
+        }
         if let ElementKind::Shape(sh) = &e.kind {
             ui.add_space(4.0);
             let fill = sh.fill.as_ref().map(Paint::primary_color);
@@ -412,6 +427,78 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             }
         });
     }
+}
+
+/// Font, size, style, colour, alignment and spacing rows for text. Returns the edit made, as
+/// `text.edit` params (one key per change), with an undo label.
+pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engine::cmds_text::TextStyle, width: Option<&mut Option<f32>>) -> Option<(&'static str, Value)> {
+    use anicraft_engine::doc::TextAlign;
+    let families = app.font_families.get_or_insert_with(|| anicraft_engine::text::Fonts::get().families().to_vec()).clone();
+    let mut out: Option<(&'static str, Value)> = None;
+    row_prose(ui, "Font", |ui| {
+        let shown = if st.font.is_empty() { anicraft_engine::text::Fonts::get().resolve("").unwrap_or_default() } else { st.font.clone() };
+        egui::ComboBox::from_id_salt("text_font").selected_text(shown.clone()).width(ui.available_width().min(220.0)).height(320.0).show_ui(ui, |ui| {
+            if families.is_empty() {
+                ui.label(text(Type::Caption, "No fonts found on this computer"));
+            }
+            for f in &families {
+                if ui.selectable_label(*f == shown, f).clicked() {
+                    st.font = f.clone();
+                    out = Some(("Font", json!({"font": f})));
+                }
+            }
+        });
+    });
+    row(ui, "Size", |ui| {
+        if ui.add(egui::DragValue::new(&mut st.size).suffix(" px").speed(0.25).range(1.0..=2000.0).max_decimals(1)).changed() {
+            out = Some(("Font size", json!({"size": st.size})));
+        }
+        let mut c = rgb(st.color);
+        if ui.color_edit_button_srgb(&mut c).on_hover_text("Text colour").changed() {
+            st.color = Rgba::hex(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]));
+            out = Some(("Text colour", json!({"color": hex(c)})));
+        }
+    });
+    row_prose(ui, "Style", |ui| {
+        if ui.selectable_label(st.bold, text(Type::Body, "B").strong()).on_hover_text("Bold").clicked() {
+            st.bold = !st.bold;
+            out = Some(("Bold", json!({"bold": st.bold})));
+        }
+        if ui.selectable_label(st.italic, text(Type::Body, "I").italics()).on_hover_text("Italic").clicked() {
+            st.italic = !st.italic;
+            out = Some(("Italic", json!({"italic": st.italic})));
+        }
+        ui.separator();
+        for (a, label, key) in [(TextAlign::Left, "Left", "left"), (TextAlign::Center, "Centre", "center"), (TextAlign::Right, "Right", "right")] {
+            if ui.selectable_label(st.align == a, label).on_hover_text(format!("Align {}", label.to_lowercase())).clicked() {
+                st.align = a;
+                out = Some(("Text alignment", json!({"align": key})));
+            }
+        }
+    });
+    row(ui, "Spacing", |ui| {
+        if ui.add(egui::DragValue::new(&mut st.letter_spacing).prefix("Letters ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
+            out = Some(("Letter spacing", json!({"letter_spacing": st.letter_spacing})));
+        }
+        if ui.add(egui::DragValue::new(&mut st.line_spacing).prefix("Lines ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
+            out = Some(("Line spacing", json!({"line_spacing": st.line_spacing})));
+        }
+    });
+    if let Some(width) = width {
+        row(ui, "Width", |ui| {
+            let mut wrap = width.is_some();
+            if crate::theme::checkbox(ui, &mut wrap, "Wrap").on_hover_text("Wrap lines at a fixed width; off, each paragraph stays on one line").changed() {
+                *width = wrap.then_some(300.0);
+                out = Some(("Text width", json!({"width": *width})));
+            }
+            if let Some(w) = width.as_mut()
+                && ui.add(egui::DragValue::new(w).suffix(" px").speed(1.0).range(1.0..=100_000.0).max_decimals(0)).changed()
+            {
+                out = Some(("Text width", json!({"width": *w})));
+            }
+        });
+    }
+    out
 }
 
 fn document_props(app: &mut App, ui: &mut egui::Ui) {
@@ -516,6 +603,14 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
 }
 
 fn tool_props(app: &mut App, ui: &mut egui::Ui) {
+    if app.tool == Tool::Text {
+        // What new text gets (the last style used, as in Animate).
+        let mut st = app.s.text_style.clone();
+        if text_style_rows(app, ui, &mut st, None).is_some() {
+            app.s.text_style = st;
+        }
+        return;
+    }
     let mut st = app.s.style;
     // Each tool shows only what it uses: the bucket always fills, the ink bottle always strokes.
     let (bucket, ink) = (app.tool == Tool::PaintBucket, app.tool == Tool::InkBottle);

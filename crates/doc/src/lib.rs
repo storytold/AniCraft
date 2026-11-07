@@ -219,6 +219,51 @@ pub enum ElementKind {
         #[serde(default)]
         first_frame: u32,
     },
+    /// A block of text (ADR 0012).
+    Text(Arc<TextBlock>),
+}
+
+/// Horizontal alignment of a text block's lines.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// A block of text: its source and style, and the outlines the engine laid out from them
+/// (ADR 0012). Rendering uses only the outlines, so the block looks the same on computers
+/// without its font.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextBlock {
+    pub text: String,
+    /// Font family the outlines were laid out with.
+    pub font: String,
+    /// Font size in pixels.
+    pub size: f32,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    pub color: Rgba,
+    #[serde(default)]
+    pub align: TextAlign,
+    /// Extra space between characters and between lines, in pixels.
+    #[serde(default)]
+    pub letter_spacing: f32,
+    #[serde(default)]
+    pub line_spacing: f32,
+    /// Lines wrap to this width; `None` keeps each paragraph on one line.
+    #[serde(default)]
+    pub width: Option<f32>,
+    /// Glyph outlines, local coordinates, the box's top-left corner at the origin.
+    #[serde(with = "path_table")]
+    pub outline: Arc<Path>,
+    /// The layout box.
+    pub box_width: f32,
+    pub box_height: f32,
 }
 
 /// Colour effect applied to an element and everything inside it.
@@ -292,6 +337,7 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
             let pad = s.stroke.map_or(0.0, |st| st.width * 0.5);
             s.path.bounds().inflate(pad).transformed(xf)
         }
+        ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),
         ElementKind::Symbol { symbol, .. } => {
             let Some(sym) = doc.symbol(*symbol) else { return Rect::EMPTY };
             let mut r = Rect::EMPTY;

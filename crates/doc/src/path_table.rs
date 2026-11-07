@@ -41,10 +41,13 @@ pub fn build_table(doc: &Document) -> Vec<Arc<Path>> {
         for layer in &tl.layers {
             for k in &layer.keyframes {
                 for e in &k.elements {
-                    if let ElementKind::Shape(s) = &e.kind
-                        && seen.insert(Arc::as_ptr(&s.path) as usize, ()).is_none()
-                    {
-                        out.push(s.path.clone());
+                    let path = match &e.kind {
+                        ElementKind::Shape(s) => &s.path,
+                        ElementKind::Text(t) => &t.outline,
+                        ElementKind::Symbol { .. } => continue,
+                    };
+                    if seen.insert(Arc::as_ptr(path) as usize, ()).is_none() {
+                        out.push(path.clone());
                     }
                 }
             }

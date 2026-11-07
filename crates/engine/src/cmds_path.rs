@@ -128,6 +128,7 @@ fn shape_mut<'a>(s: &'a mut Session, p: &Value) -> Result<(&'a mut Shape, Affine
     match &mut el.kind {
         ElementKind::Shape(sh) => Ok((sh, m)),
         ElementKind::Symbol { .. } => Err(EngineError::State("symbol instances have no points to edit (double-click to edit the symbol)".into())),
+        ElementKind::Text(_) => Err(EngineError::State("text has no points to edit; break it apart (Ctrl+B) to edit its outlines".into())),
     }
 }
 

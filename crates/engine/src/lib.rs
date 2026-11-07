@@ -12,6 +12,7 @@ mod cmds_modify;
 mod cmds_paint;
 mod cmds_path;
 mod cmds_scene;
+pub mod cmds_text;
 mod cmds_timeline;
 pub mod confirm;
 pub mod format;
@@ -28,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use anicraft_doc as doc;
+pub use anicraft_text as text;
 pub use anicraft_geom as geom;
 pub use anicraft_render as render;
 
@@ -87,6 +89,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
     v.extend(cmds_paint::specs());
+    v.extend(cmds_text::specs());
     v
 }
 
@@ -145,6 +148,8 @@ pub struct Session {
     saved_state: Option<StateId>,
     pub path: Option<PathBuf>,
     pub style: ToolStyle,
+    /// The style new text gets (the last one used).
+    pub text_style: cmds_text::TextStyle,
     history: History,
     /// Open gesture (e.g. a drag): commands inside it coalesce into one undo step.
     gesture: Option<Snapshot>,
@@ -185,6 +190,7 @@ impl Session {
             saved_state: Some(state),
             path: None,
             style: ToolStyle::default(),
+            text_style: cmds_text::TextStyle::default(),
             history: History::default(),
             gesture: None,
             dl_cache: RefCell::new(None),
@@ -535,6 +541,10 @@ pub fn element_label(doc: &Document, e: &Element) -> String {
     let kind = match &e.kind {
         ElementKind::Shape(_) => "Shape".to_string(),
         ElementKind::Symbol { symbol, .. } => format!("Graphic: {}", doc.symbol(*symbol).map_or("missing", |s| s.name.as_str())),
+        ElementKind::Text(t) => {
+            let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
+            format!("Text: {first}{}", if t.text.chars().count() > first.chars().count() { "…" } else { "" })
+        }
     };
     if e.name.is_empty() { kind } else { format!("{} ({kind})", e.name) }
 }
