@@ -324,7 +324,12 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 live(app, "Alpha", "element.set_alpha", json!({"alpha": alpha / 100.0}));
             }
         });
-        // Blending, on movie clips and buttons as in Animate.
+        // Blending and filters, on movie clips and buttons as in Animate.
+        if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
+            && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
+        {
+            filter_rows(app, ui, filters);
+        }
         if let ElementKind::Symbol { symbol, blend, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
         {
@@ -442,6 +447,121 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             }
         });
     }
+}
+
+/// The Filters rows of a movie clip or button instance: an Add menu, then each filter's values
+/// with a remove button. Every change replaces the list (`element.set_filters`), one undo step
+/// per gesture.
+fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc::Filter]) {
+    use anicraft_engine::doc::Filter;
+    let mut list: Vec<Filter> = current.to_vec();
+    let mut changed: Option<&'static str> = None;
+    row_prose(ui, "Filters", |ui| {
+        egui::ComboBox::from_id_salt("add_filter").selected_text(if list.is_empty() { "None" } else { "Add filter" }).show_ui(ui, |ui| {
+            for (kind, label) in Filter::KINDS {
+                if ui.selectable_label(false, label).clicked()
+                    && let Some(f) = Filter::new(kind)
+                {
+                    list.push(f);
+                    changed = Some("Add filter");
+                }
+            }
+        });
+    });
+    let quality_names = ["Low", "Medium", "High"];
+    let mut remove = None;
+    for (i, f) in list.iter_mut().enumerate() {
+        ui.push_id(("filter", i), |ui| {
+            row_prose(ui, f.label(), |ui| {
+                if ui.small_button("Remove").on_hover_text("Remove this filter").clicked() {
+                    remove = Some(i);
+                }
+            });
+            let blur_rows = |ui: &mut egui::Ui, bx: &mut f32, by: &mut f32, quality: &mut u8, changed: &mut Option<&'static str>| {
+                row(ui, "Blur", |ui| {
+                    let a = ui.add(egui::DragValue::new(bx).prefix("X ").suffix(" px").speed(0.25).range(0.0..=255.0).max_decimals(1));
+                    let b = ui.add(egui::DragValue::new(by).prefix("Y ").suffix(" px").speed(0.25).range(0.0..=255.0).max_decimals(1));
+                    if a.changed() || b.changed() {
+                        *changed = Some("Filter blur");
+                    }
+                });
+                row_prose(ui, "Quality", |ui| {
+                    for (q, name) in quality_names.iter().enumerate() {
+                        if ui.selectable_label(usize::from(*quality) == q + 1, *name).clicked() {
+                            *quality = q as u8 + 1;
+                            *changed = Some("Filter quality");
+                        }
+                    }
+                });
+            };
+            match f {
+                Filter::Blur { blur_x, blur_y, quality } => blur_rows(ui, blur_x, blur_y, quality, &mut changed),
+                Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner, knockout, hide_object } => {
+                    blur_rows(ui, blur_x, blur_y, quality, &mut changed);
+                    shadow_rows(ui, strength, color, &mut changed);
+                    row(ui, "Offset", |ui| {
+                        let a = ui.add(egui::DragValue::new(angle).prefix("Angle ").suffix("°").speed(1.0).range(0.0..=360.0).max_decimals(0));
+                        let b = ui.add(egui::DragValue::new(distance).prefix("Distance ").suffix(" px").speed(0.25).range(-1000.0..=1000.0).max_decimals(1));
+                        if a.changed() || b.changed() {
+                            changed = Some("Shadow offset");
+                        }
+                    });
+                    row_prose(ui, "Options", |ui| {
+                        for (v, label) in [(inner, "Inner"), (knockout, "Knockout"), (hide_object, "Hide object")] {
+                            if crate::theme::checkbox(ui, v, label).changed() {
+                                changed = Some("Shadow options");
+                            }
+                        }
+                    });
+                }
+                Filter::Glow { blur_x, blur_y, strength, quality, color, inner, knockout } => {
+                    blur_rows(ui, blur_x, blur_y, quality, &mut changed);
+                    shadow_rows(ui, strength, color, &mut changed);
+                    row_prose(ui, "Options", |ui| {
+                        for (v, label) in [(inner, "Inner"), (knockout, "Knockout")] {
+                            if crate::theme::checkbox(ui, v, label).changed() {
+                                changed = Some("Glow options");
+                            }
+                        }
+                    });
+                }
+                Filter::AdjustColor { brightness, contrast, saturation, hue } => {
+                    for (v, label, range) in [(brightness, "Brightness", 100.0), (contrast, "Contrast", 100.0), (saturation, "Saturation", 100.0), (hue, "Hue", 180.0)] {
+                        row(ui, label, |ui| {
+                            if ui.add(egui::Slider::new(v, -range..=range).max_decimals(0)).changed() {
+                                changed = Some("Adjust colour");
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    }
+    if let Some(i) = remove {
+        list.remove(i);
+        changed = Some("Remove filter");
+    }
+    if let Some(label) = changed
+        && let Ok(v) = serde_json::to_value(&list)
+    {
+        live(app, label, "element.set_filters", json!({"filters": v}));
+    }
+}
+
+/// Strength and colour rows of a drop shadow or glow.
+fn shadow_rows(ui: &mut egui::Ui, strength: &mut f32, color: &mut Rgba, changed: &mut Option<&'static str>) {
+    row(ui, "Strength", |ui| {
+        let mut pct = *strength * 100.0;
+        if ui.add(egui::DragValue::new(&mut pct).suffix(" %").speed(1.0).range(0.0..=1000.0).max_decimals(0)).changed() {
+            *strength = pct / 100.0;
+            *changed = Some("Filter strength");
+        }
+        let mut c = rgb(*color);
+        if ui.color_edit_button_srgb(&mut c).on_hover_text("Colour").changed() {
+            *color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, color.a);
+            *changed = Some("Filter colour");
+        }
+    });
 }
 
 /// Font, size, style, colour, alignment and spacing rows for text. Returns the edit made, as

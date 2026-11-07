@@ -20,6 +20,9 @@ pub enum Shader {
     Radial { inv: Affine, center: Vec2, inv_radius: f32, lut: Box<[Premul; LUT]> },
     /// Bilinear samples of a bitmap: `inv` maps pixels back to the bitmap's own pixel grid.
     Bitmap { inv: Affine, pixels: Arc<Pixels>, repeat: bool, fx: ColorEffect },
+    /// Premultiplied pixels already in surface space (a filtered group): `w` wide, its top-left
+    /// at `(x0, y0)`; transparent outside.
+    Image { data: Arc<Vec<Premul>>, x0: i32, y0: i32, w: usize },
 }
 
 fn sample_stops(stops: &[GradientStop], t: f32) -> Rgba {
@@ -102,6 +105,13 @@ impl Shader {
             Shader::Linear { inv, start, dir, lut } => lookup(lut, (inv.apply(p) - *start).dot(*dir)),
             Shader::Radial { inv, center, inv_radius, lut } => lookup(lut, (inv.apply(p) - *center).length() * inv_radius),
             Shader::Bitmap { inv, pixels, repeat, fx } => sample(pixels, inv.apply(p), *repeat, fx),
+            Shader::Image { data, x0, y0, w } => {
+                let (dx, dy) = (x - x0, y - y0);
+                if dx < 0 || dy < 0 || dx as usize >= *w {
+                    return [0.0; 4];
+                }
+                data.get(dy as usize * w + dx as usize).copied().unwrap_or([0.0; 4])
+            }
         }
     }
 }

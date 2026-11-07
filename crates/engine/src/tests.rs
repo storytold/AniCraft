@@ -1632,3 +1632,47 @@ fn blend_modes_apply_to_movie_clips_and_survive_a_save() {
     assert!(lottie.json.contains("\"bm\":1"), "Lottie multiply");
     assert!(lottie.report.contains_key("blend modes (applied shape by shape)"));
 }
+
+#[test]
+fn filters_render_on_movie_clips_clip_after_masks_and_save() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    let shadow = json!({"filters": [{"type": "drop_shadow", "blur_x": 0, "blur_y": 0, "distance": 20, "angle": 0, "color": "#000000"}]});
+    assert!(s.execute("element.set_filters", &shadow).unwrap_err().to_string().contains("movie clip"), "graphics can't");
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "sparkle"}]})).is_err());
+    run(&mut s, "element.set_filters", shadow);
+    let px = |s: &Session, x, y| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(x, y).unwrap();
+    assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0], "the box on top");
+    assert_eq!(px(&s, 210, 150), [0.0, 0.0, 0.0, 1.0], "its shadow 20 px to the right");
+    assert_eq!(px(&s, 230, 150), [1.0, 1.0, 1.0, 1.0]);
+    // A blur spreads past the edge.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "blur", "blur_x": 20, "blur_y": 20, "quality": 2}]}));
+    let edge = px(&s, 95, 150);
+    assert!(edge[1] < 0.95 && edge[1] > 0.2, "pink just outside: {edge:?}");
+    // Adjust Color: greyscale.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "adjust_color", "saturation": -100}]}));
+    let g = px(&s, 150, 150);
+    assert!((g[0] - g[1]).abs() < 1e-3 && g[0] < 0.6, "grey: {g:?}");
+    // It saves, loads and exports.
+    let text = crate::format::to_json(&s.doc).unwrap();
+    assert_eq!(crate::format::from_json(&text).unwrap(), s.doc);
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "glow", "color": "#00ff00", "blur_x": 8, "blur_y": 8}]}));
+    assert!(crate::cmds_file::frame_svg(&s.doc, 0).contains("<feDropShadow dx=\"0\" dy=\"0\""));
+    assert!(anicraft_render::lottie::to_lottie(&s.doc, "f", 0, 0, false).report.keys().any(|k| k.starts_with("filters")));
+
+    // Under a mask, the blur is clipped by the mask after filtering (as in Animate).
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "blur", "blur_x": 40, "blur_y": 40, "quality": 3}]}));
+    run(&mut s, "layer.new", json!({"name": "Mask"}));
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 150, "h": 400}));
+    run(&mut s, "layer.toggle_mask", json!({}));
+    let inside = px(&s, 95, 150);
+    assert!(inside[1] < 0.99, "blurred colour inside the mask: {inside:?}");
+    assert_eq!(px(&s, 160, 150), [1.0, 1.0, 1.0, 1.0], "nothing past the mask's edge");
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert!(px(&s, 160, 150)[1] < 0.5, "unmasked again: the box shows");
+}
