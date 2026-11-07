@@ -204,6 +204,17 @@ mod craft_fonts {
     include!(concat!(env!("OUT_DIR"), "/fonts.rs"));
 }
 
+/// Text being typed on the stage: document content, so it follows the stage zoom rather than a
+/// UI role (clamped to stay readable).
+pub fn stage_text_font(size: f32) -> egui::FontId {
+    egui::FontId::proportional(size.clamp(12.0, 64.0))
+}
+
+/// The typefaces embedded at build time (Inter, JetBrains Mono), for text on the stage.
+pub fn embedded_fonts() -> Vec<std::sync::Arc<[u8]>> {
+    [craft_fonts::UI_FONT, craft_fonts::MONO_FONT].into_iter().flatten().map(std::sync::Arc::from).collect()
+}
+
 /// Which typefaces are active (for About and diagnostics).
 pub fn font_summary() -> String {
     match (craft_fonts::UI_FONT, craft_fonts::MONO_FONT) {

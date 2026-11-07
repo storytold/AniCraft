@@ -196,7 +196,7 @@ fn selected_shapes(app: &App) -> Vec<(ElementId, Arc<Path>, Affine)> {
         .filter(|e| app.s.selection.contains(&e.id))
         .filter_map(|e| match &e.kind {
             ElementKind::Shape(sh) => Some((e.id, sh.path.clone(), e.transform)),
-            ElementKind::Symbol { .. } => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
         })
         .take(64)
         .collect()

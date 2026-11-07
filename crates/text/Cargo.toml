@@ -1,0 +1,19 @@
+[package]
+name = "anicraft-text"
+description = "AniCraft text: fonts on this computer, shaping and line layout into vector outlines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anicraft-geom.workspace = true
+# Font discovery and style matching (also the shell's font preferences).
+fontdb.workspace = true
+# Shaping (a HarfBuzz port) and outlines/metrics: both already in the tree through egui.
+harfrust = "0.12"
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

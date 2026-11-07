@@ -166,6 +166,8 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, guide: Option<(&Pa
             ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule })
         }
         (ElementKind::Symbol { symbol: s1, .. }, ElementKind::Symbol { symbol: s2, .. }) if s1 == s2 => a.kind.clone(),
+        // Text tweens its placement and colour effect; the words stay the first keyframe's.
+        (ElementKind::Text(_), ElementKind::Text(_)) => a.kind.clone(),
         _ => return None,
     };
     let mut transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
@@ -225,7 +227,7 @@ fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
             }
             PathWalk::new(&pts)
         }
-        ElementKind::Symbol { .. } => None,
+        ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
     })
 }
 
@@ -304,6 +306,22 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                         Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).and_then(crate::Bitmap::pixels),
                         _ => None,
                     },
+                }),
+                ElementKind::Text(t) => out.items.push(DisplayItem {
+                    path: t.outline.clone(),
+                    transform: xf,
+                    fill: Some(Paint::Solid(t.color)),
+                    stroke: None,
+                    fill_rule: FillRule::NonZero,
+                    color,
+                    layer: root_layer,
+                    element: root_el,
+                    outline: layer_outline,
+                    clip,
+                    masks,
+                    guide,
+                    group: cx.group,
+                    image: None,
                 }),
                 ElementKind::Symbol { symbol, loop_mode, first_frame } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+* **Text** (the Text tool, **T**). Click on the stage and type; Esc or a click elsewhere
+  finishes, and Enter starts a new line. Click text with the Text tool, or double-click it with
+  the Selection tool, to edit it. Properties sets the font (any font on your computer), size,
+  colour, bold, italic, alignment, letter and line spacing, and a width that wraps lines; with
+  the Text tool in hand they set what new text gets, and new text keeps the last style used.
+  Text moves, scales, rotates, fades, tweens and masks like any artwork, and every export
+  shows it. Documents keep the letter shapes, so text looks the same on computers without its
+  font. Break Apart (Ctrl+B) turns text into a shape. Headless: `text.create`, `text.edit`,
+  `text.fonts`.
+
 * **Export Lottie Animation** (File › Export, `file.export_lottie`): the movie, or a range of
   its frames, as a Lottie animation (JSON) for websites and apps. Every frame matches AniCraft:
   shapes, strokes, solid and gradient fills, colour effects, opacity and masks come across,

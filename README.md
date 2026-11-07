@@ -156,6 +156,7 @@ The codebase enforces strict downward-only layering:
 crates/geom     L0  Vec2, Affine (decompose/compose), Rect, Path, flattening, hit testing
 crates/xml      L0  Bounded XML element reader shared by the importers (XFL, SVG)
 crates/doc      L1  Document model, easing, timeline evaluation, sample scene
+crates/text     L1  Fonts on this computer, shaping and line layout into outlines (ADR 0012)
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
 crates/svg      L2  SVG import: shapes, groups, use, styles, transforms, gradients → shapes

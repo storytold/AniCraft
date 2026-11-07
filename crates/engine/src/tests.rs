@@ -1533,3 +1533,73 @@ fn lottie_export_writes_the_movie_and_asks_before_replacing() {
     assert!(out.report.is_empty(), "{:?}", out.report);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn text_lays_out_renders_edits_saves_and_breaks_apart() {
+    if anicraft_text::Fonts::get().families().is_empty() {
+        eprintln!("no fonts on this computer: text test skipped");
+        return;
+    }
+    let mut s = Session::default();
+    let v = run(&mut s, "text.create", json!({"text": "Hello", "x": 100, "y": 50, "size": 64, "color": "#cc2200"}));
+    let id = ElementId(v["element"].as_u64().unwrap());
+    assert_eq!(s.selection, vec![id]);
+    assert!(v["width"].as_f64().unwrap() > 64.0);
+    let text = |s: &Session| match &s.visible_elements().iter().find(|e| e.id == id).unwrap().kind {
+        ElementKind::Text(t) => t.clone(),
+        k => panic!("{k:?}"),
+    };
+    let t = text(&s);
+    assert_eq!(t.text, "Hello");
+    assert!(!t.font.is_empty() && !t.outline.cmds.is_empty());
+    // It renders: red ink inside its box, nothing outside.
+    let frame = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
+    let mut red = 0;
+    for y in 50..(50 + t.box_height as u32) {
+        for x in 100..(100 + t.box_width as u32) {
+            let p = frame.pixel(x, y).unwrap();
+            if p[0] > 0.5 && p[1] < 0.3 {
+                red += 1;
+            }
+        }
+    }
+    assert!(red > 200, "{red} red pixels");
+    assert_eq!(frame.pixel(90, 40).unwrap(), [1.0, 1.0, 1.0, 1.0]);
+    // Bounds and picking follow the box.
+    assert!(s.hit_test(Vec2::new(100.0 + t.box_width * 0.5, 50.0 + t.box_height * 0.5), 0.0).is_some());
+
+    // Editing re-lays it out; undo brings the old words back; the style is remembered.
+    run(&mut s, "text.edit", json!({"text": "Hello, world", "bold": true, "align": "center", "width": 400}));
+    let edited = text(&s);
+    assert_eq!((edited.text.as_str(), edited.bold, edited.width), ("Hello, world", true, Some(400.0)));
+    assert_eq!(edited.box_width, 400.0);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(text(&s).text, "Hello");
+    run(&mut s, "edit.redo", json!({}));
+    assert!(s.execute("text.edit", &json!({"text": "  "})).is_err());
+    assert!(s.execute("text.edit", &json!({"align": "justify"})).is_err());
+    assert!(s.execute("text.create", &json!({"text": "x", "size": 0})).is_err());
+    let next = run(&mut s, "text.create", json!({"text": "again"}));
+    let next_id = ElementId(next["element"].as_u64().unwrap());
+    let again = s.visible_elements().iter().find(|e| e.id == next_id).map(|e| e.kind.clone()).unwrap();
+    assert!(matches!(again, ElementKind::Text(t) if t.bold && t.size == 64.0), "new text takes the last style");
+    // Asking for a missing family falls back and says so.
+    let v = run(&mut s, "text.create", json!({"text": "fallback", "font": "No Such Family 12345"}));
+    assert!(v["note"].as_str().unwrap().contains("isn't installed"));
+
+    // Text saves with its outlines, and breaks apart into the same shape.
+    let dir = std::env::temp_dir().join(format!("anicraft-text-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.anicraft");
+    run(&mut s, "file.save", json!({"path": path.display().to_string()}));
+    let back = crate::format::load(&path).unwrap();
+    assert_eq!(back, s.doc);
+    run(&mut s, "element.select", json!({"ids": [id.0]}));
+    let before = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
+    run(&mut s, "modify.break_apart", json!({}));
+    assert!(matches!(s.visible_elements().iter().find(|e| s.selection.contains(&e.id)).unwrap().kind, ElementKind::Shape(_)));
+    assert_eq!(anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().data, before.data, "a shape exactly like the text");
+    let fonts = run(&mut s, "text.fonts", json!({}));
+    assert!(fonts["families"].as_array().is_some_and(|f| !f.is_empty()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
