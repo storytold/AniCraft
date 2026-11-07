@@ -38,6 +38,15 @@ pub fn specs() -> Vec<CommandSpec> {
         },
         CommandSpec { id: "file.export_svg", label: "Export Frame as SVG…", menu: "File/Export", shortcut: None, params: "{path, frame? (in the current scene), confirm?}", mutates: false, run: export_svg },
         CommandSpec {
+            id: "file.export_sprite_sheet",
+            label: "Export Sprite Sheet…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.png; the frame map goes beside it as .json), from?, to? (movie frames), scale?, columns?, padding?, background?, confirm?}",
+            mutates: false,
+            run: export_sprite_sheet,
+        },
+        CommandSpec {
             id: "file.export_png_sequence",
             label: "Export PNG Sequence…",
             menu: "File/Export",
@@ -236,6 +245,91 @@ fn export_svg(s: &mut Session, p: &Value) -> Result<Value> {
     let svg = frame_svg(&s.doc, s.doc.scene_start(s.scene).saturating_add(frame));
     std::fs::write(&path, svg.as_bytes())?;
     Ok(json!({"written": path.display().to_string(), "bytes": svg.len(), "frame": frame}))
+}
+
+/// Export Sprite Sheet: movie frames in a grid on one PNG (transparent unless `background`),
+/// and beside it a JSON frame map in the common "JSON hash" layout (frame rectangles, sizes
+/// and per-frame durations) that game engines and tools read.
+fn export_sprite_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let last = s.doc.frame_count().saturating_sub(1);
+    let from = opt_u32(p, "from")?.unwrap_or(0).min(last);
+    let to = opt_u32(p, "to")?.unwrap_or(last).min(last);
+    if to < from {
+        return Err(EngineError::Param("'to' must not be before 'from'".into()));
+    }
+    let n = (to - from + 1) as usize;
+    let scale = scale_param(p)?;
+    let pad = opt_u32(p, "padding")?.unwrap_or(0).min(256);
+    let cols = match opt_u32(p, "columns")? {
+        Some(0) => return Err(EngineError::Param("param 'columns' must be at least 1".into())),
+        Some(c) => (c as usize).min(n),
+        None => (n as f64).sqrt().ceil() as usize,
+    }
+    .max(1);
+    let rows = n.div_ceil(cols);
+    let mut view = View::stage(&s.doc, scale);
+    if !opt_bool(p, "background")?.unwrap_or(false) {
+        view.background = None;
+    }
+    let (fw, fh) = (view.width, view.height);
+    let sheet_w = u64::from(fw) * cols as u64 + u64::from(pad) * (cols as u64 - 1);
+    let sheet_h = u64::from(fh) * rows as u64 + u64::from(pad) * (rows as u64 - 1);
+    if sheet_w * sheet_h > anicraft_render::MAX_PIXELS || sheet_w > u64::from(u32::MAX) || sheet_h > u64::from(u32::MAX) {
+        return Err(EngineError::Param(format!(
+            "that sheet would be {sheet_w}×{sheet_h} px (the limit is {} pixels); lower 'scale' or the frame range",
+            anicraft_render::MAX_PIXELS
+        )));
+    }
+    // Frames render in parallel, then go onto the sheet in order.
+    let doc = &s.doc;
+    let frames: Vec<anicraft_render::Pixmap> = (from..=to).into_par_iter().map(|f| render(&anicraft_doc::evaluate(doc, f), &view).map(|(pm, _)| pm)).collect::<std::result::Result<_, _>>()?;
+    let mut sheet = anicraft_render::Pixmap::new(sheet_w as u32, sheet_h as u32)?;
+    let stride = sheet_w as usize;
+    let delays = gif_delays(n, doc.stage.fps);
+    let stem = path.file_stem().map_or_else(|| "frame".to_string(), |x| x.to_string_lossy().into_owned());
+    let mut map = serde_json::Map::new();
+    for (k, pm) in frames.iter().enumerate() {
+        let (x, y) = ((k % cols) as u32 * (fw + pad), (k / cols) as u32 * (fh + pad));
+        for row in 0..fh as usize {
+            let src = pm.data.get(row * fw as usize..(row + 1) * fw as usize);
+            let at = (y as usize + row) * stride + x as usize;
+            if let (Some(src), Some(dst)) = (src, sheet.data.get_mut(at..at + fw as usize)) {
+                dst.copy_from_slice(src);
+            }
+        }
+        let ms = u32::from(delays.get(k).copied().unwrap_or(4)) * 10;
+        map.insert(
+            format!("{stem}_{:04}", from as usize + k + 1),
+            json!({
+                "frame": {"x": x, "y": y, "w": fw, "h": fh},
+                "rotated": false,
+                "trimmed": false,
+                "spriteSourceSize": {"x": 0, "y": 0, "w": fw, "h": fh},
+                "sourceSize": {"w": fw, "h": fh},
+                "duration": ms,
+            }),
+        );
+    }
+    let png = sheet.encode_png()?;
+    let image = path.file_name().map_or_else(String::new, |x| x.to_string_lossy().into_owned());
+    let atlas = json!({
+        "frames": map,
+        "meta": {
+            "app": "AniCraft",
+            "version": env!("CARGO_PKG_VERSION"),
+            "image": image,
+            "format": "RGBA8888",
+            "size": {"w": sheet_w, "h": sheet_h},
+            "scale": scale.to_string(),
+            "frameRate": doc.stage.fps,
+        }
+    });
+    let json_path = path.with_extension("json");
+    let text = serde_json::to_string_pretty(&atlas).map_err(|e| EngineError::Format(e.to_string()))?;
+    std::fs::write(&path, &png)?;
+    std::fs::write(&json_path, text)?;
+    Ok(json!({"written": path.display().to_string(), "map": json_path.display().to_string(), "frames": n, "columns": cols, "rows": rows, "width": sheet_w, "height": sheet_h}))
 }
 
 fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {
