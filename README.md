@@ -135,6 +135,7 @@ cargo run -p anicraft-cli -- gif --sample --out animation.gif --fps 24
 cargo run -p anicraft-cli -- commands                 # the registry as JSON
 cargo run -p anicraft-cli -- exec --sample draw.rect '{"x":10,"y":10,"w":80,"h":40}' --save out.anicraft
 cargo run -p anicraft-cli -- serve --sample           # JSON-lines on stdin/stdout
+cargo run -p anicraft-cli -- mcp --sample             # MCP server for AI assistants (docs/mcp.md)
 ```
 
 The `serve` protocol accepts one JSON request per line:
@@ -159,7 +160,7 @@ crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes,
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
 crates/svg      L2  SVG import: shapes, groups, use, styles, transforms, gradients → shapes
 crates/engine   L3  Session, undo (with gesture coalescing), command registry, .anicraft format
-crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve
+crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve/mcp
 src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
 ```
 
