@@ -13,6 +13,8 @@ anicraft-doc.workspace = true
 rayon.workspace = true
 png.workspace = true
 thiserror.workspace = true
+# Lottie export writes JSON.
+serde_json.workspace = true
 
 [lints]
 workspace = true

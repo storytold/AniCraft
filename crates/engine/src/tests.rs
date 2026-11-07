@@ -1496,3 +1496,40 @@ fn library_bitmaps_place_centred_on_the_stage() {
     assert!(s.execute("library.place", &json!({})).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lottie_export_writes_the_movie_and_asks_before_replacing() {
+    let dir = std::env::temp_dir().join(format!("anicraft-lottie-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("walk.json");
+    let mut s = Session::new(sample::demo());
+    let frames = s.doc.frame_count();
+    let v = run(&mut s, "file.export_lottie", json!({"path": path.display().to_string()}));
+    assert_eq!(v["frames"].as_u64(), Some(u64::from(frames)));
+    let lottie: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(lottie["nm"], "walk");
+    assert_eq!(lottie["op"].as_u64(), Some(u64::from(frames)));
+    assert_eq!(lottie["layers"].as_array().unwrap().len() as u64, v["layers"].as_u64().unwrap(), "transparent by default");
+    // Replacing needs consent; ranges are checked.
+    let p = json!({"path": path.display().to_string(), "from": 5, "to": 9, "background": true});
+    assert!(s.execute("file.export_lottie", &p).is_err());
+    let mut p = p;
+    p["confirm"] = json!(true);
+    assert_eq!(run(&mut s, "file.export_lottie", p)["frames"], 5);
+    assert!(s.execute("file.export_lottie", &json!({"path": dir.join("x.json").display().to_string(), "from": 9, "to": 5})).is_err());
+
+    // A masked shape carries its mask; a bitmap fill is reported, not exported.
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 200, "fill": "#3366ff"}));
+    run(&mut s, "layer.new", json!({"name": "Mask"}));
+    run(&mut s, "draw.ellipse", json!({"x": 50, "y": 50, "w": 40, "h": 40}));
+    run(&mut s, "layer.toggle_mask", json!({}));
+    let out = anicraft_render::lottie::to_lottie(&s.doc, "m", 0, 0, false);
+    let v: Value = serde_json::from_str(&out.json).unwrap();
+    let layers = v["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 1, "the mask's own artwork is not drawn");
+    assert_eq!(layers[0]["hasMask"], true);
+    assert_eq!(layers[0]["masksProperties"][0]["mode"], "a");
+    assert!(out.report.is_empty(), "{:?}", out.report);
+    let _ = std::fs::remove_dir_all(&dir);
+}

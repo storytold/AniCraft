@@ -245,6 +245,7 @@ dependencies = [
  "anicraft-geom",
  "png 0.17.16",
  "rayon",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

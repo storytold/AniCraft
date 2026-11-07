@@ -73,6 +73,15 @@ pub fn specs() -> Vec<CommandSpec> {
             mutates: false,
             run: export_gif,
         },
+        CommandSpec {
+            id: "file.export_lottie",
+            label: "Export Lottie Animation…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path, from?, to? (movie frames: every scene in order), background? (default false: transparent), confirm?}",
+            mutates: false,
+            run: export_lottie,
+        },
         CommandSpec { id: "edit.undo", label: "Undo", menu: "Edit", shortcut: Some("Ctrl+Z"), params: "{}", mutates: false, run: |s, _| s.undo() },
         CommandSpec { id: "edit.redo", label: "Redo", menu: "Edit", shortcut: Some("Ctrl+Y"), params: "{}", mutates: false, run: |s, _| s.redo() },
         CommandSpec {
@@ -500,6 +509,27 @@ pub fn gif_delays(frames: usize, fps: f32) -> Vec<u16> {
             ((t1 - t0) as u16).max(2)
         })
         .collect()
+}
+
+/// The movie as a Lottie (JSON) animation, frame-accurate (see `anicraft_render::lottie`).
+fn export_lottie(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let last = s.doc.frame_count().saturating_sub(1);
+    let from = opt_u32(p, "from")?.unwrap_or(0).min(last);
+    let to = opt_u32(p, "to")?.unwrap_or(last).min(last);
+    if to < from {
+        return Err(EngineError::Param("'to' must not be before 'from'".into()));
+    }
+    let background = opt_bool(p, "background")?.unwrap_or(false);
+    let name: String = path.file_stem().map_or_else(|| "AniCraft".into(), |n| n.to_string_lossy().chars().take(128).collect());
+    let out = anicraft_render::lottie::to_lottie(&s.doc, &name, from, to, background);
+    std::fs::write(&path, out.json.as_bytes())?;
+    let summary = if out.report.is_empty() {
+        String::new()
+    } else {
+        format!("Approximated or left out: {}.", out.report.iter().map(|(k, n)| format!("{k} on {n}")).collect::<Vec<_>>().join(", "))
+    };
+    Ok(json!({"written": path.display().to_string(), "frames": to - from + 1, "layers": out.layers, "bytes": out.json.len(), "report": summary, "notes": out.report}))
 }
 
 fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {

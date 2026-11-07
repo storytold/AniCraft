@@ -122,6 +122,7 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_png" => ("PNG image", &["png"]),
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" => ("SVG image", &["svg"]),
+        "file.export_lottie" => ("Lottie animation", &["json"]),
         "file.import" => ("SVG drawing or image", &["svg", "png", "jpg", "jpeg"]),
         "file.export_sprite_sheet" => ("PNG sprite sheet", &["png"]),
         "file.export_video" => ("Video (WebM or MP4)", &["webm", "mp4"]),
