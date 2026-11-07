@@ -394,7 +394,7 @@ pub fn section<R>(ui: &mut egui::Ui, id: &str, style: Section, title: &str, deta
         ui.data_mut(|d| d.insert_temp(key, open));
     }
     let enabled = ui.is_enabled();
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, enabled, open, title));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::DisclosureTriangle, enabled, open, title));
     let p = ui.painter();
     let hot = resp.hovered() || resp.has_focus();
     match style {

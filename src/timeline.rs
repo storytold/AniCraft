@@ -329,7 +329,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             gp.line_segment([pos2(cx, ruler.bottom() - 3.0), pos2(cx, ruler.bottom())], Stroke::new(1.0, T.border));
         }
     }
-    let ruler_resp = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
+    let ruler_resp = ui.interact(ruler, ui.scope_id().with("ruler"), Sense::click_and_drag());
     if (ruler_resp.clicked() || ruler_resp.dragged())
         && let Some(p) = ruler_resp.interact_pointer_pos() {
             app.playing = false;
@@ -411,13 +411,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_filled(sw, 0.0, to_color32(layer.color));
         }
         for (r, id, salt) in [(eye, "layer.toggle_visible", "eye"), (lock, "layer.toggle_lock", "lock"), (outl, "layer.toggle_outline", "outline")] {
-            let rr = ui.interact(r, ui.id().with((salt, layer.id.0)), Sense::click());
+            let rr = ui.interact(r, ui.scope_id().with((salt, layer.id.0)), Sense::click());
             if rr.clicked() {
                 app.run(id, json!({"layer": layer.id.0}));
             }
         }
         let name_rect = Rect::from_min_max(left.left_top(), pos2(eye.left() - 4.0, left.bottom()));
-        let nr = ui.interact(name_rect, ui.id().with(("lname", layer.id.0)), Sense::click());
+        let nr = ui.interact(name_rect, ui.scope_id().with(("lname", layer.id.0)), Sense::click());
         if nr.clicked() {
             app.run("layer.select", json!({"layer": layer.id.0}));
         }
@@ -429,7 +429,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         // The folder chevron opens and closes the folder (on top of the name's click target).
         if is_folder {
-            let cr = ui.interact(chevron, ui.id().with(("fold", layer.id.0)), Sense::click());
+            let cr = ui.interact(chevron, ui.scope_id().with(("fold", layer.id.0)), Sense::click());
             if cr.on_hover_text(if open { "Close folder" } else { "Open folder" }).clicked() && !app.tl_collapsed.remove(&layer.id) {
                 app.tl_collapsed.insert(layer.id);
             }
@@ -478,7 +478,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if is_folder {
             // A folder has no frames: its row is a plain band across the timeline.
             cp.rect_filled(cells, 0.0, if is_active { T.row_active } else { T.panel_alt });
-            let fr = ui.interact(cells, ui.id().with(("fcells", layer.id.0)), Sense::click());
+            let fr = ui.interact(cells, ui.scope_id().with(("fcells", layer.id.0)), Sense::click());
             if fr.clicked() && app.s.layer != layer.id {
                 app.run("layer.select", json!({"layer": layer.id.0}));
             }
@@ -584,7 +584,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_stroke(bg, T.rc(), Stroke::new(1.0, T.border), StrokeKind::Inside);
             painter.galley(bg.min + vec2(3.0, 2.0), galley, Color32::WHITE);
         }
-        let cr = ui.interact(cells, ui.id().with(("cells", layer.id.0)), Sense::click_and_drag());
+        let cr = ui.interact(cells, ui.scope_id().with(("cells", layer.id.0)), Sense::click_and_drag());
         let shift = ui.input(|inp| inp.modifiers.shift);
         if cr.clicked() || cr.drag_started() || cr.secondary_clicked() {
             app.timeline_focus = true;
@@ -827,7 +827,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let max_s = (content - visible_cols as f32).max(0.0);
     let t = if max_s > 0.0 { (app.tl_scroll / max_s).clamp(0.0, 1.0) } else { 0.0 };
     let thumb = Rect::from_min_size(pos2(track.left() + t * travel, track.top()), vec2(thumb_w, track.height()));
-    let sr = ui.interact(bar, ui.id().with("tl_hscroll"), Sense::click_and_drag());
+    let sr = ui.interact(bar, ui.scope_id().with("tl_hscroll"), Sense::click_and_drag());
     if sr.dragged() && max_s > 0.0 {
         app.tl_scroll = (app.tl_scroll + sr.drag_delta().x / travel * max_s).clamp(0.0, max_s);
     } else if sr.clicked()
