@@ -51,11 +51,19 @@ pub enum Icon {
     DistributeV,
     Mask,
     Masked,
+    Folder,
+    FolderOpen,
+    ChevronUp,
+    FolderPlus,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 37] = [
+    pub const ALL: [Icon; 41] = [
+        Icon::ChevronUp,
+        Icon::FolderPlus,
+        Icon::Folder,
+        Icon::FolderOpen,
         Icon::Mask,
         Icon::Masked,
         Icon::AlignLeft,
@@ -132,6 +140,8 @@ impl Icon {
             Icon::Unlock => ("lock-open", false),
             Icon::ChevronRight => ("chevron-right", false),
             Icon::ChevronDown => ("chevron-down", false),
+            Icon::ChevronUp => ("chevron-up", false),
+            Icon::FolderPlus => ("folder-plus", false),
             // Lucide's object-align icons aren't in the local set; these are AniCraft originals
             // drawn on the same 24 grid with the same 2-unit round strokes.
             Icon::AlignLeft => ("anicraft-align-left", false),
@@ -145,6 +155,8 @@ impl Icon {
             // Layer types: a stencil (mask) and the area inside it (masked).
             Icon::Mask => ("anicraft-mask", false),
             Icon::Masked => ("anicraft-masked", false),
+            Icon::Folder => ("folder", false),
+            Icon::FolderOpen => ("folder-open", false),
         }
     }
 }
@@ -167,6 +179,8 @@ static FILES: &[(&str, &str)] = &[
     ("chevrons-right", include_str!("../assets/icons/chevrons-right.svg")),
     ("chevron-right", include_str!("../assets/icons/chevron-right.svg")),
     ("chevron-down", include_str!("../assets/icons/chevron-down.svg")),
+    ("chevron-up", include_str!("../assets/icons/chevron-up.svg")),
+    ("folder-plus", include_str!("../assets/icons/folder-plus.svg")),
     ("play", include_str!("../assets/icons/play.svg")),
     ("pause", include_str!("../assets/icons/pause.svg")),
     ("rotate-cw", include_str!("../assets/icons/rotate-cw.svg")),
@@ -185,6 +199,8 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-distribute-v", include_str!("../assets/icons/anicraft-distribute-v.svg")),
     ("anicraft-mask", include_str!("../assets/icons/anicraft-mask.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
+    ("folder", include_str!("../assets/icons/folder.svg")),
+    ("folder-open", include_str!("../assets/icons/folder-open.svg")),
 ];
 
 /// The value of attribute `name` in an element's tag text.

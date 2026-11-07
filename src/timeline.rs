@@ -35,6 +35,8 @@ fn frame_center(cell_left: f32, cell_w: f32) -> f32 {
 const FOOTER_H: f32 = 38.0;
 /// Eye / lock / outline toggles: square targets in each layer row.
 const TOGGLE: f32 = 24.0;
+/// Indent per folder or mask level in the layer list.
+const INDENT: f32 = 14.0;
 
 /// A rectangle of frames: the layers between the anchor's and the head's rows (in the
 /// current layer order) by the frames between them. View state: commands get explicit ranges.
@@ -262,7 +264,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // sideways wheels / trackpad swipes scroll the frames (egui turns Shift+wheel into a
     // horizontal delta). Anywhere over the timeline, rows and cells included. Only visible
     // rows and columns are painted, so cost is independent of document size.
-    let n_layers = app.s.doc.timeline(app.s.scene).layers.len();
+    // Rows are the layers not inside a closed folder (`rows[r]` is row r's layer index).
+    let rows: Vec<usize> = {
+        let tl = app.s.doc.timeline(app.s.scene);
+        (0..tl.layers.len()).filter(|&i| !app.tl_collapsed.iter().any(|f| tl.is_inside(i, *f))).collect()
+    };
+    let n_layers = rows.len();
     let rows_visible = ((body.height() - RULER_H - FOOTER_H) / ROW_H).floor().max(1.0) as usize;
     if ui.rect_contains_pointer(body) {
         let d = ui.input(|i| i.smooth_scroll_delta);
@@ -275,7 +282,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     app.tl_vscroll = app.tl_vscroll.min(n_layers.saturating_sub(rows_visible) as f32);
     if app.tl_last_layer != Some(app.s.layer)
-        && let Some(ai) = app.s.active_layer_index()
+        && let Some(ai) = app.s.active_layer_index().and_then(|li| rows.iter().position(|&r| r == li))
     {
         // the active layer changed (e.g. picked on the stage): bring its row into view
         if (ai as f32) < app.tl_vscroll {
@@ -334,8 +341,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let active = app.s.layer;
     let rows_top = ruler.bottom();
     let rows_bottom = body.bottom() - FOOTER_H;
-    for (i, layer) in layers.iter().enumerate().skip(first_row) {
-        let y = rows_top + (i - first_row) as f32 * ROW_H;
+    let tl_now = app.s.doc.timeline(app.s.scene).clone();
+    for (r, &i) in rows.iter().enumerate().skip(first_row) {
+        let Some(layer) = layers.get(i) else { continue };
+        let y = rows_top + (r - first_row) as f32 * ROW_H;
         // Whole rows only: a cut-off row would sit under the footer (scroll for the rest).
         if y + ROW_H > rows_bottom + 0.5 {
             break;
@@ -343,22 +352,34 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let row = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), ROW_H));
         let left = Rect::from_min_max(row.left_top(), pos2(grid.left(), row.bottom()));
         let is_active = layer.id == active;
-        painter.rect_filled(left, 0.0, if is_active { T.accent_dim } else if i % 2 == 0 { T.panel } else { T.panel_alt });
+        painter.rect_filled(left, 0.0, if is_active { T.accent_dim } else if r % 2 == 0 { T.panel } else { T.panel_alt });
         // The layer's colour as a full-height edge bar.
         painter.rect_filled(Rect::from_min_size(left.left_top(), vec2(4.0, ROW_H)), 0.0, to_color32(layer.color));
-        // Mask layers carry a stencil glyph; the layers they mask are indented under them.
-        let name_color = if layer.visible { T.text } else { T.text_faint };
+        // Layers are indented under the folders and masks that hold them. Folders carry a
+        // disclosure chevron and a folder glyph; masks a stencil; masked layers its inside.
+        let is_folder = layer.kind == LayerKind::Folder;
+        let masked = layer.parent.is_some_and(|p| tl_now.layer(p).is_some_and(|m| m.kind == LayerKind::Mask));
+        let hidden = !layer.visible || tl_now.hidden_by_folder(i);
+        let name_color = if hidden { T.text_faint } else { T.text };
         let type_icon = |x: f32, icon: Icon| icons::paint(&painter, Rect::from_center_size(pos2(x, left.center().y), vec2(14.0, 14.0)), icon, name_color);
-        let name_x = match (layer.kind, layer.parent) {
-            (LayerKind::Mask, _) => {
-                type_icon(left.left() + 19.0, Icon::Mask);
-                left.left() + 32.0
+        let x0 = left.left() + 12.0 + tl_now.depth(i) as f32 * INDENT;
+        let open = !app.tl_collapsed.contains(&layer.id);
+        let chevron = Rect::from_center_size(pos2(x0 + 6.0, left.center().y), vec2(TOGGLE, TOGGLE));
+        let name_x = match layer.kind {
+            LayerKind::Folder => {
+                icons::paint(&painter, Rect::from_center_size(chevron.center(), vec2(12.0, 12.0)), if open { Icon::ChevronDown } else { Icon::ChevronRight }, T.text_dim);
+                type_icon(x0 + 24.0, if open { Icon::FolderOpen } else { Icon::Folder });
+                x0 + 37.0
             }
-            (LayerKind::Normal, Some(_)) => {
-                type_icon(left.left() + 33.0, Icon::Masked);
-                left.left() + 46.0
+            LayerKind::Mask => {
+                type_icon(x0 + 7.0, Icon::Mask);
+                x0 + 20.0
             }
-            _ => left.left() + 16.0,
+            LayerKind::Normal if masked => {
+                type_icon(x0 + 7.0, Icon::Masked);
+                x0 + 20.0
+            }
+            _ => x0 + 4.0,
         };
         painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
 
@@ -401,9 +422,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if nr.double_clicked() {
             app.invoke("layer.rename");
         }
+        // The folder chevron opens and closes the folder (on top of the name's click target).
+        if is_folder {
+            let cr = ui.interact(chevron, ui.id().with(("fold", layer.id.0)), Sense::click());
+            if cr.on_hover_text(if open { "Close folder" } else { "Open folder" }).clicked() && !app.tl_collapsed.remove(&layer.id) {
+                app.tl_collapsed.insert(layer.id);
+            }
+        }
         nr.context_menu(|ui| {
             ui.set_min_width(200.0);
-            for id in ["layer.rename", "layer.new", "layer.delete"] {
+            for id in ["layer.rename", "layer.new", "layer.new_folder", "layer.delete"] {
                 menus::cmd_item(app, ui, id);
             }
             ui.separator();
@@ -412,12 +440,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             ui.separator();
             // Layer type, as check items: Mask (masks the layer below) and Masked.
-            if menus::check_item(ui, "Mask", layer.kind == LayerKind::Mask, true) {
+            if menus::check_item(ui, "Mask", layer.kind == LayerKind::Mask, !is_folder) {
                 app.run("layer.toggle_mask", json!({"layer": layer.id.0}));
             }
             let can_mask = layer.kind == LayerKind::Normal && app.s.doc.timeline(app.s.scene).mask_above(i).is_some();
-            if menus::check_item(ui, "Masked", layer.parent.is_some(), can_mask || layer.parent.is_some()) {
-                let ty = if layer.parent.is_some() { "normal" } else { "masked" };
+            if menus::check_item(ui, "Masked", masked, can_mask || masked) {
+                let ty = if masked { "normal" } else { "masked" };
                 app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));
             }
             ui.separator();
@@ -429,6 +457,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // frame cells
         let cells = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + ROW_H));
         let cp = painter.with_clip_rect(cells);
+        if is_folder {
+            // A folder has no frames: its row is a plain band across the timeline.
+            cp.rect_filled(cells, 0.0, if is_active { T.row_active } else { T.panel_alt });
+            let fr = ui.interact(cells, ui.id().with(("fcells", layer.id.0)), Sense::click());
+            if fr.clicked() && app.s.layer != layer.id {
+                app.run("layer.select", json!({"layer": layer.id.0}));
+            }
+            painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, T.separator));
+            continue;
+        }
         cp.rect_filled(cells, 0.0, if is_active { T.row_active } else { T.panel });
         for f in first..first + visible_cols + 1 {
             let x = x_of(f);
@@ -578,7 +616,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             match (app.tl_drag, app.frame_sel.as_mut()) {
                 (TlDrag::Select, Some(sel)) => {
                     let r = ((p.y - rows_top) / ROW_H).floor().max(0.0) as usize + first_row;
-                    let row = r.min(layers.len().saturating_sub(1));
+                    let row = rows.get(r.min(rows.len().saturating_sub(1))).copied().unwrap_or(0);
                     if let Some(l) = layers.get(row) {
                         sel.head = (l.id, f);
                     }
@@ -586,7 +624,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 (TlDrag::Move { grab, grab_row, .. }, Some(sel)) => {
                     // Never before frame 1, and only onto layers that exist.
                     let by = (i64::from(f) - i64::from(grab)).max(-i64::from(sel.frames().0));
-                    let row = ((p.y - rows_top) / ROW_H).floor() as i64 + first_row as i64;
+                    // The row under the pointer, as a layer index (rows skip closed folders).
+                    let vis = (((p.y - rows_top) / ROW_H).floor() as i64 + first_row as i64).clamp(0, rows.len() as i64 - 1).max(0) as usize;
+                    let row = rows.get(vis).map_or(grab_row as i64, |&li| li as i64);
                     let rows_by = match sel.rows(&layers) {
                         Some((a, b)) => (row - grab_row as i64).clamp(-(a as i64), layers.len() as i64 - 1 - b as i64),
                         None => 0,
@@ -740,11 +780,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if child.add_enabled(layers.len() > 1, egui::Button::new("Delete")).on_hover_text("Delete the active layer").clicked() {
             app.request("layer.delete", json!({}));
         }
-        if child.button("Up").clicked() {
-            app.run("layer.move_up", json!({}));
-        }
-        if child.button("Down").clicked() {
-            app.run("layer.move_down", json!({}));
+        // New folder, Up and Down as icon buttons, so the row fits the layer column.
+        for (icon, id, tip) in [
+            (Icon::FolderPlus, "layer.new_folder", "New folder above the active layer (move layers in under it with Up and Down)"),
+            (Icon::ChevronUp, "layer.move_up", "Move layer up"),
+            (Icon::ChevronDown, "layer.move_down", "Move layer down"),
+        ] {
+            let (r, resp) = child.allocate_exact_size(vec2(TARGET, TARGET), Sense::click());
+            if resp.hovered() {
+                child.painter().rect_filled(r, T.rc(), T.hover);
+            }
+            icons::paint(child.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), icon, if resp.hovered() { Color32::WHITE } else { T.icon });
+            if resp.on_hover_text(tip).clicked() {
+                app.run(id, json!({}));
+            }
         }
     }
 

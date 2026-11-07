@@ -19,7 +19,7 @@ pub mod history;
 pub mod render_service;
 pub mod params;
 
-use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, evaluate_layer_elements, evaluate_scene};
+use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
 use anicraft_geom::{Rect, Vec2};
 use serde_json::{Value, json};
 use history::History;
@@ -399,8 +399,9 @@ impl Session {
             if !bounds.contains(p) {
                 continue;
             }
-            let Some(layer) = self.doc.timeline(self.scene).layer(item.layer) else { continue };
-            if layer.locked {
+            let tl = self.doc.timeline(self.scene);
+            let Some(layer) = tl.layer(item.layer) else { continue };
+            if layer.locked || tl.locked_by_folder(layer.id) {
                 continue;
             }
             // Masked-away parts cannot be picked.
@@ -459,6 +460,15 @@ impl Session {
     /// keyframe when the playhead is inside a tween (auto-key) or past the layer's end.
     pub(crate) fn editable_keyframe(&mut self) -> Result<&mut Keyframe> {
         let frame = self.frame;
+        let tl = self.doc.timeline(self.scene);
+        if let Some(l) = tl.layer(self.layer) {
+            if l.kind == LayerKind::Folder {
+                return Err(EngineError::State(format!("'{}' is a folder; pick a layer inside it to draw on", l.name)));
+            }
+            if tl.locked_by_folder(l.id) {
+                return Err(EngineError::State(format!("layer '{}' is in a locked folder", l.name)));
+            }
+        }
         let layer = self.layer_mut(None)?;
         if layer.locked {
             return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));

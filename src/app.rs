@@ -194,6 +194,8 @@ pub struct App {
     /// Timeline vertical scroll, in rows.
     pub tl_vscroll: f32,
     pub tl_last_layer: Option<anicraft_engine::doc::LayerId>,
+    /// Folders shown closed on the timeline (view state: not saved, not undoable).
+    pub tl_collapsed: HashSet<anicraft_engine::doc::LayerId>,
     pub library_sel: Option<usize>,
     pub star_points: u32,
     pub rect_radius: f32,
@@ -281,6 +283,7 @@ impl App {
             tl_cell_w: timeline::CELL_DEFAULT,
             tl_vscroll: 0.0,
             tl_last_layer: None,
+            tl_collapsed: HashSet::new(),
             library_sel: Some(0),
             star_points: 5,
             rect_radius: 0.0,

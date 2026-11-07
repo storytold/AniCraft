@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* **Layer folders** (the folder button under the layer list, Insert › Timeline › New Folder,
+  or a layer's right-click menu). Folders group layers, can nest, and open and close with
+  their chevron. Hiding or locking a folder hides or locks everything in it. Move layers in
+  and out with Up and Down: a layer moved in under a folder goes inside it, and moving off
+  either end takes it out. A folder moves with its contents. Deleting a folder deletes what's
+  in it (it asks first; undo brings it back). Masks work inside folders too. Animate
+  documents keep their folders instead of flattening them. Up and Down are now icon buttons.
+
 * **Scenes** (Insert › Scene; the scene menu at the top left of the stage): a movie is now a
   list of scenes that play in order, each with its own timeline. Switch scenes from the menu
   or with Shift+Page Up / Shift+Page Down. Add, duplicate, rename, reorder and delete scenes

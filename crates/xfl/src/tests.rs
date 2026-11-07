@@ -75,7 +75,9 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!((doc.stage.width, doc.stage.height, doc.stage.fps), (640, 360, 30.0));
     assert_eq!(doc.stage.background, Rgba::hex(0x336699));
     let names: Vec<&str> = doc.timeline(0).layers.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["Ball", "Ground", "Notes"], "folders are flattened away, order kept (top first)");
+    assert_eq!(names, ["Ball", "Ground", "Notes", "Folder"], "folders come across as folders, order kept (top first)");
+    assert_eq!(doc.timeline(0).layers[3].kind, LayerKind::Folder);
+    assert!(doc.timeline(0).layers[3].keyframes.is_empty(), "a folder has no frames");
     let ball = &doc.timeline(0).layers[0];
     assert_eq!(ball.keyframes.len(), 2);
     assert_eq!((ball.keyframes[0].start, ball.keyframes[0].duration), (0, 10));
@@ -111,9 +113,11 @@ fn mask_layers_mask_the_layers_that_point_at_them() {
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
     let l = &d.timeline(0).layers;
-    assert_eq!(l.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["Spot", "Ball", "Ring", "Sky"]);
-    assert_eq!(l[0].kind, LayerKind::Mask);
-    assert_eq!((l[1].parent, l[2].parent, l[3].parent), (Some(l[0].id), Some(l[0].id), None), "in the folder, not masked");
+    assert_eq!(l.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["Group", "Spot", "Ball", "Ring", "Sky"]);
+    assert_eq!((l[0].kind, l[1].kind), (LayerKind::Folder, LayerKind::Mask));
+    assert_eq!(l[1].parent, Some(l[0].id), "the mask is in the folder");
+    assert_eq!((l[2].parent, l[3].parent), (Some(l[1].id), Some(l[1].id)), "masked");
+    assert_eq!(l[4].parent, Some(l[0].id), "in the folder, not masked");
     assert!(report.skipped.keys().all(|k| !k.contains("mask")));
     let dl = evaluate(&d, 0);
     assert_eq!(dl.clip_parents.len(), 1);
@@ -161,7 +165,7 @@ fn a_fla_archive_imports_the_same() {
     let fla = dir.join("scene.fla");
     std::fs::write(&fla, &z).unwrap();
     let (doc, _) = crate::import_path(&fla).unwrap();
-    assert_eq!(doc.timeline(0).layers.len(), 3);
+    assert_eq!(doc.timeline(0).layers.len(), 4);
     assert_eq!(doc.library.len(), 1);
     std::fs::remove_file(&fla).ok();
     std::fs::remove_dir(&dir).ok();

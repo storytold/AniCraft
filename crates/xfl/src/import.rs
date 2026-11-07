@@ -220,27 +220,30 @@ impl<'a> Builder<'a> {
 
     fn timeline(&mut self, tl: &X) -> Timeline {
         let mut layers = Vec::new();
-        // Mask layers by their position in the file's layer list (`parentLayerIndex` points at
-        // a layer's folder or mask; folders are flattened away).
-        let mut masks: Vec<Option<LayerId>> = Vec::new();
+        // Layers by their position in the file's layer list: `parentLayerIndex` points at a
+        // layer's folder or mask. Links that don't fit AniCraft's rules are dropped by
+        // `repair_masks` below.
+        let mut by_index: Vec<LayerId> = Vec::new();
         for l in tl.list("layers").iter().filter(|l| l.name == "DOMLayer").take(MAX_LAYERS) {
-            masks.push(None);
             let kind = match l.attr("layerType") {
-                Some("folder") => continue,
+                Some("folder") => LayerKind::Folder,
                 Some("guide") => LayerKind::Guide,
                 Some("mask") => LayerKind::Mask,
                 _ => LayerKind::Normal,
             };
             let id = LayerId(self.doc.alloc_id());
+            by_index.push(id);
             let mut layer = Layer::new(id, l.attr("name").unwrap_or("Layer"));
             layer.kind = kind;
-            if kind == LayerKind::Mask
-                && let Some(slot) = masks.last_mut()
-            {
-                *slot = Some(id);
-            }
-            if kind == LayerKind::Normal {
-                layer.parent = l.u32("parentLayerIndex").and_then(|i| masks.get(i as usize).copied().flatten());
+            layer.parent = l.u32("parentLayerIndex").and_then(|i| by_index.get(i as usize).copied()).filter(|p| *p != id);
+            if kind == LayerKind::Folder {
+                // A folder holds layers, never frames.
+                layer.keyframes.clear();
+                layer.visible = l.bool("visible").unwrap_or(true);
+                layer.locked = l.bool("locked").unwrap_or(false);
+                layer.color = color(l, "color", "__none");
+                layers.push(Arc::new(layer));
+                continue;
             }
             layer.visible = l.bool("visible").unwrap_or(true);
             layer.locked = l.bool("locked").unwrap_or(false);

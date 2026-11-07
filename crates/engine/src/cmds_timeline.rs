@@ -33,7 +33,8 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"frame": f}))
         }),
         c("layer.new", "New Layer", "Insert/Timeline", None, "{name?}", true, new_layer),
-        c("layer.delete", "Delete Layer", "Modify/Timeline", None, "{layer?}", true, delete_layer),
+        c("layer.new_folder", "New Folder", "Insert/Timeline", None, "{name?}", true, new_folder),
+        c("layer.delete", "Delete Layer", "Modify/Timeline", None, "{layer? (a folder goes with its contents)}", true, delete_layer),
         c("layer.rename", "Rename Layer", "", None, "{name, layer?}", true, rename_layer),
         c("layer.toggle_visible", "Show/Hide Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.visible = !l.visible)),
         c("layer.toggle_lock", "Lock/Unlock Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.locked = !l.locked)),
@@ -55,10 +56,12 @@ fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
     set_type(s, id, ty)?;
     if !is_mask {
         let tl = s.doc.timeline_mut(s.scene);
+        // The normal layer directly below, in the same folder, becomes masked.
+        let mask_parent = tl.layer(id).and_then(|m| m.parent);
         if let Some(i) = tl.layers.iter().position(|l| l.id == id)
             && let Some(below) = tl.layers.get_mut(i + 1)
             && below.kind == LayerKind::Normal
-            && below.parent.is_none()
+            && below.parent == mask_parent
         {
             Arc::make_mut(below).parent = Some(id);
         }
@@ -75,10 +78,15 @@ fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     let tl = s.doc.timeline_mut(s.scene);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+    if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder) {
+        return Err(EngineError::State("a folder holds layers; it can't become another kind of layer".into()));
+    }
+    // Whatever the type, the layer stays in the folder it is in.
+    let folder = tl.folder_of(i);
     let (kind, parent) = match ty {
-        "normal" => (LayerKind::Normal, None),
-        "mask" => (LayerKind::Mask, None),
-        "guide" => (LayerKind::Guide, None),
+        "normal" => (LayerKind::Normal, folder),
+        "mask" => (LayerKind::Mask, folder),
+        "guide" => (LayerKind::Guide, folder),
         "masked" => {
             let m = tl.mask_above(i).ok_or_else(|| EngineError::State("only a layer directly under a mask layer (or its masked layers) can be masked".into()))?;
             (LayerKind::Normal, Some(m))
@@ -94,13 +102,17 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
 
 fn layer_type_json(s: &Session, id: LayerId) -> Value {
     let Some(l) = s.doc.timeline(s.scene).layer(id) else { return json!({}) };
-    let ty = match (l.kind, l.parent) {
-        (LayerKind::Mask, _) => "mask",
-        (LayerKind::Guide, _) => "guide",
-        (LayerKind::Normal, Some(_)) => "masked",
-        (LayerKind::Normal, None) => "normal",
+    let tl = s.doc.timeline(s.scene);
+    let masked_by = l.parent.filter(|p| tl.layer(*p).is_some_and(|m| m.kind == LayerKind::Mask));
+    let ty = match l.kind {
+        LayerKind::Mask => "mask",
+        LayerKind::Guide => "guide",
+        LayerKind::Folder => "folder",
+        LayerKind::Normal if masked_by.is_some() => "masked",
+        LayerKind::Normal => "normal",
     };
-    json!({"layer": id.0, "type": ty, "masked_by": l.parent.map(|p| p.0)})
+    let folder = tl.layers.iter().position(|x| x.id == id).and_then(|i| tl.folder_of(i));
+    json!({"layer": id.0, "type": ty, "masked_by": masked_by.map(|p| p.0), "folder": folder.map(|f| f.0)})
 }
 
 pub(crate) fn target(s: &Session, p: &Value) -> Result<(Option<LayerId>, u32)> {
@@ -120,13 +132,20 @@ pub(crate) fn target_layers(s: &Session, p: &Value) -> Result<Vec<LayerId>> {
         None => vec![opt_u64(p, "layer")?.map_or(s.layer, LayerId)],
     };
     let mut out: Vec<LayerId> = Vec::with_capacity(ids.len());
+    let mut folders = 0;
     for id in ids {
-        if s.doc.timeline(s.scene).layer(id).is_none() {
-            return Err(EngineError::State(format!("no layer with id {}", id.0)));
+        let Some(l) = s.doc.timeline(s.scene).layer(id) else { return Err(EngineError::State(format!("no layer with id {}", id.0))) };
+        // Folders have no frames: a range across a folder row acts on the layers only.
+        if l.kind == LayerKind::Folder {
+            folders += 1;
+            continue;
         }
         if !out.contains(&id) {
             out.push(id);
         }
+    }
+    if out.is_empty() && folders > 0 {
+        return Err(EngineError::State("a folder holds layers, not frames; pick a layer inside it".into()));
     }
     Ok(out)
 }
@@ -522,43 +541,78 @@ fn step(s: &mut Session, d: i64) -> Result<Value> {
 }
 
 pub(crate) fn new_layer(s: &mut Session, p: &Value) -> Result<Value> {
-    let n = s.doc.timeline(s.scene).layers.len() + 1;
-    let name = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| format!("Layer {n}"));
-    if s.doc.timeline(s.scene).layers.len() >= 1000 {
+    add_layer(s, p, LayerKind::Normal)
+}
+
+/// New Folder: an empty folder above the active layer, beside it (never inside a mask).
+fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
+    add_layer(s, p, LayerKind::Folder)
+}
+
+fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
+    let tl = s.doc.timeline(s.scene);
+    if tl.layers.len() >= 1000 {
         return Err(EngineError::State("too many layers (limit 1000)".into()));
+    }
+    let n = tl.layers.len() + 1;
+    let folder = kind == LayerKind::Folder;
+    let default_name = if folder { format!("Folder {}", tl.layers.iter().filter(|l| l.kind == LayerKind::Folder).count() + 1) } else { format!("Layer {n}") };
+    let name = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or(default_name);
+    let at = s.active_layer_index().unwrap_or(0);
+    // It joins the active layer's parent: added above a masked layer it is masked too, and
+    // added inside a folder it stays in the folder. A folder never goes inside a mask.
+    let mut parent = tl.layers.get(at).and_then(|l| l.parent);
+    if let Some(m) = parent.and_then(|pid| tl.layer(pid)).filter(|m| m.kind == LayerKind::Mask && folder) {
+        parent = m.parent;
     }
     let id = LayerId(s.doc.alloc_id());
     let mut layer = Layer::new(id, name);
-    // Match the timeline length so the new layer spans the existing frames.
-    if let Some(k) = layer.keyframe_mut(0) {
+    layer.kind = kind;
+    layer.parent = parent;
+    if folder {
+        // A folder has no frames of its own.
+        layer.keyframes.clear();
+    } else if let Some(k) = layer.keyframe_mut(0) {
+        // Match the timeline length so the new layer spans the existing frames.
         k.duration = s.frame_count().max(1);
     }
     let palette = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
     layer.color = anicraft_doc::Rgba::hex(palette[n % palette.len()]);
-    let at = s.active_layer_index().unwrap_or(0);
-    // Added above a masked layer, it lands inside the mask's group, so it is masked too.
-    layer.parent = s.doc.timeline(s.scene).layers.get(at).and_then(|l| l.parent);
-    s.doc.timeline_mut(s.scene).layers.insert(at, Arc::new(layer));
+    let tl = s.doc.timeline_mut(s.scene);
+    tl.layers.insert(at, Arc::new(layer));
+    tl.repair_masks();
     s.layer = id;
     s.selection.clear();
     Ok(json!({"layer": id.0}))
 }
 
+/// Deletes a layer; a folder goes with everything in it. A layer masked by a deleted mask
+/// stays where it is, in the mask's folder.
 fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    if s.doc.timeline(s.scene).layers.len() <= 1 {
-        return Err(EngineError::State("a document needs at least one layer".into()));
+    let tl = s.doc.timeline(s.scene);
+    let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+    let is_folder = tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder);
+    let range = if is_folder { tl.group_range(i) } else { i..i + 1 };
+    let drawable_left = tl.layers.iter().enumerate().filter(|(j, l)| !range.contains(j) && l.kind != LayerKind::Folder).count();
+    if drawable_left == 0 {
+        return Err(EngineError::State("a document needs at least one layer to draw on".into()));
     }
-    let i = s.doc.timeline(s.scene).layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
-    s.doc.timeline_mut(s.scene).layers.remove(i);
-    // Layers masked by a deleted mask become normal layers.
-    s.doc.timeline_mut(s.scene).repair_masks();
-    if s.layer == id {
-        let j = i.min(s.doc.timeline(s.scene).layers.len() - 1);
+    let up = tl.layers.get(i).and_then(|l| l.parent);
+    let tl = s.doc.timeline_mut(s.scene);
+    if !is_folder {
+        for l in tl.layers.iter_mut().filter(|l| l.parent == Some(id)) {
+            Arc::make_mut(l).parent = up;
+        }
+    }
+    let removed: Vec<LayerId> = tl.layers.drain(range.clone()).map(|l| l.id).collect();
+    tl.repair_masks();
+    if removed.contains(&s.layer) {
+        let j = range.start.min(s.doc.timeline(s.scene).layers.len().saturating_sub(1));
         s.layer = s.doc.timeline(s.scene).layers.get(j).map_or(LayerId(0), |l| l.id);
         s.selection.clear();
     }
-    Ok(json!({"deleted": id.0}))
+    Ok(json!({"deleted": id.0, "layers": removed.len()}))
 }
 
 fn rename_layer(s: &mut Session, p: &Value) -> Result<Value> {
@@ -597,38 +651,62 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"layer": id.0}))
 }
 
-/// Moves a layer one step. A mask layer moves with its masked layers and steps over a whole
-/// neighbouring mask group. Any other layer swaps with its neighbour and then belongs to the
-/// mask group it landed in, if any: moving a layer in under a mask masks it, moving it out
-/// frees it.
+/// Moves a layer one step. A folder or mask moves with everything in it, past a whole sibling,
+/// or out of its folder at either end. Any other layer swaps with its neighbour and then belongs
+/// where it landed: moving it in under a folder or mask puts it inside, moving it out frees it.
 fn move_layer(s: &mut Session, p: &Value, d: i64) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
     let tl = s.doc.timeline_mut(s.scene);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let n = tl.layers.len();
-    if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Mask) {
+    if tl.layers.get(i).is_some_and(|l| matches!(l.kind, LayerKind::Mask | LayerKind::Folder)) {
+        // A folder or mask moves with everything in it, past one sibling (with its contents),
+        // or out of its folder at either end.
         let block = tl.group_range(i);
-        // The neighbouring unit: a layer, or a whole mask group.
-        let unit = if d < 0 {
+        let parent = tl.layers.get(i).and_then(|l| l.parent);
+        let parent_idx = parent.and_then(|p| tl.layers.iter().position(|l| l.id == p));
+        let up_parent = parent.and_then(|p| tl.layer(p)).and_then(|l| l.parent);
+        if d < 0 {
             let Some(a) = i.checked_sub(1) else { return Ok(json!({"index": i})) };
-            let top = match tl.layers.get(a).and_then(|l| l.parent) {
-                Some(m) => tl.layers.iter().position(|l| l.id == m).unwrap_or(a),
-                None => a,
-            };
-            top..i
-        } else {
-            if block.end >= n {
-                return Ok(json!({"index": i}));
+            if parent_idx == Some(a) {
+                // First in its folder: out, above the folder.
+                if let Some(l) = tl.layers.get_mut(i) {
+                    Arc::make_mut(l).parent = up_parent;
+                }
+                let Some(span) = tl.layers.get_mut(a..block.end) else { return Ok(json!({"index": i})) };
+                span.rotate_left(1);
+                tl.repair_masks();
+                return Ok(json!({"index": a}));
             }
-            tl.group_range(block.end)
-        };
-        let (lo, hi) = (unit.start.min(block.start), unit.end.max(block.end));
-        let Some(span) = tl.layers.get_mut(lo..hi) else { return Ok(json!({"index": i})) };
-        // Rotate so the block and the unit trade places.
-        if d < 0 { span.rotate_left(unit.len()) } else { span.rotate_right(unit.len()) }
-        let at = if d < 0 { unit.start } else { block.start + unit.len() };
-        tl.repair_masks();
-        return Ok(json!({"index": at}));
+            // The sibling above, with whatever it contains.
+            let mut top = a;
+            while let Some(p) = tl.layers.get(top).and_then(|l| l.parent).filter(|p| Some(*p) != parent) {
+                match tl.layers.iter().position(|l| l.id == p) {
+                    Some(t) if t < top => top = t,
+                    _ => break,
+                }
+            }
+            let Some(span) = tl.layers.get_mut(top..block.end) else { return Ok(json!({"index": i})) };
+            span.rotate_left(i - top);
+            tl.repair_masks();
+            return Ok(json!({"index": top}));
+        }
+        if block.end < n && tl.layers.get(block.end).is_some_and(|l| l.parent == parent) {
+            // Past the next sibling and its contents.
+            let unit = tl.group_range(block.end);
+            let Some(span) = tl.layers.get_mut(block.start..unit.end) else { return Ok(json!({"index": i})) };
+            span.rotate_right(unit.len());
+            tl.repair_masks();
+            return Ok(json!({"index": block.start + unit.len()}));
+        }
+        if parent.is_some() {
+            // Last in its folder: out, just below the folder's contents (where it already is).
+            if let Some(l) = tl.layers.get_mut(i) {
+                Arc::make_mut(l).parent = up_parent;
+            }
+            tl.repair_masks();
+        }
+        return Ok(json!({"index": i}));
     }
     let j = i as i64 + d;
     if j < 0 || j as usize >= n {
@@ -636,7 +714,9 @@ fn move_layer(s: &mut Session, p: &Value, d: i64) -> Result<Value> {
     }
     let j = j as usize;
     tl.layers.swap(i, j);
-    let join = tl.mask_above(j).filter(|_| tl.layers.get(j).is_some_and(|l| l.kind == LayerKind::Normal));
+    // It belongs where it landed: in the folder or under the mask above it, or beside them.
+    let kind = tl.layers.get(j).map_or(LayerKind::Normal, |l| l.kind);
+    let join = tl.container_at(j, kind);
     if let Some(l) = tl.layers.get_mut(j)
         && l.parent != join
     {
