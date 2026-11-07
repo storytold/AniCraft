@@ -89,7 +89,7 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(doc.frame_count(), 16, "the movie: scene 1, then the one-frame scene 2");
     // What couldn't come across is reported, not guessed.
     assert_eq!(report.skipped.get("text fields"), Some(&1));
-    assert_eq!(report.skipped.get("bitmaps"), Some(&1));
+    assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
     // Every scene comes across, in order.
     assert_eq!(doc.scenes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Scene 1", "Scene 2"]);
@@ -207,4 +207,71 @@ fn shape_tweens_come_across_as_shape_tweens() {
     // Halfway, the square has morphed towards the triangle.
     let mid = evaluate(&d, 5).items[0].path.bounds();
     assert!(mid.max.x > 110.0 && mid.min.x > 10.0, "{mid:?}");
+}
+
+fn png_2x1() -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, 2, 1);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().unwrap();
+        wr.write_image_data(&[255, 0, 0, 255, 0, 0, 255, 255]).unwrap();
+    }
+    out
+}
+
+const BITMAP_DOC: &str = r##"<DOMDocument width="200" height="100">
+  <media>
+    <DOMBitmapItem name="Art/photo.png" href="Art/photo.png" bitmapDataHRef="M 1 1.dat"/>
+    <DOMBitmapItem name="packed.png" href="packed.png" bitmapDataHRef="M 2 2.dat"/>
+    <DOMBitmapItem name="private.jpg" href="private.jpg" bitmapDataHRef="M 3 3.dat"/>
+    <DOMBitmapItem name="gone.png" href="gone.png"/>
+  </media>
+  <timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Layer 1"><frames><DOMFrame index="0"><elements>
+    <DOMBitmapInstance libraryItemName="Art/photo.png"><matrix><Matrix a="10" d="10" tx="5" ty="6"/></matrix></DOMBitmapInstance>
+    <DOMBitmapInstance libraryItemName="packed.png"/>
+    <DOMBitmapInstance libraryItemName="gone.png"/>
+    <DOMShape>
+      <fills><FillStyle index="1"><BitmapFill bitmapPath="Art/photo.png"><matrix><Matrix a="40" d="40" tx="100" ty="50"/></matrix></BitmapFill></FillStyle>
+             <FillStyle index="2"><BitmapFill bitmapPath="private.jpg" bitmapIsClipped="true"/></FillStyle></fills>
+      <edges><Edge fillStyle1="1" edges="!2000 1000|4000 1000|4000 2000|2000 2000|2000 1000"/>
+             <Edge fillStyle1="2" edges="!0 0|200 0|200 200|0 0"/></edges>
+    </DOMShape>
+  </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines>
+</DOMDocument>"##;
+
+#[test]
+fn bitmaps_come_across_when_their_image_is_png_or_jpeg() {
+    let files: HashMap<String, Vec<u8>> = HashMap::from([
+        ("DOMDocument.xml".to_string(), BITMAP_DOC.as_bytes().to_vec()),
+        // An XFL folder keeps the original image in LIBRARY/.
+        ("LIBRARY/Art/photo.png".to_string(), png_2x1()),
+        // A .fla may hold only the data file; a PNG or JPEG there is used as it is.
+        ("bin/M 2 2.dat".to_string(), png_2x1()),
+        // Animate's own encoding is not public: reported, not guessed.
+        ("bin/M 3 3.dat".to_string(), vec![3, 5, 0, 0, 1, 2, 3]),
+    ]);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+    let (doc, report) = import_with(&read).unwrap();
+    assert_eq!(doc.bitmaps.iter().map(|b| (b.name.as_str(), b.width, b.height)).collect::<Vec<_>>(), [("photo.png", 2, 1), ("packed.png", 2, 1)]);
+    assert_eq!(report.skipped.get("bitmaps stored in Animate's own format"), Some(&1));
+    assert_eq!(report.skipped.get("missing bitmap files"), Some(&1));
+    assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
+    assert_eq!(report.skipped.get("bitmap fills of missing bitmaps"), Some(&1));
+
+    let els = &doc.timeline(0).layers[0].keyframes[0].elements;
+    assert_eq!(els.len(), 3, "two bitmap instances and the bitmap-filled shape");
+    let photo = doc.bitmaps[0].id;
+    // An instance is a rectangle of the image's size, placed by its matrix.
+    let ElementKind::Shape(sh) = &els[0].kind else { panic!() };
+    assert_eq!(sh.fill, Some(Paint::Bitmap { bitmap: photo, repeat: false, matrix: anicraft_geom::Affine::IDENTITY }));
+    assert_eq!(sh.path.bounds(), anicraft_geom::Rect::new(0.0, 0.0, 2.0, 1.0));
+    assert_eq!(els[0].transform.m, [10.0, 0.0, 0.0, 10.0, 5.0, 6.0]);
+    // A bitmap fill keeps its matrix, in pixels (twips scale removed), and repeats.
+    let ElementKind::Shape(fill) = &els[2].kind else { panic!() };
+    assert_eq!(fill.fill, Some(Paint::Bitmap { bitmap: photo, repeat: true, matrix: anicraft_geom::Affine { m: [2.0, 0.0, 0.0, 2.0, 100.0, 50.0] } }));
+    // The renderer gets the pixels with the items.
+    let list = evaluate(&doc, 0);
+    assert_eq!(list.items.iter().filter(|i| i.image.is_some()).count(), 3);
 }

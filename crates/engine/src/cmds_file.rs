@@ -249,29 +249,14 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
 /// A PNG or JPEG as a bitmap in the document, and the one shape that shows it: a rectangle of
 /// the image's size filled with it. JPEGs are kept as PNG (lossless, so nothing degrades).
 fn import_image(s: &mut Session, path: &std::path::Path, bytes: Vec<u8>) -> Result<anicraft_svg::SvgImport> {
-    let unreadable = |why: &str| EngineError::Format(format!("{}: {why}", path.display()));
-    let png = if bytes.starts_with(b"\x89PNG") {
-        bytes
-    } else {
-        // JPEG → RGB(A) → PNG.
-        let opts = zune_jpeg::zune_core::options::DecoderOptions::default().jpeg_set_out_colorspace(zune_jpeg::zune_core::colorspace::ColorSpace::RGBA);
-        let mut dec = zune_jpeg::JpegDecoder::new_with_options(zune_jpeg::zune_core::bytestream::ZCursor::new(&bytes), opts);
-        let rgba = dec.decode().map_err(|e| unreadable(&format!("not a readable JPEG ({e:?})")))?;
-        let (w, h) = dec.dimensions().ok_or_else(|| unreadable("a JPEG without a size"))?;
-        let (w, h) = (w as u32, h as u32);
-        if w == 0 || h == 0 || w > anicraft_doc::MAX_BITMAP_EDGE || h > anicraft_doc::MAX_BITMAP_EDGE || rgba.len() != (w * h * 4) as usize {
-            return Err(unreadable("the image is empty or larger than 8192 px a side"));
-        }
-        anicraft_render::encode_png(w, h, &rgba)?
-    };
     let id = anicraft_doc::BitmapId(s.doc.alloc_id());
     let name: String = path.file_name().map_or_else(|| "image".into(), |n| n.to_string_lossy().chars().take(128).collect());
-    let bitmap = anicraft_doc::Bitmap::from_png(id, name.clone(), png).ok_or_else(|| unreadable("not a readable PNG, or larger than 8192 px a side"))?;
+    let bitmap = anicraft_doc::Bitmap::from_image(id, name.clone(), bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
     let (w, h) = (bitmap.width as f32, bitmap.height as f32);
     s.doc.bitmaps.push(std::sync::Arc::new(bitmap));
     let shape = anicraft_doc::Shape {
         path: std::sync::Arc::new(anicraft_geom::Path::rect(0.0, 0.0, w, h)),
-        fill: Some(anicraft_doc::Paint::Bitmap { bitmap: id, repeat: false }),
+        fill: Some(anicraft_doc::Paint::Bitmap { bitmap: id, repeat: false, matrix: anicraft_geom::Affine::IDENTITY }),
         stroke: None,
         fill_rule: anicraft_geom::FillRule::NonZero,
     };

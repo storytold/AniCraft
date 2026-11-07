@@ -148,8 +148,9 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
             return (c.a > 0.0).then(|| color_attrs("fill", c));
         }
         Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => stops,
-        Paint::Bitmap { .. } => {
-            // A pattern of the bitmap at its own pixel size, placed by the shape's transform.
+        Paint::Bitmap { matrix, .. } => {
+            // A pattern of the bitmap at its own pixel size, placed by the shape's transform
+            // and the fill's image matrix.
             // (Opacity comes across; tint has no SVG equivalent and is left out.)
             let px = image?;
             let key = std::sync::Arc::as_ptr(px) as usize;
@@ -165,7 +166,7 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
             };
             let id = format!("p{n}");
             *n += 1;
-            let m = xf.m;
+            let m = xf.mul(matrix).m;
             let _ = write!(
                 defs,
                 "<pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" patternTransform=\"matrix({} {} {} {} {} {})\" width=\"{}\" height=\"{}\"><use href=\"#{img_id}\"/></pattern>",

@@ -1487,7 +1487,7 @@ fn library_bitmaps_place_centred_on_the_stage() {
     assert_eq!(el.name, "dot.png");
     assert_eq!(el.transform.apply(anicraft_geom::Vec2::new(3.0, 2.0)), anicraft_geom::Vec2::new(100.0, 50.0), "centred on x/y");
     match &el.kind {
-        anicraft_doc::ElementKind::Shape(sh) => assert_eq!(sh.fill, Some(anicraft_doc::Paint::Bitmap { bitmap: anicraft_doc::BitmapId(bitmap), repeat: false })),
+        anicraft_doc::ElementKind::Shape(sh) => assert_eq!(sh.fill, Some(anicraft_doc::Paint::Bitmap { bitmap: anicraft_doc::BitmapId(bitmap), repeat: false, matrix: anicraft_geom::Affine::IDENTITY })),
         k => panic!("{k:?}"),
     }
     assert_eq!(s.doc.bitmaps.len(), 1, "placing shares the bitmap");

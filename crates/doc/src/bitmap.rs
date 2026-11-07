@@ -63,6 +63,12 @@ impl Bitmap {
         Some(Bitmap { id, name: name.into(), width, height, png: Arc::new(png), decoded: Arc::new(decoded) })
     }
 
+    /// A bitmap from PNG or JPEG data (told apart by their signatures; JPEGs become PNG).
+    pub fn from_image(id: BitmapId, name: impl Into<String>, data: Vec<u8>) -> Result<Bitmap, ImageError> {
+        let png = image_to_png(data)?;
+        Bitmap::from_png(id, name, png).ok_or(ImageError::Unreadable)
+    }
+
     /// The decoded pixels (decoded once and shared by every clone). `None` for unreadable data.
     pub fn pixels(&self) -> Option<Arc<Pixels>> {
         self.decoded.get_or_init(|| decode_png(&self.png).map(Arc::new)).clone()
@@ -89,6 +95,62 @@ pub fn decode_png(data: &[u8]) -> Option<Pixels> {
         png::ColorType::Indexed => return None, // expanded by normalize_to_color8
     };
     Some(Pixels { width: w, height: h, rgba })
+}
+
+/// Why image data can't become a bitmap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageError {
+    /// Neither PNG nor JPEG.
+    UnknownFormat,
+    /// A PNG or JPEG that doesn't decode.
+    Unreadable,
+    /// Empty, or wider or taller than [`MAX_BITMAP_EDGE`].
+    BadSize,
+}
+
+impl std::fmt::Display for ImageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ImageError::UnknownFormat => "not a PNG or JPEG image",
+            ImageError::Unreadable => "a damaged or unsupported image",
+            ImageError::BadSize => "the image is empty or larger than 8192 px a side",
+        })
+    }
+}
+
+impl std::error::Error for ImageError {}
+
+/// PNG or JPEG data as PNG: PNG passes through; JPEG is decoded and re-encoded losslessly.
+pub fn image_to_png(data: Vec<u8>) -> Result<Vec<u8>, ImageError> {
+    if data.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Ok(data);
+    }
+    if !data.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Err(ImageError::UnknownFormat);
+    }
+    use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
+    let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+    let mut dec = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(&data), opts);
+    let rgba = dec.decode().map_err(|_| ImageError::Unreadable)?;
+    let (w, h) = dec.dimensions().ok_or(ImageError::Unreadable)?;
+    let (w, h) = (u32::try_from(w).map_err(|_| ImageError::BadSize)?, u32::try_from(h).map_err(|_| ImageError::BadSize)?);
+    if w == 0 || h == 0 || w > MAX_BITMAP_EDGE || h > MAX_BITMAP_EDGE || rgba.len() != w as usize * h as usize * 4 {
+        return Err(ImageError::BadSize);
+    }
+    encode_png(w, h, &rgba).ok_or(ImageError::Unreadable)
+}
+
+/// Straight RGBA8 pixels as PNG.
+fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().ok()?;
+        wr.write_image_data(rgba).ok()?;
+    }
+    Some(out)
 }
 
 /// Bytes as base64 text in files.
@@ -191,5 +253,9 @@ mod tests {
         assert_eq!(back, b);
         assert_eq!(back.pixels().unwrap().rgba, px, "decoded again after loading");
         assert!(Bitmap::from_png(BitmapId(1), "x", b"not a png".to_vec()).is_none());
+        // Images in general: PNG passes through, other formats are told apart from damage.
+        assert_eq!(Bitmap::from_image(BitmapId(4), "y", png_of(2, 1, &px)).unwrap().pixels().unwrap().rgba, px);
+        assert_eq!(image_to_png(b"GIF89a".to_vec()).err(), Some(ImageError::UnknownFormat));
+        assert_eq!(image_to_png(vec![0xff, 0xd8, 0xff, 0xe0, 0, 1]).err(), Some(ImageError::Unreadable));
     }
 }

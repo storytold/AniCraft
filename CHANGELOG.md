@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* **Images in Animate documents.** Opening a `.fla` or XFL now brings its bitmaps into the
+  Library, with bitmap instances on the stage and bitmap fills on shapes (placed, scaled and
+  tiled as in the file). Images are read when the document keeps them as PNG or JPEG (XFL
+  folders keep the original files); bitmaps kept only in Animate's own internal format are
+  listed in the report after opening. Bitmap fills now carry their own placement inside a
+  shape (`matrix` on `Paint::Bitmap`); older files are unchanged.
+
 * **Images in the Library.** Imported images are listed in the Library with their size, next
   to symbols, and the newest is picked. Double-click one, or press Place on stage, to add
   another copy centred on the stage; copies share the one image (`library.place` takes

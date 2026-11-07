@@ -15,5 +15,8 @@ anicraft-xml.workspace = true
 miniz_oxide = "0.8"
 thiserror.workspace = true
 
+[dev-dependencies]
+png.workspace = true
+
 [lints]
 workspace = true

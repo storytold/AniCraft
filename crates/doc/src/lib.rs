@@ -10,7 +10,7 @@ mod eval;
 pub mod path_table;
 pub mod sample;
 
-pub use bitmap::{Bitmap, BitmapId, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png};
+pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
 
@@ -81,13 +81,20 @@ pub enum Paint {
     Solid(Rgba),
     Linear { start: Vec2, end: Vec2, stops: Vec<GradientStop> },
     Radial { center: Vec2, radius: f32, stops: Vec<GradientStop> },
-    /// A bitmap, its pixel (x, y) at local (x, y); `repeat` tiles it, otherwise it shows once
-    /// (an imported image is a rectangle of exactly its size).
+    /// A bitmap, its pixel (x, y) at local `matrix · (x, y)`; `repeat` tiles it, otherwise it
+    /// shows once (an imported image is a rectangle of exactly its size, with no matrix).
     Bitmap {
         bitmap: BitmapId,
         #[serde(default)]
         repeat: bool,
+        /// Image pixels → shape space (identity: one pixel per unit, at the origin).
+        #[serde(default, skip_serializing_if = "is_identity")]
+        matrix: Affine,
     },
+}
+
+fn is_identity(m: &Affine) -> bool {
+    *m == Affine::IDENTITY
 }
 
 impl Paint {
