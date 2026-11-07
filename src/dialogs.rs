@@ -2,6 +2,7 @@
 //! guard on close, the command palette (Ctrl+K) and the keyboard-shortcut sheet (F1).
 
 use crate::app::{App, Tool};
+use crate::i18n::{self, tl};
 use crate::prefs::{FontChoice, RenderMode};
 use crate::theme::{T, Type, text, with_type};
 use anicraft_engine::confirm::Confirmation;
@@ -36,37 +37,53 @@ fn danger_button(label: &str) -> egui::Button<'static> {
     egui::Button::new(text(Type::Body, label).color(Color32::WHITE).strong()).fill(T.danger).min_size(egui::vec2(120.0, crate::theme::TARGET + 4.0))
 }
 
+/// The engine's confirmation message in the interface language: its template and counts
+/// translated, then filled in.
+fn confirm_message(c: &Confirmation) -> String {
+    use anicraft_engine::confirm::Arg;
+    let values: Vec<(&str, String)> = c
+        .args
+        .iter()
+        .map(|(k, v)| match v {
+            Arg::Text(t) => (*k, t.clone()),
+            Arg::Count(n, one, other) => (*k, i18n::trn(*n as u64, one, other)),
+        })
+        .collect();
+    let refs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    i18n::fmt(c.template, &refs)
+}
+
 fn confirm_modal(app: &mut App, ctx: &egui::Context) {
     let Some(p) = &mut app.confirm else { return };
     let mut decision: Option<bool> = None;
     let irreversible = p.conf.irreversible;
-    egui::Modal::new(egui::Id::new("confirm")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("confirm")).show(ctx, |ui| crate::theme::reading(ui, |ui| {
         ui.set_width(420.0);
         ui.add_space(4.0);
-        ui.label(text(Type::Title, p.conf.title.clone()));
+        ui.label(text(Type::Title, tl!(&p.conf.title)));
         ui.add_space(6.0);
-        ui.label(text(Type::Body, p.conf.message.clone()).color(T.text_dim));
+        ui.label(text(Type::Body, confirm_message(&p.conf)).color(T.text_dim));
         ui.add_space(4.0);
         if irreversible {
-            ui.label(text(Type::Caption, "This cannot be undone.").color(T.error));
+            ui.label(text(Type::Caption, tl!("This cannot be undone.")).color(T.error));
         } else {
-            crate::theme::checkbox(ui, &mut p.dont_ask, text(Type::Caption, "Don't ask again this session").color(T.text_dim));
+            crate::theme::checkbox(ui, &mut p.dont_ask, text(Type::Caption, tl!("Don't ask again this session")).color(T.text_dim));
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
+            if ui.add(egui::Button::new(tl!("Cancel")).min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
                 decision = Some(false);
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(danger_button(&p.conf.action)).clicked() {
+            ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
+                if ui.add(danger_button(tl!(&p.conf.action))).clicked() {
                     decision = Some(true);
                 }
             });
         });
         ui.add_space(2.0);
-        let hint = if irreversible { "Esc cancels · click the red button to proceed" } else { "Enter confirms · Esc cancels" };
+        let hint = tl!(if irreversible { "Esc cancels · click the red button to proceed" } else { "Enter confirms · Esc cancels" });
         ui.label(text(Type::Caption, hint));
-    });
+    }));
     // Irreversible actions are never one keystroke away: Enter does not confirm them.
     let (esc, enter) = ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::Escape), i.consume_key(egui::Modifiers::NONE, Key::Enter)));
     if esc {
@@ -90,7 +107,7 @@ fn confirm_modal(app: &mut App, ctx: &egui::Context) {
         Some(false) => {
             app.confirm = None;
             app.close_after_save = false;
-            app.status_ok("Cancelled");
+            app.status_ok(tl!("Cancelled"));
         }
         None => {}
     }
@@ -107,28 +124,28 @@ fn close_modal(app: &mut App, ctx: &egui::Context) {
         Cancel,
     }
     let mut choice = None;
-    let name = app.s.path.as_ref().and_then(|p| p.file_name()).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
-    egui::Modal::new(egui::Id::new("close_guard")).show(ctx, |ui| {
+    let name = app.s.path.as_ref().and_then(|p| p.file_name()).map_or_else(|| tl!("Untitled").to_string(), |n| n.to_string_lossy().into_owned());
+    egui::Modal::new(egui::Id::unique("close_guard")).show(ctx, |ui| crate::theme::reading(ui, |ui| {
         ui.set_width(440.0);
-        ui.label(text(Type::Title, format!("Save changes to “{name}” before closing?")));
+        ui.label(text(Type::Title, i18n::fmt("Save changes to “{name}” before closing?", &[("name", &name)])));
         ui.add_space(6.0);
-        ui.label(text(Type::Body, "If you don't save, your changes since the last save will be lost.").color(T.text_dim));
+        ui.label(text(Type::Body, tl!("If you don't save, your changes since the last save will be lost.")).color(T.text_dim));
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if ui.add(danger_button("Don't Save")).clicked() {
+            if ui.add(danger_button(tl!("Don't Save"))).clicked() {
                 choice = Some(Choice::Discard);
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(text(Type::Body, "Save").strong().color(Color32::WHITE)).fill(T.accent).min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
+            ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(text(Type::Body, tl!("Save")).strong().color(Color32::WHITE)).fill(T.accent).min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
                     choice = Some(Choice::Save);
                 }
-                if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
+                if ui.add(egui::Button::new(tl!("Cancel")).min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
                     choice = Some(Choice::Cancel);
                 }
             });
         });
-        ui.label(text(Type::Caption, "Enter saves · Esc cancels"));
-    });
+        ui.label(text(Type::Caption, tl!("Enter saves · Esc cancels")));
+    }));
     let (esc, enter) = ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::Escape), i.consume_key(egui::Modifiers::NONE, Key::Enter)));
     if esc {
         choice = Some(Choice::Cancel);
@@ -165,18 +182,29 @@ enum Entry {
 }
 
 impl Entry {
+    /// The title in English (`tr` = identity) or in the interface language (`tr` = `i18n::t`).
+    fn title_with(&self, tr: impl Fn(&str) -> String) -> String {
+        let path = |menu: &str| menu.split('/').map(&tr).collect::<Vec<_>>().join(" › ");
+        match self {
+            Entry::Command(c) if c.menu.is_empty() => tr(c.label),
+            Entry::Command(c) => format!("{} › {}", path(c.menu), tr(c.label)),
+            Entry::Tool(t) => format!("{} › {}", tr("Tool"), tr(t.label())),
+            Entry::View(name, _, _) => format!("{} › {}", tr("View"), tr(name)),
+        }
+    }
+
     fn title(&self) -> String {
         match self {
-            Entry::Command(c) => {
-                if c.menu.is_empty() {
-                    c.label.to_string()
-                } else {
-                    format!("{} › {}", c.menu.replace('/', " › "), c.label)
-                }
-            }
-            Entry::Tool(t) => format!("Tool › {}", t.label()),
-            Entry::View(name, _, _) => format!("View › {name}"),
+            // A command's own `@id` row first, as in the menus.
+            Entry::Command(c) if c.menu.is_empty() => crate::i18n::t_id(c.id, c.label).to_string(),
+            Entry::Command(c) => format!("{} › {}", c.menu.split('/').map(crate::i18n::t).collect::<Vec<_>>().join(" › "), crate::i18n::t_id(c.id, c.label)),
+            _ => self.title_with(|s| crate::i18n::t(s).to_string()),
         }
+    }
+
+    /// The English title too, so the palette finds a command by either name.
+    fn title_en(&self) -> String {
+        self.title_with(str::to_string)
     }
     fn shortcut(&self, km: &crate::keymap::Keymap) -> String {
         match self {
@@ -233,7 +261,7 @@ fn palette(app: &mut App, ctx: &egui::Context) {
     let mut matches: Vec<(i32, Entry, String)> =
         all.into_iter().filter_map(|e| {
             let key = e.shortcut(km);
-            fuzzy(&p.query, &format!("{} {key}", e.title())).map(|s| (s, e, key))
+            fuzzy(&p.query, &format!("{} {} {key}", e.title(), e.title_en())).map(|s| (s, e, key))
         }).collect();
     matches.sort_by_key(|m| std::cmp::Reverse(m.0));
     matches.truncate(14);
@@ -255,24 +283,24 @@ fn palette(app: &mut App, ctx: &egui::Context) {
     let mut run: Option<Entry> = None;
     let mut close = esc;
     let selected = p.selected;
-    egui::Area::new(egui::Id::new("palette")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, [0.0, 70.0]).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("palette")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, [0.0, 70.0]).show(ctx, |ui| crate::theme::reading(ui, |ui| {
         egui::Frame::popup(ui.style()).fill(T.panel_alt).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
             ui.set_width(560.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut p.query).hint_text("Type a command, tool or setting…").desired_width(f32::INFINITY).font(egui::TextStyle::Heading));
+            let r = ui.add(egui::TextEdit::singleline(&mut p.query).hint_text(tl!("Type a command, tool or setting…")).desired_width(f32::INFINITY).font(egui::TextStyle::Heading));
             r.request_focus();
             if r.changed() {
                 p.selected = 0;
             }
             ui.add_space(6.0);
             if matches.is_empty() {
-                ui.label(text(Type::Caption, "No matching commands"));
+                ui.label(text(Type::Caption, tl!("No matching commands")));
             }
             for (i, (_, e, key)) in matches.iter().enumerate() {
                 let sel = i == selected;
                 let resp = ui
                     .horizontal(|ui| {
                         let lab = ui.selectable_label(sel, e.title());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
                             ui.label(text(Type::Key, crate::platform::shortcut_label(key)));
                         });
                         lab
@@ -283,9 +311,9 @@ fn palette(app: &mut App, ctx: &egui::Context) {
                 }
             }
             ui.add_space(4.0);
-            ui.label(text(Type::Caption, "Up/Down choose · Enter run · Esc close"));
+            ui.label(text(Type::Caption, tl!("Up/Down choose · Enter run · Esc close")));
         });
-    });
+    }));
     if enter {
         run = matches.get(selected).map(|(_, e, _)| e.clone());
     }
@@ -308,23 +336,23 @@ fn palette(app: &mut App, ctx: &egui::Context) {
 /// A font picker: the bundled default plus every installed family, filterable.
 fn font_picker(ui: &mut egui::Ui, id: &str, current: &FontChoice, families: Option<&[String]>, bundled: &str) -> Option<FontChoice> {
     let mut picked = None;
-    let filter_id = egui::Id::new(("font_filter", id));
+    let filter_id = egui::Id::unique(("font_filter", id));
     let shown = match current {
-        FontChoice::Bundled => format!("Default ({bundled})"),
+        FontChoice::Bundled => i18n::fmt("Default ({font})", &[("font", bundled)]),
         FontChoice::System(name) => name.clone(),
     };
     egui::ComboBox::from_id_salt(id).width(260.0).selected_text(text(Type::Body, shown)).show_ui(ui, |ui| {
-        if ui.selectable_label(*current == FontChoice::Bundled, text(Type::Body, format!("Default (bundled: {bundled})"))).clicked() {
+        if ui.selectable_label(*current == FontChoice::Bundled, text(Type::Body, i18n::fmt("Default (bundled: {font})", &[("font", bundled)]))).clicked() {
             picked = Some(FontChoice::Bundled);
         }
         ui.separator();
         match families {
             None => {
-                ui.label(text(Type::Caption, "Scanning installed fonts…"));
+                ui.label(text(Type::Caption, tl!("Scanning installed fonts…")));
             }
             Some(list) => {
                 let mut filter: String = ui.ctx().data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
-                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter fonts…").desired_width(240.0));
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tl!("Filter fonts…")).desired_width(240.0));
                 let f = filter.to_lowercase();
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                     for fam in list.iter().filter(|n| f.is_empty() || n.to_lowercase().contains(&f)) {
@@ -350,7 +378,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
     let sys = app.system_fonts.clone();
     let (bundled_ui, bundled_mono) = crate::theme::bundled_names();
     let mut reset_confirms = false;
-    let title = if crate::platform::OS == crate::platform::Os::Mac { "Settings" } else { "Preferences" };
+    let title = tl!(if crate::platform::OS == crate::platform::Os::Mac { "Settings" } else { "Preferences" });
     egui::Window::new(title)
         .open(&mut open)
         .collapsible(false)
@@ -358,7 +386,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .default_width(560.0)
-        .show(ctx, |ui| {
+        .show(ctx, |ui| crate::theme::reading(ui, |ui| {
             // A two-column form: labels in a fixed left column, controls and the notes that
             // explain them in the right one.
             use crate::theme::{FORM_LABEL_DIALOG as LW, Section, form_note, form_row, section};
@@ -366,7 +394,26 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
             // (`form_note` adds one item spacing after its indent, like a row's label column.)
             let toggle_indent = (ui.spacing().icon_width + ui.spacing().icon_spacing - ui.spacing().item_spacing.x).max(0.0);
 
-            section(ui, "prefs_appearance", Section::Rule, "Appearance", None, |ui| {
+            section(ui, "prefs_appearance", Section::Rule, tl!("Appearance"), None, |ui| {
+                form_row(ui, LW, "Interface language", |ui| {
+                    // Auto, then English and each language this build has the catalogs of, each by
+                    // its own name.
+                    let auto = p.language == crate::i18n::AUTO;
+                    let current = crate::i18n::from_pref(&p.language);
+                    let shown = if auto { format!("{} ({})", tl!("Auto"), crate::i18n::name(current)) } else { crate::i18n::name(current).to_string() };
+                    egui::ComboBox::from_id_salt("pref_language").width(260.0).selected_text(text(Type::Body, shown)).show_ui(ui, |ui| {
+                        if ui.selectable_label(auto, text(Type::Body, tl!("Auto"))).clicked() {
+                            p.language = crate::i18n::AUTO.to_string();
+                        }
+                        for lang in crate::i18n::languages() {
+                            if ui.selectable_label(!auto && lang == current, text(Type::Body, crate::i18n::name(lang))).clicked() {
+                                p.language = crate::i18n::code(lang).to_string();
+                            }
+                        }
+                    });
+                });
+                form_note(ui, LW, text(Type::Caption, tl!("Auto follows the system's language. Document text, file names and command ids stay as they are.")));
+                ui.add_space(4.0);
                 form_row(ui, LW, "Interface font", |ui| {
                     if let Some(c) = font_picker(ui, "pref_ui_font", &p.ui_font, sys.as_ref().map(|s| s.families.as_slice()), bundled_ui) {
                         p.ui_font = c;
@@ -378,12 +425,12 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                         p.data_font = c;
                     }
                 });
-                form_note(ui, LW, text(Type::Caption, "The data font shows numbers, timecode, rulers and shortcuts; only monospaced families are listed so digits stay aligned."));
+                form_note(ui, LW, text(Type::Caption, tl!("The data font shows numbers, timecode, rulers and shortcuts; only monospaced families are listed so digits stay aligned.")));
                 ui.add_space(4.0);
                 form_row(ui, LW, "Preview", |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(text(Type::Body, "Layer names, menus and dialog text read like this."));
-                        ui.label(text(Type::Data, "Frame 0042 · 1.75 s · X 1280.5 Y 720.0 · Ctrl+Shift+S"));
+                    crate::theme::column(ui, |ui| {
+                        ui.label(text(Type::Body, tl!("Layer names, menus and dialog text read like this.")));
+                        ui.label(text(Type::Data, tl!("Frame 0042 · 1.75 s · X 1280.5 Y 720.0 · Ctrl+Shift+S")));
                     });
                 });
                 ui.add_space(4.0);
@@ -399,49 +446,49 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                 });
             });
 
-            section(ui, "prefs_stage", Section::Rule, "Stage", None, |ui| {
+            section(ui, "prefs_stage", Section::Rule, tl!("Stage"), None, |ui| {
                 form_row(ui, LW, "Rendering", |ui| {
-                    ui.vertical(|ui| {
+                    crate::theme::column(ui, |ui| {
                         for (mode, name, tip) in RenderMode::ALL {
-                            crate::theme::radio_value(ui, &mut p.render_mode, mode, text(Type::Body, name));
-                            form_note(ui, toggle_indent, text(Type::Caption, tip));
+                            crate::theme::radio_value(ui, &mut p.render_mode, mode, text(Type::Body, tl!(name)));
+                            form_note(ui, toggle_indent, text(Type::Caption, tl!(tip)));
                             ui.add_space(2.0);
                         }
                     });
                 });
             });
 
-            section(ui, "prefs_timeline", Section::Rule, "Timeline", None, |ui| {
+            section(ui, "prefs_timeline", Section::Rule, tl!("Timeline"), None, |ui| {
                 form_row(ui, LW, "Extra start gap", |ui| {
                     with_type(ui, Type::Data, |ui| {
                         ui.add(egui::DragValue::new(&mut p.timeline_start_gap).range(crate::prefs::GAP_RANGE).speed(0.5).max_decimals(0).suffix(" pt"));
                     });
                 });
-                form_note(ui, LW, text(Type::Caption, "The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom."));
+                form_note(ui, LW, text(Type::Caption, tl!("The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom.")));
             });
 
-            section(ui, "prefs_files", Section::Rule, "Files", None, |ui| {
+            section(ui, "prefs_files", Section::Rule, tl!("Files"), None, |ui| {
                 form_row(ui, LW, "File dialogs", |ui| {
-                    ui.vertical(|ui| {
-                        crate::theme::checkbox(ui, &mut p.native_dialogs, text(Type::Body, "Use the system's open and save dialogs"));
-                        form_note(ui, toggle_indent, text(Type::Caption, "Turn off on Linux desktops without an XDG desktop portal; AniCraft then asks for a path instead."));
+                    crate::theme::column(ui, |ui| {
+                        crate::theme::checkbox(ui, &mut p.native_dialogs, text(Type::Body, tl!("Use the system's open and save dialogs")));
+                        form_note(ui, toggle_indent, text(Type::Caption, tl!("Turn off on Linux desktops without an XDG desktop portal; AniCraft then asks for a path instead.")));
                     });
                 });
             });
 
-            section(ui, "prefs_safety", Section::Rule, "Safety", None, |ui| {
+            section(ui, "prefs_safety", Section::Rule, tl!("Safety"), None, |ui| {
                 form_row(ui, LW, "Confirmations", |ui| {
                     let n = app.skip_confirm.len();
-                    if ui.add_enabled(n > 0, egui::Button::new(text(Type::Body, "Show all again"))).clicked() {
+                    if ui.add_enabled(n > 0, egui::Button::new(text(Type::Body, tl!("Show all again")))).clicked() {
                         reset_confirms = true;
                     }
-                    ui.label(text(Type::Caption, format!("{n} silenced this session")));
+                    ui.label(text(Type::Caption, i18n::fmt("{n} silenced this session", &[("n", &n.to_string())])));
                 });
             });
 
             ui.separator();
-            ui.label(text(Type::Caption, format!("{} · settings stored in {}", crate::platform::OS.name(), crate::platform::config_dir().map_or_else(|| "memory only".to_string(), |d| d.display().to_string()))));
-        });
+            ui.label(text(Type::Caption, i18n::fmt("{os} · settings stored in {place}", &[("os", crate::platform::OS.name()), ("place", &crate::platform::config_dir().map_or_else(|| tl!("memory only").to_string(), |d| craft_i18n::ltr(&d.display().to_string())))])));
+        }));
     if reset_confirms {
         app.skip_confirm.clear();
     }
@@ -474,17 +521,17 @@ fn licenses(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let mut open = true;
-    egui::Window::new("Licenses & Notices")
+    egui::Window::new(tl!("Licenses & Notices"))
         .open(&mut open)
         .collapsible(false)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .default_width(680.0)
         .default_height(560.0)
-        .show(ctx, |ui| {
-            ui.label(text(Type::Body, "AniCraft is free software: MIT OR Apache-2.0, at your option.").strong());
+        .show(ctx, |ui| crate::theme::reading(ui, |ui| {
+            ui.label(text(Type::Body, tl!("AniCraft is free software: MIT OR Apache-2.0, at your option.")).strong());
             ui.label(
-                text(Type::Body, "It is an independent project, not affiliated with or endorsed by Adobe. Bundled fonts and Rust crates keep their own permissive licences, listed below.")
+                text(Type::Body, tl!("It is an independent project, not affiliated with or endorsed by Adobe. Bundled fonts and Rust crates keep their own permissive licences, listed below."))
                     .color(T.text_dim),
             );
             ui.add_space(6.0);
@@ -495,7 +542,7 @@ fn licenses(app: &mut App, ctx: &egui::Context) {
                     });
                 }
             });
-        });
+        }));
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
         open = false;
     }
@@ -555,10 +602,30 @@ fn fixed_rows() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
 const GROUP_ORDER: [&str; 12] = ["Essentials", "Tools", "File", "Edit", "View", "Insert", "Modify", "Control", "Window", "Help", "Other", "Editing"];
 
 /// The action-name column: left-aligned, one row tall, cut off with an ellipsis when long.
+/// One row of the shortcut sheet's grid, its cells given in reading order (name, keys, reset) and
+/// added mirrored in a right-to-left language: egui's `Grid` only runs left to right.
+type Cell<'a> = &'a mut dyn FnMut(&mut egui::Ui, &mut Vec<SheetAct>);
+fn sheet_row(ui: &mut egui::Ui, acts: &mut Vec<SheetAct>, cells: [Cell<'_>; 3]) {
+    let [a, b, c] = cells;
+    if crate::theme::rtl() {
+        c(ui, acts);
+        b(ui, acts);
+        a(ui, acts);
+    } else {
+        a(ui, acts);
+        b(ui, acts);
+        c(ui, acts);
+    }
+    ui.end_row();
+}
+
 fn name_cell(ui: &mut egui::Ui, label: &str) {
-    ui.allocate_ui_with_layout(egui::vec2(240.0, crate::theme::TARGET), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_width(240.0);
-        ui.add(egui::Label::new(label).truncate());
+    // Right to left the name is the last column: it runs to the window's right edge, so the sheet
+    // lines up at the side reading starts from.
+    let w = if crate::theme::rtl() { ui.available_width().max(240.0) } else { 240.0 };
+    ui.allocate_ui_with_layout(egui::vec2(w, crate::theme::TARGET), crate::theme::start_row(egui::Align::Center), |ui| {
+        ui.set_min_width(w);
+        ui.add(egui::Label::new(tl!(label)).truncate());
     });
 }
 
@@ -589,7 +656,7 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
         app.key_capture = None;
         return;
     }
-    let state_id = egui::Id::new("shortcut_editor");
+    let state_id = egui::Id::unique("shortcut_editor");
     let mut st: SheetState = ctx.data_mut(|d| d.get_temp(state_id).unwrap_or_default());
     let key = crate::platform::shortcut_label;
 
@@ -604,17 +671,17 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
             let chord = crate::keymap::chord(m, k);
             match crate::keymap::assign(&app.prefs.shortcuts, cap.id, cap.replace, &chord, false) {
                 Ok(o) => {
-                    st.notice = Some((format!("{}: {}", action_label(&app.keymap, cap.id), key(&chord)), false));
+                    st.notice = Some((format!("{}: {}", tl!(action_label(&app.keymap, cap.id)), key(&chord)), false));
                     let mut p = app.prefs.clone();
                     p.shortcuts = o;
                     app.set_prefs(ctx, p);
                 }
                 Err(crate::keymap::Refusal::Taken { label, .. }) => {
-                    st.notice = Some((format!("{} is already used by {label}.", key(&chord)), true));
+                    st.notice = Some((i18n::fmt("{key} is already used by {label}.", &[("key", &key(&chord)), ("label", tl!(label))]), true));
                     st.steal = Some((cap, chord, label));
                 }
-                Err(crate::keymap::Refusal::Reserved(why)) => st.notice = Some((format!("{} is kept for {why}; choose another key.", key(&chord)), true)),
-                Err(crate::keymap::Refusal::TooMany) => st.notice = Some((format!("An action can have up to {} keys.", crate::keymap::MAX_KEYS), true)),
+                Err(crate::keymap::Refusal::Reserved(why)) => st.notice = Some((i18n::fmt("{key} is kept for {why}; choose another key.", &[("key", &key(&chord)), ("why", tl!(why))]), true)),
+                Err(crate::keymap::Refusal::TooMany) => st.notice = Some((i18n::fmt("An action can have up to {n} keys.", &[("n", &crate::keymap::MAX_KEYS.to_string())]), true)),
             }
         }
     }
@@ -623,31 +690,31 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
     let mut acts: Vec<SheetAct> = Vec::new();
     let capture = app.key_capture;
     let changed = app.prefs.shortcuts.len();
-    egui::Window::new("Keyboard Shortcuts")
+    egui::Window::new(tl!("Keyboard Shortcuts"))
         .open(&mut open)
         .collapsible(false)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .default_width(660.0)
         .default_height(600.0)
-        .show(ctx, |ui| {
+        .show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text("Filter by name or key…").desired_width(ui.available_width() - 120.0));
-                let reset_all = ui.add_enabled(changed > 0, egui::Button::new("Reset all…")).on_hover_text("Put every shortcut back to the defaults");
+                ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text(tl!("Filter by name or key…")).desired_width(ui.available_width() - 120.0));
+                let reset_all = ui.add_enabled(changed > 0, egui::Button::new(tl!("Reset all…"))).on_hover_text(tl!("Put every shortcut back to the defaults"));
                 if reset_all.clicked() {
                     st.confirm_reset_all = true;
                 }
             });
             // One message line: what is happening, what just happened, or what needs a decision.
             if let Some(cap) = capture {
-                ui.label(text(Type::Label, format!("Press the new keys for {}. Esc cancels.", action_label(&app.keymap, cap.id))).color(T.accent));
+                ui.label(text(Type::Label, i18n::fmt("Press the new keys for {action}. Esc cancels.", &[("action", tl!(action_label(&app.keymap, cap.id)))])).color(T.accent));
             } else if st.confirm_reset_all {
                 ui.horizontal(|ui| {
-                    ui.label(text(Type::Label, format!("Reset {changed} changed {} to the defaults?", if changed == 1 { "shortcut" } else { "shortcuts" })));
-                    if ui.add(danger_button("Reset all")).clicked() {
+                    ui.label(text(Type::Label, i18n::trn(changed as u64, "Reset {n} changed shortcut to the defaults?", "Reset {n} changed shortcuts to the defaults?")));
+                    if ui.add(danger_button(tl!("Reset all"))).clicked() {
                         acts.push(SheetAct::ResetAll);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tl!("Cancel")).clicked() {
                         acts.push(SheetAct::Dismiss);
                     }
                 });
@@ -655,16 +722,16 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     ui.label(text(Type::Label, msg.clone()).color(if *err { T.error } else { T.ok }));
                     if let Some((cap, _, _)) = &st.steal {
-                        if ui.button(format!("Use it for {}", action_label(&app.keymap, cap.id))).clicked() {
+                        if ui.button(i18n::fmt("Use it for {action}", &[("action", tl!(action_label(&app.keymap, cap.id)))])).clicked() {
                             acts.push(SheetAct::Steal);
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(tl!("Cancel")).clicked() {
                             acts.push(SheetAct::Dismiss);
                         }
                     }
                 });
             } else {
-                ui.label(text(Type::Caption, "Click a key to change it or + to add one; right-click a key to remove it. Changes save as you go."));
+                ui.label(text(Type::Caption, tl!("Click a key to change it or + to add one; right-click a key to remove it. Changes save as you go.")));
             }
             ui.add_space(4.0);
 
@@ -685,65 +752,75 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                         continue;
                     }
                     let count = (actions.len() + fixed.len()).to_string();
-                    crate::theme::section(ui, &format!("sheet_{group}"), crate::theme::Section::Rule, group, Some(&count), |ui| {
-                        egui::Grid::new(("sc", group)).num_columns(3).striped(true).min_col_width(60.0).show(ui, |ui| {
+                    crate::theme::section(ui, &format!("sheet_{group}"), crate::theme::Section::Rule, tl!(group), Some(&count), |ui| {
+                        crate::theme::ltr(ui, |ui| egui::Grid::new(("sc", group)).num_columns(3).striped(true).min_col_width(60.0).show(ui, |ui| {
                             for (_, label, keys) in &fixed {
-                                name_cell(ui, label);
-                                ui.horizontal(|ui| {
-                                    ui.label(text(Type::Key, keys.iter().map(|k| key(k)).collect::<Vec<_>>().join(" · ")).color(T.text_dim));
-                                    ui.add_space(6.0);
-                                    ui.label(text(Type::Caption, "fixed"));
-                                });
-                                ui.label("");
-                                ui.end_row();
+                                sheet_row(ui, &mut acts, [
+                                    &mut |ui, _| name_cell(ui, label),
+                                    &mut |ui, _| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(text(Type::Key, keys.iter().map(|k| key(k)).collect::<Vec<_>>().join(" · ")).color(T.text_dim));
+                                            ui.add_space(6.0);
+                                            ui.label(text(Type::Caption, tl!("fixed")));
+                                        });
+                                    },
+                                    &mut |ui, _| {
+                                        ui.label("");
+                                    },
+                                ]);
                             }
                             for a in actions {
-                                name_cell(ui, a.label);
-                                ui.horizontal(|ui| {
-                                    let keys = app.keymap.keys(a.id);
-                                    for (i, k) in keys.iter().enumerate() {
-                                        let recording = capture == Some(KeyCapture { id: a.id, replace: Some(i) });
-                                        let chip = if recording {
-                                            egui::Button::new(text(Type::Key, "Press keys…").color(Color32::WHITE)).fill(T.accent)
-                                        } else {
-                                            egui::Button::new(text(Type::Key, key(k)).color(T.text))
-                                        };
-                                        let r = ui.add(chip).on_hover_text("Click to change · right-click to remove");
-                                        if r.clicked() {
-                                            acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: Some(i) }));
-                                        }
-                                        r.context_menu(|ui| {
-                                            if ui.button("Change…").clicked() {
-                                                acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: Some(i) }));
-                                                ui.close();
+                                sheet_row(ui, &mut acts, [
+                                    &mut |ui, _| name_cell(ui, a.label),
+                                    &mut |ui, acts| {
+                                        ui.horizontal(|ui| {
+                                            let keys = app.keymap.keys(a.id);
+                                            for (i, k) in keys.iter().enumerate() {
+                                                let recording = capture == Some(KeyCapture { id: a.id, replace: Some(i) });
+                                                let chip = if recording {
+                                                    egui::Button::new(text(Type::Key, tl!("Press keys…")).color(Color32::WHITE)).fill(T.accent)
+                                                } else {
+                                                    egui::Button::new(text(Type::Key, key(k)).color(T.text))
+                                                };
+                                                let r = ui.add(chip).on_hover_text(tl!("Click to change · right-click to remove"));
+                                                if r.clicked() {
+                                                    acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: Some(i) }));
+                                                }
+                                                r.context_menu(|ui| {
+                                                    if ui.button(tl!("Change…")).clicked() {
+                                                        acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: Some(i) }));
+                                                        ui.close();
+                                                    }
+                                                    if ui.button(tl!("Remove")).clicked() {
+                                                        acts.push(SheetAct::Remove(a.id, i));
+                                                        ui.close();
+                                                    }
+                                                });
                                             }
-                                            if ui.button("Remove").clicked() {
-                                                acts.push(SheetAct::Remove(a.id, i));
-                                                ui.close();
+                                            if capture == Some(KeyCapture { id: a.id, replace: None }) {
+                                                ui.add(egui::Button::new(text(Type::Key, tl!("Press keys…")).color(Color32::WHITE)).fill(T.accent));
+                                            } else if keys.len() < crate::keymap::MAX_KEYS {
+                                                let tip = tl!(if keys.is_empty() { "Add a shortcut" } else { "Add another shortcut" });
+                                                if ui.add(egui::Button::new("+").min_size(egui::vec2(crate::theme::TARGET, crate::theme::TARGET))).on_hover_text(tip).clicked() {
+                                                    acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: None }));
+                                                }
                                             }
                                         });
-                                    }
-                                    if capture == Some(KeyCapture { id: a.id, replace: None }) {
-                                        ui.add(egui::Button::new(text(Type::Key, "Press keys…").color(Color32::WHITE)).fill(T.accent));
-                                    } else if keys.len() < crate::keymap::MAX_KEYS {
-                                        let tip = if keys.is_empty() { "Add a shortcut" } else { "Add another shortcut" };
-                                        if ui.add(egui::Button::new("+").min_size(egui::vec2(crate::theme::TARGET, crate::theme::TARGET))).on_hover_text(tip).clicked() {
-                                            acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: None }));
+                                    },
+                                    &mut |ui, acts| {
+                                        if app.keymap.is_default(a.id) {
+                                            ui.label("");
+                                        } else if ui.button(tl!("Reset")).on_hover_text(i18n::fmt("Back to the default ({keys})", &[("keys", &if a.defaults.is_empty() { tl!("none").to_string() } else { a.defaults.iter().map(|k| key(k)).collect::<Vec<_>>().join(" · ") })])).clicked() {
+                                            acts.push(SheetAct::Reset(a.id));
                                         }
-                                    }
-                                });
-                                if app.keymap.is_default(a.id) {
-                                    ui.label("");
-                                } else if ui.button("Reset").on_hover_text(format!("Back to the default ({})", if a.defaults.is_empty() { "none".to_string() } else { a.defaults.iter().map(|k| key(k)).collect::<Vec<_>>().join(" · ") })).clicked() {
-                                    acts.push(SheetAct::Reset(a.id));
-                                }
-                                ui.end_row();
+                                    },
+                                ]);
                             }
-                        });
+                        }));
                     });
                 }
             });
-        });
+        }));
 
     for act in acts {
         let mut p = app.prefs.clone();
@@ -757,25 +834,26 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
             }
             SheetAct::Remove(id, i) => {
                 p.shortcuts = crate::keymap::remove(&p.shortcuts, id, i);
-                st.notice = Some((format!("{}: key removed", action_label(&app.keymap, id)), false));
+                st.notice = Some((i18n::fmt("{action}: key removed", &[("action", tl!(action_label(&app.keymap, id)))]), false));
             }
             SheetAct::Reset(id) => {
                 p.shortcuts = crate::keymap::reset(&p.shortcuts, id);
-                st.notice = Some((format!("{}: back to the default", action_label(&app.keymap, id)), false));
+                st.notice = Some((i18n::fmt("{action}: back to the default", &[("action", tl!(action_label(&app.keymap, id)))]), false));
             }
             SheetAct::ResetAll => {
                 p.shortcuts.clear();
                 st.confirm_reset_all = false;
-                st.notice = Some(("Every shortcut is back to the defaults.".into(), false));
+                st.notice = Some((tl!("Every shortcut is back to the defaults.").into(), false));
             }
             SheetAct::Steal => {
                 let Some((cap, chord, from)) = st.steal.take() else { continue };
                 match crate::keymap::assign(&p.shortcuts, cap.id, cap.replace, &chord, true) {
                     Ok(o) => {
                         p.shortcuts = o;
-                        st.notice = Some((format!("{}: {} (removed from {from})", action_label(&app.keymap, cap.id), key(&chord)), false));
+                        let action = tl!(action_label(&app.keymap, cap.id));
+                        st.notice = Some((i18n::fmt("{action}: {key} (removed from {from})", &[("action", action), ("key", &key(&chord)), ("from", tl!(from))]), false));
                     }
-                    Err(_) => st.notice = Some((format!("{} could not be moved.", key(&chord)), true)),
+                    Err(_) => st.notice = Some((i18n::fmt("{key} could not be moved.", &[("key", &key(&chord))]), true)),
                 }
             }
             SheetAct::Dismiss => {

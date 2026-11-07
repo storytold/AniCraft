@@ -1,14 +1,23 @@
-//! Optional font build input (the Craft family convention, as in PhotoCraft).
+//! Optional build inputs (the Craft family convention, as in PhotoCraft).
 //!
 //! `CRAFT_FONTS_DIR=<craft-fonts checkout> cargo build` embeds the UI typefaces chosen in
-//! ADR 0005: Inter (prose) and JetBrains Mono (data), both SIL OFL 1.1. Font files are never
-//! committed to this repository. Without the variable the app uses egui's bundled defaults, and
-//! everything still works.
+//! ADR 0005: Inter (prose) and JetBrains Mono (data), both SIL OFL 1.1, and Noto Sans Arabic
+//! (OFL 1.1) for Arabic letters, which neither has. Font files are never committed to this
+//! repository. Without the variable the app uses egui's bundled defaults, and everything still
+//! works.
+//!
+//! `CRAFT_I18N_DIR=<craft-i18n checkout>` embeds the interface translations (ADR 0013) as
+//! `CRAFT_I18N`, following craft-i18n's `docs/integration.md`; without it the interface is
+//! English only. `CRAFT_I18N_REQUIRED=1` (set by CI once `craft-i18n.rev` exists) makes a missing
+//! or invalid checkout an error.
 
 use std::path::{Path, PathBuf};
 
 /// Files we look for, and the generated constant each fills.
-const FONTS: [(&str, &str); 2] = [("Inter-Regular.ttf", "UI_FONT"), ("JetBrainsMono-Regular.ttf", "MONO_FONT")];
+const FONTS: [(&str, &str); 3] = [("Inter-Regular.ttf", "UI_FONT"), ("JetBrainsMono-Regular.ttf", "MONO_FONT"), ("NotoSansArabic.ttf", "ARABIC_FONT")];
+
+/// AniCraft's own catalog in each craft-i18n locale: `locales/<locale>/anicraft.tsv`.
+const APP_CATALOG: &str = "anicraft.tsv";
 
 fn find(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
@@ -76,8 +85,74 @@ fn main() {
         }
     }
     code.push_str(&format!("pub const CRAFT_FONT_BYTES: u64 = {total};\n"));
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("fonts.rs");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
+    let out = out_dir.join("fonts.rs");
     if let Err(e) = std::fs::write(&out, code) {
         println!("cargo:warning=could not write {}: {e}", out.display());
     }
+    let out = out_dir.join("craft_i18n.rs");
+    if let Err(e) = std::fs::write(&out, craft_i18n()) {
+        println!("cargo:warning=could not write {}: {e}", out.display());
+    }
+}
+
+/// `CRAFT_I18N` from `CRAFT_I18N_DIR`: one (locale, shared catalog, AniCraft's catalog) entry per
+/// locale that has AniCraft's catalog, the list the craft-i18n crate reads.
+fn craft_i18n() -> String {
+    println!("cargo:rerun-if-env-changed=CRAFT_I18N_DIR");
+    println!("cargo:rerun-if-env-changed=CRAFT_I18N_REQUIRED");
+    let required = std::env::var("CRAFT_I18N_REQUIRED").is_ok_and(|v| v.trim() == "1");
+    // `cargo::error` (two colons) fails the build; the old one-colon form would only be metadata.
+    let level = if required { "error" } else { "warning" };
+    let entries = match std::env::var_os("CRAFT_I18N_DIR").filter(|d| !d.is_empty()) {
+        // Not canonicalized: on Windows that gives `\\?\C:\…`, which `include_str!` can't read.
+        Some(dir) => locales(&PathBuf::from(dir).join("locales")).unwrap_or_else(|e| {
+            println!("cargo::{level}=CRAFT_I18N_DIR: {e}; the interface is English only");
+            Vec::new()
+        }),
+        None => {
+            if required {
+                println!("cargo::error=CRAFT_I18N_REQUIRED=1 but CRAFT_I18N_DIR is unset");
+            }
+            Vec::new()
+        }
+    };
+    let mut code = String::from("/// (locale, shared catalog, AniCraft's catalog); `\"\"` for a missing shared one.\n");
+    code.push_str("pub static CRAFT_I18N: &craft_i18n::Embedded = &[\n");
+    for (locale, shared, app) in entries {
+        // `{:?}` writes the path as a Rust string literal (Windows backslashes escaped).
+        let shared = shared.map_or_else(|| "\"\"".to_string(), |p| format!("include_str!({p:?})"));
+        code.push_str(&format!("    ({locale:?}, {shared}, include_str!({app:?})),\n"));
+    }
+    code.push_str("];\n");
+    code
+}
+
+/// Every locale under `dir` with AniCraft's catalog: (code, its `common.tsv` if any, the catalog).
+fn locales(dir: &Path) -> Result<Vec<(String, Option<PathBuf>, PathBuf)>, String> {
+    // `include_str!` resolves a relative path against the generated file, not this crate.
+    if !dir.is_absolute() {
+        return Err(format!("{} is not an absolute path", dir.display()));
+    }
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let list = std::fs::read_dir(dir).map_err(|e| format!("{} is not a craft-i18n checkout ({e})", dir.display()))?;
+    let mut out = Vec::new();
+    for path in list.flatten().map(|e| e.path()) {
+        let Some(code) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
+        let app = path.join(APP_CATALOG);
+        if !app.is_file() {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", app.display());
+        let shared = Some(path.join("common.tsv")).filter(|p| p.is_file());
+        if let Some(p) = &shared {
+            println!("cargo:rerun-if-changed={}", p.display());
+        }
+        out.push((code, shared, app));
+    }
+    if out.is_empty() {
+        return Err(format!("{} has no locale with {APP_CATALOG}", dir.display()));
+    }
+    out.sort();
+    Ok(out)
 }

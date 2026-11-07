@@ -8,6 +8,7 @@
 
 mod app;
 mod dialogs;
+mod i18n;
 mod icons;
 mod keymap;
 mod menus;
@@ -41,9 +42,11 @@ fn open_session(file: Option<&Path>) -> Session {
     }
 }
 
-fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>) -> eframe::Result {
+fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, lang: Option<String>) -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: platform::viewport(egui::ViewportBuilder::default().with_title("AniCraft").with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0])),
+        viewport: platform::viewport(
+            egui::ViewportBuilder::default().with_title("AniCraft").with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0]),
+        ),
         renderer,
         ..Default::default()
     };
@@ -52,7 +55,7 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         "AniCraft",
         options,
         Box::new(move |cc| {
-            let mut a = app::App::new(cc, session, shot);
+            let mut a = app::App::new(cc, session, shot, lang);
             a.open_panel(open.as_deref());
             Ok(Box::new(a))
         }),
@@ -64,6 +67,7 @@ fn main() -> eframe::Result {
     let mut file: Option<PathBuf> = None;
     let mut open: Option<String> = None;
     let mut renderer_arg: Option<String> = None;
+    let mut lang: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -76,10 +80,12 @@ fn main() -> eframe::Result {
             },
             "--open" => open = args.next(),
             "--renderer" => renderer_arg = args.next(),
+            "--lang" => lang = args.next(),
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open palette|shortcuts|lastscene|select|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom]\n\
+                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--lang en|ar|auto] [--open palette|shortcuts|lastscene|select|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
+                     --lang       the interface language for this run, over Preferences (needs CRAFT_I18N_DIR at build time)\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      Headless use: anicraft-cli --help"
                 );
@@ -93,16 +99,16 @@ fn main() -> eframe::Result {
     // on some Linux setups) retry once with OpenGL, unless the user forced a backend.
     let forced = platform::forced_renderer(renderer_arg.as_deref());
     let first = forced.unwrap_or(eframe::Renderer::Wgpu);
-    match run(first, file.as_deref(), shot.clone(), open.clone()) {
+    match run(first, file.as_deref(), shot.clone(), open.clone(), lang.clone()) {
         Err(e) if forced.is_none() && first == eframe::Renderer::Wgpu => {
             eprintln!("GPU backend (wgpu) failed to start: {e}. Retrying with OpenGL.");
-            run(eframe::Renderer::Glow, file.as_deref(), shot, open)
+            run(eframe::Renderer::Glow, file.as_deref(), shot, open, lang)
         }
         other => other,
     }
 }
 
 #[cfg(test)]
-mod guidelines_tests;
-#[cfg(test)]
 mod architecture_tests;
+#[cfg(test)]
+mod guidelines_tests;

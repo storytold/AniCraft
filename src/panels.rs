@@ -1,10 +1,10 @@
 //! Tools bar, edit bar, status bar, Properties and Library panels.
 
 use crate::app::{App, LibraryItem, Tool};
+use crate::i18n::{self, tl};
 use crate::icons::{self, Icon};
-use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, font, section, text, to_color32, with_type};
+use crate::theme::{self, Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, font, section, text, to_color32, with_type};
 use anicraft_engine::doc::{ElementKind, Paint, Rgba, SymbolKind, evaluate_layer_elements};
-use anicraft_engine::element_label;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -48,7 +48,7 @@ pub fn tools(app: &mut App, ui: &mut egui::Ui) {
             let tint = if active || resp.hovered() { Color32::WHITE } else { T.icon };
             icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), tool_icon(tool), tint);
             let key = app.keymap.primary(crate::keymap::tool_id(tool)).map(|k| format!(" ({})", crate::platform::shortcut_label(k))).unwrap_or_default();
-            if resp.on_hover_text(format!("{}{key}\n{}", tool.label(), tool.hint())).clicked() {
+            if resp.on_hover_text(format!("{}{key}\n{}", tl!(tool.label()), tl!(tool.hint()))).clicked() {
                 app.tool = tool;
             }
             if matches!(tool, Tool::Transform | Tool::Pencil | Tool::Line | Tool::InkBottle) {
@@ -78,15 +78,15 @@ pub fn tools(app: &mut App, ui: &mut egui::Ui) {
 pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
         // The scene being edited; the menu switches scenes and manages them.
-        let name = app.s.doc.scenes.get(app.s.scene).map_or_else(|| "Scene".to_string(), |s| s.name.clone());
+        let name = app.s.doc.scenes.get(app.s.scene).map_or_else(|| tl!("Scene").to_string(), |s| s.name.clone());
         egui::ComboBox::from_id_salt("scene").selected_text(text(Type::Body, name).strong()).height(480.0).show_ui(ui, |ui| {
             ui.set_min_width(240.0);
             let scenes: Vec<(String, u32)> = app.s.doc.scenes.iter().map(|s| (s.name.clone(), s.timeline.frame_count())).collect();
             for (i, (n, frames)) in scenes.iter().enumerate() {
                 let r = ui.horizontal(|ui| {
                     let r = ui.selectable_label(i == app.s.scene, n.as_str());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(text(Type::DataSmall, format!("{frames} f")).color(T.text_faint));
+                    ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
+                        ui.label(text(Type::DataSmall, i18n::fmt("{n} f", &[("n", &frames.to_string())])).color(T.text_faint));
                     });
                     r
                 });
@@ -101,14 +101,15 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
                 crate::menus::cmd_item(app, ui, id);
             }
         });
-        ui.label(text(Type::Caption, "›"));
+        // Scene › layer, pointing the way the row reads.
+        ui.label(text(Type::Caption, if theme::rtl() { "‹" } else { "›" }));
         let layer = app.s.active_layer().map_or("—".to_string(), |l| l.name.clone());
         ui.label(text(Type::Body, layer).color(T.text_dim));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
             let z = app.view.zoom;
             let canvas = app.stage_cache.canvas;
             egui::ComboBox::from_id_salt("zoom").width(84.0).selected_text(text(Type::Data, format!("{:>4.0}%", z * 100.0))).show_ui(ui, |ui| {
-                if ui.selectable_label(false, "Fit in window").clicked() {
+                if ui.selectable_label(false, tl!("Fit in window")).clicked() {
                     app.view.fit = true;
                 }
                 for pct in [25.0f32, 50.0, 100.0, 200.0, 400.0, 800.0] {
@@ -117,7 +118,7 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             });
-            if ui.selectable_label(app.onion, "Onion skin").clicked() {
+            if ui.selectable_label(app.onion, tl!("Onion skin")).clicked() {
                 app.onion = !app.onion;
             }
             let st = app.s.doc.stage;
@@ -135,19 +136,19 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(text(Type::Label, s.text.clone()).color(if s.error { T.error } else { T.ok }));
             }
             None => {
-                ui.label(text(Type::Label, app.tool.hint()));
+                ui.label(text(Type::Label, tl!(app.tool.hint())));
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
             let small = |t: String| text(Type::Data, t).color(T.text_faint);
-            ui.label(small(format!("undo {} · {:.1} MB", app.s.history().undo_len(), app.s.history().bytes() as f32 / (1024.0 * 1024.0))));
+            ui.label(small(i18n::fmt("undo {n} · {mb} MB", &[("n", &app.s.history().undo_len().to_string()), ("mb", &format!("{:.1}", app.s.history().bytes() as f32 / (1024.0 * 1024.0)))])));
             ui.add_space(12.0);
             if let Some((n, mb, hit)) = app.stage_cache.stats() {
-                ui.label(small(format!("cache {n} fr · {mb:.0} MB · {hit:.0}% hit")));
+                ui.label(small(i18n::fmt("cache {n} fr · {mb} MB · {hit}% hit", &[("n", &n.to_string()), ("mb", &format!("{mb:.0}")), ("hit", &format!("{hit:.0}"))])));
                 ui.add_space(12.0);
             }
             let (ready, needed) = app.stage_cache.ready;
-            ui.label(small(format!("render {:.1} ms · tiles {ready}/{needed}", app.stage_cache.ms)));
+            ui.label(small(i18n::fmt("render {ms} ms · tiles {ready}/{needed}", &[("ms", &format!("{:.1}", app.stage_cache.ms)), ("ready", &ready.to_string()), ("needed", &needed.to_string())])));
             if let Some(p) = app.cursor_stage {
                 ui.label(small(format!("x {:.0}  y {:.0}", p.x, p.y)));
             }
@@ -164,6 +165,21 @@ fn rgb(c: Rgba) -> [u8; 3] {
 
 fn hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+/// `anicraft_engine::element_label` for the interface: the kind in the interface language, the
+/// names as the document has them.
+fn element_title(doc: &anicraft_engine::doc::Document, e: &anicraft_engine::doc::Element) -> String {
+    let kind = match &e.kind {
+        ElementKind::Shape(_) => tl!("Shape").to_string(),
+        ElementKind::Symbol { symbol, .. } => i18n::fmt("Graphic: {name}", &[("name", doc.symbol(*symbol).map_or(tl!("missing"), |s| s.name.as_str()))]),
+        ElementKind::Text(t) => {
+            let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
+            let more = if t.text.chars().count() > first.chars().count() { "…" } else { "" };
+            i18n::fmt("Text: {text}", &[("text", &format!("{first}{more}"))])
+        }
+    };
+    if e.name.is_empty() { kind } else { format!("{} ({kind})", e.name) }
 }
 
 /// Runs a command from a continuously-edited widget, coalescing into one undo step.
@@ -186,17 +202,17 @@ pub fn right(app: &mut App, ui: &mut egui::Ui) {
     let h = ui.available_height();
     // Dock sections are layout bands; each folds away to give the others room.
     egui::ScrollArea::vertical().id_salt("props").max_height(h * 0.56).auto_shrink([false, true]).show(ui, |ui| {
-        section(ui, "dock_properties", Section::Band, "Properties", None, |ui| {
+        section(ui, "dock_properties", Section::Band, tl!("Properties"), None, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| properties(app, ui));
         });
     });
-    section(ui, "dock_align", Section::Band, "Align", None, |ui| {
+    section(ui, "dock_align", Section::Band, tl!("Align"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| align_panel(app, ui));
     });
-    section(ui, "dock_library", Section::Band, "Library", None, |ui| {
+    section(ui, "dock_library", Section::Band, tl!("Library"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
     });
-    section(ui, "dock_history", Section::Band, "History", None, |ui| {
+    section(ui, "dock_history", Section::Band, tl!("History"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| history(app, ui));
     });
 }
@@ -212,10 +228,10 @@ fn align_panel(app: &mut App, ui: &mut egui::Ui) {
         icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(18.0, 18.0)), icon, if !has_sel { T.text_faint } else if resp.hovered() { Color32::WHITE } else { T.icon });
         let spec = anicraft_engine::find_command(id);
         let tip = spec.map_or_else(String::new, |c| match app.keymap.primary(c.id) {
-            Some(k) => format!("{} ({})", c.label, crate::platform::shortcut_label(k)),
-            None => c.label.to_string(),
+            Some(k) => format!("{} ({})", i18n::t_id(c.id, c.label), crate::platform::shortcut_label(k)),
+            None => i18n::t_id(c.id, c.label).to_string(),
         });
-        let tip = if has_sel { tip } else { format!("{tip}\nSelect something to align") };
+        let tip = if has_sel { tip } else { format!("{tip}\n{}", tl!("Select something to align")) };
         if resp.on_hover_text(tip).clicked() {
             // Leave it unset when off, so a single shape still aligns to the stage.
             app.run(id, if app.align_to_stage { json!({"to_stage": true}) } else { json!({}) });
@@ -236,7 +252,7 @@ fn align_panel(app: &mut App, ui: &mut egui::Ui) {
         button(app, ui, Icon::DistributeH, "align.distribute_h");
         button(app, ui, Icon::DistributeV, "align.distribute_v");
         ui.add_space(12.0);
-        crate::theme::checkbox(ui, &mut app.align_to_stage, text(Type::Body, "To stage")).on_hover_text("Align to the stage instead of the selection's bounds (a single shape always aligns to the stage)");
+        crate::theme::checkbox(ui, &mut app.align_to_stage, text(Type::Body, tl!("To stage"))).on_hover_text(tl!("Align to the stage instead of the selection's bounds (a single shape always aligns to the stage)"));
     });
 }
 
@@ -248,18 +264,18 @@ fn history(app: &mut App, ui: &mut egui::Ui) {
     let evicted = hist.evicted;
     let mut target = None;
     egui::ScrollArea::vertical().id_salt("history").max_height(ui.available_height().max(60.0)).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-        let base = if evicted > 0 { "… older steps freed (memory budget)" } else { "Opened document" };
+        let base = tl!(if evicted > 0 { "… older steps freed (memory budget)" } else { "Opened document" });
         if ui.selectable_label(past.is_empty(), text(Type::Body, base).color(if evicted > 0 { T.text_faint } else { T.text_dim })).clicked() {
             target = Some(0);
         }
         for (i, label) in past.iter().enumerate() {
             let current = i + 1 == past.len();
-            if ui.selectable_label(current, label.as_str()).clicked() {
+            if ui.selectable_label(current, tl!(label.as_str())).clicked() {
                 target = Some(i + 1);
             }
         }
         for (i, label) in future.iter().enumerate() {
-            if ui.selectable_label(false, text(Type::Body, label.as_str()).color(T.text_faint).italics()).clicked() {
+            if ui.selectable_label(false, text(Type::Body, tl!(label.as_str())).color(T.text_faint).italics()).clicked() {
                 target = Some(past.len() + i + 1);
             }
         }
@@ -277,21 +293,21 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- tool options first while a drawing tool is in hand: they're what you reach for ----
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle) {
-        let title = format!("{} tool", app.tool.label());
+        let title = i18n::fmt("{tool} tool", &[("tool", tl!(app.tool.label()))]);
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
     }
     if let Some(e) = sel.first() {
-        let title = if sel.len() > 1 { format!("{} elements", sel.len()) } else { element_label(&app.s.doc, e) };
+        let title = if sel.len() > 1 { i18n::trn(sel.len() as u64, "{n} element", "{n} elements") } else { element_title(&app.s.doc, e) };
         section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, sel.len()));
     } else {
-        section(ui, "prop_document", Section::Rule, "Document", None, |ui| document_props(app, ui));
+        section(ui, "prop_document", Section::Rule, tl!("Document"), None, |ui| document_props(app, ui));
     }
     // ---- frame ----
     let frame = app.s.frame;
     if let Some(layer) = app.s.active_layer().cloned() {
         // Mixed title: prose label, data value.
         let detail = format!("{} · {}", frame + 1, layer.name);
-        section(ui, "prop_frame", Section::Rule, "Frame", Some(&detail), |ui| frame_props(app, ui, &layer, frame));
+        section(ui, "prop_frame", Section::Rule, tl!("Frame"), Some(&detail), |ui| frame_props(app, ui, &layer, frame));
     }
 }
 
@@ -330,9 +346,9 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         {
             let current = *blend;
             row_prose(ui, "Blending", |ui| {
-                egui::ComboBox::from_id_salt("prop_blend").selected_text(current.label()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("prop_blend").selected_text(tl!(current.label())).show_ui(ui, |ui| {
                     for m in anicraft_engine::doc::BlendMode::ALL {
-                        if ui.selectable_label(m == current, m.label()).clicked() && m != current {
+                        if ui.selectable_label(m == current, tl!(m.label())).clicked() && m != current {
                             app.run("element.set_blend", json!({"mode": m.key()}));
                         }
                     }
@@ -347,18 +363,14 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             ui.add_space(4.0);
             // How the instance plays: the symbol's type, and a graphic's looping.
             row_prose(ui, "Type", |ui| {
-                let label = |k: SymbolKind| match k {
-                    SymbolKind::Graphic => "Graphic",
-                    SymbolKind::MovieClip => "Movie clip",
-                    SymbolKind::Button => "Button",
-                };
+                let label = |k: SymbolKind| tl!(kind_label(k));
                 egui::ComboBox::from_id_salt("prop_symkind").width(150.0).selected_text(label(kind)).show_ui(ui, |ui| {
                     for (k, id, tip) in [
                         (SymbolKind::Graphic, "graphic", "Keeps step with the timeline it is on (looping options below)"),
                         (SymbolKind::MovieClip, "movie_clip", "Plays its own timeline on a loop, from when it appears"),
                         (SymbolKind::Button, "button", "Shows its Up frame"),
                     ] {
-                        if ui.selectable_label(kind == k, label(k)).on_hover_text(tip).clicked() && kind != k {
+                        if ui.selectable_label(kind == k, label(k)).on_hover_text(tl!(tip)).clicked() && kind != k {
                             app.run("symbol.set_kind", json!({"symbol": symbol.0, "kind": id}));
                         }
                     }
@@ -368,9 +380,9 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 let names = [(LoopMode::Loop, "loop", "Loop"), (LoopMode::PlayOnce, "play_once", "Play once"), (LoopMode::SingleFrame, "single_frame", "Single frame")];
                 let current = names.iter().find(|(m, _, _)| m == loop_mode).map_or("Loop", |(_, _, l)| l);
                 row_prose(ui, "Looping", |ui| {
-                    egui::ComboBox::from_id_salt("prop_loop").width(150.0).selected_text(current).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("prop_loop").width(150.0).selected_text(tl!(current)).show_ui(ui, |ui| {
                         for (m, id, l) in names {
-                            if ui.selectable_label(m == *loop_mode, l).clicked() && m != *loop_mode {
+                            if ui.selectable_label(m == *loop_mode, tl!(l)).clicked() && m != *loop_mode {
                                 app.run("element.set_loop", json!({"loop": id}));
                             }
                         }
@@ -382,10 +394,10 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                     if r.changed() {
                         live(app, "First frame", "element.set_loop", json!({"first_frame": first.saturating_sub(1)}));
                     }
-                    ui.label(text(Type::Caption, format!("of {frames}")));
+                    ui.label(text(Type::Caption, i18n::fmt("of {frames}", &[("frames", &frames.to_string())])));
                 });
             } else if kind == SymbolKind::MovieClip {
-                ui.label(text(Type::Caption, format!("Plays its {frames}-frame timeline on a loop from when it appears.")));
+                ui.label(text(Type::Caption, i18n::fmt("Plays its {frames}-frame timeline on a loop from when it appears.", &[("frames", &frames.to_string())])));
             }
         }
         if let ElementKind::Text(t) = &e.kind {
@@ -396,7 +408,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 live(app, label, "text.edit", p);
             }
             row_prose(ui, "Text", |ui| {
-                if ui.button("Edit Text").on_hover_text("Type on the stage (or double-click the text)").clicked() {
+                if ui.button(tl!("Edit Text")).on_hover_text(tl!("Type on the stage (or double-click the text)")).clicked() {
                     let at = e.transform.apply(anicraft_engine::geom::Vec2::ZERO);
                     app.text_edit = Some(crate::app::TextEditing { at: pos2(at.x, at.y), element: Some(e.id), text: t.text.clone(), original: t.text.clone(), focus: true });
                 }
@@ -412,14 +424,14 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                     live(app, "Fill colour", "element.set_fill", json!({"color": hex(c)}));
                 }
                 let mut on = fill.is_some();
-                if crate::theme::checkbox(ui, &mut on, "").on_hover_text("Fill on/off").changed() {
+                if crate::theme::checkbox(ui, &mut on, "").on_hover_text(tl!("Fill on/off")).changed() {
                     app.run("element.set_fill", if on { json!({"color": hex(c)}) } else { json!({"color": null}) });
                 }
                 if let Some(Paint::Bitmap { bitmap, .. }) = &sh.fill {
-                    let name = app.s.doc.bitmap(*bitmap).map_or_else(|| "missing bitmap".to_string(), |b| format!("{} · {}×{}", b.name, b.width, b.height));
+                    let name = app.s.doc.bitmap(*bitmap).map_or_else(|| tl!("missing bitmap").to_string(), |b| format!("{} · {}×{}", b.name, b.width, b.height));
                     ui.label(text(Type::Caption, name));
                 } else if is_grad {
-                    ui.label(text(Type::Caption, "gradient"));
+                    ui.label(text(Type::Caption, tl!("gradient")));
                 }
             });
             let mut sc = rgb(sh.stroke.map_or(app.s.style.stroke, |s| s.color));
@@ -436,7 +448,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             for (label, id) in [("Convert to Symbol", "modify.convert_to_symbol"), ("Break Apart", "modify.break_apart"), ("Duplicate", "edit.duplicate"), ("Delete", "edit.delete")] {
-                if ui.button(label).clicked() {
+                if ui.button(tl!(label)).clicked() {
                     app.invoke(id);
                 }
             }
@@ -454,7 +466,7 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
         let shown = if st.font.is_empty() { anicraft_engine::text::Fonts::get().resolve("").unwrap_or_default() } else { st.font.clone() };
         egui::ComboBox::from_id_salt("text_font").selected_text(shown.clone()).width(ui.available_width().min(220.0)).height(320.0).show_ui(ui, |ui| {
             if families.is_empty() {
-                ui.label(text(Type::Caption, "No fonts found on this computer"));
+                ui.label(text(Type::Caption, tl!("No fonts found on this computer")));
             }
             for f in &families {
                 if ui.selectable_label(*f == shown, f).clicked() {
@@ -469,40 +481,40 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
             out = Some(("Font size", json!({"size": st.size})));
         }
         let mut c = rgb(st.color);
-        if ui.color_edit_button_srgb(&mut c).on_hover_text("Text colour").changed() {
+        if ui.color_edit_button_srgb(&mut c).on_hover_text(tl!("Text colour")).changed() {
             st.color = Rgba::hex(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]));
             out = Some(("Text colour", json!({"color": hex(c)})));
         }
     });
     row_prose(ui, "Style", |ui| {
-        if ui.selectable_label(st.bold, text(Type::Body, "B").strong()).on_hover_text("Bold").clicked() {
+        if ui.selectable_label(st.bold, text(Type::Body, "B").strong()).on_hover_text(tl!("Bold")).clicked() {
             st.bold = !st.bold;
             out = Some(("Bold", json!({"bold": st.bold})));
         }
-        if ui.selectable_label(st.italic, text(Type::Body, "I").italics()).on_hover_text("Italic").clicked() {
+        if ui.selectable_label(st.italic, text(Type::Body, "I").italics()).on_hover_text(tl!("Italic")).clicked() {
             st.italic = !st.italic;
             out = Some(("Italic", json!({"italic": st.italic})));
         }
         ui.separator();
         for (a, label, key) in [(TextAlign::Left, "Left", "left"), (TextAlign::Center, "Centre", "center"), (TextAlign::Right, "Right", "right")] {
-            if ui.selectable_label(st.align == a, label).on_hover_text(format!("Align {}", label.to_lowercase())).clicked() {
+            if ui.selectable_label(st.align == a, tl!(label)).on_hover_text(tl!(&format!("Align {}", label.to_lowercase()))).clicked() {
                 st.align = a;
                 out = Some(("Text alignment", json!({"align": key})));
             }
         }
     });
     row(ui, "Spacing", |ui| {
-        if ui.add(egui::DragValue::new(&mut st.letter_spacing).prefix("Letters ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
+        if ui.add(egui::DragValue::new(&mut st.letter_spacing).prefix(tl!("Letters ")).suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
             out = Some(("Letter spacing", json!({"letter_spacing": st.letter_spacing})));
         }
-        if ui.add(egui::DragValue::new(&mut st.line_spacing).prefix("Lines ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
+        if ui.add(egui::DragValue::new(&mut st.line_spacing).prefix(tl!("Lines ")).suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
             out = Some(("Line spacing", json!({"line_spacing": st.line_spacing})));
         }
     });
     if let Some(width) = width {
         row(ui, "Width", |ui| {
             let mut wrap = width.is_some();
-            if crate::theme::checkbox(ui, &mut wrap, "Wrap").on_hover_text("Wrap lines at a fixed width; off, each paragraph stays on one line").changed() {
+            if crate::theme::checkbox(ui, &mut wrap, tl!("Wrap")).on_hover_text(tl!("Wrap lines at a fixed width; off, each paragraph stays on one line")).changed() {
                 *width = wrap.then_some(300.0);
                 out = Some(("Text width", json!({"width": *width})));
             }
@@ -537,7 +549,7 @@ fn document_props(app: &mut App, ui: &mut egui::Ui) {
             if ui.color_edit_button_srgb(&mut bg).changed() {
                 live(app, "Stage colour", "doc.set_stage", json!({"background": hex(bg)}));
             }
-            ui.label(text(Type::Data, format!("{} frames", app.s.frame_count())).color(T.text_faint));
+            ui.label(text(Type::Data, i18n::trn(u64::from(app.s.frame_count()), "{n} frame", "{n} frames")).color(T.text_faint));
         });
     }
 }
@@ -546,19 +558,19 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
     if layer.kind == anicraft_engine::doc::LayerKind::Folder {
         let tl = app.s.doc.timeline(app.s.scene);
         let n = tl.layers.iter().position(|l| l.id == layer.id).map_or(0, |i| tl.group_range(i).len().saturating_sub(1));
-        let what = if n == 1 { "1 layer".to_string() } else { format!("{n} layers") };
-        ui.label(text(Type::Label, format!("Folder · {what}")));
-        ui.label(text(Type::Caption, "Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down."));
+        let what = i18n::trn(n as u64, "{n} layer", "{n} layers");
+        ui.label(text(Type::Label, i18n::fmt("Folder · {what}", &[("what", &what)])));
+        ui.label(text(Type::Caption, tl!("Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down.")));
         return;
     }
     {
         match layer.keyframe_at(frame) {
             Some(k) => {
                 let n = evaluate_layer_elements(layer, frame).map_or(0, |(_, e)| e.len());
-                let (frames, els) = (if k.duration == 1 { "frame" } else { "frames" }, if n == 1 { "element" } else { "elements" });
-                ui.label(text(Type::Label, format!("Keyframe at {} · {} {frames} · {n} {els}", k.start + 1, k.duration)));
+                let (frames, els) = (i18n::trn(u64::from(k.duration), "{n} frame", "{n} frames"), i18n::trn(n as u64, "{n} element", "{n} elements"));
+                ui.label(text(Type::Label, i18n::fmt("Keyframe at {at} · {frames} · {elements}", &[("at", &(k.start + 1).to_string()), ("frames", &frames), ("elements", &els)])));
                 if layer.kind == anicraft_engine::doc::LayerKind::Mask {
-                    ui.label(text(Type::Caption, "Mask layer: its fills reveal the masked layers below. Lock it to hide its outline."));
+                    ui.label(text(Type::Caption, tl!("Mask layer: its fills reveal the masked layers below. Lock it to hide its outline.")));
                 }
                 let mut label = k.label.clone();
                 row_prose(ui, "Label", |ui| {
@@ -569,9 +581,9 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                 match k.tween {
                     Some(t) => {
                         row_prose(ui, "Tween", |ui| {
-                            egui::ComboBox::from_id_salt("prop_ease").width(150.0).selected_text(t.easing.label()).show_ui(ui, |ui| {
+                            egui::ComboBox::from_id_salt("prop_ease").width(150.0).selected_text(crate::timeline::easing_label(t.easing)).show_ui(ui, |ui| {
                                 for (name, e) in anicraft_engine::doc::Easing::PRESETS {
-                                    if ui.selectable_label(t.easing == e, name).clicked() {
+                                    if ui.selectable_label(t.easing == e, tl!(name)).clicked() {
                                         app.run("timeline.set_easing", json!({"easing": crate::timeline::easing_param(e)}));
                                     }
                                 }
@@ -579,11 +591,11 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                         });
                         let shape = t.kind == anicraft_engine::doc::TweenKind::Shape;
                         row_prose(ui, "Kind", |ui| {
-                            egui::ComboBox::from_id_salt("prop_kind").width(150.0).selected_text(if shape { "Shape" } else { "Classic" }).show_ui(ui, |ui| {
-                                if ui.selectable_label(!shape, "Classic").clicked() && shape {
+                            egui::ComboBox::from_id_salt("prop_kind").width(150.0).selected_text(tl!(if shape { "Shape" } else { "Classic" })).show_ui(ui, |ui| {
+                                if ui.selectable_label(!shape, tl!("Classic")).clicked() && shape {
                                     app.run("timeline.create_tween", json!({}));
                                 }
-                                if ui.selectable_label(shape, "Shape").on_hover_text("Morphs one shape into another").clicked() && !shape {
+                                if ui.selectable_label(shape, tl!("Shape")).on_hover_text(tl!("Morphs one shape into another")).clicked() && !shape {
                                     app.run("timeline.create_shape_tween", json!({}));
                                 }
                             });
@@ -592,7 +604,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                         let guided = layer.parent.is_some_and(|p| app.s.doc.timeline(app.s.scene).layer(p).is_some_and(|g| g.kind == anicraft_engine::doc::LayerKind::Guide));
                         if guided {
                             let mut orient = t.orient;
-                            if crate::theme::checkbox(ui, &mut orient, "Orient to path").on_hover_text("Turn with the motion guide as it bends").changed() {
+                            if crate::theme::checkbox(ui, &mut orient, tl!("Orient to path")).on_hover_text(tl!("Turn with the motion guide as it bends")).changed() {
                                 app.run("timeline.set_orient", json!({"orient": orient}));
                             }
                         }
@@ -600,10 +612,10 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     }
                     None => {
                         ui.horizontal(|ui| {
-                            if ui.button("Create Classic Tween").clicked() {
+                            if ui.button(tl!("Create Classic Tween")).clicked() {
                                 app.run("timeline.create_tween", json!({}));
                             }
-                            if ui.button("Create Shape Tween").on_hover_text("Morph this keyframe's shapes into the next keyframe's").clicked() {
+                            if ui.button(tl!("Create Shape Tween")).on_hover_text(tl!("Morph this keyframe's shapes into the next keyframe's")).clicked() {
                                 app.run("timeline.create_shape_tween", json!({}));
                             }
                         });
@@ -611,7 +623,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                 }
             }
             None => {
-                ui.label(text(Type::Caption, "Empty frame — press F7 for a blank keyframe"));
+                ui.label(text(Type::Caption, tl!("Empty frame — press F7 for a blank keyframe")));
             }
         }
     }
@@ -661,16 +673,16 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::DragValue::new(&mut app.star_points).range(3..=32));
         }),
         Tool::PaintBucket => row_prose(ui, "Gap size", |ui| {
-            egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(app.bucket_gap.label()).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(tl!(app.bucket_gap.label())).show_ui(ui, |ui| {
                 for g in crate::app::GapSize::ALL {
-                    ui.selectable_value(&mut app.bucket_gap, g, g.label());
+                    ui.selectable_value(&mut app.bucket_gap, g, tl!(g.label()));
                 }
             });
         }),
         Tool::Pencil => row(ui, "Mode", |ui| {
             use crate::pathtools::PencilMode;
             for m in [PencilMode::Smooth, PencilMode::Straighten, PencilMode::Ink] {
-                ui.selectable_value(&mut app.pencil_mode, m, m.label()).on_hover_text(m.hint());
+                ui.selectable_value(&mut app.pencil_mode, m, tl!(m.label())).on_hover_text(tl!(m.hint()));
             }
         }),
         _ => {}
@@ -701,17 +713,18 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         .map(|sym| LibraryRow {
             item: LibraryItem::Symbol(sym.id),
             name: sym.name.clone(),
-            detail: format!("{:?} · {}f", sym.kind, sym.timeline.frame_count()),
+            detail: format!("{} · {}", tl!(kind_label(sym.kind)), i18n::fmt("{n} f", &[("n", &sym.timeline.frame_count().to_string())])),
             kind: Some(sym.kind),
         })
-        .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: format!("Bitmap · {}×{}", b.width, b.height), kind: None }))
+        .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: i18n::fmt("Bitmap · {w}×{h}", &[("w", &b.width.to_string()), ("h", &b.height.to_string())]), kind: None }))
         .collect();
     if rows.is_empty() {
         let key = |id: &str| app.keymap.primary(id).map(crate::platform::shortcut_label).unwrap_or_default();
-        ui.label(text(Type::Caption, format!("No symbols or images yet. Select artwork and press {} to make a symbol, or import an image with {}.", key("modify.convert_to_symbol"), key("file.import"))));
+        let tip = "No symbols or images yet. Select artwork and press {symbol} to make a symbol, or import an image with {import}.";
+        ui.label(text(Type::Caption, i18n::fmt(tip, &[("symbol", &key("modify.convert_to_symbol")), ("import", &key("file.import"))])));
         return;
     }
-    ui.label(text(Type::Caption, format!("{} {}", rows.len(), if rows.len() == 1 { "item" } else { "items" })));
+    ui.label(text(Type::Caption, i18n::trn(rows.len() as u64, "{n} item", "{n} items")));
     let place = |app: &mut App, item: LibraryItem| match item {
         LibraryItem::Symbol(id) => app.run("library.place", json!({"symbol": id.0})),
         LibraryItem::Bitmap(id) => app.run("library.place", json!({"bitmap": id.0})),
@@ -723,10 +736,11 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             if selected || resp.hovered() {
                 ui.painter().rect_filled(r, T.rc(), if selected { T.accent_dim } else { T.hover });
             }
+            // Laid out from the left, mirrored in a right-to-left language.
             if selected {
-                ui.painter().rect_filled(Rect::from_min_size(r.left_top(), vec2(3.0, r.height())), 0.0, T.accent);
+                ui.painter().rect_filled(theme::mirror(r, Rect::from_min_size(r.left_top(), vec2(3.0, r.height()))), 0.0, T.accent);
             }
-            let icon = Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0));
+            let icon = theme::mirror(r, Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0)));
             match row.kind {
                 Some(kind) => {
                     let kind_color = match kind {
@@ -739,8 +753,10 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
                 }
                 None => icons::paint(ui.painter(), icon.expand(1.0), Icon::Image, color(Type::Body)),
             }
-            ui.painter().text(r.left_center() + vec2(30.0, 0.0), Align2::LEFT_CENTER, &row.name, font(Type::Body), color(Type::Body));
-            ui.painter().text(r.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &row.detail, font(Type::Caption), color(Type::Caption));
+            let (start, end) = if theme::rtl() { (Align2::RIGHT_CENTER, Align2::LEFT_CENTER) } else { (Align2::LEFT_CENTER, Align2::RIGHT_CENTER) };
+            let y = r.center().y;
+            ui.painter().text(pos2(theme::mirror_x(r, r.left() + 30.0), y), start, &row.name, font(Type::Body), color(Type::Body));
+            ui.painter().text(pos2(theme::mirror_x(r, r.right() - 8.0), y), end, &row.detail, font(Type::Caption), color(Type::Caption));
             if resp.clicked() {
                 app.library_sel = Some(row.item);
             }
@@ -751,10 +767,19 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.add_space(4.0);
     let can_place = app.library_sel.filter(|sel| rows.iter().any(|r| r.item == *sel));
-    if ui.add_enabled(can_place.is_some(), egui::Button::new("Place on stage")).on_hover_text("Adds it at the stage centre (or double-click an item)").clicked()
+    if ui.add_enabled(can_place.is_some(), egui::Button::new(tl!("Place on stage"))).on_hover_text(tl!("Adds it at the stage centre (or double-click an item)")).clicked()
         && let Some(item) = can_place {
             place(app, item);
         }
+}
+
+/// A symbol type's name (English; shown through `tl!`).
+fn kind_label(k: SymbolKind) -> &'static str {
+    match k {
+        SymbolKind::Graphic => "Graphic",
+        SymbolKind::MovieClip => "Movie clip",
+        SymbolKind::Button => "Button",
+    }
 }
 
 /// One Library row: a symbol (with its kind) or a bitmap.

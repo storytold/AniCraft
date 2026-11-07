@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 # An application, not a library: not published to crates.io.
 publish = false
 repository = "https://github.com/storytold/AniCraft"
-rust-version = "1.90"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anicraft-geom = { path = "crates/geom" }
@@ -34,14 +34,18 @@ gif = "0.14"
 # wgpu is the primary renderer; glow (OpenGL) is the fallback for GPUs/VMs where wgpu fails.
 # Default features off: we skip `links` (opening web links pulls in url/idna/ICU Unicode
 # tables we don't use) and the web-only screen-reader shim. Same set as PhotoCraft, plus glow.
-eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "glow", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "glow", "wayland", "x11"] }
 # Native file dialogs: Windows common dialogs, macOS NSOpenPanel, Linux XDG desktop portal.
 rfd = "0.17"
 # Lists and loads the OS's installed fonts for Preferences › Appearance (MIT).
 # Without the `fontconfig` feature, Linux scans the standard font folders directly
 # (/usr/share/fonts, /usr/local/share/fonts, ~/.local/share/fonts, ~/.fonts).
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
-egui = "0.36"
+egui = "0.37"
+# Interface translations (ADR 0013): lookup, fallback, CLDR plurals, language names and the system
+# locale over the craft-i18n catalogs that build.rs embeds from CRAFT_I18N_DIR. The Crafting Apps'
+# shared crate (craft-libs, MIT OR Apache-2.0), at an immutable revision allowed in deny.toml.
+craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "fd5e2feff6ea25bed371a99cc732b3968d621505" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -75,6 +79,7 @@ rfd.workspace = true
 serde.workspace = true
 fontdb.workspace = true
 serde_json.workspace = true
+craft-i18n.workspace = true
 
 [lints]
 workspace = true
@@ -103,3 +108,19 @@ debug = false
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# The egui family on storytold's fork, as the other Crafting Apps use it (ADR 0013): it lays out
+# right-to-left text in its right order (Unicode bidi; crates.io egui shapes each Arabic word but
+# places the words left to right) and mirrors egui's own parts with `Style::right_to_left`.
+# Immutable revisions, allowed in deny.toml.
+[patch.crates-io]
+ecolor = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+emath = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint_default_fonts = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui-winit = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui-wgpu = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_glow = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }

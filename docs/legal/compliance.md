@@ -21,8 +21,10 @@ AniCraft is **MIT OR Apache-2.0**, the same as its sibling PhotoCraft (`LICENSE-
 Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD, BSL-1.0,
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
-"source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed
-(no unknown registries or git).
+"source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed,
+plus three storytold git repositories pinned to immutable revisions (ADR 0013): craft-libs (the
+shared `craft-i18n` crate) and the egui and winit forks, all MIT OR Apache-2.0. No other
+registries or git.
 
 ```sh
 cargo deny check licenses bans sources   # policy in deny.toml; must pass before every commit

@@ -1,6 +1,7 @@
 //! The AniCraft shell: view state plus the frame loop. Document changes go through
 //! `Session::execute`, so everything here is also reachable headless.
 
+use crate::i18n::{self, tl};
 use crate::theme::{self, T};
 use crate::{dialogs, keymap, menus, panels, pathtools, platform, prefs, stage, timeline};
 use std::collections::HashSet;
@@ -184,6 +185,8 @@ pub struct Shot {
     pub path: PathBuf,
     pub frames: u32,
     pub requested: bool,
+    /// Where the renderer's callback leaves the picture once it has read the frame back.
+    pub image: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<egui::ColorImage>>>>,
 }
 
 pub const SHOT_FRAMES: u32 = 120;
@@ -218,6 +221,8 @@ pub struct App {
     pub show_files: bool,
     pub show_licenses: bool,
     pub shot: Option<Shot>,
+    /// `--lang`: the interface language for this run only, over the preference (not saved).
+    pub lang_arg: Option<String>,
     pub cursor_stage: Option<egui::Pos2>,
     pub tl_scroll: f32,
     /// Timeline frame width (zoom), in points.
@@ -290,7 +295,7 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
+    pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>, lang_arg: Option<String>) -> App {
         theme::apply(&cc.egui_ctx);
         let shot_mode = shot.is_some();
         // Screenshot runs use defaults so automated checks are reproducible.
@@ -319,7 +324,8 @@ impl App {
             show_about: false,
             show_files: false,
             show_licenses: false,
-            shot: shot.map(|path| Shot { path, frames: 0, requested: false }),
+            shot: shot.map(|path| Shot { path, frames: 0, requested: false, image: Default::default() }),
+            lang_arg,
             cursor_stage: None,
             tl_scroll: 0.0,
             tl_cell_w: timeline::CELL_DEFAULT,
@@ -359,7 +365,9 @@ impl App {
             key_capture: None,
         };
         app.apply_prefs(&cc.egui_ctx);
-        app.status_ok("Welcome to AniCraft. Press Enter to play the sample animation.");
+        // The language is set every frame; the first message is written before the first frame.
+        crate::i18n::set_current(crate::i18n::from_pref(app.lang_arg.as_deref().unwrap_or(&app.prefs.language)));
+        app.status_ok(tl!("Welcome to AniCraft. Press Enter to play the sample animation."));
         app
     }
 
@@ -411,7 +419,7 @@ impl App {
                 })
                 .collect();
             for name in missing {
-                self.status_err(format!("Font “{name}” is not installed; using the bundled font"));
+                self.status_err(i18n::fmt("Font “{name}” is not installed; using the bundled font", &[("name", &name)]));
             }
         }
         theme::install_fonts(ctx, ui_font.as_ref(), data_font.as_ref());
@@ -434,7 +442,7 @@ impl App {
         if self.shot.is_none()
             && let Err(e) = self.prefs.save()
         {
-            self.status_err(format!("Could not save preferences: {e}"));
+            self.status_err(i18n::fmt("Could not save preferences: {error}", &[("error", &e)]));
         }
     }
 
@@ -594,12 +602,12 @@ impl App {
                 match v.get("report").and_then(Value::as_str) {
                     // An imported file: say what came across and what didn't, and that saving
                     // makes a new .anicraft document.
-                    Some(r) => self.status_ok(format!("{r} Save to keep it as an AniCraft document.")),
-                    None => self.status_ok(if id == "file.open" { "Opened" } else { "New document" }),
+                    Some(r) => self.status_ok(i18n::fmt("{report} Save to keep it as an AniCraft document.", &[("report", r)])),
+                    None => self.status_ok(tl!(if id == "file.open" { "Opened" } else { "New document" })),
                 }
             }
             "file.save" | "file.save_as" => {
-                self.status_ok(format!("Saved {}", v["saved"].as_str().unwrap_or("")));
+                self.status_ok(i18n::fmt("Saved {path}", &[("path", &craft_i18n::ltr(v["saved"].as_str().unwrap_or("")))]));
                 if self.close_after_save {
                     self.allow_close = true;
                 }
@@ -610,21 +618,25 @@ impl App {
                 }
                 let n = v["elements"].as_u64().unwrap_or(0);
                 let report = v["report"].as_str().unwrap_or("");
-                self.status_ok(format!("{n} {} on a new layer. {report} Ctrl+Z to undo.", if n == 1 { "shape" } else { "shapes" }));
+                self.status_ok(i18n::fmt("{shapes} on a new layer. {report} Ctrl+Z to undo.", &[("shapes", &i18n::trn(n, "{n} shape", "{n} shapes")), ("report", report)]));
             }
-            "file.export_sprite_sheet" => self.status_ok(format!("Exported {} frames to {} ({}×{} grid) and its frame map {}", v["frames"], v["written"].as_str().unwrap_or(""), v["columns"], v["rows"], v["map"].as_str().unwrap_or(""))),
+            "file.export_sprite_sheet" => self.status_ok(i18n::fmt("Exported {frames} frames to {path} ({columns}×{rows} grid) and its frame map {map}", &[("frames", &v["frames"].to_string()), ("path", &craft_i18n::ltr(v["written"].as_str().unwrap_or(""))), ("columns", &v["columns"].to_string()), ("rows", &v["rows"].to_string()), ("map", &craft_i18n::ltr(v["map"].as_str().unwrap_or("")))])),
             "file.export_lottie" => {
+                // The engine's report on what Lottie can't carry stays English (ADR 0013).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
-                self.status_ok(format!("Exported {} ({} frames, {} layers).{report}", v["written"].as_str().unwrap_or(""), v["frames"], v["layers"]));
+                let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
+                let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
+                let layers = i18n::trn(v["layers"].as_u64().unwrap_or(0), "{n} layer", "{n} layers");
+                self.status_ok(i18n::fmt("Exported {path} ({frames}, {layers}).{report}", &[("path", &path), ("frames", &frames), ("layers", &layers), ("report", &report)]));
             }
-            "file.export_png" | "file.export_png_sequence" | "file.export_gif" | "file.export_svg" | "file.export_video" => self.status_ok(format!("Exported {}", v.get("written").or_else(|| v.get("dir")).and_then(Value::as_str).unwrap_or(""))),
-            "edit.undo" => self.status_ok(format!("Undid {}", v["undone"].as_str().unwrap_or(""))),
-            "edit.redo" => self.status_ok(format!("Redid {}", v["redone"].as_str().unwrap_or(""))),
-            "edit.delete" => self.status_ok(format!("Deleted {} {} — Ctrl+Z to undo", selected, if selected == 1 { "element" } else { "elements" })),
-            "layer.delete" => self.status_ok("Deleted layer — Ctrl+Z to undo"),
+            "file.export_png" | "file.export_png_sequence" | "file.export_gif" | "file.export_svg" | "file.export_video" => self.status_ok(i18n::fmt("Exported {path}", &[("path", &craft_i18n::ltr(v.get("written").or_else(|| v.get("dir")).and_then(Value::as_str).unwrap_or("")))])),
+            "edit.undo" => self.status_ok(i18n::fmt("Undid {action}", &[("action", tl!(v["undone"].as_str().unwrap_or("")))])),
+            "edit.redo" => self.status_ok(i18n::fmt("Redid {action}", &[("action", tl!(v["redone"].as_str().unwrap_or("")))])),
+            "edit.delete" => self.status_ok(i18n::fmt("Deleted {elements} — Ctrl+Z to undo", &[("elements", &i18n::trn(selected as u64, "{n} element", "{n} elements"))])),
+            "layer.delete" => self.status_ok(tl!("Deleted layer — Ctrl+Z to undo")),
             "scene.delete" => {
                 self.frame_sel = None;
-                self.status_ok("Deleted scene — Ctrl+Z to undo");
+                self.status_ok(tl!("Deleted scene — Ctrl+Z to undo"));
             }
             "scene.new" | "scene.duplicate" | "scene.select" | "scene.next" | "scene.prev" => {
                 // Another scene's timeline: frame selections and scroll belong to the old one.
@@ -632,24 +644,24 @@ impl App {
                 self.tl_scroll = 0.0;
                 self.playing = false;
                 let (n, of) = (v["scene"].as_u64().unwrap_or(0) + 1, v["scenes"].as_u64().unwrap_or(1));
-                self.status_ok(format!("{} (scene {n} of {of})", v["name"].as_str().unwrap_or("")));
+                self.status_ok(i18n::fmt("{name} (scene {n} of {of})", &[("name", v["name"].as_str().unwrap_or("")), ("n", &n.to_string()), ("of", &of.to_string())]));
             }
             "timeline.clear_keyframe" => {
                 let n = v["cleared"].as_u64().unwrap_or(1);
-                self.status_ok(format!("Cleared {} — Ctrl+Z to undo", if n == 1 { "keyframe".to_string() } else { format!("{n} keyframes") }));
+                self.status_ok(i18n::fmt("Cleared {keyframes} — Ctrl+Z to undo", &[("keyframes", &i18n::trn(n, "{n} keyframe", "{n} keyframes"))]));
             }
             "timeline.copy_frames" | "timeline.cut_frames" | "timeline.paste_frames" => {
                 let n = v["copied"].as_u64().or_else(|| v["cut"].as_u64()).or_else(|| v["pasted"].as_u64()).unwrap_or(0);
-                let what = format!("{n} {}", if n == 1 { "frame" } else { "frames" });
+                let what = i18n::trn(n, "{n} frame", "{n} frames");
                 self.status_ok(match id {
-                    "timeline.copy_frames" => format!("Copied {what}"),
-                    "timeline.cut_frames" => format!("Cut {what} — Ctrl+Z to undo"),
-                    _ => format!("Pasted {what} — Ctrl+Z to undo"),
+                    "timeline.copy_frames" => i18n::fmt("Copied {what}", &[("what", &what)]),
+                    "timeline.cut_frames" => i18n::fmt("Cut {what} — Ctrl+Z to undo", &[("what", &what)]),
+                    _ => i18n::fmt("Pasted {what} — Ctrl+Z to undo", &[("what", &what)]),
                 });
             }
             "timeline.remove_frame" => {
                 let n = v["removed"].as_u64().unwrap_or(1);
-                self.status_ok(format!("Removed {} — Ctrl+Z to undo", if n == 1 { "frame".to_string() } else { format!("{n} frames") }));
+                self.status_ok(i18n::fmt("Removed {frames} — Ctrl+Z to undo", &[("frames", &i18n::trn(n, "{n} frame", "{n} frames"))]));
             }
             _ => {}
         }
@@ -701,7 +713,7 @@ impl App {
             if is_file && self.prefs.native_dialogs && self.shot.is_none() {
                 // The platform's own dialog (it blocks, as native dialogs do). Cancel = no-op.
                 self.playing = false;
-                match platform::file_dialog(id, title, &text) {
+                match platform::file_dialog(id, tl!(title), &text) {
                     Some(path) => self.request(id, json!({ key: path.display().to_string() })),
                     None => self.close_after_save = false,
                 }
@@ -830,7 +842,7 @@ impl App {
                 "view.onion" => self.onion = !self.onion,
                 "view.align_to_stage" => {
                     self.align_to_stage = !self.align_to_stage;
-                    self.status_ok(if self.align_to_stage { "Align: to stage" } else { "Align: to the selection" });
+                    self.status_ok(tl!(if self.align_to_stage { "Align: to stage" } else { "Align: to the selection" }));
                 }
                 "view.select_all_frames" => {
                     let layers = &self.s.doc.timeline(self.s.scene).layers;
@@ -867,12 +879,7 @@ impl App {
         let Some(shot) = &mut self.shot else { return };
         shot.frames += 1;
         ctx.request_repaint();
-        let image = ctx.input(|i| {
-            i.raw.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
+        let image = shot.image.lock().ok().and_then(|mut slot| slot.take());
         if let Some(img) = image {
             let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
             let result = anicraft_render::encode_png(img.size[0] as u32, img.size[1] as u32, &rgba).map_err(|e| e.to_string()).and_then(|png| {
@@ -892,7 +899,14 @@ impl App {
         }
         if shot.frames >= SHOT_FRAMES && !shot.requested {
             shot.requested = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            let slot = shot.image.clone();
+            let repaint = ctx.clone();
+            ctx.request_screenshot(move |img| {
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some(img);
+                }
+                repaint.request_repaint();
+            });
         }
         if shot.frames > SHOT_FRAMES + 600 {
             eprintln!("screenshot: the renderer never delivered a frame");
@@ -901,7 +915,7 @@ impl App {
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
-        let name = self.s.path.as_ref().and_then(|p| p.file_name()).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
+        let name = self.s.path.as_ref().and_then(|p| p.file_name()).map_or_else(|| tl!("Untitled").to_string(), |n| n.to_string_lossy().into_owned());
         let title = format!("AniCraft — {name}{}", if self.s.is_dirty() { " •" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -913,7 +927,7 @@ impl App {
         let Some(p) = &mut self.prompt else { return };
         let mut submit = false;
         let mut cancel = false;
-        egui::Window::new(p.title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| {
+        egui::Window::new(tl!(p.title)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.set_min_width(360.0);
             let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY));
             r.request_focus();
@@ -921,14 +935,14 @@ impl App {
                 submit = true;
             }
             ui.horizontal(|ui| {
-                if ui.button("OK").clicked() {
+                if ui.button(tl!("OK")).clicked() {
                     submit = true;
                 }
-                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                if ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
                     cancel = true;
                 }
             });
-        });
+        }));
         if submit {
             if let Some(p) = self.prompt.take() {
                 // Through `request`, so opening over unsaved work or saving over a file asks first.
@@ -942,14 +956,14 @@ impl App {
 
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
-        egui::Window::new("About AniCraft").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new(tl!("About AniCraft")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.heading("AniCraft");
-            ui.label(format!("Version {} · {RELEASE_STAGE}", env!("CARGO_PKG_VERSION")));
-            ui.label("Open-source 2D vector animation studio, written in Rust.");
-            ui.label(format!("{} engine commands — all available headless via anicraft-cli.", commands().len()));
+            ui.label(i18n::fmt("Version {version} · {stage}", &[("version", env!("CARGO_PKG_VERSION")), ("stage", tl!(RELEASE_STAGE))]));
+            ui.label(tl!("Open-source 2D vector animation studio, written in Rust."));
+            ui.label(i18n::fmt("{n} engine commands — all available headless via anicraft-cli.", &[("n", &commands().len().to_string())]));
             ui.colored_label(T.text_dim, "MIT OR Apache-2.0");
-            ui.label(theme::text(theme::Type::Caption, format!("Typefaces: {}", theme::font_summary())));
-        });
+            ui.label(theme::text(theme::Type::Caption, i18n::fmt("Typefaces: {fonts}", &[("fonts", &theme::font_summary())])));
+        }));
         self.show_about = open;
     }
 
@@ -972,29 +986,49 @@ impl App {
             ("Screenshots", root.join("shots")),
         ];
         let mut opened: Option<Result<(), String>> = None;
-        egui::Window::new("Project Files").open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| {
-            ui.label(theme::text(theme::Type::Label, "Where AniCraft's documents and files are on this computer"));
+        egui::Window::new(tl!("Project Files")).open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| crate::theme::reading(ui, |ui| {
+            ui.label(theme::text(theme::Type::Label, tl!("Where AniCraft's documents and files are on this computer")));
             ui.add_space(4.0);
-            egui::Grid::new("files").num_columns(3).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
+            crate::theme::ltr(ui, |ui| egui::Grid::new("files").num_columns(3).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
+                // Name, path, button in reading order: egui's Grid only runs left to right, so a
+                // right-to-left language adds them the other way round.
+                let rtl = theme::rtl();
                 for (label, path) in &entries {
-                    ui.label(theme::text(theme::Type::Body, *label).strong());
-                    ui.label(theme::text(theme::Type::Path, path.display().to_string()).color(if path.exists() { T.text } else { T.text_faint }));
-                    if ui.add_enabled(path.exists(), egui::Button::new("Open")).clicked() {
-                        opened = Some(open_in_system(path));
+                    let name = |ui: &mut egui::Ui| ui.label(theme::text(theme::Type::Body, tl!(label)).strong());
+                    let at = |ui: &mut egui::Ui| ui.label(theme::text(theme::Type::Path, path.display().to_string()).color(if path.exists() { T.text } else { T.text_faint }));
+                    let mut button = |ui: &mut egui::Ui| {
+                        if ui.add_enabled(path.exists(), egui::Button::new(tl!("Open"))).clicked() {
+                            opened = Some(open_in_system(path));
+                        }
+                    };
+                    if rtl {
+                        button(ui);
+                        at(ui);
+                        name(ui);
+                    } else {
+                        name(ui);
+                        at(ui);
+                        button(ui);
                     }
                     ui.end_row();
                 }
-                let doc = self.s.path.as_ref().map_or_else(|| "not saved yet (File › Save)".to_string(), |p| p.display().to_string());
-                ui.label(theme::text(theme::Type::Body, "Current document").strong());
-                ui.label(theme::text(theme::Type::Path, doc));
+                let doc = self.s.path.as_ref().map_or_else(|| tl!("not saved yet (File › Save)").to_string(), |p| p.display().to_string());
+                if rtl {
+                    ui.label("");
+                    ui.label(theme::text(theme::Type::Path, doc));
+                    ui.label(theme::text(theme::Type::Body, tl!("Current document")).strong());
+                } else {
+                    ui.label(theme::text(theme::Type::Body, tl!("Current document")).strong());
+                    ui.label(theme::text(theme::Type::Path, doc));
+                }
                 ui.end_row();
-            });
+            }));
             ui.add_space(4.0);
-            ui.label(theme::text(theme::Type::Caption, "Saved documents and exports go where you type in the save box; a plain name lands in the folder AniCraft was started from."));
-        });
+            ui.label(theme::text(theme::Type::Caption, tl!("Saved documents and exports go where you type in the save box; a plain name lands in the folder AniCraft was started from.")));
+        }));
         match opened {
             Some(Err(e)) => self.status_err(e),
-            Some(Ok(())) => self.status_ok("Opened in your system's file viewer"),
+            Some(Ok(())) => self.status_ok(tl!("Opened in your system's file viewer")),
             None => {}
         }
         self.show_files = open;
@@ -1016,12 +1050,19 @@ fn open_in_system(path: &std::path::Path) -> Result<(), String> {
         c.arg(path);
         c
     };
-    cmd.spawn().map(|_| ()).map_err(|e| format!("could not open {}: {e}", path.display()))
+    cmd.spawn().map(|_| ()).map_err(|e| i18n::fmt("could not open {path}: {error}", &[("path", &path.display().to_string()), ("error", &e.to_string())]))
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // The interface language, and its direction for egui's own parts (menus, scroll bars,
+        // combo boxes) (ADR 0013).
+        crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
+        let rtl = crate::i18n::rtl();
+        if ctx.global_style().right_to_left != rtl {
+            ctx.global_style_mut(|s| s.right_to_left = rtl);
+        }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
         if self.glyph_check {
@@ -1048,10 +1089,12 @@ impl eframe::App for App {
 
         let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 2));
         egui::Panel::top("menu_bar").frame(bar(T.chrome)).show(ui, |ui| menus::bar(self, ui));
-        egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| panels::edit_bar(self, ui));
-        egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| panels::status_bar(self, ui));
-        egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(6, 8))).show(ui, |ui| panels::tools(self, ui));
-        egui::Panel::right("properties").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
+        egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| theme::reading(ui, |ui| panels::edit_bar(self, ui)));
+        egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| theme::reading(ui, |ui| panels::status_bar(self, ui)));
+        // Tools where reading starts, the dock where it ends: mirrored in a right-to-left language.
+        let (start, end) = if theme::rtl() { (egui::Panel::right("tools"), egui::Panel::left("properties")) } else { (egui::Panel::left("tools"), egui::Panel::right("properties")) };
+        start.resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(6, 8))).show(ui, |ui| panels::tools(self, ui));
+        end.resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| theme::reading(ui, |ui| panels::right(self, ui)));
         egui::Panel::bottom("timeline").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
 

@@ -11,6 +11,7 @@
 //! `draw.freehand`, `path.*`), so agents and the CLI draw and edit exactly the same way.
 
 use crate::app::{App, Drag, Tool};
+use crate::i18n::tl;
 use crate::theme::T;
 use anicraft_engine::doc::{ElementId, ElementKind};
 use anicraft_engine::geom::edit::{ANCHOR, C1, C2};
@@ -324,7 +325,7 @@ pub fn subselect_double_click(app: &mut App, at: Pos2, xf: Xf) {
         let r = app.s.execute("path.add_point", &json!({"id": id.0, "x": sp.x, "y": sp.y, "slop": PICK * xf.unit()}));
         if let Ok(v) = r {
             app.points = v["cmd"].as_u64().map(|c| vec![(id, c as usize, ANCHOR)]).unwrap_or_default();
-            app.status_ok("Added a point. Ctrl+Z to undo.");
+            app.status_ok(tl!("Added a point. Ctrl+Z to undo."));
             return;
         }
     }
@@ -365,16 +366,16 @@ pub fn point_menu(app: &mut App, ui: &mut egui::Ui) -> bool {
     if app.tool != Tool::Subselect || selected_anchors(app).is_empty() {
         return false;
     }
-    if ui.button("Make Smooth").clicked() {
+    if ui.button(tl!("Make Smooth")).clicked() {
         convert_points(app, true);
         ui.close();
     }
-    if ui.button("Make Corner").clicked() {
+    if ui.button(tl!("Make Corner")).clicked() {
         convert_points(app, false);
         ui.close();
     }
     ui.separator();
-    if ui.button("Delete Point").clicked() {
+    if ui.button(tl!("Delete Point")).clicked() {
         delete_points(app);
         ui.close();
     }

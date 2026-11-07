@@ -7,6 +7,7 @@
 //! state, scaled) underneath, so panning and zooming never reveal an empty stage.
 
 use crate::app::{App, Drag, Tool, XfKind};
+use crate::i18n::tl;
 use crate::prefs::RenderMode;
 use crate::theme::{T, to_color32};
 use anicraft_engine::geom::{Affine, Vec2};
@@ -383,7 +384,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     // The gap size is set in screen points, so it feels the same at any zoom.
                     let gap = app.bucket_gap.screen_px() / zoom.max(1e-3);
                     if let Some(v) = app.run("paint.bucket", json!({"x": sp.x, "y": sp.y, "gap": gap})) {
-                        app.status_ok(if v.get("recolored").is_some() { "Recoloured the fill. Ctrl+Z to undo." } else { "Filled the area. Ctrl+Z to undo." });
+                        app.status_ok(tl!(if v.get("recolored").is_some() { "Recoloured the fill. Ctrl+Z to undo." } else { "Filled the area. Ctrl+Z to undo." }));
                     }
                 }
                 Tool::InkBottle if !panning => {
@@ -450,12 +451,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 crate::menus::cmd_item(app, ui, id);
             }
             ui.separator();
-            ui.menu_button("Transform", |ui| {
+            ui.menu_button(tl!("Transform"), |ui| {
                 for id in ["modify.rotate_cw", "modify.rotate_ccw", "modify.flip_h", "modify.flip_v"] {
                     crate::menus::cmd_item(app, ui, id);
                 }
             });
-            ui.menu_button("Align", |ui| {
+            ui.menu_button(tl!("Align"), |ui| {
                 for id in ["align.left", "align.hcenter", "align.right", "align.top", "align.vcenter", "align.bottom", "align.distribute_h", "align.distribute_v"] {
                     crate::menus::cmd_item(app, ui, id);
                 }
@@ -464,7 +465,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             for id in ["modify.convert_to_symbol", "modify.break_apart"] {
                 crate::menus::cmd_item(app, ui, id);
             }
-            ui.menu_button("Arrange", |ui| {
+            ui.menu_button(tl!("Arrange"), |ui| {
                 for id in ["arrange.bring_to_front", "arrange.send_to_back"] {
                     crate::menus::cmd_item(app, ui, id);
                 }
@@ -739,9 +740,9 @@ fn text_editor(app: &mut App, ui: &mut egui::Ui, stage_origin: Pos2, zoom: f32) 
     let at = stage_origin + vec2(te.at.x * zoom, te.at.y * zoom);
     let size = (app.s.text_style.size * zoom).clamp(12.0, 64.0);
     let mut done = false;
-    egui::Area::new(egui::Id::new("stage_text_edit")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+    egui::Area::new(egui::Id::unique("stage_text_edit")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         egui::Frame::new().fill(T.panel).stroke(Stroke::new(1.0, T.selection)).inner_margin(4.0).show(ui, |ui| {
-            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text("Type text"));
+            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text(tl!("Type text")));
             if te.focus {
                 r.request_focus();
                 te.focus = false;
