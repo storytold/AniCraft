@@ -206,6 +206,7 @@ name = "anicraft-doc"
 version = "0.1.0"
 dependencies = [
  "anicraft-geom",
+ "png 0.17.16",
  "serde",
  "serde_json",
 ]
@@ -225,6 +226,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "zune-jpeg",
 ]
 
 [[package]]

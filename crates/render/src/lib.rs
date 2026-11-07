@@ -432,7 +432,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
     }
     if let Some(fill) = &item.fill {
         let polys: Vec<Vec<Vec2>> = lines.iter().map(|l| l.points.clone()).collect();
-        push(polys, item.fill_rule, Shader::new(fill, &m, &item.color));
+        push(polys, item.fill_rule, Shader::new(fill, &m, &item.color, item.image.as_ref()));
     }
     if let Some(st) = item.stroke {
         let mut fx: ColorEffect = item.color;
@@ -443,7 +443,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
                 fx.alpha *= pw;
                 pw = 1.0;
             }
-            push(stroke::stroke_polygons(&lines, pw * 0.5), FillRule::NonZero, Shader::new(&Paint::Solid(st.color), &m, &fx));
+            push(stroke::stroke_polygons(&lines, pw * 0.5), FillRule::NonZero, Shader::new(&Paint::Solid(st.color), &m, &fx, None));
         }
     }
     out
@@ -525,6 +525,7 @@ mod tests {
             masks: None,
             guide: false,
             group: None,
+            image: None,
         }
     }
 

@@ -640,7 +640,7 @@ impl App {
             "file.export_svg" => Some(("Export frame as SVG", "path", format!("frame_{:04}.svg", self.s.frame + 1))),
             "file.export_sprite_sheet" => Some(("Export sprite sheet (PNG + JSON frame map)", "path", "sprites.png".to_string())),
             "file.export_video" => Some(("Export video (.webm or .mp4, made with your ffmpeg)", "path", "animation.webm".to_string())),
-            "file.import" => Some(("Import to stage (SVG)", "path", "drawing.svg".to_string())),
+            "file.import" => Some(("Import to stage (SVG, PNG or JPEG)", "path", "drawing.svg".to_string())),
             "modify.convert_to_symbol" => Some(("Convert to symbol — name", "name", format!("Symbol {}", self.s.doc.library.len() + 1))),
             _ => None,
         };

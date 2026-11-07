@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* **Images.** Import to Stage (Ctrl+R) now takes **PNG** and **JPEG** too. An image arrives on
+  its own layer, centred and selected, and can be moved, scaled, rotated, faded, tweened and
+  masked like any artwork. It renders smoothly at every size, on the stage and in every export
+  (SVG embeds it). Images are saved inside the document as PNG, with JPEGs converted losslessly.
+  The model also has **bitmap fills** (`Paint::Bitmap`, tiled or once), so any shape can show an
+  image.
+
 * **Export Video** (File › Export, `file.export_video`): the movie as **WebM** (VP9,
   royalty-free; the default) or **MP4** (H.264), made by your own installed ffmpeg. AniCraft
   bundles no video encoder. ffmpeg is found through the `ffmpeg` parameter, the

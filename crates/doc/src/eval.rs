@@ -33,6 +33,8 @@ pub struct DisplayItem {
     /// The innermost group this item fades with (see [`DisplayList::groups`]); `color.alpha`
     /// leaves out the groups' opacity.
     pub group: Option<u32>,
+    /// The decoded pixels a [`Paint::Bitmap`] fill shows (shared, never copied).
+    pub image: Option<Arc<crate::Pixels>>,
 }
 
 /// Back-to-front list of shapes.
@@ -298,6 +300,10 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     masks,
                     guide,
                     group: cx.group,
+                    image: match &s.fill {
+                        Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).and_then(crate::Bitmap::pixels),
+                        _ => None,
+                    },
                 }),
                 ElementKind::Symbol { symbol, loop_mode, first_frame } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };

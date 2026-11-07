@@ -385,7 +385,10 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 if crate::theme::checkbox(ui, &mut on, "").on_hover_text("Fill on/off").changed() {
                     app.run("element.set_fill", if on { json!({"color": hex(c)}) } else { json!({"color": null}) });
                 }
-                if is_grad {
+                if let Some(Paint::Bitmap { bitmap, .. }) = &sh.fill {
+                    let name = app.s.doc.bitmap(*bitmap).map_or_else(|| "missing bitmap".to_string(), |b| format!("{} · {}×{}", b.name, b.width, b.height));
+                    ui.label(text(Type::Caption, name));
+                } else if is_grad {
                     ui.label(text(Type::Caption, "gradient"));
                 }
             });
