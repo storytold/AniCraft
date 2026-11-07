@@ -17,22 +17,42 @@ per-edit and per-undo time, history bytes per step and hit-test time. In the app
 bar shows render time, shapes drawn and culled, frame-cache size and hit rate, and history
 memory.
 
-## Budgets (targets)
+## Budgets
 
-| Scenario | Budget | Measured 2026-10-28 (release, 32 threads) |
-|---|---|---|
-| Edit command on a 200k-instance document | < 1 ms | 0.011 ms ✅ |
-| Undo / redo | < 1 ms | 0.009 ms ✅ |
-| Undo memory per small edit | < 16 KB | 2.7 KB ✅ |
-| Document snapshot | < 50 µs | 0.4 µs ✅ |
-| Evaluate one frame (200k instances) | < 4 ms | 1.5 ms ✅ |
-| Render 1080p, ~10k visible shapes | < 16.7 ms (60 fps) | 16.5 ms ✅ (tight) |
-| Render at 400% zoom | < 16.7 ms | 10.9 ms ✅ |
-| Hit test | < 200 µs | 51 µs ✅ |
-| Save / load 65 MB file | < 500 ms | 118 / 142 ms ✅ |
-| UI frame while rendering | never blocked | worker thread ✅ |
+The default `bench` scenario: 50 layers × 200 shapes × 240 frames, 200k element instances.
 
-Budgets become CI-enforced once the perf harness runs on a fixed machine (roadmap M2).
+| Scenario | Budget | Measured 2026-11-06 (release, 32 threads) | Enforced by |
+|---|---|---|---|
+| Edit command on a 200k-instance document | < 1 ms | 0.013 ms ✅ | `bench --check` |
+| Undo / redo | < 1 ms | 0.009 ms ✅ | `bench --check` |
+| Undo memory per small edit | < 16 KB | 2.7 KB ✅ | test, every PR |
+| Document snapshot | < 50 µs, shares everything | 0.04 µs ✅ | test (sharing) and `bench --check` |
+| Evaluate one frame (200k instances) | < 4 ms | 1.7 ms ✅ | `bench --check` |
+| Render 1080p, ~10k visible shapes | < 16.7 ms (60 fps) | **19.5–20.2 ms ❌** | `bench --check` |
+| Render at 400% zoom | < 16.7 ms | 11.7 ms ✅ | `bench --check` |
+| Shapes drawn at 400% zoom | ≤ 1/8 of the frame's shapes | 5.5% ✅ | test, every PR |
+| Hit test | < 200 µs | 52 µs ✅ | `bench --check` |
+| File size | < 400 bytes per element instance | 342 ✅ | test, every PR |
+| Save / load 65 MB file | < 500 ms | 123 / 146 ms ✅ | `bench --check` |
+| UI frame while rendering | never blocked | worker thread ✅ | design (ADR 0002) |
+
+**The 1080p render is over budget.** On the same machine on 2026-11-06, v0.1.0 measures
+18.0–18.9 ms and today's `main` 19.4–20.2 ms (most of the difference came with bitmap fills).
+The 16.5 ms recorded on 2026-10-28 was not reproduced. Getting back under 16.7 ms is the
+next performance task.
+
+### How budgets are enforced
+
+* **Budgets that don't depend on the machine** (undo memory, snapshot sharing, file size,
+  culling) are a test (`machine_independent_budgets` in `crates/cli`), so the CI gate fails
+  any PR that breaks them.
+* **Timing budgets** are `cargo run --release -p anicraft-cli -- bench --check yes`. It
+  prints every measurement next to its budget and fails when one is missed. Shared CI
+  runners vary too much in speed and core count to gate on time, so this runs on a known
+  machine before a release and after performance work. A dedicated benchmark runner would
+  let CI run it too.
+* The limits live in `TIME_BUDGETS` in `crates/cli/src/lib.rs`; keep that list and this
+  table in step.
 
 ## Decisions
 
