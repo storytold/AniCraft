@@ -589,12 +589,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- overlays -------------------------------------------------------------------------
     // Mask artwork is never painted; while its layer is unlocked (editable), its edge shows in
     // the layer colour so it can be seen, picked and reshaped. Locking the mask hides the edge.
+    // Guide artwork never renders either: it always shows here, as a line in the guide's layer
+    // colour, so the path a tween follows is visible while animating.
     {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
         let dl = app.s.display_list();
-        for item in dl.items.iter().filter(|i| i.masks.is_some()).take(2_000) {
-            let Some(layer) = app.s.doc.timeline(app.s.scene).layer(item.layer).filter(|l| !l.locked) else { continue };
-            let stroke = Stroke::new(1.5, to_color32(layer.color));
+        for item in dl.items.iter().filter(|i| i.masks.is_some() || i.guide).take(2_000) {
+            let Some(layer) = app.s.doc.timeline(app.s.scene).layer(item.layer).filter(|l| item.guide || !l.locked) else { continue };
+            let stroke = Stroke::new(if item.guide { 2.0 } else { 1.5 }, to_color32(layer.color));
             for pl in item.path.flatten(&to_px.mul(&item.transform), 0.5) {
                 let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
                 painter.add(if pl.closed { egui::Shape::closed_line(pts, stroke) } else { egui::Shape::line(pts, stroke) });

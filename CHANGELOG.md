@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* **Motion guides** (a layer's right-click menu › Add Classic Motion Guide, or Insert ›
+  Timeline). Draw a line on the guide layer and the layer's classic tweens travel along it,
+  from the point nearest each start keyframe to the point nearest its end. With **Orient to
+  path** (Properties) the artwork turns as the path bends. The guide shows on the stage while
+  you animate and never appears in exports. Plain guides, and the Guide and Guided types, are
+  in the right-click menu. Animate documents keep their guided layers and orient-to-path.
+* The Pen path command (`draw.path`) now reads full SVG path data, including relative
+  commands, H/V, S/T and arcs.
+
 * **Layer folders** (the folder button under the layer list, Insert › Timeline › New Folder,
   or a layer's right-click menu). Folders group layers, can nest, and open and close with
   their chevron. Hiding or locking a folder hides or locks everything in it. Move layers in

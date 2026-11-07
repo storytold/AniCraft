@@ -434,6 +434,14 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                                 }
                             });
                         });
+                        // On a layer a motion guide steers: turn with the path.
+                        let guided = layer.parent.is_some_and(|p| app.s.doc.timeline(app.s.scene).layer(p).is_some_and(|g| g.kind == anicraft_engine::doc::LayerKind::Guide));
+                        if guided {
+                            let mut orient = t.orient;
+                            if crate::theme::checkbox(ui, &mut orient, "Orient to path").on_hover_text("Turn with the motion guide as it bends").changed() {
+                                app.run("timeline.set_orient", json!({"orient": orient}));
+                            }
+                        }
                         ease_curve(ui, t.easing);
                     }
                     None => {

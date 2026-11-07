@@ -316,6 +316,10 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
     if !m.is_finite() {
         return out;
     }
+    // Guide artwork is for editing only: it never renders.
+    if item.guide {
+        return out;
+    }
     // Mask artwork is its fill area only: no strokes, no opacity (as animators expect).
     let is_mask = item.masks.is_some();
     if is_mask && item.fill.is_none() {
@@ -444,6 +448,7 @@ mod tests {
             outline: None,
             clip: None,
             masks: None,
+            guide: false,
         }
     }
 
@@ -478,6 +483,14 @@ mod tests {
         assert_eq!(pm2.pixel(25, 20).unwrap()[3], 1.0);
         assert_eq!(pm2.pixel(35, 2).unwrap()[3], 1.0);
         assert!((alpha_sum(&pm2) - (800.0 + area / 2.0)).abs() < 8.0, "{}", alpha_sum(&pm2));
+    }
+
+    #[test]
+    fn guide_artwork_never_renders() {
+        let mut g = item(Path::rect(0.0, 0.0, 8.0, 8.0), Paint::Solid(Rgba::BLACK));
+        g.guide = true;
+        let (pm, st) = render(&list(vec![g]), &view(8, 8)).unwrap();
+        assert_eq!((alpha_sum(&pm), st.drawn), (0.0, 0));
     }
 
     #[test]

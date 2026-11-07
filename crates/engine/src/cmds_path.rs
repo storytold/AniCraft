@@ -71,7 +71,8 @@ fn draw_path(s: &mut Session, p: &Value) -> Result<Value> {
     if d.len() > 4_000_000 {
         return Err(EngineError::Param("param 'd' is too long".into()));
     }
-    let path = Path::from_svg(d).map_err(|e| EngineError::Param(format!("param 'd': {e}")))?;
+    // Full SVG path data: relative commands, H/V, S/T shorthands and arcs too.
+    let path = anicraft_geom::svg::parse_path_data(d).map_err(|e| EngineError::Param(format!("param 'd': {e}")))?;
     add_path(s, "path", path, p)
 }
 

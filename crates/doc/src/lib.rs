@@ -308,6 +308,13 @@ pub struct Tween {
     pub easing: Easing,
     #[serde(default, skip_serializing_if = "is_classic")]
     pub kind: TweenKind,
+    /// On a guided layer: turn with the motion guide as it bends.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub orient: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_classic(k: &TweenKind) -> bool {
@@ -359,7 +366,8 @@ impl Keyframe {
 pub enum LayerKind {
     #[default]
     Normal,
-    /// Authoring aid; never rendered in output.
+    /// Authoring aid, never in output: a plain guide, or a motion guide whose first path the
+    /// tweens on the layers it guides (its children) follow.
     Guide,
     /// Its fills are not drawn: they reveal the layers masked by it (see [`Layer::parent`]).
     Mask,
@@ -538,11 +546,11 @@ impl Timeline {
     pub fn container_at(&self, index: usize, kind: LayerKind) -> Option<LayerId> {
         let above = self.layers.get(index.checked_sub(1)?)?;
         let slot = match above.kind {
-            LayerKind::Folder | LayerKind::Mask => Some(above.id),
+            LayerKind::Folder | LayerKind::Mask | LayerKind::Guide => Some(above.id),
             _ => above.parent,
         };
         let p = self.layer(slot?)?;
-        if p.kind == LayerKind::Mask && kind != LayerKind::Normal {
+        if matches!(p.kind, LayerKind::Mask | LayerKind::Guide) && kind != LayerKind::Normal {
             return p.parent;
         }
         let too_deep = self.index_of(p.id).is_none_or(|pi| self.depth(pi) + 1 >= MAX_LAYER_DEPTH);
@@ -552,6 +560,11 @@ impl Timeline {
     /// The mask a normal layer placed at `index` would be masked by.
     pub fn mask_above(&self, index: usize) -> Option<LayerId> {
         self.container_at(index, LayerKind::Normal).filter(|p| self.layer(*p).is_some_and(|l| l.kind == LayerKind::Mask))
+    }
+
+    /// The motion guide a normal layer placed at `index` would be guided by.
+    pub fn guide_above(&self, index: usize) -> Option<LayerId> {
+        self.container_at(index, LayerKind::Normal).filter(|p| self.layer(*p).is_some_and(|l| l.kind == LayerKind::Guide))
     }
 
     /// Indices `i..j` of the layer at `i` and everything inside it (a folder's layers, a mask's
@@ -628,7 +641,7 @@ impl Timeline {
         let above = i.checked_sub(1).and_then(|a| self.layers.get(a));
         match self.layer(p).filter(|_| self.index_of(p).is_some_and(|pi| pi < i)).map(|x| x.kind) {
             Some(LayerKind::Folder) => above.is_some_and(|a| a.id == p || self.is_inside(i - 1, p)) && self.depth_of_parent(p) + 1 < MAX_LAYER_DEPTH,
-            Some(LayerKind::Mask) => l.kind == LayerKind::Normal && above.is_some_and(|a| a.id == p || a.parent == Some(p)),
+            Some(LayerKind::Mask | LayerKind::Guide) => l.kind == LayerKind::Normal && above.is_some_and(|a| a.id == p || a.parent == Some(p)),
             _ => false,
         }
     }

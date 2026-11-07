@@ -54,13 +54,15 @@ fn static_frames_share_elements_with_the_document() {
 }
 
 #[test]
-fn hidden_and_guide_layers_are_skipped() {
+fn hidden_layers_are_skipped_and_guide_artwork_is_marked() {
     let mut d = tween_doc(Easing::Linear);
     layer0(&mut d).visible = false;
     assert!(evaluate(&d, 0).items.is_empty());
     layer0(&mut d).visible = true;
     layer0(&mut d).kind = LayerKind::Guide;
-    assert!(evaluate(&d, 0).items.is_empty());
+    // Guide artwork is listed for editing, but marked so nothing draws or exports it.
+    let dl = evaluate(&d, 0);
+    assert!(!dl.items.is_empty() && dl.items.iter().all(|i| i.guide));
 }
 
 #[test]
@@ -218,10 +220,10 @@ fn shape_tweens_morph_between_different_shapes_and_classic_ones_hold() {
     let path_at = |d: &Document, f| evaluate(d, f).items[0].path.clone();
 
     // Classic tween: incompatible shapes hold the first one until the next keyframe.
-    layer0(&mut d).keyframe_mut(0).unwrap().tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Classic });
+    layer0(&mut d).keyframe_mut(0).unwrap().tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Classic, ..Default::default() });
     assert_eq!(*path_at(&d, 5), Path::rect(0.0, 0.0, 100.0, 100.0));
     // Shape tween: halfway, the shape sits between the two and is neither of them.
-    layer0(&mut d).keyframe_mut(0).unwrap().tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Shape });
+    layer0(&mut d).keyframe_mut(0).unwrap().tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Shape, ..Default::default() });
     let mid = path_at(&d, 5);
     let c = mid.bounds().center();
     assert!((c.x - 150.0).abs() < 1.0 && (c.y - 50.0).abs() < 1.0, "{c:?}");
@@ -230,7 +232,50 @@ fn shape_tweens_morph_between_different_shapes_and_classic_ones_hold() {
     assert_eq!(*path_at(&d, 0), Path::rect(0.0, 0.0, 100.0, 100.0));
     assert_eq!(*path_at(&d, 10), Path::ellipse(250.0, 50.0, 50.0, 50.0));
     // The kind survives a save (and older files without it read as classic).
-    let t: Tween = serde_json::from_str(&serde_json::to_string(&Tween { easing: Easing::Linear, kind: TweenKind::Shape }).unwrap()).unwrap();
+    let t: Tween = serde_json::from_str(&serde_json::to_string(&Tween { easing: Easing::Linear, kind: TweenKind::Shape, ..Default::default() }).unwrap()).unwrap();
     assert_eq!(t.kind, TweenKind::Shape);
     assert_eq!(serde_json::from_str::<Tween>(r#"{"easing":"Linear"}"#).unwrap().kind, TweenKind::Classic);
+}
+
+#[test]
+fn motion_guides_steer_tweens_and_their_artwork_is_marked() {
+    // Guide (id 1): an L-shaped line, right 100 then down 100. Guided layer (id 2): a box
+    // tweened from (0,0) to (100,100) — a straight diagonal without the guide.
+    let mut d = Document { scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], ..Document::default() };
+    let mut g = Layer::new(LayerId(1), "Guide");
+    g.kind = LayerKind::Guide;
+    let mut l = Path::new();
+    l.move_to(anicraft_geom::Vec2::new(0.0, 0.0)).line_to(anicraft_geom::Vec2::new(100.0, 0.0)).line_to(anicraft_geom::Vec2::new(100.0, 100.0));
+    let mut line = Shape::filled(l, Paint::Solid(Rgba::BLACK)).with_stroke(Rgba::BLACK, 1.0);
+    line.fill = None;
+    g.keyframe_mut(0).unwrap().duration = 11;
+    push(&mut g, 0, Element { id: ElementId(5), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(line) });
+    let mut moving = Layer::new(LayerId(2), "Box");
+    moving.parent = Some(LayerId(1));
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(shape_el(10, 0.0)));
+    k0.tween = Some(Tween { easing: Easing::Linear, ..Default::default() });
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(Element { transform: Affine::translate(100.0, 100.0), ..shape_el(10, 0.0) }));
+    moving.keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    d.timeline_mut(0).layers = vec![Arc::new(g), Arc::new(moving)];
+    d.timeline_mut(0).repair_masks();
+    assert_eq!(d.timeline(0).layers[1].parent, Some(LayerId(1)), "a guided layer under its guide holds");
+
+    let at = |d: &Document, f| evaluate(d, f).items.iter().find(|i| i.element == ElementId(10)).unwrap().transform;
+    // Halfway along the 200-long path is the corner (100, 0), not the diagonal's (50, 50).
+    let mid = at(&d, 5).translation();
+    assert!((mid.x - 100.0).abs() < 1e-3 && mid.y.abs() < 1e-3, "{mid:?}");
+    let q = at(&d, 2).translation();
+    assert!((q.x - 40.0).abs() < 1e-3 && q.y.abs() < 1e-3, "{q:?}");
+    // Keyframes stay where they were drawn.
+    assert_eq!(at(&d, 0).translation(), anicraft_geom::Vec2::new(0.0, 0.0));
+    // Orient to path: on the downward leg the box has turned a quarter turn.
+    Arc::make_mut(&mut Arc::make_mut(&mut d.timeline_mut(0).layers[1]).keyframes[0]).tween.as_mut().unwrap().orient = true;
+    let m = at(&d, 8);
+    assert!((m.m[0]).abs() < 1e-3 && (m.m[1] - 1.0).abs() < 1e-3, "rotated 90°: {:?}", m.m);
+    // The guide's line is in the list, marked, so it can be edited but is never drawn.
+    let dl = evaluate(&d, 0);
+    assert!(dl.items.iter().any(|i| i.element == ElementId(5) && i.guide));
+    assert!(dl.items.iter().filter(|i| i.element != ElementId(5)).all(|i| !i.guide));
 }
