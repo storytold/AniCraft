@@ -1,6 +1,6 @@
 //! Timeline evaluation: `(document, frame) -> DisplayList`. Pure, deterministic, no caching.
 
-use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, Timeline, TweenKind};
+use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
 use anicraft_geom::walk::PathWalk;
 use anicraft_geom::{Affine, FillRule, Path};
 use std::borrow::Cow;
@@ -193,6 +193,22 @@ struct Ctx {
     group: Option<u32>,
 }
 
+/// The first frame of the unbroken run of keyframes on `layer`, up to `frame`, that hold
+/// element `id` as an instance of `symbol`: where a movie clip instance started playing.
+fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) -> u32 {
+    let Some(mut i) = layer.keyframe_index_at(frame) else { return frame };
+    let holds = |k: &crate::Keyframe| k.elements.iter().any(|e| e.id == id && matches!(e.kind, ElementKind::Symbol { symbol: s, .. } if s == symbol));
+    let mut start = layer.keyframes.get(i).map_or(frame, |k| k.start);
+    while let Some(prev) = i.checked_sub(1).and_then(|p| layer.keyframes.get(p)) {
+        if prev.end() != start || !holds(prev) {
+            break;
+        }
+        start = prev.start;
+        i -= 1;
+    }
+    start
+}
+
 /// The path a guide layer's first shape traces at `frame`, in the layer's own space.
 fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
     let (_, els) = evaluate_layer_elements(guide, frame)?;
@@ -285,7 +301,16 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                 }),
                 ElementKind::Symbol { symbol, loop_mode, first_frame } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
-                    let local = loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, sym.timeline.frame_count());
+                    let len = sym.timeline.frame_count();
+                    let local = match sym.kind {
+                        // A graphic keeps step with this timeline: loop mode and first frame apply.
+                        SymbolKind::Graphic => loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, len),
+                        // A movie clip plays its own timeline on a loop from when the instance
+                        // appeared, carrying on across keyframes that hold the same instance.
+                        SymbolKind::MovieClip => frame.saturating_sub(instance_start(layer, frame, el.id, *symbol)) % len.max(1),
+                        // A button shows its Up frame (states come with interactivity).
+                        SymbolKind::Button => 0,
+                    };
                     // An instance below full opacity fades as one: its contents composite in a
                     // group at full opacity, and the group blends at the instance's alpha. (Mask
                     // artwork ignores opacity, so it never needs one.)

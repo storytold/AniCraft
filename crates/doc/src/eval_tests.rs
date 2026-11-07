@@ -281,3 +281,48 @@ fn motion_guides_steer_tweens_and_their_artwork_is_marked() {
     assert!(dl.items.iter().any(|i| i.element == ElementId(5) && i.guide));
     assert!(dl.items.iter().filter(|i| i.element != ElementId(5)).all(|i| !i.guide));
 }
+
+#[test]
+fn movie_clips_play_their_own_timeline_graphics_keep_step_buttons_hold_up() {
+    // A 4-frame symbol: a box at x = 10·frame.
+    let sid = SymbolId(99);
+    let mut st = Layer::new(LayerId(50), "anim");
+    st.keyframes = (0..4u32)
+        .map(|f| {
+            let mut k = Keyframe::new(f, 1);
+            k.elements.push(Arc::new(shape_el(51, f as f32 * 10.0)));
+            Arc::new(k)
+        })
+        .collect();
+    let mut d = Document::default();
+    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![Arc::new(st)] } }));
+    // The same instance on two keyframes back to back (frames 0–4 and 5–11), moved on the second.
+    let inst = |x: f32| Element {
+        id: ElementId(60),
+        name: String::new(),
+        transform: Affine::translate(x, 0.0),
+        color: ColorEffect::default(),
+        kind: ElementKind::Symbol { symbol: sid, loop_mode: crate::LoopMode::Loop, first_frame: 0 },
+    };
+    let (mut k0, mut k1) = (Keyframe::new(0, 5), Keyframe::new(5, 7));
+    k0.elements.push(Arc::new(inst(0.0)));
+    k1.elements.push(Arc::new(inst(1000.0)));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    let x = |d: &Document, f| evaluate(d, f).items[0].transform.translation().x;
+    // Movie clip: frame 7 of the parent is frame 7 of its run (7 mod 4 = 3), across the keyframe.
+    assert_eq!(x(&d, 7), 1030.0);
+    assert_eq!(x(&d, 2), 20.0);
+    // Graphic: in step with the keyframe it is on (7 − 5 = 2).
+    let kind = |d: &mut Document, k| Arc::make_mut(&mut d.library[0]).kind = k;
+    kind(&mut d, SymbolKind::Graphic);
+    assert_eq!(x(&d, 7), 1020.0);
+    // Button: always its first (Up) frame.
+    kind(&mut d, SymbolKind::Button);
+    assert_eq!((x(&d, 2), x(&d, 7)), (0.0, 1000.0));
+    // A different instance on the next keyframe starts its movie clip over.
+    kind(&mut d, SymbolKind::MovieClip);
+    let mut k1b = Keyframe::new(5, 7);
+    k1b.elements.push(Arc::new(Element { id: ElementId(61), ..inst(1000.0) }));
+    layer0(&mut d).keyframes[1] = Arc::new(k1b);
+    assert_eq!(x(&d, 7), 1020.0);
+}

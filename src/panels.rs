@@ -323,6 +323,55 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 live(app, "Alpha", "element.set_alpha", json!({"alpha": alpha / 100.0}));
             }
         });
+        if let ElementKind::Symbol { symbol, loop_mode, first_frame } = &e.kind
+            && let Some(sym) = app.s.doc.symbol(*symbol).map(|s| (s.kind, s.timeline.frame_count()))
+        {
+            use anicraft_engine::doc::LoopMode;
+            let (kind, frames) = sym;
+            ui.add_space(4.0);
+            // How the instance plays: the symbol's type, and a graphic's looping.
+            row_prose(ui, "Type", |ui| {
+                let label = |k: SymbolKind| match k {
+                    SymbolKind::Graphic => "Graphic",
+                    SymbolKind::MovieClip => "Movie clip",
+                    SymbolKind::Button => "Button",
+                };
+                egui::ComboBox::from_id_salt("prop_symkind").width(150.0).selected_text(label(kind)).show_ui(ui, |ui| {
+                    for (k, id, tip) in [
+                        (SymbolKind::Graphic, "graphic", "Keeps step with the timeline it is on (looping options below)"),
+                        (SymbolKind::MovieClip, "movie_clip", "Plays its own timeline on a loop, from when it appears"),
+                        (SymbolKind::Button, "button", "Shows its Up frame"),
+                    ] {
+                        if ui.selectable_label(kind == k, label(k)).on_hover_text(tip).clicked() && kind != k {
+                            app.run("symbol.set_kind", json!({"symbol": symbol.0, "kind": id}));
+                        }
+                    }
+                });
+            });
+            if kind == SymbolKind::Graphic {
+                let names = [(LoopMode::Loop, "loop", "Loop"), (LoopMode::PlayOnce, "play_once", "Play once"), (LoopMode::SingleFrame, "single_frame", "Single frame")];
+                let current = names.iter().find(|(m, _, _)| m == loop_mode).map_or("Loop", |(_, _, l)| l);
+                row_prose(ui, "Looping", |ui| {
+                    egui::ComboBox::from_id_salt("prop_loop").width(150.0).selected_text(current).show_ui(ui, |ui| {
+                        for (m, id, l) in names {
+                            if ui.selectable_label(m == *loop_mode, l).clicked() && m != *loop_mode {
+                                app.run("element.set_loop", json!({"loop": id}));
+                            }
+                        }
+                    });
+                });
+                let mut first = first_frame + 1;
+                row(ui, "First frame", |ui| {
+                    let r = ui.add(egui::DragValue::new(&mut first).range(1..=frames.max(1)).speed(0.2));
+                    if r.changed() {
+                        live(app, "First frame", "element.set_loop", json!({"first_frame": first.saturating_sub(1)}));
+                    }
+                    ui.label(text(Type::Caption, format!("of {frames}")));
+                });
+            } else if kind == SymbolKind::MovieClip {
+                ui.label(text(Type::Caption, format!("Plays its {frames}-frame timeline on a loop from when it appears.")));
+            }
+        }
         if let ElementKind::Shape(sh) = &e.kind {
             ui.add_space(4.0);
             let fill = sh.fill.as_ref().map(Paint::primary_color);

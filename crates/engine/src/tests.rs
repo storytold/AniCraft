@@ -1346,3 +1346,27 @@ fn sprite_sheet_export_lays_frames_in_a_grid_with_a_frame_map() {
     assert!(s.execute("file.export_sprite_sheet", &json!({"path": dir.join("huge.png").display().to_string(), "scale": 8})).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn symbol_type_and_graphic_looping_commands() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    let v = run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    assert_eq!(v["kind"], "MovieClip");
+    assert_eq!(s.doc.library[0].kind, anicraft_doc::SymbolKind::MovieClip);
+    assert!(s.execute("symbol.set_kind", &json!({"kind": "sprite"})).is_err());
+    run(&mut s, "symbol.set_kind", json!({"kind": "graphic"}));
+    run(&mut s, "element.set_loop", json!({"loop": "single_frame", "first_frame": 3}));
+    let el = s.visible_elements()[0].clone();
+    assert!(matches!(el.kind, ElementKind::Symbol { loop_mode: anicraft_doc::LoopMode::SingleFrame, first_frame: 3, .. }));
+    assert!(s.execute("element.set_loop", &json!({})).is_err());
+    assert!(s.execute("element.set_loop", &json!({"loop": "sometimes"})).is_err());
+    // Undo restores the previous looping in one step.
+    s.undo().unwrap();
+    assert!(matches!(s.visible_elements()[0].kind, ElementKind::Symbol { loop_mode: anicraft_doc::LoopMode::Loop, first_frame: 0, .. }));
+    // Shapes have no looping.
+    run(&mut s, "draw.ellipse", json!({"x": 50, "y": 50, "w": 10, "h": 10}));
+    assert!(s.execute("element.set_loop", &json!({"loop": "loop"})).is_err());
+}

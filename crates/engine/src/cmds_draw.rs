@@ -28,6 +28,8 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, set_fill),
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?}", true, set_stroke),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, set_alpha),
+        c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, set_loop),
+        c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
         c("element.rename", "Instance Name", "", None, "{name}", true, rename),
         c("arrange.bring_to_front", "Bring to Front", "Modify/Arrange", Some("Ctrl+Shift+Up"), "{}", true, |s, _| arrange(s, true)),
         c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{}", true, |s, _| arrange_step(s, true)),
@@ -302,6 +304,67 @@ fn set_alpha(s: &mut Session, p: &Value) -> Result<Value> {
         e.color.alpha = a;
     }
     Ok(json!({"alpha": a}))
+}
+
+/// Looping for the selected graphic instances: loop, play once or a single frame, from
+/// `first_frame` (1-based in the UI, 0-based here).
+fn set_loop(s: &mut Session, p: &Value) -> Result<Value> {
+    let mode = match opt_str(p, "loop")? {
+        None => None,
+        Some("loop") => Some(LoopMode::Loop),
+        Some("play_once" | "play once") => Some(LoopMode::PlayOnce),
+        Some("single_frame" | "single frame") => Some(LoopMode::SingleFrame),
+        Some(other) => return Err(EngineError::Param(format!("unknown loop '{other}' (loop, play_once or single_frame)"))),
+    };
+    let first = opt_u32(p, "first_frame")?;
+    if mode.is_none() && first.is_none() {
+        return Err(EngineError::Param("pass 'loop' and/or 'first_frame'".into()));
+    }
+    let mut n = 0;
+    for e in s.selected_elements_mut()? {
+        if let ElementKind::Symbol { loop_mode, first_frame, .. } = &mut e.kind {
+            if let Some(m) = mode {
+                *loop_mode = m;
+            }
+            if let Some(f) = first {
+                *first_frame = f.min(crate::MAX_FRAME);
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return Err(EngineError::State("select a symbol instance first".into()));
+    }
+    Ok(json!({"instances": n}))
+}
+
+/// A symbol's kind, for every instance of it: a graphic keeps step with the timeline it is
+/// placed on, a movie clip plays its own timeline on a loop, a button shows its Up frame.
+fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
+    let kind = match str_req(p, "kind")? {
+        "graphic" => SymbolKind::Graphic,
+        "movie_clip" | "movie clip" => SymbolKind::MovieClip,
+        "button" => SymbolKind::Button,
+        other => return Err(EngineError::Param(format!("unknown symbol kind '{other}' (graphic, movie_clip or button)"))),
+    };
+    let id = match opt_u64(p, "symbol")? {
+        Some(id) => SymbolId(id),
+        None => {
+            // The symbol of the selected instance.
+            let sel = s.selection.first().copied().ok_or_else(|| EngineError::State("select a symbol instance, or pass 'symbol'".into()))?;
+            s.visible_elements()
+                .iter()
+                .find(|e| e.id == sel)
+                .and_then(|e| match e.kind {
+                    ElementKind::Symbol { symbol, .. } => Some(symbol),
+                    ElementKind::Shape(_) => None,
+                })
+                .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
+        }
+    };
+    let sym = s.doc.library.iter_mut().find(|x| x.id == id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
+    std::sync::Arc::make_mut(sym).kind = kind;
+    Ok(json!({"symbol": id.0, "kind": format!("{kind:?}")}))
 }
 
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {

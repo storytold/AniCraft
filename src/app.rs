@@ -443,6 +443,11 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some("select") => {
+                // The top layer's artwork selected, for its Properties.
+                self.run("layer.select", json!({"index": 0}));
+                self.run("edit.select_all", json!({}));
+            }
             Some("transform") => {
                 self.tool = Tool::Transform;
                 self.run("layer.select", json!({"index": 0}));
