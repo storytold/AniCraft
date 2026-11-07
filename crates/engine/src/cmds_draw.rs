@@ -28,6 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, set_fill),
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?}", true, set_stroke),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, set_alpha),
+        c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, set_blend),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, set_loop),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
         c("element.rename", "Instance Name", "", None, "{name}", true, rename),
@@ -306,6 +307,36 @@ fn set_alpha(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"alpha": a}))
 }
 
+/// Blending for the selected movie clip and button instances (Animate offers it on those only).
+fn set_blend(s: &mut Session, p: &Value) -> Result<Value> {
+    let key = str_req(p, "mode")?;
+    let mode = anicraft_doc::BlendMode::from_key(key).ok_or_else(|| {
+        let all: Vec<&str> = anicraft_doc::BlendMode::ALL.iter().map(|m| m.key()).collect();
+        EngineError::Param(format!("unknown blend mode '{key}' ({})", all.join(", ")))
+    })?;
+    let kinds: std::collections::HashMap<SymbolId, SymbolKind> = s.doc.library.iter().map(|x| (x.id, x.kind)).collect();
+    let mut set = 0;
+    let mut graphics = 0;
+    for e in s.selected_elements_mut()? {
+        if let ElementKind::Symbol { symbol, blend, .. } = &mut e.kind {
+            if kinds.get(symbol) == Some(&SymbolKind::Graphic) {
+                graphics += 1;
+                continue;
+            }
+            *blend = mode;
+            set += 1;
+        }
+    }
+    if set == 0 {
+        return Err(EngineError::State(if graphics > 0 {
+            "blending applies to movie clip and button instances, as in Animate; set the symbol's Type to Movie Clip first".into()
+        } else {
+            "select a movie clip or button instance".into()
+        }));
+    }
+    Ok(json!({"mode": mode.key(), "set": set}))
+}
+
 /// Looping for the selected graphic instances: loop, play once or a single frame, from
 /// `first_frame` (1-based in the UI, 0-based here).
 fn set_loop(s: &mut Session, p: &Value) -> Result<Value> {
@@ -479,7 +510,7 @@ fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(center.x, center.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sym_id, loop_mode: LoopMode::Loop, first_frame: 0 },
+        kind: ElementKind::Symbol { symbol: sym_id, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal },
     };
     let mut elements = rest;
     elements.insert(first_pos.min(elements.len()), Arc::new(instance));
@@ -563,7 +594,7 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(x, y),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0 },
+        kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal },
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
     s.selection = vec![id];

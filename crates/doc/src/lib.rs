@@ -218,9 +218,96 @@ pub enum ElementKind {
         loop_mode: LoopMode,
         #[serde(default)]
         first_frame: u32,
+        /// How the instance blends with what is below it (movie clips and buttons).
+        #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+        blend: BlendMode,
     },
     /// A block of text (ADR 0012).
     Text(Arc<TextBlock>),
+}
+
+/// How an instance's pixels combine with what is below it, as Animate's Blending menu. Every
+/// mode except Normal composites the instance on its own first (as Layer does), then blends
+/// the result.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Layer,
+    Darken,
+    Multiply,
+    Lighten,
+    Screen,
+    Overlay,
+    #[serde(rename = "hardlight")]
+    HardLight,
+    Add,
+    Subtract,
+    Difference,
+    Invert,
+    /// Shows what is below only where the instance is opaque.
+    Alpha,
+    /// Clears what is below where the instance is opaque.
+    Erase,
+}
+
+impl BlendMode {
+    pub const ALL: [BlendMode; 14] = [
+        BlendMode::Normal,
+        BlendMode::Layer,
+        BlendMode::Darken,
+        BlendMode::Multiply,
+        BlendMode::Lighten,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::HardLight,
+        BlendMode::Add,
+        BlendMode::Subtract,
+        BlendMode::Difference,
+        BlendMode::Invert,
+        BlendMode::Alpha,
+        BlendMode::Erase,
+    ];
+
+    pub fn is_normal(&self) -> bool {
+        *self == BlendMode::Normal
+    }
+
+    /// The name used in files, commands and Animate documents (`hardlight`, `multiply`…).
+    pub fn key(self) -> &'static str {
+        match self {
+            BlendMode::Normal => "normal",
+            BlendMode::Layer => "layer",
+            BlendMode::Darken => "darken",
+            BlendMode::Multiply => "multiply",
+            BlendMode::Lighten => "lighten",
+            BlendMode::Screen => "screen",
+            BlendMode::Overlay => "overlay",
+            BlendMode::HardLight => "hardlight",
+            BlendMode::Add => "add",
+            BlendMode::Subtract => "subtract",
+            BlendMode::Difference => "difference",
+            BlendMode::Invert => "invert",
+            BlendMode::Alpha => "alpha",
+            BlendMode::Erase => "erase",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BlendMode::HardLight => "Hard Light",
+            m => {
+                const L: [&str; 14] = ["Normal", "Layer", "Darken", "Multiply", "Lighten", "Screen", "Overlay", "Hard Light", "Add", "Subtract", "Difference", "Invert", "Alpha", "Erase"];
+                L.get(BlendMode::ALL.iter().position(|x| *x == m).unwrap_or(0)).copied().unwrap_or("Normal")
+            }
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<BlendMode> {
+        let s = s.trim().to_ascii_lowercase().replace([' ', '_', '-'], "");
+        BlendMode::ALL.into_iter().find(|m| m.key() == s)
+    }
 }
 
 /// Horizontal alignment of a text block's lines.

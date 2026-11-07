@@ -1603,3 +1603,32 @@ fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     assert!(fonts["families"].as_array().is_some_and(|f| !f.is_empty()));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn blend_modes_apply_to_movie_clips_and_survive_a_save() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 100, "fill": "#8080ff"}));
+    run(&mut s, "layer.new", json!({}));
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": "#ff0000"}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Red"}));
+    // A graphic can't blend, as in Animate; a movie clip can.
+    assert!(s.execute("element.set_blend", &json!({"mode": "multiply"})).unwrap_err().to_string().contains("movie clip"));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    assert!(s.execute("element.set_blend", &json!({"mode": "sparkle"})).is_err());
+    let v = run(&mut s, "element.set_blend", json!({"mode": "Multiply"}));
+    assert_eq!(v["mode"], "multiply");
+    let px = |s: &Session| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(50, 50).unwrap();
+    let p = px(&s);
+    assert!((p[0] - 128.0 / 255.0).abs() < 0.01 && p[1] < 0.01 && p[2] < 0.01, "red × lavender: {p:?}");
+    // Undo returns to normal; it saves and loads; SVG export writes the CSS blend mode.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(px(&s)[0] > 0.99);
+    run(&mut s, "edit.redo", json!({}));
+    let text = crate::format::to_json(&s.doc).unwrap();
+    assert!(text.contains("\"blend\": \"multiply\"") || text.contains("\"blend\":\"multiply\""));
+    assert_eq!(crate::format::from_json(&text).unwrap(), s.doc);
+    assert!(crate::cmds_file::frame_svg(&s.doc, 0).contains("mix-blend-mode:multiply"));
+    let lottie = anicraft_render::lottie::to_lottie(&s.doc, "b", 0, 0, false);
+    assert!(lottie.json.contains("\"bm\":1"), "Lottie multiply");
+    assert!(lottie.report.contains_key("blend modes (applied shape by shape)"));
+}

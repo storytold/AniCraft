@@ -56,6 +56,8 @@ pub struct DisplayList {
 pub struct Group {
     pub parent: Option<u32>,
     pub alpha: f32,
+    /// How the group's composited pixels combine with what is below.
+    pub blend: crate::BlendMode,
 }
 
 impl DisplayList {
@@ -94,7 +96,7 @@ impl DisplayList {
         let gbase = self.groups.len() as u32;
         let gshift = |g: Option<u32>| g.map(|g| g + gbase);
         self.clip_parents.extend(other.clip_parents.into_iter().map(shift));
-        self.groups.extend(other.groups.into_iter().map(|g| Group { parent: gshift(g.parent), alpha: g.alpha }));
+        self.groups.extend(other.groups.into_iter().map(|g| Group { parent: gshift(g.parent), alpha: g.alpha, blend: g.blend }));
         self.items.extend(other.items.into_iter().map(|mut i| {
             i.clip = shift(i.clip);
             i.masks = shift(i.masks);
@@ -323,7 +325,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     group: cx.group,
                     image: None,
                 }),
-                ElementKind::Symbol { symbol, loop_mode, first_frame } => {
+                ElementKind::Symbol { symbol, loop_mode, first_frame, blend } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
                     let len = sym.timeline.frame_count();
                     let local = match sym.kind {
@@ -338,10 +340,11 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     // An instance below full opacity fades as one: its contents composite in a
                     // group at full opacity, and the group blends at the instance's alpha. (Mask
                     // artwork ignores opacity, so it never needs one.)
+                    // A blend mode composites the instance on its own too, then blends it.
                     let fade = el.color.alpha.clamp(0.0, 1.0);
-                    let (color, group) = if masks.is_none() && fade < 1.0 - 1e-4 {
+                    let (color, group) = if masks.is_none() && (fade < 1.0 - 1e-4 || !blend.is_normal()) {
                         let gid = out.groups.len() as u32;
-                        out.groups.push(Group { parent: cx.group, alpha: fade });
+                        out.groups.push(Group { parent: cx.group, alpha: fade, blend: *blend });
                         (cx.color.concat(&ColorEffect { alpha: 1.0, ..el.color }), Some(gid))
                     } else {
                         (color, cx.group)

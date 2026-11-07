@@ -10,7 +10,7 @@ pub mod stroke;
 pub mod lottie;
 pub mod svg;
 
-use anicraft_doc::{ColorEffect, DisplayItem, DisplayList, Document, Paint, Rgba, evaluate};
+use anicraft_doc::{BlendMode, ColorEffect, DisplayItem, DisplayList, Document, Paint, Rgba, evaluate};
 use anicraft_geom::{Affine, FillRule, Rect, Vec2};
 use paint::{Premul, Shader, premultiply};
 use raster::{Coverage, IRect};
@@ -249,10 +249,12 @@ pub(crate) fn group_chains(groups: &[anicraft_doc::Group]) -> Vec<Vec<u32>> {
     out
 }
 
-/// Blends the innermost open group into what is below it, at the group's alpha.
+/// Blends the innermost open group into what is below it, at the group's alpha and in its
+/// blend mode.
 fn close_group(open: &mut Vec<OpenGroup>, rows: &mut [Premul], groups: &[anicraft_doc::Group], band_y0: i32, w: usize) {
     let Some(g) = open.pop() else { return };
     let alpha = groups.get(g.id as usize).map_or(1.0, |x| if x.alpha.is_finite() { x.alpha.clamp(0.0, 1.0) } else { 1.0 });
+    let mode = groups.get(g.id as usize).map_or(BlendMode::Normal, |x| x.blend);
     let dst: &mut [Premul] = match open.last_mut() {
         Some(below) => {
             below.dirty = below.dirty.union(&g.dirty);
@@ -262,6 +264,18 @@ fn close_group(open: &mut Vec<OpenGroup>, rows: &mut [Premul], groups: &[anicraf
     };
     let d = g.dirty;
     if d.is_empty() || alpha <= 0.0 {
+        return;
+    }
+    if !matches!(mode, BlendMode::Normal | BlendMode::Layer) {
+        for py in d.y0..d.y1 {
+            let start = (py - band_y0) as usize * w + d.x0 as usize;
+            let (Some(src), Some(out)) = (g.buf.get(start..start + d.width()), dst.get_mut(start..start + d.width())) else { continue };
+            for (o, s) in out.iter_mut().zip(src) {
+                if s[3] > 0.0 {
+                    *o = blend(mode, [s[0] * alpha, s[1] * alpha, s[2] * alpha, s[3] * alpha], *o);
+                }
+            }
+        }
         return;
     }
     for py in d.y0..d.y1 {
@@ -279,6 +293,45 @@ fn close_group(open: &mut Vec<OpenGroup>, rows: &mut [Premul], groups: &[anicraf
             o[3] = sa + o[3] * inv;
         }
     }
+}
+
+/// Source `s` over backdrop `b` (both premultiplied) in blend mode `mode`: the W3C
+/// compositing formula `Cr = (1 − αb)·Cs + (1 − αs)·Cb + αs·αb·B(cb, cs)` for the separable
+/// modes; Alpha and Erase keep or clear the backdrop by the source's opacity.
+pub(crate) fn blend(mode: BlendMode, s: Premul, b: Premul) -> Premul {
+    let (sa, ba) = (s[3].clamp(0.0, 1.0), b[3].clamp(0.0, 1.0));
+    match mode {
+        BlendMode::Alpha => return [b[0] * sa, b[1] * sa, b[2] * sa, ba * sa],
+        BlendMode::Erase => {
+            let k = 1.0 - sa;
+            return [b[0] * k, b[1] * k, b[2] * k, ba * k];
+        }
+        _ => {}
+    }
+    let un = |c: f32, a: f32| if a > 1e-6 { (c / a).clamp(0.0, 1.0) } else { 0.0 };
+    let f = |cb: f32, cs: f32| -> f32 {
+        let hard = |cb: f32, cs: f32| if cs <= 0.5 { cb * 2.0 * cs } else { let t = 2.0 * cs - 1.0; cb + t - cb * t };
+        match mode {
+            BlendMode::Multiply => cb * cs,
+            BlendMode::Screen => cb + cs - cb * cs,
+            BlendMode::Darken => cb.min(cs),
+            BlendMode::Lighten => cb.max(cs),
+            BlendMode::Difference => (cb - cs).abs(),
+            BlendMode::Add => (cb + cs).min(1.0),
+            BlendMode::Subtract => (cb - cs).max(0.0),
+            BlendMode::Invert => 1.0 - cb,
+            BlendMode::HardLight => hard(cb, cs),
+            BlendMode::Overlay => hard(cs, cb),
+            BlendMode::Normal | BlendMode::Layer | BlendMode::Alpha | BlendMode::Erase => cs,
+        }
+    };
+    let mut out = [0.0; 4];
+    for i in 0..3 {
+        let (cs, cb) = (un(s[i], sa), un(b[i], ba));
+        out[i] = (1.0 - ba) * s[i] + (1.0 - sa) * b[i] + sa * ba * f(cb, cs);
+    }
+    out[3] = sa + ba - sa * ba;
+    out
 }
 
 /// Rows per parallel band.
@@ -583,7 +636,7 @@ mod tests {
         let mut blue = item(Path::rect(4.0, 0.0, 8.0, 4.0), Paint::Solid(Rgba::new(0.0, 0.0, 1.0, 1.0)));
         red.group = Some(0);
         blue.group = Some(0);
-        let grouped = DisplayList { items: vec![red.clone(), blue.clone()], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5 }] };
+        let grouped = DisplayList { items: vec![red.clone(), blue.clone()], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5, blend: Default::default() }] };
         let (pm, _) = render(&grouped, &white).unwrap();
         let near = |p: Premul, q: [f32; 4]| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 1e-4);
         // In the overlap only the top square shows through: half blue, half white, no red.
@@ -602,7 +655,7 @@ mod tests {
         let nested = DisplayList {
             items: vec![inner],
             clip_parents: vec![],
-            groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5 }, anicraft_doc::Group { parent: Some(0), alpha: 0.5 }],
+            groups: vec![anicraft_doc::Group { parent: None, alpha: 0.5, blend: Default::default() }, anicraft_doc::Group { parent: Some(0), alpha: 0.5, blend: Default::default() }],
         };
         let (n, _) = render(&nested, &white).unwrap();
         assert!(near(n.pixel(3, 2).unwrap(), [0.75, 0.75, 0.75, 1.0]), "{:?}", n.pixel(3, 2));
@@ -613,7 +666,7 @@ mod tests {
         // Spanning several render bands changes nothing.
         let mut tall = item(Path::rect(0.0, 0.0, 4.0, 100.0), Paint::Solid(Rgba::BLACK));
         tall.group = Some(0);
-        let (t, _) = render(&DisplayList { items: vec![tall], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.25 }] }, &View { background: Some(Rgba::WHITE), ..view(4, 100) }).unwrap();
+        let (t, _) = render(&DisplayList { items: vec![tall], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.25, blend: Default::default() }] }, &View { background: Some(Rgba::WHITE), ..view(4, 100) }).unwrap();
         assert!((0..100).all(|y| near(t.pixel(1, y).unwrap(), [0.75, 0.75, 0.75, 1.0])));
     }
 
@@ -752,5 +805,38 @@ mod tests {
     #[test]
     fn huge_surface_is_refused() {
         assert!(matches!(Pixmap::new(100_000, 100_000), Err(RenderError::TooLarge(..))));
+    }
+
+    #[test]
+    fn blend_modes_follow_the_compositing_formulas() {
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let grey = [0.5, 0.5, 0.5, 1.0];
+        let close = |a: Premul, b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(close(blend(BlendMode::Multiply, red, grey), [0.5, 0.0, 0.0, 1.0]));
+        assert!(close(blend(BlendMode::Screen, red, grey), [1.0, 0.5, 0.5, 1.0]));
+        assert!(close(blend(BlendMode::Darken, red, grey), [0.5, 0.0, 0.0, 1.0]));
+        assert!(close(blend(BlendMode::Lighten, red, grey), [1.0, 0.5, 0.5, 1.0]));
+        assert!(close(blend(BlendMode::Difference, red, grey), [0.5, 0.5, 0.5, 1.0]));
+        assert!(close(blend(BlendMode::Add, red, grey), [1.0, 0.5, 0.5, 1.0]));
+        assert!(close(blend(BlendMode::Subtract, red, grey), [0.0, 0.5, 0.5, 1.0]));
+        assert!(close(blend(BlendMode::Invert, red, grey), [0.5, 0.5, 0.5, 1.0]));
+        assert!(close(blend(BlendMode::Erase, red, grey), [0.0, 0.0, 0.0, 0.0]));
+        assert!(close(blend(BlendMode::Alpha, [0.0, 0.0, 0.0, 0.5], grey), [0.25, 0.25, 0.25, 0.5]));
+        // Over nothing, a blend mode is just the source; a clear source leaves the backdrop.
+        assert!(close(blend(BlendMode::Multiply, red, [0.0; 4]), red));
+        assert!(close(blend(BlendMode::Multiply, [0.0; 4], grey), grey));
+    }
+
+    #[test]
+    fn a_multiply_group_darkens_what_is_below() {
+        let bg = item(Path::rect(0.0, 0.0, 20.0, 10.0), Paint::Solid(Rgba::new(0.5, 0.5, 1.0, 1.0)));
+        let mut top = item(Path::rect(0.0, 0.0, 10.0, 10.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0)));
+        top.group = Some(0);
+        let dl = DisplayList { items: vec![bg, top], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 1.0, blend: BlendMode::Multiply }] };
+        let (pm, _) = render(&dl, &View { background: Some(Rgba::WHITE), ..view(20, 10) }).unwrap();
+        let p = pm.pixel(5, 5).unwrap();
+        assert!((p[0] - 0.5).abs() < 1e-3 && p[1].abs() < 1e-3 && p[2].abs() < 1e-3, "red × lavender: {p:?}");
+        let q = pm.pixel(15, 5).unwrap();
+        assert!((q[2] - 1.0).abs() < 1e-3, "outside the group unchanged: {q:?}");
     }
 }
