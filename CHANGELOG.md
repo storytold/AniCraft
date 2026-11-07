@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* **Export Sprite Sheet** (File › Export, `file.export_sprite_sheet`): movie frames in a grid
+  on one PNG, plus a JSON frame map beside it in the common "JSON hash" layout, with frame
+  rectangles, sizes and per-frame durations, ready for game engines. Choose the frame range,
+  scale, columns, padding and whether to keep the stage background (transparent by default).
+  Replacing either file asks first.
+
 * **Motion guides** (a layer's right-click menu › Add Classic Motion Guide, or Insert ›
   Timeline). Draw a line on the guide layer and the layer's classic tweens travel along it,
   from the point nearest each start keyframe to the point nearest its end. With **Orient to

@@ -91,6 +91,12 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             path.exists().then(|| overwrite(path, "Exporting"))
         }
+        "file.export_sprite_sheet" => {
+            // The sheet and its frame map: either one already there is replaced.
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            let json = path.with_extension("json");
+            [path, json.as_path()].into_iter().find(|f| f.exists()).map(|f| overwrite(f, "Exporting"))
+        }
         "file.export_png_sequence" => {
             let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
             let has_frames = std::fs::read_dir(dir).ok()?.take(10_000).flatten().any(|e| {

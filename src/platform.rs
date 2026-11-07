@@ -122,6 +122,7 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_png" => ("PNG image", &["png"]),
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" | "file.import" => ("SVG image", &["svg"]),
+        "file.export_sprite_sheet" => ("PNG sprite sheet", &["png"]),
         // Opening also imports .fla archives and .xfl packages.
         "file.open" => ("Documents", &["anicraft", "fla", "xfl"]),
         _ => ("AniCraft document", &["anicraft"]),

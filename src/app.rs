@@ -560,6 +560,7 @@ impl App {
                 let report = v["report"].as_str().unwrap_or("");
                 self.status_ok(format!("{n} {} on a new layer. {report} Ctrl+Z to undo.", if n == 1 { "shape" } else { "shapes" }));
             }
+            "file.export_sprite_sheet" => self.status_ok(format!("Exported {} frames to {} ({}×{} grid) and its frame map {}", v["frames"], v["written"].as_str().unwrap_or(""), v["columns"], v["rows"], v["map"].as_str().unwrap_or(""))),
             "file.export_png" | "file.export_png_sequence" | "file.export_gif" | "file.export_svg" => self.status_ok(format!("Exported {}", v.get("written").or_else(|| v.get("dir")).and_then(Value::as_str).unwrap_or(""))),
             "edit.undo" => self.status_ok(format!("Undid {}", v["undone"].as_str().unwrap_or(""))),
             "edit.redo" => self.status_ok(format!("Redid {}", v["redone"].as_str().unwrap_or(""))),
@@ -632,6 +633,7 @@ impl App {
             "file.export_png_sequence" => Some(("Export PNG sequence to folder", "dir", "frames".to_string())),
             "file.export_gif" => Some(("Export animated GIF", "path", "animation.gif".to_string())),
             "file.export_svg" => Some(("Export frame as SVG", "path", format!("frame_{:04}.svg", self.s.frame + 1))),
+            "file.export_sprite_sheet" => Some(("Export sprite sheet (PNG + JSON frame map)", "path", "sprites.png".to_string())),
             "file.import" => Some(("Import to stage (SVG)", "path", "drawing.svg".to_string())),
             "modify.convert_to_symbol" => Some(("Convert to symbol — name", "name", format!("Symbol {}", self.s.doc.library.len() + 1))),
             _ => None,

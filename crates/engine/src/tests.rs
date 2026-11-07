@@ -1312,3 +1312,37 @@ fn add_motion_guide_steers_the_tween_and_stays_out_of_exports() {
     assert_eq!(s.doc.timeline(s.scene).layers.len(), n);
     assert!(s.doc.timeline(s.scene).layers.iter().all(|l| l.kind != anicraft_doc::LayerKind::Mask));
 }
+
+#[test]
+fn sprite_sheet_export_lays_frames_in_a_grid_with_a_frame_map() {
+    let dir = std::env::temp_dir().join(format!("anicraft-sheet-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sheet = dir.join("ball.png");
+    let _ = std::fs::remove_file(&sheet);
+    let _ = std::fs::remove_file(dir.join("ball.json"));
+    let mut s = Session::new(sample::demo());
+    let p = json!({"path": sheet.display().to_string(), "from": 0, "to": 4, "scale": 0.1, "padding": 2});
+    let v = run(&mut s, "file.export_sprite_sheet", p.clone());
+    // 5 frames of 128×72 in 3 columns × 2 rows, 2 px apart.
+    assert_eq!((v["columns"].as_u64(), v["rows"].as_u64()), (Some(3), Some(2)));
+    assert_eq!((v["width"].as_u64(), v["height"].as_u64()), (Some(3 * 128 + 4), Some(2 * 72 + 2)));
+    let map: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("ball.json")).unwrap()).unwrap();
+    let frames = map["frames"].as_object().unwrap();
+    assert_eq!(frames.len(), 5);
+    assert_eq!(frames["ball_0005"]["frame"], json!({"x": 130, "y": 74, "w": 128, "h": 72}));
+    assert_eq!(map["meta"]["image"], "ball.png");
+    let total: u64 = frames.values().map(|f| f["duration"].as_u64().unwrap()).sum();
+    assert!((200..=220).contains(&total), "5 frames at 24 fps ≈ 208 ms: {total}");
+    // The PNG is that size, transparent between frames, and each cell matches a plain render.
+    let dec = png::Decoder::new(std::io::Cursor::new(std::fs::read(&sheet).unwrap()));
+    let mut r = dec.read_info().unwrap();
+    let mut buf = vec![0; r.output_buffer_size()];
+    let info = r.next_frame(&mut buf).unwrap();
+    assert_eq!((info.width, info.height), (388, 146));
+    let at = |x: usize, y: usize| buf[(y * 388 + x) * 4 + 3];
+    assert_eq!(at(129, 10), 0, "the padding is transparent");
+    // Replacing either file asks first; an impossible sheet is refused.
+    assert!(s.execute("file.export_sprite_sheet", &p).is_err());
+    assert!(s.execute("file.export_sprite_sheet", &json!({"path": dir.join("huge.png").display().to_string(), "scale": 8})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
