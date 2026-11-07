@@ -55,8 +55,7 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         "AniCraft",
         options,
         Box::new(move |cc| {
-            let mut a = app::App::new(cc, session, shot);
-            a.lang_arg = lang;
+            let mut a = app::App::new(cc, session, shot, lang);
             a.open_panel(open.as_deref());
             Ok(Box::new(a))
         }),

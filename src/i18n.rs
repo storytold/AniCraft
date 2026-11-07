@@ -151,6 +151,12 @@ mod tests {
         assert!(!fmt("Saved {path}", &[("path", "a.anicraft")]).starts_with("Saved"));
         assert!(fmt("Saved {path}", &[("path", "a.anicraft")]).contains("a.anicraft"));
         assert!(trn(2, "{n} frame", "{n} frames").contains('2'));
+        // Hand-painted widgets mirror; rows run from the right.
+        let r = egui::Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(300.0, 20.0));
+        assert_eq!(crate::theme::mirror_x(r, 110.0), 290.0);
+        assert_eq!(crate::theme::mirror(r, egui::Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(103.0, 20.0))).min.x, 297.0);
+        assert_eq!(crate::theme::start_row(egui::Align::Center).main_dir, egui::Direction::RightToLeft);
         set_current(Lang::EN);
+        assert_eq!(crate::theme::mirror_x(r, 110.0), 110.0, "left to right leaves it");
     }
 }

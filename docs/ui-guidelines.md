@@ -115,7 +115,7 @@ are not used for UI text, because they would change metrics per OS.
   at the set's native 24 px, where they are sharpest.
 * **Selection is solid, Subselection hollow** (`Icon::solid`): the two arrows must be told apart
   at a glance, as animators expect.
-* Forms use `theme::form_row` / `theme::form_note`: labels left-aligned in one column, controls
+* Forms use `theme::form_row` / `theme::form_note`: labels at the start of one column, controls
   in the next, and explanations under the control they explain (under a checkbox or radio
   button, aligned with its text), never back at the label column.
 * 18–20 px glyph inside a larger target, the same colour as the text, white on an active
@@ -153,6 +153,10 @@ are not used for UI text, because they would change metrics per OS.
 * Frames are 1-based in the UI (frame 1 is the first). Time is in seconds with two decimals
   (`0.50 s`). Units follow the number with a space: `24.00 fps`, `1280 × 720 px`, `78%`.
 * Use "×" for dimensions and "·" to separate inline facts.
+* Text is English in the code and goes through `tl!`, `i18n::fmt` (templates) or `i18n::trn`
+  (counts); document text, ids and file names never do (ADR 0013). In a right-to-left language
+  rows, forms and dialogs start at the right (`theme::start_row`, `end_row`, `reading`,
+  `column`, `mirror`); the stage and the timeline keep their direction.
 
 ## 9. Checklist for a UI change
 

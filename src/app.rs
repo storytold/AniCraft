@@ -295,7 +295,7 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
+    pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>, lang_arg: Option<String>) -> App {
         theme::apply(&cc.egui_ctx);
         let shot_mode = shot.is_some();
         // Screenshot runs use defaults so automated checks are reproducible.
@@ -325,7 +325,7 @@ impl App {
             show_files: false,
             show_licenses: false,
             shot: shot.map(|path| Shot { path, frames: 0, requested: false, image: Default::default() }),
-            lang_arg: None,
+            lang_arg,
             cursor_stage: None,
             tl_scroll: 0.0,
             tl_cell_w: timeline::CELL_DEFAULT,
@@ -365,6 +365,8 @@ impl App {
             key_capture: None,
         };
         app.apply_prefs(&cc.egui_ctx);
+        // The language is set every frame; the first message is written before the first frame.
+        crate::i18n::set_current(crate::i18n::from_pref(app.lang_arg.as_deref().unwrap_or(&app.prefs.language)));
         app.status_ok(tl!("Welcome to AniCraft. Press Enter to play the sample animation."));
         app
     }
@@ -925,7 +927,7 @@ impl App {
         let Some(p) = &mut self.prompt else { return };
         let mut submit = false;
         let mut cancel = false;
-        egui::Window::new(tl!(p.title)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| {
+        egui::Window::new(tl!(p.title)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.set_min_width(360.0);
             let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY));
             r.request_focus();
@@ -940,7 +942,7 @@ impl App {
                     cancel = true;
                 }
             });
-        });
+        }));
         if submit {
             if let Some(p) = self.prompt.take() {
                 // Through `request`, so opening over unsaved work or saving over a file asks first.
@@ -954,14 +956,14 @@ impl App {
 
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
-        egui::Window::new(tl!("About AniCraft")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new(tl!("About AniCraft")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.heading("AniCraft");
             ui.label(i18n::fmt("Version {version} · {stage}", &[("version", env!("CARGO_PKG_VERSION")), ("stage", tl!(RELEASE_STAGE))]));
             ui.label(tl!("Open-source 2D vector animation studio, written in Rust."));
             ui.label(i18n::fmt("{n} engine commands — all available headless via anicraft-cli.", &[("n", &commands().len().to_string())]));
             ui.colored_label(T.text_dim, "MIT OR Apache-2.0");
             ui.label(theme::text(theme::Type::Caption, i18n::fmt("Typefaces: {fonts}", &[("fonts", &theme::font_summary())])));
-        });
+        }));
         self.show_about = open;
     }
 
@@ -984,26 +986,46 @@ impl App {
             ("Screenshots", root.join("shots")),
         ];
         let mut opened: Option<Result<(), String>> = None;
-        egui::Window::new(tl!("Project Files")).open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| {
+        egui::Window::new(tl!("Project Files")).open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.label(theme::text(theme::Type::Label, tl!("Where AniCraft's documents and files are on this computer")));
             ui.add_space(4.0);
-            egui::Grid::new("files").num_columns(3).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
+            crate::theme::ltr(ui, |ui| egui::Grid::new("files").num_columns(3).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
+                // Name, path, button in reading order: egui's Grid only runs left to right, so a
+                // right-to-left language adds them the other way round.
+                let rtl = theme::rtl();
                 for (label, path) in &entries {
-                    ui.label(theme::text(theme::Type::Body, tl!(label)).strong());
-                    ui.label(theme::text(theme::Type::Path, path.display().to_string()).color(if path.exists() { T.text } else { T.text_faint }));
-                    if ui.add_enabled(path.exists(), egui::Button::new(tl!("Open"))).clicked() {
-                        opened = Some(open_in_system(path));
+                    let name = |ui: &mut egui::Ui| ui.label(theme::text(theme::Type::Body, tl!(label)).strong());
+                    let at = |ui: &mut egui::Ui| ui.label(theme::text(theme::Type::Path, path.display().to_string()).color(if path.exists() { T.text } else { T.text_faint }));
+                    let mut button = |ui: &mut egui::Ui| {
+                        if ui.add_enabled(path.exists(), egui::Button::new(tl!("Open"))).clicked() {
+                            opened = Some(open_in_system(path));
+                        }
+                    };
+                    if rtl {
+                        button(ui);
+                        at(ui);
+                        name(ui);
+                    } else {
+                        name(ui);
+                        at(ui);
+                        button(ui);
                     }
                     ui.end_row();
                 }
                 let doc = self.s.path.as_ref().map_or_else(|| tl!("not saved yet (File › Save)").to_string(), |p| p.display().to_string());
-                ui.label(theme::text(theme::Type::Body, tl!("Current document")).strong());
-                ui.label(theme::text(theme::Type::Path, doc));
+                if rtl {
+                    ui.label("");
+                    ui.label(theme::text(theme::Type::Path, doc));
+                    ui.label(theme::text(theme::Type::Body, tl!("Current document")).strong());
+                } else {
+                    ui.label(theme::text(theme::Type::Body, tl!("Current document")).strong());
+                    ui.label(theme::text(theme::Type::Path, doc));
+                }
                 ui.end_row();
-            });
+            }));
             ui.add_space(4.0);
             ui.label(theme::text(theme::Type::Caption, tl!("Saved documents and exports go where you type in the save box; a plain name lands in the folder AniCraft was started from.")));
-        });
+        }));
         match opened {
             Some(Err(e)) => self.status_err(e),
             Some(Ok(())) => self.status_ok(tl!("Opened in your system's file viewer")),
@@ -1067,10 +1089,12 @@ impl eframe::App for App {
 
         let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 2));
         egui::Panel::top("menu_bar").frame(bar(T.chrome)).show(ui, |ui| menus::bar(self, ui));
-        egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| panels::edit_bar(self, ui));
-        egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| panels::status_bar(self, ui));
-        egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(6, 8))).show(ui, |ui| panels::tools(self, ui));
-        egui::Panel::right("properties").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
+        egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| theme::reading(ui, |ui| panels::edit_bar(self, ui)));
+        egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| theme::reading(ui, |ui| panels::status_bar(self, ui)));
+        // Tools where reading starts, the dock where it ends: mirrored in a right-to-left language.
+        let (start, end) = if theme::rtl() { (egui::Panel::right("tools"), egui::Panel::left("properties")) } else { (egui::Panel::left("tools"), egui::Panel::right("properties")) };
+        start.resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(6, 8))).show(ui, |ui| panels::tools(self, ui));
+        end.resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| theme::reading(ui, |ui| panels::right(self, ui)));
         egui::Panel::bottom("timeline").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
 

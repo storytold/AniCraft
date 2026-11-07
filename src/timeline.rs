@@ -158,58 +158,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- header ---------------------------------------------------------------------------
     egui::Frame::NONE.fill(T.panel_alt).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(text(Type::Heading, tl!("Timeline")));
-            ui.add_space(8.0);
-            transport(app, ui);
-            ui.add_space(8.0);
-            let fps = app.s.doc.stage.fps;
-            let f = app.s.frame;
-            // Fixed-width readouts: digits stay put while the playhead moves.
-            let digits = app.s.frame_count().max(f + 1).to_string().len().max(3);
-            ui.label(text(Type::DataLarge, format!("{:>digits$}", f + 1)).color(T.accent)).on_hover_text(tl!("Current frame"));
-            ui.label(text(Type::Data, i18n::fmt("{fps} fps", &[("fps", &format!("{fps:.2}"))])).color(T.text_dim)).on_hover_text(tl!("Frame rate"));
-            ui.label(text(Type::Data, i18n::fmt("{secs} s", &[("secs", &format!("{:>7.2}", f as f32 / fps.max(1.0)))])).color(T.text_dim)).on_hover_text(tl!("Time at the playhead"));
-            ui.separator();
-            // Through `invoke`, so the buttons act on the frame selection like the keys do.
-            let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
-                if ui.button(tl!(label)).on_hover_text(tl!(tip)).clicked() {
-                    app.invoke(id);
-                }
-            };
-            cmd(app, ui, "Frame", "Insert frame (F5)", "timeline.insert_frame");
-            cmd(app, ui, "Keyframe", "Insert keyframe (F6)", "timeline.insert_keyframe");
-            cmd(app, ui, "Blank", "Insert blank keyframe (F7)", "timeline.insert_blank_keyframe");
-            let in_tween = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).and_then(|k| k.tween);
-            match in_tween {
-                Some(tw) => {
-                    egui::ComboBox::from_id_salt("tl_ease").width(150.0).selected_text(tl!(&tw.easing.label())).show_ui(ui, |ui| {
-                        for (name, e) in Easing::PRESETS {
-                            if ui.selectable_label(tw.easing == e, tl!(name)).clicked() {
-                                app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
-                            }
-                        }
-                    });
-                    // The tween's kind: classic ⇄ shape (keeping the easing), or none.
-                    let shape = tw.kind == TweenKind::Shape;
-                    egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text(tl!(if shape { "Shape tween" } else { "Classic tween" })).show_ui(ui, |ui| {
-                        if ui.selectable_label(!shape, tl!("Classic tween")).on_hover_text(tl!("Moves, scales, rotates and recolours")).clicked() && shape {
-                            app.run("timeline.create_tween", json!({}));
-                        }
-                        if ui.selectable_label(shape, tl!("Shape tween")).on_hover_text(tl!("Also morphs one shape into another")).clicked() && !shape {
-                            app.run("timeline.create_shape_tween", json!({}));
-                        }
-                        ui.separator();
-                        if ui.selectable_label(false, tl!("Remove tween")).clicked() {
-                            app.invoke("timeline.remove_tween");
-                        }
-                    });
-                }
-                None => {
-                    cmd(app, ui, "Create Tween", "Create a classic tween to the next keyframe", "timeline.create_tween");
-                    cmd(app, ui, "Shape Tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween");
-                }
-            }
-            // Frame zoom, at the right end of the header.
+            // The frame zoom first, at the right end, so nothing runs over it; the rest wraps onto
+            // a second row when its labels need more room than the window has (longer languages).
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
                 let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
@@ -218,6 +168,60 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.tl_cell_w = (pct / 100.0 * CELL_DEFAULT).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
                 }
                 ui.label(text(Type::Label, tl!("Zoom")));
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
+                    ui.label(text(Type::Heading, tl!("Timeline")));
+                    ui.add_space(8.0);
+                    transport(app, ui);
+                    ui.add_space(8.0);
+                    let fps = app.s.doc.stage.fps;
+                    let f = app.s.frame;
+                    // Fixed-width readouts: digits stay put while the playhead moves.
+                    let digits = app.s.frame_count().max(f + 1).to_string().len().max(3);
+                    ui.label(text(Type::DataLarge, format!("{:>digits$}", f + 1)).color(T.accent)).on_hover_text(tl!("Current frame"));
+                    ui.label(text(Type::Data, i18n::fmt("{fps} fps", &[("fps", &format!("{fps:.2}"))])).color(T.text_dim)).on_hover_text(tl!("Frame rate"));
+                    ui.label(text(Type::Data, i18n::fmt("{secs} s", &[("secs", &format!("{:>7.2}", f as f32 / fps.max(1.0)))])).color(T.text_dim)).on_hover_text(tl!("Time at the playhead"));
+                    ui.separator();
+                    // Through `invoke`, so the buttons act on the frame selection like the keys do.
+                    let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
+                        if ui.button(tl!(label)).on_hover_text(tl!(tip)).clicked() {
+                            app.invoke(id);
+                        }
+                    };
+                    cmd(app, ui, "Frame", "Insert frame (F5)", "timeline.insert_frame");
+                    cmd(app, ui, "Keyframe", "Insert keyframe (F6)", "timeline.insert_keyframe");
+                    cmd(app, ui, "Blank", "Insert blank keyframe (F7)", "timeline.insert_blank_keyframe");
+                    let in_tween = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).and_then(|k| k.tween);
+                    match in_tween {
+                        Some(tw) => {
+                            egui::ComboBox::from_id_salt("tl_ease").width(150.0).selected_text(easing_label(tw.easing)).show_ui(ui, |ui| {
+                                for (name, e) in Easing::PRESETS {
+                                    if ui.selectable_label(tw.easing == e, tl!(name)).clicked() {
+                                        app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
+                                    }
+                                }
+                            });
+                            // The tween's kind: classic ⇄ shape (keeping the easing), or none.
+                            let shape = tw.kind == TweenKind::Shape;
+                            egui::ComboBox::from_id_salt("tl_kind").width(150.0).selected_text(tl!(if shape { "Shape tween" } else { "Classic tween" })).show_ui(ui, |ui| {
+                                if ui.selectable_label(!shape, tl!("Classic tween")).on_hover_text(tl!("Moves, scales, rotates and recolours")).clicked() && shape {
+                                    app.run("timeline.create_tween", json!({}));
+                                }
+                                if ui.selectable_label(shape, tl!("Shape tween")).on_hover_text(tl!("Also morphs one shape into another")).clicked() && !shape {
+                                    app.run("timeline.create_shape_tween", json!({}));
+                                }
+                                ui.separator();
+                                if ui.selectable_label(false, tl!("Remove tween")).clicked() {
+                                    app.invoke("timeline.remove_tween");
+                                }
+                            });
+                        }
+                        None => {
+                            cmd(app, ui, "Create Tween", "Create a classic tween to the next keyframe", "timeline.create_tween");
+                            cmd(app, ui, "Shape Tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween");
+                        }
+                    }
+                });
             });
         });
     });
@@ -842,6 +846,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_filled(track, T.rc(), T.field);
     painter.rect_filled(thumb, T.rc(), if sr.hovered() || sr.dragged() { T.control_edge } else { T.hover });
     sr.on_hover_text(tl!("Scroll the timeline (or Shift+wheel anywhere over it)"));
+}
+
+/// An easing's name in the interface language. A classic ease carries its strength (-100…100).
+pub fn easing_label(e: Easing) -> String {
+    match e {
+        Easing::Classic(s) => i18n::fmt("Classic {strength}", &[("strength", &format!("{s:+.0}"))]),
+        other => tl!(&other.label()).to_string(),
+    }
 }
 
 /// Engine param for an easing preset.

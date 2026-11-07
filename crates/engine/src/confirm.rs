@@ -17,6 +17,64 @@ pub struct Confirmation {
     pub action: String,
     /// True when undo cannot bring the loss back (unsaved work, files on disk).
     pub irreversible: bool,
+    /// `message` before its values go in, with `{name}` placeholders, and those values: what a
+    /// front end translates to show the message in another language (ADR 0013).
+    pub template: &'static str,
+    pub args: Vec<(&'static str, Arg)>,
+}
+
+/// A value in a confirmation's message.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Arg {
+    /// Shown as it is: a name, a path, a frame number.
+    Text(String),
+    /// A count of things, with English `one` and `other` forms around `{n}`: (3, "{n} layer", "{n} layers").
+    Count(usize, &'static str, &'static str),
+}
+
+impl Confirmation {
+    fn new(title: &str, template: &'static str, args: Vec<(&'static str, Arg)>, action: &str, irreversible: bool) -> Confirmation {
+        let message = fill(template, &args, |n, one, other| (if n == 1 { one } else { other }).replace("{n}", &n.to_string()));
+        Confirmation { title: title.into(), message, action: action.into(), irreversible, template, args }
+    }
+}
+
+/// `template` with each `{name}` replaced by its value, counts written by `count(n, one, other)`.
+/// One pass, so a value that itself contains `{…}` (a layer named that way) is left alone.
+pub fn fill(template: &str, args: &[(&str, Arg)], count: impl Fn(usize, &str, &str) -> String) -> String {
+    let mut out = String::with_capacity(template.len() + 32);
+    let mut rest = template;
+    while let Some((before, after)) = rest.split_once('{') {
+        out.push_str(before);
+        let found = after.split_once('}').and_then(|(key, tail)| args.iter().find(|(k, _)| *k == key).map(|(_, v)| (v, tail)));
+        match found {
+            Some((v, tail)) => {
+                match v {
+                    Arg::Text(t) => out.push_str(t),
+                    Arg::Count(n, one, other) => out.push_str(&count(*n, one, other)),
+                }
+                rest = tail;
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn text(v: impl ToString) -> Arg {
+    Arg::Text(v.to_string())
+}
+
+fn keyframes(n: usize) -> Arg {
+    Arg::Count(n, "{n} keyframe", "{n} keyframes")
+}
+
+fn elements(n: usize) -> Arg {
+    Arg::Count(n, "{n} element", "{n} elements")
 }
 
 /// Whether the params carry an explicit confirmation.
@@ -32,10 +90,6 @@ fn layer_content(l: &Layer) -> (usize, usize) {
     let keys = l.keyframes.iter().filter(|k| !k.elements.is_empty()).count();
     let elements = l.keyframes.iter().map(|k| k.elements.len()).sum();
     (keys, elements)
-}
-
-fn plural(n: usize, word: &str) -> String {
-    if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 
 fn target_layer<'a>(s: &'a Session, p: &Value) -> Option<&'a Layer> {
@@ -64,38 +118,38 @@ fn lost_keys(s: &Session, p: &Value, hit: impl Fn(&Keyframe) -> bool) -> Vec<(St
         .collect()
 }
 
-fn overwrite(path: &Path, what: &str) -> Confirmation {
-    Confirmation {
-        title: "Replace existing file?".into(),
-        message: format!("{} already exists. {what} will replace it; this cannot be undone.", path.display()),
-        action: "Replace".into(),
-        irreversible: true,
-    }
+/// `template` names the file `{path}`: "… Saving will replace it …" or "… Exporting …".
+fn overwrite(path: &Path, template: &'static str) -> Confirmation {
+    Confirmation::new("Replace existing file?", template, vec![("path", text(path.display()))], "Replace", true)
 }
+
+const SAVING_REPLACES: &str = "{path} already exists. Saving will replace it; this cannot be undone.";
+const EXPORTING_REPLACES: &str = "{path} already exists. Exporting will replace it; this cannot be undone.";
 
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
     match id {
-        "file.new" | "file.new_sample" | "file.open" if s.is_dirty() => Some(Confirmation {
-            title: "Discard unsaved changes?".into(),
-            message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
-            action: "Discard Changes".into(),
-            irreversible: true,
-        }),
+        "file.new" | "file.new_sample" | "file.open" if s.is_dirty() => Some(Confirmation::new(
+            "Discard unsaved changes?",
+            "“{name}” has changes that are not saved. They will be lost, and its undo history is cleared.",
+            vec![("name", text(doc_name(s)))],
+            "Discard Changes",
+            true,
+        )),
         "file.save" | "file.save_as" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             let same = s.path.as_deref() == Some(path);
-            (!same && path.exists()).then(|| overwrite(path, "Saving"))
+            (!same && path.exists()).then(|| overwrite(path, SAVING_REPLACES))
         }
         "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
-            path.exists().then(|| overwrite(path, "Exporting"))
+            path.exists().then(|| overwrite(path, EXPORTING_REPLACES))
         }
         "file.export_sprite_sheet" => {
             // The sheet and its frame map: either one already there is replaced.
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             let json = path.with_extension("json");
-            [path, json.as_path()].into_iter().find(|f| f.exists()).map(|f| overwrite(f, "Exporting"))
+            [path, json.as_path()].into_iter().find(|f| f.exists()).map(|f| overwrite(f, EXPORTING_REPLACES))
         }
         "file.export_png_sequence" => {
             let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
@@ -104,11 +158,9 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 let n = n.to_string_lossy();
                 n.starts_with("frame_") && n.ends_with(".png")
             });
-            has_frames.then(|| Confirmation {
-                title: "Replace exported frames?".into(),
-                message: format!("{} already contains exported frames. Matching files will be replaced; this cannot be undone.", dir.display()),
-                action: "Replace".into(),
-                irreversible: true,
+            has_frames.then(|| {
+                let template = "{dir} already contains exported frames. Matching files will be replaced; this cannot be undone.";
+                Confirmation::new("Replace exported frames?", template, vec![("dir", text(dir.display()))], "Replace", true)
             })
         }
         "layer.delete" => {
@@ -120,66 +172,75 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 let inner = tl.layers.get(tl.group_range(i))?;
                 let n = inner.len().saturating_sub(1);
                 let (keys, elements) = inner.iter().map(|x| layer_content(x)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-                return (n > 0).then(|| Confirmation {
-                    title: "Delete folder?".into(),
-                    message: format!(
-                        "Folder “{}” holds {}{}. They are deleted with it. You can undo this.",
-                        l.name,
-                        plural(n, "layer"),
-                        if elements > 0 { format!(" with {} in {}", plural(elements, "element"), plural(keys, "keyframe")) } else { String::new() }
-                    ),
-                    action: "Delete Folder".into(),
-                    irreversible: false,
+                return (n > 0).then(|| {
+                    let template = if elements > 0 {
+                        "Folder “{name}” holds {layers} with {elements} in {keyframes}. They are deleted with it. You can undo this."
+                    } else {
+                        "Folder “{name}” holds {layers}. They are deleted with it. You can undo this."
+                    };
+                    let args = vec![("name", text(&l.name)), ("layers", Arg::Count(n, "{n} layer", "{n} layers")), ("elements", self::elements(elements)), ("keyframes", self::keyframes(keys))];
+                    Confirmation::new("Delete folder?", template, args, "Delete Folder", false)
                 });
             }
-            let (keys, elements) = layer_content(l);
-            (elements > 0).then(|| Confirmation {
-                title: "Delete layer?".into(),
-                message: format!("Layer “{}” has {} with {}. You can undo this.", l.name, plural(keys, "keyframe"), plural(elements, "element")),
-                action: "Delete Layer".into(),
-                irreversible: false,
+            let (keys, n) = layer_content(l);
+            (n > 0).then(|| {
+                let args = vec![("name", text(&l.name)), ("keyframes", keyframes(keys)), ("elements", elements(n))];
+                Confirmation::new("Delete layer?", "Layer “{name}” has {keyframes} with {elements}. You can undo this.", args, "Delete Layer", false)
             })
         }
         "scene.delete" => {
             let i = crate::cmds_scene::target_scene(s, p).ok()?;
             let sc = s.doc.scenes.get(i)?;
-            let (keys, elements) = sc.timeline.layers.iter().map(|l| layer_content(l)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-            (elements > 0 && s.doc.scenes.len() > 1).then(|| Confirmation {
-                title: "Delete scene?".into(),
-                message: format!("Scene “{}” has {} with {}. You can undo this.", sc.name, plural(keys, "keyframe"), plural(elements, "element")),
-                action: "Delete Scene".into(),
-                irreversible: false,
+            let (keys, n) = sc.timeline.layers.iter().map(|l| layer_content(l)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+            (n > 0 && s.doc.scenes.len() > 1).then(|| {
+                let args = vec![("name", text(&sc.name)), ("keyframes", keyframes(keys)), ("elements", elements(n))];
+                Confirmation::new("Delete scene?", "Scene “{name}” has {keyframes} with {elements}. You can undo this.", args, "Delete Scene", false)
             })
         }
         "timeline.clear_keyframe" => {
             let (f, n) = (target_frame(s, p), target_count(p));
             let lost = lost_keys(s, p, |k| k.start >= f && k.start - f < n);
-            let (keys, elements) = (lost.len(), lost.iter().map(|(_, e)| e).sum::<usize>());
-            (elements > 0).then(|| Confirmation {
-                title: if keys == 1 { "Clear keyframe?".into() } else { "Clear keyframes?".into() },
-                message: match lost.as_slice() {
-                    [(name, e)] if n == 1 => format!("The keyframe at frame {} on “{name}” holds {}. You can undo this.", f + 1, plural(*e, "element")),
-                    _ => format!("The selected frames hold {} with {}. You can undo this.", plural(keys, "keyframe"), plural(elements, "element")),
-                },
-                action: if keys == 1 { "Clear Keyframe".into() } else { "Clear Keyframes".into() },
-                irreversible: false,
+            let (keys, total) = (lost.len(), lost.iter().map(|(_, e)| e).sum::<usize>());
+            (total > 0).then(|| {
+                let (template, args) = match lost.as_slice() {
+                    [(name, e)] if n == 1 => ("The keyframe at frame {frame} on “{name}” holds {elements}. You can undo this.", vec![("frame", text(f + 1)), ("name", text(name)), ("elements", elements(*e))]),
+                    _ => ("The selected frames hold {keyframes} with {elements}. You can undo this.", vec![("keyframes", keyframes(keys)), ("elements", elements(total))]),
+                };
+                let (title, action) = if keys == 1 { ("Clear keyframe?", "Clear Keyframe") } else { ("Clear keyframes?", "Clear Keyframes") };
+                Confirmation::new(title, template, args, action, false)
             })
         }
         "timeline.remove_frame" => {
             // A keyframe whose whole span is removed takes its artwork with it.
             let (f, n) = (target_frame(s, p), target_count(p));
             let lost = lost_keys(s, p, |k| k.start >= f && k.end() <= f.saturating_add(n));
-            let (keys, elements) = (lost.len(), lost.iter().map(|(_, e)| e).sum::<usize>());
-            (elements > 0).then(|| Confirmation {
-                title: if n == 1 { "Remove frame?".into() } else { "Remove frames?".into() },
-                message: match lost.as_slice() {
-                    [(name, e)] if n == 1 => format!("Frame {} is a one-frame keyframe on “{name}” with {}; removing it deletes that artwork. You can undo this.", f + 1, plural(*e, "element")),
-                    _ => format!("Removing these frames deletes {} with {}. You can undo this.", plural(keys, "keyframe"), plural(elements, "element")),
-                },
-                action: if n == 1 { "Remove Frame".into() } else { "Remove Frames".into() },
-                irreversible: false,
+            let (keys, total) = (lost.len(), lost.iter().map(|(_, e)| e).sum::<usize>());
+            (total > 0).then(|| {
+                let (template, args) = match lost.as_slice() {
+                    [(name, e)] if n == 1 => (
+                        "Frame {frame} is a one-frame keyframe on “{name}” with {elements}; removing it deletes that artwork. You can undo this.",
+                        vec![("frame", text(f + 1)), ("name", text(name)), ("elements", elements(*e))],
+                    ),
+                    _ => ("Removing these frames deletes {keyframes} with {elements}. You can undo this.", vec![("keyframes", keyframes(keys)), ("elements", elements(total))]),
+                };
+                let (title, action) = if n == 1 { ("Remove frame?", "Remove Frame") } else { ("Remove frames?", "Remove Frames") };
+                Confirmation::new(title, template, args, action, false)
             })
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_puts_each_value_in_once() {
+        let english = |n: usize, one: &str, other: &str| (if n == 1 { one } else { other }).replace("{n}", &n.to_string());
+        let args = vec![("name", text("{layers}")), ("layers", Arg::Count(1, "{n} layer", "{n} layers")), ("keys", keyframes(3))];
+        // A value is never filled in again (a layer named "{layers}"), and unknown or unclosed
+        // braces stay as written.
+        assert_eq!(fill("“{name}” holds {layers} and {keys}; {other} {", &args, english), "“{layers}” holds 1 layer and 3 keyframes; {other} {");
     }
 }

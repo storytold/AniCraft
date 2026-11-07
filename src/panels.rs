@@ -3,7 +3,7 @@
 use crate::app::{App, LibraryItem, Tool};
 use crate::i18n::{self, tl};
 use crate::icons::{self, Icon};
-use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, font, section, text, to_color32, with_type};
+use crate::theme::{self, Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, font, section, text, to_color32, with_type};
 use anicraft_engine::doc::{ElementKind, Paint, Rgba, SymbolKind, evaluate_layer_elements};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
@@ -85,7 +85,7 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
             for (i, (n, frames)) in scenes.iter().enumerate() {
                 let r = ui.horizontal(|ui| {
                     let r = ui.selectable_label(i == app.s.scene, n.as_str());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
                         ui.label(text(Type::DataSmall, i18n::fmt("{n} f", &[("n", &frames.to_string())])).color(T.text_faint));
                     });
                     r
@@ -101,10 +101,11 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
                 crate::menus::cmd_item(app, ui, id);
             }
         });
-        ui.label(text(Type::Caption, "›"));
+        // Scene › layer, pointing the way the row reads.
+        ui.label(text(Type::Caption, if theme::rtl() { "‹" } else { "›" }));
         let layer = app.s.active_layer().map_or("—".to_string(), |l| l.name.clone());
         ui.label(text(Type::Body, layer).color(T.text_dim));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
             let z = app.view.zoom;
             let canvas = app.stage_cache.canvas;
             egui::ComboBox::from_id_salt("zoom").width(84.0).selected_text(text(Type::Data, format!("{:>4.0}%", z * 100.0))).show_ui(ui, |ui| {
@@ -138,7 +139,7 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(text(Type::Label, tl!(app.tool.hint())));
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
             let small = |t: String| text(Type::Data, t).color(T.text_faint);
             ui.label(small(i18n::fmt("undo {n} · {mb} MB", &[("n", &app.s.history().undo_len().to_string()), ("mb", &format!("{:.1}", app.s.history().bytes() as f32 / (1024.0 * 1024.0)))])));
             ui.add_space(12.0);
@@ -345,9 +346,9 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         {
             let current = *blend;
             row_prose(ui, "Blending", |ui| {
-                egui::ComboBox::from_id_salt("prop_blend").selected_text(current.label()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("prop_blend").selected_text(tl!(current.label())).show_ui(ui, |ui| {
                     for m in anicraft_engine::doc::BlendMode::ALL {
-                        if ui.selectable_label(m == current, m.label()).clicked() && m != current {
+                        if ui.selectable_label(m == current, tl!(m.label())).clicked() && m != current {
                             app.run("element.set_blend", json!({"mode": m.key()}));
                         }
                     }
@@ -362,11 +363,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             ui.add_space(4.0);
             // How the instance plays: the symbol's type, and a graphic's looping.
             row_prose(ui, "Type", |ui| {
-                let label = |k: SymbolKind| match k {
-                    SymbolKind::Graphic => tl!("Graphic"),
-                    SymbolKind::MovieClip => tl!("Movie clip"),
-                    SymbolKind::Button => tl!("Button"),
-                };
+                let label = |k: SymbolKind| tl!(kind_label(k));
                 egui::ComboBox::from_id_salt("prop_symkind").width(150.0).selected_text(label(kind)).show_ui(ui, |ui| {
                     for (k, id, tip) in [
                         (SymbolKind::Graphic, "graphic", "Keeps step with the timeline it is on (looping options below)"),
@@ -411,7 +408,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 live(app, label, "text.edit", p);
             }
             row_prose(ui, "Text", |ui| {
-                if ui.button("Edit Text").on_hover_text("Type on the stage (or double-click the text)").clicked() {
+                if ui.button(tl!("Edit Text")).on_hover_text(tl!("Type on the stage (or double-click the text)")).clicked() {
                     let at = e.transform.apply(anicraft_engine::geom::Vec2::ZERO);
                     app.text_edit = Some(crate::app::TextEditing { at: pos2(at.x, at.y), element: Some(e.id), text: t.text.clone(), original: t.text.clone(), focus: true });
                 }
@@ -469,7 +466,7 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
         let shown = if st.font.is_empty() { anicraft_engine::text::Fonts::get().resolve("").unwrap_or_default() } else { st.font.clone() };
         egui::ComboBox::from_id_salt("text_font").selected_text(shown.clone()).width(ui.available_width().min(220.0)).height(320.0).show_ui(ui, |ui| {
             if families.is_empty() {
-                ui.label(text(Type::Caption, "No fonts found on this computer"));
+                ui.label(text(Type::Caption, tl!("No fonts found on this computer")));
             }
             for f in &families {
                 if ui.selectable_label(*f == shown, f).clicked() {
@@ -484,40 +481,40 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
             out = Some(("Font size", json!({"size": st.size})));
         }
         let mut c = rgb(st.color);
-        if ui.color_edit_button_srgb(&mut c).on_hover_text("Text colour").changed() {
+        if ui.color_edit_button_srgb(&mut c).on_hover_text(tl!("Text colour")).changed() {
             st.color = Rgba::hex(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]));
             out = Some(("Text colour", json!({"color": hex(c)})));
         }
     });
     row_prose(ui, "Style", |ui| {
-        if ui.selectable_label(st.bold, text(Type::Body, "B").strong()).on_hover_text("Bold").clicked() {
+        if ui.selectable_label(st.bold, text(Type::Body, "B").strong()).on_hover_text(tl!("Bold")).clicked() {
             st.bold = !st.bold;
             out = Some(("Bold", json!({"bold": st.bold})));
         }
-        if ui.selectable_label(st.italic, text(Type::Body, "I").italics()).on_hover_text("Italic").clicked() {
+        if ui.selectable_label(st.italic, text(Type::Body, "I").italics()).on_hover_text(tl!("Italic")).clicked() {
             st.italic = !st.italic;
             out = Some(("Italic", json!({"italic": st.italic})));
         }
         ui.separator();
         for (a, label, key) in [(TextAlign::Left, "Left", "left"), (TextAlign::Center, "Centre", "center"), (TextAlign::Right, "Right", "right")] {
-            if ui.selectable_label(st.align == a, label).on_hover_text(format!("Align {}", label.to_lowercase())).clicked() {
+            if ui.selectable_label(st.align == a, tl!(label)).on_hover_text(tl!(&format!("Align {}", label.to_lowercase()))).clicked() {
                 st.align = a;
                 out = Some(("Text alignment", json!({"align": key})));
             }
         }
     });
     row(ui, "Spacing", |ui| {
-        if ui.add(egui::DragValue::new(&mut st.letter_spacing).prefix("Letters ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
+        if ui.add(egui::DragValue::new(&mut st.letter_spacing).prefix(tl!("Letters ")).suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
             out = Some(("Letter spacing", json!({"letter_spacing": st.letter_spacing})));
         }
-        if ui.add(egui::DragValue::new(&mut st.line_spacing).prefix("Lines ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
+        if ui.add(egui::DragValue::new(&mut st.line_spacing).prefix(tl!("Lines ")).suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).changed() {
             out = Some(("Line spacing", json!({"line_spacing": st.line_spacing})));
         }
     });
     if let Some(width) = width {
         row(ui, "Width", |ui| {
             let mut wrap = width.is_some();
-            if crate::theme::checkbox(ui, &mut wrap, "Wrap").on_hover_text("Wrap lines at a fixed width; off, each paragraph stays on one line").changed() {
+            if crate::theme::checkbox(ui, &mut wrap, tl!("Wrap")).on_hover_text(tl!("Wrap lines at a fixed width; off, each paragraph stays on one line")).changed() {
                 *width = wrap.then_some(300.0);
                 out = Some(("Text width", json!({"width": *width})));
             }
@@ -584,9 +581,9 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                 match k.tween {
                     Some(t) => {
                         row_prose(ui, "Tween", |ui| {
-                            egui::ComboBox::from_id_salt("prop_ease").width(150.0).selected_text(t.easing.label()).show_ui(ui, |ui| {
+                            egui::ComboBox::from_id_salt("prop_ease").width(150.0).selected_text(crate::timeline::easing_label(t.easing)).show_ui(ui, |ui| {
                                 for (name, e) in anicraft_engine::doc::Easing::PRESETS {
-                                    if ui.selectable_label(t.easing == e, name).clicked() {
+                                    if ui.selectable_label(t.easing == e, tl!(name)).clicked() {
                                         app.run("timeline.set_easing", json!({"easing": crate::timeline::easing_param(e)}));
                                     }
                                 }
@@ -716,7 +713,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         .map(|sym| LibraryRow {
             item: LibraryItem::Symbol(sym.id),
             name: sym.name.clone(),
-            detail: format!("{:?} · {}f", sym.kind, sym.timeline.frame_count()),
+            detail: format!("{} · {}", tl!(kind_label(sym.kind)), i18n::fmt("{n} f", &[("n", &sym.timeline.frame_count().to_string())])),
             kind: Some(sym.kind),
         })
         .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: i18n::fmt("Bitmap · {w}×{h}", &[("w", &b.width.to_string()), ("h", &b.height.to_string())]), kind: None }))
@@ -739,10 +736,11 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             if selected || resp.hovered() {
                 ui.painter().rect_filled(r, T.rc(), if selected { T.accent_dim } else { T.hover });
             }
+            // Laid out from the left, mirrored in a right-to-left language.
             if selected {
-                ui.painter().rect_filled(Rect::from_min_size(r.left_top(), vec2(3.0, r.height())), 0.0, T.accent);
+                ui.painter().rect_filled(theme::mirror(r, Rect::from_min_size(r.left_top(), vec2(3.0, r.height()))), 0.0, T.accent);
             }
-            let icon = Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0));
+            let icon = theme::mirror(r, Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0)));
             match row.kind {
                 Some(kind) => {
                     let kind_color = match kind {
@@ -755,8 +753,10 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
                 }
                 None => icons::paint(ui.painter(), icon.expand(1.0), Icon::Image, color(Type::Body)),
             }
-            ui.painter().text(r.left_center() + vec2(30.0, 0.0), Align2::LEFT_CENTER, &row.name, font(Type::Body), color(Type::Body));
-            ui.painter().text(r.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &row.detail, font(Type::Caption), color(Type::Caption));
+            let (start, end) = if theme::rtl() { (Align2::RIGHT_CENTER, Align2::LEFT_CENTER) } else { (Align2::LEFT_CENTER, Align2::RIGHT_CENTER) };
+            let y = r.center().y;
+            ui.painter().text(pos2(theme::mirror_x(r, r.left() + 30.0), y), start, &row.name, font(Type::Body), color(Type::Body));
+            ui.painter().text(pos2(theme::mirror_x(r, r.right() - 8.0), y), end, &row.detail, font(Type::Caption), color(Type::Caption));
             if resp.clicked() {
                 app.library_sel = Some(row.item);
             }
@@ -771,6 +771,15 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         && let Some(item) = can_place {
             place(app, item);
         }
+}
+
+/// A symbol type's name (English; shown through `tl!`).
+fn kind_label(k: SymbolKind) -> &'static str {
+    match k {
+        SymbolKind::Graphic => "Graphic",
+        SymbolKind::MovieClip => "Movie clip",
+        SymbolKind::Button => "Button",
+    }
 }
 
 /// One Library row: a symbol (with its kind) or a bitmap.

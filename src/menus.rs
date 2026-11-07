@@ -10,7 +10,9 @@ const TOP_MENUS: [&str; 8] = ["File", "Edit", "View", "Insert", "Modify", "Contr
 
 pub fn bar(app: &mut App, ui: &mut egui::Ui) {
     let cmds = commands();
-    egui::MenuBar::new().ui(ui, |ui| {
+    // The menus run from where reading starts (the right in Arabic); MenuBar itself is always a
+    // left-to-right row.
+    egui::MenuBar::new().ui(ui, |ui| ui.with_layout(crate::theme::start_row(egui::Align::Center), |ui| {
         // macOS: leave room for the traffic lights over the unified title bar.
         ui.add_space(platform::menu_inset());
         if platform::OS == Os::Mac {
@@ -37,7 +39,7 @@ pub fn bar(app: &mut App, ui: &mut egui::Ui) {
                 menu_contents(app, ui, top, &cmds);
             });
         }
-    });
+    }));
 }
 
 fn enabled(app: &App, id: &str) -> bool {

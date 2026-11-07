@@ -218,10 +218,10 @@ pub fn embedded_fonts() -> Vec<std::sync::Arc<[u8]>> {
 /// Which typefaces are active (for About and diagnostics).
 pub fn font_summary() -> String {
     match (craft_fonts::UI_FONT, craft_fonts::MONO_FONT) {
-        (Some(_), Some(_)) => format!("Inter + JetBrains Mono (craft-fonts, {} KB)", craft_fonts::CRAFT_FONT_BYTES / 1024),
-        (Some(_), None) => "Inter + Hack (fallback)".into(),
-        (None, Some(_)) => "Ubuntu (fallback) + JetBrains Mono".into(),
-        (None, None) => "Ubuntu + Hack (built-in defaults; build with CRAFT_FONTS_DIR for Inter + JetBrains Mono)".into(),
+        (Some(_), Some(_)) => crate::i18n::fmt("Inter + JetBrains Mono (craft-fonts, {kb} KB)", &[("kb", &(craft_fonts::CRAFT_FONT_BYTES / 1024).to_string())]),
+        (Some(_), None) => crate::i18n::t("Inter + Hack (fallback)").into(),
+        (None, Some(_)) => crate::i18n::t("Ubuntu (fallback) + JetBrains Mono").into(),
+        (None, None) => crate::i18n::t("Ubuntu + Hack (built-in defaults; build with CRAFT_FONTS_DIR for Inter + JetBrains Mono)").into(),
     }
 }
 
@@ -350,15 +350,66 @@ pub fn radio_value<V: PartialEq>(ui: &mut egui::Ui, current: &mut V, value: V, l
     with_control_edges(ui, |ui| ui.radio_value(current, value, label))
 }
 
+// ----- right to left (ADR 0013) -------------------------------------------------------------
+// In a right-to-left language (Arabic) the window mirrors: rows start at the right, the tools
+// sit on the right and the dock on the left. The stage, the timeline's frames and the playback
+// buttons keep their direction: they follow time and the artwork, not the reading order.
+
+pub fn rtl() -> bool {
+    crate::i18n::rtl()
+}
+
+/// A row filled from where reading starts: the left, or the right in a right-to-left language.
+pub fn start_row(align: egui::Align) -> egui::Layout {
+    if rtl() { egui::Layout::right_to_left(align) } else { egui::Layout::left_to_right(align) }
+}
+
+/// A row filled from its end (what is pushed to the far side): from the right, or from the left
+/// in a right-to-left language.
+pub fn end_row(align: egui::Align) -> egui::Layout {
+    if rtl() { egui::Layout::left_to_right(align) } else { egui::Layout::right_to_left(align) }
+}
+
+/// Draw `f` from where reading starts. Panels and windows lay out from the left whatever the
+/// language; inside this, items line up at the right and `ui.horizontal` rows start there.
+pub fn reading<R>(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    if rtl() && ui.layout().main_dir() == egui::Direction::TopDown { ui.with_layout(egui::Layout::top_down(egui::Align::Max), f).inner } else { f(ui) }
+}
+
+/// `ui.vertical`, lined up where reading starts. (`vertical` in a right-to-left row would put the
+/// column at the far left.)
+pub fn column<R>(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let align = if rtl() { egui::Align::Max } else { egui::Align::Min };
+    ui.scope_builder(egui::UiBuilder::new().layout(egui::Layout::top_down(align)), f)
+}
+
+/// Left to right whatever the language, for egui's `Grid` (it has no right-to-left layout).
+pub fn ltr<R>(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.with_layout(egui::Layout::top_down(egui::Align::Min), f).inner
+}
+
+/// For hand-painted widgets: `x` measured from the left of `within`, moved to the same distance
+/// from its right in a right-to-left language.
+pub fn mirror_x(within: egui::Rect, x: f32) -> f32 {
+    if rtl() { within.left() + within.right() - x } else { x }
+}
+
+/// For hand-painted widgets: `r` laid out from the left of `within`, mirrored in a right-to-left
+/// language.
+pub fn mirror(within: egui::Rect, r: egui::Rect) -> egui::Rect {
+    if rtl() { egui::Rect::from_x_y_ranges(mirror_x(within, r.right())..=mirror_x(within, r.left()), r.y_range()) } else { r }
+}
+
 /// Label column widths for forms: dialogs (Preferences) and the narrow dock.
 pub const FORM_LABEL_DIALOG: f32 = 150.0;
 pub const FORM_LABEL_DOCK: f32 = 78.0;
 
-/// A form row on a two-column grid: the label left-aligned in a fixed column, the controls after
+/// A form row on a two-column grid: the label at the start of a fixed column, the controls after
 /// it. Every row's controls start at the same x, so a form reads as one column of values.
 pub fn form_row<R>(ui: &mut egui::Ui, label_w: f32, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    // `horizontal` runs from the right inside `reading`.
     ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(egui::vec2(label_w, TARGET), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.allocate_ui_with_layout(egui::vec2(label_w, TARGET), start_row(egui::Align::Center), |ui| {
             ui.set_min_size(egui::vec2(label_w, TARGET));
             ui.label(text(Type::Label, crate::i18n::t(label)));
         });
@@ -409,7 +460,7 @@ pub fn section<R>(ui: &mut egui::Ui, id: &str, style: Section, title: &str, deta
             p.rect_filled(rect, SQUARE, if hot { T.header } else { T.panel_alt });
             p.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, T.border));
             p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, T.border));
-            p.rect_filled(egui::Rect::from_min_size(rect.left_top() + vec2(0.0, 1.0), vec2(3.0, rect.height() - 1.0)), SQUARE, T.accent);
+            p.rect_filled(mirror(rect, egui::Rect::from_min_size(rect.left_top() + vec2(0.0, 1.0), vec2(3.0, rect.height() - 1.0))), SQUARE, T.accent);
         }
         Section::Rule => {
             if hot {
@@ -420,25 +471,28 @@ pub fn section<R>(ui: &mut egui::Ui, id: &str, style: Section, title: &str, deta
     if resp.has_focus() {
         p.rect_stroke(rect.shrink(1.0), T.rc(), Stroke::new(2.0, T.accent), StrokeKind::Inside);
     }
-    // Chevron: right when closed, down when open.
+    // Chevron: pointing where reading goes when closed, down when open. Laid out from the left,
+    // then mirrored in a right-to-left language.
     let left = if style == Section::Band { 10.0 } else { 2.0 };
-    let chevron = egui::Rect::from_center_size(pos2(rect.left() + left + 7.0, rect.center().y), vec2(14.0, 14.0));
-    let icon = if open { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronRight };
+    let chevron = mirror(rect, egui::Rect::from_center_size(pos2(rect.left() + left + 7.0, rect.center().y), vec2(14.0, 14.0)));
+    // `Prev` is the same chevron pointing left.
+    let icon = if open { crate::icons::Icon::ChevronDown } else if rtl() { crate::icons::Icon::Prev } else { crate::icons::Icon::ChevronRight };
     crate::icons::paint(p, chevron, icon, if hot { T.text } else { T.text_dim });
     let mut x = rect.left() + left + 20.0;
     let title_g = p.layout_no_wrap(title.to_string(), font(Type::Heading), color(Type::Heading));
     let w = title_g.rect.width();
-    p.galley(pos2(x, rect.center().y - title_g.rect.height() * 0.5), title_g, color(Type::Heading));
+    p.galley(pos2(mirror_x(rect, x + if rtl() { w } else { 0.0 }), rect.center().y - title_g.rect.height() * 0.5), title_g, color(Type::Heading));
     x += w;
     if let Some(d) = detail {
         let g = p.layout_no_wrap(d.to_string(), font(Type::Data), T.text_dim);
         x += 8.0;
         let dw = g.rect.width();
-        p.galley(pos2(x, rect.center().y - g.rect.height() * 0.5), g, T.text_dim);
+        p.galley(pos2(mirror_x(rect, x + if rtl() { dw } else { 0.0 }), rect.center().y - g.rect.height() * 0.5), g, T.text_dim);
         x += dw;
     }
     if style == Section::Rule && x + 12.0 < rect.right() {
-        p.hline((x + 12.0)..=rect.right(), rect.center().y, Stroke::new(1.0, T.border));
+        let (a, b) = (mirror_x(rect, x + 12.0), mirror_x(rect, rect.right()));
+        p.hline(a.min(b)..=a.max(b), rect.center().y, Stroke::new(1.0, T.border));
     }
     if !open {
         if style == Section::Rule {
