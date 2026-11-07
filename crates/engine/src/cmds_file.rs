@@ -38,6 +38,15 @@ pub fn specs() -> Vec<CommandSpec> {
         },
         CommandSpec { id: "file.export_svg", label: "Export Frame as SVG…", menu: "File/Export", shortcut: None, params: "{path, frame? (in the current scene), confirm?}", mutates: false, run: export_svg },
         CommandSpec {
+            id: "file.export_video",
+            label: "Export Video…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.mp4 or .webm), from?, to? (movie frames), scale?, ffmpeg? (path; else ANICRAFT_FFMPEG, else ffmpeg on the PATH), confirm?}",
+            mutates: false,
+            run: export_video,
+        },
+        CommandSpec {
             id: "file.export_sprite_sheet",
             label: "Export Sprite Sheet…",
             menu: "File/Export",
@@ -330,6 +339,98 @@ fn export_sprite_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     std::fs::write(&path, &png)?;
     std::fs::write(&json_path, text)?;
     Ok(json!({"written": path.display().to_string(), "map": json_path.display().to_string(), "frames": n, "columns": cols, "rows": rows, "width": sheet_w, "height": sheet_h}))
+}
+
+/// The ffmpeg to run: `ffmpeg` param, else `ANICRAFT_FFMPEG`, else `ffmpeg` on the PATH.
+fn ffmpeg_program(p: &Value) -> Result<std::ffi::OsString> {
+    if let Some(x) = opt_str(p, "ffmpeg")?.filter(|x| !x.trim().is_empty()) {
+        return Ok(x.into());
+    }
+    Ok(std::env::var_os("ANICRAFT_FFMPEG").filter(|x| !x.is_empty()).unwrap_or_else(|| "ffmpeg".into()))
+}
+
+/// Export Video: movie frames streamed in order to the user's own ffmpeg (AniCraft bundles no
+/// video encoder; see docs/legal/compliance.md). `.webm` is VP9 (royalty-free); `.mp4` is H.264
+/// from whatever encoder that ffmpeg has. Frames render in parallel batches; odd sizes are
+/// padded to even, as 4:2:0 video needs.
+fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
+    use std::io::Write;
+    let path = PathBuf::from(str_req(p, "path")?);
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    let codec: &[&str] = match ext.as_deref() {
+        Some("webm") => &["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "30", "-row-mt", "1"],
+        Some("mp4" | "m4v" | "mov") => &["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-movflags", "+faststart"],
+        _ => return Err(EngineError::Param("video goes to .mp4 or .webm".into())),
+    };
+    let last = s.doc.frame_count().saturating_sub(1);
+    let from = opt_u32(p, "from")?.unwrap_or(0).min(last);
+    let to = opt_u32(p, "to")?.unwrap_or(last).min(last);
+    if to < from {
+        return Err(EngineError::Param("'to' must not be before 'from'".into()));
+    }
+    let view = View::stage(&s.doc, scale_param(p)?);
+    let (w, h, fps) = (view.width, view.height, s.doc.stage.fps);
+    let program = ffmpeg_program(p)?;
+    let size = format!("{w}x{h}");
+    let rate = format!("{fps}");
+    let mut args: Vec<&std::ffi::OsStr> = Vec::new();
+    for a in ["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &rate, "-i", "-", "-an", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p"] {
+        args.push(a.as_ref());
+    }
+    args.extend(codec.iter().map(std::ffi::OsStr::new));
+    args.push(path.as_os_str());
+    let mut child = std::process::Command::new(&program)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            EngineError::State(format!(
+                "AniCraft makes video with ffmpeg, which could not be started ({e}). Install it from ffmpeg.org, or point ANICRAFT_FFMPEG at it."
+            ))
+        })?;
+    // Read ffmpeg's messages as they come, so a full pipe never stalls it.
+    let mut err_pipe = child.stderr.take();
+    let messages = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(e) = err_pipe.as_mut() {
+            let _ = std::io::Read::read_to_string(e, &mut text);
+        }
+        text
+    });
+    let doc = &s.doc;
+    let mut written = 0u32;
+    let mut failure: Option<EngineError> = None;
+    if let Some(mut stdin) = child.stdin.take() {
+        let frames: Vec<u32> = (from..=to).collect();
+        'batches: for batch in frames.chunks(8) {
+            let images: Vec<Vec<u8>> = match batch.par_iter().map(|&f| render(&anicraft_doc::evaluate(doc, f), &view).map(|(pm, _)| pm.to_rgba8())).collect::<std::result::Result<_, _>>() {
+                Ok(v) => v,
+                Err(e) => {
+                    failure = Some(e.into());
+                    break;
+                }
+            };
+            for img in images {
+                if stdin.write_all(&img).is_err() {
+                    break 'batches; // ffmpeg stopped reading: its message says why
+                }
+                written += 1;
+            }
+        }
+    }
+    let status = child.wait()?;
+    let log = messages.join().unwrap_or_default();
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    if !status.success() || written != to - from + 1 {
+        let tail: Vec<&str> = log.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        return Err(EngineError::Format(format!("ffmpeg could not make the video ({status}): {}", if tail.is_empty() { "no message".to_string() } else { tail.join(" | ") })));
+    }
+    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    Ok(json!({"written": path.display().to_string(), "frames": written, "bytes": bytes, "width": w, "height": h, "fps": fps}))
 }
 
 fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {

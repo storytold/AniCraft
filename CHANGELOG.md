@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* **Export Video** (File › Export, `file.export_video`): the movie as **WebM** (VP9,
+  royalty-free; the default) or **MP4** (H.264), made by your own installed ffmpeg. AniCraft
+  bundles no video encoder. ffmpeg is found through the `ffmpeg` parameter, the
+  `ANICRAFT_FFMPEG` setting, or the system path, and if it's missing you're told how to get it.
+  Frames stream in order straight from the renderer; odd sizes are padded to even.
+
 * **Movie clips and buttons behave like themselves.** A movie clip instance plays its own
   timeline on a loop from when it appears, and keeps playing across keyframes that hold the
   same instance. A graphic keeps step with the timeline it's on. A button shows its Up frame.

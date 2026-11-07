@@ -1370,3 +1370,37 @@ fn symbol_type_and_graphic_looping_commands() {
     run(&mut s, "draw.ellipse", json!({"x": 50, "y": 50, "w": 10, "h": 10}));
     assert!(s.execute("element.set_loop", &json!({"loop": "loop"})).is_err());
 }
+
+#[test]
+fn video_export_streams_frames_to_ffmpeg_or_explains_how_to_get_it() {
+    let dir = std::env::temp_dir().join(format!("anicraft-video-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(sample::demo());
+    // Without ffmpeg: a clear message, no file.
+    let missing = dir.join("none.webm");
+    let e = s.execute("file.export_video", &json!({"path": missing.display().to_string(), "ffmpeg": dir.join("no-such-ffmpeg").display().to_string(), "to": 2, "scale": 0.1})).unwrap_err();
+    assert!(e.to_string().contains("ffmpeg"), "{e}");
+    assert!(!missing.exists());
+    assert!(s.execute("file.export_video", &json!({"path": dir.join("x.avi").display().to_string()})).is_err(), "only .mp4 and .webm");
+    // With an ffmpeg (on the PATH or in ANICRAFT_FFMPEG), real files; skipped where there is none.
+    let program = std::env::var("ANICRAFT_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+    let have = std::process::Command::new(&program).arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|st| st.success());
+    if !have {
+        eprintln!("no ffmpeg here: only the missing-ffmpeg path was tested");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    for (name, magic_at, magic) in [("clip.webm", 0usize, &[0x1A, 0x45, 0xDF, 0xA3][..]), ("clip.mp4", 4, b"ftyp")] {
+        let out = dir.join(name);
+        let _ = std::fs::remove_file(&out);
+        // Scale 0.1 makes a 128×72 picture; 0.105 an odd 134×76 → padded to even.
+        let v = run(&mut s, "file.export_video", json!({"path": out.display().to_string(), "from": 0, "to": 5, "scale": 0.105}));
+        assert_eq!(v["frames"], 6, "{name}");
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.len() > 200, "{name}: {} bytes", bytes.len());
+        assert_eq!(&bytes[magic_at..magic_at + magic.len()], magic, "{name} container");
+        // Replacing it needs consent.
+        assert!(s.execute("file.export_video", &json!({"path": out.display().to_string(), "to": 1, "scale": 0.1})).is_err());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
