@@ -363,7 +363,13 @@ pub enum LayerKind {
     Guide,
     /// Its fills are not drawn: they reveal the layers masked by it (see [`Layer::parent`]).
     Mask,
+    /// Holds layers (its children name it as their [`Layer::parent`]); draws nothing itself.
+    /// Hiding or locking a folder hides or locks everything in it.
+    Folder,
 }
+
+/// Deepest nesting of folders (and a mask inside them) that is kept.
+pub const MAX_LAYER_DEPTH: usize = 16;
 
 /// A timeline layer. Keyframes are `Arc`-shared (see [`Keyframe`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -372,8 +378,9 @@ pub struct Layer {
     pub name: String,
     #[serde(default)]
     pub kind: LayerKind,
-    /// The mask layer this layer is masked by. Masked layers sit directly under their mask, in
-    /// one unbroken run ([`Timeline::repair_masks`] keeps it so); any other link is dropped.
+    /// The folder this layer is in, or the mask layer it is masked by. A layer sits below its
+    /// parent, inside the parent's unbroken run of descendants ([`Timeline::repair_masks`]
+    /// keeps it so); any other link is dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<LayerId>,
     #[serde(default = "yes")]
@@ -494,41 +501,145 @@ impl Timeline {
         self.layers.iter_mut().find(|l| l.id == id).map(Arc::make_mut)
     }
 
-    /// The mask that a layer placed at `index` would join: the mask directly above it, or the
-    /// mask of the masked layer directly above it.
-    pub fn mask_above(&self, index: usize) -> Option<LayerId> {
-        let above = self.layers.get(index.checked_sub(1)?)?;
-        match above.kind {
-            LayerKind::Mask => Some(above.id),
-            _ => above.parent,
-        }
+    fn index_of(&self, id: LayerId) -> Option<usize> {
+        self.layers.iter().position(|l| l.id == id)
     }
 
-    /// Indices `i..j` of the layer at `i` plus, for a mask layer, the masked layers under it.
+    /// Whether layer `ancestor` contains the layer at `index` (directly or through folders).
+    pub fn is_inside(&self, index: usize, ancestor: LayerId) -> bool {
+        let mut cur = self.layers.get(index).and_then(|l| l.parent);
+        for _ in 0..=MAX_LAYER_DEPTH {
+            let Some(p) = cur else { return false };
+            if p == ancestor {
+                return true;
+            }
+            cur = self.layer(p).and_then(|l| l.parent);
+        }
+        false
+    }
+
+    /// How many folders and masks contain the layer at `index` (its indent in the timeline).
+    pub fn depth(&self, index: usize) -> usize {
+        let mut cur = self.layers.get(index).and_then(|l| l.parent);
+        let mut d = 0;
+        while let Some(p) = cur {
+            if d >= MAX_LAYER_DEPTH {
+                break;
+            }
+            d += 1;
+            cur = self.layer(p).and_then(|l| l.parent);
+        }
+        d
+    }
+
+    /// The parent a layer of `kind` gets when placed at `index`, from the layer directly above:
+    /// under a folder it goes in the folder; under a mask (or a masked layer) a normal layer is
+    /// masked, anything else sits beside the mask; otherwise it shares the above layer's parent.
+    pub fn container_at(&self, index: usize, kind: LayerKind) -> Option<LayerId> {
+        let above = self.layers.get(index.checked_sub(1)?)?;
+        let slot = match above.kind {
+            LayerKind::Folder | LayerKind::Mask => Some(above.id),
+            _ => above.parent,
+        };
+        let p = self.layer(slot?)?;
+        if p.kind == LayerKind::Mask && kind != LayerKind::Normal {
+            return p.parent;
+        }
+        let too_deep = self.index_of(p.id).is_none_or(|pi| self.depth(pi) + 1 >= MAX_LAYER_DEPTH);
+        if too_deep { p.parent } else { Some(p.id) }
+    }
+
+    /// The mask a normal layer placed at `index` would be masked by.
+    pub fn mask_above(&self, index: usize) -> Option<LayerId> {
+        self.container_at(index, LayerKind::Normal).filter(|p| self.layer(*p).is_some_and(|l| l.kind == LayerKind::Mask))
+    }
+
+    /// Indices `i..j` of the layer at `i` and everything inside it (a folder's layers, a mask's
+    /// masked layers).
     pub fn group_range(&self, i: usize) -> std::ops::Range<usize> {
         let Some(l) = self.layers.get(i) else { return i..i };
         let mut j = i + 1;
-        if l.kind == LayerKind::Mask {
-            while self.layers.get(j).is_some_and(|m| m.parent == Some(l.id)) {
-                j += 1;
-            }
+        while j < self.layers.len() && self.is_inside(j, l.id) {
+            j += 1;
         }
         i..j
     }
 
-    /// Drops mask links that no longer hold: a masked layer must be a normal layer directly
-    /// under its mask layer or under another layer masked by it. Touches only layers that change.
+    /// Whether a folder containing the layer at `index` is hidden (so the layer is too).
+    pub fn hidden_by_folder(&self, index: usize) -> bool {
+        self.folders_of(index).any(|f| !f.visible)
+    }
+
+    /// Whether a folder containing layer `id` is locked (so the layer is too).
+    pub fn locked_by_folder(&self, id: LayerId) -> bool {
+        self.index_of(id).is_some_and(|i| self.folders_of(i).any(|f| f.locked))
+    }
+
+    /// The folders containing the layer at `index`, innermost first.
+    fn folders_of(&self, index: usize) -> impl Iterator<Item = &Layer> {
+        let mut cur = self.layers.get(index).and_then(|l| l.parent);
+        let mut n = 0;
+        std::iter::from_fn(move || {
+            while let Some(p) = cur {
+                n += 1;
+                if n > MAX_LAYER_DEPTH {
+                    return None;
+                }
+                let l = self.layer(p)?;
+                cur = l.parent;
+                if l.kind == LayerKind::Folder {
+                    return Some(l);
+                }
+            }
+            None
+        })
+    }
+
+    /// Drops parent links that no longer hold. A layer in a folder sits below the folder inside
+    /// its unbroken run; a masked layer is a normal layer directly under its mask or another
+    /// layer masked by it; nesting stops at [`MAX_LAYER_DEPTH`]. Touches only layers that change.
     pub fn repair_masks(&mut self) {
         for i in 0..self.layers.len() {
             let Some(l) = self.layers.get(i) else { continue };
             let Some(p) = l.parent else { continue };
-            // (Layers above are already repaired, so `mask_above` sees valid links.)
-            let holds = l.kind == LayerKind::Normal && self.mask_above(i) == Some(p);
-            if !holds && let Some(l) = self.layers.get_mut(i)
+            // A broken link falls back to the nearest enclosing parent that still holds (a layer
+            // whose mask stops being a mask stays in the folder the mask is in).
+            let mut cand = Some(p);
+            for _ in 0..=MAX_LAYER_DEPTH {
+                let Some(c) = cand else { break };
+                if self.link_holds(i, c) {
+                    break;
+                }
+                cand = self.layer(c).and_then(|x| x.parent);
+            }
+            let cand = cand.filter(|c| self.link_holds(i, *c));
+            if cand != Some(p)
+                && let Some(l) = self.layers.get_mut(i)
             {
-                Arc::make_mut(l).parent = None;
+                Arc::make_mut(l).parent = cand;
             }
         }
+    }
+
+    /// Whether the layer at `i` may name `p` as its parent. (Layers above `i` are already
+    /// repaired, so their chains are valid.)
+    fn link_holds(&self, i: usize, p: LayerId) -> bool {
+        let Some(l) = self.layers.get(i) else { return false };
+        let above = i.checked_sub(1).and_then(|a| self.layers.get(a));
+        match self.layer(p).filter(|_| self.index_of(p).is_some_and(|pi| pi < i)).map(|x| x.kind) {
+            Some(LayerKind::Folder) => above.is_some_and(|a| a.id == p || self.is_inside(i - 1, p)) && self.depth_of_parent(p) + 1 < MAX_LAYER_DEPTH,
+            Some(LayerKind::Mask) => l.kind == LayerKind::Normal && above.is_some_and(|a| a.id == p || a.parent == Some(p)),
+            _ => false,
+        }
+    }
+
+    /// The folder directly containing the layer at `index`, if any.
+    pub fn folder_of(&self, index: usize) -> Option<LayerId> {
+        self.folders_of(index).next().map(|f| f.id)
+    }
+
+    fn depth_of_parent(&self, p: LayerId) -> usize {
+        self.index_of(p).map_or(0, |i| self.depth(i))
     }
 }
 

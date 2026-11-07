@@ -107,6 +107,25 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
         }
         "layer.delete" => {
             let l = target_layer(s, p)?;
+            if l.kind == anicraft_doc::LayerKind::Folder {
+                // A folder goes with everything in it.
+                let tl = s.doc.timeline(s.scene);
+                let i = tl.layers.iter().position(|x| x.id == l.id)?;
+                let inner = tl.layers.get(tl.group_range(i))?;
+                let n = inner.len().saturating_sub(1);
+                let (keys, elements) = inner.iter().map(|x| layer_content(x)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+                return (n > 0).then(|| Confirmation {
+                    title: "Delete folder?".into(),
+                    message: format!(
+                        "Folder “{}” holds {}{}. They are deleted with it. You can undo this.",
+                        l.name,
+                        plural(n, "layer"),
+                        if elements > 0 { format!(" with {} in {}", plural(elements, "element"), plural(keys, "keyframe")) } else { String::new() }
+                    ),
+                    action: "Delete Folder".into(),
+                    irreversible: false,
+                });
+            }
             let (keys, elements) = layer_content(l);
             (elements > 0).then(|| Confirmation {
                 title: "Delete layer?".into(),

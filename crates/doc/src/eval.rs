@@ -156,8 +156,10 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         }
     }
     let clip_of = |id: LayerId| clips.iter().find(|(l, _)| *l == id).map(|(_, c)| *c);
-    for layer in tl.layers.iter().rev() {
-        if !layer.visible || layer.kind == LayerKind::Guide {
+    // Folders draw nothing, and a hidden folder hides everything in it.
+    let has_folders = tl.layers.iter().any(|l| l.kind == LayerKind::Folder);
+    for (index, layer) in tl.layers.iter().enumerate().rev() {
+        if !layer.visible || matches!(layer.kind, LayerKind::Guide | LayerKind::Folder) || (has_folders && tl.hidden_by_folder(index)) {
             continue;
         }
         let (clip, masks) = match (cx.masks, layer.kind) {

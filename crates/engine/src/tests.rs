@@ -1197,3 +1197,77 @@ fn files_from_before_scenes_open_as_one_scene() {
     assert_eq!(d.frame_count(), 3);
     assert_eq!(anicraft_doc::evaluate(&d, 0).items.len(), 1);
 }
+
+#[test]
+fn layer_folders_hold_hide_lock_move_and_delete_their_layers() {
+    let mut s = Session::default();
+    let art = s.layer;
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 50, "h": 50}));
+    let bg = run(&mut s, "layer.new", json!({"name": "Background"}))["layer"].as_u64().map(LayerId).unwrap();
+    // Background sits above Layer 1; move it below so the order is: Layer 1, Background.
+    run(&mut s, "layer.move_down", json!({"layer": bg.0}));
+    run(&mut s, "layer.select", json!({"layer": art.0}));
+    let folder = run(&mut s, "layer.new_folder", json!({}))["layer"].as_u64().map(LayerId).unwrap();
+    let tl = |s: &Session| s.doc.timeline(s.scene).clone();
+    let names = |s: &Session| tl(s).layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&s), ["Folder 1", "Layer 1", "Background"]);
+    assert!(tl(&s).layers[0].keyframes.is_empty(), "a folder has no frames");
+    // A new folder is empty; a layer moved in under it goes inside.
+    assert_eq!(tl(&s).layers[1].parent, None);
+    run(&mut s, "layer.move_up", json!({"layer": art.0}));
+    run(&mut s, "layer.move_down", json!({"layer": art.0}));
+    assert_eq!(tl(&s).layers[1].parent, Some(folder), "moved in under the folder: inside it");
+    assert_eq!(tl(&s).depth(1), 1);
+
+    // A hidden folder hides what's in it; a locked folder locks it.
+    let items = |s: &Session| anicraft_doc::evaluate_scene(&s.doc, s.scene, 0).items.len();
+    assert_eq!(items(&s), 1);
+    run(&mut s, "layer.toggle_visible", json!({"layer": folder.0}));
+    assert_eq!(items(&s), 0);
+    run(&mut s, "layer.toggle_visible", json!({"layer": folder.0}));
+    run(&mut s, "layer.toggle_lock", json!({"layer": folder.0}));
+    assert_eq!(s.hit_test(Vec2::new(10.0, 10.0), 0.0), None, "locked by its folder");
+    run(&mut s, "layer.select", json!({"layer": art.0}));
+    assert!(s.execute("draw.rect", &json!({"x": 0, "y": 0, "w": 5, "h": 5})).is_err());
+    run(&mut s, "layer.toggle_lock", json!({"layer": folder.0}));
+    // Nothing draws on a folder, and frame commands refuse it.
+    run(&mut s, "layer.select", json!({"layer": folder.0}));
+    assert!(s.execute("draw.rect", &json!({"x": 0, "y": 0, "w": 5, "h": 5})).is_err());
+    assert!(s.execute("timeline.insert_frame", &json!({})).is_err());
+
+    // The folder moves with its contents, past a whole sibling.
+    run(&mut s, "layer.move_down", json!({"layer": folder.0}));
+    assert_eq!(names(&s), ["Background", "Folder 1", "Layer 1"]);
+    assert_eq!(tl(&s).layers[2].parent, Some(folder));
+    run(&mut s, "layer.move_up", json!({"layer": folder.0}));
+    assert_eq!(names(&s), ["Folder 1", "Layer 1", "Background"]);
+
+    // A mask inside the folder; turning it back into a normal layer keeps both in the folder.
+    run(&mut s, "layer.select", json!({"layer": art.0}));
+    let spot = run(&mut s, "layer.new", json!({"name": "Spot"}))["layer"].as_u64().map(LayerId).unwrap();
+    assert_eq!(tl(&s).layer(spot).unwrap().parent, Some(folder), "added inside the folder");
+    run(&mut s, "layer.toggle_mask", json!({"layer": spot.0}));
+    assert_eq!(tl(&s).layer(art).unwrap().parent, Some(spot), "masked by the mask in the folder");
+    run(&mut s, "layer.toggle_mask", json!({"layer": spot.0}));
+    assert_eq!((tl(&s).layer(art).unwrap().parent, tl(&s).layer(spot).unwrap().parent), (Some(folder), Some(folder)));
+
+    // Moving the first layer up and out of the folder.
+    run(&mut s, "layer.move_up", json!({"layer": spot.0}));
+    assert_eq!(names(&s), ["Spot", "Folder 1", "Layer 1", "Background"]);
+    assert_eq!(tl(&s).layer(spot).unwrap().parent, None);
+
+    // Deleting a folder takes its contents (it asks first), and undo brings them back.
+    let c = s.confirmation("layer.delete", &json!({"layer": folder.0})).expect("asks");
+    assert!(!c.irreversible && c.message.contains("1 layer"));
+    let v = run(&mut s, "layer.delete", json!({"layer": folder.0}));
+    assert_eq!(v["layers"], 2);
+    assert_eq!(names(&s), ["Spot", "Background"]);
+    s.undo().unwrap();
+    assert_eq!(names(&s), ["Spot", "Folder 1", "Layer 1", "Background"]);
+    // Folders save and load.
+    let back = crate::format::from_json(&crate::format::to_json(&s.doc).unwrap()).unwrap();
+    assert_eq!(back.timeline(0).layers[1].kind, anicraft_doc::LayerKind::Folder);
+    assert_eq!(back.timeline(0).layers[2].parent, Some(folder));
+    // A folder never becomes another kind of layer.
+    assert!(s.execute("layer.set_type", &json!({"layer": folder.0, "type": "normal"})).is_err());
+}
