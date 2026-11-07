@@ -69,7 +69,9 @@ impl Coverage {
         }
         let o = Vec2::new(self.bounds.x0 as f32, self.bounds.y0 as f32);
         let (a, b) = (a - o, b - o);
-        if a.y == b.y {
+        // Horizontal, or wholly above or below the buffer (common: a band sees every edge of
+        // the shapes crossing it): nothing to deposit, so skip the splitting below.
+        if a.y == b.y || a.y.max(b.y) <= 0.0 || a.y.min(b.y) >= self.bounds.height() as f32 {
             return;
         }
         let w = self.bounds.width() as f32;

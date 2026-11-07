@@ -28,18 +28,27 @@ The default `bench` scenario: 50 layers × 200 shapes × 240 frames, 200k elemen
 | Undo memory per small edit | < 16 KB | 2.7 KB ✅ | test, every PR |
 | Document snapshot | < 50 µs, shares everything | 0.04 µs ✅ | test (sharing) and `bench --check` |
 | Evaluate one frame (200k instances) | < 4 ms | 1.7 ms ✅ | `bench --check` |
-| Render 1080p, ~10k visible shapes | < 16.7 ms (60 fps) | **19.5–20.2 ms ❌** | `bench --check` |
-| Render at 400% zoom | < 16.7 ms | 11.7 ms ✅ | `bench --check` |
+| Render 1080p, ~10k visible shapes | < 16.7 ms (60 fps) | 15.3–15.8 ms ✅ | `bench --check` |
+| Render at 400% zoom | < 16.7 ms | 9.0–9.3 ms ✅ | `bench --check` |
 | Shapes drawn at 400% zoom | ≤ 1/8 of the frame's shapes | 5.5% ✅ | test, every PR |
 | Hit test | < 200 µs | 52 µs ✅ | `bench --check` |
 | File size | < 400 bytes per element instance | 342 ✅ | test, every PR |
 | Save / load 65 MB file | < 500 ms | 123 / 146 ms ✅ | `bench --check` |
 | UI frame while rendering | never blocked | worker thread ✅ | design (ADR 0002) |
 
-**The 1080p render is over budget.** On the same machine on 2026-11-06, v0.1.0 measures
-18.0–18.9 ms and today's `main` 19.4–20.2 ms (most of the difference came with bitmap fills).
-The 16.5 ms recorded on 2026-10-28 was not reproduced. Getting back under 16.7 ms is the
-next performance task.
+**1080p render, back under budget (2026-11-06).** It had drifted to 19.4–20.2 ms (v0.1.0
+measured 18.0–18.9 ms on the same machine; the 16.5 ms of 2026-10-28 didn't reproduce).
+Timing each step of a frame showed the time was outside the drawing itself:
+
+| Change | 1080p | 400% |
+|---|---|---|
+| Before | 19.4–20.2 ms | 11.6–11.9 ms |
+| Background filled per band, in parallel, instead of one serial 33 MB fill | 16.9–17.5 ms | 9.1–9.6 ms |
+| Edges wholly above or below a band skipped before splitting; fill polygons moved, not copied | 17.0–17.2 ms | 8.9–9.1 ms |
+| Prepared polygons freed on the pool after the frame, off the critical path | 15.3–15.8 ms | 9.0–9.3 ms |
+
+Output is unchanged: the sample's frames and a bitmap document render byte-identical before
+and after.
 
 ### How budgets are enforced
 
