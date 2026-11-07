@@ -143,9 +143,9 @@ pub fn render_frame(doc: &Document, frame: u32, scale: f32) -> Result<Pixmap, Re
 /// Renders a display list.
 pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), RenderError> {
     let mut pm = Pixmap::new(view.width, view.height)?;
-    if let Some(bg) = view.background {
-        pm.fill(bg);
-    }
+    // The background is filled band by band, in parallel, just before each band draws (a
+    // serial fill of a 1080p float buffer cost as much as all the drawing).
+    let background = view.background.map(premultiply);
     let surface = IRect { x0: 0, y0: 0, x1: view.width as i32, y1: view.height as i32 };
 
     // Phase 1 (parallel over items): cull, flatten, stroke and build shaders. Output keeps
@@ -181,6 +181,9 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
     let w = view.width as usize;
     let chains = group_chains(&dl.groups);
     pm.data.par_chunks_mut(BAND_ROWS * w.max(1)).enumerate().for_each(|(bi, rows)| {
+        if let Some(bg) = background {
+            rows.fill(bg);
+        }
         let y0 = (bi * BAND_ROWS) as i32;
         let band = IRect { x0: 0, y0, x1: surface.x1, y1: (y0 + BAND_ROWS as i32).min(surface.y1) };
         let mut cov = Coverage::new(IRect { x0: 0, y0: 0, x1: 0, y1: 0 });
@@ -219,6 +222,9 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
             close_group(&mut open, rows, &dl.groups, band.y0, w);
         }
     });
+    // Tens of thousands of small polygon buffers: free them on the pool, off the frame's
+    // critical path (it cost about 2 ms at 1080p).
+    rayon::spawn(move || drop((ops, clips)));
     Ok((pm, stats))
 }
 
@@ -430,21 +436,27 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
         push(stroke::stroke_polygons(&lines, 0.5), FillRule::NonZero, Shader::Solid(premultiply(color)));
         return out;
     }
-    if let Some(fill) = &item.fill {
-        let polys: Vec<Vec<Vec2>> = lines.iter().map(|l| l.points.clone()).collect();
-        push(polys, item.fill_rule, Shader::new(fill, &m, &item.color, item.image.as_ref()));
-    }
-    if let Some(st) = item.stroke {
+    // The stroke is outlined from the flattened lines first, so the fill can then take them
+    // without a copy; it is still drawn after the fill.
+    let stroke = item.stroke.and_then(|st| {
         let mut fx: ColorEffect = item.color;
         let mut pw = st.width * m.mean_scale();
-        if pw.is_finite() && pw > 0.0 {
-            if pw < 1.0 {
-                // Thin strokes: keep a 1 px footprint and fade by width (avoids dropouts).
-                fx.alpha *= pw;
-                pw = 1.0;
-            }
-            push(stroke::stroke_polygons(&lines, pw * 0.5), FillRule::NonZero, Shader::new(&Paint::Solid(st.color), &m, &fx, None));
+        if !(pw.is_finite() && pw > 0.0) {
+            return None;
         }
+        if pw < 1.0 {
+            // Thin strokes: keep a 1 px footprint and fade by width (avoids dropouts).
+            fx.alpha *= pw;
+            pw = 1.0;
+        }
+        Some((stroke::stroke_polygons(&lines, pw * 0.5), Shader::new(&Paint::Solid(st.color), &m, &fx, None)))
+    });
+    if let Some(fill) = &item.fill {
+        let polys: Vec<Vec<Vec2>> = lines.into_iter().map(|l| l.points).collect();
+        push(polys, item.fill_rule, Shader::new(fill, &m, &item.color, item.image.as_ref()));
+    }
+    if let Some((polys, shader)) = stroke {
+        push(polys, FillRule::NonZero, shader);
     }
     out
 }
