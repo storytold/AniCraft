@@ -259,7 +259,8 @@ impl<'a> Builder<'a> {
                     Some(t @ ("motion" | "shape")) => {
                         let acc = f.f32("acceleration").unwrap_or(0.0).clamp(-100.0, 100.0);
                         let kind = if t == "shape" { TweenKind::Shape } else { TweenKind::Classic };
-                        k.tween = Some(Tween { easing: if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) }, kind });
+                        let orient = f.bool("motionTweenOrientToPath").unwrap_or(false);
+                        k.tween = Some(Tween { easing: if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) }, kind, orient });
                         if t == "shape" && f.child("shapeHints").is_some_and(|h| !h.children.is_empty()) {
                             self.report.skip("shape hints (the tween morphs without them)");
                         }

@@ -11,6 +11,7 @@ mod fit;
 mod path;
 pub mod svg;
 pub mod trace;
+pub mod walk;
 
 pub use affine::{Affine, Decomposed};
 pub use fit::fit_curve;

@@ -1,6 +1,7 @@
 //! Timeline evaluation: `(document, frame) -> DisplayList`. Pure, deterministic, no caching.
 
 use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, Timeline, TweenKind};
+use anicraft_geom::walk::PathWalk;
 use anicraft_geom::{Affine, FillRule, Path};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -27,6 +28,8 @@ pub struct DisplayItem {
     pub clip: Option<u32>,
     /// Mask artwork: not drawn; its fill area (strokes and opacity ignored) forms this clip.
     pub masks: Option<u32>,
+    /// Guide artwork: shown while editing, never in output.
+    pub guide: bool,
 }
 
 /// Back-to-front list of shapes.
@@ -75,7 +78,7 @@ pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
 /// Evaluates scene `scene`'s timeline at its own `frame` (what the stage shows while editing).
 pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
-    let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None };
+    let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false };
     eval_timeline(doc, doc.timeline(scene), frame, &cx, &mut out);
     out
 }
@@ -83,6 +86,13 @@ pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
 /// Elements of `layer` as they appear at `frame`, with tweens applied, plus the start frame of
 /// the covering keyframe. `None` when the frame is empty on this layer.
 pub fn evaluate_layer_elements(layer: &Layer, frame: u32) -> Option<(u32, Cow<'_, [Arc<Element>]>)> {
+    evaluate_guided(layer, frame, None)
+}
+
+/// [`evaluate_layer_elements`] with a motion guide: tweened elements travel along `guide` (in
+/// the layer's own space) from the point nearest their start to the point nearest their end,
+/// turning with it when the tween orients to the path.
+pub fn evaluate_guided<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf = layer.keyframes.get(idx)?;
     let Some(tween) = kf.tween else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
@@ -92,14 +102,15 @@ pub fn evaluate_layer_elements(layer: &Layer, frame: u32) -> Option<(u32, Cow<'_
     }
     let t = tween.easing.apply((frame - kf.start) as f32 / kf.duration.max(1) as f32);
     let morph = tween.kind == TweenKind::Shape;
-    let els = kf.elements.iter().enumerate().map(|(i, a)| next.elements.get(i).and_then(|b| interpolate(a, b, t, morph)).map_or_else(|| a.clone(), Arc::new)).collect();
+    let path = guide.map(|g| (g, tween.orient));
+    let els = kf.elements.iter().enumerate().map(|(i, a)| next.elements.get(i).and_then(|b| interpolate(a, b, t, morph, path)).map_or_else(|| a.clone(), Arc::new)).collect();
     Some((kf.start, Cow::Owned(els)))
 }
 
 /// Interpolates two elements; `None` when they cannot tween. With `morph` (a shape tween),
 /// shapes of different structure blend through [`anicraft_geom::morph`]; otherwise a shape
 /// changes only when both keyframes share its structure.
-fn interpolate(a: &Element, b: &Element, t: f32, morph: bool) -> Option<Element> {
+fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, guide: Option<(&PathWalk, bool)>) -> Option<Element> {
     let kind = match (&a.kind, &b.kind) {
         (ElementKind::Shape(sa), ElementKind::Shape(sb)) => {
             let path = if Arc::ptr_eq(&sa.path, &sb.path) {
@@ -122,7 +133,10 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool) -> Option<Element>
         (ElementKind::Symbol { symbol: s1, .. }, ElementKind::Symbol { symbol: s2, .. }) if s1 == s2 => a.kind.clone(),
         _ => return None,
     };
-    let transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
+    let mut transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
+    if let Some((g, orient)) = guide {
+        transform = follow(g, orient, &a.transform, &b.transform, t, transform);
+    }
     Some(Element { id: a.id, name: a.name.clone(), transform, color: a.color.lerp(&b.color, t), kind })
 }
 
@@ -140,6 +154,44 @@ struct Ctx {
     clip: Option<u32>,
     /// Set while evaluating mask artwork: everything inside forms this clip.
     masks: Option<u32>,
+    /// Set while evaluating guide artwork.
+    guide: bool,
+}
+
+/// The path a guide layer's first shape traces at `frame`, in the layer's own space.
+fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
+    let (_, els) = evaluate_layer_elements(guide, frame)?;
+    els.iter().find_map(|e| match &e.kind {
+        ElementKind::Shape(s) => {
+            let line = s.path.flatten(&e.transform, 0.25).into_iter().next()?;
+            let mut pts = line.points;
+            if line.closed
+                && let Some(&first) = pts.first()
+            {
+                pts.push(first);
+            }
+            PathWalk::new(&pts)
+        }
+        ElementKind::Symbol { .. } => None,
+    })
+}
+
+/// The tweened transform `tw` moved onto the guide: its origin travels from the point on the
+/// guide nearest the start keyframe's origin to the point nearest the end's; with `orient`, it
+/// also turns as the path turns.
+fn follow(g: &PathWalk, orient: bool, from: &Affine, to: &Affine, t: f32, tw: Affine) -> Affine {
+    let (s0, s1) = (g.project(from.translation()), g.project(to.translation()));
+    let s = s0 + (s1 - s0) * t;
+    let p = g.at(s);
+    let [a, b, c, d, _, _] = tw.m;
+    let mut lin = Affine { m: [a, b, c, d, 0.0, 0.0] };
+    if orient {
+        let (d0, d1) = (g.tangent(s0), g.tangent(s));
+        lin = Affine::rotate(d1.y.atan2(d1.x) - d0.y.atan2(d0.x)).mul(&lin);
+    }
+    let [a, b, c, d, _, _] = lin.m;
+    let out = Affine { m: [a, b, c, d, p.x, p.y] };
+    if out.is_finite() { out } else { tw }
 }
 
 fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut DisplayList) {
@@ -159,15 +211,22 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
     // Folders draw nothing, and a hidden folder hides everything in it.
     let has_folders = tl.layers.iter().any(|l| l.kind == LayerKind::Folder);
     for (index, layer) in tl.layers.iter().enumerate().rev() {
-        if !layer.visible || matches!(layer.kind, LayerKind::Guide | LayerKind::Folder) || (has_folders && tl.hidden_by_folder(index)) {
+        // Guide artwork is listed (marked, for editing) but never drawn; inside mask artwork
+        // it plays no part at all.
+        let is_guide = layer.kind == LayerKind::Guide;
+        if !layer.visible || layer.kind == LayerKind::Folder || (is_guide && cx.masks.is_some()) || (has_folders && tl.hidden_by_folder(index)) {
             continue;
         }
         let (clip, masks) = match (cx.masks, layer.kind) {
             (Some(_), _) => (cx.clip, cx.masks),
             (None, LayerKind::Mask) => (cx.clip, clip_of(layer.id)),
+            (None, LayerKind::Guide) => (cx.clip, None),
             (None, _) => (layer.parent.and_then(clip_of).or(cx.clip), None),
         };
-        let Some((kf_start, elements)) = evaluate_layer_elements(layer, frame) else { continue };
+        let guide = cx.guide || is_guide;
+        // A layer guided by a guide layer: its tweens follow the guide's first path.
+        let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
+        let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
         for el in elements.iter() {
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
@@ -186,11 +245,12 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     outline: layer_outline,
                     clip,
                     masks,
+                    guide,
                 }),
                 ElementKind::Symbol { symbol, loop_mode, first_frame } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
                     let local = loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, sym.timeline.frame_count());
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks };
+                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide };
                     eval_timeline(doc, &sym.timeline, local, &inner, out);
                 }
             }

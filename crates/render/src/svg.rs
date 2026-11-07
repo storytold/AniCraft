@@ -42,7 +42,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
         defs.push_str("</clipPath>");
     }
 
-    for item in dl.items.iter().filter(|it| it.masks.is_none()) {
+    for item in dl.items.iter().filter(|it| it.masks.is_none() && !it.guide) {
         let Some(d) = stage_path(item) else { continue };
         let clip = item.clip.filter(|&c| (c as usize) < dl.clip_parents.len()).map(|c| format!(" clip-path=\"url(#c{c})\"")).unwrap_or_default();
         if let Some(color) = item.outline {
@@ -180,6 +180,7 @@ mod tests {
             outline: None,
             clip: None,
             masks: None,
+            guide: false,
         }
     }
 

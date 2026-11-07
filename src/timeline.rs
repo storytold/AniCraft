@@ -359,6 +359,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // disclosure chevron and a folder glyph; masks a stencil; masked layers its inside.
         let is_folder = layer.kind == LayerKind::Folder;
         let masked = layer.parent.is_some_and(|p| tl_now.layer(p).is_some_and(|m| m.kind == LayerKind::Mask));
+        let guided = layer.parent.is_some_and(|p| tl_now.layer(p).is_some_and(|m| m.kind == LayerKind::Guide));
         let hidden = !layer.visible || tl_now.hidden_by_folder(i);
         let name_color = if hidden { T.text_faint } else { T.text };
         let type_icon = |x: f32, icon: Icon| icons::paint(&painter, Rect::from_center_size(pos2(x, left.center().y), vec2(14.0, 14.0)), icon, name_color);
@@ -377,6 +378,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             LayerKind::Normal if masked => {
                 type_icon(x0 + 7.0, Icon::Masked);
+                x0 + 20.0
+            }
+            LayerKind::Guide => {
+                type_icon(x0 + 7.0, Icon::Guide);
                 x0 + 20.0
             }
             _ => x0 + 4.0,
@@ -447,6 +452,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if menus::check_item(ui, "Masked", masked, can_mask || masked) {
                 let ty = if masked { "normal" } else { "masked" };
                 app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));
+            }
+            // Guides: a plain guide never exports; a motion guide steers the layers it guides.
+            if menus::check_item(ui, "Guide", layer.kind == LayerKind::Guide, matches!(layer.kind, LayerKind::Normal | LayerKind::Guide) && !masked && !guided) {
+                let ty = if layer.kind == LayerKind::Guide { "normal" } else { "guide" };
+                app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));
+            }
+            let can_guide = layer.kind == LayerKind::Normal && app.s.doc.timeline(app.s.scene).guide_above(i).is_some();
+            if menus::check_item(ui, "Guided", guided, can_guide || guided) {
+                let ty = if guided { "normal" } else { "guided" };
+                app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));
+            }
+            if layer.kind == LayerKind::Normal && !masked && !guided {
+                menus::cmd_item(app, ui, "layer.add_motion_guide");
             }
             ui.separator();
             for id in ["layer.move_up", "layer.move_down"] {

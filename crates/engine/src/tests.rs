@@ -1271,3 +1271,44 @@ fn layer_folders_hold_hide_lock_move_and_delete_their_layers() {
     // A folder never becomes another kind of layer.
     assert!(s.execute("layer.set_type", &json!({"layer": folder.0, "type": "normal"})).is_err());
 }
+
+#[test]
+fn add_motion_guide_steers_the_tween_and_stays_out_of_exports() {
+    let mut s = Session::default();
+    let art = s.layer;
+    run(&mut s, "draw.ellipse", json!({"x": -10, "y": -10, "w": 20, "h": 20}));
+    run(&mut s, "timeline.goto", json!({"frame": 9}));
+    run(&mut s, "timeline.insert_keyframe", json!({}));
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "element.translate", json!({"dx": 200, "dy": 0}));
+    run(&mut s, "timeline.goto", json!({"frame": 0}));
+    run(&mut s, "timeline.create_tween", json!({}));
+    // Add the guide and draw an arch on it: up from (0,0) over to (200,0).
+    let v = run(&mut s, "layer.add_motion_guide", json!({"layer": art.0}));
+    let guide = LayerId(v["guide"].as_u64().unwrap());
+    assert_eq!(s.layer, guide, "the new guide is active, ready to draw on");
+    assert_eq!(s.doc.timeline(s.scene).layer(art).unwrap().parent, Some(guide));
+    run(&mut s, "draw.path", json!({"d": "M0 0 C0 -150 200 -150 200 0"}));
+    let y_at = |s: &Session, f| anicraft_doc::evaluate_scene(&s.doc, s.scene, f).items.iter().find(|i| i.layer == art).unwrap().transform.translation().y;
+    assert!(y_at(&s, 5) < -60.0, "midway the ball is up on the arch: {}", y_at(&s, 5));
+    // The guide line shows for editing but never in a rendered frame.
+    let px = |s: &Session, x, y| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(x, y).unwrap();
+    assert_eq!(px(&s, 100, 300), px(&s, 600, 600), "no trace of the guide stroke in output");
+    // Orient to path, and the guided type.
+    run(&mut s, "layer.select", json!({"layer": art.0}));
+    assert_eq!(run(&mut s, "timeline.set_orient", json!({"orient": true}))["orient"], true);
+    assert!(s.active_layer().unwrap().keyframes[0].tween.unwrap().orient);
+    assert_eq!(run(&mut s, "layer.set_type", json!({"type": "normal"}))["type"], "normal");
+    assert_eq!(run(&mut s, "layer.set_type", json!({"type": "guided"}))["type"], "guided");
+    // A masked layer can't also follow a guide.
+    let mask = run(&mut s, "layer.new", json!({"name": "M"}))["layer"].as_u64().unwrap();
+    run(&mut s, "layer.toggle_mask", json!({"layer": mask}));
+    let masked = s.doc.timeline(s.scene).layers.iter().find(|l| l.parent == Some(LayerId(mask))).map(|l| l.id);
+    let masked = masked.expect("the mask took the layer below it");
+    assert!(s.execute("layer.add_motion_guide", &json!({"layer": masked.0})).is_err());
+    // Undo takes back one step at a time: here, the mask.
+    let n = s.doc.timeline(s.scene).layers.len();
+    s.undo().unwrap();
+    assert_eq!(s.doc.timeline(s.scene).layers.len(), n);
+    assert!(s.doc.timeline(s.scene).layers.iter().all(|l| l.kind != anicraft_doc::LayerKind::Mask));
+}

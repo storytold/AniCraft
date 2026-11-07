@@ -19,6 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_shape_tween),
         c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?}", true, remove_tween),
         c("timeline.set_easing", "Set Tween Easing", "", None, "{easing, layer?, frame?}", true, set_easing),
+        c("timeline.set_orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}", true, set_orient),
         c("timeline.set_label", "Frame Label", "", None, "{label, layer?, frame?}", true, set_label),
         c("timeline.goto", "Go to Frame", "", None, "{frame}", false, goto),
         c("timeline.next_frame", "Next Frame", "Control", Some("."), "{}", false, |s, _| step(s, 1)),
@@ -43,7 +44,8 @@ pub fn specs() -> Vec<CommandSpec> {
         c("layer.move_up", "Move Layer Up", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, -1)),
         c("layer.move_down", "Move Layer Down", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, 1)),
         c("layer.toggle_mask", "Mask", "Modify/Timeline", None, "{layer?}", true, toggle_mask),
-        c("layer.set_type", "Layer Type", "", None, "{type: normal|mask|masked|guide, layer?}", true, set_layer_type),
+        c("layer.set_type", "Layer Type", "", None, "{type: normal|mask|masked|guide|guided, layer?}", true, set_layer_type),
+        c("layer.add_motion_guide", "Add Classic Motion Guide", "Insert/Timeline", None, "{layer?}", true, add_motion_guide),
     ]
 }
 
@@ -69,6 +71,54 @@ fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(layer_type_json(s, id))
 }
 
+/// Add Classic Motion Guide: a guide layer above the layer, which the layer then follows.
+/// Draw a line on the guide; the layer's classic tweens travel along it.
+fn add_motion_guide(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
+    let tl = s.doc.timeline(s.scene);
+    let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+    let Some(l) = tl.layers.get(i) else { return Err(EngineError::State("no such layer".into())) };
+    if l.kind != LayerKind::Normal {
+        return Err(EngineError::State("a motion guide guides a normal layer".into()));
+    }
+    if tl.layers.len() >= 1000 {
+        return Err(EngineError::State("too many layers (limit 1000)".into()));
+    }
+    // The guide sits where the layer was, beside it in its folder; a masked layer's guide
+    // would break the mask, so it can't have one.
+    if l.parent.and_then(|pid| tl.layer(pid)).is_some_and(|x| x.kind == LayerKind::Mask) {
+        return Err(EngineError::State("a masked layer can't also follow a motion guide".into()));
+    }
+    let folder = tl.folder_of(i);
+    let name: String = format!("Guide: {}", l.name).chars().take(128).collect();
+    let gid = LayerId(s.doc.alloc_id());
+    let mut guide = Layer::new(gid, name);
+    guide.kind = LayerKind::Guide;
+    guide.parent = folder;
+    guide.color = anicraft_doc::Rgba::hex(0x9e9e9e);
+    if let Some(k) = guide.keyframe_mut(0) {
+        k.duration = s.frame_count().max(1);
+    }
+    let tl = s.doc.timeline_mut(s.scene);
+    tl.layers.insert(i, Arc::new(guide));
+    if let Some(l) = tl.layers.get_mut(i + 1) {
+        Arc::make_mut(l).parent = Some(gid);
+    }
+    tl.repair_masks();
+    s.layer = gid;
+    s.selection.clear();
+    Ok(json!({"guide": gid.0, "guided": id.0}))
+}
+
+/// Orient to Path: a guided tween turns with the guide as it bends.
+fn set_orient(s: &mut Session, p: &Value) -> Result<Value> {
+    let orient = opt_bool(p, "orient")?.ok_or_else(|| EngineError::Param("param 'orient' (true or false) is required".into()))?;
+    let k = keyframe_mut(s, p)?;
+    let t = k.tween.as_mut().ok_or_else(|| EngineError::State("this span has no tween; create one first".into()))?;
+    t.orient = orient;
+    Ok(json!({"orient": orient}))
+}
+
 fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
     set_type(s, id, str_req(p, "type")?)?;
@@ -91,7 +141,11 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
             let m = tl.mask_above(i).ok_or_else(|| EngineError::State("only a layer directly under a mask layer (or its masked layers) can be masked".into()))?;
             (LayerKind::Normal, Some(m))
         }
-        other => return Err(EngineError::Param(format!("unknown layer type '{other}' (normal, mask, masked or guide)"))),
+        "guided" => {
+            let g = tl.guide_above(i).ok_or_else(|| EngineError::State("only a layer directly under a motion guide (or a layer it guides) can be guided".into()))?;
+            (LayerKind::Normal, Some(g))
+        }
+        other => return Err(EngineError::Param(format!("unknown layer type '{other}' (normal, mask, masked, guide or guided)"))),
     };
     let l = tl.layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     l.kind = kind;
@@ -103,16 +157,19 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
 fn layer_type_json(s: &Session, id: LayerId) -> Value {
     let Some(l) = s.doc.timeline(s.scene).layer(id) else { return json!({}) };
     let tl = s.doc.timeline(s.scene);
-    let masked_by = l.parent.filter(|p| tl.layer(*p).is_some_and(|m| m.kind == LayerKind::Mask));
+    let parent_kind = l.parent.and_then(|p| tl.layer(p)).map(|x| x.kind);
+    let masked_by = l.parent.filter(|_| parent_kind == Some(LayerKind::Mask));
+    let guided_by = l.parent.filter(|_| parent_kind == Some(LayerKind::Guide));
     let ty = match l.kind {
         LayerKind::Mask => "mask",
         LayerKind::Guide => "guide",
         LayerKind::Folder => "folder",
         LayerKind::Normal if masked_by.is_some() => "masked",
+        LayerKind::Normal if guided_by.is_some() => "guided",
         LayerKind::Normal => "normal",
     };
     let folder = tl.layers.iter().position(|x| x.id == id).and_then(|i| tl.folder_of(i));
-    json!({"layer": id.0, "type": ty, "masked_by": masked_by.map(|p| p.0), "folder": folder.map(|f| f.0)})
+    json!({"layer": id.0, "type": ty, "masked_by": masked_by.map(|p| p.0), "guided_by": guided_by.map(|p| p.0), "folder": folder.map(|f| f.0)})
 }
 
 pub(crate) fn target(s: &Session, p: &Value) -> Result<(Option<LayerId>, u32)> {
@@ -501,7 +558,8 @@ fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
         Some(e) => e,
         None => k.tween.map(|t| t.easing).unwrap_or_default(),
     };
-    k.tween = Some(Tween { easing, kind });
+    let orient = k.tween.is_some_and(|t| t.orient);
+    k.tween = Some(Tween { easing, kind, orient });
     let kind = if kind == TweenKind::Shape { "shape" } else { "classic" };
     Ok(json!({"tween": k.start, "easing": easing.label(), "kind": kind}))
 }

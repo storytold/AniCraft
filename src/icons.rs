@@ -55,11 +55,13 @@ pub enum Icon {
     FolderOpen,
     ChevronUp,
     FolderPlus,
+    Guide,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 41] = [
+    pub const ALL: [Icon; 42] = [
+        Icon::Guide,
         Icon::ChevronUp,
         Icon::FolderPlus,
         Icon::Folder,
@@ -142,6 +144,7 @@ impl Icon {
             Icon::ChevronDown => ("chevron-down", false),
             Icon::ChevronUp => ("chevron-up", false),
             Icon::FolderPlus => ("folder-plus", false),
+            Icon::Guide => ("spline", false),
             // Lucide's object-align icons aren't in the local set; these are AniCraft originals
             // drawn on the same 24 grid with the same 2-unit round strokes.
             Icon::AlignLeft => ("anicraft-align-left", false),
@@ -181,6 +184,7 @@ static FILES: &[(&str, &str)] = &[
     ("chevron-down", include_str!("../assets/icons/chevron-down.svg")),
     ("chevron-up", include_str!("../assets/icons/chevron-up.svg")),
     ("folder-plus", include_str!("../assets/icons/folder-plus.svg")),
+    ("spline", include_str!("../assets/icons/spline.svg")),
     ("play", include_str!("../assets/icons/play.svg")),
     ("pause", include_str!("../assets/icons/pause.svg")),
     ("rotate-cw", include_str!("../assets/icons/rotate-cw.svg")),
