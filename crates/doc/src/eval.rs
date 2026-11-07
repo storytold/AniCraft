@@ -30,6 +30,9 @@ pub struct DisplayItem {
     pub masks: Option<u32>,
     /// Guide artwork: shown while editing, never in output.
     pub guide: bool,
+    /// The innermost group this item fades with (see [`DisplayList::groups`]); `color.alpha`
+    /// leaves out the groups' opacity.
+    pub group: Option<u32>,
 }
 
 /// Back-to-front list of shapes.
@@ -39,9 +42,35 @@ pub struct DisplayList {
     /// One entry per clip: the enclosing clip it is intersected with. A parent always has a
     /// lower index than its children. A clip with no mask artwork hides everything in it.
     pub clip_parents: Vec<Option<u32>>,
+    /// Groups that fade as one: a symbol instance with an opacity below 1 composites its
+    /// items together, then blends the result at `alpha`, so overlapping parts don't show
+    /// through each other. A group's items are one unbroken run of `items`, nested runs for
+    /// nested groups; a parent always has a lower index.
+    pub groups: Vec<Group>,
+}
+
+/// A group that fades as one (see [`DisplayList::groups`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Group {
+    pub parent: Option<u32>,
+    pub alpha: f32,
 }
 
 impl DisplayList {
+    /// The opacity an item ends up with: its own times every group's it is in (what an item
+    /// looks like when nothing overlaps it; also what picking and outlines use).
+    pub fn effective_alpha(&self, item: &DisplayItem) -> f32 {
+        let mut a = item.color.alpha;
+        let mut g = item.group;
+        for _ in 0..self.groups.len() {
+            let Some(id) = g else { break };
+            let Some(grp) = self.groups.get(id as usize) else { break };
+            a *= grp.alpha;
+            g = grp.parent.filter(|&p| p < id);
+        }
+        a
+    }
+
     /// Whether stage point `p` lies inside clip `clip` (and every clip enclosing it): the test
     /// that keeps masked-away parts of a shape from being picked.
     pub fn clip_contains(&self, clip: u32, p: anicraft_geom::Vec2) -> bool {
@@ -56,14 +85,18 @@ impl DisplayList {
         c.is_none()
     }
 
-    /// Appends `other`'s items (drawn on top), renumbering its clips.
+    /// Appends `other`'s items (drawn on top), renumbering its clips and groups.
     pub fn append(&mut self, other: DisplayList) {
         let base = self.clip_parents.len() as u32;
         let shift = |c: Option<u32>| c.map(|c| c + base);
+        let gbase = self.groups.len() as u32;
+        let gshift = |g: Option<u32>| g.map(|g| g + gbase);
         self.clip_parents.extend(other.clip_parents.into_iter().map(shift));
+        self.groups.extend(other.groups.into_iter().map(|g| Group { parent: gshift(g.parent), alpha: g.alpha }));
         self.items.extend(other.items.into_iter().map(|mut i| {
             i.clip = shift(i.clip);
             i.masks = shift(i.masks);
+            i.group = gshift(i.group);
             i
         }));
     }
@@ -78,7 +111,7 @@ pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
 /// Evaluates scene `scene`'s timeline at its own `frame` (what the stage shows while editing).
 pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
-    let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false };
+    let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None };
     eval_timeline(doc, doc.timeline(scene), frame, &cx, &mut out);
     out
 }
@@ -156,6 +189,8 @@ struct Ctx {
     masks: Option<u32>,
     /// Set while evaluating guide artwork.
     guide: bool,
+    /// The group everything inside fades with.
+    group: Option<u32>,
 }
 
 /// The path a guide layer's first shape traces at `frame`, in the layer's own space.
@@ -246,11 +281,23 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     clip,
                     masks,
                     guide,
+                    group: cx.group,
                 }),
                 ElementKind::Symbol { symbol, loop_mode, first_frame } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
                     let local = loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, sym.timeline.frame_count());
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide };
+                    // An instance below full opacity fades as one: its contents composite in a
+                    // group at full opacity, and the group blends at the instance's alpha. (Mask
+                    // artwork ignores opacity, so it never needs one.)
+                    let fade = el.color.alpha.clamp(0.0, 1.0);
+                    let (color, group) = if masks.is_none() && fade < 1.0 - 1e-4 {
+                        let gid = out.groups.len() as u32;
+                        out.groups.push(Group { parent: cx.group, alpha: fade });
+                        (cx.color.concat(&ColorEffect { alpha: 1.0, ..el.color }), Some(gid))
+                    } else {
+                        (color, cx.group)
+                    };
+                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group };
                     eval_timeline(doc, &sym.timeline, local, &inner, out);
                 }
             }
