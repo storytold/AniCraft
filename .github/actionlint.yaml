@@ -1,0 +1,4 @@
+# Custom runner labels actionlint can't know about.
+self-hosted-runner:
+  labels:
+    - github-ubuntu-16core  # org 16-core larger runner, used by the FreeBSD VM jobs (release.yml, freebsd.yml)

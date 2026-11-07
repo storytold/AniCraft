@@ -24,6 +24,15 @@ shaders or SDK code).
 | Library symbol-kind marks, selection handles, timeline marks | UI | AniCraft contributors | Original work, drawn in code (`src/panels.rs`, `src/timeline.rs`, `src/stage.rs`) | MIT OR Apache-2.0 |
 | Sample animation (ball, star, sun, hills, sky) | First launch, tests, CLI `--sample` | AniCraft contributors | Original work, generated in code (`crates/doc/src/sample.rs`) | MIT OR Apache-2.0 |
 | Colour theme | UI | AniCraft contributors | Original work (`src/theme.rs`) | MIT OR Apache-2.0 |
+| `docs/brand/artcraft-logo-white.png` | ArtCraft brand mark (wordmark, light ink for dark backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/artcraft-logo-white.svg` | ArtCraft brand mark (wordmark, light ink for dark backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/artcraft-logo.png` | ArtCraft brand mark (wordmark, dark ink for light backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/artcraft-logo.svg` | ArtCraft brand mark (wordmark, dark ink for light backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/artcraft-mark-black.png` | ArtCraft mark (symbol, dark ink for light backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/artcraft-mark-black.svg` | ArtCraft mark (symbol, dark ink for light backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/artcraft-mark.png` | ArtCraft mark (symbol, color) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/artcraft-mark.svg` | ArtCraft mark (symbol, color) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
+| `docs/brand/LICENSE-brand.txt` | Brand license terms | ArtCraft Team | craftrules `standards/license-files` | — (licence text) |
 
 ### Optional build input: craft-fonts (not files in this repo)
 
