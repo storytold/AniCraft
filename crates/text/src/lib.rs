@@ -158,28 +158,37 @@ impl Fonts {
             style: if style.italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
         };
         let id = self.db.query(&q).ok_or(TextError::NoFonts)?;
-        let face = |id| self.db.with_face_data(id, |data, index| (data.to_vec(), index));
-        let mut faces = vec![face(id).ok_or(TextError::NoFonts)?];
-        // Characters the face doesn't have (Arabic in Inter, say) come from the first fallback
-        // family that has them; everything else stays in the chosen face.
-        let charmap_lacks = |f: &(Vec<u8>, u32), c: char| skrifa::FontRef::from_index(&f.0, f.1).ok().is_none_or(|font| font.charmap().map(c).is_none());
-        let mut missing: Vec<char> = text.chars().filter(|c| needs_glyph(*c)).collect();
-        missing.sort_unstable();
-        missing.dedup();
-        missing.retain(|c| faces.first().is_none_or(|f| charmap_lacks(f, *c)));
-        for fallback in FALLBACK_FAMILIES {
-            if missing.is_empty() || faces.len() >= MAX_FACES {
-                break;
-            }
-            let Some(fid) = self.db.query(&fontdb::Query { families: &[fontdb::Family::Name(fallback)], ..q }).filter(|f| *f != id) else { continue };
-            let Some(f) = face(fid) else { continue };
-            let before = missing.len();
-            missing.retain(|c| charmap_lacks(&f, *c));
-            if missing.len() < before {
-                faces.push(f);
-            }
-        }
-        let laid = lay_out(&faces, text, style).ok_or(TextError::NoFonts)?;
+        // The chosen face is read in place (memory-mapped); only fallback faces the text needs are
+        // copied, so text in one script costs what it did before fallbacks.
+        let laid = self
+            .db
+            .with_face_data(id, |data, index| {
+                // Characters the face doesn't have (Arabic in Inter, say) come from the first
+                // fallback family that has them; everything else stays in the chosen face.
+                let mut missing: Vec<char> = text.chars().filter(|c| needs_glyph(*c)).collect();
+                missing.sort_unstable();
+                missing.dedup();
+                keep_lacking(&mut missing, data, index);
+                let mut fallbacks: Vec<(Vec<u8>, u32)> = Vec::new();
+                for fallback in FALLBACK_FAMILIES {
+                    if missing.is_empty() || fallbacks.len() + 1 >= MAX_FACES {
+                        break;
+                    }
+                    let Some(fid) = self.db.query(&fontdb::Query { families: &[fontdb::Family::Name(fallback)], ..q }).filter(|f| *f != id) else { continue };
+                    let helps = |d: &[u8], i: u32| {
+                        let before = missing.len();
+                        keep_lacking(&mut missing, d, i);
+                        (missing.len() < before).then(|| (d.to_vec(), i))
+                    };
+                    if let Some(face) = self.db.with_face_data(fid, helps).flatten() {
+                        fallbacks.push(face);
+                    }
+                }
+                let faces: Vec<(&[u8], u32)> = std::iter::once((data, index)).chain(fallbacks.iter().map(|(d, i)| (d.as_slice(), *i))).collect();
+                lay_out(&faces, text, style)
+            })
+            .flatten()
+            .ok_or(TextError::NoFonts)?;
         Ok(Layout { family, ..laid })
     }
 }
@@ -207,6 +216,14 @@ fn needs_glyph(c: char) -> bool {
     !c.is_control() && !c.is_whitespace()
 }
 
+/// Drops from `chars` those the face in `data` has (its charmap read once).
+fn keep_lacking(chars: &mut Vec<char>, data: &[u8], index: u32) {
+    if let Ok(font) = skrifa::FontRef::from_index(data, index) {
+        let charmap = font.charmap();
+        chars.retain(|c| charmap.map(*c).is_none());
+    }
+}
+
 /// Clamps a style to sane ranges (sizes from 1 to 2000 px, spacing within ±1000 px).
 pub fn sanitize(style: &Style) -> Style {
     let fin = |v: f32, d: f32| if v.is_finite() { v } else { d };
@@ -232,7 +249,7 @@ struct Glyph {
 
 /// Lays `text` out with `faces`: the chosen face first (its metrics set the lines), then the
 /// fallbacks for characters it doesn't have.
-fn lay_out(faces: &[(Vec<u8>, u32)], text: &str, style: &Style) -> Option<Layout> {
+fn lay_out(faces: &[(&[u8], u32)], text: &str, style: &Style) -> Option<Layout> {
     let style = sanitize(style);
     let fonts: Vec<skrifa::FontRef> = faces.iter().filter_map(|(data, index)| skrifa::FontRef::from_index(data, *index).ok()).collect();
     let size = skrifa::instance::Size::new(style.size);
@@ -266,7 +283,9 @@ fn lay_out(faces: &[(Vec<u8>, u32)], text: &str, style: &Style) -> Option<Layout
             if !joins || !has(current, c) {
                 current = (0..fonts.len()).find(|f| has(*f, c)).unwrap_or(if joins { current } else { 0 });
             }
-            face_of.iter_mut().skip(i).take(c.len_utf8()).for_each(|f| *f = current);
+            if let Some(bytes) = face_of.get_mut(i..i + c.len_utf8()) {
+                bytes.fill(current);
+            }
         }
         // A run shaped in one direction, split where the face changes; glyphs in visual order.
         let shape_run = |run: std::ops::Range<usize>, rtl: bool| {
@@ -510,15 +529,20 @@ mod tests {
             fonts.db.query(&q).and_then(|id| fonts.db.with_face_data(id, |d, i| skrifa::FontRef::from_index(d, i).is_ok_and(|f| f.charmap().map(c).is_some()))).unwrap_or(false)
         };
         // A family with Latin letters and no Arabic ones, and a fallback that has Arabic.
-        let Some(latin) = fonts.families().iter().find(|f| has(f, 'a') && !has(f, 'ب')) else { return };
-        if !FALLBACK_FAMILIES.iter().any(|f| has(f, 'ب')) {
+        let Some(latin) = fonts.families().iter().find(|f| has(f, 'a') && !has(f, 'ب')) else {
+            eprintln!("no family with Latin letters and no Arabic ones here: fallback test skipped");
+            return;
+        };
+        let Some(fallback) = FALLBACK_FAMILIES.iter().find(|f| has(f, 'ب')) else {
             eprintln!("no fallback family with Arabic letters here: fallback test skipped");
             return;
-        }
+        };
         let lay = |t: &str| fonts.layout(t, &Style { family: latin.clone(), ..style(40.0) }).unwrap();
         let arabic = lay("بيت");
         assert_eq!((arabic.missing, arabic.family.as_str()), (0, latin.as_str()), "the block keeps its family");
-        assert!(!arabic.outline.cmds.is_empty());
+        // The letters are the fallback face's (as wide as in that family), not the chosen face's boxes.
+        let direct = fonts.layout("بيت", &Style { family: fallback.to_string(), ..style(40.0) }).unwrap();
+        assert!((arabic.width - direct.width).abs() < 0.01, "{} vs {} in {fallback}", arabic.width, direct.width);
         // The Latin letters are still drawn in the chosen face, the Arabic ones after them.
         let mixed = lay("ab بيت");
         assert!(mixed.outline.cmds.starts_with(&lay("ab").outline.cmds));
