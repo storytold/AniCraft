@@ -422,7 +422,7 @@ fn move_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Dragging keyframes onto other layers (`layer_by` rows down, negative = up): the frames are
-/// lifted out of every source layer first (leaving blank keyframes, as in Animate), then
+/// lifted out of every source layer first (leaving blank keyframes), then
 /// placed on the target layers, replacing what was there; frames after the landing range
 /// keep their content. Lifting everything before placing anything makes overlapping row
 /// ranges (dragging two rows down by one) come out right.

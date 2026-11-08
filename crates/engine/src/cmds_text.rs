@@ -9,7 +9,7 @@ use anicraft_text::{Align, Fonts};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// The text style new text gets: the last one used, as in Animate.
+/// The text style new text gets: the last one used.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
     pub font: String,

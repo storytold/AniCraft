@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **Filters** (Properties › Filters, on movie clip and button instances as in Animate): **Drop
+* **Filters** (Properties › Filters, on movie clip and button instances): **Drop
   Shadow**, **Blur**, **Glow** and **Adjust Color**, in any order and combination, with blur
   X/Y, quality (Low, Medium, High), strength, colour, angle and distance, and inner, knockout
   and hide object. They show on the stage and in every picture export; SVG export writes
@@ -11,7 +11,7 @@
   Animate. Animate documents keep their instances' filters (bevel and gradient filters are
   reported). Headless: `element.set_filters`.
 
-* **Blend modes** (Properties › Blending, on movie clip and button instances as in Animate):
+* **Blend modes** (Properties › Blending, on movie clip and button instances):
   Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract,
   Difference, Invert, Alpha and Erase. The instance is composited on its own and then blended
   with what is below, on the stage and in every export. SVG export writes the CSS blend modes
@@ -72,7 +72,7 @@
   (loop, play once, single frame) and **First frame** (`symbol.set_kind`, `element.set_loop`).
 
 * **Symbols fade as one.** A symbol instance below full opacity now composites its contents
-  first and then fades the result, as in Animate, so overlapping parts no longer show through
+  first and then fades the result, so overlapping parts no longer show through
   each other. This applies on the stage and in PNG, GIF, sprite sheet and SVG exports (SVG
   uses `<g opacity>`). Fully opaque instances render exactly as before.
 
@@ -114,7 +114,7 @@
   Properties › Kind, and the easing is kept. Animate documents' shape tweens now import as
   shape tweens.
 
-* **Import to Stage** (File › Import, **Ctrl+R** as in Animate; `file.import`): SVG drawings
+* **Import to Stage** (File › Import, **Ctrl+R**; `file.import`): SVG drawings
   come in as editable shapes on a new layer named after the file, at the playhead, centred
   and selected, as one undo step. Supported: paths and basic shapes, groups, `use` and
   symbols, transforms, `viewBox`, inline and attribute styles, opacity, and linear and radial

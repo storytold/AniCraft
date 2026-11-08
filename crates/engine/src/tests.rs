@@ -1611,7 +1611,7 @@ fn blend_modes_apply_to_movie_clips_and_survive_a_save() {
     run(&mut s, "layer.new", json!({}));
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": "#ff0000"}));
     run(&mut s, "modify.convert_to_symbol", json!({"name": "Red"}));
-    // A graphic can't blend, as in Animate; a movie clip can.
+    // A graphic can't blend; a movie clip can.
     assert!(s.execute("element.set_blend", &json!({"mode": "multiply"})).unwrap_err().to_string().contains("movie clip"));
     run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
     assert!(s.execute("element.set_blend", &json!({"mode": "sparkle"})).is_err());
@@ -1662,7 +1662,7 @@ fn filters_render_on_movie_clips_clip_after_masks_and_save() {
     assert!(crate::cmds_file::frame_svg(&s.doc, 0).contains("<feDropShadow dx=\"0\" dy=\"0\""));
     assert!(anicraft_render::lottie::to_lottie(&s.doc, "f", 0, 0, false).report.keys().any(|k| k.starts_with("filters")));
 
-    // Under a mask, the blur is clipped by the mask after filtering (as in Animate).
+    // Under a mask, the blur is clipped by the mask after filtering.
     run(&mut s, "element.set_filters", json!({"filters": [{"type": "blur", "blur_x": 40, "blur_y": 40, "quality": 3}]}));
     run(&mut s, "layer.new", json!({"name": "Mask"}));
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 150, "h": 400}));

@@ -417,7 +417,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": false}));
         }
     }
-    // Double-clicking text with the Selection tool edits it, as in Animate.
+    // Double-clicking text with the Selection tool edits it.
     if app.tool == Tool::Select
         && resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()

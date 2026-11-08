@@ -324,7 +324,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 live(app, "Alpha", "element.set_alpha", json!({"alpha": alpha / 100.0}));
             }
         });
-        // Blending and filters, on movie clips and buttons as in Animate.
+        // Blending and filters, on movie clips and buttons.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
         {
@@ -739,7 +739,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
 
 fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     if app.tool == Tool::Text {
-        // What new text gets (the last style used, as in Animate).
+        // What new text gets (the last style used).
         let mut st = app.s.text_style.clone();
         if text_style_rows(app, ui, &mut st, None).is_some() {
             app.s.text_style = st;
