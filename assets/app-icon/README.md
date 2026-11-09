@@ -13,8 +13,9 @@ full-bleed field, no frame or roundel, with the body running off the tile.
 | Paper | `#f2f1ee` | the figure (a neutral white, so the rabbit doesn't read as cream on the yellow) |
 | AniCraft colour | `#dac604` | the full-bleed field |
 
-**Tile:** `viewBox="0 0 512 512"`, a rounded square with `rx=112`, clipped, the same tile as every
-Crafting App. The padded files add Apple's transparent margin (tile = 824/1024 of the canvas); Windows
+**Tile:** `viewBox="0 0 512 512"`, a rounded square with `rx=112`, the same tile as every Crafting App.
+The art is clipped 6 units inside it (a concentric rounded square, `x=y=6`, `500×500`, `rx=106`), so a
+band of field colour runs round every edge where the rabbit runs off, as on the other icons. The padded files add Apple's transparent margin (tile = 824/1024 of the canvas); Windows
 and Linux use the tile edge to edge.
 
 **Provenance:** the owner's original ArtCraft drawing, vectorised with `trace.py`. `anicraft.svg` is the
