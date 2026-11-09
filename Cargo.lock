@@ -231,6 +231,7 @@ dependencies = [
  "anicraft-doc",
  "anicraft-engine",
  "anicraft-geom",
+ "anicraft-mohoproj-import",
  "anicraft-render",
  "serde_json",
 ]
