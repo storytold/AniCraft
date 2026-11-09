@@ -48,7 +48,7 @@ here.
 
 ### Optional build input: craft-i18n (not files in this repo)
 
-Builds made with `CRAFT_I18N_DIR` (ADR 0013) embed the interface translations from the shared
+Builds made with `CRAFT_I18N_DIR` (ADR 0014) embed the interface translations from the shared
 [storytold/craft-i18n](https://github.com/storytold/craft-i18n) catalogs (`locales/<code>/common.tsv`
 and `anicraft.tsv`, MIT OR Apache-2.0); its `ATTRIBUTION.md` credits the translators.
 
@@ -66,6 +66,9 @@ OR Apache-2.0) is noted in the table.
 | Signed-area coverage accumulation rasterizer | `crates/render/src/raster.rs` | Raph Levien, *font-rs* (2016), <https://github.com/raphlinus/font-rs>, Apache-2.0; also stb_truetype v2 (public domain) | Our implementation follows the published accumulate-and-prefix-sum approach. Credited here; Apache-2.0 includes a patent licence. |
 | Adaptive Bézier flattening (Wang's formula) | `crates/geom/src/path.rs` | G.-J. Wang (1984); public mathematical result | |
 | Porter–Duff "source over" compositing, premultiplied alpha | `crates/render/src/lib.rs` | Porter & Duff, *Compositing Digital Images*, SIGGRAPH 1984 | Public; standard in every graphics stack. |
+| Blend modes (separable modes, premultiplied) | `crates/render/src/lib.rs` | W3C Compositing and Blending Level 1 | W3C Royalty-Free Patent Policy. |
+| Adjust Color filter (brightness, contrast, saturation and hue as colour matrices) | `crates/render/src/filters.rs` | Paul Haeberli, *Matrix Operations for Image Processing* (Silicon Graphics, 1993) | Public description; standard matrix operations. |
+| Blur, drop shadow and glow by repeated box blurs | `crates/render/src/filters.rs` | Standard image processing (repeated box filters approach a Gaussian, central limit theorem) | Public; no specific implementation followed. |
 | Cubic-Bézier easing (CSS model) | `crates/doc/src/easing.rs` | W3C CSS Easing Functions Level 1 | W3C Royalty-Free Patent Policy. |
 | SVG path data syntax (file format v2) | `crates/geom/src/path.rs` | W3C SVG 1.1 / 2 | W3C Royalty-Free Patent Policy. |
 | Marching-squares contour tracing (Paint Bucket regions) | `crates/geom/src/trace.rs` | Lorensen & Cline (1987); public algorithm | Ported from PhotoCraft's mask tracer (same project family and licence) and reviewed. |

@@ -622,7 +622,7 @@ impl App {
             }
             "file.export_sprite_sheet" => self.status_ok(i18n::fmt("Exported {frames} frames to {path} ({columns}×{rows} grid) and its frame map {map}", &[("frames", &v["frames"].to_string()), ("path", &craft_i18n::ltr(v["written"].as_str().unwrap_or(""))), ("columns", &v["columns"].to_string()), ("rows", &v["rows"].to_string()), ("map", &craft_i18n::ltr(v["map"].as_str().unwrap_or("")))])),
             "file.export_lottie" => {
-                // The engine's report on what Lottie can't carry stays English (ADR 0013).
+                // The engine's report on what Lottie can't carry stays English (ADR 0014).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
                 let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
@@ -1057,7 +1057,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // The interface language, and its direction for egui's own parts (menus, scroll bars,
-        // combo boxes) (ADR 0013).
+        // combo boxes) (ADR 0014).
         crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         let rtl = crate::i18n::rtl();
         if ctx.global_style().right_to_left != rtl {

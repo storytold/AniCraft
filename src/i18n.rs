@@ -1,4 +1,4 @@
-//! Interface translations (ADR 0013). Strings in the code stay English and are the lookup keys;
+//! Interface translations (ADR 0014). Strings in the code stay English and are the lookup keys;
 //! the craft-i18n catalogs ([storytold/craft-i18n](https://github.com/storytold/craft-i18n):
 //! `locales/<code>/common.tsv`, shared by the Crafting Apps, and `anicraft.tsv`) give the text in
 //! the interface language when it is drawn. Lookup, fallback, plurals, language names and the

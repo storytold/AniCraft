@@ -16,10 +16,12 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
                 <DOMSymbolInstance libraryItemName="Characters/Ball" loop="play once" firstFrame="2" blendMode="hardlight">
                   <matrix><Matrix a="2" d="2" tx="100" ty="50"/></matrix>
                   <color><Color alphaMultiplier="0.5"/></color>
+                  <filters><DropShadowFilter distance="8" color="#333333" alpha="0.5"/><BlurFilter blurX="10" blurY="10" quality="2"/><BevelFilter/><GlowFilter enabled="false"/></filters>
                 </DOMSymbolInstance>
               </elements>
             </DOMFrame>
             <DOMFrame index="10" duration="5">
+              <Actionscript><script><![CDATA[stop();]]></script></Actionscript>
               <elements>
                 <DOMSymbolInstance libraryItemName="Characters/Ball"><matrix><Matrix a="2" d="2" tx="300" ty="50"/></matrix></DOMSymbolInstance>
               </elements>
@@ -55,7 +57,7 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
 </DOMDocument>"##;
 
 const BALL: &str = r##"<DOMSymbolItem name="Characters/Ball" symbolType="movie clip">
-  <timeline><DOMTimeline name="Ball"><layers><DOMLayer name="Layer 1"><frames><DOMFrame index="0" duration="4"><elements>
+  <timeline><DOMTimeline name="Ball"><layers><DOMLayer name="Layer 1"><frames><DOMFrame index="0" duration="4"><Actionscript><script><![CDATA[gotoAndPlay(2);]]></script></Actionscript><elements>
     <DOMOvalObject x="-10" y="-10" objectWidth="20" objectHeight="20"><fill><SolidColor color="#FF0000"/></fill></DOMOvalObject>
   </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timeline>
 </DOMSymbolItem>"##;
@@ -91,6 +93,8 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(report.skipped.get("text fields"), Some(&1));
     assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
+    // Frame scripts, on the scene's frames and inside symbols, are counted (ADR 0013).
+    assert_eq!(report.skipped.get("frame scripts (ActionScript isn't supported yet)"), Some(&2));
     // Every scene comes across, in order.
     assert_eq!(doc.scenes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Scene 1", "Scene 2"]);
     assert_eq!(doc.timeline(1).layers.len(), 1, "an empty scene gets a layer to draw on");
@@ -132,8 +136,11 @@ fn symbols_instances_and_the_tween_between_them() {
     let sym = &doc.library[0];
     assert_eq!((sym.name.as_str(), sym.kind), ("Ball", SymbolKind::MovieClip));
     let inst = &doc.timeline(0).layers[0].keyframes[0].elements[0];
-    let ElementKind::Symbol { symbol, loop_mode, first_frame, blend } = &inst.kind else { panic!("an instance") };
+    let ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters } = &inst.kind else { panic!("an instance") };
     assert_eq!(*blend, anicraft_doc::BlendMode::HardLight, "Animate's blend mode names");
+    assert_eq!(filters.len(), 2, "{filters:?}");
+    assert!(matches!(filters[0], anicraft_doc::Filter::DropShadow { distance, inner: false, .. } if distance == 8.0));
+    assert!(matches!(filters[1], anicraft_doc::Filter::Blur { blur_x, quality: 2, .. } if blur_x == 10.0));
     assert_eq!((*symbol, *loop_mode, *first_frame), (sym.id, LoopMode::PlayOnce, 2));
     assert_eq!(inst.transform.m, [2.0, 0.0, 0.0, 2.0, 100.0, 50.0]);
     assert_eq!(inst.color.alpha, 0.5);

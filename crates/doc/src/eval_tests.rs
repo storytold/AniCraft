@@ -81,7 +81,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
             name: String::new(),
             transform: Affine::translate(1.0, 0.0),
             color: ColorEffect::default(),
-            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default() },
+            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new() },
         },
     );
     tl.layers.push(Arc::new(layer));
@@ -94,7 +94,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
             name: String::new(),
             transform: Affine::translate(100.0, 0.0),
             color: ColorEffect { alpha: 0.5, ..Default::default() },
-            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default() },
+            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new() },
         },
     );
     let dl = evaluate(&d, 0);
@@ -146,7 +146,7 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
         name: String::new(),
         transform: Affine::IDENTITY,
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default() },
+        kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new() },
     };
     push(Arc::make_mut(&mut d.timeline_mut(0).layers[1]), 0, inst);
     let dl = evaluate(&d, 0);
@@ -302,7 +302,7 @@ fn movie_clips_play_their_own_timeline_graphics_keep_step_buttons_hold_up() {
         name: String::new(),
         transform: Affine::translate(x, 0.0),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sid, loop_mode: crate::LoopMode::Loop, first_frame: 0, blend: Default::default() },
+        kind: ElementKind::Symbol { symbol: sid, loop_mode: crate::LoopMode::Loop, first_frame: 0, blend: Default::default(), filters: Vec::new() },
     };
     let (mut k0, mut k1) = (Keyframe::new(0, 5), Keyframe::new(5, 7));
     k0.elements.push(Arc::new(inst(0.0)));

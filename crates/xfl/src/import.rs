@@ -14,7 +14,7 @@
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Bitmap, BitmapId, BlendMode, ColorEffect, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Bitmap, BitmapId, BlendMode, ColorEffect, Filter, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
@@ -201,6 +201,43 @@ impl<'a> Builder<'a> {
         out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)), ColorEffect::default()));
     }
 
+    /// An instance's filters, by Animate's element names. Bevel and gradient filters are
+    /// reported, and switched-off filters left out.
+    fn filters(&mut self, el: &X) -> Vec<Filter> {
+        let mut out = Vec::new();
+        for f in el.list("filters") {
+            if f.bool("enabled") == Some(false) {
+                continue;
+            }
+            let num = |k: &str, d: f32| f.f32(k).unwrap_or(d);
+            let flag = |k: &str| f.bool(k).unwrap_or(false);
+            let quality = f.u32("quality").unwrap_or(1).clamp(1, 3) as u8;
+            let filter = match f.name.as_str() {
+                "BlurFilter" => Filter::Blur { blur_x: num("blurX", 5.0), blur_y: num("blurY", 5.0), quality },
+                "DropShadowFilter" => Filter::DropShadow {
+                    blur_x: num("blurX", 5.0),
+                    blur_y: num("blurY", 5.0),
+                    strength: num("strength", 1.0),
+                    quality,
+                    angle: num("angle", 45.0),
+                    distance: num("distance", 4.0),
+                    color: color(f, "color", "alpha"),
+                    inner: flag("inner"),
+                    knockout: flag("knockout"),
+                    hide_object: flag("hideObject"),
+                },
+                "GlowFilter" => Filter::Glow { blur_x: num("blurX", 5.0), blur_y: num("blurY", 5.0), strength: num("strength", 1.0), quality, color: color(f, "color", "alpha"), inner: flag("inner"), knockout: flag("knockout") },
+                "AdjustColorFilter" => Filter::AdjustColor { brightness: num("brightness", 0.0), contrast: num("contrast", 0.0), saturation: num("saturation", 0.0), hue: num("hue", 0.0) },
+                _ => {
+                    self.report.skip("bevel and gradient filters");
+                    continue;
+                }
+            };
+            out.push(filter.sanitized());
+        }
+        out
+    }
+
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
         let Some(&symbol) = el.attr("libraryItemName").and_then(|n| self.ids.get(n)) else {
             self.report.skip("instances of missing symbols");
@@ -223,7 +260,8 @@ impl<'a> Builder<'a> {
         let m = parent.mul(&matrix(el));
         // Blend modes by Animate's names; unknown ones stay Normal.
         let blend = el.attr("blendMode").and_then(BlendMode::from_key).unwrap_or_default();
-        out.push(self.element(ElementKind::Symbol { symbol, loop_mode, first_frame, blend }, m, fx));
+        let filters = self.filters(el);
+        out.push(self.element(ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters }, m, fx));
     }
 
     fn elements(&mut self, list: &[X], parent: &Affine, out: &mut Vec<Arc<Element>>, depth: usize) {
@@ -296,6 +334,10 @@ impl<'a> Builder<'a> {
                     }
                     Some("motion object") => self.report.skip("motion tweens (kept as keyframes)"),
                     _ => {}
+                }
+                // Frame scripts aren't kept yet (ADR 0013); say so instead of dropping them quietly.
+                if f.child("Actionscript").is_some() {
+                    self.report.skip("frame scripts (ActionScript isn't supported yet)");
                 }
                 let mut els = Vec::new();
                 self.elements(f.list("elements"), &Affine::IDENTITY, &mut els, 0);

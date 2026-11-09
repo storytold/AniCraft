@@ -305,6 +305,9 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
             while let Some(gi) = g {
                 let Some(group) = dl.groups.get(gi as usize) else { break };
                 opacity *= group.alpha.clamp(0.0, 1.0);
+                if !group.filters.is_empty() {
+                    flags.insert("filters (not exported; the artwork is drawn without them)");
+                }
                 if blend_mode.is_normal() && !matches!(group.blend, anicraft_doc::BlendMode::Normal | anicraft_doc::BlendMode::Layer) {
                     // The innermost blending group decides.
                     blend_mode = group.blend;

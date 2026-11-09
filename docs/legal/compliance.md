@@ -22,7 +22,7 @@ Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
 "source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed,
-plus three storytold git repositories pinned to immutable revisions (ADR 0013): craft-libs (the
+plus three storytold git repositories pinned to immutable revisions (ADR 0014): craft-libs (the
 shared `craft-i18n` crate) and the egui and winit forks, all MIT OR Apache-2.0. No other
 registries or git.
 
@@ -81,6 +81,7 @@ cargo deny check advisories              # RustSec security advisories (needs ne
 | PNG, GIF, SVG, WebP | Royalty-free (GIF's LZW patents expired in 2003–2004). | OK to implement. |
 | **Video export** | H.264/HEVC/AAC are covered by patent pools. VP9, AV1 and Opus are royalty-free. | **Never bundle encoders for patent-pool codecs.** MP4/H.264 only by piping to a user-installed ffmpeg. Default to WebM (VP9/AV1). **As built** (`file.export_video`): AniCraft starts the user's ffmpeg (found via a parameter, `ANICRAFT_FFMPEG` or the PATH) with an argument list, never a shell, writes raw RGBA frames to its stdin, and ships no codec code; the default file type is `.webm` (VP9). |
 | **XFL / FLA import** (M4) | Adobe's proprietary formats, without a public specification. | Clean room: work only from files users or we author, public community docs and observation. Never use Adobe code, SDKs or decompiled software. Interoperability-focused (generally protected in EU Software Directive art. 6 and US DMCA §1201(f)); **confirm with counsel before shipping**. |
+| **ActionScript compatibility** (M6, ADR 0013) | A programming language; no known patent pool. Implemented from ECMA-262 (3rd edition) and Adobe's public ActionScript 3.0 references. | Clean room as for XFL: public documents and self-authored files only; never Adobe compilers, SDKs or player code. Keep and run a timeline subset only; no bytecode VM. |
 | SWF export (optional) | Adobe published the SWF specification and lifted its use restrictions in 2009 (Open Screen Project). | Allowed, low priority. |
 | Lottie | Open specification (Lottie Animation Community, Linux Foundation). | Allowed. |
 
@@ -90,6 +91,9 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   ("compatible with…", "competitor to…") and in the non-affiliation disclaimer of the legal
   notices (`NOTICE`, Help › Licenses & Notices). Never in the product name, feature UI, icons
   or marketing imagery, and never implying endorsement.
+* "ActionScript" is also an Adobe trademark. Docs and compatibility messages (import reports,
+  the language a kept script is written in) name it nominatively; the features themselves have
+  generic names (Actions panel, frame scripts, Test Movie). See ADR 0013.
 * "AniCraft": a trademark clearance search has not been done yet (open item below).
 
 ## 6. Release checklist (before any public binary)
@@ -106,7 +110,7 @@ cargo deny check advisories              # RustSec security advisories (needs ne
 
 | Item | Status |
 |---|---|
-| Counsel review of this document (patents, XFL interoperability) | Open, before the first public release |
+| Counsel review of this document (patents, XFL interoperability, ActionScript compatibility and naming) | Open, before the first public release |
 | "AniCraft" trademark clearance | Open |
 | Freedom-to-operate patent search for core animation features | Open (recommended before 1.0) |
 | Full licence-text bundle generation (`cargo about`) in the release pipeline | Open (M8) |

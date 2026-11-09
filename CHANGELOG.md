@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+* **ActionScript on the roadmap** (ADR 0013, low priority, M6): first keep the scripts in
+  imported Animate files, with an Actions panel, then play the common timeline controls (stop,
+  play, go to a frame or label, button clicks) in Test Movie and HTML canvas export. Until
+  then, opening an Animate document now says how many frame scripts it left out instead of
+  dropping them silently.
+* **Filters** (Properties › Filters, on movie clip and button instances as in Animate): **Drop
+  Shadow**, **Blur**, **Glow** and **Adjust Color**, in any order and combination, with blur
+  X/Y, quality (Low, Medium, High), strength, colour, angle and distance, and inner, knockout
+  and hide object. They show on the stage and in every picture export; SVG export writes
+  matching SVG filters (blur, outer shadows and glows, colour adjustments), and Lottie export
+  reports them as not exported. A masked instance is filtered first, then masked, as in
+  Animate. Animate documents keep their instances' filters (bevel and gradient filters are
+  reported). Headless: `element.set_filters`.
+
 * **Blend modes** (Properties › Blending, on movie clip and button instances as in Animate):
   Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract,
   Difference, Invert, Alpha and Erase. The instance is composited on its own and then blended
