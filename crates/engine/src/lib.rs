@@ -15,6 +15,7 @@ mod cmds_paint;
 mod cmds_path;
 mod cmds_recovery;
 pub mod cmds_plugin;
+mod cmds_camera;
 mod cmds_scene;
 pub mod cmds_sound;
 pub mod cmds_text;
@@ -94,6 +95,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_timeline::specs());
     v.extend(cmds_motion::specs());
     v.extend(cmds_hints::specs());
+    v.extend(cmds_camera::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
@@ -456,7 +458,7 @@ impl Session {
     // ----- queries ---------------------------------------------------------------------------
 
     pub fn frame_count(&self) -> u32 {
-        self.doc.timeline(self.scene).frame_count()
+        self.doc.scenes.get(self.scene).map_or(1, |s| s.frame_count())
     }
 
     pub fn active_layer(&self) -> Option<&Layer> {

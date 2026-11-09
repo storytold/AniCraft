@@ -146,3 +146,22 @@ pub fn opt_profile(p: &Value, key: &str) -> Result<Option<Option<WidthProfile>>>
         Some(_) => Err(bad(key, want)),
     }
 }
+
+/// A two-number param `[x, y]` (points, scales, shears).
+pub fn opt_vec2(p: &Value, key: &str) -> Result<Option<(f32, f32)>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let Some(a) = v.as_array() else { return Err(bad(key, "a pair of numbers [x, y]")) };
+            if a.len() != 2 {
+                return Err(bad(key, "a pair of exactly two numbers [x, y]"));
+            }
+            let x = a[0].as_f64().ok_or_else(|| bad(key, "a pair of numbers [x, y]"))?;
+            let y = a[1].as_f64().ok_or_else(|| bad(key, "a pair of numbers [x, y]"))?;
+            if ![x, y].iter().all(|f| f.is_finite()) || x.abs() > 1e7 || y.abs() > 1e7 {
+                return Err(bad(key, "a pair of finite numbers within ±10,000,000"));
+            }
+            Ok(Some((x as f32, y as f32)))
+        }
+    }
+}
