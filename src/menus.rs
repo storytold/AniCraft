@@ -54,6 +54,8 @@ fn enabled(app: &App, id: &str) -> bool {
             None => app.s.active_layer().is_some_and(|l| l.keyframe_starting_at(app.s.frame).is_some()),
         },
         "timeline.paste_frames" => !app.s.frame_clipboard.is_empty(),
+        "tween.add_hint" => app.s.active_layer().and_then(|l| l.hint_tween_at(app.s.frame)).is_some(),
+        "tween.clear_hints" => app.s.active_layer().and_then(|l| l.hint_tween_at(app.s.frame).and_then(|(i, _)| l.keyframes.get(i))).is_some_and(|k| !k.hints.is_empty()),
         "timeline.remove_frame" | "timeline.create_tween" | "timeline.create_shape_tween" => app.s.active_layer().is_some_and(|l| l.keyframe_at(app.s.frame).is_some()),
         _ => true,
     }

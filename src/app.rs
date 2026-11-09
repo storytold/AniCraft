@@ -172,6 +172,8 @@ pub enum Drag {
     Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
+    /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
+    Hint { index: usize, side: anicraft_engine::doc::HintSide },
     Pan,
 }
 
@@ -228,6 +230,8 @@ pub struct App {
     pub view: StageView,
     pub stage_cache: stage::Cache,
     pub drag: Drag,
+    /// The shape hint a right-click landed on (its menu is showing).
+    pub hint_menu: Option<usize>,
     pub playing: bool,
     pub looping: bool,
     play_acc: f64,
@@ -363,6 +367,7 @@ impl App {
             view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
+            hint_menu: None,
             playing: false,
             looping: true,
             play_acc: 0.0,
@@ -653,6 +658,30 @@ impl App {
                     self.run("timeline.goto", json!({"frame": 14}));
                 }
             }
+            Some(which @ ("hints" | "hintsend")) => {
+                // A square shape-tweening into a circle on a new layer, with three shape hints:
+                // a placed on both keyframes, b on the first only, c just added (unplaced).
+                self.run("layer.new", json!({"name": "Morph"}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.run("draw.rect", json!({"x": 420, "y": 220, "w": 200, "h": 200, "fill": "#ff9f43"}));
+                self.run("timeline.insert_blank_keyframe", json!({"frame": 15}));
+                self.run("timeline.goto", json!({"frame": 15}));
+                self.run("draw.ellipse", json!({"x": 750, "y": 210, "w": 220, "h": 220, "fill": "#ff9f43"}));
+                self.run("timeline.create_shape_tween", json!({"frame": 0}));
+                self.run("edit.deselect", json!({}));
+                let d = 110.0 * std::f32::consts::FRAC_1_SQRT_2;
+                for (start, end) in [(Some((420.0, 220.0)), Some((860.0 - d, 320.0 - d))), (Some((620.0, 330.0)), None), (None, None)] {
+                    let Some(v) = self.run("tween.add_hint", json!({"frame": 0})) else { break };
+                    let hint = v["hint"].clone();
+                    if let Some((x, y)) = start {
+                        self.run("tween.move_hint", json!({"hint": hint, "frame": 0, "side": "start", "x": x, "y": y}));
+                    }
+                    if let Some((x, y)) = end {
+                        self.run("tween.move_hint", json!({"hint": hint, "frame": 0, "side": "end", "x": x, "y": y}));
+                    }
+                }
+                self.run("timeline.goto", json!({"frame": if which == "hints" { 0 } else { 15 }}));
+            }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.
                 self.tl_cell_w = 48.0;
@@ -878,6 +907,10 @@ impl App {
             if !self.recovery.show {
                 self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
             }
+            return;
+        }
+        if id == "tween.add_hint" {
+            crate::shape_hints::add(self);
             return;
         }
         if id == "plugin.list" {
