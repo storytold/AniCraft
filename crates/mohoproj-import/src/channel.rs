@@ -20,6 +20,7 @@ fn at(arr: &[Value], i: usize) -> Option<&Value> {
 pub struct Channel<'a> {
     when: &'a [Value],
     val: &'a [Value],
+    interp: &'a [Value],
 }
 
 impl<'a> Channel<'a> {
@@ -30,7 +31,39 @@ impl<'a> Channel<'a> {
         if when.is_empty() || when.len() != val.len() || when.len() > 100_000 {
             return None;
         }
-        Some(Channel { when, val })
+        let interp = array(json::get(v, "interp")).unwrap_or(&[]);
+        Some(Channel { when, val, interp })
+    }
+
+    /// The channel's key count.
+    pub fn len(&self) -> usize {
+        self.when.len()
+    }
+
+    /// Whether the channel has no keys (it never does after a successful parse).
+    pub fn is_empty(&self) -> bool {
+        self.when.is_empty()
+    }
+
+    /// Key `i`'s frame, as Moho stores it (0-based; the corpus's −1000000 "always" sentinel
+    /// sorts first).
+    pub fn frame(&self, i: usize) -> Option<u32> {
+        let f = num(Some(self.when.get(i)?))?;
+        if f < 0.0 {
+            // Moho's −1000000 "always" sentinel: before the first frame.
+            return Some(0);
+        }
+        u32::try_from(f as i64).ok()
+    }
+
+    /// The channel's `interp[]` entries, one per key (may be shorter).
+    pub fn interp(&self) -> Option<&'a [Value]> {
+        Some(self.interp)
+    }
+
+    /// The channel's raw values.
+    pub fn val(&self) -> &'a [Value] {
+        self.val
     }
 
     /// Whether the channel holds animation (more than one key): stage 1 draws its first state
@@ -59,6 +92,23 @@ pub fn sample_f64(ch: &Channel, frame: f64) -> Option<f64> {
     num(ch.sample(frame))
 }
 
+/// The raw value at key `i` (no interpolation): the importer's per-key conversions.
+pub fn sample_f64_at(ch: &Channel, i: usize) -> Option<f64> {
+    num(ch.val().get(i))
+}
+
+pub fn sample_bool_at(ch: &Channel, i: usize) -> Option<bool> {
+    ch.val().get(i)?.as_bool()
+}
+
+pub fn sample_vec2_at(ch: &Channel, i: usize) -> Option<Vec2> {
+    json::vec2(ch.val().get(i))
+}
+
+pub fn sample_vec3_at(ch: &Channel, i: usize) -> Option<(f32, f32, f32)> {
+    json::vec3(ch.val().get(i))
+}
+
 pub fn sample_bool(ch: &Channel, frame: f64) -> Option<bool> {
     ch.sample(frame)?.as_bool()
 }
@@ -78,4 +128,9 @@ pub fn sample_color01(ch: &Channel, frame: f64) -> Option<Rgba> {
 
 pub fn sample_string(ch: &Channel, frame: f64) -> Option<String> {
     json::string(ch.sample(frame))
+}
+
+/// The raw string at key `i` (no interpolation): marker labels.
+pub fn sample_string_at(ch: &Channel, i: usize) -> Option<String> {
+    json::string(ch.val().get(i))
 }

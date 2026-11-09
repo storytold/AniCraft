@@ -196,22 +196,38 @@ fn unsupported_things_count_and_degrade() {
 }
 
 #[test]
-fn animated_channels_report_but_static_values_draw() {
+fn animated_transform_channels_import_and_sample() {
     let mut root = minimal();
+    // Linear keys at frames 0/12/24, inches → pixels (320/in, y flipped) on the layer.
     root["layers"][0]["transforms"] = json!({
-        "translation": channel("Vec3", vec![0, 12, 24], vec![json!({"x": 0.0, "y": 0.0, "z": 0.0}), json!({"x": 1.0, "y": 0.0, "z": 0.0}), json!({"x": 2.0, "y": 0.0, "z": 0.0})])
+        "translation": channel("Vec3", vec![0, 12, 24], vec![json!({"x": 0.0, "y": 0.0, "z": 0.0}), json!({"x": 1.0, "y": -0.5, "z": 0.0}), json!({"x": 2.0, "y": 0.0, "z": 0.0})]),
+        "rotation_z": channel("Val", vec![0, 24], vec![json!(0.0), json!(std::f64::consts::PI)])
     });
+    // The camera zooms 2 → 3 over the range; a marker at frame 6.
     root["animated_values"] = json!({
         "camera_zoom": channel("Val", vec![0, 48], vec![json!(2.0), json!(3.0)]),
-        "timeline_markers": channel("String", vec![-1000000], vec![json!("")])
+        "timeline_markers": channel("String", vec![-1000000, 6], vec![json!(""), json!("Kick")])
     });
     let (doc, report) = import(&root);
-    assert_eq!(report.skipped.get("layer transform animation (drawn at frame 1)"), Some(&1), "{:?}", report.skipped);
-    assert!(report.skipped.contains_key("camera animation"));
-    // The static frame is the first key: one keyframe spanning the imported range.
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
     let l = &doc.timeline(0).layers[0];
-    assert_eq!(l.keyframes.len(), 1);
-    assert_eq!(l.keyframes[0].duration, 240);
+    // The layer carries the channels; the elements keep only the inch→pixel mapping.
+    assert_eq!(l.translation.keys.iter().map(|k| k.val.x).collect::<Vec<_>>(), vec![0.0, 320.0, 640.0]);
+    assert_eq!(l.translation.keys[1].val.y, 160.0, "y flips with the coordinate system");
+    assert!((l.rotation.keys[1].val - -std::f32::consts::PI).abs() < 1e-5, "rotation flips sign: {:?}", l.rotation.keys[1].val);
+    // Frame-by-frame sampling (the parity gate's in-repo half): linear segments exact.
+    let x = |f: u32| l.translation.sample_or(f as f32, anicraft_geom::Vec2::ZERO).x;
+    for f in 0..=24u32 {
+        assert!((x(f) - 26.666668 * f as f32).abs() < 1e-4, "frame {f}: {}", x(f));
+    }
+    assert!((l.rotation.sample_or(12.0, 0.0) - -std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    // The camera zooms 2 → 3, so the view scale runs 1 → 1.5.
+    let cam = &doc.scenes[0].camera;
+    assert!(!cam.is_neutral());
+    assert!((cam.zoom.sample_or(0.0, 2.0) - 2.0).abs() < 1e-6);
+    assert!((cam.zoom.sample_or(48.0, 2.0) - 3.0).abs() < 1e-6);
+    assert!((cam.zoom.sample_or(24.0, 2.0) - 2.5).abs() < 1e-6);
+    assert_eq!(doc.scenes[0].markers, vec![(6, "Kick".into())]);
 }
 
 #[test]

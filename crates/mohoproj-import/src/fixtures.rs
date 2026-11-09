@@ -174,3 +174,30 @@ fn all_corpus_fixtures_import() {
     assert!(n >= 8, "expected the corpus's fixtures, found {n} in {}", dir.display());
     assert!(failures.is_empty(), "fixtures failed to import:\n{}", failures.join("\n"));
 }
+
+/// A real Moho-saved document with animation data (the fork's CharWalk sample, next to the
+/// corpus in the local knowledge base): 39 keyframed channels, ten timeline markers and a
+/// 44-frame project range. Verified against the file's own channel data — the in-repo half
+/// of the stage-2 gate; the Moho-runtime half (Lua probe) stays with the owner's machine.
+#[test]
+fn charwalk_markers_and_range_import() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/moho/samples/CharWalk.mohoproj");
+    if !path.is_file() {
+        eprintln!("skipped: no CharWalk.mohoproj beside the corpus");
+        return;
+    }
+    let (doc, _report) = import_path(&path).unwrap_or_else(|e| panic!("CharWalk: {e}"));
+    // Its bones and point animation are later milestones; the report says so.
+    // The 0-based project range 1..44 becomes (0, 44): a 44-frame timeline, as Moho shows.
+    // It equals the imported content's length, so no explicit range is stored.
+    assert_eq!(doc.scenes[0].frames, None, "range == content: nothing to store");
+    assert_eq!(doc.frame_count(), 44);
+    // The walk cycle's markers, one per frame, in order.
+    let labels: Vec<(u32, &str)> = doc.scenes[0].markers.iter().map(|(f, s)| (*f, s.as_str())).collect();
+    assert_eq!(labels, vec![(1, "Contact"), (6, "Passing"), (12, "Kickoff"), (16, "Float"), (23, "Contact"), (28, "Passing"), (34, "Kickoff"), (38, "Float"), (45, "Contact")], "{labels:?}");
+    // Its camera is the default (zoom 2 at the centre): nothing stored.
+    assert!(doc.scenes[0].camera.is_neutral());
+    // Bone and point channels are later milestones and stay in the sidecar untouched.
+    let raw = &doc.maop_maohou.as_ref().unwrap().raw;
+    assert_eq!(raw["animated_values"]["timeline_markers"]["val"][1], "Contact");
+}
