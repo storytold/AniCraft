@@ -6,7 +6,8 @@
 //! shape layer, its outline baked into stage space. Whatever changes (outline, colours,
 //! gradient points, stroke width, opacity, masks) is written as hold keyframes at the frames
 //! where it changes, so any Lottie player shows exactly AniCraft's frames. Strokes use round
-//! joins and caps, like the renderer.
+//! joins and caps, like the renderer; variable-width strokes are filled outlines (the
+//! polygons the renderer fills).
 //!
 //! Not carried across (counted in the report): bitmap fills; nested masks keep only the
 //! innermost mask; a symbol fading as one group is faded shape by shape; stretched radial
@@ -244,7 +245,7 @@ fn sample(item: &DisplayItem, opacity: f32, masks: Vec<Bez>, report: &mut HashSe
             }
             None => None,
         };
-        let stroke = item.stroke.and_then(|s| {
+        let stroke = item.stroke.as_ref().and_then(|s| {
             let w = s.width * m.mean_scale();
             (w.is_finite() && w > 0.0).then(|| (fx.apply(s.color), w))
         });
@@ -266,7 +267,9 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
     let to = to.max(from);
     for f in from..=to {
         let t = f - from;
-        let dl = evaluate(doc, f);
+        let full = evaluate(doc, f);
+        // Variable-width strokes become filled outlines, as the renderer draws them.
+        let dl = crate::stroke::outline_variable_strokes(&full);
         // Mask artwork per clip, in stage space.
         let mut clip_art: Vec<Vec<Bez>> = vec![Vec::new(); dl.clip_parents.len()];
         for item in dl.items.iter().filter(|i| i.fill.is_some()) {
@@ -609,5 +612,21 @@ mod tests {
         let part = parse(&to_lottie(&doc, "part", 10, 19, false));
         assert_eq!(part["op"], 10);
         assert!(part["layers"].as_array().unwrap().iter().all(|l| l["ty"] == 4), "transparent: no stage layer");
+    }
+
+    #[test]
+    fn variable_width_strokes_export_as_filled_outlines() {
+        use anicraft_doc::{Document, Element, ElementId, ElementKind, ProfilePreset, Shape, Stroke};
+        let mut doc = Document::default();
+        let shape = Shape { path: std::sync::Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(Stroke::new(Rgba::hex(0x00ff00), 10.0).with_profile(ProfilePreset::TaperEnd.profile())), fill_rule: FillRule::NonZero };
+        let el = Element { id: ElementId(77), name: String::new(), transform: Affine::IDENTITY, color: Default::default(), kind: ElementKind::Shape(shape) };
+        let layer = std::sync::Arc::make_mut(&mut doc.timeline_mut(0).layers[0]);
+        layer.keyframe_mut(0).unwrap().elements.push(std::sync::Arc::new(el));
+        let e = to_lottie(&doc, "w", 0, 0, false);
+        let v = parse(&e);
+        let it = v["layers"][0]["shapes"][0]["it"].as_array().unwrap();
+        assert!(it.iter().any(|i| i["ty"] == "fl"), "filled outline");
+        assert!(!it.iter().any(|i| i["ty"] == "st"), "no Lottie stroke");
+        assert!(e.report.is_empty(), "nothing lost: {:?}", e.report);
     }
 }

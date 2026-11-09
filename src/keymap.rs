@@ -46,6 +46,7 @@ pub fn tool_id(t: Tool) -> &'static str {
         Tool::Select => "tool.selection",
         Tool::Subselect => "tool.subselection",
         Tool::Transform => "tool.free_transform",
+        Tool::Width => "tool.width",
         Tool::Pen => "tool.pen",
         Tool::Text => "tool.text",
         Tool::Pencil => "tool.pencil",

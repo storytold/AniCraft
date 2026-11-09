@@ -19,6 +19,19 @@
   unnamed control. `anicraft --theme high-contrast --scale 200` previews a look for one run.
   Not yet: stage elements and single frames one by one for screen readers, following the
   system's contrast setting, the menu bar from the keyboard.
+* **Variable-width strokes and the Width tool** (**U**, ADR 0018). A stroke's width can now
+  vary along it: pick a profile in Properties › Width (Uniform, Taper both ends, Taper start,
+  Taper end, Bulge, Pinch, each with a picture), or set one in the drawing tools' options so
+  new lines start tapered. With the Width tool, hover a stroke to see its width points; drag a
+  point's handle to widen or narrow the line there (Alt: one side only), drag its dot to slide
+  it along, or drag anywhere on the line to add a point. Delete removes the selected point, and
+  each drag is one undo step. Changing the stroke width scales the whole profile. Shape tweens
+  blend profiles, SVG and Lottie export write the strokes as filled outlines matching the
+  stage, and `.anicraft` files keep them. Headless: `stroke.set_profile`,
+  `stroke.set_width_point`, `stroke.delete_width_point`, `stroke.width_at`, and a `profile`
+  param on `element.set_stroke`, the drawing commands and `paint.ink`.
+* **Fixed**: perfectly horizontal or vertical lines inside a moved shape could not be picked
+  (their flat bounds were not transformed).
 * **GPU stage, first slice** (M3, ADR 0019; build with `--features gpu-stage`). Preferences ›
   Stage › Renderer (also View › Stage Rendering) can draw the stage on the graphics card
   instead of the CPU. It draws fills, strokes and gradients from the CPU renderer's own

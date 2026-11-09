@@ -161,7 +161,7 @@ fn shapes_become_fills_and_strokes() {
     let b = fill.path.bounds();
     assert!((b.min.y - 300.0).abs() < 0.01 && (b.max.x - 640.0).abs() < 0.01 && (b.max.y - 360.0).abs() < 0.01, "{b:?}: twips to pixels");
     let ElementKind::Shape(st) = &els[1].kind else { panic!() };
-    assert_eq!(st.stroke.map(|s| (s.color, s.width)), Some((Rgba::hex(0x112233), 3.0)));
+    assert_eq!(st.stroke.as_ref().map(|s| (s.color, s.width)), Some((Rgba::hex(0x112233), 3.0)));
     assert!(st.fill.is_none());
 }
 
