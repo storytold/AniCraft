@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Self-authored AniCraft test drawing (MIT OR Apache-2.0): clip paths, a mask and text. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="480" height="270" viewBox="0 0 480 270">
+  <defs>
+    <clipPath id="frame"><rect width="480" height="270"/></clipPath>
+    <clipPath id="porthole"><circle cx="120" cy="125" r="80"/></clipPath>
+    <clipPath id="band"><rect x="0" y="95" width="480" height="60"/></clipPath>
+    <mask id="reveal" maskUnits="userSpaceOnUse" x="0" y="0" width="480" height="270">
+      <path d="M260 60 L440 60 L400 200 L300 200 Z" fill="#fff"/>
+    </mask>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b5876"/><stop offset="1" stop-color="#4e4376"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="480" height="270" fill="#1d1f24"/>
+    <g id="sea" clip-path="url(#porthole)">
+      <rect x="20" y="25" width="200" height="200" fill="url(#sky)"/>
+      <circle cx="150" cy="95" r="26" fill="#ffd54a"/>
+      <path d="M20 160 Q70 140 120 160 T220 160 V230 H20 Z" fill="#4dd0e1"/>
+      <g clip-path="url(#band)"><circle cx="70" cy="120" r="40" fill="#ff6b4a" opacity="0.8"/></g>
+    </g>
+    <g id="stripes" mask="url(#reveal)">
+      <rect x="240" y="40" width="220" height="180" fill="#66bb6a"/>
+      <rect x="240" y="80" width="220" height="24" fill="#ba68c8"/>
+      <rect x="240" y="140" width="220" height="24" fill="#ffd54a"/>
+    </g>
+    <text x="350" y="245" font-family="Inter, Helvetica, Arial, sans-serif" font-size="22" font-weight="bold" fill="#ffffff" text-anchor="middle">Clipped <tspan fill="#ff6b4a">&amp;</tspan> masked</text>
+    <text x="24" y="258" font-family="'No Such Typeface', sans-serif" font-size="12" fill="#9aa0a6">AniCraft SVG import</text>
+  </g>
+</svg>
