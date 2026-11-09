@@ -1,6 +1,6 @@
 # ADR 0019: GPU stage renderer (first slice)
 
-* Status: accepted (2026-11-09)
+* Status: accepted (2026-11-09); extended by ADR 0029 (no readback, masks and groups on the GPU)
 * Relates to: roadmap M3, ADR 0002 (render pipeline), ADR 0007 (tiled stage), AGENTS.md rule 4
   (the CPU renderer is the oracle)
 

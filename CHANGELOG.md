@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+* **GPU stage, second slice** (ADR 0029; builds with `--features gpu-stage`, Preferences ›
+  Stage › Renderer › GPU (preview)). The graphics card now draws each stage tile straight into
+  the picture the window shows, with no copy back to the CPU: a 4K stage with 1,000 shapes
+  takes about 2 ms, and 10,000 shapes about 10 ms (the CPU needs 16–28 ms). **Mask layers**
+  (nested, several shapes per mask), **symbols that fade as one** and **all 14 blend modes**
+  are drawn on the GPU too, so ordinary documents no longer fall back to the CPU; masked scenes
+  draw up to 7× faster than on the CPU. The picture is the CPU's within one 8-bit step.
+  Filters and bitmaps still draw on the CPU (the status bar says so). When the window runs on
+  OpenGL, the GPU stage uses a device of its own and copies tiles back, as before; Preferences
+  says which.
+
 * **HTML canvas export** (ADR 0028). File › Export › Export HTML Canvas… writes the movie as
   one web page that plays in any modern browser: open it from your disk, put it on a server or
   send it as one file. Everything moves exactly as on the stage, because every frame of every

@@ -97,7 +97,7 @@ impl Timings {
 }
 
 /// Most work one dispatch may carry (edge pieces plus entries, summed over tiles, each walked
-/// by 256 pixels). Far above real scenes (the 10k-shape 4K stress frame is about 1.2M), it
+/// by 256 pixels). Far above real scenes (the 10k-shape 4K stress frame is about 1M), it
 /// keeps a pathological frame from running long enough for the driver to reset the GPU, which
 /// on a shared device would take the window with it. Such a frame is drawn on the CPU.
 pub const MAX_WORK: u64 = 1 << 25;
@@ -180,6 +180,7 @@ impl GpuRenderer {
         let want = wgpu::Limits {
             max_storage_buffer_binding_size: have.max_storage_buffer_binding_size,
             max_buffer_size: have.max_buffer_size,
+            max_texture_dimension_2d: have.max_texture_dimension_2d,
             ..wgpu::Limits::downlevel_defaults()
         };
         check(&adapter, &have, &name)?;

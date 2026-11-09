@@ -166,12 +166,18 @@ DisplayList ──► for each item:
   rasterizes 32-row bands in parallel, each compositing all ops that touch it, in order.
   Output is bit-identical to serial. Numbers are in [performance.md](performance.md).
 
-**GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), behind the shell's `gpu-stage` feature):
-`render::plain_fills` hands the oracle's own prepared fills to `anicraft-gpu`, which bins edge
-pieces into 16 × 16 tiles with per-row backdrops (CPU, parallel) and computes each pixel's
-exact area coverage and src-over in one compute pass. Display lists with masks, groups or
-bitmaps are drawn by the oracle instead. The engine's `RenderService` takes any `Rasterizer`
-and falls back to the oracle per job, so the engine itself never depends on the GPU.
+**GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md),
+behind the shell's `gpu-stage` feature): `render::prepare_scene` hands the oracle's own
+prepared fills, with their clips and groups, to `anicraft-gpu`, which bins edge pieces into
+16 × 16 tiles with per-row backdrops (CPU, parallel) and writes each tile's stream of entries
+in drawing order, with clip-coverage and group open/close entries. One compute pass computes
+each pixel's exact area coverage and composites it as the oracle's band compositor does (clip
+coverage, a per-pixel group stack, the W3C blend modes). On the window's wgpu device it draws
+each stage tile into a texture egui shows as it is (no readback); otherwise on a headless
+device of its own, read back. Filters and bitmaps are drawn by the oracle instead. The
+engine's `RenderService` takes any `Rasterizer`, whose pictures may be bytes or an opaque GPU
+image (`Raster::Native`) only the shell can show, and falls back to the oracle per job, so the
+engine itself never depends on the GPU.
 
 ## 5. Engine (`anicraft-engine`)
 
