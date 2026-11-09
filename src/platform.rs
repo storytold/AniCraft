@@ -108,10 +108,16 @@ pub fn plugins_dir() -> Option<PathBuf> {
     config_dir().map(|d| d.join("plugins"))
 }
 
+/// The app id, one value everywhere (ADR 0026): the window's Wayland app_id and X11 class, the
+/// Linux desktop entry, AppStream and MIME package names, the Flatpak id and the macOS bundle id.
+pub const APP_ID: &str = "ai.storyteller.anicraft";
+
 /// Main-window chrome. macOS gets the unified look (content under a transparent title bar,
 /// traffic lights over our menu row); Windows and Linux keep their native frames.
 pub fn viewport(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
-    let b = b.with_app_id("anicraft").with_icon(app_icon()); // app ID: Wayland/X11 window class, for docks and window rules
+    // The Wayland app_id / X11 class: docks match it to the installed desktop entry
+    // (packaging/linux/ai.storyteller.anicraft.desktop) for the icon and the launcher.
+    let b = b.with_app_id(APP_ID).with_icon(app_icon());
     match OS {
         Os::Mac => b.with_fullsize_content_view(true).with_title_shown(false),
         _ => b,

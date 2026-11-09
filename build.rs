@@ -50,8 +50,22 @@ fn discover() -> Option<PathBuf> {
     None
 }
 
+/// Release builds set this (packaging/, ADR 0026): a build that would ship without its icon then
+/// fails instead of warning.
+fn required(var: &str) -> bool {
+    println!("cargo:rerun-if-env-changed={var}");
+    std::env::var(var).is_ok_and(|v| v == "1")
+}
+
+/// Stops the build with a message (only for the release requirement above).
+fn fail(message: &str) -> ! {
+    eprintln!("error: {message}");
+    std::process::exit(1);
+}
+
 /// Windows only: embed the app icon into `anicraft.exe` (taskbar, Start menu, Explorer, Alt-Tab).
-/// A missing resource compiler is a warning, so a cross-compile still links.
+/// A missing resource compiler is a warning, so a cross-compile still links, unless
+/// `ANICRAFT_REQUIRE_WINRES=1` (packaging/windows/package.ps1).
 fn windows_icon() {
     println!("cargo:rerun-if-changed=assets/app-icon/anicraft.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
@@ -60,6 +74,9 @@ fn windows_icon() {
     let mut res = winresource::WindowsResource::new();
     res.set_icon("assets/app-icon/anicraft.ico").set("ProductName", "AniCraft").set("FileDescription", "AniCraft 2D vector animation studio");
     if let Err(e) = res.compile() {
+        if required("ANICRAFT_REQUIRE_WINRES") {
+            fail(&format!("ANICRAFT_REQUIRE_WINRES=1 but anicraft.exe's icon and version resource could not be embedded: {e}"));
+        }
         println!("cargo:warning=anicraft.exe built without its icon: {e}");
     }
 }
