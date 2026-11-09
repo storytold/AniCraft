@@ -103,7 +103,7 @@ pub fn recovery_dir_overridden() -> bool {
     std::env::var_os("ANICRAFT_RECOVERY_DIR").is_some_and(|v| !v.is_empty())
 }
 
-/// Where installed plug-ins live: a `plugins` folder in the settings folder (ADR 0014).
+/// Where installed plug-ins live: a `plugins` folder in the settings folder (ADR 0017).
 pub fn plugins_dir() -> Option<PathBuf> {
     config_dir().map(|d| d.join("plugins"))
 }

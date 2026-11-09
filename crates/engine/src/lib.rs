@@ -169,7 +169,7 @@ pub struct Session {
     pub frame_clipboard: cmds_frames::FrameClipboard,
     /// A command is editing a motion tween's target (auto-key, ADR 0016).
     motion_edit: Option<cmds_motion::MotionEdit>,
-    /// Installed WebAssembly plug-ins (ADR 0014). They belong to the session, not the
+    /// Installed WebAssembly plug-ins (ADR 0017). They belong to the session, not the
     /// document: they survive New and Open.
     pub plugins: anicraft_plugins::Registry,
     /// A name for the undo step the running command records, set by the command

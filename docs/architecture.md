@@ -29,7 +29,7 @@
 app/                         workspace root; the root package is the desktop app (`anicraft`)
   crates/
     geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test
-    plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0014)
+    plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0017)
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format

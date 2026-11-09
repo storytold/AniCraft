@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **Plug-ins** (Commands › Plug-ins; ADR 0014, `docs/plugins.md`). Plug-ins are WebAssembly
+* **Plug-ins** (Commands › Plug-ins; ADR 0017, `docs/plugins.md`). Plug-ins are WebAssembly
   files that add commands: generators such as the sample **Star Field**, and selection effects
   such as the sample **Jitter Selection**. A plug-in with settings opens a dialog with a live
   preview on the stage; OK keeps the result as one undo step named after the plug-in. Install

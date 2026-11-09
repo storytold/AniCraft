@@ -1,4 +1,4 @@
-//! Sandboxed WebAssembly plug-ins for AniCraft (layer L0; ADR 0014, `docs/plugins.md`).
+//! Sandboxed WebAssembly plug-ins for AniCraft (layer L0; ADR 0017, `docs/plugins.md`).
 //!
 //! A plug-in is a core WebAssembly module that implements the AniCraft plug-in ABI (v1). It
 //! runs in [`wasmi`], a pure-Rust interpreter, with:

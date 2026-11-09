@@ -11,7 +11,7 @@ pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 pub const MAX_PARAMS: usize = 32;
 
 /// What a plug-in is. ABI v1 has command plug-ins only; exporters, easing presets and frame
-/// scripts are later kinds on the same host (ADR 0014).
+/// scripts are later kinds on the same host (ADR 0017).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {

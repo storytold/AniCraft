@@ -1,4 +1,4 @@
-//! WebAssembly plug-ins (ADR 0014, `docs/plugins.md`): `plugin.install / list / run / remove /
+//! WebAssembly plug-ins (ADR 0017, `docs/plugins.md`): `plugin.install / list / run / remove /
 //! reload`, and the host side of the ABI, which lets a running plug-in read the document and
 //! run registry commands. A run is atomic and one undo step: the commands it makes run nested
 //! (no history of their own) inside `plugin.run`, and any failure restores the document.

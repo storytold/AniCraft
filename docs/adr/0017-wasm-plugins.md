@@ -1,4 +1,4 @@
-# ADR 0014: WebAssembly plug-ins over the command registry
+# ADR 0017: WebAssembly plug-ins over the command registry
 
 * Status: accepted (2026-11-09)
 * Relates to: requirements U2, roadmap M6, ADR 0001 (undo), ADR 0004 (destructive actions),

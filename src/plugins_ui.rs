@@ -1,4 +1,4 @@
-//! Plug-ins in the desktop app (ADR 0014): the Commands menu, the dialog generated from a
+//! Plug-ins in the desktop app (ADR 0017): the Commands menu, the dialog generated from a
 //! plug-in's parameters (with a live preview on the stage), and the Plug-ins window.
 //!
 //! The dialog previews inside one gesture: every change puts the document back where the

@@ -5,7 +5,7 @@ Craft apps (PhotoCraft's filter plug-ins). One `.wasm` file works on Windows, ma
 later, the web build. A plug-in adds a command: it reads the open document and changes it
 through AniCraft's own command registry, so everything it does is checked like any other edit
 and can be undone in one step. The decision and the alternatives are in
-[ADR 0014](adr/0014-wasm-plugins.md).
+[ADR 0017](adr/0017-wasm-plugins.md).
 
 This page is the contract for plug-in authors and the reference for the host
 (`crates/plugins`, the `plugin.*` commands in `crates/engine/src/cmds_plugin.rs`).
