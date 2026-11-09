@@ -29,6 +29,7 @@ USAGE:
         {\"id\":1,\"cmd\":\"draw.rect\",\"params\":{\"x\":10,\"y\":10,\"w\":50,\"h\":50}}
   anicraft-cli mcp [file|--sample]       Model Context Protocol server on stdin/stdout,
                                          for AI assistants (see docs/mcp.md)
+  anicraft-cli --version
 
   --plugins <folder>   loads the WebAssembly plug-ins in a folder first (also the
                        ANICRAFT_PLUGINS environment variable); see docs/plugins.md.
@@ -113,6 +114,8 @@ pub fn run(argv: &[String]) -> Result<String, String> {
     let src = a.positional.first().map(String::as_str);
     match cmd.as_str() {
         "help" | "--help" | "-h" => Ok(USAGE.to_string()),
+        // The release packaging smoke-tests every build with this (packaging/, ADR 0026).
+        "version" | "--version" | "-V" => Ok(format!("anicraft-cli {}", env!("CARGO_PKG_VERSION"))),
         "commands" => {
             let list: Vec<Value> = commands().iter().map(|c| c.to_json()).collect();
             serde_json::to_string_pretty(&list).map_err(|e| e.to_string())
@@ -468,6 +471,13 @@ mod tests {
         assert_eq!(lines[4]["bye"], true);
         assert_eq!(lines.len(), 5, "nothing runs after quit");
         assert_eq!(s.visible_elements().len(), 1);
+    }
+
+    #[test]
+    fn version_names_the_workspace_version() {
+        for flag in ["--version", "-V", "version"] {
+            assert_eq!(run(&[flag.to_string()]).unwrap(), format!("anicraft-cli {}", env!("CARGO_PKG_VERSION")));
+        }
     }
 
     #[test]

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened-runtime entitlements for AniCraft. Deliberately empty: the app is pure Rust, loads no
+     unsigned code, needs no JIT (plug-ins run in the wasmi interpreter, ADR 0017), plays sound
+     without recording any, and is not sandboxed (it opens files by path, from the command line
+     and drag-and-drop, and runs the user's own ffmpeg for video export). Add exceptions here only
+     with a reason in a comment. -->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

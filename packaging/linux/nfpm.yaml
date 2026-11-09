@@ -1,0 +1,87 @@
+# .deb and .rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
+# the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and the
+# glibc the binaries need for @GLIBC_FLOOR@, and exports VERSION and NFPM_ARCH.
+#
+#   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
+name: anicraft
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+# semver: 0.2.0-rc.1 becomes 0.2.0~rc.1 in deb/rpm, so pre-releases sort before the release.
+version_schema: semver
+release: 1
+section: graphics
+priority: optional
+maintainer: ${ANICRAFT_MAINTAINER}
+vendor: ArtCraft Team
+homepage: https://getartcraft.com/apps/anicraft
+license: MIT OR Apache-2.0
+description: |-
+  Open-source, native 2D animation studio.
+  Vector drawing tools, a layered timeline with keyframes and classic, shape
+  and motion tweens, symbols and a library; opens FLA and XFL documents;
+  exports PNG, GIF, SVG, sprite sheets, Lottie and (with ffmpeg) video.
+  Includes anicraft-cli, a headless renderer, command runner and MCP server.
+
+# The binaries link glibc, libgcc_s and ALSA (libasound, for sound through cpal; PulseAudio and
+# PipeWire are reached through their ALSA plugins). Windowing (X11/Wayland, xkbcommon) and the
+# GPU (Vulkan, EGL/GL) are loaded at runtime with dlopen, so they aren't ELF NEEDED entries and
+# the package tools can't find them: they are listed here. winit 0.30 loads, for X11: libX11,
+# libX11-xcb, libxcb, libXcursor, libXi, libxkbcommon and libxkbcommon-x11; for Wayland:
+# libwayland-client and libxkbcommon. wgpu needs libvulkan, and the OpenGL fallback libEGL.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= @GLIBC_FLOOR@)
+      - libgcc-s1
+      - libasound2 | libasound2t64
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libwayland-client0
+      - libx11-6
+      - libx11-xcb1
+      - libxcb1
+      - libxcursor1
+      - libxi6
+      - libvulkan1 | libegl1
+    recommends:
+      - mesa-vulkan-drivers
+      - libegl-mesa0
+      - xdg-desktop-portal
+      - pipewire-alsa | pulseaudio
+    suggests:
+      # Video export streams frames to the user's own ffmpeg (no encoder is bundled).
+      - ffmpeg
+  rpm:
+    # Soname provides rather than package names, so the same requirements resolve on Fedora/RHEL
+    # (libxkbcommon-x11, libX11-xcb, ...) and openSUSE (libxkbcommon-x11-0, libX11-xcb1, ...).
+    depends:
+      - libasound.so.2()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libX11.so.6()(64bit)
+      - libX11-xcb.so.1()(64bit)
+      - libxcb.so.1()(64bit)
+      - libXcursor.so.1()(64bit)
+      - libXi.so.6()(64bit)
+      - (libvulkan.so.1()(64bit) or libEGL.so.1()(64bit))
+    recommends:
+      - mesa-vulkan-drivers
+      - xdg-desktop-portal
+      - (pipewire-alsa or alsa-plugins-pulseaudio)
+
+contents:
+  - src: ${STAGE}/usr/bin/anicraft
+    dst: /usr/bin/anicraft
+    file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/bin/anicraft-cli
+    dst: /usr/bin/anicraft-cli
+    file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/share/
+    dst: /usr/share/
+    type: tree
+
+scripts:
+  postinstall: packaging/linux/postinst.sh
+  postremove: packaging/linux/postinst.sh

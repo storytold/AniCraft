@@ -25,6 +25,7 @@ pub enum Tool {
     Line,
     PaintBucket,
     InkBottle,
+    Camera,
     Hand,
     Zoom,
 }
@@ -61,7 +62,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 15] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 16] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -78,6 +79,7 @@ impl Tool {
             Tool::Line => "Line",
             Tool::PaintBucket => "Paint Bucket",
             Tool::InkBottle => "Ink Bottle",
+            Tool::Camera => "Camera",
             Tool::Hand => "Hand",
             Tool::Zoom => "Zoom",
         }
@@ -98,6 +100,7 @@ impl Tool {
             Tool::Line => Some("N"),
             Tool::PaintBucket => Some("K"),
             Tool::InkBottle => Some("S"),
+            Tool::Camera => Some("C"),
             Tool::Hand => Some("H"),
             Tool::Zoom => Some("Z"),
         }
@@ -117,6 +120,7 @@ impl Tool {
             Tool::Line => "Drag to draw a line. Shift snaps to 45°.",
             Tool::PaintBucket => "Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings.",
             Tool::InkBottle => "Click a shape to give it the current stroke colour and width.",
+            Tool::Camera => "Drag on the stage to pan the camera, drag the round handle to turn it, and use the wheel to zoom (each drag is one undo step). Picking the tool adds a camera if the scene has none.",
             Tool::Hand => "Drag to pan the stage. Space works with any tool.",
             Tool::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere.",
         }
@@ -174,6 +178,12 @@ pub enum Drag {
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
     Hint { index: usize, side: anicraft_engine::doc::HintSide },
+    /// Camera tool (ADR 0027): panning from screen point `last`, turning from pointer angle
+    /// `last` (radians about the camera centre), or zooming with the wheel until `until`
+    /// (seconds; the turns of one burst are one undo step).
+    CameraPan { last: egui::Pos2 },
+    CameraRotate { last: f32 },
+    CameraWheel { until: f64 },
     Pan,
 }
 
@@ -236,6 +246,10 @@ pub struct App {
     pub looping: bool,
     play_acc: f64,
     pub onion: bool,
+    /// View › Preview Through Camera: the stage shows what the movie shows (ADR 0027).
+    pub camera_preview: bool,
+    /// The tool in hand last frame (picking the Camera tool adds a camera).
+    pub last_tool: Tool,
     pub status: Option<Status>,
     pub prompt: Option<Prompt>,
     pub show_about: bool,
@@ -377,6 +391,8 @@ impl App {
             looping: true,
             play_acc: 0.0,
             onion: false,
+            camera_preview: false,
+            last_tool: Tool::Select,
             status: None,
             prompt: None,
             show_about: false,
@@ -445,6 +461,15 @@ impl App {
         }
         crate::plugins_ui::load_at_start(&mut app);
         app
+    }
+
+    /// View › Preview Through Camera (ADR 0027). With no camera yet there is nothing to look
+    /// through, so it says how to add one.
+    pub fn toggle_camera_preview(&mut self) {
+        self.camera_preview = !self.camera_preview;
+        if self.camera_preview && self.s.doc.timeline(self.s.scene).camera_layer().is_none() {
+            self.status_ok("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it.");
+        }
     }
 
     pub fn status_ok(&mut self, text: impl Into<String>) {
@@ -633,6 +658,12 @@ impl App {
                     crate::test_movie::demo_pointer(self);
                 }
             }
+            Some("exporthtml") => {
+                // File › Export › Export HTML Canvas… on the interactive sample (the in-app
+                // prompt: screenshots never open native dialogs).
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.invoke("file.export_html");
+            }
             Some("select") => {
                 // The top layer's artwork selected, for its Properties.
                 self.run("layer.select", json!({"index": 0}));
@@ -720,6 +751,21 @@ impl App {
                     }
                 }
                 self.run("timeline.goto", json!({"frame": if which == "hints" { 0 } else { 15 }}));
+            }
+            Some(which @ ("camera" | "cameraview")) => {
+                // The sample seen by a camera that pushes in and turns over the first second,
+                // the far background a layer deep; the Camera tool in hand at frame 12.
+                self.run("camera.add", json!({}));
+                self.run("timeline.insert_keyframe", json!({"frame": 23}));
+                self.run("camera.set", json!({"frame": 23, "x": 760, "y": 380, "zoom": 160, "rotation": -8}));
+                self.run("timeline.create_tween", json!({"frame": 0}));
+                if let Some(back) = self.s.doc.timeline(0).layers.last().map(|l| l.id.0) {
+                    self.run("layer.set_depth", json!({"layer": back, "depth": 1500}));
+                }
+                self.run("timeline.goto", json!({"frame": 12}));
+                self.tool = Tool::Camera;
+                self.last_tool = Tool::Camera;
+                self.camera_preview = which == "cameraview";
             }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.
@@ -879,6 +925,11 @@ impl App {
                 self.status_ok(format!("{n} {what} {place}. {report} {undo} to undo."));
             }
             "file.export_sprite_sheet" => self.status_ok(format!("Exported {} frames to {} ({}×{} grid) and its frame map {}", v["frames"], v["written"].as_str().unwrap_or(""), v["columns"], v["rows"], v["map"].as_str().unwrap_or(""))),
+            "file.export_html" => {
+                let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
+                let kb = v["bytes"].as_u64().unwrap_or(0).div_ceil(1024);
+                self.status_ok(format!("Exported {} ({} frames, {kb} KB): open it in a web browser.{report}", v["written"].as_str().unwrap_or(""), v["frames"]));
+            }
             "file.export_lottie" => {
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 self.status_ok(format!("Exported {} ({} frames, {} layers).{report}", v["written"].as_str().unwrap_or(""), v["frames"], v["layers"]));
@@ -982,6 +1033,7 @@ impl App {
             "file.export_sprite_sheet" => Some(("Export sprite sheet (PNG + JSON frame map)", "path", "sprites.png".to_string())),
             "file.export_video" => Some(("Export video (.webm or .mp4, made with your ffmpeg)", "path", "animation.webm".to_string())),
             "file.export_lottie" => Some(("Export Lottie animation (JSON, for web and apps)", "path", "animation.json".to_string())),
+            "file.export_html" => Some(("Export HTML canvas (one web page)", "path", "movie.html".to_string())),
             "file.export_audio" => Some(("Export audio (the movie's soundtrack as a WAV)", "path", "soundtrack.wav".to_string())),
             "file.import_to_library" => Some(("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)", "path", "sound.wav".to_string())),
             "file.import" => Some(("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)", "path", "drawing.svg".to_string())),

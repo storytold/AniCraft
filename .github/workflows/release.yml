@@ -1,17 +1,21 @@
+# Builds every installer from packaging/ (docs/release.md, ADR 0026) through the Craft family's
+# shared release workflow: Windows MSI and portable zip (x64, arm64), macOS universal DMG and CLI
+# zip, Linux AppImage, deb, rpm, tar.gz, Flatpak and Arch packages (x86_64, aarch64; riscv64
+# without the AppImage), FreeBSD archives, then one draft GitHub Release with SHA256SUMS.txt.
+# A push to `release` builds signed artifacts (missing signing secrets fail the run); a manual run
+# from any branch builds them unsigned, to try the packaging. Nothing is published: a maintainer
+# publishes the draft, which creates the v<version> tag.
 name: Release
 
 on:
   push:
     branches: [release]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version override for a test run, e.g. 0.2.0-rc.1 (empty: Cargo.toml)"
-        type: string
-        default: ""
 
 permissions:
   contents: write
+  # The Flatpak job pushes its OCI image to GHCR.
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -25,7 +29,8 @@ jobs:
       app-name: anicraft
       app-title: AniCraft
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      version: ${{ inputs.version }}
+      # No WebAssembly build of the editor yet (roadmap M8).
+      has-web: false
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -41,3 +46,4 @@ jobs:
       AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
       AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
       AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+      LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}
