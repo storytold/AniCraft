@@ -191,6 +191,33 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: false,
             })
         }
+        "plugin.install" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            let (m, dest) = s.plugins.install_overwrites(path)?;
+            let old = s.plugins.get(&m.id).map(|o| o.manifest().version.clone()).filter(|v| !v.is_empty());
+            Some(Confirmation {
+                title: "Replace plug-in?".into(),
+                message: format!(
+                    "“{}”{} is already installed. Installing {} replaces its file in the plug-ins folder ({}); this cannot be undone.",
+                    m.name,
+                    old.map_or_else(String::new, |v| format!(" {v}")),
+                    path.display(),
+                    dest.display()
+                ),
+                action: "Replace Plug-in".into(),
+                irreversible: true,
+            })
+        }
+        "plugin.remove" => {
+            let plugin = s.plugins.get(p.get("id").and_then(Value::as_str)?)?;
+            let file = plugin.source().filter(|_| s.plugins.owns_file(&plugin))?;
+            Some(Confirmation {
+                title: "Remove plug-in?".into(),
+                message: format!("“{}” is uninstalled and its file is deleted from the plug-ins folder ({}). This cannot be undone.", plugin.manifest().name, file.display()),
+                action: "Remove Plug-in".into(),
+                irreversible: true,
+            })
+        }
         _ => None,
     }
 }

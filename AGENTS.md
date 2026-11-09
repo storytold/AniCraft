@@ -9,6 +9,7 @@ is written **AniCraft**; machine names are lowercase (`anicraft-*`). Read `docs/
 ```text
 crates/geom     L0  Vec2, Affine (decompose/compose), Rect, Path, flattening, hit testing
 crates/xml      L0  Bounded XML element reader shared by the importers (XFL, SVG)
+crates/plugins  L0  Sandboxed WebAssembly plug-ins: wasmi host, ABI v1, limits, registry (ADR 0017)
 crates/doc      L1  Document model, easing, timeline evaluation, sample scene
 crates/text     L1  Fonts on this computer, shaping and line layout into outlines (ADR 0012)
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
