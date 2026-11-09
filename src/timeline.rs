@@ -385,7 +385,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             LayerKind::Normal => "layer",
         };
         a11y::control(ui, &nr, WidgetType::SelectableLabel, &format!("{} · {kind}", layer.name), Some(is_active));
-        if is_active {
+        // Ctrl+F6 lands on the active layer, or on the top row shown when it is scrolled away
+        // (rows are drawn top down, so the active row, when drawn, has the last word).
+        if is_active || r == first_row {
             a11y::anchor(ui, a11y::Region::Timeline, dock, &nr);
         }
         for (r, id, salt, verb, on) in [(eye, "layer.toggle_visible", "eye", "Show", layer.visible), (lock, "layer.toggle_lock", "lock", "Lock", layer.locked), (outl, "layer.toggle_outline", "outline", "Outline", layer.outline)] {

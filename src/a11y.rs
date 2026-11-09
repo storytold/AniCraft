@@ -373,6 +373,38 @@ mod tests {
         assert!(found.is_empty(), "{} interactive nodes a screen reader can't name:\n{}", found.len(), found.join("\n"));
     }
 
+    fn press(key: egui::Key, modifiers: egui::Modifiers) -> egui::RawInput {
+        let mut i = input(1.0);
+        i.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+        i
+    }
+
+    #[test]
+    fn a_focused_control_keeps_enter_but_shortcuts_still_work() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        // Stage, Timeline, then the Properties header: a control, not a surface.
+        for _ in 0..3 {
+            frame(&ctx, &mut app, press(egui::Key::F6, egui::Modifiers::COMMAND));
+            frame(&ctx, &mut app, input(1.0));
+        }
+        assert_eq!(focused_region(&ctx), Some(Region::Properties));
+        assert_eq!(keyboard(&ctx), Keyboard::Control);
+        // A tool key still works with the header focused...
+        frame(&ctx, &mut app, press(egui::Key::R, egui::Modifiers::NONE));
+        assert_eq!(app.tool, Tool::Rect);
+        // ...but Enter presses the header (folds the section) instead of playing.
+        frame(&ctx, &mut app, press(egui::Key::Enter, egui::Modifiers::NONE));
+        assert!(!app.playing, "Enter went to the focused header, not to play");
+        // On the stage, Enter plays as usual.
+        for _ in 0..3 {
+            frame(&ctx, &mut app, press(egui::Key::F6, egui::Modifiers::COMMAND));
+            frame(&ctx, &mut app, input(1.0));
+        }
+        assert_eq!(focused_region(&ctx), Some(Region::Stage));
+        frame(&ctx, &mut app, press(egui::Key::Enter, egui::Modifiers::NONE));
+        assert!(app.playing, "Enter on the focused stage plays");
+    }
+
     #[test]
     fn ctrl_f6_moves_focus_through_the_panels_and_back() {
         let (_, mut app, ctx) = tree(|_, _| {});
