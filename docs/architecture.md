@@ -31,7 +31,8 @@ app/                         workspace root; the root package is the desktop app
     geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test
     plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0017)
     audio     L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing/resampling, WAV, waveform peaks
-    doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
+    actions   L0  Timeline action IR: stop/play/goto, instance targets, button events, frame scripts
+    doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols) + player
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
     gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019; shell feature `gpu-stage`)
@@ -45,7 +46,8 @@ app/                         workspace root; the root package is the desktop app
 | L0 | `anicraft-geom` | std, serde |
 | L0 | `anicraft-plugins` | wasmi, serde_json (knows nothing of documents; the engine is its host) |
 | L0 | `anicraft-audio` | std, lewton, nanomp3 |
-| L1 | `anicraft-doc` | geom, audio |
+| L0 | `anicraft-actions` | serde (knows nothing of documents: targets are name paths) |
+| L1 | `anicraft-doc` | geom, audio, actions |
 | L2 | `anicraft-render` | geom, doc, rayon, png |
 | L3 | `anicraft-engine` | geom, doc, render, serde_json |
 | L3 | `anicraft-gpu` | geom, doc, render, wgpu (the version egui brings), pollster, bytemuck |
