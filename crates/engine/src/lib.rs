@@ -5,6 +5,7 @@
 //! JSON params, so headless and interactive behaviour cannot drift apart.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod cmds_actions;
 mod cmds_draw;
 mod cmds_file;
 mod cmds_frames;
@@ -26,6 +27,7 @@ pub mod history;
 pub mod recovery;
 pub mod render_service;
 pub mod params;
+pub mod player;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
 use anicraft_geom::{Rect, Vec2};
@@ -104,6 +106,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_width::specs());
     v.extend(cmds_plugin::specs());
     v.extend(cmds_sound::specs());
+    v.extend(cmds_actions::specs());
     v
 }
 
@@ -616,7 +619,7 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping}))})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -646,7 +649,14 @@ impl Session {
 pub fn element_label(doc: &Document, e: &Element) -> String {
     let kind = match &e.kind {
         ElementKind::Shape(_) => "Shape".to_string(),
-        ElementKind::Symbol { symbol, .. } => format!("Graphic: {}", doc.symbol(*symbol).map_or("missing", |s| s.name.as_str())),
+        ElementKind::Symbol { symbol, .. } => match doc.symbol(*symbol) {
+            Some(s) => format!("{}: {}", match s.kind {
+                anicraft_doc::SymbolKind::Graphic => "Graphic",
+                anicraft_doc::SymbolKind::MovieClip => "Movie clip",
+                anicraft_doc::SymbolKind::Button => "Button",
+            }, s.name),
+            None => "Graphic: missing".to_string(),
+        },
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             format!("Text: {first}{}", if t.text.chars().count() > first.chars().count() { "…" } else { "" })
@@ -666,3 +676,5 @@ mod plugin_tests;
 mod tests_sound;
 #[cfg(test)]
 mod hint_tests;
+#[cfg(test)]
+mod tests_actions;

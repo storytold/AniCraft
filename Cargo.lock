@@ -213,6 +213,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "anicraft-actions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "anicraft-audio"
 version = "0.1.0"
 dependencies = [
@@ -235,6 +243,7 @@ dependencies = [
 name = "anicraft-doc"
 version = "0.1.0"
 dependencies = [
+ "anicraft-actions",
  "anicraft-audio",
  "anicraft-geom",
  "png 0.17.16",

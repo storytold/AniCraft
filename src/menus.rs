@@ -213,6 +213,9 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             if ui_item(ui, "Motion Editor", "", Some(app.bottom == BottomTab::MotionEditor)) {
                 app.bottom = BottomTab::MotionEditor;
             }
+            if ui_item(ui, "Actions", app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
+                app.show_actions = !app.show_actions;
+            }
             ui.separator();
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
                 app.onion = !app.onion;

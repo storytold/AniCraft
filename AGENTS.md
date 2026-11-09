@@ -11,7 +11,8 @@ crates/geom     L0  Vec2, Affine (decompose/compose), Rect, Path, flattening, hi
 crates/xml      L0  Bounded XML element reader shared by the importers (XFL, SVG)
 crates/plugins  L0  Sandboxed WebAssembly plug-ins: wasmi host, ABI v1, limits, registry (ADR 0017)
 crates/audio    L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing and resampling, WAV, peaks (ADR 0020)
-crates/doc      L1  Document model, easing, timeline evaluation, sample scene
+crates/actions  L0  Timeline action IR: stop/play/goto, targets, button events, frame scripts (ADR 0024)
+crates/doc      L1  Document model, easing, timeline evaluation, the interactive player, sample scene
 crates/text     L1  Fonts on this computer, shaping and line layout into outlines (ADR 0012)
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
@@ -39,7 +40,7 @@ a new crate needs a row here and in its `LAYERS` table.
   (labels, menus, buttons, names, dialog text) is proportional. No raw font sizes or colours
   outside `theme.rs` (enforced by `guidelines_tests`). Typefaces: Inter + JetBrains Mono via
   `CRAFT_FONTS_DIR`, with egui defaults as fallback. Interface text is English in the code and
-  goes through `i18n` (`tl!`, ADR 0024); rows and dialogs use the `theme` right-to-left helpers.
+  goes through `i18n` (`tl!`, ADR 0025); rows and dialogs use the `theme` right-to-left helpers.
 * **Cross-platform** (ADR 0006): macOS, Windows and Linux are first-class. OS-specific
   behaviour lives only in `src/platform.rs` (shortcut labels with ⌘ on macOS, app menu,
   window chrome, settings folder, native dialogs, GPU backend fallback). Shortcut text always
@@ -71,7 +72,7 @@ a new crate needs a row here and in its `LAYERS` table.
 
 * AniCraft is **MIT OR Apache-2.0**, like PhotoCraft (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`).
 * **Dependencies**: permissive only, from crates.io only (plus storytold's craft-libs, egui and
-  winit at pinned revisions, ADR 0024). `deny.toml` is the policy, and
+  winit at pinned revisions, ADR 0025). `deny.toml` is the policy, and
   `cargo deny check licenses bans sources` must pass. Adding a crate with a new licence needs
   a deliberate `deny.toml` change and a note in `compliance.md`. No copyleft, "non-commercial"
   or source-available terms.

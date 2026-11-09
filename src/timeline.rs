@@ -114,7 +114,7 @@ pub fn paste_params(app: &App) -> Option<serde_json::Value> {
 
 /// An icon button: a full-size target around a Lucide glyph, named by its tooltip.
 /// `on` is a toggle's state (`None` for a plain button); a toggle that is on is filled.
-fn icon_button(ui: &mut egui::Ui, tip: &str, on: Option<bool>, icon: Icon) -> egui::Response {
+pub fn icon_button(ui: &mut egui::Ui, tip: &str, on: Option<bool>, icon: Icon) -> egui::Response {
     let active = on == Some(true);
     let (rect, resp) = ui.allocate_exact_size(vec2(TARGET + 4.0, TARGET), Sense::click());
     // Same language as the tools: a toggle that is on is a lighter gray block, icon white.
@@ -536,8 +536,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 cp.circle_filled(kc, 4.0, mark);
             }
+            // Keyframes that run actions carry an "a" after the dot (Animate puts one there too).
+            let after = if k.script.is_some() {
+                cp.text(kc + vec2(6.5, -1.0), Align2::LEFT_CENTER, "a", font(Type::DataSmall), mark);
+                9.0
+            } else {
+                0.0
+            };
             if !k.label.is_empty() {
-                cp.text(kc + vec2(8.0, -1.0), Align2::LEFT_CENTER, &k.label, font(Type::Caption), mark);
+                cp.text(kc + vec2(8.0 + after, -1.0), Align2::LEFT_CENTER, &k.label, font(Type::Caption), mark);
             }
         }
         // Selected frames, and where a keyframe drag would drop them.
