@@ -37,7 +37,7 @@ Priority: **P0** = M0–M2 skeleton must have, **P1** = parity core, **P2** = lo
 | Bones / IK | Bone tool, armature poses. | P2 |
 | Audio | Import WAV/OGG/MP3, stream vs event sync, waveform on timeline, scrub audio. | P1 |
 | Filters / blend | Blend modes, drop shadow, blur, glow, bevel, colour adjust on Movie Clips. | P1 |
-| Scripting | Frame scripts and automation (see open question U2 below). | P2 |
+| Scripting | Frame scripts and automation (see open question U2 below). ActionScript compatibility for imported Animate projects: keep scripts, then run the ActionScript 3 timeline subset (ADR 0013). | P2 |
 | Import | SVG, PNG/JPEG sequences, **XFL (uncompressed FLA XML)**, then binary FLA as a stretch goal. | P1 |
 | Export | PNG / PNG sequence, animated GIF, sprite sheet + JSON, SVG (static frame), **Lottie JSON**, HTML canvas, MP4/WebM via a system encoder (ffmpeg pipe), optionally SWF. | P0 (PNG) / P1 |
 | History | Unlimited undo/redo, named history entries, history is per document. | P0 |
@@ -100,5 +100,5 @@ Priority: **P0** = M0–M2 skeleton must have, **P1** = parity core, **P2** = lo
 | Id | Question | Current decision (until settled) |
 |---|---|---|
 | U1 | Which interchange format first? | Own `.anicraft` + PNG/GIF first (headless verification needs it), then **XFL import** (migration path for existing projects), then Lottie/SVG export. Chosen by the builder in auto mode. |
-| U2 | Scripting surface replacing ActionScript/JSFL? | **Settled by the project lead: use the sibling apps' plug-in system.** As in PhotoCraft (`docs/plugins.md` there): sandboxed WebAssembly plug-ins run by `wasmi` (pure Rust, MIT OR Apache-2.0, works in the web build), with no host imports, fuel/memory/time limits, `plugin.install/list/run/remove/reload` commands, and one undo step per run. AniCraft's ABI targets vector/timeline work (shape generators, selection transforms, easing presets, exporters) and calls the same command registry. Commands-only scripting (CLI/JSON-lines) stays available. |
+| U2 | Scripting surface replacing ActionScript/JSFL? | **Settled by the project lead: use the sibling apps' plug-in system.** As in PhotoCraft (`docs/plugins.md` there): sandboxed WebAssembly plug-ins run by `wasmi` (pure Rust, MIT OR Apache-2.0, works in the web build), with no host imports, fuel/memory/time limits, `plugin.install/list/run/remove/reload` commands, and one undo step per run. AniCraft's ABI targets vector/timeline work (shape generators, selection transforms, easing presets, exporters) and calls the same command registry. Commands-only scripting (CLI/JSON-lines) stays available. **ActionScript** (asked for by the project lead, low priority) is a compatibility front end on top, not a second engine: ADR 0013. |
 | U3 | When does the GPU renderer become primary on stage? | CPU oracle drives the stage until the GPU renderer passes golden parity tests (M3). |

@@ -21,6 +21,7 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
               </elements>
             </DOMFrame>
             <DOMFrame index="10" duration="5">
+              <Actionscript><script><![CDATA[stop();]]></script></Actionscript>
               <elements>
                 <DOMSymbolInstance libraryItemName="Characters/Ball"><matrix><Matrix a="2" d="2" tx="300" ty="50"/></matrix></DOMSymbolInstance>
               </elements>
@@ -56,7 +57,7 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
 </DOMDocument>"##;
 
 const BALL: &str = r##"<DOMSymbolItem name="Characters/Ball" symbolType="movie clip">
-  <timeline><DOMTimeline name="Ball"><layers><DOMLayer name="Layer 1"><frames><DOMFrame index="0" duration="4"><elements>
+  <timeline><DOMTimeline name="Ball"><layers><DOMLayer name="Layer 1"><frames><DOMFrame index="0" duration="4"><Actionscript><script><![CDATA[gotoAndPlay(2);]]></script></Actionscript><elements>
     <DOMOvalObject x="-10" y="-10" objectWidth="20" objectHeight="20"><fill><SolidColor color="#FF0000"/></fill></DOMOvalObject>
   </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timeline>
 </DOMSymbolItem>"##;
@@ -92,6 +93,8 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(report.skipped.get("text fields"), Some(&1));
     assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
+    // Frame scripts, on the scene's frames and inside symbols, are counted (ADR 0013).
+    assert_eq!(report.skipped.get("frame scripts (ActionScript isn't supported yet)"), Some(&2));
     // Every scene comes across, in order.
     assert_eq!(doc.scenes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Scene 1", "Scene 2"]);
     assert_eq!(doc.timeline(1).layers.len(), 1, "an empty scene gets a layer to draw on");
