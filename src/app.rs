@@ -614,6 +614,20 @@ impl App {
                     None => self.show_plugins = true,
                 }
             }
+            Some("filters") => {
+                // A movie clip with a bevel and a gradient glow, selected: Properties › Filters
+                // shows both (scrolled to the glow's ramp editor).
+                self.run("draw.rect", json!({"x": 960, "y": 470, "w": 200, "h": 130, "fill": "#e8553b", "stroke": null}));
+                self.run("modify.convert_to_symbol", json!({"name": "Badge"}));
+                self.run("symbol.set_kind", json!({"kind": "movie_clip"}));
+                self.run(
+                    "element.set_filters",
+                    json!({"filters": [
+                        {"type": "bevel", "blur_x": 8, "blur_y": 8, "distance": 6, "strength": 1.2, "quality": 2},
+                        {"type": "gradient_glow", "blur_x": 28, "blur_y": 28, "quality": 2, "distance": 0, "stops": [{"offset": 0, "color": "#ffffff00"}, {"offset": 0.55, "color": "#ffd36b"}, {"offset": 1, "color": "#ff4d3d"}]},
+                    ]}),
+                );
+            }
             Some(which @ ("actions" | "testmovie")) => {
                 // The interactive sample: its Play button selected with the Actions panel on
                 // its events, or playing in Test Movie with the pointer over the button.
@@ -881,7 +895,7 @@ impl App {
             }
             "file.export_sprite_sheet" => self.status_ok(i18n::fmt("Exported {frames} frames to {path} ({columns}×{rows} grid) and its frame map {map}", &[("frames", &v["frames"].to_string()), ("path", &craft_i18n::ltr(v["written"].as_str().unwrap_or(""))), ("columns", &v["columns"].to_string()), ("rows", &v["rows"].to_string()), ("map", &craft_i18n::ltr(v["map"].as_str().unwrap_or("")))])),
             "file.export_lottie" => {
-                // The engine's report on what Lottie can't carry stays English (ADR 0025).
+                // The engine's report on what Lottie can't carry stays English (ADR 0026).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
                 let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
@@ -1485,7 +1499,7 @@ impl App {
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // The interface language, and its direction for egui's own parts (menus, scroll bars,
-        // combo boxes) (ADR 0025).
+        // combo boxes) (ADR 0026).
         crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         let rtl = crate::i18n::rtl();
         if ctx.global_style().right_to_left != rtl {
