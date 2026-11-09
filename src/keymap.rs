@@ -71,9 +71,9 @@ fn view_label(id: &str) -> &'static str {
         "view.onion" => "Onion Skin On / Off",
         "view.select_all_frames" => "Select All Frames",
         "view.align_to_stage" => "Align to Stage On / Off",
-        "view.test" => "Test (Play from Frame 1)",
         "view.next_panel" => "Next Panel",
         "view.prev_panel" => "Previous Panel",
+        "view.actions" => "Actions Panel",
         _ => "View action",
     }
 }

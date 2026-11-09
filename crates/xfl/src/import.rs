@@ -352,7 +352,7 @@ impl<'a> Builder<'a> {
         // Blend modes by Animate's names; unknown ones stay Normal.
         let blend = el.attr("blendMode").and_then(BlendMode::from_key).unwrap_or_default();
         let filters = self.filters(el);
-        out.push(self.element(ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters }, m, fx));
+        out.push(self.element(ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events: Vec::new() }, m, fx));
     }
 
     fn elements(&mut self, list: &[X], parent: &Affine, out: &mut Vec<Arc<Element>>, depth: usize) {

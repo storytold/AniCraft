@@ -352,6 +352,11 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, _count: usize) {
+    if let ElementKind::Symbol { symbol, events, .. } = &e.kind
+        && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
+    {
+        instance_rows(app, ui, e, events);
+    }
     {
         let d = e.transform.decompose();
         let (mut x, mut y, mut sx, mut sy, mut rot) = (d.tx, d.ty, d.sx * 100.0, d.sy * 100.0, d.rotation.to_degrees());
@@ -516,6 +521,27 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             }
         });
     }
+}
+
+/// A movie clip or button instance's name (what actions address it by) and its events, as at
+/// the top of Animate's Properties.
+fn instance_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, events: &[anicraft_engine::doc::EventHandler]) {
+    let mut name = e.name.clone();
+    row_prose(ui, "Instance", |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0).hint_text("instance name")).named("Instance name");
+        if r.on_hover_text("The name actions use to address it (letters, digits and _)").changed() {
+            live(app, "Instance name", "instance.set_name", json!({"element": e.id.0, "name": name}));
+        }
+    });
+    let key = app.keymap.primary("view.actions").map(crate::platform::shortcut_label).unwrap_or_default();
+    row_prose(ui, "Events", |ui| {
+        let what = if events.is_empty() { "None".to_string() } else { events.iter().map(|h| h.event.label()).collect::<Vec<_>>().join(", ") };
+        ui.label(text(Type::Body, what).color(if events.is_empty() { T.text_faint } else { T.text }));
+        if ui.small_button("Actions…").on_hover_text(format!("Edit what it does on clicks and the pointer ({key})")).clicked() {
+            crate::actions_panel::open(app, crate::actions_panel::Tab::Instance);
+        }
+    });
+    ui.add_space(4.0);
 }
 
 /// The Filters rows of a movie clip or button instance: an Add menu, then each filter's values
@@ -970,6 +996,17 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     }
                 });
                 sound_rows(app, ui, k.sound);
+                let key = app.keymap.primary("view.actions").map(crate::platform::shortcut_label).unwrap_or_default();
+                row_prose(ui, "Actions", |ui| {
+                    let what = k.script.as_ref().map_or_else(|| "None".to_string(), anicraft_engine::doc::FrameScript::describe);
+                    let short: String = what.chars().take(36).collect();
+                    let short = if short.len() < what.len() { format!("{short}…") } else { short };
+                    ui.label(text(Type::Body, short).color(if k.script.is_none() { T.text_faint } else { T.text })).on_hover_text(what);
+                    if ui.small_button("Edit…").on_hover_text(format!("What runs when the playhead enters this keyframe ({key})")).clicked() {
+                        app.actions.symbol = None;
+                        crate::actions_panel::open(app, crate::actions_panel::Tab::Frame);
+                    }
+                });
                 if let Some(m) = &k.motion {
                     // A motion tween: what is keyed, and the way to its curves.
                     row_prose(ui, "Tween", |ui| {

@@ -5,6 +5,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub use anicraft_audio as audio;
+pub use anicraft_actions as actions;
 
 mod bitmap;
 mod filter;
@@ -14,6 +15,7 @@ mod hints;
 pub mod motion;
 pub mod path_table;
 pub mod width;
+pub mod player;
 pub mod sample;
 pub mod sound;
 
@@ -24,7 +26,8 @@ pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index
 pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
 pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
-pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene};
+pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, PluginScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use serde::{Deserialize, Serialize};
@@ -276,6 +279,10 @@ pub enum ElementKind {
         /// Filters, applied in order (movie clips and buttons).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         filters: Vec<Filter>,
+        /// What the instance does on pointer events in the player (buttons and movie clips;
+        /// ADR 0024), one handler per event.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        events: Vec<EventHandler>,
     },
     /// A block of text (ADR 0012).
     Text(Arc<TextBlock>),
@@ -553,17 +560,21 @@ pub struct Keyframe {
     /// The sound that starts (or, for Stop, ends) on this keyframe (ADR 0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<FrameSound>,
+    /// What runs when the player enters this keyframe: frame actions or a plug-in frame
+    /// script (ADR 0024). Rendering and exports ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<FrameScript>,
 }
 
 impl PartialEq for Keyframe {
     fn eq(&self, o: &Keyframe) -> bool {
-        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && arcs_eq(&self.elements, &o.elements)
+        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && self.script == o.script && arcs_eq(&self.elements, &o.elements)
     }
 }
 
 impl Keyframe {
     pub fn new(start: u32, duration: u32) -> Self {
-        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None }
+        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None, script: None }
     }
     /// Mutable access to the elements whose ids satisfy `pick`, cloning only those.
     pub fn elements_mut_where(&mut self, mut pick: impl FnMut(ElementId) -> bool) -> Vec<&mut Element> {
@@ -1092,6 +1103,7 @@ impl Document {
             let tl = &mut Arc::make_mut(scene).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
+                sanitize_scripts(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1101,6 +1113,7 @@ impl Document {
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
+                sanitize_scripts(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1112,6 +1125,40 @@ impl Document {
             max_id = max_id.max(s.id.0);
         }
         self.next_id = self.next_id.max(max_id.saturating_add(1));
+    }
+}
+
+/// Repairs a loaded layer's frame scripts and instance event handlers (ADR 0024). Touches (and
+/// so un-shares) only keyframes that need it.
+fn sanitize_scripts(layer: &mut Arc<Layer>) {
+    let bad_script = |k: &Keyframe| match &k.script {
+        Some(FrameScript::Actions(a)) => a.is_empty() || actions::check_actions(a).is_err(),
+        Some(FrameScript::Plugin(p)) => p.check().is_err(),
+        None => false,
+    };
+    let bad_events = |e: &Element| match &e.kind {
+        ElementKind::Symbol { events, .. } => {
+            events.len() > actions::MAX_HANDLERS || events.iter().enumerate().any(|(i, h)| events.iter().take(i).any(|o| o.event == h.event) || actions::check_actions(&h.actions).is_err())
+        }
+        _ => false,
+    };
+    if !layer.keyframes.iter().any(|k| bad_script(k) || k.elements.iter().any(|e| bad_events(e))) {
+        return;
+    }
+    let l = Arc::make_mut(layer);
+    for k in &mut l.keyframes {
+        if !(bad_script(k) || k.elements.iter().any(|e| bad_events(e))) {
+            continue;
+        }
+        let k = Arc::make_mut(k);
+        if k.script.as_mut().is_some_and(|s| !s.sanitize()) {
+            k.script = None;
+        }
+        for e in k.elements.iter_mut().filter(|e| bad_events(e)) {
+            if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(e).kind {
+                actions::sanitize_handlers(events);
+            }
+        }
     }
 }
 

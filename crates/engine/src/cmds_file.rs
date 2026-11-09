@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
-        CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{}", mutates: false, run: new_sample },
+        CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{which?: demo (default) | interactive (a menu with a Play button, for Test Movie)}", mutates: false, run: new_sample },
         CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path}", mutates: false, run: open },
         CommandSpec { id: "file.save", label: "Save", menu: "File", shortcut: Some("Ctrl+S"), params: "{path?, confirm?}", mutates: false, run: save },
         CommandSpec {
@@ -124,8 +124,13 @@ fn new_doc(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(s.info())
 }
 
-fn new_sample(s: &mut Session, _: &Value) -> Result<Value> {
-    s.replace_document(sample::demo(), None);
+fn new_sample(s: &mut Session, p: &Value) -> Result<Value> {
+    let doc = match opt_str(p, "which")? {
+        None | Some("demo") => sample::demo(),
+        Some("interactive") => sample::interactive(),
+        Some(other) => return Err(EngineError::Param(format!("unknown sample '{other}' (demo or interactive)"))),
+    };
+    s.replace_document(doc, None);
     Ok(json!({"frames": s.frame_count()}))
 }
 

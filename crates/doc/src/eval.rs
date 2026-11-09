@@ -1,5 +1,6 @@
 //! Timeline evaluation: `(document, frame) -> DisplayList`. Pure, deterministic, no caching.
 
+use crate::player::PlayerState;
 use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
 use anicraft_geom::walk::PathWalk;
 use anicraft_geom::{Affine, FillRule, Path};
@@ -119,9 +120,43 @@ pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
 /// Evaluates scene `scene`'s timeline at its own `frame` (what the stage shows while editing).
 pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
-    let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None };
-    eval_timeline(doc, doc.timeline(scene), frame, &cx, &mut out);
+    eval_timeline(doc, doc.timeline(scene), frame, &Ctx::top(Affine::IDENTITY), &mut out, None);
     out
+}
+
+/// What the player shows (ADR 0024): the scene and frame its main timeline is on, each movie
+/// clip at its own playhead, buttons in their pointer state, and properties scripts set.
+pub fn evaluate_player(doc: &Document, state: &PlayerState) -> DisplayList {
+    let mut out = DisplayList::default();
+    let play = Play { state, path: Vec::new() };
+    eval_timeline(doc, doc.timeline(state.scene), state.root.frame, &Ctx::top(Affine::IDENTITY), &mut out, Some(&play));
+    out
+}
+
+/// A symbol's timeline at `frame`, drawn at `xf` (stage space): a button's hit area, or a movie
+/// clip's artwork, as the player sees it when `play` is given.
+pub(crate) fn evaluate_symbol(doc: &Document, tl: &Timeline, frame: u32, xf: Affine, play: Option<&Play<'_>>) -> DisplayList {
+    let mut out = DisplayList::default();
+    let mut cx = Ctx::top(xf);
+    cx.depth = 1;
+    eval_timeline(doc, tl, frame, &cx, &mut out, play);
+    out
+}
+
+/// The player state an evaluation follows, and the instance path of the timeline being
+/// evaluated (empty for the main timeline).
+pub(crate) struct Play<'a> {
+    pub state: &'a PlayerState,
+    pub path: Vec<ElementId>,
+}
+
+impl<'a> Play<'a> {
+    pub fn child(&self, id: ElementId) -> Play<'a> {
+        let mut path = Vec::with_capacity(self.path.len() + 1);
+        path.extend_from_slice(&self.path);
+        path.push(id);
+        Play { state: self.state, path }
+    }
 }
 
 /// Elements of `layer` as they appear at `frame`, with tweens applied, plus the start frame of
@@ -222,9 +257,15 @@ struct Ctx {
     group: Option<u32>,
 }
 
+impl Ctx {
+    fn top(xf: Affine) -> Ctx {
+        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None }
+    }
+}
+
 /// The first frame of the unbroken run of keyframes on `layer`, up to `frame`, that hold
 /// element `id` as an instance of `symbol`: where a movie clip instance started playing.
-fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) -> u32 {
+pub(crate) fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) -> u32 {
     let Some(mut i) = layer.keyframe_index_at(frame) else { return frame };
     let holds = |k: &crate::Keyframe| k.elements.iter().any(|e| e.id == id && matches!(e.kind, ElementKind::Symbol { symbol: s, .. } if s == symbol));
     let mut start = layer.keyframes.get(i).map_or(frame, |k| k.start);
@@ -239,7 +280,7 @@ fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) ->
 }
 
 /// The path a guide layer's first shape traces at `frame`, in the layer's own space.
-fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
+pub(crate) fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
     let (_, els) = evaluate_layer_elements(guide, frame)?;
     els.iter().find_map(|e| match &e.kind {
         ElementKind::Shape(s) => {
@@ -274,7 +315,7 @@ fn follow(g: &PathWalk, orient: bool, from: &Affine, to: &Affine, t: f32, tw: Af
     if out.is_finite() { out } else { tw }
 }
 
-fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut DisplayList) {
+fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut DisplayList, play: Option<&Play<'_>>) {
     if cx.depth > MAX_SYMBOL_DEPTH {
         return;
     }
@@ -309,6 +350,20 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
         for el in elements.iter() {
+            // In the player, a symbol instance has its own path, and maybe properties a script set.
+            let child = match (&el.kind, play) {
+                (ElementKind::Symbol { .. }, Some(p)) => Some(p.child(el.id)),
+                _ => None,
+            };
+            let set;
+            let el: &Element = match child.as_ref().and_then(|c| c.state.props.get(&c.path)) {
+                Some(ov) if !ov.shown() => continue,
+                Some(ov) => {
+                    set = ov.apply(el);
+                    &set
+                }
+                None => el,
+            };
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
             let xf = cx.xf.mul(&el.transform);
             let color = cx.color.concat(&el.color);
@@ -348,17 +403,20 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     group: cx.group,
                     image: None,
                 }),
-                ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters } => {
+                ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
                     let len = sym.timeline.frame_count();
-                    let local = match sym.kind {
+                    let local = match (sym.kind, &child) {
                         // A graphic keeps step with this timeline: loop mode and first frame apply.
-                        SymbolKind::Graphic => loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, len),
+                        (SymbolKind::Graphic, _) => loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, len),
+                        // In the player, movie clips and buttons are where it has them.
+                        (SymbolKind::MovieClip, Some(c)) => c.state.clip_frame(&c.path, len),
+                        (SymbolKind::Button, Some(c)) => c.state.button_frame(&c.path, len),
                         // A movie clip plays its own timeline on a loop from when the instance
                         // appeared, carrying on across keyframes that hold the same instance.
-                        SymbolKind::MovieClip => frame.saturating_sub(instance_start(layer, frame, el.id, *symbol)) % len.max(1),
-                        // A button shows its Up frame (states come with interactivity).
-                        SymbolKind::Button => 0,
+                        (SymbolKind::MovieClip, None) => frame.saturating_sub(instance_start(layer, frame, el.id, *symbol)) % len.max(1),
+                        // While editing, a button shows its Up frame.
+                        (SymbolKind::Button, None) => 0,
                     };
                     // An instance below full opacity fades as one: its contents composite in a
                     // group at full opacity, and the group blends at the instance's alpha. (Mask
@@ -373,7 +431,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                         (color, cx.group)
                     };
                     let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group };
-                    eval_timeline(doc, &sym.timeline, local, &inner, out);
+                    eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
                 }
             }
         }
