@@ -17,6 +17,12 @@ Fonts: builds embed Inter and JetBrains Mono when `CRAFT_FONTS_DIR` points at a 
 checkout, or when one is found next to the repository (ADR 0005). Otherwise they use the
 built-in fallback fonts.
 
+### GPU stage (optional)
+
+`cargo run --features gpu-stage` adds Preferences › Stage › Renderer (ADR 0014). The
+`anicraft-gpu` crate builds and tests in every build (its GPU tests skip without an adapter);
+`cargo run --release -p anicraft-gpu --example gpu_bench` prints timings and parity.
+
 ## Build footprint (biased for disk space, then time)
 
 Measured on Windows, 32 threads, offline, from an empty target directory:

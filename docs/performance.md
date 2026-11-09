@@ -65,6 +65,27 @@ flushed to disk, renamed).
 With the default "every minute or 25 changes", even the 262 MB document keeps the worker busy
 for about 1% of the time, and the UI never waits for it.
 
+### GPU stage (M3, ADR 0014)
+
+`cargo run --release -p anicraft-gpu --example gpu_bench` (2026-11-09, RTX 5090 over Vulkan,
+32 threads). GPU ms is the whole call: preparing the fills (shared with the oracle), binning,
+upload, the compute pass and the readback. Parity is mean / max difference from the oracle per
+8-bit channel.
+
+| Scene | Size | CPU oracle | GPU stage (prepare + bin + GPU) | Parity |
+|---|---|---|---|---|
+| Stress, 50 × 200 (≈10k drawn) | 1920×1080 | 11.3 ms | 13.6–14.3 ms (3.1 + 5.0 + 4.6) | < 0.0001 / 1 |
+| Stress, 50 × 200 | 3840×2160 | 26.6–27.3 ms | 22.1–22.4 ms (2.8 + 8.0 + 8.4) | < 0.0001 / 1 |
+| 1,000 shapes | 1920×1080 | 4.4–4.6 ms | 2.8–2.9 ms | < 0.0001 / 1 |
+| 1,000 shapes (M3 target: 4K at 60 fps) | 3840×2160 | 17.4–17.8 ms | 8.8–9.0 ms ✅ | < 0.0001 / 1 |
+| Sample scene | 3840×2160 | 18.2 ms | 8.8 ms | < 0.0001 / 1 |
+
+Binning went from 16 ms to 5 ms on the stress frame by binning fills in chunks with reused
+scratch (no allocation per edge piece), freeing the per-chunk buffers on the pool, and
+scattering the tile lists in parallel per tile row. What is left: CPU binning on very large
+scenes (next: GPU binning) and the 33 MB readback at 4K (next: render into the texture egui
+shows).
+
 ### How budgets are enforced
 
 * **Budgets that don't depend on the machine** (undo memory, snapshot sharing, file size,
@@ -84,3 +105,4 @@ for about 1% of the time, and the UI never waits for it.
 * [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
 * [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
 * [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
+* [ADR 0014](adr/0014-gpu-stage.md): GPU stage renderer (first slice), parity with the oracle
