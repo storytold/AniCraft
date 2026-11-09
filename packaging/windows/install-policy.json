@@ -1,0 +1,83 @@
+{
+  "id": "anicraft",
+  "name": "AniCraft",
+  "upgradeCode": "95D4D208-47EF-42CD-9127-28D9A7BA88A2",
+  "sources": [
+    "anicraft.wxs"
+  ],
+  "icon": "assets/app-icon/anicraft.ico",
+  "localization": [
+    "anicraft.en-us.wxl"
+  ],
+  "extensions": [
+    "UI",
+    "Util"
+  ],
+  "payloads": [
+    "anicraft-cli.exe",
+    "anicraft.exe"
+  ],
+  "registry": [
+    [
+      "-1",
+      "Software\\Classes\\Anicraft.Import\\shell\\open\\command",
+      "",
+      "\"[#AnicraftExe]\" \"%1\""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.fla\\OpenWithProgids",
+      "Anicraft.Import",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.xfl\\OpenWithProgids",
+      "Anicraft.Import",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\anicraft.exe",
+      "FriendlyAppName",
+      "AniCraft"
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\anicraft.exe\\shell\\open\\command",
+      "",
+      "\"[#AnicraftExe]\" \"%1\""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\anicraft.exe\\SupportedTypes",
+      ".anicraft",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\anicraft.exe\\SupportedTypes",
+      ".fla",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\anicraft.exe\\SupportedTypes",
+      ".xfl",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\anicraft.exe",
+      "",
+      "[#AnicraftExe]"
+    ],
+    [
+      "-1",
+      "Software\\AniCraft",
+      "InstallDir",
+      "[INSTALLFOLDER]"
+    ]
+  ],
+  "mode": "dualScope"
+}
