@@ -78,7 +78,7 @@ for about 1% of the time, and the UI never waits for it.
 * The limits live in `TIME_BUDGETS` in `crates/cli/src/lib.rs`; keep that list and this
   table in step.
 
-## Sound (2026-11-09, ADR 0014)
+## Sound (2026-11-09, ADR 0015)
 
 Release build, Windows 10, one 120-second 48 kHz stereo sine, through `anicraft-cli run`
 (times include starting the CLI and loading the sample):

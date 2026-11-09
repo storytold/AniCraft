@@ -1,4 +1,4 @@
-//! Sound commands (ADR 0014): import sounds into the library, put them on keyframes and set
+//! Sound commands (ADR 0015): import sounds into the library, put them on keyframes and set
 //! their sync and repeats, delete them, and mix the movie's soundtrack to a WAV file.
 
 use crate::cmds_timeline::{keyframe_mut, target};

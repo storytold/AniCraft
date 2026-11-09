@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **Sound** (ADR 0014). Import WAV, Ogg Vorbis or MP3 sounds: **File › Import › Import to
+* **Sound** (ADR 0015). Import WAV, Ogg Vorbis or MP3 sounds: **File › Import › Import to
   Stage** puts one on a new layer at the playhead, its span as long as the sound; **Import to
   Library** just adds it. A sound belongs to a keyframe, as in Animate: pick it under
   **Properties › Sound**, with **Sync** (Event, Start, Stop, Stream) and **Repeat ×N** or

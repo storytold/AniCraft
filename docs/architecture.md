@@ -100,7 +100,7 @@ iterations and a bisection fallback, the same model CSS uses.
 
 ### Sound
 
-Sound is time as a function too (ADR 0014): `doc::sound::voices(doc, rate)` lays every
+Sound is time as a function too (ADR 0015): `doc::sound::voices(doc, rate)` lays every
 keyframe's sound out in output frames by playing the timeline from the start (Event, Start,
 Stop and Stream resolved, repeats and loops included), and `audio::mix(voices, rate, origin,
 start, out)` turns any stretch of it into samples, exactly when the rates match. Export Audio,

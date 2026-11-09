@@ -17,7 +17,7 @@ Fonts: builds embed Inter and JetBrains Mono when `CRAFT_FONTS_DIR` points at a 
 checkout, or when one is found next to the repository (ADR 0005). Otherwise they use the
 built-in fallback fonts.
 
-Sound output (ADR 0014) uses `cpal`, which on Linux and the BSDs builds against ALSA: install
+Sound output (ADR 0015) uses `cpal`, which on Linux and the BSDs builds against ALSA: install
 `libasound2-dev` and `pkg-config` (Debian/Ubuntu), `alsa-lib-devel` (Fedora) or `alsa-lib`
 (Arch, FreeBSD). `cargo build --no-default-features` leaves sound output out (playback is
 silent; import, waveforms and audio export still work). Tests never open an audio device.

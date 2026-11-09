@@ -50,7 +50,7 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
   `examples/plugins` (MIT OR Apache-2.0).
 
-### Sound (2026-11-09, ADR 0014)
+### Sound (2026-11-09, ADR 0015)
 
 The audio slice adds, all permissive and from crates.io: `lewton` (Ogg Vorbis decoding, MIT OR
 Apache-2.0) with `ogg` (BSD-3-Clause), `nanomp3` and `nanomp3-core` (MP3 decoding, MIT OR
@@ -93,7 +93,7 @@ used.
 | GPU renderer (M3) | Planned design follows published, Apache/MIT-licensed work (e.g. Vello's sparse strips). | Same rule: public papers and permissive code only. |
 | PNG, GIF, SVG, WebP | Royalty-free (GIF's LZW patents expired in 2003–2004). | OK to implement. |
 | **Video export** | H.264/HEVC/AAC are covered by patent pools. VP9, AV1 and Opus are royalty-free. | **Never bundle encoders for patent-pool codecs.** MP4/H.264 only by piping to a user-installed ffmpeg. Default to WebM (VP9/AV1). **As built** (`file.export_video`): AniCraft starts the user's ffmpeg (found via a parameter, `ANICRAFT_FFMPEG` or the PATH) with an argument list, never a shell, writes raw RGBA frames to its stdin, and ships no codec code; the default file type is `.webm` (VP9). |
-| **Sound** (M5, ADR 0014) | WAV/PCM is unencumbered; Vorbis and Opus are royalty-free; the MP3 patents expired in 2017; AAC is in a patent pool. | Decode WAV, Ogg Vorbis and MP3 in-process (pure-Rust, permissive decoders; no encoders). The video soundtrack is encoded by the user's ffmpeg: Opus for WebM (the default), AAC only for MP4, never by code we ship. Exported audio is uncompressed WAV. |
+| **Sound** (M5, ADR 0015) | WAV/PCM is unencumbered; Vorbis and Opus are royalty-free; the MP3 patents expired in 2017; AAC is in a patent pool. | Decode WAV, Ogg Vorbis and MP3 in-process (pure-Rust, permissive decoders; no encoders). The video soundtrack is encoded by the user's ffmpeg: Opus for WebM (the default), AAC only for MP4, never by code we ship. Exported audio is uncompressed WAV. |
 | **XFL / FLA import** (M4) | Adobe's proprietary formats, without a public specification. | Clean room: work only from files users or we author, public community docs and observation. Never use Adobe code, SDKs or decompiled software. Interoperability-focused (generally protected in EU Software Directive art. 6 and US DMCA §1201(f)); **confirm with counsel before shipping**. |
 | **ActionScript compatibility** (M6, ADR 0013) | A programming language; no known patent pool. Implemented from ECMA-262 (3rd edition) and Adobe's public ActionScript 3.0 references. | Clean room as for XFL: public documents and self-authored files only; never Adobe compilers, SDKs or player code. Keep and run a timeline subset only; no bytecode VM. |
 | WebAssembly (plug-ins, ADR 0017) | W3C standard under the W3C Royalty-Free Patent Policy. | Allowed. Interpreted by `wasmi` (no code generation). |
