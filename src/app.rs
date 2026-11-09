@@ -756,7 +756,18 @@ impl App {
                 }
                 let n = v["elements"].as_u64().unwrap_or(0);
                 let report = v["report"].as_str().unwrap_or("");
-                self.status_ok(i18n::fmt("{shapes} on a new layer. {report} Ctrl+Z to undo.", &[("shapes", &i18n::trn(n, "{n} shape", "{n} shapes")), ("report", report)]));
+                let elements = i18n::trn(n, "{n} element", "{n} elements");
+                let undo = platform::shortcut_label("Ctrl+Z");
+                // A drawing with clip paths or masks comes in as a folder of layers (ADR 0021).
+                let (layers, masks) = (v["layers"].as_u64().unwrap_or(1), v["masks"].as_u64().unwrap_or(0));
+                let in_layers = i18n::trn(layers, "{n} layer", "{n} layers");
+                let in_masks = i18n::trn(masks, "{n} mask", "{n} masks");
+                let args = [("elements", elements.as_str()), ("layers", in_layers.as_str()), ("masks", in_masks.as_str()), ("report", report), ("undo", undo.as_str())];
+                self.status_ok(match (layers, masks) {
+                    (0 | 1, _) => i18n::fmt("{elements} on a new layer. {report} {undo} to undo.", &args),
+                    (_, 1) => i18n::fmt("{elements} in a new folder of {layers} with a mask. {report} {undo} to undo.", &args),
+                    _ => i18n::fmt("{elements} in a new folder of {layers} with {masks}. {report} {undo} to undo.", &args),
+                });
             }
             "file.export_sprite_sheet" => self.status_ok(i18n::fmt("Exported {frames} frames to {path} ({columns}×{rows} grid) and its frame map {map}", &[("frames", &v["frames"].to_string()), ("path", &craft_i18n::ltr(v["written"].as_str().unwrap_or(""))), ("columns", &v["columns"].to_string()), ("rows", &v["rows"].to_string()), ("map", &craft_i18n::ltr(v["map"].as_str().unwrap_or("")))])),
             "file.export_lottie" => {

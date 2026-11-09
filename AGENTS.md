@@ -15,7 +15,7 @@ crates/doc      L1  Document model, easing, timeline evaluation, sample scene
 crates/text     L1  Fonts on this computer, shaping and line layout into outlines (ADR 0012)
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
-crates/svg      L2  SVG import: shapes, groups, use, styles, transforms, gradients → shapes
+crates/svg      L2  SVG import: shapes, groups, use, styles, gradients, clips/masks → mask layers, text
 crates/engine   L3  Session, undo (with gesture coalescing), command registry, .anicraft format
 crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve/mcp
 src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
