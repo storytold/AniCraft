@@ -87,8 +87,10 @@ when they are compatible:
   naive matrix lerp would.
 * **Colour effects** (alpha multiplier, tint) and **paints** interpolate linearly in
   straight-alpha sRGB, like the reference tools.
-* **Shape tweens** interpolate path points when both paths have the same command structure
-  (M2 adds correspondence via shape hints).
+* **Shape tweens** morph any two outlines (`anicraft_geom::morph`): subpaths paired by size,
+  segments equalized, windings and start points aligned. **Shape hints** (ADR 0023) on the
+  tween's first keyframe steer it: placed hints join subpaths, cut both outlines at the hinted
+  points and match the pieces in order by length.
 
 Symbol instances recurse into the symbol's timeline at the local frame given by the loop mode
 (`Loop`, `PlayOnce`, `SingleFrame`) and the first frame. Recursion is limited to depth 32, so a

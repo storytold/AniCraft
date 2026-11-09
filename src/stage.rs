@@ -229,11 +229,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // Selection box in screen space (free transform handles live on it).
     let sel_bounds = bounds_arr(app.s.selection_bounds());
     let sel_rect = sel_bounds.map(|b| Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))));
+    // Shape hint markers take the pointer first with the selection tools (ADR 0023).
+    let hint_tools = matches!(app.tool, Tool::Select | Tool::Transform | Tool::Subselect) && !panning;
+    let hint_marks = if hint_tools { crate::shape_hints::markers(app) } else { Vec::new() };
+    let hint_at = |p: Pos2| crate::shape_hints::hit(&hint_marks, p, to_screen);
+    let hint_hot = pointer.and_then(hint_at);
 
     let xf = crate::pathtools::Xf { origin, zoom };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
+            _ if matches!(app.drag, Drag::Hint { .. }) => CursorIcon::Grabbing,
+            _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
@@ -277,6 +284,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let sp = to_stage(press);
         app.drag = if panning {
             Drag::Pan
+        } else if let Some(m) = hint_at(press) {
+            app.s.begin_gesture("Move Shape Hint");
+            Drag::Hint { index: m.index, side: m.side }
         } else {
             match app.tool {
                 Tool::Select => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
@@ -351,6 +361,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
+            (Drag::Hint { index, side }, Some(c)) => {
+                // Live: the hint snaps to the nearest edge as the pointer moves.
+                let (index, side) = (*index, *side);
+                app.run("tween.move_hint", json!({"hint": index, "side": side.key(), "x": c.x, "y": c.y}));
+            }
             (Drag::Points { last }, Some(c)) => {
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
@@ -372,7 +387,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } => app.s.end_gesture(),
+            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } => app.s.end_gesture(),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
@@ -421,7 +436,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         app.text_edit = Some(crate::app::TextEditing { at: sp, element: None, text: String::new(), original: String::new(), focus: true });
                     }
                 }
-                Tool::Select | Tool::Transform if !panning => {
+                // A click on a hint marker leaves the selection alone.
+                Tool::Select | Tool::Transform if !panning && hint_at(p).is_none() => {
                     app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                 }
                 Tool::Zoom => {
@@ -434,7 +450,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     // Right-click: select what is under the cursor (keeping an existing multi-selection), then
     // offer the actions that apply to it.
+    if resp.secondary_clicked() {
+        app.hint_menu = resp.interact_pointer_pos().and_then(hint_at).map(|m| m.index);
+    }
     if resp.secondary_clicked()
+        && app.hint_menu.is_none()
         && let Some(p) = resp.interact_pointer_pos()
     {
         let sp = to_stage(p);
@@ -460,7 +480,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     resp.context_menu(|ui| {
         ui.set_min_width(220.0);
-        if crate::pathtools::point_menu(app, ui) {
+        if crate::shape_hints::menu(app, ui) || crate::pathtools::point_menu(app, ui) {
             return;
         }
         if app.s.selection.is_empty() {
@@ -722,6 +742,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         Drag::Shape { start, cur } => draw_preview(app, &painter, to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)), zoom),
         _ => {}
+    }
+
+    // Shape hints sit on top of the artwork and the selection (fresh: a drag just moved one).
+    if hint_tools {
+        let marks = crate::shape_hints::markers(app);
+        let hot = match app.drag {
+            Drag::Hint { index, .. } => Some(index),
+            _ => hint_hot.map(|m| m.index),
+        };
+        crate::shape_hints::draw(&painter, &marks, to_screen, hot);
     }
 
     text_editor(app, ui, to_screen(Vec2::new(0.0, 0.0)), zoom);

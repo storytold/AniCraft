@@ -184,6 +184,7 @@ pub(crate) fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let k = layer.keyframe_mut(i).ok_or_else(|| EngineError::State("the keyframe went away".into()))?;
     let target = k.elements.first().map(|e| e.id).ok_or_else(|| EngineError::State("there is nothing on this keyframe to tween".into()))?;
     k.tween = None;
+    k.hints.clear();
     k.motion = Some(MotionTween::new(target));
     // A single frame has no room to move in: it becomes a one-second span.
     if k.duration == 1 {
