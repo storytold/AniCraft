@@ -73,7 +73,11 @@ prompt they didn't ask for.
 7. **Release builds fail rather than degrade** where we can check: `ANICRAFT_REQUIRE_WINRES=1`
    (set by `package.ps1`) makes a missing icon/version resource in `anicraft.exe` a build error;
    `package.ps1` checks each exe's PE machine and subsystem (GUI app, console CLI); every package
-   script ends with `anicraft-cli --version` (new, with `anicraft --version`).
+   script ends with `anicraft-cli --version` (new, with `anicraft --version`). The subsystem
+   check found that `anicraft.exe` was a console program (a console window opened beside the
+   app): release builds are now Windows GUI programs (`windows_subsystem = "windows"`), debug
+   builds keep the console. On Windows a release `anicraft --version` therefore prints only
+   when its output is redirected; `anicraft-cli` is the command-line front end.
 
 ## Consequences
 

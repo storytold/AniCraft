@@ -11,7 +11,8 @@
   and XFL files list AniCraft under "Open with" without changing your default app.
   `anicraft-cli` is installed next to the app. Windows and macOS builds are signed (macOS also
   notarized) and the Linux packages and checksums are signed when the release secrets are set.
-  `anicraft --version` and `anicraft-cli --version` print the version. On Linux the window now
+  `anicraft --version` and `anicraft-cli --version` print the version. On Windows, AniCraft no
+  longer opens a console window beside the app. On Linux the window now
   reports the app id `ai.storyteller.anicraft`, so docks show AniCraft's icon. Not yet: on macOS,
   double-clicking a document starts AniCraft but doesn't open the file.
 

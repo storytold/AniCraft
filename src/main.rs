@@ -7,6 +7,10 @@
 //! ```
 //! `--screenshot` starts normally, draws ~120 frames, saves the window as PNG and exits.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Release builds are Windows GUI programs, so no console window opens beside the app (the
+// packaging checks the PE subsystem, ADR 0026). Debug builds keep the console for logs; the
+// headless front end is anicraft-cli.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod a11y;
 mod actions_panel;
