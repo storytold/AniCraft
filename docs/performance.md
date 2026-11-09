@@ -78,13 +78,6 @@ for about 1% of the time, and the UI never waits for it.
 * The limits live in `TIME_BUDGETS` in `crates/cli/src/lib.rs`; keep that list and this
   table in step.
 
-## Decisions
-
-* [ADR 0001](adr/0001-undo-persistent-snapshots.md): persistent document and snapshot undo
-* [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
-* [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
-* [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
-
 ## Sound (2026-11-09, ADR 0014)
 
 Release build, Windows 10, one 120-second 48 kHz stereo sine, through `anicraft-cli run`
@@ -100,3 +93,16 @@ Release build, Windows 10, one 120-second 48 kHz stereo sine, through `anicraft-
 
 Mixing runs about 1,000× faster than real time, so the audio callback's share of a 10 ms device
 buffer is tiny; the stage never waits on sound.
+
+## Decisions
+
+* [ADR 0001](adr/0001-undo-persistent-snapshots.md): persistent document and snapshot undo
+* [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
+* [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
+
+## Decisions
+
+* [ADR 0001](adr/0001-undo-persistent-snapshots.md): persistent document and snapshot undo
+* [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
+* [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
+* [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
