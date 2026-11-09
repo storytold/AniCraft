@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **App icon**: an engraved rabbit on AniCraft yellow, on the same rounded tile as the other
+  Crafting Apps. It shows on the window, the macOS Dock (on Apple's icon grid), the Windows
+  taskbar and `anicraft.exe`, and in Help › About. Files and how to regenerate them are in
+  `assets/app-icon/`.
+* **README**: screenshots of the app and the sample animation, and a quick start.
 * **Text in Animate documents.** Opening a `.fla` or XFL now brings its text across as text
   you can edit: titles, captions and paragraphs keep their font, size, colour, bold and
   italic, alignment, letter and line spacing, position, and fixed width (wrapping) or

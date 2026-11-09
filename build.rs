@@ -1,4 +1,5 @@
-//! Optional build inputs (the Craft family convention, as in PhotoCraft).
+//! Optional build inputs (the Craft family convention, as in PhotoCraft), and the app icon
+//! embedded in the Windows executable.
 //!
 //! `CRAFT_FONTS_DIR=<craft-fonts checkout> cargo build` embeds the UI typefaces chosen in
 //! ADR 0005: Inter (prose) and JetBrains Mono (data), both SIL OFL 1.1, and Noto Sans Arabic
@@ -58,7 +59,22 @@ fn discover() -> Option<PathBuf> {
     None
 }
 
+/// Windows only: embed the app icon into `anicraft.exe` (taskbar, Start menu, Explorer, Alt-Tab).
+/// A missing resource compiler is a warning, so a cross-compile still links.
+fn windows_icon() {
+    println!("cargo:rerun-if-changed=assets/app-icon/anicraft.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon("assets/app-icon/anicraft.ico").set("ProductName", "AniCraft").set("FileDescription", "AniCraft 2D vector animation studio");
+    if let Err(e) = res.compile() {
+        println!("cargo:warning=anicraft.exe built without its icon: {e}");
+    }
+}
+
 fn main() {
+    windows_icon();
     println!("cargo:rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo:rerun-if-changed=build.rs");
     let dir = discover();
