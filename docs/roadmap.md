@@ -49,7 +49,7 @@ titled with its milestone.
 | Track | Next task | Depends on (all done) |
 |---|---|---|
 | M2 | Motion tweens with property curves and the Motion Editor | timeline evaluation, classic tweens |
-| M3 | GPU stage renderer, first slice, behind a feature flag with parity tests | CPU oracle, tiled stage |
+| M3 | GPU stage: no-readback textures, then masks, group opacity and blend modes on the GPU (first slice ✅, ADR 0014) | CPU oracle, tiled stage, GPU stage first slice |
 | M4 | Text from Animate files | XFL import, text engine (M5 first slice) |
 | M5 | Audio layers: import, waveform, playback sync | timeline, layers |
 | M6 | ~~WebAssembly plug-ins (U2)~~ ✅ first slice (ADR 0017); next: frame scripts and Test Movie on the plug-in host | command registry, plug-in host |
