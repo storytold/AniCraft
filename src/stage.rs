@@ -155,10 +155,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::a11y::anchor(ui, crate::a11y::Region::Stage, canvas, &resp);
     let ppp = ui.ctx().pixels_per_point();
     let size = vec2(app.s.doc.stage.width as f32, app.s.doc.stage.height as f32);
-    if app.view.fit && canvas.width() > 10.0 {
+    // Still as fitted (nobody zoomed or panned since) but the canvas changed size: fit again, as
+    // Fit in Window stays fitted when the window or the interface scale changes.
+    if let Some((was, z)) = app.view.fitted
+        && was != vec2(canvas.width(), canvas.height())
+        && app.view.zoom == z
+        && app.view.pan == egui::Vec2::ZERO
+    {
+        app.view.fit = true;
+    }
+    if app.view.fit && canvas.width() > 10.0 && canvas.height() > 10.0 {
         app.view.zoom = ((canvas.width() - 64.0) / size.x).min((canvas.height() - 64.0) / size.y).clamp(0.05, 64.0);
         app.view.pan = egui::Vec2::ZERO;
         app.view.fit = false;
+        app.view.fitted = Some((vec2(canvas.width(), canvas.height()), app.view.zoom));
     }
 
     // ---- camera input -------------------------------------------------------------------

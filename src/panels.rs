@@ -33,6 +33,14 @@ fn tool_icon(tool: Tool) -> Icon {
 
 pub fn tools(app: &mut App, ui: &mut egui::Ui) {
     let area = ui.max_rect();
+    // Scrolls (wheel, or Tab to a tool) when a large interface scale leaves too little height.
+    // The margin is inside the scroll area, so focus rings drawn around a tool are not clipped.
+    egui::ScrollArea::vertical().id_salt("tools").scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| tool_column(app, ui, area));
+    });
+}
+
+fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
     ui.vertical_centered(|ui| {
         for tool in Tool::ALL {
             let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::click());
@@ -140,16 +148,11 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
 pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
         let now = ui.input(|i| i.time);
-        let msg = app.status.as_ref().filter(|s| s.error || now - s.at < 8.0 || s.at == 0.0);
-        match msg {
-            Some(s) => {
-                ui.label(text(Type::Label, s.text.clone()).color(if s.error { T.error } else { T.ok }));
-            }
-            None => {
-                ui.label(text(Type::Label, app.tool.hint()));
-            }
-        }
+        // Readouts from the right first; the message takes the rest and is cut short (whole on
+        // hover) rather than running under them. Narrow windows and large interface scales drop
+        // the render and cache diagnostics before the message.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let wide = ui.available_width() >= 1000.0;
             let small = |t: String| text(Type::Data, t).color(T.text_faint);
             ui.label(small(format!("undo {} · {:.1} MB", app.s.history().undo_len(), app.s.history().bytes() as f32 / (1024.0 * 1024.0))));
             ui.add_space(12.0);
@@ -157,15 +160,28 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(small(a)).on_hover_text("A recovery copy of your unsaved work. If AniCraft closes unexpectedly, the next start offers it back.");
                 ui.add_space(12.0);
             }
-            if let Some((n, mb, hit)) = app.stage_cache.stats() {
-                ui.label(small(format!("cache {n} fr · {mb:.0} MB · {hit:.0}% hit")));
-                ui.add_space(12.0);
+            if wide {
+                if let Some((n, mb, hit)) = app.stage_cache.stats() {
+                    ui.label(small(format!("cache {n} fr · {mb:.0} MB · {hit:.0}% hit")));
+                    ui.add_space(12.0);
+                }
+                let (ready, needed) = app.stage_cache.ready;
+                ui.label(small(format!("render {:.1} ms{} · tiles {ready}/{needed}", app.stage_cache.ms, renderer_tag(app))));
             }
-            let (ready, needed) = app.stage_cache.ready;
-            ui.label(small(format!("render {:.1} ms{} · tiles {ready}/{needed}", app.stage_cache.ms, renderer_tag(app))));
             if let Some(p) = app.cursor_stage {
                 ui.label(small(format!("x {:.0}  y {:.0}", p.x, p.y)));
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let msg = app.status.as_ref().filter(|s| s.error || now - s.at < 8.0 || s.at == 0.0);
+                let (line, colour) = match msg {
+                    Some(s) => (s.text.as_str(), if s.error { T.error } else { T.ok }),
+                    None => (app.tool.hint(), color(Type::Label)),
+                };
+                let r = ui.add(egui::Label::new(text(Type::Label, line).color(colour)).truncate());
+                // Screen readers announce what an action did ("Deleted layer — Ctrl+Z to undo")
+                // without moving focus (a polite live region).
+                ui.ctx().accesskit_node_builder(r.id, |n| n.set_live(egui::accesskit::Live::Polite));
+            });
         });
     });
 }

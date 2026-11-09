@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open <panel>]
+//!          [--theme graphite|high-contrast] [--scale <percent>]
 //! ```
 //! `--screenshot` starts normally, draws ~120 frames, saves the window as PNG and exits.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -49,7 +50,15 @@ fn open_session(file: Option<&Path>) -> (Session, Option<String>) {
     }
 }
 
-fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>) -> eframe::Result {
+/// `--theme` / `--scale`: the look for this run only (screenshots of high contrast or 200 %),
+/// over the saved preferences, without saving them.
+#[derive(Clone, Copy, Default)]
+struct Look {
+    theme: Option<theme::Palette>,
+    scale: Option<f32>,
+}
+
+fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: platform::viewport(egui::ViewportBuilder::default().with_title("AniCraft").with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0])),
         renderer,
@@ -64,6 +73,7 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         options,
         Box::new(move |cc| {
             let mut a = app::App::new(cc, session, shot);
+            a.preview_look(&cc.egui_ctx, look.theme, look.scale);
             a.open_panel(open.as_deref());
             // An imported document says what came across, as opening it from the menu does.
             if let Some(r) = report {
@@ -79,6 +89,7 @@ fn main() -> eframe::Result {
     let mut file: Option<PathBuf> = None;
     let mut open: Option<String> = None;
     let mut renderer_arg: Option<String> = None;
+    let mut look = Look::default();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -91,12 +102,29 @@ fn main() -> eframe::Result {
             },
             "--open" => open = args.next(),
             "--renderer" => renderer_arg = args.next(),
+            "--theme" => match args.next().as_deref() {
+                Some("graphite") => look.theme = Some(theme::Palette::Graphite),
+                Some("high-contrast") => look.theme = Some(theme::Palette::HighContrast),
+                other => {
+                    eprintln!("--theme takes graphite or high-contrast, not {}", other.unwrap_or("nothing"));
+                    std::process::exit(2);
+                }
+            },
+            "--scale" => match args.next().and_then(|s| s.trim_end_matches('%').parse::<f32>().ok()) {
+                Some(pct) if pct.is_finite() => look.scale = Some(pct / 100.0),
+                _ => {
+                    eprintln!("--scale takes a percentage, such as 150");
+                    std::process::exit(2);
+                }
+            },
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|prefs|licenses|zoom|recovery|plugins]\n\
+                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|prefs|licenses|zoom|recovery|plugins]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer, in builds with the gpu-stage feature (ADR 0019)\n\
+                     --theme      the interface palette for this run (not saved)\n\
+                     --scale      the interface scale for this run, 75 to 200 (not saved)\n\
                      Headless use: anicraft-cli --help"
                 );
                 return Ok(());
@@ -109,10 +137,10 @@ fn main() -> eframe::Result {
     // on some Linux setups) retry once with OpenGL, unless the user forced a backend.
     let forced = platform::forced_renderer(renderer_arg.as_deref());
     let first = forced.unwrap_or(eframe::Renderer::Wgpu);
-    match run(first, file.as_deref(), shot.clone(), open.clone()) {
+    match run(first, file.as_deref(), shot.clone(), open.clone(), look) {
         Err(e) if forced.is_none() && first == eframe::Renderer::Wgpu => {
             eprintln!("GPU backend (wgpu) failed to start: {e}. Retrying with OpenGL.");
-            run(eframe::Renderer::Glow, file.as_deref(), shot, open)
+            run(eframe::Renderer::Glow, file.as_deref(), shot, open, look)
         }
         other => other,
     }

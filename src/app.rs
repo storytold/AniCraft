@@ -145,6 +145,9 @@ pub struct StageView {
     pub zoom: f32,
     pub pan: egui::Vec2,
     pub fit: bool,
+    /// The canvas size and zoom of the last fit: while the view is still as fitted, it fits
+    /// again when the canvas changes size (window resized, panels or interface scale changed).
+    pub fitted: Option<(egui::Vec2, f32)>,
 }
 
 /// In-progress pointer gesture on the stage.
@@ -348,7 +351,7 @@ impl App {
         let mut app = App {
             s: session,
             tool: Tool::Select,
-            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true },
+            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
             playing: false,
@@ -475,6 +478,19 @@ impl App {
         }
         theme::install_fonts(ctx, ui_font.as_ref(), data_font.as_ref());
         self.glyph_check = true;
+    }
+
+    /// `--theme` / `--scale`: a palette and interface scale for this run only (clamped like the
+    /// preference), not saved.
+    pub fn preview_look(&mut self, ctx: &egui::Context, theme: Option<theme::Palette>, scale: Option<f32>) {
+        if theme.is_none() && scale.is_none() {
+            return;
+        }
+        let mut p = self.prefs.clone();
+        p.theme = theme.unwrap_or(p.theme);
+        p.ui_scale = scale.unwrap_or(p.ui_scale);
+        self.prefs = p.sanitized();
+        self.apply_prefs(ctx);
     }
 
     pub fn open_prefs(&mut self) {
@@ -1375,9 +1391,15 @@ impl App {
         egui::Panel::top("menu_bar").frame(bar(T.chrome)).show(ui, |ui| menus::bar(self, ui));
         egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| panels::edit_bar(self, ui));
         egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| panels::status_bar(self, ui));
-        egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(6, 8))).show(ui, |ui| panels::tools(self, ui));
-        egui::Panel::right("properties").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
-        egui::Panel::bottom("timeline").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
+        // Docks start at their usual size, but never take most of a small window or a large
+        // interface scale (200 % on a laptop leaves under 1000 × 600 points), and the stage
+        // always keeps room when the scale goes up later.
+        let room = ui.available_rect_before_wrap();
+        let room = egui::vec2(room.width(), room.height());
+        let (dock_w, timeline_h) = ((room.x * 0.3).clamp(220.0, 292.0), (room.y * 0.42).clamp(200.0, 292.0));
+        egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(0, 8))).show(ui, |ui| panels::tools(self, ui));
+        egui::Panel::right("properties").resizable(true).default_size(dock_w).max_size((room.x * 0.5).max(220.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
+        egui::Panel::bottom("timeline").resizable(true).default_size(timeline_h).max_size((room.y * 0.6).max(200.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
         crate::a11y::name_splitter(&ctx, "properties", "Resize the right-hand panels");
         crate::a11y::name_splitter(&ctx, "timeline", "Resize the timeline");

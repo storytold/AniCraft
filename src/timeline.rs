@@ -160,116 +160,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- header ---------------------------------------------------------------------------
     egui::Frame::NONE.fill(T.panel_alt).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            // Two tabs share the dock: the timeline and the Motion Editor.
-            for (tab, name, tip) in [(BottomTab::Timeline, "Timeline", "Layers and frames"), (BottomTab::MotionEditor, "Motion Editor", "Property curves of the motion tween at the playhead (double-click a motion span)")] {
-                let r = ui.selectable_label(app.bottom == tab, text(Type::Heading, name));
-                // With the Motion Editor up, Ctrl+F6 lands on its tab (the layer rows are hidden).
-                if tab == BottomTab::MotionEditor && app.bottom == tab {
-                    a11y::anchor(ui, a11y::Region::Timeline, dock, &r);
-                }
-                if r.on_hover_text(tip).clicked() {
-                    app.bottom = tab;
-                }
-            }
-            ui.add_space(8.0);
-            transport(app, ui);
-            ui.add_space(8.0);
-            let fps = app.s.doc.stage.fps;
-            let f = app.s.frame;
-            // Fixed-width readouts: digits stay put while the playhead moves.
-            let digits = app.s.frame_count().max(f + 1).to_string().len().max(3);
-            ui.label(text(Type::DataLarge, format!("{:>digits$}", f + 1)).color(T.accent_text)).named("Current frame").on_hover_text("Current frame");
-            ui.label(text(Type::Data, format!("{fps:.2} fps")).color(T.text_dim)).on_hover_text("Frame rate");
-            ui.label(text(Type::Data, format!("{:>7.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text("Time at the playhead");
-            ui.separator();
-            // Through `invoke`, so the buttons act on the frame selection like the keys do.
-            let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
-                if ui.button(label).named(tip).on_hover_text(tip).clicked() {
-                    app.invoke(id);
-                }
-            };
-            cmd(app, ui, "Frame", "Insert frame (F5)", "timeline.insert_frame");
-            cmd(app, ui, "Keyframe", "Insert keyframe (F6)", "timeline.insert_keyframe");
-            cmd(app, ui, "Blank", "Insert blank keyframe (F7)", "timeline.insert_blank_keyframe");
-            let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
-            let in_tween = here.and_then(|k| k.tween);
-            let in_motion = here.is_some_and(|k| k.motion.is_some());
-            if in_motion {
-                egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text("Motion tween").show_ui(ui, |ui| {
-                    if ui.selectable_label(false, "Motion Editor").on_hover_text("Edit the property curves").clicked() {
-                        app.bottom = BottomTab::MotionEditor;
-                    }
-                    ui.separator();
-                    if ui.selectable_label(false, "Classic tween").on_hover_text("Tween to the next keyframe instead").clicked() {
-                        app.run("timeline.create_tween", json!({}));
-                    }
-                    if ui.selectable_label(false, "Remove tween").clicked() {
-                        app.invoke("timeline.remove_tween");
-                    }
-                })
-                .response
-                .set_name("Tween");
-            }
-            match in_tween.filter(|_| !in_motion) {
-                Some(tw) => {
-                    egui::ComboBox::from_id_salt("tl_ease").width(112.0).selected_text(tw.easing.label()).show_ui(ui, |ui| {
-                        for (name, e) in Easing::PRESETS {
-                            if ui.selectable_label(tw.easing == e, name).clicked() {
-                                app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
-                            }
-                        }
-                    })
-                    .response
-                    .set_name("Easing");
-                    // The tween's kind: classic ⇄ shape (keeping the easing), or none.
-                    let shape = tw.kind == TweenKind::Shape;
-                    egui::ComboBox::from_id_salt("tl_kind").width(104.0).selected_text(if shape { "Shape tween" } else { "Classic tween" }).show_ui(ui, |ui| {
-                        if ui.selectable_label(!shape, "Classic tween").on_hover_text("Moves, scales, rotates and recolours").clicked() && shape {
-                            app.run("timeline.create_tween", json!({}));
-                        }
-                        if ui.selectable_label(shape, "Shape tween").on_hover_text("Also morphs one shape into another").clicked() && !shape {
-                            app.run("timeline.create_shape_tween", json!({}));
-                        }
-                        if ui.selectable_label(false, "Motion tween").on_hover_text("Animate each property on its own curve").clicked() {
-                            app.run("timeline.create_motion_tween", json!({}));
-                        }
-                        ui.separator();
-                        if ui.selectable_label(false, "Remove tween").clicked() {
-                            app.invoke("timeline.remove_tween");
-                        }
-                    })
-                    .response
-                    .set_name("Tween");
-                }
-                None if in_motion => {}
-                None => {
-                    // One menu for the three kinds keeps the header short.
-                    egui::ComboBox::from_id_salt("tl_create").width(120.0).selected_text("Create tween").show_ui(ui, |ui| {
-                        for (label, tip, id) in [
-                            ("Motion tween", "Animate this span's object property by property (edit the curves in the Motion Editor)", "timeline.create_motion_tween"),
-                            ("Classic tween", "Tween to the next keyframe", "timeline.create_tween"),
-                            ("Shape tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween"),
-                        ] {
-                            if ui.selectable_label(false, label).on_hover_text(tip).clicked() {
-                                app.run(id, json!({}));
-                            }
-                        }
-                    })
-                    .response
-                    .set_name("Tween");
-                }
-            }
-            // Frame zoom, at the right end of the header.
+            // Room kept at the right end for the frame zoom: the 56 pt slider, its field, spacing.
+            const ZOOM_W: f32 = 122.0;
+            // The rest scrolls sideways (Shift+wheel) when the dock is narrow (a small window, a
+            // large interface scale) instead of being cut off.
+            let w = (ui.available_width() - ZOOM_W).max(0.0);
+            egui::ScrollArea::horizontal().id_salt("tl_header").max_width(w).show(ui, |ui| ui.horizontal(|ui| header(app, ui, dock)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
                 let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
-                ui.spacing_mut().slider_width = 64.0;
-                // Right to left: the field and then the slider, so they read slider, field.
-                let r = with_type(ui, Type::Data, |ui| ui.horizontal(|ui| a11y::slider(ui, &mut pct, lo..=hi, "Frame zoom", a11y::SliderLook { suffix: " %", max_decimals: Some(0), logarithmic: true, ..Default::default() })).inner);
+                ui.spacing_mut().slider_width = 56.0;
+                let r = with_type(ui, Type::Data, |ui| a11y::slider(ui, &mut pct, lo..=hi, "Frame zoom", a11y::SliderLook { suffix: " %", max_decimals: Some(0), logarithmic: true, ..Default::default() }));
                 if r.on_hover_text("Frame zoom: frame width (Ctrl+wheel over the frames)").changed() {
                     app.tl_cell_w = (pct / 100.0 * CELL_DEFAULT).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
                 }
-
             });
         });
     });
@@ -897,7 +801,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let footer = Rect::from_min_max(pos2(body.left(), body.bottom() - FOOTER_H), pos2(grid.left(), body.bottom()));
     if n_layers > rows_visible {
         let more = format!("{}–{} of {} layers", first_row + 1, (first_row + rows_visible).min(n_layers), n_layers);
-        painter.text(pos2(grid.left() - 8.0, footer.top() - 4.0), Align2::RIGHT_BOTTOM, more, font(Type::Caption), color(Type::Caption));
+        // In the "Layers" header row, never over a layer row.
+        painter.text(pos2(grid.left() - 8.0, ruler.center().y), Align2::RIGHT_CENTER, more, font(Type::Caption), color(Type::Caption));
     }
     {
         painter.rect_filled(footer, 0.0, T.panel_alt);
@@ -1014,6 +919,108 @@ pub fn easing_param(e: Easing) -> serde_json::Value {
     }
 }
 
+/// The timeline header, left to right: tabs, transport, readouts, frame and tween buttons.
+fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
+    // Two tabs share the dock: the timeline and the Motion Editor.
+    for (tab, name, tip) in [(BottomTab::Timeline, "Timeline", "Layers and frames"), (BottomTab::MotionEditor, "Motion Editor", "Property curves of the motion tween at the playhead (double-click a motion span)")] {
+        let r = ui.selectable_label(app.bottom == tab, text(Type::Heading, name));
+        // With the Motion Editor up, Ctrl+F6 lands on its tab (the layer rows are hidden).
+        if tab == BottomTab::MotionEditor && app.bottom == tab {
+            a11y::anchor(ui, a11y::Region::Timeline, dock, &r);
+        }
+        if r.on_hover_text(tip).clicked() {
+            app.bottom = tab;
+        }
+    }
+    ui.add_space(8.0);
+    transport(app, ui);
+    ui.add_space(8.0);
+    let fps = app.s.doc.stage.fps;
+    let f = app.s.frame;
+    // Fixed-width readouts: digits stay put while the playhead moves.
+    let digits = app.s.frame_count().max(f + 1).to_string().len().max(3);
+    ui.label(text(Type::DataLarge, format!("{:>digits$}", f + 1)).color(T.accent_text)).named("Current frame").on_hover_text("Current frame");
+    ui.label(text(Type::Data, format!("{fps:.2} fps")).color(T.text_dim)).on_hover_text("Frame rate");
+    ui.label(text(Type::Data, format!("{:>7.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text("Time at the playhead");
+    ui.separator();
+    // Through `invoke`, so the buttons act on the frame selection like the keys do.
+    let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
+        if ui.button(label).named(tip).on_hover_text(tip).clicked() {
+            app.invoke(id);
+        }
+    };
+    cmd(app, ui, "Frame", "Insert frame (F5)", "timeline.insert_frame");
+    cmd(app, ui, "Keyframe", "Insert keyframe (F6)", "timeline.insert_keyframe");
+    cmd(app, ui, "Blank", "Insert blank keyframe (F7)", "timeline.insert_blank_keyframe");
+    let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
+    let in_tween = here.and_then(|k| k.tween);
+    let in_motion = here.is_some_and(|k| k.motion.is_some());
+    if in_motion {
+        egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text("Motion tween").show_ui(ui, |ui| {
+            if ui.selectable_label(false, "Motion Editor").on_hover_text("Edit the property curves").clicked() {
+                app.bottom = BottomTab::MotionEditor;
+            }
+            ui.separator();
+            if ui.selectable_label(false, "Classic tween").on_hover_text("Tween to the next keyframe instead").clicked() {
+                app.run("timeline.create_tween", json!({}));
+            }
+            if ui.selectable_label(false, "Remove tween").clicked() {
+                app.invoke("timeline.remove_tween");
+            }
+        })
+        .response
+        .set_name("Tween");
+    }
+    match in_tween.filter(|_| !in_motion) {
+        Some(tw) => {
+            egui::ComboBox::from_id_salt("tl_ease").width(112.0).selected_text(tw.easing.label()).show_ui(ui, |ui| {
+                for (name, e) in Easing::PRESETS {
+                    if ui.selectable_label(tw.easing == e, name).clicked() {
+                        app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
+                    }
+                }
+            })
+            .response
+            .set_name("Easing");
+            // The tween's kind: classic ⇄ shape (keeping the easing), or none.
+            let shape = tw.kind == TweenKind::Shape;
+            egui::ComboBox::from_id_salt("tl_kind").width(104.0).selected_text(if shape { "Shape tween" } else { "Classic tween" }).show_ui(ui, |ui| {
+                if ui.selectable_label(!shape, "Classic tween").on_hover_text("Moves, scales, rotates and recolours").clicked() && shape {
+                    app.run("timeline.create_tween", json!({}));
+                }
+                if ui.selectable_label(shape, "Shape tween").on_hover_text("Also morphs one shape into another").clicked() && !shape {
+                    app.run("timeline.create_shape_tween", json!({}));
+                }
+                if ui.selectable_label(false, "Motion tween").on_hover_text("Animate each property on its own curve").clicked() {
+                    app.run("timeline.create_motion_tween", json!({}));
+                }
+                ui.separator();
+                if ui.selectable_label(false, "Remove tween").clicked() {
+                    app.invoke("timeline.remove_tween");
+                }
+            })
+            .response
+            .set_name("Tween");
+        }
+        None if in_motion => {}
+        None => {
+            // One menu for the three kinds keeps the header short.
+            egui::ComboBox::from_id_salt("tl_create").width(120.0).selected_text("Create tween").show_ui(ui, |ui| {
+                for (label, tip, id) in [
+                    ("Motion tween", "Animate this span's object property by property (edit the curves in the Motion Editor)", "timeline.create_motion_tween"),
+                    ("Classic tween", "Tween to the next keyframe", "timeline.create_tween"),
+                    ("Shape tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween"),
+                ] {
+                    if ui.selectable_label(false, label).on_hover_text(tip).clicked() {
+                        app.run(id, json!({}));
+                    }
+                }
+            })
+            .response
+            .set_name("Tween");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
