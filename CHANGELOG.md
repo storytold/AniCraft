@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+* **Installers for Windows, macOS and Linux** (ADR 0026, `docs/release.md`). A push to the
+  `release` branch now builds installable AniCraft for every platform and drafts a GitHub
+  Release: a Windows **MSI** (x64 and arm64) that installs for your account without an admin
+  prompt, or for everyone if you choose, with a Start menu entry; a macOS **DMG** with the
+  universal app (drag to Applications); a Linux **AppImage**, **deb**, **rpm**, **Flatpak** and
+  tarball. Everywhere, `.anicraft` documents get AniCraft's icon and open in AniCraft, and FLA
+  and XFL files list AniCraft under "Open with" without changing your default app.
+  `anicraft-cli` is installed next to the app. Windows and macOS builds are signed (macOS also
+  notarized) and the Linux packages and checksums are signed when the release secrets are set.
+  `anicraft --version` and `anicraft-cli --version` print the version. On Windows, AniCraft no
+  longer opens a console window beside the app. On Linux the window now
+  reports the app id `ai.storyteller.anicraft`, so docks show AniCraft's icon. Not yet: on macOS,
+  double-clicking a document starts AniCraft but doesn't open the file.
+
 * **Bevel, Gradient Glow and Gradient Bevel filters** (ADR 0025). Properties › Filters ›
   Add filter now offers all seven of Animate's filters on movie clip and button instances.
   **Bevel** lights the edges that face the light and shades the others (shadow and highlight

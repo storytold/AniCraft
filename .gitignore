@@ -1,5 +1,7 @@
 # build output
 /target/
+# release packages (packaging/*/package.*)
+/dist/
 # sample plug-ins built by examples/plugins/build.sh (sources are committed, binaries never)
 /examples/plugins/dist/
 /examples/plugins/target/

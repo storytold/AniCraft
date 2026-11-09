@@ -40,7 +40,7 @@ a new crate needs a row here and in its `LAYERS` table.
   (labels, menus, buttons, names, dialog text) is proportional. No raw font sizes or colours
   outside `theme.rs` (enforced by `guidelines_tests`). Typefaces: Inter + JetBrains Mono via
   `CRAFT_FONTS_DIR`, with egui defaults as fallback. Interface text is English in the code and
-  goes through `i18n` (`tl!`, ADR 0026); rows and dialogs use the `theme` right-to-left helpers.
+  goes through `i18n` (`tl!`, ADR 0027); rows and dialogs use the `theme` right-to-left helpers.
 * **Cross-platform** (ADR 0006): macOS, Windows and Linux are first-class. OS-specific
   behaviour lives only in `src/platform.rs` (shortcut labels with ⌘ on macOS, app menu,
   window chrome, settings folder, native dialogs, GPU backend fallback). Shortcut text always
@@ -72,7 +72,7 @@ a new crate needs a row here and in its `LAYERS` table.
 
 * AniCraft is **MIT OR Apache-2.0**, like PhotoCraft (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`).
 * **Dependencies**: permissive only, from crates.io only (plus storytold's craft-libs, egui and
-  winit at pinned revisions, ADR 0026). `deny.toml` is the policy, and
+  winit at pinned revisions, ADR 0027). `deny.toml` is the policy, and
   `cargo deny check licenses bans sources` must pass. Adding a crate with a new licence needs
   a deliberate `deny.toml` change and a note in `compliance.md`. No copyleft, "non-commercial"
   or source-available terms.

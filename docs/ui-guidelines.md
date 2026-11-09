@@ -181,7 +181,7 @@ are not used for UI text, because they would change metrics per OS.
   (`0.50 s`). Units follow the number with a space: `24.00 fps`, `1280 × 720 px`, `78%`.
 * Use "×" for dimensions and "·" to separate inline facts.
 * Text is English in the code and goes through `tl!`, `i18n::fmt` (templates) or `i18n::trn`
-  (counts); document text, ids and file names never do (ADR 0026). In a right-to-left language
+  (counts); document text, ids and file names never do (ADR 0027). In a right-to-left language
   rows, forms and dialogs start at the right (`theme::start_row`, `end_row`, `reading`,
   `column`, `mirror`); the stage and the timeline keep their direction.
 
