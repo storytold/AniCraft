@@ -658,6 +658,12 @@ impl App {
                     crate::test_movie::demo_pointer(self);
                 }
             }
+            Some("exporthtml") => {
+                // File › Export › Export HTML Canvas… on the interactive sample (the in-app
+                // prompt: screenshots never open native dialogs).
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.invoke("file.export_html");
+            }
             Some("select") => {
                 // The top layer's artwork selected, for its Properties.
                 self.run("layer.select", json!({"index": 0}));
@@ -919,6 +925,11 @@ impl App {
                 self.status_ok(format!("{n} {what} {place}. {report} {undo} to undo."));
             }
             "file.export_sprite_sheet" => self.status_ok(format!("Exported {} frames to {} ({}×{} grid) and its frame map {}", v["frames"], v["written"].as_str().unwrap_or(""), v["columns"], v["rows"], v["map"].as_str().unwrap_or(""))),
+            "file.export_html" => {
+                let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
+                let kb = v["bytes"].as_u64().unwrap_or(0).div_ceil(1024);
+                self.status_ok(format!("Exported {} ({} frames, {kb} KB): open it in a web browser.{report}", v["written"].as_str().unwrap_or(""), v["frames"]));
+            }
             "file.export_lottie" => {
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 self.status_ok(format!("Exported {} ({} frames, {} layers).{report}", v["written"].as_str().unwrap_or(""), v["frames"], v["layers"]));
@@ -1022,6 +1033,7 @@ impl App {
             "file.export_sprite_sheet" => Some(("Export sprite sheet (PNG + JSON frame map)", "path", "sprites.png".to_string())),
             "file.export_video" => Some(("Export video (.webm or .mp4, made with your ffmpeg)", "path", "animation.webm".to_string())),
             "file.export_lottie" => Some(("Export Lottie animation (JSON, for web and apps)", "path", "animation.json".to_string())),
+            "file.export_html" => Some(("Export HTML canvas (one web page)", "path", "movie.html".to_string())),
             "file.export_audio" => Some(("Export audio (the movie's soundtrack as a WAV)", "path", "soundtrack.wav".to_string())),
             "file.import_to_library" => Some(("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)", "path", "sound.wav".to_string())),
             "file.import" => Some(("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)", "path", "drawing.svg".to_string())),

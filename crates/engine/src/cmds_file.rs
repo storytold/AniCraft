@@ -83,6 +83,15 @@ pub fn specs() -> Vec<CommandSpec> {
             mutates: false,
             run: export_lottie,
         },
+        CommandSpec {
+            id: "file.export_html",
+            label: "Export HTML Canvas…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.html: one self-contained page), title? (default: the file name), sound? (default true: embed the movie's sounds), fit? (default true: scale to the browser window), confirm?}",
+            mutates: false,
+            run: export_html,
+        },
         CommandSpec { id: "edit.undo", label: "Undo", menu: "Edit", shortcut: Some("Ctrl+Z"), params: "{}", mutates: false, run: |s, _| s.undo() },
         CommandSpec { id: "edit.redo", label: "Redo", menu: "Edit", shortcut: Some("Ctrl+Y"), params: "{}", mutates: false, run: |s, _| s.redo() },
         CommandSpec {
@@ -623,6 +632,44 @@ fn export_lottie(s: &mut Session, p: &Value) -> Result<Value> {
         format!("Approximated or left out: {}.", out.report.iter().map(|(k, n)| format!("{k} on {n}")).collect::<Vec<_>>().join(", "))
     };
     Ok(json!({"written": path.display().to_string(), "frames": to - from + 1, "layers": out.layers, "bytes": out.json.len(), "report": summary, "notes": out.report}))
+}
+
+/// The movie as one web page that plays in a browser, buttons and frame actions included
+/// (see `anicraft_render::html`, ADR 0028).
+fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let stem: String = path.file_stem().map_or_else(|| "AniCraft movie".into(), |n| n.to_string_lossy().chars().take(128).collect());
+    let title = match opt_str(p, "title")? {
+        Some(t) if t.chars().count() > 256 => return Err(EngineError::Param("param 'title' is at most 256 characters".into())),
+        Some(t) if !t.trim().is_empty() => t.to_string(),
+        _ => stem,
+    };
+    let opts = anicraft_render::html::HtmlOptions { title, sound: opt_bool(p, "sound")?.unwrap_or(true), fit: opt_bool(p, "fit")?.unwrap_or(true) };
+    let started = std::time::Instant::now();
+    let out = anicraft_render::html::to_html(&s.doc, &opts).map_err(EngineError::Param)?;
+    std::fs::write(&path, out.html.as_bytes())?;
+    let summary = if out.report.is_empty() {
+        String::new()
+    } else {
+        format!("Approximated or left out: {}.", out.report.iter().map(|(k, n)| format!("{k} on {n}")).collect::<Vec<_>>().join(", "))
+    };
+    let st = out.stats;
+    Ok(json!({
+        "written": path.display().to_string(),
+        "bytes": out.html.len(),
+        "frames": s.doc.frame_count(),
+        "scenes": s.doc.scenes.len(),
+        "timelines": st.timelines,
+        "stored_frames": st.contents,
+        "paths": st.paths,
+        "images": st.images,
+        "sounds": st.sounds,
+        "data_bytes": st.data_bytes,
+        "code_bytes": st.code_bytes,
+        "ms": started.elapsed().as_millis() as u64,
+        "report": summary,
+        "notes": out.report,
+    }))
 }
 
 fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {

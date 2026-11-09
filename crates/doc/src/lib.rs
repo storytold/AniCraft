@@ -28,7 +28,7 @@ pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
 pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use camera::Camera;
-pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera};
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, guide_walk, instance_start};
 pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, PluginScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
