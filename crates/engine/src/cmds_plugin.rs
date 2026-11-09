@@ -31,7 +31,7 @@ const MAX_ELEMENTS: usize = 10_000;
 /// a namespace this list doesn't know is refused until someone decides (a test checks that
 /// every registered namespace is known).
 pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
-    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound"];
+    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke"];
     match id {
         "edit.undo" | "edit.redo" => Err("a plug-in run is one undo step; it can't undo or redo"),
         "edit.cut" | "edit.copy" | "edit.paste" | "edit.paste_in_place" | "timeline.cut_frames" | "timeline.copy_frames" | "timeline.paste_frames" => {
@@ -109,7 +109,7 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
     // Stage bounds of every top-level element in one pass over the display list.
     let mut bounds: HashMap<ElementId, Rect> = HashMap::new();
     for item in s.display_list().items.iter().filter(|i| i.layer == s.layer) {
-        let pad = item.stroke.map_or(0.0, |st| st.width * 0.5);
+        let pad = item.stroke.as_ref().map_or(0.0, |st| st.width * 0.5);
         let r = item.path.bounds().inflate(pad).transformed(&item.transform);
         let e = bounds.entry(item.element).or_insert(Rect::EMPTY);
         *e = e.union(&r);
@@ -132,7 +132,7 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
             ElementKind::Shape(sh) => {
                 v["kind"] = json!("shape");
                 v["fill"] = sh.fill.as_ref().map_or(Value::Null, paint_json);
-                v["stroke"] = sh.stroke.map_or(Value::Null, |st| json!({"color": st.color.to_hex(), "width": st.width}));
+                v["stroke"] = sh.stroke.as_ref().map_or(Value::Null, |st| json!({"color": st.color.to_hex(), "width": st.width}));
                 if paths {
                     v["path"] = json!(sh.path.to_svg());
                 }

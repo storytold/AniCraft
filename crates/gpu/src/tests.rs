@@ -75,10 +75,17 @@ fn scenes() -> Vec<(&'static str, DisplayList, View)> {
     // Strokes: wide, thin (sub-pixel, faded), on open and closed paths.
     let mut wide = item(Path::line(Vec2::new(10.0, 20.0), Vec2::new(150.0, 70.0)), Paint::Solid(red));
     wide.fill = None;
-    wide.stroke = Some(Stroke { color: Rgba::BLACK, width: 9.0 });
+    wide.stroke = Some(Stroke { color: Rgba::BLACK, width: 9.0, profile: None });
     let mut thin = item(Path::ellipse(80.0, 50.0, 60.0, 30.0), Paint::Solid(Rgba::new(1.0, 0.9, 0.2, 1.0)));
-    thin.stroke = Some(Stroke { color: Rgba::new(0.1, 0.1, 0.4, 1.0), width: 0.4 });
+    thin.stroke = Some(Stroke { color: Rgba::new(0.1, 0.1, 0.4, 1.0), width: 0.4, profile: None });
     out.push(("strokes", list(vec![thin, wide]), view(160, 100, Some(Rgba::WHITE))));
+    // Variable-width strokes (ADR 0018) come prepared by the oracle, so the GPU draws them alike.
+    let mut taper = item(Path::line(Vec2::new(10.0, 80.0), Vec2::new(150.0, 15.0)), Paint::Solid(red));
+    taper.fill = None;
+    taper.stroke = Some(Stroke::new(Rgba::BLACK, 12.0).with_profile(anicraft_doc::ProfilePreset::TaperBoth.profile()));
+    let mut bulge = item(Path::ellipse(80.0, 50.0, 55.0, 28.0), Paint::Solid(Rgba::new(0.3, 0.8, 0.5, 1.0)));
+    bulge.stroke = Some(Stroke::new(Rgba::new(0.1, 0.1, 0.4, 1.0), 8.0).with_profile(anicraft_doc::ProfilePreset::Bulge.profile()));
+    out.push(("variable-width strokes", list(vec![bulge, taper]), view(160, 100, Some(Rgba::WHITE))));
     // Larger than the surface on every side; colour effects (onion-skin style tint and alpha).
     let mut huge = item(Path::ellipse(50.0, 40.0, 300.0, 200.0), Paint::Solid(red));
     huge.color = ColorEffect { alpha: 0.5, tint: Rgba::hex(0x4cd07d), tint_amount: 0.7 };

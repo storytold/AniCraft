@@ -354,7 +354,7 @@ fn filtered_group(dl: &DisplayList, run: &FilteredRun, view: &View, surface: IRe
     // Where it can draw: its artwork's bounds, grown by how far the filters spread.
     let mut r = Rect::EMPTY;
     for it in items.iter().filter(|i| i.masks.is_none() && !i.guide) {
-        let pad = it.stroke.map_or(0.0, |s| s.width * 0.5) + 1.0;
+        let pad = it.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach) + 1.0;
         r = r.union(&it.path.bounds().inflate(pad).transformed(&view.transform.mul(&it.transform)));
     }
     if r.is_empty() || !r.min.x.is_finite() || !r.max.y.is_finite() {
@@ -628,7 +628,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
         return out;
     }
     // Cull before flattening: control-point bounds are a cheap, conservative superset.
-    let pad = if is_mask { 1.0 } else { item.stroke.map_or(0.0, |s| s.width * 0.5) + 1.0 };
+    let pad = if is_mask { 1.0 } else { item.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach) + 1.0 };
     let bounds = item.path.bounds().inflate(pad).transformed(&m);
     let surface_rect = Rect::new(0.0, 0.0, surface.x1 as f32, surface.y1 as f32);
     if bounds.is_empty() || bounds.intersect(&surface_rect).is_empty() {
@@ -659,18 +659,32 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
     }
     // The stroke is outlined from the flattened lines first, so the fill can then take them
     // without a copy; it is still drawn after the fill.
-    let stroke = item.stroke.and_then(|st| {
+    let stroke = item.stroke.as_ref().and_then(|st| {
         let mut fx: ColorEffect = item.color;
         let mut pw = st.width * m.mean_scale();
         if !(pw.is_finite() && pw > 0.0) {
             return None;
+        }
+        let shader = |fx: &ColorEffect| Shader::new(&Paint::Solid(st.color), &m, fx, None);
+        if let Some(profile) = &st.profile {
+            // Variable width (ADR 0018). Thin strokes fade by their widest part instead.
+            let widest = pw * profile.max_factor();
+            if !(widest.is_finite() && widest > 0.0) {
+                return None;
+            }
+            if widest < 1.0 {
+                fx.alpha *= widest;
+                pw /= widest;
+            }
+            let polys = stroke::variable_polygons(&lines, pw * 0.5, profile, m.inverse().as_ref(), m.determinant() < 0.0);
+            return Some((polys, shader(&fx)));
         }
         if pw < 1.0 {
             // Thin strokes: keep a 1 px footprint and fade by width (avoids dropouts).
             fx.alpha *= pw;
             pw = 1.0;
         }
-        Some((stroke::stroke_polygons(&lines, pw * 0.5), Shader::new(&Paint::Solid(st.color), &m, &fx, None)))
+        Some((stroke::stroke_polygons(&lines, pw * 0.5), shader(&fx)))
     });
     if let Some(fill) = &item.fill {
         let polys: Vec<Vec<Vec2>> = lines.into_iter().map(|l| l.points).collect();
@@ -774,7 +788,7 @@ mod tests {
         square.clip = Some(0);
         let mut mask = item(Path::ellipse(20.0, 20.0, 10.0, 10.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 0.2)));
         mask.masks = Some(0);
-        mask.stroke = Some(anicraft_doc::Stroke { color: Rgba::BLACK, width: 8.0 });
+        mask.stroke = Some(anicraft_doc::Stroke::new(Rgba::BLACK, 8.0));
         let dl = DisplayList { items: vec![square, mask], clip_parents: vec![None], groups: Vec::new() };
         let (pm, _) = render(&dl, &view(40, 40)).unwrap();
         // Pixel for pixel, the same as the circle drawn in the square's colour.
@@ -841,7 +855,7 @@ mod tests {
     fn plain_fills_match_the_renderers_preparation_and_name_what_needs_more() {
         // A filled, stroked square and an off-screen circle: fill then stroke, one culled.
         let mut sq = item(Path::rect(2.0, 2.0, 8.0, 8.0), Paint::Solid(Rgba::BLACK));
-        sq.stroke = Some(anicraft_doc::Stroke { color: Rgba::WHITE, width: 2.0 });
+        sq.stroke = Some(anicraft_doc::Stroke { color: Rgba::WHITE, width: 2.0, profile: None });
         let off = item(Path::ellipse(500.0, 500.0, 10.0, 10.0), Paint::Solid(Rgba::BLACK));
         let dl = list(vec![sq.clone(), off]);
         let (fills, st) = plain_fills(&dl, &view(16, 16)).unwrap();
@@ -931,11 +945,87 @@ mod tests {
     fn stroke_covers_expected_area() {
         let mut it = item(Path::line(Vec2::new(10.0, 20.0), Vec2::new(90.0, 20.0)), Paint::Solid(Rgba::BLACK));
         it.fill = None;
-        it.stroke = Some(anicraft_doc::Stroke { color: Rgba::BLACK, width: 4.0 });
+        it.stroke = Some(anicraft_doc::Stroke::new(Rgba::BLACK, 4.0));
         let (pm, _) = render(&list(vec![it]),&view(100, 40)).unwrap();
         // 80 × 4 body plus two round caps (π · 2²)
         let expected = 80.0 * 4.0 + std::f32::consts::PI * 4.0;
         assert!((alpha_sum(&pm) - expected).abs() / expected < 0.01, "{}", alpha_sum(&pm));
+    }
+
+    fn stroked(path: Path, width: f32, profile: Option<anicraft_doc::WidthProfile>) -> DisplayItem {
+        let mut it = item(path, Paint::Solid(Rgba::BLACK));
+        it.fill = None;
+        it.stroke = Some(anicraft_doc::Stroke::new(Rgba::BLACK, width).with_profile(profile));
+        it
+    }
+
+    #[test]
+    fn a_tapered_stroke_covers_the_profile_integral() {
+        // Taper both ends on an 80-unit line, nominal width 8: the half-width is 4·f(t), f the
+        // monotone cubic 0 → 1 → 0. Each half is a Hermite segment (h = ½, ends 0 and 1,
+        // tangents 2 and 0), whose integral is h·(0 + 1)/2 + h²·(2 − 0)/12 = 7/24; no caps.
+        let taper = anicraft_doc::ProfilePreset::TaperBoth.profile();
+        let (pm, _) = render(&list(vec![stroked(Path::line(Vec2::new(10.0, 20.0), Vec2::new(90.0, 20.0)), 8.0, taper.clone())]), &view(100, 40)).unwrap();
+        let expected = 2.0 * 4.0 * 80.0 * (7.0 / 12.0);
+        assert!((alpha_sum(&pm) - expected).abs() / expected < 0.01, "{} vs {expected}", alpha_sum(&pm));
+        // Thin at the ends, full in the middle.
+        assert_eq!(pm.pixel(50, 17).unwrap()[3], 1.0);
+        assert_eq!(pm.pixel(12, 17).unwrap()[3], 0.0);
+        // The profile lives in the shape's space: twice the scale, four times the area.
+        let mut big = stroked(Path::line(Vec2::new(10.0, 20.0), Vec2::new(90.0, 20.0)), 8.0, taper);
+        big.transform = Affine::scale(2.0, 2.0);
+        let (pm2, _) = render(&list(vec![big]), &view(200, 80)).unwrap();
+        assert!((alpha_sum(&pm2) / alpha_sum(&pm) - 4.0).abs() < 0.04, "{}", alpha_sum(&pm2) / alpha_sum(&pm));
+    }
+
+    #[test]
+    fn constant_profiles_match_uniform_strokes_and_one_side_stays_on_its_side() {
+        let line = || Path::line(Vec2::new(10.0, 20.0), Vec2::new(90.0, 20.0));
+        let p = |l: f32, r: f32| anicraft_doc::WidthProfile::new(vec![anicraft_doc::WidthPoint::new(0.5, l, r)]);
+        // 1.5 × a 4-wide stroke is a 6-wide one: body plus round caps.
+        let (wide, _) = render(&list(vec![stroked(line(), 4.0, p(1.5, 1.5))]), &view(100, 40)).unwrap();
+        let expected = 80.0 * 6.0 + std::f32::consts::PI * 9.0;
+        assert!((alpha_sum(&wide) - expected).abs() / expected < 0.01, "{}", alpha_sum(&wide));
+        // All on the left (above a line heading right): a 4-wide band, with half-disc caps.
+        let (left, _) = render(&list(vec![stroked(line(), 4.0, p(2.0, 0.0))]), &view(100, 40)).unwrap();
+        let expected = 80.0 * 4.0 + std::f32::consts::PI * 4.0;
+        assert!((alpha_sum(&left) - expected).abs() / expected < 0.01, "{}", alpha_sum(&left));
+        assert_eq!(left.pixel(50, 17).unwrap()[3], 1.0);
+        assert_eq!(left.pixel(50, 22).unwrap()[3], 0.0, "nothing on the right");
+        // A mirror swaps the sides as seen on screen.
+        let mut flipped = stroked(line(), 4.0, p(2.0, 0.0));
+        flipped.transform = Affine::translate(0.0, 40.0).mul(&Affine::scale(1.0, -1.0));
+        let (f, _) = render(&list(vec![flipped]), &view(100, 40)).unwrap();
+        assert_eq!(f.pixel(50, 22).unwrap()[3], 1.0);
+        assert_eq!(f.pixel(50, 17).unwrap()[3], 0.0);
+    }
+
+    /// `cargo test -p anicraft-render --release -- --ignored --nocapture variable_stroke_cost`
+    #[test]
+    #[ignore = "measurement"]
+    fn variable_stroke_cost() {
+        let strokes = |profile: Option<anicraft_doc::WidthProfile>| {
+            let items = (0..300)
+                .map(|i| {
+                    let (x, y) = ((i % 20) as f32 * 64.0, (i / 20) as f32 * 48.0);
+                    let mut p = Path::new();
+                    p.move_to(Vec2::new(x, y + 40.0)).cubic_to(Vec2::new(x + 10.0, y - 20.0), Vec2::new(x + 50.0, y + 80.0), Vec2::new(x + 60.0, y + 10.0));
+                    stroked(p, 6.0, profile.clone())
+                })
+                .collect();
+            list(items)
+        };
+        for (name, dl) in [("uniform", strokes(None)), ("taper_both", strokes(anicraft_doc::ProfilePreset::TaperBoth.profile())), ("bulge", strokes(anicraft_doc::ProfilePreset::Bulge.profile()))] {
+            let mut ms: Vec<f64> = (0..9)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    let _ = render(&dl, &view(1280, 720)).unwrap();
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            ms.sort_by(f64::total_cmp);
+            println!("300 strokes, 1280x720, {name}: median {:.2} ms", ms[4]);
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Select => Icon::Select,
         Tool::Subselect => Icon::Subselect,
         Tool::Transform => Icon::Transform,
+        Tool::Width => Icon::Width,
         Tool::Pen => Icon::Pen,
         Tool::Text => Icon::Type,
         Tool::Pencil => Icon::Pencil,
@@ -51,7 +52,7 @@ pub fn tools(app: &mut App, ui: &mut egui::Ui) {
             if resp.on_hover_text(format!("{}{key}\n{}", tl!(tool.label()), tl!(tool.hint()))).clicked() {
                 app.tool = tool;
             }
-            if matches!(tool, Tool::Transform | Tool::Pencil | Tool::Line | Tool::InkBottle) {
+            if matches!(tool, Tool::Width | Tool::Pencil | Tool::Line | Tool::InkBottle) {
                 // Tool groups: select, draw by hand, shapes, view.
                 ui.add_space(3.0);
                 let y = ui.cursor().top();
@@ -460,8 +461,8 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                     ui.label(text(Type::Caption, tl!("gradient")));
                 }
             });
-            let mut sc = rgb(sh.stroke.map_or(app.s.style.stroke, |s| s.color));
-            let mut sw = sh.stroke.map_or(0.0, |s| s.width);
+            let mut sc = rgb(sh.stroke.as_ref().map_or(app.s.style.stroke, |s| s.color));
+            let mut sw = sh.stroke.as_ref().map_or(0.0, |s| s.width);
             row(ui, "Stroke", |ui| {
                 if ui.color_edit_button_srgb(&mut sc).changed() {
                     live(app, "Stroke colour", "element.set_stroke", json!({"color": hex(sc)}));
@@ -470,6 +471,13 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                     live(app, "Stroke width", "element.set_stroke", json!({"width": sw}));
                 }
             });
+            if let Some(st) = &sh.stroke {
+                // The width profile, as Animate's Width menu: built-ins with a picture of each.
+                let current = st.profile.clone();
+                if let Some(pick) = profile_picker(ui, ProfileRow::Selection, current.as_ref()) {
+                    app.run("stroke.set_profile", json!({"profile": pick.key()}));
+                }
+            }
         }
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
@@ -883,6 +891,11 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
             }
             ui.add(egui::DragValue::new(&mut st.stroke_width).suffix(" px").speed(0.1).range(0.0..=100.0).max_decimals(1));
         });
+        // The width profile new strokes get.
+        let current = st.stroke_profile.profile();
+        if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref()) {
+            st.stroke_profile = pick;
+        }
     }
     app.s.style = st;
     match app.tool {
@@ -907,6 +920,64 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }),
         _ => {}
     }
+}
+
+/// A small picture of a width profile: the stroke's outline, left side up.
+fn profile_preview(ui: &mut egui::Ui, profile: Option<&anicraft_engine::doc::WidthProfile>, size: egui::Vec2, color: Color32) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+    let p = ui.painter();
+    let n = 32;
+    let half = r.height() * 0.5 / profile.map_or(1.0, |pr| pr.max_factor().max(1.0));
+    let at = |i: usize| {
+        let t = i as f32 / n as f32;
+        let (l, rr) = profile.map_or((1.0, 1.0), |pr| pr.at(t));
+        let x = r.left() + t * r.width();
+        (pos2(x, r.center().y - l * half), pos2(x, r.center().y + rr * half))
+    };
+    // Each slice is a convex quad, so any profile (a pinch too) fills correctly.
+    for i in 0..n {
+        let ((a0, b0), (a1, b1)) = (at(i), at(i + 1));
+        p.add(egui::Shape::convex_polygon(vec![a0, a1, b1, b0], color, Stroke::NONE));
+    }
+    resp
+}
+
+/// Which Width row a profile menu is (each needs its own popup).
+#[derive(Clone, Copy, Debug, Hash)]
+enum ProfileRow {
+    Selection,
+    Tool,
+}
+
+/// The Width row: a profile menu with a picture of each built-in. Returns the one picked.
+fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraft_engine::doc::WidthProfile>) -> Option<anicraft_engine::doc::ProfilePreset> {
+    use anicraft_engine::doc::ProfilePreset;
+    let preset = match current {
+        None => Some(ProfilePreset::Uniform),
+        Some(p) => p.preset(),
+    };
+    let label = preset.map_or_else(|| format!("Custom ({} points)", current.map_or(0, |p| p.points().len())), |p| p.label().to_string());
+    let mut picked = None;
+    row_prose(ui, "Width", |ui| {
+        profile_preview(ui, current, vec2(44.0, 12.0), T.text_dim);
+        let menu = ui.scope_id().with(which);
+        egui::ComboBox::from_id_salt(menu).width(150.0).selected_text(label).show_ui(ui, |ui| {
+            for pr in ProfilePreset::ALL {
+                let on = preset == Some(pr);
+                let r = ui.horizontal(|ui| {
+                    let pic = profile_preview(ui, pr.profile().as_ref(), vec2(44.0, 12.0), if on { T.text } else { T.text_dim });
+                    let lab = ui.selectable_label(on, pr.label());
+                    pic.clicked() || lab.clicked()
+                });
+                if r.inner && !on {
+                    picked = Some(pr);
+                }
+            }
+        })
+        .response
+        .on_hover_text("How the stroke's width varies along it. Shape it by hand with the Width tool (U).");
+    });
+    picked
 }
 
 /// Plots the easing curve (output against time).
