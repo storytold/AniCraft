@@ -7,6 +7,7 @@
 pub use anicraft_audio as audio;
 
 mod bitmap;
+mod channel;
 mod filter;
 mod easing;
 mod eval;
@@ -16,6 +17,8 @@ pub mod path_table;
 pub mod width;
 pub mod sample;
 pub mod sound;
+
+pub use channel::{Channel, ChannelValue, Handle, Interp, Key, MAX_CHANNEL_FRAME, MAX_CHANNEL_KEYS};
 
 pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
