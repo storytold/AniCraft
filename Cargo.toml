@@ -25,6 +25,12 @@ anicraft-svg = { path = "crates/svg" }
 anicraft-text = { path = "crates/text" }
 anicraft-plugins = { path = "crates/plugins" }
 anicraft-audio = { path = "crates/audio" }
+anicraft-gpu = { path = "crates/gpu" }
+# The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
+# (default) features, so the tree keeps one wgpu build.
+wgpu = "30"
+pollster = "1"
+bytemuck = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -66,6 +72,9 @@ default-run = "anicraft"
 # Plays sound during stage playback. Off: playback is silent (for builders without ALSA headers).
 default = ["sound-output"]
 sound-output = ["dep:cpal"]
+# GPU stage renderer (ADR 0019), off by default: Preferences › Stage › Renderer can then hand
+# the stage to the wgpu renderer. The CPU stays the default and the oracle.
+gpu-stage = ["dep:anicraft-gpu"]
 
 [[bin]]
 name = "anicraft"
@@ -76,6 +85,7 @@ anicraft-geom.workspace = true
 anicraft-doc.workspace = true
 anicraft-render.workspace = true
 anicraft-engine.workspace = true
+anicraft-gpu = { workspace = true, optional = true }
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
