@@ -408,11 +408,11 @@ enum Change {
 
 /// The rows of an action list, and Add action. Returns the new list when it changed, and
 /// whether the change is continuous (typing, dragging).
-fn edit_list(ui: &mut egui::Ui, salt: &str, list: &[Action], cx: &Choices<'_>) -> Option<(Vec<Action>, bool)> {
+fn edit_list(ui: &mut egui::Ui, scope: &str, list: &[Action], cx: &Choices<'_>) -> Option<(Vec<Action>, bool)> {
     let mut v = list.to_vec();
     let mut out: Option<(usize, Change)> = None;
     for (i, a) in v.iter_mut().enumerate() {
-        ui.push_id((salt, i), |ui| {
+        ui.push_id((scope, i), |ui| {
             if let Some(c) = action_row(ui, i, list.len(), a, cx) {
                 out = Some((i, c));
             }
