@@ -7,9 +7,9 @@
 //! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
-//! JPEG in the package. Everything else (text, sound, motion tweens with property curves,
-//! filters, bitmaps kept only in Animate's own storage) is counted in the report instead of
-//! guessed at.
+//! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014).
+//! Everything else (sound, motion tweens with property curves, bevel and gradient filters,
+//! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at.
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
@@ -18,7 +18,8 @@ use anicraft_doc::{
     Scene, SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use anicraft_text::{FaceMatch, Fonts};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -33,25 +34,40 @@ pub enum XflError {
     NotXfl(String),
 }
 
-/// What the import couldn't bring across, by kind ("3 bitmaps").
+/// What the import couldn't bring across, by kind ("3 bitmaps"), and the fonts it couldn't
+/// find.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Report {
     pub skipped: BTreeMap<String, usize>,
     pub notes: Vec<String>,
+    /// Font families the document's text asks for that aren't on this computer.
+    pub missing_fonts: BTreeSet<String>,
+    /// The family that text was laid out in instead.
+    pub fallback_font: Option<String>,
 }
 
 impl Report {
-    fn skip(&mut self, what: &str) {
+    pub(crate) fn skip(&mut self, what: &str) {
         *self.skipped.entry(what.to_string()).or_default() += 1;
     }
-    /// One line for a status bar: "Imported. Not yet supported: 2 bitmaps, 1 text field."
+    /// One line for a status bar: "Imported. Not yet supported: 2 sounds. Fonts not on this
+    /// computer, drawn in Inter: Futura, Gotham."
     pub fn summary(&self) -> String {
-        if self.skipped.is_empty() && self.notes.is_empty() {
+        if self.skipped.is_empty() && self.notes.is_empty() && self.missing_fonts.is_empty() {
             return "Imported everything in the file.".into();
         }
+        let mut out = String::from("Imported.");
         let mut parts: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{n} {k}")).collect();
         parts.extend(self.notes.iter().cloned());
-        format!("Imported. Not yet supported: {}.", parts.join(", "))
+        if !parts.is_empty() {
+            out.push_str(&format!(" Not yet supported: {}.", parts.join(", ")));
+        }
+        if !self.missing_fonts.is_empty() {
+            let names: Vec<&str> = self.missing_fonts.iter().map(String::as_str).collect();
+            let instead = self.fallback_font.as_deref().map(|f| format!(", drawn in {f}")).unwrap_or_default();
+            out.push_str(&format!(" Fonts not on this computer{instead}: {}.", names.join(", ")));
+        }
+        out
     }
 }
 
@@ -77,9 +93,13 @@ struct Builder<'a> {
     /// Library item name → bitmap id, for the bitmaps that could be read.
     bitmaps: HashMap<String, BitmapId>,
     report: Report,
+    /// The fonts text is laid out with; the computer's, found on the first text field.
+    fonts: Option<&'a Fonts>,
+    /// Face name → what it is on this computer, looked up once per name.
+    faces: HashMap<String, FaceMatch>,
 }
 
-fn color(el: &X, key: &str, alpha_key: &str) -> Rgba {
+pub(crate) fn color(el: &X, key: &str, alpha_key: &str) -> Rgba {
     let rgb = el.attr(key).and_then(|c| u32::from_str_radix(c.trim().trim_start_matches('#'), 16).ok()).unwrap_or(0);
     Rgba::hex(rgb).with_alpha(el.f32(alpha_key).unwrap_or(1.0).clamp(0.0, 1.0))
 }
@@ -238,6 +258,25 @@ impl<'a> Builder<'a> {
         out
     }
 
+    /// A text field: one text element per block (`text::field`), placed by the field's matrix.
+    fn text_field(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
+        let fonts: &'a Fonts = match self.fonts {
+            Some(f) => f,
+            None => Fonts::get(),
+        };
+        self.fonts = Some(fonts);
+        let m = parent.mul(&matrix(el));
+        let name: String = el.attr("name").unwrap_or("").chars().take(256).collect();
+        for (i, p) in crate::text::field(el, fonts, &mut self.faces, &mut self.report).into_iter().enumerate() {
+            let mut e = Element { id: ElementId(self.doc.alloc_id()), name: String::new(), transform: m.mul(&Affine::translate(p.offset.x, p.offset.y)), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(p.block)) };
+            // A dynamic or input field's instance name goes on its first block.
+            if i == 0 {
+                e.name.clone_from(&name);
+            }
+            out.push(Arc::new(e));
+        }
+    }
+
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
         let Some(&symbol) = el.attr("libraryItemName").and_then(|n| self.ids.get(n)) else {
             self.report.skip("instances of missing symbols");
@@ -278,7 +317,7 @@ impl<'a> Builder<'a> {
                 "DOMSymbolInstance" => self.instance(el, parent, out),
                 "DOMRectangleObject" | "DOMOvalObject" => self.primitive(el, parent, out),
                 "DOMBitmapInstance" => self.bitmap_instance(el, parent, out),
-                "DOMStaticText" | "DOMDynamicText" | "DOMInputText" => self.report.skip("text fields"),
+                "DOMStaticText" | "DOMDynamicText" | "DOMInputText" => self.text_field(el, parent, out),
                 "DOMVideoInstance" => self.report.skip("videos"),
                 _ => self.report.skip("other elements"),
             }
@@ -438,14 +477,25 @@ impl<'a> Builder<'a> {
     }
 }
 
-/// Imports an XFL package through `read` (paths inside the package).
+/// Imports an XFL package through `read` (paths inside the package). Text is laid out with
+/// the fonts on this computer.
 pub fn import_with(read: &Reader<'_>) -> Result<(Document, Report), XflError> {
+    import_from(read, None)
+}
+
+/// Imports an XFL package, laying text out with `fonts` (tests, and hosts with their own font
+/// library).
+pub fn import_with_fonts(read: &Reader<'_>, fonts: &Fonts) -> Result<(Document, Report), XflError> {
+    import_from(read, Some(fonts))
+}
+
+fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Document, Report), XflError> {
     let bytes = read("DOMDocument.xml")?.ok_or_else(|| XflError::NotXfl("no DOMDocument.xml".into()))?;
     let root = xml::parse(&bytes)?;
     if root.name != "DOMDocument" {
         return Err(XflError::NotXfl(format!("the root element is <{}>", root.name)));
     }
-    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), bitmaps: HashMap::new(), report: Report::default() };
+    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), bitmaps: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
     b.doc.library.clear();
     b.doc.scenes.clear();
     b.doc.stage = Stage {
