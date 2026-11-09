@@ -294,7 +294,7 @@ impl Ctx {
 
 /// The first frame of the unbroken run of keyframes on `layer`, up to `frame`, that hold
 /// element `id` as an instance of `symbol`: where a movie clip instance started playing.
-pub(crate) fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) -> u32 {
+pub fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) -> u32 {
     let Some(mut i) = layer.keyframe_index_at(frame) else { return frame };
     let holds = |k: &crate::Keyframe| k.elements.iter().any(|e| e.id == id && matches!(e.kind, ElementKind::Symbol { symbol: s, .. } if s == symbol));
     let mut start = layer.keyframes.get(i).map_or(frame, |k| k.start);
@@ -309,7 +309,7 @@ pub(crate) fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: S
 }
 
 /// The path a guide layer's first shape traces at `frame`, in the layer's own space.
-pub(crate) fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
+pub fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
     let (_, els) = evaluate_layer_elements(guide, frame)?;
     els.iter().find_map(|e| match &e.kind {
         ElementKind::Shape(s) => {

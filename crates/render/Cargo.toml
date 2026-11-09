@@ -18,3 +18,8 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Runs the exported HTML player's JavaScript in tests, to compare it with the Rust player
+# (pure Rust, Unlicense OR MIT; tests only, never in the app).
+boa_engine = { version = "0.21", default-features = false }
