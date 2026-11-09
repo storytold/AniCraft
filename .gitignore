@@ -1,5 +1,8 @@
 # build output
 /target/
+# sample plug-ins built by examples/plugins/build.sh (sources are committed, binaries never)
+/examples/plugins/dist/
+/examples/plugins/target/
 
 # generated screenshots and exports (regenerate with --screenshot / anicraft-cli)
 /shots/
@@ -12,3 +15,6 @@
 *.swp
 .DS_Store
 Thumbs.db
+
+# parallel milestone worktrees (AGENTS.md › Milestone tracks)
+/.worktrees/

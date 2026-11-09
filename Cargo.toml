@@ -23,6 +23,7 @@ anicraft-xfl = { path = "crates/xfl" }
 anicraft-xml = { path = "crates/xml" }
 anicraft-svg = { path = "crates/svg" }
 anicraft-text = { path = "crates/text" }
+anicraft-plugins = { path = "crates/plugins" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -75,6 +76,10 @@ rfd.workspace = true
 serde.workspace = true
 fontdb.workspace = true
 serde_json.workspace = true
+
+[build-dependencies]
+# Embeds the app icon in anicraft.exe on Windows (build.rs); does nothing on other targets.
+winresource = "0.1"
 
 [lints]
 workspace = true

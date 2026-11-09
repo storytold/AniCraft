@@ -76,7 +76,18 @@ fn overwrite(path: &Path, what: &str) -> Confirmation {
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
     match id {
-        "file.new" | "file.new_sample" | "file.open" if s.is_dirty() => Some(Confirmation {
+        "file.discard_recovery" => {
+            // Always: the autosaved work is the last copy there is.
+            let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
+            let e = crate::recovery::find(dir, p.get("session").and_then(Value::as_str)?).ok()?;
+            Some(Confirmation {
+                title: "Discard autosaved document?".into(),
+                message: format!("The autosaved copy of “{}” will be deleted, with the work it holds.", e.meta.name),
+                action: "Discard".into(),
+                irreversible: true,
+            })
+        }
+        "file.new" | "file.new_sample" | "file.open" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
             action: "Discard Changes".into(),
@@ -178,6 +189,33 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 },
                 action: if n == 1 { "Remove Frame".into() } else { "Remove Frames".into() },
                 irreversible: false,
+            })
+        }
+        "plugin.install" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            let (m, dest) = s.plugins.install_overwrites(path)?;
+            let old = s.plugins.get(&m.id).map(|o| o.manifest().version.clone()).filter(|v| !v.is_empty());
+            Some(Confirmation {
+                title: "Replace plug-in?".into(),
+                message: format!(
+                    "“{}”{} is already installed. Installing {} replaces its file in the plug-ins folder ({}); this cannot be undone.",
+                    m.name,
+                    old.map_or_else(String::new, |v| format!(" {v}")),
+                    path.display(),
+                    dest.display()
+                ),
+                action: "Replace Plug-in".into(),
+                irreversible: true,
+            })
+        }
+        "plugin.remove" => {
+            let plugin = s.plugins.get(p.get("id").and_then(Value::as_str)?)?;
+            let file = plugin.source().filter(|_| s.plugins.owns_file(&plugin))?;
+            Some(Confirmation {
+                title: "Remove plug-in?".into(),
+                message: format!("“{}” is uninstalled and its file is deleted from the plug-ins folder ({}). This cannot be undone.", plugin.manifest().name, file.display()),
+                action: "Remove Plug-in".into(),
+                irreversible: true,
             })
         }
         _ => None,

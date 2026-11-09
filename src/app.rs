@@ -2,7 +2,7 @@
 //! `Session::execute`, so everything here is also reachable headless.
 
 use crate::theme::{self, T};
-use crate::{dialogs, keymap, menus, panels, pathtools, platform, prefs, stage, timeline};
+use crate::{autosave, dialogs, keymap, menus, motion_editor, panels, pathtools, platform, prefs, stage, timeline};
 use std::collections::HashSet;
 use anicraft_engine::{Session, commands};
 use egui::{Key, Modifiers};
@@ -116,6 +116,14 @@ impl Tool {
             Tool::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere.",
         }
     }
+}
+
+/// What the timeline dock shows: the timeline, or the Motion Editor beside it (as in Animate).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BottomTab {
+    #[default]
+    Timeline,
+    MotionEditor,
 }
 
 /// Text being typed on the stage (view state until it is committed as one command).
@@ -247,6 +255,13 @@ pub struct App {
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
+    /// Timeline or Motion Editor, and the Motion Editor's view state: the property whose curve
+    /// it shows, the picked key (frames into the span), its drag and its list scroll.
+    pub bottom: BottomTab,
+    pub me_prop: anicraft_engine::doc::Property,
+    pub me_key: Option<u32>,
+    pub me_drag: Option<motion_editor::MeDrag>,
+    pub me_vscroll: f32,
     /// The frame grid was clicked more recently than the stage: Ctrl+X/C/V act on frames.
     pub timeline_focus: bool,
     /// A destructive command waiting for the user's decision (ADR 0004).
@@ -254,6 +269,10 @@ pub struct App {
     /// Undoable-tier confirmations the user chose not to see again this session.
     pub skip_confirm: HashSet<String>,
     pub palette: Option<dialogs::Palette>,
+    /// The open plug-in dialog (its preview is an open gesture).
+    pub plugin_dialog: Option<crate::plugins_ui::Dialog>,
+    /// Commands › Manage Plug-ins.
+    pub show_plugins: bool,
     pub show_shortcuts: bool,
     /// The window close was intercepted because of unsaved changes.
     pub close_dialog: bool,
@@ -275,6 +294,8 @@ pub struct App {
     shortcuts: Vec<(Modifiers, Key, &'static str)>,
     /// The shortcut editor is waiting for a key press: global shortcuts pause.
     pub key_capture: Option<dialogs::KeyCapture>,
+    /// Crash-recovery autosave and the copies earlier sessions left behind (ADR 0015).
+    pub recovery: autosave::Recovery,
 }
 
 /// How finished this version is, shown next to the version number (docs/release.md).
@@ -298,6 +319,7 @@ impl App {
         let keymap = keymap::Keymap::new(&prefs.shortcuts);
         let shortcuts = keymap.table();
         let library_sel = LibraryItem::first(&session.doc);
+        let (recovery, recovery_err) = autosave::Recovery::start(shot_mode);
         // Text lays out with the fonts on this computer plus the embedded interface font (so new
         // text has the same default everywhere). Scan them now, off the UI thread.
         anicraft_engine::text::Fonts::register(crate::theme::embedded_fonts());
@@ -339,10 +361,17 @@ impl App {
             points: Vec::new(),
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
+            bottom: BottomTab::Timeline,
+            me_prop: anicraft_engine::doc::Property::X,
+            me_key: None,
+            me_drag: None,
+            me_vscroll: 0.0,
             timeline_focus: false,
             confirm: None,
             skip_confirm: HashSet::new(),
             palette: None,
+            plugin_dialog: None,
+            show_plugins: false,
             show_shortcuts: false,
             close_dialog: false,
             allow_close: false,
@@ -357,9 +386,14 @@ impl App {
             keymap,
             shortcuts,
             key_capture: None,
+            recovery,
         };
         app.apply_prefs(&cc.egui_ctx);
         app.status_ok("Welcome to AniCraft. Press Enter to play the sample animation.");
+        if let Some(e) = recovery_err {
+            app.status_err(e);
+        }
+        crate::plugins_ui::load_at_start(&mut app);
         app
     }
 
@@ -475,7 +509,16 @@ impl App {
                 self.run("scene.select", json!({"scene": last}));
             }
             Some("files") => self.show_files = true,
+            Some("recovery") => {
+                // Work left behind by a session that didn't close cleanly (sample entries
+                // unless ANICRAFT_RECOVERY_DIR holds real ones).
+                if self.recovery.found.is_empty() {
+                    self.recovery.found = autosave::sample_entries();
+                }
+                self.recovery.show = true;
+            }
             Some("licenses") => self.show_licenses = true,
+            Some("about") => self.show_about = true,
             Some("zoom") => {
                 // 300% on the ball: many tiles, edges cross shapes (seam check).
                 self.view.fit = false;
@@ -487,6 +530,14 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some("plugins") => {
+                // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
+                let first = self.s.plugins.list().find(|p| !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
+                match first {
+                    Some(id) => crate::plugins_ui::open(self, &id),
+                    None => self.show_plugins = true,
+                }
+            }
             Some("select") => {
                 // The top layer's artwork selected, for its Properties.
                 self.run("layer.select", json!({"index": 0}));
@@ -552,6 +603,29 @@ impl App {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
                 }
             }
+            Some(which @ ("motion" | "motionspan")) => {
+                // The Star layer's span as a motion tween: it moves, turns and fades out, with
+                // an eased X and a custom Bezier on Y, shown in the Motion Editor.
+                self.run("layer.select", json!({"index": 1}));
+                if self.run("timeline.create_motion_tween", json!({"frame": 0})).is_some() {
+                    let frames = self.s.active_layer().and_then(|l| l.keyframes.first()).map_or(24, |k| k.duration);
+                    let (mid, end) = (frames / 2, frames.saturating_sub(1));
+                    let x0 = self.run("motion.info", json!({"frame": 0})).and_then(|v| v["values"]["x"].as_f64()).unwrap_or(0.0);
+                    let y0 = self.run("motion.info", json!({"frame": 0})).and_then(|v| v["values"]["y"].as_f64()).unwrap_or(0.0);
+                    for (p, f, v) in [("x", mid, x0 + 260.0), ("x", end, x0 + 420.0), ("y", mid, y0 + 160.0), ("y", end, y0), ("rotation", end, 270.0), ("alpha", end, 20.0)] {
+                        self.run("motion.set_key", json!({"property": p, "frame": f, "value": v}));
+                    }
+                    self.run("motion.set_ease", json!({"property": "x", "frame": 1, "easing": "CubicOut"}));
+                    self.run("motion.set_ease", json!({"property": "y", "frame": 1, "easing": {"bezier": [0.2, 1.6, 0.6, 1.0]}}));
+                    self.s.mark_saved();
+                }
+                if which == "motion" {
+                    self.bottom = BottomTab::MotionEditor;
+                }
+                self.me_prop = anicraft_engine::doc::Property::Y;
+                self.me_key = Some(0);
+                self.run("timeline.goto", json!({"frame": 6}));
+            }
             Some("pen") => {
                 // A pen path still being drawn: a corner, a smooth point with handles, a corner.
                 self.tool = Tool::Pen;
@@ -567,7 +641,7 @@ impl App {
 
     /// Any modal (prompt, confirmation, close guard) is open: global shortcuts pause.
     pub fn modal_open(&self) -> bool {
-        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog
+        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
     }
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
@@ -597,6 +671,22 @@ impl App {
                     Some(r) => self.status_ok(format!("{r} Save to keep it as an AniCraft document.")),
                     None => self.status_ok(if id == "file.open" { "Opened" } else { "New document" }),
                 }
+            }
+            "file.recover" => {
+                self.view.fit = true;
+                self.frame_sel = None;
+                self.library_sel = LibraryItem::first(&self.s.doc);
+                self.recovery.restored(v["recovered"].as_str().unwrap_or(""));
+                let name = v["name"].as_str().unwrap_or("Untitled");
+                self.status_ok(if v["original_newer"].as_bool() == Some(true) {
+                    format!("Restored “{name}” as a new document (the file on disk is newer). Save to keep it.")
+                } else {
+                    format!("Restored “{name}”. It isn't saved yet: Save to keep it.")
+                });
+            }
+            "file.discard_recovery" => {
+                self.recovery.discarded(v["discarded"].as_str().unwrap_or(""));
+                self.status_ok("Discarded the autosaved copy");
             }
             "file.save" | "file.save_as" => {
                 self.status_ok(format!("Saved {}", v["saved"].as_str().unwrap_or("")));
@@ -647,6 +737,7 @@ impl App {
                     _ => format!("Pasted {what} — Ctrl+Z to undo"),
                 });
             }
+            "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, &v),
             "timeline.remove_frame" => {
                 let n = v["removed"].as_u64().unwrap_or(1);
                 self.status_ok(format!("Removed {} — Ctrl+Z to undo", if n == 1 { "frame".to_string() } else { format!("{n} frames") }));
@@ -673,6 +764,19 @@ impl App {
             self.request(id, p);
             return;
         }
+        if id == "file.recovery_list" {
+            self.recovery.rescan();
+            self.recovery.show = !self.recovery.found.is_empty();
+            if !self.recovery.show {
+                self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
+            }
+            return;
+        }
+        if id == "plugin.list" {
+            // Commands › Manage Plug-ins (headless, the same command lists them).
+            self.show_plugins = true;
+            return;
+        }
         if id == "edit.paste" {
             // Paste in the centre of what you are looking at.
             let c = self.view_center_stage();
@@ -693,11 +797,12 @@ impl App {
             "file.export_video" => Some(("Export video (.webm or .mp4, made with your ffmpeg)", "path", "animation.webm".to_string())),
             "file.export_lottie" => Some(("Export Lottie animation (JSON, for web and apps)", "path", "animation.json".to_string())),
             "file.import" => Some(("Import to stage (SVG, PNG or JPEG)", "path", "drawing.svg".to_string())),
+            "plugin.install" => Some(("Install plug-in (.wasm file)", "path", "plugin.wasm".to_string())),
             "modify.convert_to_symbol" => Some(("Convert to symbol — name", "name", format!("Symbol {}", self.s.doc.library.len() + 1))),
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
-            let is_file = matches!(key, "path" | "dir") && id.starts_with("file.");
+            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || id == "plugin.install");
             if is_file && self.prefs.native_dialogs && self.shot.is_none() {
                 // The platform's own dialog (it blocks, as native dialogs do). Cancel = no-op.
                 self.playing = false;
@@ -943,6 +1048,7 @@ impl App {
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
         egui::Window::new("About AniCraft").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.add(egui::Image::new((app_mark(ctx).id(), egui::vec2(64.0, 64.0))));
             ui.heading("AniCraft");
             ui.label(format!("Version {} · {RELEASE_STAGE}", env!("CARGO_PKG_VERSION")));
             ui.label("Open-source 2D vector animation studio, written in Rust.");
@@ -1001,8 +1107,24 @@ impl App {
     }
 }
 
+/// The app icon (`assets/app-icon/`; the PNG carries its rounded corners) as a texture, decoded on
+/// first use and kept in the context. 128 px stays sharp at 64 pt on a 2× display.
+fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
+    const PNG: &[u8] = include_bytes!("../assets/app-icon/hicolor/128x128/apps/ai.storyteller.anicraft.png");
+    let id = egui::Id::new("anicraft-app-mark");
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return tex;
+    }
+    let icon = eframe::icon_data::from_png_bytes(PNG).unwrap_or_default();
+    let image = egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba);
+    let options = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
+    let tex = ctx.load_texture("anicraft-app-mark", image, options);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
 /// Opens a file or folder with the operating system's default handler.
-fn open_in_system(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new("explorer");
         c.arg(path);
@@ -1020,6 +1142,13 @@ fn open_in_system(path: &std::path::Path) -> Result<(), String> {
 }
 
 impl eframe::App for App {
+    /// A clean exit (saved, or the user chose Don't Save) removes this session's recovery
+    /// copy; otherwise the work is written once more and offered at the next start.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let clean = !self.s.is_dirty() || self.allow_close || self.shot.is_some();
+        self.recovery.finish(&self.s, clean);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
@@ -1058,6 +1187,8 @@ impl eframe::App for App {
         self.prompt_window(&ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
+        autosave::window(self, &ctx);
+        crate::plugins_ui::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {
@@ -1074,9 +1205,13 @@ impl eframe::App for App {
         self.files_window(&ctx);
 
         // Close a coalesced edit (property drags) once nothing is being dragged or typed.
-        if self.s.in_gesture() && self.drag == Drag::None && !ctx.egui_is_using_pointer() && ctx.memory(|m| m.focused().is_none()) {
+        // (A plug-in dialog keeps its preview gesture open until OK or Cancel.)
+        if self.s.in_gesture() && self.plugin_dialog.is_none() && self.drag == Drag::None && !ctx.egui_is_using_pointer() && ctx.memory(|m| m.focused().is_none()) {
             self.s.end_gesture();
         }
+
+        // After this frame's edits: start a recovery copy when one is due (off this thread).
+        autosave::tick(self, &ctx);
 
         // An edit late in this frame (after the stage drew) must be shown without waiting for
         // the next input event: egui only repaints on demand. This was the "drag commits after a

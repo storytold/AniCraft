@@ -8,11 +8,14 @@
 
 pub mod edges;
 pub mod import;
+pub mod text;
 /// The shared XML reader (`anicraft-xml`), under its old path.
 pub use anicraft_xml as xml;
 pub mod zip;
 
-pub use import::{Report, XflError, import_path, import_with};
+pub use import::{Report, XflError, import_path, import_with, import_with_fonts};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_tests;

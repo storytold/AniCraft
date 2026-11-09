@@ -42,6 +42,30 @@ impl Easing {
         }
     }
 
+    /// The cubic Bézier `(x1, y1, x2, y2)` that draws this ease, as the Motion Editor's handles:
+    /// exact for linear, the quad and cubic in/out eases and the classic slider; the two in-out
+    /// polynomials (two curves joined at the middle) get their usual one-curve approximations.
+    pub fn as_bezier(&self) -> (f32, f32, f32, f32) {
+        const THIRD: f32 = 1.0 / 3.0;
+        match *self {
+            Easing::Linear => (THIRD, THIRD, 2.0 * THIRD, 2.0 * THIRD),
+            // t² and t³ and their mirrors, with x(s) = s.
+            Easing::QuadIn => (THIRD, 0.0, 2.0 * THIRD, THIRD),
+            Easing::QuadOut => (THIRD, 2.0 * THIRD, 2.0 * THIRD, 1.0),
+            Easing::CubicIn => (THIRD, 0.0, 2.0 * THIRD, 0.0),
+            Easing::CubicOut => (THIRD, 1.0, 2.0 * THIRD, 1.0),
+            Easing::QuadInOut => (0.45, 0.0, 0.55, 1.0),
+            Easing::CubicInOut => (0.65, 0.0, 0.35, 1.0),
+            Easing::Classic(strength) => {
+                // The quadratic 2(1 − t)t·c + t², raised to a cubic.
+                let s = if strength.is_finite() { strength.clamp(-100.0, 100.0) / 100.0 } else { 0.0 };
+                let c = 0.5 + 0.5 * s;
+                (THIRD, 2.0 * c * THIRD, 2.0 * THIRD, (2.0 * c + 1.0) * THIRD)
+            }
+            Easing::CubicBezier(a, b, c, d) => (a, b, c, d),
+        }
+    }
+
     pub fn apply(&self, t: f32) -> f32 {
         let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
         match *self {
@@ -166,6 +190,24 @@ mod tests {
         assert_eq!(Easing::QuadIn.apply(5.0), 1.0);
         assert!(Easing::CubicBezier(f32::NAN, 0.0, 1.0, 1.0).apply(0.5).is_finite());
         assert!(Easing::Classic(f32::INFINITY).apply(0.5).is_finite());
+    }
+
+    #[test]
+    fn bezier_forms_draw_the_same_curves() {
+        // Exact for everything but the two in-out polynomials.
+        for e in [Easing::Linear, Easing::QuadIn, Easing::QuadOut, Easing::CubicIn, Easing::CubicOut, Easing::Classic(-60.0), Easing::Classic(100.0), Easing::CubicBezier(0.2, 1.4, 0.6, -0.3)] {
+            let (a, b, c, d) = e.as_bezier();
+            let bez = Easing::CubicBezier(a, b, c, d);
+            for i in 0..=20 {
+                let t = i as f32 / 20.0;
+                assert!((e.apply(t) - bez.apply(t)).abs() < 1e-3, "{e:?} at {t}");
+            }
+        }
+        for e in [Easing::QuadInOut, Easing::CubicInOut] {
+            let (a, b, c, d) = e.as_bezier();
+            let bez = Easing::CubicBezier(a, b, c, d);
+            assert!((0..=20).all(|i| (e.apply(i as f32 / 20.0) - bez.apply(i as f32 / 20.0)).abs() < 0.08), "{e:?}");
+        }
     }
 
     #[test]

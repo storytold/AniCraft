@@ -142,6 +142,9 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
                 let new = *remap.entry(old).or_insert_with(|| ElementId(s.doc.alloc_id()));
                 Arc::make_mut(e).id = new;
             }
+            if let Some(m) = k.motion.as_mut() {
+                m.target = *remap.entry(m.target).or_insert_with(|| ElementId(s.doc.alloc_id()));
+            }
             keys.push(Arc::new(k));
         }
         let Some(layer) = s.doc.timeline_mut(s.scene).layers.get_mut(row).map(Arc::make_mut) else { continue };

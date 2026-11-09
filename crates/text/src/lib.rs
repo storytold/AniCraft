@@ -13,6 +13,12 @@ use std::sync::{Arc, OnceLock};
 /// Families tried, in order, when none is asked for or the one asked for isn't installed.
 pub const DEFAULT_FAMILIES: &[&str] = &["Inter", "Arial", "Helvetica", "Helvetica Neue", "Segoe UI", "DejaVu Sans", "Liberation Sans", "Noto Sans", "Roboto", "Ubuntu"];
 
+/// Installed families tried for the device font `_serif`, in order.
+const SERIF_FAMILIES: &[&str] = &["Times New Roman", "Times", "Georgia", "DejaVu Serif", "Liberation Serif", "Noto Serif"];
+
+/// Installed families tried for the device font `_typewriter`, in order.
+const MONO_FAMILIES: &[&str] = &["Courier New", "Courier", "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Consolas", "Menlo"];
+
 /// Largest text block laid out (characters).
 pub const MAX_CHARS: usize = 100_000;
 
@@ -60,6 +66,24 @@ pub struct Layout {
     pub family: String,
     /// Characters the font has no glyph for (drawn as its "notdef" box).
     pub missing: usize,
+    /// Lines laid out (at least one), and the distance between their baselines (pixels): a
+    /// line that continued the block would start `lines × line_height` below its top.
+    pub lines: usize,
+    pub line_height: f32,
+}
+
+/// What a font name written by another program means on this computer: a PostScript name
+/// (`Arial-BoldMT`, as Animate documents store faces), a family name, or a device font
+/// (`_sans`, `_serif`, `_typewriter`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaceMatch {
+    /// The installed family, or `None` when it isn't installed (layout then falls back to the
+    /// default family).
+    pub family: Option<String>,
+    /// The family the name stands for, installed or not ("Times New Roman"), for reports.
+    pub wanted: String,
+    pub bold: bool,
+    pub italic: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -134,6 +158,46 @@ impl Fonts {
         &self.families
     }
 
+    /// The installed family named `name`, ignoring case and spaces ("SegoeUI" finds "Segoe UI").
+    fn installed(&self, name: &str) -> Option<String> {
+        let key = |s: &str| s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect::<String>();
+        let want = key(name);
+        if want.is_empty() {
+            return None;
+        }
+        self.families.iter().find(|f| key(f) == want).cloned()
+    }
+
+    /// What `name` (a PostScript name, a family or a device font) is on this computer: the
+    /// face with that PostScript name, else the family, else the family the name suggests
+    /// ([`guess_family`]).
+    pub fn find_face(&self, name: &str) -> FaceMatch {
+        let name = name.trim();
+        if name.is_empty() {
+            return FaceMatch { family: None, wanted: String::new(), bold: false, italic: false };
+        }
+        if let Some(f) = self.db.faces().find(|f| f.post_script_name.eq_ignore_ascii_case(name))
+            && let Some((family, _)) = f.families.first()
+        {
+            return FaceMatch { family: Some(family.clone()), wanted: family.clone(), bold: f.weight.0 >= 600, italic: f.style != fontdb::Style::Normal };
+        }
+        let device: Option<&[&str]> = match name {
+            "_sans" => Some(DEFAULT_FAMILIES),
+            "_serif" => Some(SERIF_FAMILIES),
+            "_typewriter" => Some(MONO_FAMILIES),
+            _ => None,
+        };
+        if let Some(list) = device {
+            let family = list.iter().find_map(|f| self.installed(f));
+            return FaceMatch { wanted: family.clone().unwrap_or_else(|| name.to_string()), family, bold: false, italic: false };
+        }
+        if let Some(family) = self.installed(name) {
+            return FaceMatch { wanted: family.clone(), family: Some(family), bold: false, italic: false };
+        }
+        let (wanted, bold, italic) = guess_family(name);
+        FaceMatch { family: self.installed(&wanted), wanted, bold, italic }
+    }
+
     /// The family used for `asked`: itself when installed (any case), else the default.
     pub fn resolve(&self, asked: &str) -> Option<String> {
         let find = |name: &str| self.families.iter().find(|f| f.eq_ignore_ascii_case(name)).cloned();
@@ -161,6 +225,32 @@ impl Fonts {
         let laid = self.db.with_face_data(id, |data, index| lay_out(data, index, text, style)).flatten().ok_or(TextError::NoFonts)?;
         Ok(Layout { family, ..laid })
     }
+}
+
+/// The family, boldness and slant a PostScript name suggests, for fonts that aren't installed:
+/// `TimesNewRomanPS-BoldItalicMT` is Times New Roman, bold and italic.
+pub fn guess_family(postscript: &str) -> (String, bool, bool) {
+    let name: String = postscript.trim().chars().take(256).collect();
+    let (base, style) = name.split_once(['-', ',']).unwrap_or((&name, ""));
+    let style = style.to_ascii_lowercase();
+    let bold = ["bold", "black", "heavy"].iter().any(|w| style.contains(w));
+    let italic = ["italic", "oblique"].iter().any(|w| style.contains(w));
+    // The suffixes PostScript names give Monotype and PostScript versions of a face.
+    let mut base = base;
+    for suffix in ["MT", "PS"] {
+        base = base.strip_suffix(suffix).filter(|b| !b.is_empty()).unwrap_or(base);
+    }
+    // CamelCase to words: "HelveticaNeue" → "Helvetica Neue"; capital runs stay ("ComicSansMS").
+    let mut family = String::with_capacity(base.len() + 4);
+    let mut prev: Option<char> = None;
+    for c in base.chars() {
+        if c.is_uppercase() && prev.is_some_and(|p| p.is_lowercase() || p.is_ascii_digit()) {
+            family.push(' ');
+        }
+        family.push(c);
+        prev = Some(c);
+    }
+    (family.trim().to_string(), bold, italic)
 }
 
 /// Clamps a style to sane ranges (sizes from 1 to 2000 px, spacing within ±1000 px).
@@ -257,7 +347,7 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
         }
     }
     let height = (lines.len().max(1) as f32 - 1.0) * line_height + (metrics.ascent - metrics.descent);
-    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing })
+    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing, lines: lines.len().max(1), line_height })
 }
 
 /// Shapes `text` in one direction. Glyphs come back in visual order (left to right), clusters
@@ -436,5 +526,51 @@ mod tests {
         assert_eq!((s.size, s.letter_spacing, s.width), (32.0, 1000.0, None));
         assert_eq!(fonts.layout(&"x".repeat(MAX_CHARS + 1), &style(10.0)), Err(TextError::TooLong));
         assert_eq!(Fonts::from_faces(Vec::new()).layout("x", &style(10.0)), Err(TextError::NoFonts));
+    }
+
+    #[test]
+    fn postscript_names_suggest_families() {
+        let g = |n: &str| guess_family(n);
+        assert_eq!(g("ArialMT"), ("Arial".into(), false, false));
+        assert_eq!(g("Arial-BoldMT"), ("Arial".into(), true, false));
+        assert_eq!(g("TimesNewRomanPS-BoldItalicMT"), ("Times New Roman".into(), true, true));
+        assert_eq!(g("TimesNewRomanPSMT"), ("Times New Roman".into(), false, false));
+        assert_eq!(g("HelveticaNeue-LightOblique"), ("Helvetica Neue".into(), false, true));
+        assert_eq!(g("ComicSansMS"), ("Comic Sans MS".into(), false, false));
+        assert_eq!(g("Myriad Pro"), ("Myriad Pro".into(), false, false));
+        assert_eq!(g("Gotham-Black"), ("Gotham".into(), true, false));
+        assert_eq!(g(""), (String::new(), false, false));
+        assert_eq!(g("MT"), ("MT".into(), false, false), "a suffix alone is the name");
+    }
+
+    #[test]
+    fn faces_are_found_by_postscript_name_family_or_device_font() {
+        let none = Fonts::from_faces(Vec::new());
+        let m = none.find_face("Futura-Bold");
+        assert_eq!((m.family, m.wanted.as_str(), m.bold, m.italic), (None, "Futura", true, false));
+        assert_eq!(none.find_face("  ").wanted, "");
+        let Some(fonts) = fonts() else { return };
+        let face = fonts.db.faces().find(|f| !f.post_script_name.is_empty() && f.families.first().is_some_and(|(n, _)| !n.starts_with('.')));
+        if let Some(face) = face {
+            let m = fonts.find_face(&face.post_script_name);
+            assert!(m.family.is_some(), "{}", face.post_script_name);
+        }
+        let first = fonts.families()[0].clone();
+        assert_eq!(fonts.find_face(&first.to_uppercase()).family, Some(first.clone()));
+        assert_eq!(fonts.find_face(&first.replace(' ', "")).family, Some(first), "spaces don't matter");
+        assert!(fonts.find_face("_sans").family.is_some(), "the default families include an installed one");
+        let missing = fonts.find_face("NoSuchFamily-Italic");
+        assert_eq!((missing.family, missing.wanted.as_str(), missing.italic), (None, "No Such Family", true));
+    }
+
+    #[test]
+    fn layouts_report_their_lines() {
+        let Some(fonts) = fonts() else { return };
+        let one = fonts.layout("one", &style(20.0)).unwrap();
+        let three = fonts.layout("one\ntwo\nthree", &style(20.0)).unwrap();
+        assert_eq!((one.lines, three.lines), (1, 3));
+        assert!((one.line_height - three.line_height).abs() < 1e-3 && one.line_height >= 10.0);
+        assert!((three.height - one.height - 2.0 * one.line_height).abs() < 0.01);
+        assert_eq!(fonts.layout("", &style(20.0)).unwrap().lines, 1);
     }
 }

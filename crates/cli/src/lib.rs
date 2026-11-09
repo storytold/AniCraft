@@ -30,6 +30,10 @@ USAGE:
   anicraft-cli mcp [file|--sample]       Model Context Protocol server on stdin/stdout,
                                          for AI assistants (see docs/mcp.md)
 
+  --plugins <folder>   loads the WebAssembly plug-ins in a folder first (also the
+                       ANICRAFT_PLUGINS environment variable); see docs/plugins.md.
+                       Without it, headless runs use no plug-ins, so they are repeatable.
+
 Frames on the command line are 1-based, as in the timeline.";
 
 /// Parsed flags: positional args plus `--key value` pairs.
@@ -77,6 +81,19 @@ pub fn open_session(src: Option<&str>) -> Result<Session, String> {
     }
 }
 
+/// [`open_session`], with the plug-ins of `--plugins <folder>` (or `ANICRAFT_PLUGINS`) loaded.
+pub fn session(a: &Args, src: Option<&str>) -> Result<Session, String> {
+    let mut s = open_session(src)?;
+    let folder = a.flag("plugins").map(str::to_string).or_else(|| std::env::var("ANICRAFT_PLUGINS").ok().filter(|v| !v.trim().is_empty()));
+    if let Some(folder) = folder {
+        let r = exec(&mut s, "plugin.reload", &json!({"folder": folder}))?;
+        for f in r["failed"].as_array().into_iter().flatten() {
+            eprintln!("plug-in {} not loaded: {}", f["file"].as_str().unwrap_or(""), f["error"].as_str().unwrap_or(""));
+        }
+    }
+    Ok(s)
+}
+
 fn exec(s: &mut Session, id: &str, params: &Value) -> Result<Value, String> {
     s.execute(id, params).map_err(|e| format!("{id}: {e}"))
 }
@@ -101,11 +118,11 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             serde_json::to_string_pretty(&list).map_err(|e| e.to_string())
         }
         "info" => {
-            let s = open_session(Some(src.ok_or("info needs a file or --sample")?))?;
+            let s = session(&a, Some(src.ok_or("info needs a file or --sample")?))?;
             serde_json::to_string_pretty(&s.info()).map_err(|e| e.to_string())
         }
         "render" => {
-            let mut s = open_session(Some(src.ok_or("render needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("render needs a file or --sample")?))?;
             let out = a.flag("out").ok_or("render needs --out <file.png>")?;
             let mut p = json!({"path": out, "frame": one_based(&a, "frame")?.unwrap_or(0)});
             if let Some(sc) = a.num::<f32>("scale")? {
@@ -114,7 +131,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             exec(&mut s, "file.export_png", &p).map(|v| v.to_string())
         }
         "render-seq" => {
-            let mut s = open_session(Some(src.ok_or("render-seq needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("render-seq needs a file or --sample")?))?;
             let dir = a.flag("out-dir").ok_or("render-seq needs --out-dir <dir>")?;
             let mut p = json!({"dir": dir});
             if let Some(f) = one_based(&a, "from")? {
@@ -129,7 +146,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             exec(&mut s, "file.export_png_sequence", &p).map(|v| v.to_string())
         }
         "gif" => {
-            let mut s = open_session(Some(src.ok_or("gif needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("gif needs a file or --sample")?))?;
             let out = a.flag("out").ok_or("gif needs --out <anim.gif>")?;
             let mut p = json!({"path": out});
             if let Some(f) = one_based(&a, "from")? {
@@ -162,7 +179,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             exec(&mut s, "file.save", &json!({"path": out})).map(|v| v.to_string())
         }
         "exec" => {
-            let mut s = open_session(Some(src.ok_or("exec needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("exec needs a file or --sample")?))?;
             let id = a.positional.get(1).ok_or("exec needs a command id")?;
             let params: Value = match a.positional.get(2) {
                 Some(t) => serde_json::from_str(t).map_err(|e| format!("params are not JSON: {e}"))?,
@@ -175,7 +192,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             Ok(v.to_string())
         }
         "run" => {
-            let mut s = open_session(Some(src.ok_or("run needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("run needs a file or --sample")?))?;
             let script = a.positional.get(1).ok_or("run needs a script.json")?;
             let text = std::fs::read_to_string(script).map_err(|e| format!("{script}: {e}"))?;
             // Windows editors often save UTF-8 with a byte-order mark; JSON parsers reject it.
@@ -193,14 +210,14 @@ pub fn run(argv: &[String]) -> Result<String, String> {
         }
         "bench" => bench(&a),
         "serve" => {
-            let mut s = open_session(src)?;
+            let mut s = session(&a, src)?;
             let stdin = std::io::stdin();
             let mut stdout = std::io::stdout();
             serve(&mut s, stdin.lock(), &mut stdout).map_err(|e| e.to_string())?;
             Ok(String::new())
         }
         "mcp" => {
-            let mut s = open_session(src)?;
+            let mut s = session(&a, src)?;
             let stdin = std::io::stdin();
             let mut stdout = std::io::stdout();
             mcp::serve(&mut s, stdin.lock(), &mut stdout).map_err(|e| e.to_string())?;
@@ -236,7 +253,41 @@ pub const TIME_BUDGETS: &[(&str, &str, f64)] = &[
     ("hit_test_us", "hit test (µs)", 200.0),
     ("file.save_ms", "save the 65 MB file (ms)", 500.0),
     ("file.load_ms", "load the 65 MB file (ms)", 500.0),
+    ("autosave.ui_us", "autosave: time on the editing thread (µs)", 1000.0),
+    ("autosave.background_ms", "autosave the 65 MB file in the background (ms)", 2000.0),
 ];
+
+/// One crash-recovery autosave of `doc` as the app does it: an `Autosaver` in a scratch
+/// recovery folder, timing what the editing thread pays (the hand-off) apart from the
+/// background serialize + atomic write (temp file, flush to disk, rename).
+fn bench_autosave(doc: &anicraft_doc::Document) -> Value {
+    use anicraft_engine::recovery::{Autosaver, Outcome, SessionLock};
+    let dir = std::env::temp_dir().join(format!("anicraft-bench-recovery-{}", std::process::id()));
+    let Ok(mut saver) = SessionLock::acquire(&dir).and_then(Autosaver::start) else { return json!({"error": "no scratch folder"}) };
+    let t = Instant::now();
+    saver.write(doc.clone(), None);
+    let ui_us = t.elapsed().as_secs_f64() * 1e6;
+    let mut out = json!({"error": "timed out"});
+    while t.elapsed().as_secs() < 120 {
+        if let Some(o) = saver.poll().into_iter().next() {
+            let background_ms = t.elapsed().as_secs_f64() * 1000.0;
+            out = match o {
+                Outcome::Written { stats, .. } => json!({
+                    "ui_us": round(ui_us), "background_ms": round(background_ms),
+                    "serialize_ms": round(stats.serialize_ms), "write_ms": round(stats.write_ms),
+                    "mb": round(stats.bytes as f64 / 1048576.0),
+                }),
+                Outcome::Failed { error, .. } => json!({"error": error}),
+                Outcome::Cleared { .. } => out,
+            };
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    saver.finish(None);
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
 
 /// Compares bench output with [`TIME_BUDGETS`]: one row per budget, and the ones missed.
 pub fn check_budgets(out: &Value) -> (Vec<Value>, Vec<String>) {
@@ -287,6 +338,8 @@ pub fn bench(a: &Args) -> Result<String, String> {
         let _ = format::from_json(&json_text);
     });
 
+    let autosave = bench_autosave(&doc);
+
     let eval_ms = avg_ms(48, |i| {
         let _ = evaluate(&doc, (i * 5) % frames.max(1));
     });
@@ -332,6 +385,7 @@ pub fn bench(a: &Args) -> Result<String, String> {
         "document": {"layers": layers, "shapes_per_layer": shapes, "frames": frames, "element_instances": instances,
                      "estimated_mb": round(document_bytes(&s.doc) as f64 / 1048576.0), "build_ms": round(build_ms)},
         "file": {"json_mb": round(json_text.len() as f64 / 1048576.0), "save_ms": round(save_ms), "load_ms": round(load_ms)},
+        "autosave": autosave,
         "evaluate_ms_per_frame": round(eval_ms),
         "render_1080p_ms_per_frame": round(render_ms), "render_shapes_drawn": drawn,
         "render_zoom400_ms_per_frame": round(zoom_ms), "render_zoom400_culled": culled,
@@ -472,7 +526,7 @@ mod tests {
     #[test]
     fn budget_check_reads_bench_output() {
         let mut out = json!({"edit_command_ms": 0.01, "undo_ms": 0.01, "snapshot_clone_us": 0.4, "evaluate_ms_per_frame": 1.5,
-            "render_1080p_ms_per_frame": 20.0, "render_zoom400_ms_per_frame": 10.0, "hit_test_us": 50.0, "file": {"save_ms": 100.0}});
+            "render_1080p_ms_per_frame": 20.0, "render_zoom400_ms_per_frame": 10.0, "hit_test_us": 50.0, "file": {"save_ms": 100.0}, "autosave": {"ui_us": 5.0, "background_ms": 300.0}});
         let (rows, missed) = check_budgets(&out);
         assert_eq!(rows.len(), TIME_BUDGETS.len());
         assert_eq!(missed, ["render 1080p (ms): 20 (budget 16.7)", "load the 65 MB file (ms): not measured"]);
@@ -483,6 +537,17 @@ mod tests {
         if cfg!(debug_assertions) {
             assert!(run(&["bench".into(), "--check".into(), "yes".into()]).unwrap_err().contains("release"));
         }
+    }
+
+    #[test]
+    fn plugins_folder_flag() {
+        let dir = std::env::temp_dir().join(format!("anicraft-cli-plugins-{}", std::process::id()));
+        let argv: Vec<String> = ["--sample", "--plugins", dir.to_str().unwrap()].iter().map(|s| s.to_string()).collect();
+        let a = Args::parse(&argv).unwrap();
+        let s = session(&a, Some("--sample")).unwrap();
+        // A folder that doesn't exist yet is the plug-ins folder, with nothing in it.
+        assert_eq!(s.plugins.folder(), Some(dir.as_path()));
+        assert!(s.plugins.is_empty());
     }
 
     #[test]
