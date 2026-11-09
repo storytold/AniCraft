@@ -35,6 +35,8 @@ The default `bench` scenario: 50 layers × 200 shapes × 240 frames, 200k elemen
 | File size | < 400 bytes per element instance | 342 ✅ | test, every PR |
 | Save / load 65 MB file | < 500 ms | 123 / 146 ms ✅ | `bench --check` |
 | UI frame while rendering | never blocked | worker thread ✅ | design (ADR 0002) |
+| Autosave: time on the editing thread | < 1 ms | 7–15 µs ✅ | `bench --check` |
+| Autosave of the 65 MB file, in the background | < 2 s | 183–184 ms ✅ | `bench --check` |
 
 **1080p render, back under budget (2026-11-06).** It had drifted to 19.4–20.2 ms (v0.1.0
 measured 18.0–18.9 ms on the same machine; the 16.5 ms of 2026-10-28 didn't reproduce).
@@ -49,6 +51,19 @@ Timing each step of a frame showed the time was outside the drawing itself:
 
 Output is unchanged: the sample's frames and a bitmap document render byte-identical before
 and after.
+
+**Crash-recovery autosave (2026-11-09, ADR 0015).** `bench` now runs one autosave the way the
+app does: an `Autosaver` in a scratch recovery folder. The editing thread only hands over an
+`Arc` snapshot of the document; the worker serializes and writes atomically (temp file,
+flushed to disk, renamed).
+
+| Document | Editing thread | Serialize | Write + flush + rename | Total, in the background |
+|---|---|---|---|---|
+| 200k instances, 65 MB | 6.6–15.4 µs | 124–128 ms | 52–55 ms | 183–184 ms |
+| 800k instances (100 × 400 × 240), 262 MB | 9.9 µs | 501 ms | 210 ms | 725 ms |
+
+With the default "every minute or 25 changes", even the 262 MB document keeps the worker busy
+for about 1% of the time, and the UI never waits for it.
 
 ### How budgets are enforced
 
@@ -68,3 +83,4 @@ and after.
 * [ADR 0001](adr/0001-undo-persistent-snapshots.md): persistent document and snapshot undo
 * [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
 * [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
+* [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread

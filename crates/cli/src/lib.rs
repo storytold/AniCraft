@@ -236,7 +236,41 @@ pub const TIME_BUDGETS: &[(&str, &str, f64)] = &[
     ("hit_test_us", "hit test (µs)", 200.0),
     ("file.save_ms", "save the 65 MB file (ms)", 500.0),
     ("file.load_ms", "load the 65 MB file (ms)", 500.0),
+    ("autosave.ui_us", "autosave: time on the editing thread (µs)", 1000.0),
+    ("autosave.background_ms", "autosave the 65 MB file in the background (ms)", 2000.0),
 ];
+
+/// One crash-recovery autosave of `doc` as the app does it: an `Autosaver` in a scratch
+/// recovery folder, timing what the editing thread pays (the hand-off) apart from the
+/// background serialize + atomic write (temp file, flush to disk, rename).
+fn bench_autosave(doc: &anicraft_doc::Document) -> Value {
+    use anicraft_engine::recovery::{Autosaver, Outcome, SessionLock};
+    let dir = std::env::temp_dir().join(format!("anicraft-bench-recovery-{}", std::process::id()));
+    let Ok(mut saver) = SessionLock::acquire(&dir).and_then(Autosaver::start) else { return json!({"error": "no scratch folder"}) };
+    let t = Instant::now();
+    saver.write(doc.clone(), None);
+    let ui_us = t.elapsed().as_secs_f64() * 1e6;
+    let mut out = json!({"error": "timed out"});
+    while t.elapsed().as_secs() < 120 {
+        if let Some(o) = saver.poll().into_iter().next() {
+            let background_ms = t.elapsed().as_secs_f64() * 1000.0;
+            out = match o {
+                Outcome::Written { stats, .. } => json!({
+                    "ui_us": round(ui_us), "background_ms": round(background_ms),
+                    "serialize_ms": round(stats.serialize_ms), "write_ms": round(stats.write_ms),
+                    "mb": round(stats.bytes as f64 / 1048576.0),
+                }),
+                Outcome::Failed { error, .. } => json!({"error": error}),
+                Outcome::Cleared { .. } => out,
+            };
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    saver.finish(None);
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
 
 /// Compares bench output with [`TIME_BUDGETS`]: one row per budget, and the ones missed.
 pub fn check_budgets(out: &Value) -> (Vec<Value>, Vec<String>) {
@@ -287,6 +321,8 @@ pub fn bench(a: &Args) -> Result<String, String> {
         let _ = format::from_json(&json_text);
     });
 
+    let autosave = bench_autosave(&doc);
+
     let eval_ms = avg_ms(48, |i| {
         let _ = evaluate(&doc, (i * 5) % frames.max(1));
     });
@@ -332,6 +368,7 @@ pub fn bench(a: &Args) -> Result<String, String> {
         "document": {"layers": layers, "shapes_per_layer": shapes, "frames": frames, "element_instances": instances,
                      "estimated_mb": round(document_bytes(&s.doc) as f64 / 1048576.0), "build_ms": round(build_ms)},
         "file": {"json_mb": round(json_text.len() as f64 / 1048576.0), "save_ms": round(save_ms), "load_ms": round(load_ms)},
+        "autosave": autosave,
         "evaluate_ms_per_frame": round(eval_ms),
         "render_1080p_ms_per_frame": round(render_ms), "render_shapes_drawn": drawn,
         "render_zoom400_ms_per_frame": round(zoom_ms), "render_zoom400_culled": culled,
@@ -472,7 +509,7 @@ mod tests {
     #[test]
     fn budget_check_reads_bench_output() {
         let mut out = json!({"edit_command_ms": 0.01, "undo_ms": 0.01, "snapshot_clone_us": 0.4, "evaluate_ms_per_frame": 1.5,
-            "render_1080p_ms_per_frame": 20.0, "render_zoom400_ms_per_frame": 10.0, "hit_test_us": 50.0, "file": {"save_ms": 100.0}});
+            "render_1080p_ms_per_frame": 20.0, "render_zoom400_ms_per_frame": 10.0, "hit_test_us": 50.0, "file": {"save_ms": 100.0}, "autosave": {"ui_us": 5.0, "background_ms": 300.0}});
         let (rows, missed) = check_budgets(&out);
         assert_eq!(rows.len(), TIME_BUDGETS.len());
         assert_eq!(missed, ["render 1080p (ms): 20 (budget 16.7)", "load the 65 MB file (ms): not measured"]);
