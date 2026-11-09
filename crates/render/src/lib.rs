@@ -340,8 +340,8 @@ fn filtered_runs(dl: &DisplayList) -> Vec<FilteredRun> {
     out
 }
 
-/// Largest buffer a filtered group is drawn into (pixels).
-const MAX_FILTER_PIXELS: i64 = 64 * 1024 * 1024;
+/// Largest buffer a filtered group is drawn into (pixels): what [`render`] accepts.
+const MAX_FILTER_PIXELS: i64 = MAX_PIXELS as i64;
 
 /// Draws a filtered group's items on their own (the group neutral, clips from outside it
 /// left for later), applies its filters, and returns the result as one image op in the group,
@@ -360,7 +360,11 @@ fn filtered_group(dl: &DisplayList, run: &FilteredRun, view: &View, surface: IRe
     if r.is_empty() || !r.min.x.is_finite() || !r.max.y.is_finite() {
         return Ok(None);
     }
-    let reach = margin as i32;
+    // How far past the surface it draws, at most so far that the buffer still fits (a filter
+    // reaching further is cut there, well off the surface).
+    let edge = (MAX_FILTER_PIXELS as f64).sqrt() as i64;
+    let cap = ((edge - (surface.width() as i64).max(surface.height() as i64)) / 2).clamp(0, i64::from(i32::MAX / 4)) as i32;
+    let reach = (margin as i32).clamp(0, cap);
     let limit = IRect { x0: surface.x0 - reach, y0: surface.y0 - reach, x1: surface.x1 + reach, y1: surface.y1 + reach };
     let b = IRect { x0: r.min.x.floor() as i32 - reach, y0: r.min.y.floor() as i32 - reach, x1: r.max.x.ceil() as i32 + reach, y1: r.max.y.ceil() as i32 + reach }.intersect(&limit);
     if b.is_empty() || (b.width() as i64) * (b.height() as i64) > MAX_FILTER_PIXELS {
