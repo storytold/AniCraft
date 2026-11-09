@@ -48,7 +48,15 @@ fn plugin(app: &App, id: &str) -> Option<Arc<Plugin>> {
 
 /// Why `p` can't run now (it works on the selection and nothing is selected).
 fn blocked(s: &Session, p: &Plugin) -> Option<&'static str> {
+    if p.manifest().kind == anicraft_engine::plugins::Kind::FrameScript {
+        return Some("A frame script: it runs while the movie plays. Pick it for a keyframe in the Actions panel (F9)");
+    }
     (p.manifest().selection == SelectionNeed::Required && s.selection.is_empty()).then_some("Select some artwork first")
+}
+
+/// Plug-ins that run as commands (frame scripts run from keyframes instead).
+pub fn is_command(p: &Plugin) -> bool {
+    p.manifest().kind == anicraft_engine::plugins::Kind::Command
 }
 
 /// The menu label: an ellipsis when it asks for settings first.
@@ -108,7 +116,7 @@ fn preview(app: &mut App) {
 pub fn menu(app: &mut App, ui: &mut egui::Ui, cmds: &[CommandSpec], item: impl Fn(&mut App, &mut egui::Ui, &CommandSpec)) {
     ui.menu_button("Plug-ins", |ui| {
         ui.set_min_width(220.0);
-        let list: Vec<Arc<Plugin>> = app.s.plugins.list().cloned().collect();
+        let list: Vec<Arc<Plugin>> = app.s.plugins.list().filter(|p| is_command(p)).cloned().collect();
         if list.is_empty() {
             ui.label(text(Type::Caption, "No plug-ins installed yet"));
         }

@@ -31,7 +31,8 @@ app/                         workspace root; the root package is the desktop app
     geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test
     plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0017)
     audio     L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing/resampling, WAV, waveform peaks
-    doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
+    actions   L0  Timeline action IR: stop/play/goto, instance targets, button events, frame scripts
+    doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols) + player
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
     gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019; shell feature `gpu-stage`)
@@ -45,7 +46,8 @@ app/                         workspace root; the root package is the desktop app
 | L0 | `anicraft-geom` | std, serde |
 | L0 | `anicraft-plugins` | wasmi, serde_json (knows nothing of documents; the engine is its host) |
 | L0 | `anicraft-audio` | std, lewton, nanomp3 |
-| L1 | `anicraft-doc` | geom, audio |
+| L0 | `anicraft-actions` | serde (knows nothing of documents: targets are name paths) |
+| L1 | `anicraft-doc` | geom, audio, actions |
 | L2 | `anicraft-render` | geom, doc, rayon, png |
 | L3 | `anicraft-engine` | geom, doc, render, serde_json |
 | L3 | `anicraft-gpu` | geom, doc, render, wgpu (the version egui brings), pollster, bytemuck |
@@ -67,9 +69,11 @@ Document
 │           ├── start, duration        (frames covered by this keyframe)
 │           ├── elements: [Element]
 │           │   ├── Shape { path, fill: Paint?, stroke: Stroke?, transform }
-│           │   └── Symbol instance { symbol id, transform, color effect, loop mode, first frame }
+│           │   └── Symbol instance { symbol id, transform, color effect, loop mode, first frame,
+│           │                         event handlers (buttons, movie clips; ADR 0024) }
 │           ├── tween: Tween? { kind: Classic | Shape, easing: Easing }
-│           └── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+│           ├── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+│           └── script: FrameScript? (actions, or a frame-script plug-in entry; ADR 0024)
 ├── library: [Symbol { id, name, kind: Graphic | MovieClip | Button, timeline }]
 ├── bitmaps: [Bitmap { id, name, PNG data }]
 └── sounds: [Sound { id, name, format, rate, channels, frames, data as imported }]
@@ -101,6 +105,19 @@ cyclic library in a malformed file renders what it can instead of overflowing th
 `Easing` is `Linear`, `QuadIn/Out/InOut`, `CubicIn/Out/InOut`, `Classic(strength −100…100)`
 (the traditional single-slider ease) or `CubicBezier(x1, y1, x2, y2)` solved with Newton
 iterations and a bisection fallback, the same model CSS uses.
+
+### Interactive playback
+
+Interactivity is time as a function too (ADR 0013, ADR 0024). Keyframes and button or movie
+clip instances carry lists of typed actions (`anicraft-actions`) or a frame-script plug-in
+entry; nothing in the document changes while a movie plays. `player::step(doc, &state,
+&events, scripts) -> Step` advances a `PlayerState` (the main timeline's scene and playhead,
+each movie clip instance's playhead by its element-id path, script-set properties, the
+pointer) by one frame, runs the actions of the frames entered and routes pointer events to
+buttons by their Hit frame; `evaluate_player(doc, &state)` draws it with the same code as
+`evaluate`, which stays pure and script-free for the stage and every export. Budgets bound a
+step, and nothing reads a clock, so steps are deterministic. Frame scripts run through the
+`ScriptHost` trait, which the engine implements over the plug-in sandbox.
 
 ### Sound
 

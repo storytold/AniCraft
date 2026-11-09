@@ -291,6 +291,11 @@ pub struct App {
     pub plugin_dialog: Option<crate::plugins_ui::Dialog>,
     /// Commands › Manage Plug-ins.
     pub show_plugins: bool,
+    /// Window › Actions (F9), and what it addresses.
+    pub show_actions: bool,
+    pub actions: crate::actions_panel::State,
+    /// Control › Test Movie: the movie playing in its own window.
+    pub test_movie: Option<crate::test_movie::TestMovie>,
     pub show_shortcuts: bool,
     /// The window close was intercepted because of unsaved changes.
     pub close_dialog: bool,
@@ -333,11 +338,11 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
     ("Alt+Shift+O", "view.onion"),
     ("Ctrl+Alt+A", "view.select_all_frames"),
     ("Ctrl+Alt+8", "view.align_to_stage"),
-    ("Ctrl+Enter", "view.test"),
     // Keyboard focus between the panels (ADR 0022). F6 alone is Insert Keyframe, as animators
     // expect; Ctrl+F6 is the next-pane key of Windows apps.
     ("Ctrl+F6", "view.next_panel"),
     ("Ctrl+Shift+F6", "view.prev_panel"),
+    ("F9", "view.actions"),
 ];
 
 impl App {
@@ -409,6 +414,9 @@ impl App {
             palette: None,
             plugin_dialog: None,
             show_plugins: false,
+            show_actions: false,
+            actions: crate::actions_panel::State::default(),
+            test_movie: None,
             show_shortcuts: false,
             close_dialog: false,
             allow_close: false,
@@ -588,10 +596,27 @@ impl App {
             Some("confirm") => self.request("layer.delete", json!({})),
             Some("plugins") => {
                 // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
-                let first = self.s.plugins.list().find(|p| !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
+                let first = self.s.plugins.list().find(|p| crate::plugins_ui::is_command(p) && !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
                 match first {
                     Some(id) => crate::plugins_ui::open(self, &id),
                     None => self.show_plugins = true,
+                }
+            }
+            Some(which @ ("actions" | "testmovie")) => {
+                // The interactive sample: its Play button selected with the Actions panel on
+                // its events, or playing in Test Movie with the pointer over the button.
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 1}));
+                if which == "actions" {
+                    if let Some(id) = self.s.visible_elements().iter().find(|e| e.name == "play_btn").map(|e| e.id.0) {
+                        self.run("element.select", json!({"ids": [id]}));
+                    }
+                    crate::actions_panel::open(self, crate::actions_panel::Tab::Instance);
+                } else {
+                    self.run("layer.select", json!({"index": 0}));
+                    crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_pointer(self);
                 }
             }
             Some("select") => {
@@ -913,6 +938,12 @@ impl App {
             crate::shape_hints::add(self);
             return;
         }
+        if id == "control.test_movie" {
+            // Control › Test Movie: the player in its own window (headless, the command plays
+            // the movie and reports).
+            crate::test_movie::open(self);
+            return;
+        }
         if id == "plugin.list" {
             // Commands › Manage Plug-ins (headless, the same command lists them).
             self.show_plugins = true;
@@ -1204,13 +1235,7 @@ impl App {
                         self.run("timeline.goto", json!({"frame": 0}));
                     }
                 }
-                "view.test" => {
-                    // Test: play from frame 1.
-                    self.run("timeline.goto", json!({"frame": 0}));
-                    if !self.playing {
-                        self.toggle_play();
-                    }
-                }
+                "view.actions" => self.show_actions = !self.show_actions,
                 id if id.starts_with("tool.") => tool = keymap::tool_for(id).or(tool),
                 _ => self.invoke(id),
             }
@@ -1466,6 +1491,8 @@ impl App {
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
+        crate::actions_panel::show(self, &ctx);
+        crate::test_movie::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {

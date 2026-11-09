@@ -51,6 +51,25 @@ pub struct Limits {
     pub max_log_lines: usize,
 }
 
+impl Limits {
+    /// The limits of one frame-script run (ADR 0024): it runs between two frames of a playing
+    /// movie, so it gets a sliver of a command run's budget. The player shares one budget of
+    /// this many instructions among every frame script of a frame.
+    pub fn frame_script() -> Limits {
+        Limits {
+            fuel: 20_000_000,
+            wall_time_ms: 100,
+            max_calls: 1_000,
+            max_request_bytes: 64 << 10,
+            max_response_bytes: 1 << 20,
+            max_total_request_bytes: 1 << 20,
+            max_params_bytes: 16 << 10,
+            max_log_lines: 50,
+            ..Limits::default()
+        }
+    }
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -237,12 +256,12 @@ impl Plugin {
         let load_fuel = p.limits.fuel / 10;
         let mut live = p.instantiate(load_fuel)?;
         let version: TypedFunc<(), i32> = live.func("ac_abi_version")?;
-        let v = p.call(&mut live, &version, (), load_fuel, &deadline, &mut None)?;
+        let v = p.call(&mut live, &version, (), load_fuel, &deadline, &mut None, &p.limits)?;
         if v != ABI_VERSION {
             return Err(Error::Abi(format!("ac_abi_version returned {v}; this AniCraft runs ABI version {ABI_VERSION}")));
         }
         let manifest: TypedFunc<(), i64> = live.func("ac_manifest")?;
-        let packed = p.call(&mut live, &manifest, (), load_fuel, &deadline, &mut None)? as u64;
+        let packed = p.call(&mut live, &manifest, (), load_fuel, &deadline, &mut None, &p.limits)? as u64;
         let (ptr, len) = ((packed & 0xffff_ffff) as u32, (packed >> 32) as u32);
         if len as usize > MAX_MANIFEST_BYTES {
             return Err(Error::Manifest(format!("it is {len} bytes (limit {MAX_MANIFEST_BYTES})")));
@@ -296,7 +315,8 @@ impl Plugin {
 
     /// Calls `f` with at most `fuel` instructions, in slices, checking the deadline between
     /// them and answering host calls through `host` (`None`: host calls are an error).
-    fn call<P: WasmParams, R: WasmResults>(&self, live: &mut Live, f: &TypedFunc<P, R>, params: P, fuel: u64, deadline: &Deadline, host: &mut Option<(&mut dyn Host, &mut RunReport)>) -> Result<R> {
+    #[allow(clippy::too_many_arguments)]
+    fn call<P: WasmParams, R: WasmResults>(&self, live: &mut Live, f: &TypedFunc<P, R>, params: P, fuel: u64, deadline: &Deadline, host: &mut Option<(&mut dyn Host, &mut RunReport)>, limits: &Limits) -> Result<R> {
         let mut left = fuel;
         let give = left.min(FUEL_SLICE);
         left -= give;
@@ -315,7 +335,7 @@ impl Plugin {
                     deadline.check()?;
                     let request = live.store.data_mut().pending.take().unwrap_or_default();
                     let response = match host {
-                        Some((h, report)) => self.answer(&mut **h, report, &request)?,
+                        Some((h, report)) => self.answer(&mut **h, report, &request, limits)?,
                         None => return Err(Error::Abi("host calls are allowed only while the plug-in runs (not while loading)".into())),
                     };
                     let n = response.len() as i32;
@@ -339,14 +359,14 @@ impl Plugin {
 
     /// Answers one request: `log` here, everything else through the host. Always a JSON
     /// envelope; only a broken channel (too many calls) stops the run.
-    fn answer(&self, host: &mut dyn Host, report: &mut RunReport, request: &[u8]) -> Result<Vec<u8>> {
+    fn answer(&self, host: &mut dyn Host, report: &mut RunReport, request: &[u8], limits: &Limits) -> Result<Vec<u8>> {
         report.calls = report.calls.saturating_add(1);
-        if report.calls > self.limits.max_calls {
-            return Err(Error::Limit(format!("host-call budget ({} requests)", self.limits.max_calls)));
+        if report.calls > limits.max_calls {
+            return Err(Error::Limit(format!("host-call budget ({} requests)", limits.max_calls)));
         }
         report.request_bytes = report.request_bytes.saturating_add(request.len() as u64);
-        if report.request_bytes > self.limits.max_total_request_bytes as u64 {
-            return Err(Error::Limit(format!("request budget ({} MiB per run)", self.limits.max_total_request_bytes >> 20)));
+        if report.request_bytes > limits.max_total_request_bytes as u64 {
+            return Err(Error::Limit(format!("request budget ({} KiB per run)", limits.max_total_request_bytes >> 10)));
         }
         let result: std::result::Result<Value, String> = match serde_json::from_slice::<Value>(request) {
             Err(e) => Err(format!("the request is not JSON: {e}")),
@@ -354,7 +374,7 @@ impl Plugin {
                 None => Err("the request needs an \"op\" (command, document, elements or log)".into()),
                 Some("log") => {
                     let msg = req.get("message").map(|m| m.as_str().map_or_else(|| m.to_string(), str::to_string)).unwrap_or_default();
-                    if report.log.len() < self.limits.max_log_lines {
+                    if report.log.len() < limits.max_log_lines {
                         report.log.push(msg.chars().filter(|c| !c.is_control()).take(MAX_LOG_CHARS).collect());
                     } else {
                         report.log_dropped = report.log_dropped.saturating_add(1);
@@ -373,8 +393,8 @@ impl Plugin {
             Ok(v) => envelope(true, v),
             Err(e) => envelope(false, &Value::String(e.clone())),
         };
-        if bytes.len() > self.limits.max_response_bytes {
-            let msg = format!("the response is {} bytes, over the {} byte limit; ask for less (e.g. without paths)", bytes.len(), self.limits.max_response_bytes);
+        if bytes.len() > limits.max_response_bytes {
+            let msg = format!("the response is {} bytes, over the {} byte limit; ask for less (e.g. without paths)", bytes.len(), limits.max_response_bytes);
             return Ok(envelope(false, &Value::String(msg)));
         }
         Ok(bytes)
@@ -384,16 +404,22 @@ impl Plugin {
     /// [`Manifest::resolve_params`]). The host answers its requests; any failure is an error
     /// and the caller should discard what the run changed.
     pub fn run(&self, host: &mut dyn Host, params: &Map<String, Value>) -> Result<RunReport> {
-        let deadline = Deadline::new(self.limits.wall_time_ms);
+        self.run_with(host, params, &self.limits)
+    }
+
+    /// [`Plugin::run`] under other run limits (fuel, time, traffic, log); the module's memory
+    /// cap stays the one it was loaded with. Frame scripts run with [`Limits::frame_script`].
+    pub fn run_with(&self, host: &mut dyn Host, params: &Map<String, Value>, limits: &Limits) -> Result<RunReport> {
+        let deadline = Deadline::new(limits.wall_time_ms);
         let text = serde_json::to_vec(params).map_err(|e| Error::Params(e.to_string()))?;
-        if text.len() > self.limits.max_params_bytes {
-            return Err(Error::Params(format!("{} bytes of parameters (limit {})", text.len(), self.limits.max_params_bytes)));
+        if text.len() > limits.max_params_bytes {
+            return Err(Error::Params(format!("{} bytes of parameters (limit {})", text.len(), limits.max_params_bytes)));
         }
-        let mut live = self.instantiate(self.limits.fuel)?;
+        let mut live = self.instantiate(limits.fuel)?;
         let alloc: TypedFunc<i32, i32> = live.func("ac_alloc")?;
         let run: TypedFunc<(i32, i32), i32> = live.func("ac_run")?;
         let mut report = RunReport::default();
-        let ptr = self.call(&mut live, &alloc, text.len().max(1) as i32, self.limits.fuel / 10, &deadline, &mut None)? as u32;
+        let ptr = self.call(&mut live, &alloc, text.len().max(1) as i32, limits.fuel / 10, &deadline, &mut None, limits)? as u32;
         if ptr == 0 {
             return Err(Error::Failed("ac_alloc returned 0 (out of memory)".into()));
         }
@@ -402,7 +428,7 @@ impl Plugin {
         live.used = 0;
         let rc = {
             let mut h: Option<(&mut dyn Host, &mut RunReport)> = Some((host, &mut report));
-            self.call(&mut live, &run, (ptr as i32, l as i32), self.limits.fuel, &deadline, &mut h)
+            self.call(&mut live, &run, (ptr as i32, l as i32), limits.fuel, &deadline, &mut h, limits)
         };
         report.fuel = live.used;
         let rc = rc?;
@@ -424,5 +450,6 @@ fn placeholder_manifest() -> Manifest {
         author: String::new(),
         selection: crate::SelectionNeed::Optional,
         params: Vec::new(),
+        entries: Vec::new(),
     }
 }
