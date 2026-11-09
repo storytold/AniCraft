@@ -7,6 +7,7 @@ use anicraft_render::{View, render};
 use rayon::prelude::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -32,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Import to Stage…",
             menu: "File/Import",
             shortcut: Some("Ctrl+R"),
-            params: "{path (.svg), x?, y? (top-left on the stage; default: centred)}",
+            params: "{path (.svg, .png, .jpg), x?, y? (top-left on the stage; default: centred)}",
             mutates: true,
             run: import_to_stage,
         },
@@ -191,9 +192,10 @@ fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
 /// Largest file Import to Stage reads.
 const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Import to Stage: the drawing's shapes become editable shapes on a new layer named after the
-/// file, in a keyframe at the playhead, selected, as one undo step. Centred on the stage unless
-/// `x`/`y` give its top-left corner.
+/// Import to Stage: the drawing's shapes and text become editable elements on a new layer
+/// named after the file, in a keyframe at the playhead, selected, as one undo step. A drawing
+/// with clip paths or masks becomes a folder named after the file, with mask layers over the
+/// artwork they clip (ADR 0021). Centred on the stage unless `x`/`y` give its top-left corner.
 fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
@@ -211,7 +213,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         let drawing = import_image(s, &path, bytes)?;
         (drawing, s.doc.bitmaps.last().map(|b| b.id.0))
     };
-    if drawing.shapes.is_empty() {
+    if drawing.is_empty() {
         return Err(EngineError::State(format!("{} has no shapes AniCraft can import yet. {}", path.display(), drawing.report.summary())));
     }
     let stage = s.doc.stage;
@@ -222,37 +224,108 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let place = anicraft_geom::Affine::translate(x, y);
     let name: String = path.file_stem().map_or_else(|| "Imported".into(), |n| n.to_string_lossy().chars().take(128).collect());
-    crate::cmds_timeline::new_layer(s, &json!({"name": name}))?;
     let frame = s.frame;
     let end = s.frame_count().max(frame + 1);
-    let mut elements = Vec::with_capacity(drawing.shapes.len());
-    for sh in drawing.shapes {
-        let id = anicraft_doc::ElementId(s.doc.alloc_id());
-        elements.push(std::sync::Arc::new(anicraft_doc::Element {
-            id,
-            name: sh.name,
-            transform: place.mul(&sh.transform),
-            color: anicraft_doc::ColorEffect { alpha: sh.alpha, ..Default::default() },
-            kind: anicraft_doc::ElementKind::Shape(sh.shape),
-        }));
-    }
-    let ids: Vec<anicraft_doc::ElementId> = elements.iter().map(|e| e.id).collect();
-    let layer = s.layer_mut(None)?;
+    let elements = |s: &mut Session, list: Vec<anicraft_svg::ImportedElement>| -> Vec<Arc<anicraft_doc::Element>> {
+        list.into_iter()
+            .map(|e| {
+                let id = anicraft_doc::ElementId(s.doc.alloc_id());
+                Arc::new(anicraft_doc::Element { id, name: e.name, transform: place.mul(&e.transform), color: anicraft_doc::ColorEffect { alpha: e.alpha, ..Default::default() }, kind: e.kind })
+            })
+            .collect()
+    };
     // Empty before the playhead, the drawing from the playhead to the end of the timeline.
-    let mut key = anicraft_doc::Keyframe::new(frame, end - frame);
-    key.elements = elements;
-    layer.keyframes = if frame == 0 { vec![std::sync::Arc::new(key)] } else { vec![std::sync::Arc::new(anicraft_doc::Keyframe::new(0, frame)), std::sync::Arc::new(key)] };
-    layer.normalize();
-    let layer_id = layer.id;
+    let keys = |els: Vec<Arc<anicraft_doc::Element>>| -> Vec<Arc<anicraft_doc::Keyframe>> {
+        let mut key = anicraft_doc::Keyframe::new(frame, end - frame);
+        key.elements = els;
+        if frame == 0 { vec![Arc::new(key)] } else { vec![Arc::new(anicraft_doc::Keyframe::new(0, frame)), Arc::new(key)] }
+    };
+    let texts = drawing.elements().filter(|e| matches!(e.kind, anicraft_doc::ElementKind::Text(_))).count();
+    let count = drawing.elements().count();
+    let masks = drawing.layers.iter().filter(|l| l.mask.is_some()).count();
+    let (width, height, report) = (drawing.width, drawing.height, drawing.report);
+    let mut layers = drawing.layers;
+    let (layer_id, ids, made, folder) = if layers.len() == 1 && masks == 0 {
+        // One layer, named after the file, as Import to Stage always made.
+        crate::cmds_timeline::new_layer(s, &json!({"name": name}))?;
+        let els = elements(s, layers.pop().map(|l| l.elements).unwrap_or_default());
+        let ids: Vec<anicraft_doc::ElementId> = els.iter().map(|e| e.id).collect();
+        let layer = s.layer_mut(None)?;
+        layer.keyframes = keys(els);
+        layer.normalize();
+        (layer.id, ids, 1, None)
+    } else {
+        // Clips and masks (ADR 0021): a folder named after the file holding, top first, each
+        // run of artwork, with a mask layer over the runs that are masked.
+        let made = layers.len() + masks + 1;
+        let tl = s.doc.timeline(s.scene);
+        if tl.layers.len() + made > 1000 {
+            return Err(EngineError::State(format!("importing {} would make {made} layers; a timeline holds at most 1000", path.display())));
+        }
+        // Above the active layer, beside it; above its whole mask group when it is masked.
+        let mut at = s.active_layer_index().unwrap_or(0);
+        let mut parent = tl.layers.get(at).and_then(|l| l.parent);
+        if let Some(m) = parent.and_then(|pid| tl.layer(pid)).filter(|m| m.kind == anicraft_doc::LayerKind::Mask) {
+            parent = m.parent;
+            at = tl.layers.iter().position(|l| l.id == m.id).unwrap_or(at);
+        }
+        let palette = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
+        let mut color = tl.layers.len();
+        let mut new_layer = |s: &mut Session, name: String, kind: anicraft_doc::LayerKind, parent: Option<anicraft_doc::LayerId>| {
+            let mut l = anicraft_doc::Layer::new(anicraft_doc::LayerId(s.doc.alloc_id()), name);
+            l.kind = kind;
+            l.parent = parent;
+            color += 1;
+            l.color = anicraft_doc::Rgba::hex(palette[color % palette.len()]);
+            l
+        };
+        let mut folder = new_layer(s, name, anicraft_doc::LayerKind::Folder, parent);
+        folder.keyframes.clear();
+        let fid = folder.id;
+        let mut stack = vec![folder];
+        let mut top: Option<(anicraft_doc::LayerId, Vec<anicraft_doc::ElementId>)> = None;
+        for (n, l) in layers.into_iter().enumerate().rev() {
+            let mut inside = Some(fid);
+            if let Some(mask) = l.mask {
+                let label = if mask.name.is_empty() { "Mask".to_string() } else { mask.name.clone() };
+                let mut ml = new_layer(s, label, anicraft_doc::LayerKind::Mask, Some(fid));
+                // Mask layers are locked, as Animate keeps them: the mask shows, its edge hides.
+                ml.locked = true;
+                ml.keyframes = keys(elements(s, mask.elements));
+                inside = Some(ml.id);
+                stack.push(ml);
+            }
+            let mut cl = new_layer(s, format!("Layer {}", n + 1), anicraft_doc::LayerKind::Normal, inside);
+            let els = elements(s, l.elements);
+            if top.is_none() {
+                top = Some((cl.id, els.iter().map(|e| e.id).collect()));
+            }
+            cl.keyframes = keys(els);
+            stack.push(cl);
+        }
+        let tl = s.doc.timeline_mut(s.scene);
+        for (k, l) in stack.into_iter().enumerate() {
+            tl.layers.insert((at + k).min(tl.layers.len()), Arc::new(l));
+        }
+        tl.repair_masks();
+        let (lid, ids) = top.unwrap_or((fid, Vec::new()));
+        s.layer = lid;
+        (lid, ids, made, Some(fid.0))
+    };
     s.selection = ids.clone();
     Ok(json!({
         "layer": layer_id.0,
-        "elements": ids.len(),
+        "folder": folder,
+        "layers": made,
+        "masks": masks,
+        "texts": texts,
+        "elements": count,
         "bitmap": bitmap,
-        "width": drawing.width,
-        "height": drawing.height,
-        "report": drawing.report.summary(),
-        "skipped": drawing.report.skipped,
+        "width": width,
+        "height": height,
+        "report": report.summary(),
+        "skipped": report.skipped,
+        "missing_fonts": report.missing_fonts,
     }))
 }
 
@@ -270,12 +343,7 @@ fn import_image(s: &mut Session, path: &std::path::Path, bytes: Vec<u8>) -> Resu
         stroke: None,
         fill_rule: anicraft_geom::FillRule::NonZero,
     };
-    Ok(anicraft_svg::SvgImport {
-        width: w,
-        height: h,
-        shapes: vec![anicraft_svg::ImportedShape { name, transform: anicraft_geom::Affine::IDENTITY, alpha: 1.0, shape }],
-        report: anicraft_svg::Report::default(),
-    })
+    Ok(anicraft_svg::SvgImport::single(w, h, vec![anicraft_svg::ImportedElement { name, transform: anicraft_geom::Affine::IDENTITY, alpha: 1.0, kind: anicraft_doc::ElementKind::Shape(shape) }]))
 }
 
 /// Movie frame `frame` as a standalone SVG document (vectors, gradients and masks kept).

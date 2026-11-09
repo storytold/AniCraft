@@ -257,6 +257,7 @@ version = "0.1.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
+ "anicraft-text",
  "anicraft-xml",
  "thiserror 2.0.21",
 ]
