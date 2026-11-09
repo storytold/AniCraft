@@ -70,6 +70,9 @@ pub struct Layout {
     /// line that continued the block would start `lines × line_height` below its top.
     pub lines: usize,
     pub line_height: f32,
+    /// From the top of the box to the first line's baseline (pixels), for placing text by its
+    /// baseline, as SVG does.
+    pub ascent: f32,
 }
 
 /// What a font name written by another program means on this computer: a PostScript name
@@ -366,7 +369,7 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
         }
     }
     let height = (lines.len().max(1) as f32 - 1.0) * line_height + (metrics.ascent - metrics.descent);
-    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing, lines: lines.len().max(1), line_height })
+    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing, lines: lines.len().max(1), line_height, ascent })
 }
 
 /// Draws glyph outlines (font space, y up) into a path (pixels, y down) at a pen position.
@@ -518,5 +521,9 @@ mod tests {
         assert!((one.line_height - three.line_height).abs() < 1e-3 && one.line_height >= 10.0);
         assert!((three.height - one.height - 2.0 * one.line_height).abs() < 0.01);
         assert_eq!(fonts.layout("", &style(20.0)).unwrap().lines, 1);
+        // The first baseline is inside the box, below its top by most of a line.
+        assert!(one.ascent > 10.0 && one.ascent < one.height, "{} in {}", one.ascent, one.height);
+        let b = one.outline.bounds();
+        assert!(b.max.y > one.ascent - 1.0 && b.min.y < one.ascent, "glyphs sit on the baseline: {b:?}");
     }
 }

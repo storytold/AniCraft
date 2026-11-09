@@ -1110,7 +1110,7 @@ fn opening_an_xfl_folder_imports_it_untitled() {
     // It renders.
     let dl = s.display_list();
     assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0xff8800))));
-    // Text comes across as an editable text block when this computer has fonts (ADR 0015),
+    // Text comes across as an editable text block when this computer has fonts (ADR 0014),
     // with the missing family named.
     if !anicraft_text::Fonts::get().families().is_empty() {
         assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"), "{v}");
@@ -1212,6 +1212,72 @@ fn bring_forward_send_backward_and_remove_transform() {
     let t = s.visible_elements().iter().find(|e| e.id.0 == ids[0]).unwrap().transform;
     assert_eq!(t.m[..4], [1.0, 0.0, 0.0, 1.0]);
     assert_eq!(t.translation(), before);
+}
+
+#[test]
+fn masked_frames_round_trip_through_svg_onto_mask_layers() {
+    // A drawing with a mask: a background, artwork under an ellipse mask, a layer on top.
+    let mut src = Session::default();
+    run(&mut src, "draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 360, "fill": "#20304a"}));
+    run(&mut src, "layer.new", json!({"name": "Art"}));
+    run(&mut src, "draw.rect", json!({"x": 100, "y": 60, "w": 400, "h": 240, "fill": "#ff6b4a"}));
+    run(&mut src, "draw.star", json!({"cx": 300, "cy": 180, "outer": 150, "inner": 60, "points": 5, "fill": "#ffd54a"}));
+    run(&mut src, "layer.new", json!({"name": "Mask"}));
+    run(&mut src, "draw.ellipse", json!({"x": 180, "y": 80, "w": 260, "h": 200}));
+    run(&mut src, "layer.toggle_mask", json!({}));
+    run(&mut src, "layer.new", json!({"name": "Top"}));
+    run(&mut src, "draw.rect", json!({"x": 20, "y": 20, "w": 60, "h": 60, "fill": "#66bb6a"}));
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-mask-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("masked.svg");
+    std::fs::write(&svg, crate::cmds_file::frame_svg(&src.doc, 0)).unwrap();
+
+    // Import it at the origin of an empty document of the same size.
+    let mut s = Session::default();
+    let before = s.doc.timeline(s.scene).layers.len();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    assert_eq!((v["masks"].as_u64(), v["layers"].as_u64()), (Some(1), Some(5)), "{v}");
+    let tl = s.doc.timeline(s.scene);
+    use anicraft_doc::LayerKind;
+    let kinds: Vec<(LayerKind, usize)> = tl.layers.iter().take(5).map(|l| (l.kind, tl.depth(tl.layers.iter().position(|x| x.id == l.id).unwrap()))).collect();
+    assert_eq!(kinds, [(LayerKind::Folder, 0), (LayerKind::Normal, 1), (LayerKind::Mask, 1), (LayerKind::Normal, 2), (LayerKind::Normal, 1)], "folder › top art, mask › masked art, background");
+    assert_eq!(tl.layers[0].name, "masked");
+    assert_eq!(tl.layers.len(), before + 5);
+    assert_eq!(s.selection.len(), 2, "the top layer's artwork (exported as a fill and a stroke) is selected");
+
+    // The same picture comes back.
+    let a = anicraft_render::render_frame(&src.doc, 0, 0.5).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&s.doc, 0, 0.5).unwrap().to_rgba8();
+    let worst = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs()).max().unwrap();
+    let mean = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs() as f64).sum::<f64>() / a.len() as f64;
+    assert!(mean < 0.01 && worst <= 2, "mean {mean:.3}, worst {worst} of 255");
+    // Exporting the import again gives the same masks.
+    assert_eq!(crate::cmds_file::frame_svg(&s.doc, 0).matches("<clipPath").count(), 1);
+
+    // One undo step removes the folder and all its layers.
+    s.undo().unwrap();
+    assert_eq!(s.doc.timeline(s.scene).layers.len(), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn imported_svg_text_is_editable_text() {
+    if anicraft_text::Fonts::get().families().is_empty() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-text-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("title.svg");
+    std::fs::write(&svg, r##"<svg width="300" height="80"><text x="150" y="50" text-anchor="middle" font-family="Zz Not Installed" font-size="32" fill="#ff0000">Title</text><rect width="10" height="10"/></svg>"##).unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string()}));
+    assert_eq!((v["texts"].as_u64(), v["elements"].as_u64(), v["layers"].as_u64()), (Some(1), Some(2), Some(1)));
+    assert_eq!(v["missing_fonts"], json!(["Zz Not Installed"]));
+    assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"));
+    let text = s.visible_elements().into_iter().find(|e| matches!(e.kind, anicraft_doc::ElementKind::Text(_))).unwrap();
+    run(&mut s, "element.select", json!({"ids": [text.id.0]}));
+    run(&mut s, "text.edit", json!({"text": "Longer title"}));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
