@@ -7,6 +7,7 @@
 //! structure is square, controls are softened slightly, floating surfaces are rounder.
 
 use egui::{Color32, CornerRadius, Shadow, Stroke, Visuals};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy)]
 pub struct Tokens {
@@ -19,10 +20,13 @@ pub struct Tokens {
     pub header: Color32,
     /// Buttons under the pointer.
     pub hover: Color32,
-    /// The active tool or a toggle that is on: a lighter gray block, the icon white.
+    /// The active tool or a toggle that is on: a lighter block, its icon in `on_active`.
     pub active: Color32,
-    /// Icons at rest: a step down from white so the active one stands out.
+    pub on_active: Color32,
+    /// Icons at rest: a step down from `icon_hot` so the active one stands out.
     pub icon: Color32,
+    /// Icons under the pointer.
+    pub icon_hot: Color32,
     /// Inset surfaces: text and number fields.
     pub field: Color32,
     /// Lines between layout regions and around popups.
@@ -37,7 +41,13 @@ pub struct Tokens {
     /// Selection, focus, active tool.
     pub accent: Color32,
     pub accent_dim: Color32,
-    /// Dark marks drawn on vibrant blocks (keyframe dots, tween arrows, labels).
+    /// Accent-coloured text (the current frame, links, prompts): the accent lightened until it
+    /// reads at 4.5:1 on the panels.
+    pub accent_text: Color32,
+    /// Text and icons on filled `accent` and `danger` buttons (Save, Delete, Restore).
+    pub on_fill: Color32,
+    /// Dark marks drawn on vibrant blocks (keyframe dots, tween arrows, labels, the number on
+    /// the playhead's flag).
     pub ink: Color32,
     pub pasteboard: Color32,
     pub stage_shadow: Color32,
@@ -65,6 +75,9 @@ pub struct Tokens {
     pub kind_graphic: Color32,
     pub kind_movie_clip: Color32,
     pub kind_button: Color32,
+    /// Buttons and fields carry a visible `control_edge` (WCAG 1.4.11: a control's boundary at
+    /// 3:1). Off in the graphite look, where fills and hover carry it; on in high contrast.
+    pub control_outline: bool,
     /// Corner radii by role (see `Shape` below).
     pub radius_control: u8,
     pub radius_menu: u8,
@@ -82,24 +95,29 @@ pub struct Tokens {
 /// * **Round only where the thing is round**: keyframe dots, dials, onion-skin marks.
 pub const SQUARE: f32 = 0.0;
 
-pub const T: Tokens = Tokens {
+/// The graphite look (ADR 0008), the default.
+pub const GRAPHITE: Tokens = Tokens {
     chrome: Color32::from_rgb(0x13, 0x13, 0x16),
     panel: Color32::from_rgb(0x1b, 0x1b, 0x1f),
     panel_alt: Color32::from_rgb(0x22, 0x22, 0x27),
     header: Color32::from_rgb(0x2c, 0x2c, 0x32),
     hover: Color32::from_rgb(0x3a, 0x3a, 0x42),
     active: Color32::from_rgb(0x4a, 0x4a, 0x53),
+    on_active: Color32::WHITE,
     icon: Color32::from_rgb(0xb4, 0xb4, 0xbc),
+    icon_hot: Color32::WHITE,
     field: Color32::from_rgb(0x0e, 0x0e, 0x11),
     border: Color32::from_rgb(0x36, 0x36, 0x3e),
     control_edge: Color32::from_rgb(0x78, 0x78, 0x82),
     separator: Color32::from_rgb(0x26, 0x26, 0x2c),
     text: Color32::from_rgb(0xee, 0xee, 0xf0),
     text_dim: Color32::from_rgb(0xb0, 0xb0, 0xb8),
-    // ≥ 4.5:1 on `panel`, so even hints stay readable.
-    text_faint: Color32::from_rgb(0x8e, 0x8e, 0x98),
+    // ≥ 4.5:1 on every surface up to `header`, so even hints stay readable.
+    text_faint: Color32::from_rgb(0x98, 0x98, 0xa2),
     accent: Color32::from_rgb(0x2e, 0x66, 0xf0),
     accent_dim: Color32::from_rgb(0x1f, 0x35, 0x70),
+    accent_text: Color32::from_rgb(0x6f, 0x97, 0xff),
+    on_fill: Color32::WHITE,
     ink: Color32::from_rgb(0x0e, 0x0e, 0x10),
     pasteboard: Color32::from_rgb(0x2a, 0x2a, 0x30),
     stage_shadow: Color32::from_black_alpha(150),
@@ -119,10 +137,107 @@ pub const T: Tokens = Tokens {
     kind_graphic: Color32::from_rgb(0x22, 0xc7, 0xa9),
     kind_movie_clip: Color32::from_rgb(0x5a, 0x8f, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xb5, 0x3d),
+    control_outline: false,
     radius_control: 3,
     radius_menu: 6,
     radius_window: 10,
 };
+
+/// High contrast (ADR 0022): the same roles on black, with white text, a yellow accent for
+/// focus, selection and the active tool, outlined controls and brighter timeline blocks. Every
+/// pair a role puts together meets WCAG AA (text 4.5:1, most of it 7:1 and more; UI parts 3:1),
+/// checked by `guidelines_tests`.
+pub const HIGH_CONTRAST: Tokens = Tokens {
+    chrome: Color32::from_rgb(0x00, 0x00, 0x00),
+    panel: Color32::from_rgb(0x00, 0x00, 0x00),
+    panel_alt: Color32::from_rgb(0x10, 0x10, 0x10),
+    header: Color32::from_rgb(0x1c, 0x1c, 0x1c),
+    hover: Color32::from_rgb(0x38, 0x38, 0x38),
+    active: Color32::from_rgb(0xff, 0xd8, 0x1a),
+    on_active: Color32::from_rgb(0x00, 0x00, 0x00),
+    icon: Color32::from_rgb(0xff, 0xff, 0xff),
+    icon_hot: Color32::from_rgb(0xff, 0xd8, 0x1a),
+    field: Color32::from_rgb(0x00, 0x00, 0x00),
+    border: Color32::from_rgb(0x9a, 0x9a, 0x9a),
+    control_edge: Color32::from_rgb(0xd6, 0xd6, 0xd6),
+    separator: Color32::from_rgb(0x44, 0x44, 0x44),
+    text: Color32::from_rgb(0xff, 0xff, 0xff),
+    text_dim: Color32::from_rgb(0xe8, 0xe8, 0xe8),
+    text_faint: Color32::from_rgb(0xc8, 0xc8, 0xc8),
+    accent: Color32::from_rgb(0xff, 0xd8, 0x1a),
+    accent_dim: Color32::from_rgb(0x4d, 0x3d, 0x00),
+    accent_text: Color32::from_rgb(0xff, 0xd8, 0x1a),
+    on_fill: Color32::from_rgb(0x00, 0x00, 0x00),
+    ink: Color32::from_rgb(0x00, 0x00, 0x00),
+    pasteboard: Color32::from_rgb(0x1c, 0x1c, 0x1c),
+    stage_shadow: Color32::from_black_alpha(200),
+    span: Color32::from_rgb(0x3d, 0xf0, 0xcf),
+    span_empty: Color32::from_rgb(0x26, 0x26, 0x26),
+    row_active: Color32::from_rgb(0x1f, 0x1a, 0x00),
+    tween: Color32::from_rgb(0xb3, 0x99, 0xff),
+    tween_shape: Color32::from_rgb(0xff, 0xb8, 0x5c),
+    tween_motion: Color32::from_rgb(0x6b, 0xd0, 0xff),
+    tween_line: Color32::from_rgb(0x00, 0x00, 0x00),
+    waveform: Color32::from_rgb(0x8f, 0xd3, 0xff),
+    playhead: Color32::from_rgb(0xff, 0x6a, 0x5c),
+    // Drawn over the artwork, which is usually light: a deep blue stays visible on white.
+    selection: Color32::from_rgb(0x1f, 0x5b, 0xff),
+    danger: Color32::from_rgb(0xff, 0x70, 0x63),
+    error: Color32::from_rgb(0xff, 0x9a, 0x8f),
+    ok: Color32::from_rgb(0x74, 0xff, 0xb0),
+    kind_graphic: Color32::from_rgb(0x3d, 0xf0, 0xcf),
+    kind_movie_clip: Color32::from_rgb(0x85, 0xad, 0xff),
+    kind_button: Color32::from_rgb(0xff, 0xc8, 0x5c),
+    control_outline: true,
+    radius_control: 3,
+    radius_menu: 6,
+    radius_window: 10,
+};
+
+/// Which palette the interface uses (Preferences › Appearance › Theme).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Palette {
+    #[default]
+    Graphite,
+    HighContrast,
+}
+
+impl Palette {
+    pub const ALL: [(Palette, &'static str, &'static str); 2] = [
+        (Palette::Graphite, "Graphite", "The standard dark look: graphite panels, colour where it means something."),
+        (Palette::HighContrast, "High contrast", "White text on black, a yellow focus and selection colour, outlined controls."),
+    ];
+
+    pub fn tokens(self) -> &'static Tokens {
+        match self {
+            Palette::Graphite => &GRAPHITE,
+            Palette::HighContrast => &HIGH_CONTRAST,
+        }
+    }
+}
+
+/// The palette in use. Process-wide view state, like the interface scale: one window, one look.
+static ACTIVE: AtomicU8 = AtomicU8::new(0);
+
+pub fn palette() -> Palette {
+    match ACTIVE.load(Ordering::Relaxed) {
+        1 => Palette::HighContrast,
+        _ => Palette::Graphite,
+    }
+}
+
+/// The tokens of the palette in use, read as `T.panel` or `T.rc()`. A palette change shows from
+/// the next read on, so switching themes is live in the same frame.
+pub struct ActiveTokens;
+
+impl std::ops::Deref for ActiveTokens {
+    type Target = Tokens;
+    fn deref(&self) -> &Tokens {
+        palette().tokens()
+    }
+}
+
+pub static T: ActiveTokens = ActiveTokens;
 
 impl Tokens {
     /// Control corner radius for painter calls.
@@ -143,9 +258,22 @@ fn depth(y: i8, blur: u8, alpha: u8) -> Shadow {
     Shadow { offset: [0, y], blur, spread: 0, color: Color32::from_black_alpha(alpha) }
 }
 
+/// Fonts and the look, at start-up.
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx, None, None);
-    let t = T;
+    apply_palette(ctx, Palette::Graphite);
+}
+
+/// Switches the palette and restyles every widget with it (Preferences › Theme), live.
+pub fn apply_palette(ctx: &egui::Context, palette: Palette) {
+    ACTIVE.store(
+        match palette {
+            Palette::Graphite => 0,
+            Palette::HighContrast => 1,
+        },
+        Ordering::Relaxed,
+    );
+    let t = *palette.tokens();
     let mut v = Visuals::dark();
     v.panel_fill = t.panel;
     v.window_fill = t.panel_alt;
@@ -155,7 +283,7 @@ pub fn apply(ctx: &egui::Context) {
     v.override_text_color = Some(t.text);
     v.selection.bg_fill = t.accent_dim;
     v.selection.stroke = Stroke::new(2.0, t.accent);
-    v.hyperlink_color = t.accent;
+    v.hyperlink_color = t.accent_text;
     v.window_stroke = Stroke::new(1.0, t.border);
     v.window_shadow = depth(10, 28, 150);
     v.popup_shadow = depth(4, 12, 130);
@@ -173,20 +301,20 @@ pub fn apply(ctx: &egui::Context) {
     // Buttons are flat fills at rest; no border on every button.
     v.widgets.inactive.weak_bg_fill = t.header;
     v.widgets.inactive.bg_fill = t.header;
-    v.widgets.inactive.bg_stroke = Stroke::NONE;
+    v.widgets.inactive.bg_stroke = if t.control_outline { Stroke::new(1.0, t.control_edge) } else { Stroke::NONE };
     v.widgets.inactive.fg_stroke = Stroke::new(1.5, t.text);
     v.widgets.hovered.weak_bg_fill = t.hover;
     v.widgets.hovered.bg_fill = t.hover;
-    v.widgets.hovered.bg_stroke = Stroke::NONE;
+    v.widgets.hovered.bg_stroke = if t.control_outline { Stroke::new(1.0, t.text) } else { Stroke::NONE };
     v.widgets.hovered.fg_stroke = Stroke::new(1.5, t.text);
     // Pressed and keyboard-focused widgets (egui styles focus as "active"): a visible ring.
     v.widgets.active.weak_bg_fill = t.accent_dim;
     v.widgets.active.bg_fill = t.accent_dim;
     v.widgets.active.bg_stroke = Stroke::new(2.0, t.accent);
-    v.widgets.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
+    v.widgets.active.fg_stroke = Stroke::new(1.5, t.text);
     v.widgets.open.weak_bg_fill = t.hover;
     v.widgets.open.bg_fill = t.hover;
-    v.widgets.open.bg_stroke = Stroke::NONE;
+    v.widgets.open.bg_stroke = if t.control_outline { Stroke::new(1.0, t.control_edge) } else { Stroke::NONE };
     // Same dark look whatever the OS theme is.
     ctx.all_styles_mut(|s| {
         s.visuals = v.clone();
@@ -390,6 +518,11 @@ pub enum Section {
 /// `id` for the session. `detail` is an optional data value shown after the title in the data
 /// face (a frame number, a count).
 pub fn section<R>(ui: &mut egui::Ui, id: &str, style: Section, title: &str, detail: Option<&str>, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
+    section_with_header(ui, id, style, title, detail, add).1
+}
+
+/// [`section`], also returning its header (a panel's keyboard anchor, `a11y::anchor`).
+pub fn section_with_header<R>(ui: &mut egui::Ui, id: &str, style: Section, title: &str, detail: Option<&str>, add: impl FnOnce(&mut egui::Ui) -> R) -> (egui::Response, Option<R>) {
     use egui::{Sense, StrokeKind, pos2, vec2};
     let key = ui.make_persistent_id(("section", id));
     let mut open = ui.data_mut(|d| *d.get_temp_mut_or(key, true));
@@ -443,14 +576,14 @@ pub fn section<R>(ui: &mut egui::Ui, id: &str, style: Section, title: &str, deta
         if style == Section::Rule {
             ui.add_space(2.0);
         }
-        return None;
+        return (resp, None);
     }
     if style == Section::Rule {
         ui.add_space(2.0);
     }
     let r = add(ui);
     ui.add_space(if style == Section::Rule { 10.0 } else { 0.0 });
-    Some(r)
+    (resp, Some(r))
 }
 
 /// Runs `add` with every widget's text in `role` (e.g. numeric fields in the Data role).

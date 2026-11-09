@@ -7,10 +7,11 @@
 //! segment to shape its ease (a cubic Bézier), click to move the playhead, double-click to add
 //! a key. Every drag is one undo step (a session gesture); every change is a command.
 
+use crate::a11y::{self, Named};
 use crate::app::App;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, with_type};
 use anicraft_engine::doc::{Easing, MotionTween, Property, Props, Track};
-use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, WidgetType, pos2, vec2};
 use serde_json::json;
 
 /// Property list width (the timeline's layer column).
@@ -145,6 +146,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.text(pos2(row.left() + 84.0, row.center().y), Align2::LEFT_CENTER, "keyed", font(Type::Caption), T.tween_motion);
         }
         let rr = ui.interact(row, ui.id().with(("me_row", p.key())), Sense::click());
+        a11y::control(ui, &rr, WidgetType::SelectableLabel, &format!("{}{}", p.label(), if track.is_some() { " · keyed" } else { "" }), Some(selected));
         if rr.clicked() {
             app.me_prop = p;
             app.me_key = None;
@@ -157,7 +159,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let suffix = if p.unit() == "px" { " px" } else { p.unit() };
         // In a child placed on the row, so the field never grows the dock.
         let mut cell = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let r = with_type(&mut cell, Type::Data, |ui| ui.add_sized(vec2(field.width(), field.height()), egui::DragValue::new(&mut v).speed(speed).range(range).max_decimals(1).suffix(suffix)));
+        let r = with_type(&mut cell, Type::Data, |ui| ui.add_sized(vec2(field.width(), field.height()), egui::DragValue::new(&mut v).speed(speed).range(range).max_decimals(1).suffix(suffix)).named(p.label()));
         if r.changed() {
             app.me_prop = p;
             app.s.begin_gesture("Property keyframe");
@@ -172,6 +174,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         diamond(&painter, toggle.center(), 5.0, if keyed { T.text } else { Color32::TRANSPARENT }, Stroke::new(1.5, if keyed { T.text } else { T.text_faint }));
         let tip = if keyed { format!("Remove the {} keyframe at frame {}", p.label(), app.s.frame + 1) } else { format!("Add a {} keyframe at frame {}", p.label(), app.s.frame + 1) };
+        a11y::control(ui, &tr, WidgetType::Checkbox, &format!("{} keyframe at frame {}", p.label(), app.s.frame + 1), Some(keyed));
         if tr.on_hover_text(tip).clicked() {
             app.me_prop = p;
             if keyed {
@@ -228,10 +231,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let x = x_of(offset as f32).round() + 0.5;
         gp.line_segment([pos2(x, ruler.bottom()), pos2(x, graph.bottom())], Stroke::new(1.5, T.playhead));
         let label = (app.s.frame + 1).to_string();
-        let w = painter.layout_no_wrap(label.clone(), font(Type::DataSmall), Color32::WHITE).rect.width();
+        let w = painter.layout_no_wrap(label.clone(), font(Type::DataSmall), T.ink).rect.width();
         let head = Rect::from_center_size(pos2(x, ruler.center().y), vec2((w + 8.0).max(22.0), RULER_H - 4.0));
         gp.rect_filled(head, T.rc(), T.playhead);
-        gp.text(head.center(), Align2::CENTER_CENTER, label, font(Type::DataSmall), Color32::WHITE);
+        gp.text(head.center(), Align2::CENTER_CENTER, label, font(Type::DataSmall), T.ink);
     }
     // The curve: sampled every two points; flat at the object's own value when unkeyed.
     let mut pts = Vec::new();
@@ -276,7 +279,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // ---- graph interaction -------------------------------------------------------------------
-    let gr = ui.interact(graph_full, ui.id().with("me_graph"), Sense::click_and_drag());
+    // Pointer work; the keyboard route to the same values is the property list and its fields.
+    let gr = ui.interact(graph_full, ui.id().with("me_graph"), a11y::pointer_only());
+    a11y::surface(ui, &gr, &format!("{} curve", app.me_prop.label()));
     let hover = gr.hover_pos();
     let near_key = |pt: Pos2| keys.iter().find(|k| pos2(x_of(k.0 as f32), y_of(k.1)).distance(pt) <= GRAB).map(|k| k.0);
     let near_handle = |pt: Pos2| handles.and_then(|h| [(1u8, h[1]), (2u8, h[2])].into_iter().find(|(_, q)| q.distance(pt) <= GRAB).map(|(w, _)| w));
@@ -408,7 +413,9 @@ fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, s
                         app.run("motion.set_ease", json!({"property": p.key(), "frame": start + f, "easing": crate::timeline::easing_param(e)}));
                     }
                 }
-            });
+            })
+            .response
+            .set_name("Ease");
             if ui.button("Same for all").on_hover_text("Give every property's segment at this frame this ease").clicked() {
                 app.run("motion.set_ease", json!({"frame": start + f, "easing": crate::timeline::easing_param(ease)}));
             }

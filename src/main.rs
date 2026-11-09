@@ -6,6 +6,7 @@
 //! `--screenshot` starts normally, draws ~120 frames, saves the window as PNG and exits.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod a11y;
 mod app;
 mod autosave;
 mod dialogs;
