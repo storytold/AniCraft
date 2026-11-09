@@ -318,7 +318,14 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
         for range in break_lines(para, &advance, style.width) {
             let mut line: Vec<(Glyph, f32)> = Vec::new();
             let mut x = 0.0f32;
-            if !range.is_empty() {
+            if !bidi.has_rtl() {
+                // All left to right: nothing to reorder (visual_runs copies the paragraph's levels per line).
+                for g in shape_run(range, false) {
+                    let a = g.advance;
+                    line.push((g, x));
+                    x += a;
+                }
+            } else if !range.is_empty() {
                 let (levels, runs) = bidi.visual_runs(range);
                 for run in runs {
                     let rtl = levels.get(run.start).is_some_and(|l| l.is_rtl());
