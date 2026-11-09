@@ -60,6 +60,7 @@ module, which would abort the process). Limits (`anicraft_plugins::Limits`, defa
 | Wall clock | 5 s per run, host calls included (native builds; checked every 10 M instructions and at every request) | "exceeded its time budget" |
 | Requests | 100,000 per run | "exceeded its host-call budget" |
 | Request / response size | 1 MiB / 8 MiB | an oversized request traps; an oversized response becomes an error answer |
+| All requests of a run | 64 MiB | "exceeded its request budget" (bounds what one run can add to a document) |
 | Params handed to `ac_run` | 64 KiB | error |
 | Log | 200 lines of ≤ 500 characters (more are counted, not kept) | dropped |
 | Call depth | 1,024 frames | trap |

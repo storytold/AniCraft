@@ -254,6 +254,16 @@ fn a_flood_of_host_calls_is_cut_off_and_the_log_stays_bounded() {
 }
 
 #[test]
+fn the_total_size_of_requests_is_bounded() {
+    // 1,000 requests of 64 KiB each: over a 16 MiB budget long before the call budget.
+    let body = "(loop $l (drop (call $call (i32.const 0) (i32.const 65536))) (br $l)) i32.const 0";
+    let limits = Limits { max_total_request_bytes: 16 << 20, ..small() };
+    let p = Plugin::load(&module(&[(0, "{}")], body), limits).unwrap();
+    let r = p.run(&mut Rec::default(), &Map::new());
+    assert!(matches!(r, Err(Error::Limit(ref m)) if m.contains("request budget")), "{r:?}");
+}
+
+#[test]
 fn oversized_responses_become_errors() {
     struct Big;
     impl Host for Big {

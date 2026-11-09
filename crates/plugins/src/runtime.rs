@@ -43,6 +43,8 @@ pub struct Limits {
     /// Largest request a plug-in may send, and largest response it is given.
     pub max_request_bytes: usize,
     pub max_response_bytes: usize,
+    /// All requests of one run together: bounds what a run can add to the document.
+    pub max_total_request_bytes: usize,
     /// Largest params object handed to `ac_run`.
     pub max_params_bytes: usize,
     /// Most log lines kept from one run (later ones are counted, not kept).
@@ -60,6 +62,7 @@ impl Default for Limits {
             max_calls: 100_000,
             max_request_bytes: 1 << 20,
             max_response_bytes: 8 << 20,
+            max_total_request_bytes: 64 << 20,
             max_params_bytes: 64 << 10,
             max_log_lines: 200,
         }
@@ -73,8 +76,9 @@ pub struct RunReport {
     pub log: Vec<String>,
     /// Log messages dropped beyond the limit.
     pub log_dropped: u32,
-    /// Host requests made.
+    /// Host requests made, and their total size.
     pub calls: u32,
+    pub request_bytes: u64,
     /// Instructions used.
     pub fuel: u64,
 }
@@ -339,6 +343,10 @@ impl Plugin {
         report.calls = report.calls.saturating_add(1);
         if report.calls > self.limits.max_calls {
             return Err(Error::Limit(format!("host-call budget ({} requests)", self.limits.max_calls)));
+        }
+        report.request_bytes = report.request_bytes.saturating_add(request.len() as u64);
+        if report.request_bytes > self.limits.max_total_request_bytes as u64 {
+            return Err(Error::Limit(format!("request budget ({} MiB per run)", self.limits.max_total_request_bytes >> 20)));
         }
         let result: std::result::Result<Value, String> = match serde_json::from_slice::<Value>(request) {
             Err(e) => Err(format!("the request is not JSON: {e}")),

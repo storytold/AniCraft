@@ -40,7 +40,7 @@ crash or hang the app, touch files, or leave half an edit behind.
    can't live inside wasmi's `'static` store) and resumes. Fuel runs out the same way, in
    10 M-instruction slices, which is where the wall-clock deadline is checked.
 4. **Limits**: 16 MiB modules, 256 MiB memory, 10⁹ instructions and 5 s per run, 100,000
-   requests, 1 MiB requests and 8 MiB responses, 64 KiB params, 200 log lines, call depth
+   requests, 1 MiB requests (64 MiB in all) and 8 MiB responses, 64 KiB params, 200 log lines, call depth
    1,024, wasmi's strict module limits, a fresh instance per run. Every violation is an error.
 5. **Policy**: plug-ins may call document commands only. `file.*`, `plugin.*`, undo/redo and
    the clipboard commands are refused, and so is any namespace the policy doesn't know (a test
