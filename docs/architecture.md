@@ -30,6 +30,7 @@ app/                         workspace root; the root package is the desktop app
   crates/
     geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test
     plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0017)
+    audio     L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing/resampling, WAV, waveform peaks
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
@@ -42,13 +43,14 @@ app/                         workspace root; the root package is the desktop app
 |---|---|---|
 | L0 | `anicraft-geom` | std, serde |
 | L0 | `anicraft-plugins` | wasmi, serde_json (knows nothing of documents; the engine is its host) |
-| L1 | `anicraft-doc` | geom |
+| L0 | `anicraft-audio` | std, lewton, nanomp3 |
+| L1 | `anicraft-doc` | geom, audio |
 | L2 | `anicraft-render` | geom, doc, rayon, png |
 | L3 | `anicraft-engine` | geom, doc, render, serde_json |
 | L4 | `anicraft-cli` | engine (+ lower) |
 | L5 | `anicraft` (shell) | engine (+ lower), eframe/egui |
 
-Planned crates: `gpu` (L2, wgpu renderer), `io` (L3, XFL/SVG/Lottie/GIF), `audio` (L2),
+Planned crates: `gpu` (L2, wgpu renderer), `io` (L3, XFL/SVG/Lottie/GIF),
 `automation` (L4, MCP), `testkit`.
 
 ## 3. Document model (`anicraft-doc`)
@@ -64,8 +66,11 @@ Document
 │           ├── elements: [Element]
 │           │   ├── Shape { path, fill: Paint?, stroke: Stroke?, transform }
 │           │   └── Symbol instance { symbol id, transform, color effect, loop mode, first frame }
-│           └── tween: Tween? { kind: Classic | Shape, easing: Easing }
-└── library: [Symbol { id, name, kind: Graphic | MovieClip | Button, timeline }]
+│           ├── tween: Tween? { kind: Classic | Shape, easing: Easing }
+│           └── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+├── library: [Symbol { id, name, kind: Graphic | MovieClip | Button, timeline }]
+├── bitmaps: [Bitmap { id, name, PNG data }]
+└── sounds: [Sound { id, name, format, rate, channels, frames, data as imported }]
 ```
 
 ### Evaluation
@@ -92,6 +97,16 @@ cyclic library in a malformed file renders what it can instead of overflowing th
 `Easing` is `Linear`, `QuadIn/Out/InOut`, `CubicIn/Out/InOut`, `Classic(strength −100…100)`
 (the traditional single-slider ease) or `CubicBezier(x1, y1, x2, y2)` solved with Newton
 iterations and a bisection fallback, the same model CSS uses.
+
+### Sound
+
+Sound is time as a function too (ADR 0014): `doc::sound::voices(doc, rate)` lays every
+keyframe's sound out in output frames by playing the timeline from the start (Event, Start,
+Stop and Stream resolved, repeats and loops included), and `audio::mix(voices, rate, origin,
+start, out)` turns any stretch of it into samples, exactly when the rates match. Export Audio,
+the video soundtrack and stage playback all use these two pure functions; the shell's audio
+callback only calls `Player::fill`, and the playhead follows the player's clock while sound
+plays.
 
 ## 4. Rendering (`anicraft-render`)
 

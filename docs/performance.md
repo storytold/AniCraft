@@ -84,3 +84,19 @@ for about 1% of the time, and the UI never waits for it.
 * [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
 * [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
 * [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
+
+## Sound (2026-11-09, ADR 0014)
+
+Release build, Windows 10, one 120-second 48 kHz stereo sine, through `anicraft-cli run`
+(times include starting the CLI and loading the sample):
+
+| Step | Time |
+|---|---|
+| Import + decode WAV (23 MB) | 129 ms |
+| Import + decode Ogg Vorbis (420 KB) | 147 ms |
+| Import + decode MP3 (2.9 MB, 192 kb/s) | 99 ms |
+| `file.export_audio`, 120 s at 48 kHz (exact copy path) | 95 ms |
+| `file.export_audio`, 120 s at 44.1 kHz (Catmull-Rom resampling) | 128 ms |
+
+Mixing runs about 1,000× faster than real time, so the audio callback's share of a 10 ms device
+buffer is tiny; the stage never waits on sound.
