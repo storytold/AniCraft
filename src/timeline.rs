@@ -202,7 +202,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             match in_tween.filter(|_| !in_motion) {
                 Some(tw) => {
-                    egui::ComboBox::from_id_salt("tl_ease").width(150.0).selected_text(tw.easing.label()).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("tl_ease").width(112.0).selected_text(tw.easing.label()).show_ui(ui, |ui| {
                         for (name, e) in Easing::PRESETS {
                             if ui.selectable_label(tw.easing == e, name).clicked() {
                                 app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
@@ -211,7 +211,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     });
                     // The tween's kind: classic ⇄ shape (keeping the easing), or none.
                     let shape = tw.kind == TweenKind::Shape;
-                    egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text(if shape { "Shape tween" } else { "Classic tween" }).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("tl_kind").width(104.0).selected_text(if shape { "Shape tween" } else { "Classic tween" }).show_ui(ui, |ui| {
                         if ui.selectable_label(!shape, "Classic tween").on_hover_text("Moves, scales, rotates and recolours").clicked() && shape {
                             app.run("timeline.create_tween", json!({}));
                         }
@@ -229,20 +229,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 None if in_motion => {}
                 None => {
-                    cmd(app, ui, "Motion Tween", "Animate this span's object property by property (edit the curves in the Motion Editor)", "timeline.create_motion_tween");
-                    cmd(app, ui, "Create Tween", "Create a classic tween to the next keyframe", "timeline.create_tween");
-                    cmd(app, ui, "Shape Tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween");
+                    // One menu for the three kinds keeps the header short.
+                    egui::ComboBox::from_id_salt("tl_create").width(120.0).selected_text("Create tween").show_ui(ui, |ui| {
+                        for (label, tip, id) in [
+                            ("Motion tween", "Animate this span's object property by property (edit the curves in the Motion Editor)", "timeline.create_motion_tween"),
+                            ("Classic tween", "Tween to the next keyframe", "timeline.create_tween"),
+                            ("Shape tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween"),
+                        ] {
+                            if ui.selectable_label(false, label).on_hover_text(tip).clicked() {
+                                app.run(id, json!({}));
+                            }
+                        }
+                    });
                 }
             }
             // Frame zoom, at the right end of the header.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
                 let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
+                ui.spacing_mut().slider_width = 64.0;
                 let r = with_type(ui, Type::Data, |ui| ui.add(egui::Slider::new(&mut pct, lo..=hi).logarithmic(true).max_decimals(0).suffix(" %")));
-                if r.on_hover_text("Frame width (Ctrl+wheel over the frames)").changed() {
+                if r.on_hover_text("Frame zoom: frame width (Ctrl+wheel over the frames)").changed() {
                     app.tl_cell_w = (pct / 100.0 * CELL_DEFAULT).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
                 }
-                ui.label(text(Type::Label, "Zoom"));
+
             });
         });
     });
