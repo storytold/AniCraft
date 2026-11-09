@@ -92,11 +92,21 @@ pub fn config_dir() -> Option<PathBuf> {
 /// Main-window chrome. macOS gets the unified look (content under a transparent title bar,
 /// traffic lights over our menu row); Windows and Linux keep their native frames.
 pub fn viewport(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
-    let b = b.with_app_id("anicraft"); // Wayland/X11 window class, for docks and window rules
+    let b = b.with_app_id("anicraft").with_icon(app_icon()); // app ID: Wayland/X11 window class, for docks and window rules
     match OS {
         Os::Mac => b.with_fullsize_content_view(true).with_title_shown(false),
         _ => b,
     }
+}
+
+/// The window, Dock, taskbar and app-switcher icon (`assets/app-icon/`, see its README). macOS gets
+/// the tile on Apple's grid (with its transparent margin); elsewhere the full-bleed tile.
+fn app_icon() -> egui::IconData {
+    #[cfg(target_os = "macos")]
+    let png: &[u8] = include_bytes!("../assets/app-icon/anicraft-macos-512.png");
+    #[cfg(not(target_os = "macos"))]
+    let png: &[u8] = include_bytes!("../assets/app-icon/hicolor/256x256/apps/ai.storyteller.anicraft.png");
+    eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
 /// Space left of the menu row for the macOS traffic-light buttons.
