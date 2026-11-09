@@ -43,7 +43,7 @@ UI Automation on Windows, NSAccessibility on macOS, AT-SPI on Linux.
   "Stage · Selection tool · frame 12 · 1 element selected".
 * The status bar is a live region: after an action a screen reader reads its result ("Deleted
   layer — Ctrl+Z to undo") without moving focus.
-* A test (`a11y::tests`) runs the whole interface without a window in 22 states and fails if
+* A test (`a11y::tests`) runs the whole interface without a window in 23 states and fails if
   any interactive control has no name or no role.
 
 ### High contrast

@@ -351,7 +351,7 @@ mod tests {
         for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::PaintBucket, Tool::InkBottle, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
-        for panel in ["select", "motion", "motionspan", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames"] {
+        for panel in ["select", "motion", "motionspan", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
         found.extend(check("movie clip with filters", |a, _| {

@@ -32,8 +32,9 @@ shortcuts, the command palette, the shortcut editor). The rest was not there:
    slider is anonymous unless the slider shows a visible text label); `surface` marks the stage
    and the Motion Editor graph as canvases; `name_title_bar` and `name_splitter` name the parts
    egui leaves anonymous. The test `a11y::tests::every_interactive_node_has_a_name_and_a_role`
-   runs the whole app on a headless `egui::Context` with AccessKit on, in 22 states (default,
-   every tool's options, a selection, a movie clip with all four filters, the Motion Editor,
+   runs the whole app on a headless `egui::Context` with AccessKit on, in 23 states (default,
+   every tool's options, a selection, a movie clip with all four filters, the Motion Editor, a
+   sound keyframe,
    every dialog, high contrast at 200 %), and fails on any focusable or clickable node without
    a name or with an unknown role. egui's scroll-area bars are the only exemption.
 2. **Names say what and how.** An icon-only control's name is its tooltip's first line with the

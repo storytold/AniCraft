@@ -850,7 +850,9 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
                     app.run("sound.set", json!({"sound": id}));
                 }
             }
-        });
+        })
+        .response
+        .set_name("Sound");
     });
     let Some(f) = current else { return };
     row_prose(ui, "Sync", |ui| {
@@ -860,7 +862,9 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
                     app.run("sound.set", json!({"sync": m.key()}));
                 }
             }
-        });
+        })
+        .response
+        .set_name("Sound sync");
     });
     if f.sync == SoundSync::Stop {
         return;
@@ -873,11 +877,13 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
             if ui.selectable_label(f.looping, "Loop").on_hover_text("Plays again and again: to the end of the movie (event) or of this span (stream)").clicked() && !f.looping {
                 app.run("sound.set", json!({"loop": true}));
             }
-        });
+        })
+        .response
+        .set_name("Repeat or loop");
         if !f.looping {
             let mut n = f.repeat;
             let r = with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(&mut n).range(1..=anicraft_engine::doc::sound::MAX_REPEAT).suffix(" ×")));
-            if r.on_hover_text("Times it plays in a row").changed() {
+            if r.named("Times it plays").on_hover_text("Times it plays in a row").changed() {
                 live(app, "Sound repeat", "sound.set", json!({"repeat": n}));
             }
         }

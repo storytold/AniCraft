@@ -15,7 +15,7 @@
   scale** holds up to 200 %: the stage refits, the tools column and timeline header scroll, the
   status bar shortens its message instead of overlapping. The default theme now meets WCAG AA
   everywhere (the playhead's frame number, the current-frame readout and faint hints were
-  below it). A test walks the AccessKit tree in 22 states of the interface and fails on any
+  below it). A test walks the AccessKit tree in 23 states of the interface and fails on any
   unnamed control. `anicraft --theme high-contrast --scale 200` previews a look for one run.
   Not yet: stage elements and single frames one by one for screen readers, following the
   system's contrast setting, the menu bar from the keyboard.
