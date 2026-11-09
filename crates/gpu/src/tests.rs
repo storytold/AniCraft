@@ -154,12 +154,34 @@ fn f32_diff(a: &[Premul], b: &[Premul]) -> (f64, f32) {
     (sum / (a.len().max(1) * 4) as f64, max)
 }
 
+/// The sample seen through a camera (ADR 0027): zoomed, turned and tinted, the sky a layer
+/// deep, so every transform the camera adds reaches the GPU's fills.
+fn camera_sample() -> anicraft_doc::Document {
+    let mut doc = sample::demo();
+    let cam = anicraft_doc::Camera { center: Vec2::new(700.0, 380.0), zoom: 1.6, rotation: -0.15, tint: Rgba::hex(0x3366ff), tint_amount: 0.3 };
+    let mut layer = anicraft_doc::Layer::new(LayerId(9_000), "Camera");
+    layer.kind = anicraft_doc::LayerKind::Camera;
+    let mut k = anicraft_doc::Keyframe::new(0, doc.frame_count());
+    k.elements.push(Arc::new(cam.to_element(ElementId(9_001))));
+    layer.keyframes = vec![Arc::new(k)];
+    let tl = doc.timeline_mut(0);
+    if let Some(last) = tl.layers.last_mut() {
+        Arc::make_mut(last).depth = 1500.0;
+    }
+    tl.layers.insert(0, Arc::new(layer));
+    doc
+}
+
 #[test]
 fn binned_coverage_matches_the_oracle_on_the_cpu() {
     let mut all = scenes();
     let doc = sample::demo();
     for (f, s) in [(0u32, 0.5f32), (13, 0.37), (40, 1.0)] {
         all.push(("sample", anicraft_doc::evaluate(&doc, f), View::stage(&doc, s)));
+    }
+    let cam = camera_sample();
+    for (f, s) in [(0u32, 0.5f32), (20, 0.8)] {
+        all.push(("camera", anicraft_doc::evaluate(&cam, f), View::stage(&cam, s)));
     }
     for (name, dl, v) in all {
         let (fills, _) = plain_fills(&dl, &v).unwrap();
@@ -252,10 +274,12 @@ fn gpu_matches_the_oracle_on_analytic_scenes() {
 fn gpu_matches_the_oracle_on_the_sample_scene() {
     let Some(g) = gpu() else { return };
     let doc = sample::demo();
+    let cam = camera_sample();
     let frames = doc.frame_count();
-    for (f, s) in [(0u32, 1.0f32), (7, 0.5), (13, 0.37), (frames / 2, 1.5), (frames.saturating_sub(1), 0.25)] {
-        let dl = anicraft_doc::evaluate(&doc, f);
-        let v = View::stage(&doc, s);
+    for (d, f, s) in [(&doc, 0u32, 1.0f32), (&doc, 7, 0.5), (&doc, 13, 0.37), (&doc, frames / 2, 1.5), (&doc, frames.saturating_sub(1), 0.25), (&cam, 0, 1.0), (&cam, 20, 0.5)] {
+        let doc = d;
+        let dl = anicraft_doc::evaluate(doc, f);
+        let v = View::stage(doc, s);
         let gpu = g.render(&dl, &v, Output::Premul8).unwrap();
         let (oracle, st) = render(&dl, &v).unwrap();
         let d = compare_premul8(&gpu.premul8, &oracle.to_premul_rgba8()).unwrap();

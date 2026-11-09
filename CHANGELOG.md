@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+* **HTML canvas export** (ADR 0028). File › Export › Export HTML Canvas… writes the movie as
+  one web page that plays in any modern browser: open it from your disk, put it on a server or
+  send it as one file. Everything moves exactly as on the stage, because every frame of every
+  timeline is computed by AniCraft (classic, shape and motion tweens, easing, motion guides,
+  shape hints); shapes, gradients, strokes (variable-width ones too), text, bitmaps, masks,
+  symbols that fade or blend as one, alpha and tint all come across. It is interactive: movie
+  clips play on their own timelines, buttons show Up, Over and Down and answer in their Hit
+  area, and frame actions and button events (stop, play, go to a frame or label in any scene,
+  next/previous frame and scene, trace, set properties, instance paths like `panel.door`)
+  behave as in Test Movie: the page's player is a port of AniCraft's and the tests run both
+  side by side. Sounds play with the first click (Event, Start, Stop; Stream over its span).
+  The movie fits the browser window, sharp on high-density screens. The demo exports in 1 ms
+  to a 59 KB page (18 KB of movie data). Filters, Subtract and Invert blending, tints on
+  bitmaps and plug-in frame scripts are reported, not exported. Headless:
+  `file.export_html {path, title?, sound?, fit?}`.
+
+* **Camera layer with layer depth** (ADR 0027). Click the camera button in the timeline
+  header (or pick the **Camera tool**, C) to add a camera: a Camera layer on top of the
+  timeline whose frame shows on the stage as an orange outline of what the movie will show.
+  With the Camera tool, drag to pan it, turn it with the round handle above the frame and zoom
+  with the wheel (each drag is one undo step); Properties › Camera sets position, zoom (5–2,000
+  %), rotation and a tint over the whole view, or resets it. The camera animates like any
+  object: add keyframes on its layer and create a classic or motion tween (the zoom is Scale X
+  in the Motion Editor). Give layers a **Depth** (Properties › Frame, once there is a camera):
+  a layer behind the stage moves less as the camera pans, for parallax. **View › Preview
+  Through Camera** shows the stage as the movie will look. Every export (PNG, sequences, GIF,
+  video, sprite sheets, SVG, Lottie), Test Movie and the GPU stage see the camera; the stage
+  stays in stage space while you edit. Hiding the camera layer turns the camera off; removing
+  an animated camera asks first. Headless: `camera.add`, `camera.remove`, `camera.set`,
+  `camera.info`, `layer.set_depth`.
+* **Installers for Windows, macOS and Linux** (ADR 0026, `docs/release.md`). A push to the
+  `release` branch now builds installable AniCraft for every platform and drafts a GitHub
+  Release: a Windows **MSI** (x64 and arm64) that installs for your account without an admin
+  prompt, or for everyone if you choose, with a Start menu entry; a macOS **DMG** with the
+  universal app (drag to Applications); a Linux **AppImage**, **deb**, **rpm**, **Flatpak** and
+  tarball. Everywhere, `.anicraft` documents get AniCraft's icon and open in AniCraft, and FLA
+  and XFL files list AniCraft under "Open with" without changing your default app.
+  `anicraft-cli` is installed next to the app. Windows and macOS builds are signed (macOS also
+  notarized) and the Linux packages and checksums are signed when the release secrets are set.
+  `anicraft --version` and `anicraft-cli --version` print the version. On Windows, AniCraft no
+  longer opens a console window beside the app. On Linux the window now
+  reports the app id `ai.storyteller.anicraft`, so docks show AniCraft's icon. Not yet: on macOS,
+  double-clicking a document starts AniCraft but doesn't open the file.
+
 * **Bevel, Gradient Glow and Gradient Bevel filters** (ADR 0025). Properties › Filters ›
   Add filter now offers all seven of Animate's filters on movie clip and button instances.
   **Bevel** lights the edges that face the light and shades the others (shadow and highlight

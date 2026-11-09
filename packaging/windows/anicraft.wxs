@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AniCraft's Windows installer (WiX v5). Built by package.ps1; the scope, folder and upgrade rules
+  are the Craft family's (install-policy.wxi, checked by check-install-policy.ps1 against
+  install-policy.json). Never change the UpgradeCode or the AnicraftApp component GUID: Windows
+  uses them to find the installed copy on upgrade.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="AniCraft" Manufacturer="Learning Machines LLC" Version="$(var.Version)" UpgradeCode="95D4D208-47EF-42CD-9127-28D9A7BA88A2" Scope="perUserOrMachine" Compressed="yes" Language="1033">
+    <SummaryInformation Description="AniCraft 2D animation studio" Manufacturer="Learning Machines LLC" />
+    <?include $(sys.SOURCEFILEDIR)install-policy.wxi?>
+    <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
+         (MSI versions are numeric, so 0.2.0-rc.1 and 0.2.0-rc.2 are both 0.2.0). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of AniCraft is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- MSI caches this icon using its Id as the file name. Advertised shortcuts to an .exe need
+         an .exe icon identifier (ICE50), even when the source is an ICO. -->
+    <Icon Id="AnicraftIcon.exe" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AnicraftIcon.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://getartcraft.com/apps/anicraft" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/anicraft" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/storytold/AniCraft/issues" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="CraftSuiteFolder" Name="ArtCraft">
+        <Directory Id="INSTALLFOLDER" Name="AniCraft" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="AniCraft" Level="1">
+      <ComponentGroupRef Id="AnicraftNotices" />
+      <ComponentGroupRef Id="AnicraftFiles" />
+    </Feature>
+
+    <!-- The setup wizard: WixUI_InstallDir without its licence page (the code is MIT OR
+         Apache-2.0; there is nothing to accept). A later NewDialog on the same button wins. -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchAnicraft" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+    <!-- Our own art, drawn by package.ps1 from the app icon (not WiX's stock bitmaps). -->
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.BannerBmp)" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.DialogBmp)" />
+
+    <!-- The full version (Version is numeric, so it drops a pre-release tag), shown on the
+         wizard's pages through anicraft.en-us.wxl. -->
+    <Property Id="AnicraftVersion" Value="$(var.DisplayVersion)" />
+
+    <!-- Finish page: say where to find the app, and offer to start it (ticked by default). -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="AniCraft $(var.DisplayVersion) is installed. You can start it any time from the Start menu, or by opening an .anicraft file." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch AniCraft" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#AnicraftExe]" />
+    <!-- Runs in the wizard's own (unelevated) process, so the app starts as the user, not as admin. -->
+    <CustomAction Id="LaunchAnicraft" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec" Impersonate="yes" Return="ignore" />
+  </Package>
+
+  <Fragment>
+    <!-- Licences and notices: ours, the dependencies' (NOTICE, ATTRIBUTION.md) and the OFL
+         licences of the embedded craft-fonts typefaces. package.ps1 stages them in DocsDir. -->
+    <ComponentGroup Id="AnicraftNotices" Directory="INSTALLFOLDER">
+      <Files Include="$(var.DocsDir)\**" />
+    </ComponentGroup>
+    <ComponentGroup Id="AnicraftFiles" Directory="INSTALLFOLDER">
+      <Component Id="AnicraftApp" Guid="4E60952D-2A56-4E37-A732-E2768E88CD9B">
+        <File Id="AnicraftExe" Source="$(var.BinDir)\anicraft.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="AniCraft" Description="AniCraft 2D animation studio" WorkingDirectory="INSTALLFOLDER" Advertise="yes" Icon="AnicraftIcon.exe" IconIndex="0" />
+        </File>
+
+        <!-- .anicraft: AniCraft's own format; AniCraft is its default app. -->
+        <ProgId Id="Anicraft.Document" Description="AniCraft Document" Icon="AnicraftExe" IconIndex="0">
+          <Extension Id="anicraft" ContentType="application/x-anicraft">
+            <Verb Id="open" Command="Open" TargetFile="AnicraftExe" Argument="&quot;%1&quot;" />
+          </Extension>
+        </ProgId>
+        <!-- FLA and XFL documents: offered under "Open with", never made the default. They open as
+             an untitled import (ADR 0009), so Save never overwrites the original. -->
+        <ProgId Id="Anicraft.Import" Description="Animation document" Icon="AnicraftExe" IconIndex="0" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Anicraft.Import\shell\open\command" Value="&quot;[#AnicraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\.fla\OpenWithProgids" Name="Anicraft.Import" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\.xfl\OpenWithProgids" Name="Anicraft.Import" Value="" Type="string" />
+
+        <!-- The "Open with" app list and the Run dialog (Win+R "anicraft"). -->
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe" Name="FriendlyAppName" Value="AniCraft" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\shell\open\command" Value="&quot;[#AnicraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".anicraft" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".fla" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".xfl" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\anicraft.exe" Value="[#AnicraftExe]" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\AniCraft" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
+      </Component>
+
+      <!-- The headless CLI and MCP server, next to the app. -->
+      <Component Id="AnicraftCli">
+        <File Id="AnicraftCliExe" Source="$(var.BinDir)\anicraft-cli.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -282,3 +282,23 @@ fn input_between_frames_moves_no_playhead() {
     let s = input(&d, &s.state, &[Event::Move(Vec2::new(150.0, 150.0)), Event::Down(Vec2::new(150.0, 150.0)), Event::Up(Vec2::new(150.0, 150.0))], &mut NoScripts);
     assert_eq!((s.state.root.frame, s.state.tick), (4, 0), "the click ran, no frame advanced");
 }
+
+
+#[test]
+fn the_player_sees_through_the_camera_and_buttons_are_hit_where_they_show() {
+    let mut d = button_doc();
+    // A camera zoomed 2x on the button's corner (100, 100): it shows at the output's middle.
+    let cam = crate::Camera { center: Vec2::new(100.0, 100.0), zoom: 2.0, ..crate::Camera::rest(&d.stage) };
+    let mut cl = Layer::new(LayerId(90), "Camera");
+    cl.kind = crate::LayerKind::Camera;
+    cl.keyframes = vec![kf(0, 10, vec![Arc::new(cam.to_element(ElementId(91)))], vec![], "")];
+    d.timeline_mut(0).layers.insert(0, Arc::new(cl));
+    let s = start(&d, &mut NoScripts);
+    let mid = Vec2::new(d.stage.width as f32 / 2.0, d.stage.height as f32 / 2.0);
+    let item = &evaluate_player(&d, &s.state).items[0];
+    assert!(item.transform.apply(Vec2::ZERO).distance(mid) < 1e-3, "drawn through the camera");
+    assert!((item.transform.mean_scale() - 2.0).abs() < 1e-4);
+    // The Hit area (100 x 100 at the corner) is now 200 x 200 from the middle.
+    assert!(hit(&d, &s.state, mid + Vec2::new(150.0, 150.0)).is_some());
+    assert!(hit(&d, &s.state, mid - Vec2::new(5.0, 5.0)).is_none());
+}

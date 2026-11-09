@@ -8,6 +8,7 @@ pub use anicraft_audio as audio;
 pub use anicraft_actions as actions;
 
 mod bitmap;
+pub mod camera;
 mod filter;
 mod easing;
 mod eval;
@@ -26,7 +27,8 @@ pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index
 pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
 pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
-pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene};
+pub use camera::Camera;
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, guide_walk, instance_start};
 pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, PluginScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
@@ -286,6 +288,9 @@ pub enum ElementKind {
     },
     /// A block of text (ADR 0012).
     Text(Arc<TextBlock>),
+    /// The camera, on a camera layer (ADR 0027): the element's transform is the camera on the
+    /// stage and its tint colours the view. It draws nothing itself.
+    Camera,
 }
 
 /// How an instance's pixels combine with what is below it, as Animate's Blending menu. Every
@@ -487,6 +492,7 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
             s.path.bounds().inflate(pad).transformed(xf)
         }
         ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),
+        ElementKind::Camera => Rect::EMPTY,
         ElementKind::Symbol { symbol, .. } => {
             let Some(sym) = doc.symbol(*symbol) else { return Rect::EMPTY };
             let mut r = Rect::EMPTY;
@@ -600,6 +606,9 @@ pub enum LayerKind {
     /// Holds layers (its children name it as their [`Layer::parent`]); draws nothing itself.
     /// Hiding or locking a folder hides or locks everything in it.
     Folder,
+    /// The camera (ADR 0027): at most one per scene timeline, always the top layer; its
+    /// keyframes hold the camera, which views every other layer. Draws nothing itself.
+    Camera,
 }
 
 /// Deepest nesting of folders (and a mask inside them) that is kept.
@@ -627,6 +636,14 @@ pub struct Layer {
     pub color: Rgba,
     #[serde(default)]
     pub keyframes: Vec<Arc<Keyframe>>,
+    /// Layer depth (ADR 0027), pixels behind the stage (negative: in front): the camera's pans
+    /// move a deeper layer less (parallax). Not the nesting depth ([`Timeline::depth`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub depth: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl PartialEq for Layer {
@@ -639,6 +656,7 @@ impl PartialEq for Layer {
             && self.locked == o.locked
             && self.outline == o.outline
             && self.color == o.color
+            && self.depth.to_bits() == o.depth.to_bits()
             && arcs_eq(&self.keyframes, &o.keyframes)
     }
 }
@@ -662,6 +680,7 @@ impl Layer {
             outline: false,
             color: default_layer_color(),
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
+            depth: 0.0,
         }
     }
     /// Mutable keyframe `i` (copy-on-write: clones it only if it is shared).
@@ -848,6 +867,8 @@ impl Timeline {
     /// its unbroken run; a masked layer is a normal layer directly under its mask or another
     /// layer masked by it; nesting stops at [`MAX_LAYER_DEPTH`]. Touches only layers that change.
     pub fn repair_masks(&mut self) {
+        // The camera layer sits on top, outside any folder (ADR 0027).
+        self.repair_camera();
         for i in 0..self.layers.len() {
             let Some(l) = self.layers.get(i) else { continue };
             let Some(p) = l.parent else { continue };
@@ -1104,6 +1125,7 @@ impl Document {
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
                 sanitize_scripts(l);
+                sanitize_depth(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1114,6 +1136,11 @@ impl Document {
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
                 sanitize_scripts(l);
+                // Only a scene has a camera; a symbol's camera layer is kept as a normal layer.
+                if l.kind == LayerKind::Camera {
+                    Arc::make_mut(l).kind = LayerKind::Normal;
+                }
+                sanitize_depth(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1125,6 +1152,14 @@ impl Document {
             max_id = max_id.max(s.id.0);
         }
         self.next_id = self.next_id.max(max_id.saturating_add(1));
+    }
+}
+
+/// Keeps a loaded layer's depth finite and in range (touching it only if it isn't).
+fn sanitize_depth(layer: &mut Arc<Layer>) {
+    let d = camera::clamp_depth(layer.depth);
+    if d.to_bits() != layer.depth.to_bits() {
+        Arc::make_mut(layer).depth = d;
     }
 }
 
@@ -1161,6 +1196,10 @@ fn sanitize_scripts(layer: &mut Arc<Layer>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "camera_tests.rs"]
+mod camera_tests;
 
 #[cfg(test)]
 mod tests {

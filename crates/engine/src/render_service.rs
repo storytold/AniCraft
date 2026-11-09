@@ -13,7 +13,7 @@
 //! the picture is always complete. Keys include which rasterizer drew them.
 
 use crate::history::StateId;
-use anicraft_doc::{ColorEffect, DisplayList, Document, Rgba, evaluate_scene};
+use anicraft_doc::{ColorEffect, DisplayList, Document, Rgba, evaluate_scene, evaluate_scene_camera};
 use anicraft_render::{RenderStats, View, render};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -34,6 +34,26 @@ pub struct FrameJob {
     pub frame: u32,
     pub view: View,
     pub onion: bool,
+    /// Seen through the scene's camera (View › Preview Through Camera, ADR 0027): what the
+    /// movie shows, rather than the stage as edited.
+    pub camera: bool,
+}
+
+impl FrameJob {
+    /// The same job seen through the scene's camera (`on`), keyed apart from the plain one.
+    pub fn through_camera(mut self, on: bool) -> FrameJob {
+        if on && !self.camera {
+            let mix = |k: u64| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (k, "camera").hash(&mut h);
+                h.finish()
+            };
+            self.key = mix(self.key);
+            self.scene = mix(self.scene);
+            self.camera = true;
+        }
+        self
+    }
 }
 
 /// A finished image: premultiplied RGBA8, ready for a texture upload.
@@ -82,7 +102,7 @@ pub fn frame_key(state: StateId, frame: u32, view: &View, onion: bool) -> u64 {
 
 /// A job whose `scene` is derived from the same inputs as its key.
 pub fn make_job(state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
-    FrameJob { key: frame_key(state, frame, &view, onion), raster: 0, scene: scene_key(state, frame, onion), doc: doc.clone(), frame, view, onion }
+    FrameJob { key: frame_key(state, frame, &view, onion), raster: 0, scene: scene_key(state, frame, onion), doc: doc.clone(), frame, view, onion, camera: false }
 }
 
 /// A job for rasterizer `raster` (from [`RenderService::raster_id`]; 0 is the CPU oracle, and
@@ -101,6 +121,12 @@ pub fn make_job_for(raster: u64, state: StateId, doc: &Document, frame: u32, vie
 /// Movie frame `frame`'s display list, with ±2 onion-skin frames (tinted red before, green after)
 /// underneath, taken from the same scene only.
 pub fn display_list_with_onion(doc: &Document, frame: u32, onion: bool) -> DisplayList {
+    display_list_for(doc, frame, onion, false)
+}
+
+/// [`display_list_with_onion`], seen through the scene's camera when `camera` (ADR 0027).
+pub fn display_list_for(doc: &Document, frame: u32, onion: bool, camera: bool) -> DisplayList {
+    let eval = |scene: usize, f: u32| if camera { evaluate_scene_camera(doc, scene, f) } else { evaluate_scene(doc, scene, f) };
     let mut dl = DisplayList::default();
     let (scene, local) = doc.locate(frame);
     if onion {
@@ -110,14 +136,14 @@ pub fn display_list_with_onion(doc: &Document, frame: u32, onion: bool) -> Displ
             if f < 0 || f >= n {
                 continue;
             }
-            let mut ghost = evaluate_scene(doc, scene, f as u32);
+            let mut ghost = eval(scene, f as u32);
             for item in &mut ghost.items {
                 item.color = item.color.concat(&ColorEffect { alpha, tint: Rgba::hex(tint), tint_amount: 1.0 });
             }
             dl.append(ghost);
         }
     }
-    dl.append(evaluate_scene(doc, scene, local));
+    dl.append(eval(scene, local));
     dl
 }
 
@@ -154,7 +180,7 @@ fn render_job_by(job: &FrameJob, dl: &DisplayList, raster: Option<&Rasterizer>) 
 
 /// Renders a job synchronously, evaluating its scene.
 pub fn render_job(job: &FrameJob) -> FrameImage {
-    render_job_with(job, &display_list_with_onion(&job.doc, job.frame, job.onion))
+    render_job_with(job, &display_list_for(&job.doc, job.frame, job.onion, job.camera))
 }
 
 /// Renders a batch: one scene evaluation per distinct `scene`, then all images in parallel.
@@ -166,7 +192,7 @@ pub fn render_batch(jobs: &[FrameJob]) -> Vec<FrameImage> {
 fn render_batch_by(jobs: &[FrameJob], slot: &RasterSlot) -> Vec<FrameImage> {
     let mut scenes: HashMap<u64, Arc<DisplayList>> = HashMap::new();
     for j in jobs {
-        scenes.entry(j.scene).or_insert_with(|| Arc::new(display_list_with_onion(&j.doc, j.frame, j.onion)));
+        scenes.entry(j.scene).or_insert_with(|| Arc::new(display_list_for(&j.doc, j.frame, j.onion, j.camera)));
     }
     jobs.par_iter()
         .map(|j| {
@@ -174,7 +200,7 @@ fn render_batch_by(jobs: &[FrameJob], slot: &RasterSlot) -> Vec<FrameImage> {
             let raster = slot.raster.as_ref().filter(|_| j.raster != 0 && j.raster == slot.id);
             match scenes.get(&j.scene) {
                 Some(dl) => render_job_by(j, dl, raster),
-                None => render_job_by(j, &display_list_with_onion(&j.doc, j.frame, j.onion), raster),
+                None => render_job_by(j, &display_list_for(&j.doc, j.frame, j.onion, j.camera), raster),
             }
         })
         .collect()

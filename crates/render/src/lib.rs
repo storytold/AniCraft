@@ -8,6 +8,7 @@ pub mod paint;
 pub mod raster;
 pub mod stroke;
 mod filters;
+pub mod html;
 pub mod lottie;
 pub mod svg;
 

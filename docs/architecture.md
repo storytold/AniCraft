@@ -64,13 +64,14 @@ Document
 ├── stage: width, height, fps, background
 ├── timeline: Timeline                 (main scene; scenes list arrives in M2)
 │   └── layers: [Layer]                (index 0 = top of the stack, as in the timeline panel)
-│       ├── name, visible, locked, outline, kind (Normal | Guide | Mask | Folder)
+│       ├── name, visible, locked, outline, depth, kind (Normal | Guide | Mask | Folder | Camera)
 │       └── keyframes: [Keyframe]      (sorted by start, spans do not overlap)
 │           ├── start, duration        (frames covered by this keyframe)
 │           ├── elements: [Element]
 │           │   ├── Shape { path, fill: Paint?, stroke: Stroke?, transform }
-│           │   └── Symbol instance { symbol id, transform, color effect, loop mode, first frame,
-│           │                         event handlers (buttons, movie clips; ADR 0024) }
+│           │   ├── Symbol instance { symbol id, transform, color effect, loop mode, first frame,
+│           │   │                     event handlers (buttons, movie clips; ADR 0024) }
+│           │   └── Camera { transform: the camera on the stage, tint }  (camera layer; ADR 0027)
 │           ├── tween: Tween? { kind: Classic | Shape, easing: Easing }
 │           ├── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
 │           └── script: FrameScript? (actions, or a frame-script plug-in entry; ADR 0024)
@@ -95,6 +96,14 @@ when they are compatible:
   segments equalized, windings and start points aligned. **Shape hints** (ADR 0023) on the
   tween's first keyframe steer it: placed hints join subpaths, cut both outlines at the hinted
   points and match the pieces in order by length.
+
+**The camera** (ADR 0027): a scene's top layer may be its camera layer. `evaluate` (every
+export), `evaluate_player` and `evaluate_scene_camera` draw each top-level layer through
+`Camera::view(stage, layer.depth)`: the camera's centre at the middle of the output, zoomed
+and turned against the camera, its pan scaled by the layer's depth (parallax), and its tint
+around everything. `evaluate_scene` is the editing view in stage space, which picking, bounds
+and every tool use; the stage previews the camera's picture by rendering its tiles through
+`evaluate_scene_camera`.
 
 Symbol instances recurse into the symbol's timeline at the local frame given by the loop mode
 (`Loop`, `PlayOnce`, `SingleFrame`) and the first frame. Recursion is limited to depth 32, so a

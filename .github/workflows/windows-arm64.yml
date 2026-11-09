@@ -28,3 +28,6 @@ jobs:
     with:
       app-name: anicraft
       app-dir: AniCraft
+      # A silent install goes to the current account, in the family's ArtCraft folder (ADR 0026).
+      install-relative-path: Programs/ArtCraft/AniCraft
+      install-scope: perUser
