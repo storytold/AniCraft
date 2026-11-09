@@ -5,6 +5,7 @@
 //! dialog opened and runs the plug-in again, so OK records exactly one undo step named after
 //! the plug-in, and Cancel leaves nothing behind.
 
+use crate::a11y::{self, Named};
 use crate::app::App;
 use crate::platform;
 use crate::theme::{self, FORM_LABEL_DOCK, T, TARGET, Type, form_row, text};
@@ -138,23 +139,24 @@ fn hex_rgb(s: &str) -> [u8; 3] {
 }
 
 /// One parameter's control; true when the value changed.
-fn control(ui: &mut egui::Ui, kind: &ParamKind, v: &mut Value) -> bool {
+/// Named for screen readers with the parameter's label.
+fn control(ui: &mut egui::Ui, name: &str, kind: &ParamKind, v: &mut Value) -> bool {
     match kind {
         ParamKind::Number { min, max, .. } => {
             let mut f = v.as_f64().unwrap_or(*min);
-            let changed = ui.add(egui::Slider::new(&mut f, *min..=*max).max_decimals(2)).changed();
+            let changed = a11y::slider(ui, &mut f, *min..=*max, name, a11y::SliderLook { max_decimals: Some(2), ..Default::default() }).changed();
             *v = json!(f);
             changed
         }
         ParamKind::Int { min, max, .. } => {
             let mut n = v.as_i64().unwrap_or(*min);
-            let changed = ui.add(egui::Slider::new(&mut n, *min..=*max)).changed();
+            let changed = a11y::slider(ui, &mut n, *min..=*max, name, a11y::SliderLook::default()).changed();
             *v = json!(n);
             changed
         }
         ParamKind::Bool { .. } => {
             let mut b = v.as_bool().unwrap_or(false);
-            let changed = theme::checkbox(ui, &mut b, "").changed();
+            let changed = theme::checkbox(ui, &mut b, "").named(name).changed();
             *v = json!(b);
             changed
         }
@@ -165,13 +167,15 @@ fn control(ui: &mut egui::Ui, kind: &ParamKind, v: &mut Value) -> bool {
                 for o in options {
                     changed |= ui.selectable_value(&mut cur, o.clone(), text(Type::Body, o.clone())).changed();
                 }
-            });
+            })
+            .response
+            .set_name(name);
             *v = json!(cur);
             changed
         }
         ParamKind::Color { .. } => {
             let mut c = hex_rgb(v.as_str().unwrap_or("#000000"));
-            let changed = ui.color_edit_button_srgb(&mut c).changed();
+            let changed = ui.color_edit_button_srgb(&mut c).named(name).changed();
             let h = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
             ui.label(text(Type::Data, h.clone()));
             *v = json!(h);
@@ -208,7 +212,7 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
         ui.add_space(8.0);
         for (key, spec) in &m.params {
             let v = d.values.entry(key.clone()).or_insert(Value::Null);
-            form_row(ui, FORM_LABEL_DOCK + 40.0, &spec.label, |ui| changed |= control(ui, &spec.kind, v));
+            form_row(ui, FORM_LABEL_DOCK + 40.0, &spec.label, |ui| changed |= control(ui, &spec.label, &spec.kind, v));
         }
         ui.add_space(6.0);
         if theme::checkbox(ui, &mut d.preview, "Preview on the stage").changed() {
@@ -270,7 +274,7 @@ fn finish(app: &mut App) {
 fn manager(app: &mut App, ctx: &egui::Context) {
     let mut open = app.show_plugins;
     let mut action: Option<(&'static str, String)> = None;
-    egui::Window::new("Plug-ins").open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
+    let shown = egui::Window::new("Plug-ins").open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
         let list: Vec<Arc<Plugin>> = app.s.plugins.list().cloned().collect();
         if list.is_empty() {
             ui.label(text(Type::Label, "No plug-ins installed yet. Plug-ins are WebAssembly (.wasm) files that add commands, such as generators and selection effects."));
@@ -326,6 +330,7 @@ fn manager(app: &mut App, ctx: &egui::Context) {
         });
         ui.label(text(Type::Caption, "Plug-ins run sandboxed: they can change the open document through AniCraft's commands, never your files."));
     });
+    a11y::name_title_bar(&shown, "Plug-ins");
     app.show_plugins = open;
     match action {
         Some(("plugin.run", id)) => run_or_ask(app, &id),

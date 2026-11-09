@@ -213,7 +213,8 @@ No code below `src/` depends on egui, eframe or windowing libraries.
 
 Agent and contributor rules (clean room, the asset policy, no panics in shipped code) are in [`AGENTS.md`](AGENTS.md).
 [`docs/requirements.md`](docs/requirements.md) has the scope, [`docs/architecture.md`](docs/architecture.md) the design,
-[`docs/product-principles.md`](docs/product-principles.md) the design and user experience principles, and
+[`docs/product-principles.md`](docs/product-principles.md) the design and user experience principles,
+[`docs/accessibility.md`](docs/accessibility.md) keyboard, screen-reader, high-contrast and scaling support, and
 [`docs/development.md`](docs/development.md) the setup, testing and build hygiene. Every bundled asset is listed
 with its licence in [`ATTRIBUTION.md`](ATTRIBUTION.md).
 
