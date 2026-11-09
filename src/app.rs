@@ -596,7 +596,7 @@ impl App {
             Some("confirm") => self.request("layer.delete", json!({})),
             Some("plugins") => {
                 // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
-                let first = self.s.plugins.list().find(|p| !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
+                let first = self.s.plugins.list().find(|p| crate::plugins_ui::is_command(p) && !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
                 match first {
                     Some(id) => crate::plugins_ui::open(self, &id),
                     None => self.show_plugins = true,

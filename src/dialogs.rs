@@ -235,7 +235,7 @@ fn palette(app: &mut App, ctx: &egui::Context) {
     let km = &app.keymap;
     let Some(p) = &mut app.palette else { return };
     let mut all = entries();
-    all.extend(app.s.plugins.list().map(|p| Entry::Plugin(p.id().to_string(), crate::plugins_ui::label(p))));
+    all.extend(app.s.plugins.list().filter(|p| crate::plugins_ui::is_command(p)).map(|p| Entry::Plugin(p.id().to_string(), crate::plugins_ui::label(p))));
     let mut matches: Vec<(i32, Entry, String)> =
         all.into_iter().filter_map(|e| {
             let key = e.shortcut(km);

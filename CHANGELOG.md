@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Interactivity: actions, buttons and Test Movie** (ADR 0024). Make a movie stop on a
+  frame, wait for a click and go on, without writing code. **Window › Actions** (F9) edits
+  what a keyframe does when the playhead reaches it and what a button or movie clip does on
+  Click, Press, Release, Pointer over and Pointer out: add Stop, Play, Go to and play, Go to
+  and stop, Next/Previous frame or scene, Trace or Set property from a menu, and pick the
+  target instance, frame, label or scene from your document. Name instances under
+  **Properties › Instance** to steer movie clips by name (`hero.arm`); keyframes with actions
+  show an "a" on the timeline. **Control › Test Movie** (Ctrl+Enter) plays the movie in its
+  own window at its frame rate, with buttons showing their Up, Over and Down frames and
+  answering clicks within their Hit area, and an **Output** panel for traces and anything
+  that couldn't run; Restart, Pause and Step are at the top, and your stage stays as it was.
+  **Frame scripts**: a WebAssembly plug-in of kind `frame-script` can run on a keyframe,
+  read where the movie is and send actions back, within 20 million instructions per frame
+  (`docs/plugins.md`). Headless: `actions.set`, `actions.clear`, `actions.list`,
+  `instance.set_name`, `control.test_movie` (plays with timed clicks and returns the output),
+  and `file.new_sample {"which": "interactive"}`. Exports still show the timeline as
+  authored.
+
 * **Shape hints** (Modify › Shape; ADR 0023). On a shape tween, Add Shape Hint (Ctrl+Shift+H)
   adds a lettered marker, `a` to `z`, at the shape's centre. Drag it onto an edge on the
   tween's first keyframe and onto the matching edge on its last: the morph then carries that

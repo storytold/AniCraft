@@ -69,9 +69,11 @@ Document
 │           ├── start, duration        (frames covered by this keyframe)
 │           ├── elements: [Element]
 │           │   ├── Shape { path, fill: Paint?, stroke: Stroke?, transform }
-│           │   └── Symbol instance { symbol id, transform, color effect, loop mode, first frame }
+│           │   └── Symbol instance { symbol id, transform, color effect, loop mode, first frame,
+│           │                         event handlers (buttons, movie clips; ADR 0024) }
 │           ├── tween: Tween? { kind: Classic | Shape, easing: Easing }
-│           └── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+│           ├── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+│           └── script: FrameScript? (actions, or a frame-script plug-in entry; ADR 0024)
 ├── library: [Symbol { id, name, kind: Graphic | MovieClip | Button, timeline }]
 ├── bitmaps: [Bitmap { id, name, PNG data }]
 └── sounds: [Sound { id, name, format, rate, channels, frames, data as imported }]
@@ -103,6 +105,19 @@ cyclic library in a malformed file renders what it can instead of overflowing th
 `Easing` is `Linear`, `QuadIn/Out/InOut`, `CubicIn/Out/InOut`, `Classic(strength −100…100)`
 (the traditional single-slider ease) or `CubicBezier(x1, y1, x2, y2)` solved with Newton
 iterations and a bisection fallback, the same model CSS uses.
+
+### Interactive playback
+
+Interactivity is time as a function too (ADR 0013, ADR 0024). Keyframes and button or movie
+clip instances carry lists of typed actions (`anicraft-actions`) or a frame-script plug-in
+entry; nothing in the document changes while a movie plays. `player::step(doc, &state,
+&events, scripts) -> Step` advances a `PlayerState` (the main timeline's scene and playhead,
+each movie clip instance's playhead by its element-id path, script-set properties, the
+pointer) by one frame, runs the actions of the frames entered and routes pointer events to
+buttons by their Hit frame; `evaluate_player(doc, &state)` draws it with the same code as
+`evaluate`, which stays pure and script-free for the stage and every export. Budgets bound a
+step, and nothing reads a clock, so steps are deterministic. Frame scripts run through the
+`ScriptHost` trait, which the engine implements over the plug-in sandbox.
 
 ### Sound
 

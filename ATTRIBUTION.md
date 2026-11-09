@@ -26,6 +26,7 @@ shaders or SDK code).
 | `docs/images/` (screenshots and `sample-animation.gif`) | README | AniCraft contributors | Original work: AniCraft's own screenshots (`--screenshot`) and sample animation (`anicraft-cli gif`) | MIT OR Apache-2.0 |
 | Library symbol-kind marks, selection handles, timeline marks | UI | AniCraft contributors | Original work, drawn in code (`src/panels.rs`, `src/timeline.rs`, `src/stage.rs`) | MIT OR Apache-2.0 |
 | Sample animation (ball, star, sun, hills, sky) | First launch, tests, CLI `--sample` | AniCraft contributors | Original work, generated in code (`crates/doc/src/sample.rs`) | MIT OR Apache-2.0 |
+| Interactive sample (menu, Play button, spinner) | File › New from Sample (`which: interactive`), Test Movie tests and screenshots | AniCraft contributors | Original work, generated in code (`crates/doc/src/sample.rs`, `interactive`) | MIT OR Apache-2.0 |
 | Colour theme | UI | AniCraft contributors | Original work (`src/theme.rs`) | MIT OR Apache-2.0 |
 | `docs/brand/artcraft-logo-white.png` | ArtCraft brand mark (wordmark, light ink for dark backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
 | `docs/brand/artcraft-logo-white.svg` | ArtCraft brand mark (wordmark, light ink for dark backgrounds) | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source |
@@ -73,6 +74,7 @@ OR Apache-2.0) is noted in the table.
 | Blend modes (separable modes, premultiplied) | `crates/render/src/lib.rs` | W3C Compositing and Blending Level 1 | W3C Royalty-Free Patent Policy. |
 | Adjust Color filter (brightness, contrast, saturation and hue as colour matrices) | `crates/render/src/filters.rs` | Paul Haeberli, *Matrix Operations for Image Processing* (Silicon Graphics, 1993) | Public description; standard matrix operations. |
 | Blur, drop shadow and glow by repeated box blurs | `crates/render/src/filters.rs` | Standard image processing (repeated box filters approach a Gaussian, central limit theorem) | Public; no specific implementation followed. |
+| Timeline playback semantics for actions (stop, play, go to frame or label, next/previous frame and scene; button Up/Over/Down/Hit states; mouse events) | `crates/actions`, `crates/doc/src/player.rs` | Behaviour learned from Adobe's public *ActionScript 3.0 Reference* (`MovieClip`, `SimpleButton`, `MouseEvent`) and the public Animate user guide on buttons, plus observation (ADR 0013, ADR 0024) | Clean room: no Adobe code, SDKs or players; names used nominatively. |
 | Cubic-Bézier easing (CSS model) | `crates/doc/src/easing.rs` | W3C CSS Easing Functions Level 1 | W3C Royalty-Free Patent Policy. |
 | SVG path data syntax (file format v2) | `crates/geom/src/path.rs` | W3C SVG 1.1 / 2 | W3C Royalty-Free Patent Policy. |
 | Marching-squares contour tracing (Paint Bucket regions) | `crates/geom/src/trace.rs` | Lorensen & Cline (1987); public algorithm | Ported from PhotoCraft's mask tracer (same project family and licence) and reviewed. |
