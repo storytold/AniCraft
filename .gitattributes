@@ -10,3 +10,9 @@ scripts/git-hooks/* text eol=lf
 *.wav binary
 *.ogg binary
 *.mp3 binary
+# packaging scripts run on Linux and macOS runners; the DMG layout files are binary
+*.sh text eol=lf
+.shellcheckrc text eol=lf
+*.tiff binary
+*.DS_Store binary
+*.ico binary
