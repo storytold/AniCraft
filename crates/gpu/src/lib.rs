@@ -313,9 +313,9 @@ impl GpuRenderer {
                 Output::Premul8 => (bytes.to_vec(), None),
                 Output::Float => {
                     let mut pm = Pixmap::new(w, h).map_err(|e| GpuError::TooLarge(e.to_string()))?;
-                    for (p, q) in pm.data.iter_mut().zip(bytes.chunks_exact(16)) {
-                        for (c, v) in p.iter_mut().zip(q.chunks_exact(4)) {
-                            *c = f32::from_le_bytes([v[0], v[1], v[2], v[3]]);
+                    for (p, q) in pm.data.iter_mut().zip(bytes.as_chunks::<16>().0) {
+                        for (c, v) in p.iter_mut().zip(q.as_chunks::<4>().0) {
+                            *c = f32::from_le_bytes(*v);
                         }
                     }
                     (Vec::new(), Some(pm))
@@ -336,7 +336,7 @@ pub fn compare_premul8(a: &[u8], b: &[u8]) -> Option<Diff> {
     let mut sum = 0u64;
     let mut max = 0u8;
     let mut differing = 0usize;
-    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (p, q) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         let mut any = false;
         for (x, y) in p.iter().zip(q) {
             let d = x.abs_diff(*y);

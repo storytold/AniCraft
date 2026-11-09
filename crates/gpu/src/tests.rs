@@ -282,7 +282,7 @@ fn gpu_hands_back_what_it_does_not_draw_and_stays_usable() {
     assert!(matches!(g.render(&list(vec![]), &view(100_000, 100_000, None), Output::Premul8), Err(GpuError::TooLarge(_))));
     // An empty list is just the background; and the device is still fine afterwards.
     let f = g.render(&list(vec![]), &view(20, 3, Some(Rgba::new(0.0, 1.0, 0.0, 1.0))), Output::Premul8).unwrap();
-    assert!(f.premul8.chunks_exact(4).all(|p| p == [0, 255, 0, 255]));
+    assert!(f.premul8.as_chunks::<4>().0.iter().all(|p| *p == [0, 255, 0, 255]));
     assert!(g.broken().is_none());
 }
 

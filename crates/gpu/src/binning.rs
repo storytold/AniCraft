@@ -296,7 +296,7 @@ fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, piec
                     Some((k, w)) if w == wind => k,
                     _ => {
                         let k = out.backdrops.len() as u32;
-                        out.backdrops.extend(wind.chunks_exact(4).map(|q| [q[0], q[1], q[2], q[3]]));
+                        out.backdrops.extend_from_slice(wind.as_chunks::<4>().0);
                         last_bd = Some((k, wind));
                         k
                     }
