@@ -275,7 +275,7 @@ pub struct App {
     shortcuts: Vec<(Modifiers, Key, &'static str)>,
     /// The shortcut editor is waiting for a key press: global shortcuts pause.
     pub key_capture: Option<dialogs::KeyCapture>,
-    /// Crash-recovery autosave and the copies earlier sessions left behind (ADR 0014).
+    /// Crash-recovery autosave and the copies earlier sessions left behind (ADR 0015).
     pub recovery: autosave::Recovery,
 }
 

@@ -1,4 +1,4 @@
-//! Crash recovery (ADR 0014): autosaved copies of open documents in a recovery folder, so a
+//! Crash recovery (ADR 0015): autosaved copies of open documents in a recovery folder, so a
 //! crash, power cut or killed process loses at most the last autosave interval of work.
 //!
 //! One running editor is one *recovery session* with an id (`SessionLock`). Its files in the

@@ -1,4 +1,4 @@
-//! Crash recovery in the shell (ADR 0014): when to autosave, and the window that offers work a
+//! Crash recovery in the shell (ADR 0015): when to autosave, and the window that offers work a
 //! previous session left behind (Restore / Discard / Later).
 //!
 //! The engine does the work: [`Autosaver`] serializes snapshots of the persistent document on

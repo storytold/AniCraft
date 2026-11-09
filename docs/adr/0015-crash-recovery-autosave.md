@@ -1,4 +1,4 @@
-# ADR 0014: Crash-recovery autosave
+# ADR 0015: Crash-recovery autosave
 
 * Status: accepted (2026-11-09)
 * Relates to: roadmap M8 (crash-recovery autosave), ADR 0001 (persistent document), ADR 0003

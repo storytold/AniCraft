@@ -89,7 +89,7 @@ pub fn config_dir() -> Option<PathBuf> {
     }
 }
 
-/// Where crash-recovery copies live (ADR 0014): `Recovery` in the settings folder.
+/// Where crash-recovery copies live (ADR 0015): `Recovery` in the settings folder.
 /// `ANICRAFT_RECOVERY_DIR` points it elsewhere (tests, portable installs).
 pub fn recovery_dir() -> Option<PathBuf> {
     match std::env::var_os("ANICRAFT_RECOVERY_DIR").filter(|v| !v.is_empty()) {

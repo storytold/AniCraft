@@ -1,4 +1,4 @@
-//! Crash-recovery commands (ADR 0014): list, restore and discard the autosaved copies that a
+//! Crash-recovery commands (ADR 0015): list, restore and discard the autosaved copies that a
 //! session which didn't close cleanly left in a recovery folder, and autosave on request.
 //! The desktop app autosaves in the background with [`crate::recovery::Autosaver`]; these
 //! commands are how it (and the CLI, scripts and agents) acts on what was left behind.

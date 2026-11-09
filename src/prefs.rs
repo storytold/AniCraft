@@ -52,7 +52,7 @@ pub struct Prefs {
     /// Keyboard shortcuts the user changed: action id → its full list of keys (empty =
     /// unbound). Actions not listed keep their defaults (`keymap`).
     pub shortcuts: std::collections::BTreeMap<String, Vec<String>>,
-    /// Keep a crash-recovery copy of unsaved work (ADR 0014).
+    /// Keep a crash-recovery copy of unsaved work (ADR 0015).
     pub autosave: bool,
     /// Longest time unsaved work goes without a recovery copy, in seconds.
     pub autosave_secs: u32,

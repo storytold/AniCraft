@@ -52,7 +52,7 @@ Timing each step of a frame showed the time was outside the drawing itself:
 Output is unchanged: the sample's frames and a bitmap document render byte-identical before
 and after.
 
-**Crash-recovery autosave (2026-11-09, ADR 0014).** `bench` now runs one autosave the way the
+**Crash-recovery autosave (2026-11-09, ADR 0015).** `bench` now runs one autosave the way the
 app does: an `Autosaver` in a scratch recovery folder. The editing thread only hands over an
 `Arc` snapshot of the document; the worker serializes and writes atomically (temp file,
 flushed to disk, renamed).
@@ -83,4 +83,4 @@ for about 1% of the time, and the UI never waits for it.
 * [ADR 0001](adr/0001-undo-persistent-snapshots.md): persistent document and snapshot undo
 * [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
 * [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
-* [ADR 0014](adr/0014-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
+* [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread

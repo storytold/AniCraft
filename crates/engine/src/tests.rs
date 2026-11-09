@@ -577,7 +577,7 @@ fn file_commands_reject_bad_params() {
     assert!(s.execute("no.such.command", &json!({})).is_err());
 }
 
-// ----- crash recovery (ADR 0014) -------------------------------------------------------------
+// ----- crash recovery (ADR 0015) -------------------------------------------------------------
 
 /// A crash simulated end to end: a session autosaves unsaved work and dies without a clean
 /// exit; the next session finds the copy, restores it as unsaved work with its original path,
@@ -1097,7 +1097,7 @@ fn opening_an_xfl_folder_imports_it_untitled() {
     // It renders.
     let dl = s.display_list();
     assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0xff8800))));
-    // Text comes across as an editable text block when this computer has fonts (ADR 0014),
+    // Text comes across as an editable text block when this computer has fonts (ADR 0015),
     // with the missing family named.
     if !anicraft_text::Fonts::get().families().is_empty() {
         assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"), "{v}");
