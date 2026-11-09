@@ -7,7 +7,8 @@
 //! * colour effects (alpha, tint) are baked into every colour and stop;
 //! * masks become `clipPath`s (fill areas only, nested through `clip-path` on the clip), and an
 //!   empty mask clips everything, as on the stage;
-//! * outline-mode layers are hairlines in the layer colour.
+//! * outline-mode layers are hairlines in the layer colour;
+//! * variable-width strokes are filled outlines: the polygons the renderer fills.
 //!
 //! The output is deterministic and contains only generated ids and numbers, so it needs no
 //! escaping.
@@ -18,6 +19,8 @@ use std::fmt::Write;
 
 /// Writes `dl` as a standalone SVG document the size of `stage`, with its background.
 pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
+    // Variable-width strokes are written as the filled outlines the renderer draws.
+    let dl = &*crate::stroke::outline_variable_strokes(dl);
     let (w, h) = (stage.width, stage.height);
     let mut defs = String::new();
     let mut body = String::new();
@@ -81,7 +84,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
         {
             let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
         }
-        if let Some(st) = item.stroke {
+        if let Some(st) = &item.stroke {
             let width = st.width * item.transform.mean_scale();
             if width.is_finite() && width > 0.0 {
                 let c = item.color.apply(st.color);
@@ -304,7 +307,7 @@ mod tests {
     fn shapes_strokes_and_effects_come_out_in_stage_space() {
         let mut a = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Solid(Rgba::hex(0xff0000))));
         a.transform = Affine::translate(5.0, 7.0).mul(&Affine::scale(2.0, 2.0));
-        a.stroke = Some(Stroke { color: Rgba::BLACK, width: 3.0 });
+        a.stroke = Some(Stroke::new(Rgba::BLACK, 3.0));
         a.color = ColorEffect { alpha: 0.5, ..Default::default() };
         a.fill_rule = FillRule::EvenOdd;
         let svg = to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
@@ -313,6 +316,17 @@ mod tests {
         assert!(svg.contains("d=\"M5 7L25 7L25 27L5 27Z\" fill=\"#ff0000\" fill-opacity=\"0.5\" fill-rule=\"evenodd\""), "{svg}");
         assert!(svg.contains("stroke=\"#000000\" stroke-opacity=\"0.5\" stroke-width=\"6\""), "stroke width scales like the renderer");
         assert!(svg.trim_end().ends_with("</svg>"));
+    }
+
+    #[test]
+    fn variable_width_strokes_are_written_as_filled_outlines() {
+        let mut a = item(Path::line(Vec2::new(0.0, 10.0), Vec2::new(80.0, 10.0)), Some(Paint::Solid(Rgba::hex(0xff0000))));
+        a.stroke = Some(Stroke::new(Rgba::hex(0x0000ff), 6.0).with_profile(anicraft_doc::ProfilePreset::TaperBoth.profile()));
+        let svg = to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
+        assert!(!svg.contains("stroke-width"), "no SVG stroke: {svg}");
+        assert!(svg.contains("fill=\"#0000ff\""), "the outline is filled in the stroke colour");
+        assert!(svg.contains("fill=\"#ff0000\""), "the shape's own fill stays");
+        assert!(!svg.contains("NaN") && !svg.contains("inf"));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! can show, never panics, and rejects non-finite numbers.
 
 use crate::{EngineError, Result};
-use anicraft_doc::{Easing, Rgba};
+use anicraft_doc::{Easing, ProfilePreset, Rgba, WidthPoint, WidthProfile};
 use serde_json::Value;
 
 fn bad(key: &str, want: &str) -> EngineError {
@@ -112,4 +112,37 @@ pub fn opt_easing(p: &Value, key: &str) -> Result<Option<Easing>> {
         }
     }
     Err(bad(key, "an easing name, {\"classic\": n} or {\"bezier\": [x1, y1, x2, y2]}"))
+}
+
+/// A width profile (ADR 0014): a preset name (`"uniform"`, `"taper_both"`, `"taper_start"`,
+/// `"taper_end"`, `"bulge"`, `"pinch"`) or width points as `[[t, left, right], ..]` (or
+/// `{t, left, right}` objects; factors of the nominal width, 1 = as set). `Some(None)` is
+/// uniform; `None` when the param is absent.
+pub fn opt_profile(p: &Value, key: &str) -> Result<Option<Option<WidthProfile>>> {
+    let want = "a profile name (uniform, taper_both, taper_start, taper_end, bulge, pinch) or a list of [t, left, right] width points";
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(name)) => ProfilePreset::from_key(name).map(|pr| Some(pr.profile())).ok_or_else(|| bad(key, want)),
+        Some(Value::Array(list)) => {
+            if list.len() > anicraft_doc::MAX_WIDTH_POINTS {
+                return Err(bad(key, &format!("at most {} width points", anicraft_doc::MAX_WIDTH_POINTS)));
+            }
+            let num = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|f| f.is_finite()).map(|f| f as f32);
+            let mut pts = Vec::with_capacity(list.len());
+            for v in list {
+                let (t, l, r) = match v {
+                    Value::Array(a) => (num(a.first()), num(a.get(1)), num(a.get(2))),
+                    Value::Object(_) => (num(v.get("t")), num(v.get("left")), num(v.get("right"))),
+                    _ => (None, None, None),
+                };
+                let (Some(t), Some(l), Some(r)) = (t, l, r) else { return Err(bad(key, want)) };
+                if !(0.0..=1.0).contains(&t) || !(0.0..=anicraft_doc::MAX_WIDTH_FACTOR).contains(&l) || !(0.0..=anicraft_doc::MAX_WIDTH_FACTOR).contains(&r) {
+                    return Err(bad(key, &format!("width points with t in 0..=1 and widths in 0..={}", anicraft_doc::MAX_WIDTH_FACTOR)));
+                }
+                pts.push(WidthPoint::new(t, l, r));
+            }
+            Ok(Some(WidthProfile::new(pts)))
+        }
+        Some(_) => Err(bad(key, want)),
+    }
 }

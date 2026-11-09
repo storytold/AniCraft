@@ -165,9 +165,9 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, guide: Option<(&Pa
                 (Some(x), Some(y)) => Some(x.lerp(y, t)),
                 (x, _) => x.clone(),
             };
-            let stroke = match (sa.stroke, sb.stroke) {
-                (Some(x), Some(y)) => Some(Stroke { color: x.color.lerp(y.color, t), width: anicraft_geom::lerp(x.width, y.width, t) }),
-                (x, _) => x,
+            let stroke = match (&sa.stroke, &sb.stroke) {
+                (Some(x), Some(y)) => Some(x.lerp(y, t)),
+                (x, _) => x.clone(),
             };
             ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule })
         }
@@ -298,7 +298,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     path: s.path.clone(),
                     transform: xf,
                     fill: s.fill.clone(),
-                    stroke: s.stroke,
+                    stroke: s.stroke.clone(),
                     fill_rule: s.fill_rule,
                     color,
                     layer: root_layer,

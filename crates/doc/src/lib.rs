@@ -9,11 +9,13 @@ mod filter;
 mod easing;
 mod eval;
 pub mod path_table;
+pub mod width;
 pub mod sample;
 
 pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
+pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
@@ -130,11 +132,51 @@ impl Paint {
     }
 }
 
-/// Stroke style. M0: round joins and caps.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Stroke style: round joins and caps, one width or a width profile (ADR 0014).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StrokeFile")]
 pub struct Stroke {
     pub color: Rgba,
+    /// Nominal width; a profile varies it along the stroke.
     pub width: f32,
+    /// How the width varies along each subpath (`None`: the same everywhere). Never uniform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<WidthProfile>,
+}
+
+/// What a file may hold for a stroke (a uniform profile is dropped on load).
+#[derive(Deserialize)]
+struct StrokeFile {
+    color: Rgba,
+    width: f32,
+    #[serde(default)]
+    profile: Option<WidthProfile>,
+}
+
+impl From<StrokeFile> for Stroke {
+    fn from(f: StrokeFile) -> Stroke {
+        Stroke { color: f.color, width: f.width, profile: f.profile.filter(|p| !p.is_uniform()) }
+    }
+}
+
+impl Stroke {
+    /// A stroke of one width.
+    pub fn new(color: Rgba, width: f32) -> Stroke {
+        Stroke { color, width, profile: None }
+    }
+    pub fn with_profile(self, profile: Option<WidthProfile>) -> Stroke {
+        Stroke { profile: profile.filter(|p| !p.is_uniform()), ..self }
+    }
+    /// The farthest the stroke reaches from its path (local units): half its nominal width
+    /// times the profile's widest factor.
+    pub fn reach(&self) -> f32 {
+        let w = if self.width.is_finite() { self.width.max(0.0) } else { 0.0 };
+        w * 0.5 * self.profile.as_ref().map_or(1.0, WidthProfile::max_factor)
+    }
+    /// The stroke `t` of the way to `o` (shape tweens): colour, width and profile blend.
+    pub fn lerp(&self, o: &Stroke, t: f32) -> Stroke {
+        Stroke { color: self.color.lerp(o.color, t), width: anicraft_geom::lerp(self.width, o.width, t), profile: WidthProfile::lerp(self.profile.as_ref(), o.profile.as_ref(), t) }
+    }
 }
 
 /// `Arc` equality that short-circuits on shared pointers. Unchanged subtrees of two document
@@ -172,7 +214,7 @@ impl Shape {
         Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
-        self.stroke = Some(Stroke { color, width });
+        self.stroke = Some(Stroke::new(color, width));
         self
     }
 }
@@ -426,7 +468,7 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
     }
     match &el.kind {
         ElementKind::Shape(s) => {
-            let pad = s.stroke.map_or(0.0, |st| st.width * 0.5);
+            let pad = s.stroke.as_ref().map_or(0.0, Stroke::reach);
             s.path.bounds().inflate(pad).transformed(xf)
         }
         ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),

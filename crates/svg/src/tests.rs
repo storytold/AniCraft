@@ -31,7 +31,7 @@ fn shapes_styles_and_inheritance() {
     let r = &i.shapes[0];
     assert_eq!(r.name, "box");
     assert_eq!(solid(r), Rgba::hex(0xff0000));
-    assert_eq!(r.shape.stroke, Some(Stroke { color: Rgba::hex(0x0000ff), width: 4.0 }));
+    assert_eq!(r.shape.stroke, Some(Stroke::new(Rgba::hex(0x0000ff), 4.0)));
     assert_eq!(r.alpha, 0.5, "group opacity reaches every child");
     assert_eq!(r.shape.path.bounds(), Rect::new(10.0, 10.0, 60.0, 40.0));
     let c = &i.shapes[1];

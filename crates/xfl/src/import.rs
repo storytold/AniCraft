@@ -138,7 +138,7 @@ fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> 
     let width = def.f32("weight").unwrap_or(1.0).clamp(0.05, 1000.0);
     let fill = def.child("fill").and_then(|f| f.children.first());
     let c = fill.map_or(Rgba::BLACK, |f| if f.name == "SolidColor" { color(f, "color", "alpha") } else { paint(f, bitmaps, report).map_or(Rgba::BLACK, |p| p.primary_color()) });
-    Some(Stroke { color: c, width })
+    Some(Stroke::new(c, width))
 }
 
 impl<'a> Builder<'a> {

@@ -10,10 +10,10 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?}", true, draw_rect as crate::RunFn),
-        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?}", true, draw_ellipse),
-        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?}", true, draw_star),
-        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?}", true, draw_line),
+        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?}", true, draw_rect as crate::RunFn),
+        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?}", true, draw_ellipse),
+        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?}", true, draw_star),
+        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..])}", true, draw_line),
         c("edit.select_all", "Select All", "Edit", Some("Ctrl+A"), "{}", false, select_all),
         c("edit.deselect", "Deselect All", "Edit", Some("Ctrl+Shift+A"), "{}", false, |s, _| {
             s.selection.clear();
@@ -26,7 +26,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.translate", "Move", "", None, "{dx, dy}", true, translate),
         c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, set_transform),
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, set_fill),
-        c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?}", true, set_stroke),
+        c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..]}", true, set_stroke),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, set_alpha),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, set_blend),
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them)", true, set_filters),
@@ -62,14 +62,16 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
         Some(_) => return Err(EngineError::Param("param 'stroke_width' must be in 0..=1000".into())),
         None => s.style.stroke_width,
     };
+    let profile = opt_profile(p, "profile")?.unwrap_or_else(|| s.style.stroke_profile.profile());
     let stroke = if p.get("stroke").is_some_and(Value::is_null) || width <= 0.0 {
         None
     } else {
         match opt_color(p, "stroke")? {
-            Some(c) => Some(Stroke { color: c, width }),
-            None => (s.style.use_stroke || !closed).then_some(Stroke { color: s.style.stroke, width }),
+            Some(c) => Some(Stroke::new(c, width)),
+            None => (s.style.use_stroke || !closed).then_some(Stroke::new(s.style.stroke, width)),
         }
-    };
+    }
+    .map(|st| st.with_profile(profile));
     if fill.is_none() && stroke.is_none() {
         return Err(EngineError::Param("shape would be invisible: give it a fill or a stroke".into()));
     }
@@ -279,18 +281,22 @@ fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     if width.is_some_and(|w| !(0.0..=1000.0).contains(&w)) {
         return Err(EngineError::Param("param 'width' must be in 0..=1000".into()));
     }
+    let profile = opt_profile(p, "profile")?;
     let default = s.style;
     for sh in shapes_mut(s)? {
         if remove {
             sh.stroke = None;
             continue;
         }
-        let mut st = sh.stroke.unwrap_or(Stroke { color: default.stroke, width: default.stroke_width });
+        let mut st = sh.stroke.take().unwrap_or_else(|| Stroke::new(default.stroke, default.stroke_width).with_profile(default.stroke_profile.profile()));
         if let Some(c) = color {
             st.color = c;
         }
         if let Some(w) = width {
             st.width = w;
+        }
+        if let Some(pr) = &profile {
+            st = st.with_profile(pr.clone());
         }
         sh.stroke = (st.width > 0.0).then_some(st);
     }

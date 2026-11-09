@@ -58,11 +58,13 @@ pub enum Icon {
     Guide,
     Image,
     Type,
+    Width,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 44] = [
+    pub const ALL: [Icon; 45] = [
+        Icon::Width,
         Icon::Guide,
         Icon::Image,
         Icon::Type,
@@ -122,6 +124,8 @@ impl Icon {
             // A hollow arrowhead, mirrored to point like a cursor: the subselection arrow.
             Icon::Subselect => ("navigation", true),
             Icon::Transform => ("scaling", false),
+            // A stroke swelling and tapering, with a width point across it (AniCraft original).
+            Icon::Width => ("anicraft-width", false),
             Icon::Pen => ("pen-tool", false),
             Icon::Pencil => ("pencil", false),
             Icon::Rect => ("rectangle-horizontal", false),
@@ -210,6 +214,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-distribute-h", include_str!("../assets/icons/anicraft-distribute-h.svg")),
     ("anicraft-distribute-v", include_str!("../assets/icons/anicraft-distribute-v.svg")),
     ("anicraft-mask", include_str!("../assets/icons/anicraft-mask.svg")),
+    ("anicraft-width", include_str!("../assets/icons/anicraft-width.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),

@@ -544,6 +544,9 @@ fn panic_hunt_every_command() {
         json!({"d": "M 0 0 C", "points": [[0, 0]], "mode": "straighten", "tolerance": 0}),
         json!({"id": 3, "points": [[0, 0], [99, 9], [1, 2]], "dx": 1e30, "dy": 0, "cmds": [0, 1, 2, 3, 4, 5, 99], "cmd": 0, "smooth": true}),
         json!({"id": 5, "points": [[1, 1]], "dx": 3, "dy": 4, "x": 0, "y": 0, "slop": 1e9, "cmds": [1, 1, 0], "cmd": 1, "smooth": false}),
+        json!({"id": 3, "profile": [[0, 1e30, -5], ["x"], [0.5, 16, 16]], "index": u64::MAX, "t": -0.5, "left": 1e9, "width": f64::MAX}),
+        json!({"id": 3, "profile": "taper_both", "index": 0, "t": 1, "x": 1e30, "y": -1e30, "left": 0, "right": 16}),
+        json!({"profile": (0..500).map(|i| json!([f64::from(i) / 500.0, 2, 2])).collect::<Vec<_>>()}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -864,7 +867,7 @@ fn shapes_on_layer(s: &Session) -> Vec<(u64, Option<anicraft_doc::Paint>, Option
     s.visible_elements()
         .iter()
         .filter_map(|e| match &e.kind {
-            ElementKind::Shape(sh) => Some((e.id.0, sh.fill.clone(), sh.stroke)),
+            ElementKind::Shape(sh) => Some((e.id.0, sh.fill.clone(), sh.stroke.clone())),
             _ => None,
         })
         .collect()
@@ -915,7 +918,7 @@ fn ink_bottle_strokes_the_clicked_shape() {
     run(&mut s, "draw.ellipse", json!({"x": 0, "y": 0, "w": 40, "h": 40, "stroke": null}));
     assert!(shapes_on_layer(&s)[0].2.is_none());
     run(&mut s, "paint.ink", json!({"x": 20, "y": 20, "color": "#123456", "width": 4}));
-    let st = shapes_on_layer(&s)[0].2.expect("stroked");
+    let st = shapes_on_layer(&s)[0].2.clone().expect("stroked");
     assert_eq!((st.color, st.width), (anicraft_doc::Rgba::hex(0x123456), 4.0));
     assert!(s.execute("paint.ink", &json!({"x": 300, "y": 300})).is_err(), "nothing there");
     // Symbols keep their colours.

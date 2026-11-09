@@ -14,6 +14,7 @@ mod cmds_path;
 mod cmds_scene;
 pub mod cmds_text;
 mod cmds_timeline;
+mod cmds_width;
 pub mod confirm;
 pub mod format;
 pub mod history;
@@ -90,6 +91,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_path::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
+    v.extend(cmds_width::specs());
     v
 }
 
@@ -118,11 +120,13 @@ pub struct ToolStyle {
     pub stroke_width: f32,
     pub use_fill: bool,
     pub use_stroke: bool,
+    /// The width profile new strokes get (ADR 0014).
+    pub stroke_profile: anicraft_doc::ProfilePreset,
 }
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform }
     }
 }
 
@@ -400,7 +404,7 @@ impl Session {
     pub fn hit_test(&self, p: Vec2, slop: f32) -> Option<(LayerId, ElementId)> {
         let dl = self.display_list();
         for item in dl.items.iter().rev() {
-            let hw = item.stroke.map_or(0.0, |s| s.width * 0.5 * item.transform.mean_scale());
+            let hw = item.stroke.as_ref().map_or(0.0, |s| s.reach() * item.transform.mean_scale());
             let bounds = item.path.bounds().transformed(&item.transform).inflate(hw + slop);
             if !bounds.contains(p) {
                 continue;
@@ -426,7 +430,7 @@ impl Session {
     pub fn element_bounds(&self, id: ElementId) -> Rect {
         let mut r = Rect::EMPTY;
         for item in self.display_list().items.iter().filter(|i| i.element == id) {
-            let pad = item.stroke.map_or(0.0, |s| s.width * 0.5);
+            let pad = item.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach);
             r = r.union(&item.path.bounds().inflate(pad).transformed(&item.transform));
         }
         r

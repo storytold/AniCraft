@@ -637,7 +637,7 @@ impl<'a> Builder<'a> {
                 other.primary_color()
             }
         };
-        Some(Stroke { color, width: style.stroke_width })
+        Some(Stroke::new(color, style.stroke_width))
     }
 
     /// A fill or stroke paint, with `opacity` folded in; `None` draws nothing.
