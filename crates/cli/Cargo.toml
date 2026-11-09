@@ -21,5 +21,8 @@ anicraft-render.workspace = true
 anicraft-geom.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+anicraft-mohoproj-import.workspace = true
+
 [lints]
 workspace = true
