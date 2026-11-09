@@ -959,7 +959,8 @@ fn opening_an_xfl_folder_imports_it_untitled() {
         dir.join("DOMDocument.xml"),
         r##"<DOMDocument width="320" height="240" frameRate="12"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Art"><frames><DOMFrame index="0" duration="6"><elements>
         <DOMShape><fills><FillStyle index="1"><SolidColor color="#FF8800"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="!0 0|2000 0|2000 2000|0 2000|0 0"/></edges></DOMShape>
-        <DOMStaticText/></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"##,
+        <DOMDynamicText name="title" width="200"><matrix><Matrix tx="20" ty="30"/></matrix><textRuns><DOMTextRun><characters>Hello</characters><textAttrs><DOMTextAttrs face="NoSuchFamilyAtAll-Bold" size="20" fillColor="#0000FF"/></textAttrs></DOMTextRun></textRuns></DOMDynamicText>
+        </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"##,
     )
     .unwrap();
     let mut s = Session::default();
@@ -967,12 +968,30 @@ fn opening_an_xfl_folder_imports_it_untitled() {
     assert_eq!((s.doc.stage.width, s.doc.stage.fps), (320, 12.0));
     assert_eq!(s.doc.timeline(s.scene).layers[0].name, "Art");
     assert_eq!(s.doc.frame_count(), 6);
-    assert!(v["report"].as_str().unwrap().contains("1 text fields"), "{v}");
+    assert!(v["report"].as_str().unwrap().contains("1 dynamic and input text fields (imported as static text)"), "{v}");
     assert!(s.path.is_none(), "imported documents are untitled: Save never writes over the original");
     assert!(s.execute("file.save", &json!({})).is_err());
     // It renders.
     let dl = s.display_list();
     assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0xff8800))));
+    // Text comes across as an editable text block when this computer has fonts (ADR 0014),
+    // with the missing family named.
+    if !anicraft_text::Fonts::get().families().is_empty() {
+        assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"), "{v}");
+        assert_eq!(v["missing_fonts"], json!(["No Such Family At All"]));
+        let text = s.doc.timeline(s.scene).layers[0].keyframes[0].elements.iter().find(|e| matches!(e.kind, ElementKind::Text(_))).cloned().expect("a text element");
+        assert_eq!(text.name, "title");
+        assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0x0000ff))), "the text renders");
+        s.selection = vec![text.id];
+        run(&mut s, "text.edit", json!({"text": "Hello again"}));
+        // Saved and opened again, it is the same text.
+        let file = dir.join("imported.anicraft");
+        run(&mut s, "file.save", json!({"path": file.display().to_string()}));
+        let mut back = Session::default();
+        run(&mut back, "file.open", json!({"path": file.display().to_string()}));
+        let ElementKind::Text(t) = &back.doc.timeline(0).layers[0].keyframes[0].elements.iter().find(|e| e.id == text.id).unwrap().kind else { panic!("text") };
+        assert_eq!((t.text.as_str(), t.size, t.bold), ("Hello again", 20.0, true));
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 
