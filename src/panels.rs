@@ -159,7 +159,7 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-/// Who draws the stage, when this build can draw it on the GPU (ADR 0014): " GPU", or " CPU"
+/// Who draws the stage, when this build can draw it on the GPU (ADR 0019): " GPU", or " CPU"
 /// with what kept the GPU out.
 fn renderer_tag(app: &App) -> String {
     use crate::gpu_stage::State;

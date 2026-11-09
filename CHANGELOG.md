@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **GPU stage, first slice** (M3, ADR 0015; build with `--features gpu-stage`). Preferences ›
+* **GPU stage, first slice** (M3, ADR 0019; build with `--features gpu-stage`). Preferences ›
   Stage › Renderer (also View › Stage Rendering) can draw the stage on the graphics card
   instead of the CPU. It draws fills, strokes and gradients from the CPU renderer's own
   preparation and matches it to within one 8-bit step at a few edge pixels; masks, symbol

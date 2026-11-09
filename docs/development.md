@@ -19,7 +19,7 @@ built-in fallback fonts.
 
 ### GPU stage (optional)
 
-`cargo run --features gpu-stage` adds Preferences › Stage › Renderer (ADR 0014). The
+`cargo run --features gpu-stage` adds Preferences › Stage › Renderer (ADR 0019). The
 `anicraft-gpu` crate builds and tests in every build (its GPU tests skip without an adapter);
 `cargo run --release -p anicraft-gpu --example gpu_bench` prints timings and parity.
 

@@ -46,7 +46,7 @@ pub struct Cache {
     pub service: Option<RenderService>,
     /// Document state of the picture on screen (an edit makes it differ).
     pub shown_state: Option<anicraft_engine::StateId>,
-    /// The GPU stage (ADR 0014), when this build has it and Preferences ask for it.
+    /// The GPU stage (ADR 0019), when this build has it and Preferences ask for it.
     pub gpu: crate::gpu_stage::GpuStage,
     /// Who drew the newest visible tiles: the GPU, or the CPU and why (status bar).
     pub drawn_by: Option<(bool, Option<String>)>,

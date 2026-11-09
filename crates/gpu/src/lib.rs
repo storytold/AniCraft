@@ -1,4 +1,4 @@
-//! AniCraft GPU stage renderer (layer L3, beside the engine; ADR 0014).
+//! AniCraft GPU stage renderer (layer L3, beside the engine; ADR 0019).
 //!
 //! Draws the same fills as the CPU oracle (`anicraft-render`) with wgpu compute: the oracle
 //! prepares the fills ([`anicraft_render::plain_fills`]: flattening, strokes, paints and their

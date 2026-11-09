@@ -35,7 +35,7 @@ impl RenderMode {
     ];
 }
 
-/// Which renderer draws the stage (ADR 0014). The GPU only takes part in builds with the
+/// Which renderer draws the stage (ADR 0019). The GPU only takes part in builds with the
 /// `gpu-stage` feature; elsewhere the setting is kept but the CPU draws.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StageRenderer {

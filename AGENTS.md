@@ -16,7 +16,7 @@ crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes,
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
 crates/svg      L2  SVG import: shapes, groups, use, styles, transforms, gradients → shapes
 crates/engine   L3  Session, undo (with gesture coalescing), command registry, .anicraft format
-crates/gpu      L3  wgpu stage renderer over the oracle's fills: tile binning, compute coverage (ADR 0014)
+crates/gpu      L3  wgpu stage renderer over the oracle's fills: tile binning, compute coverage (ADR 0019)
 crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve/mcp
 src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
 ```

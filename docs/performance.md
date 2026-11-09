@@ -65,7 +65,7 @@ flushed to disk, renamed).
 With the default "every minute or 25 changes", even the 262 MB document keeps the worker busy
 for about 1% of the time, and the UI never waits for it.
 
-### GPU stage (M3, ADR 0014)
+### GPU stage (M3, ADR 0019)
 
 `cargo run --release -p anicraft-gpu --example gpu_bench` (2026-11-09, RTX 5090 over Vulkan,
 32 threads). GPU ms is the whole call: preparing the fills (shared with the oracle), binning,
@@ -105,4 +105,4 @@ shows).
 * [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
 * [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
 * [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
-* [ADR 0014](adr/0014-gpu-stage.md): GPU stage renderer (first slice), parity with the oracle
+* [ADR 0019](adr/0019-gpu-stage.md): GPU stage renderer (first slice), parity with the oracle

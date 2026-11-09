@@ -1,4 +1,4 @@
-# ADR 0014: GPU stage renderer (first slice)
+# ADR 0019: GPU stage renderer (first slice)
 
 * Status: accepted (2026-11-09)
 * Relates to: roadmap M3, ADR 0002 (render pipeline), ADR 0007 (tiled stage), AGENTS.md rule 4

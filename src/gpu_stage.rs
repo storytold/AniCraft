@@ -1,4 +1,4 @@
-//! The GPU stage switch (ADR 0014). With the `gpu-stage` feature, Preferences › Stage ›
+//! The GPU stage switch (ADR 0019). With the `gpu-stage` feature, Preferences › Stage ›
 //! Renderer can hand the stage to the wgpu renderer (`anicraft-gpu`): it starts off the UI
 //! thread, draws what it can, and the CPU oracle draws the rest (masks, symbol opacity, blend
 //! modes, filters, bitmaps) and everything when the GPU is missing or fails. Without the feature

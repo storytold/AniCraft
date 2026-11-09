@@ -33,7 +33,7 @@ app/                         workspace root; the root package is the desktop app
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
-    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0014; shell feature `gpu-stage`)
+    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019; shell feature `gpu-stage`)
     cli       L4  `anicraft-cli`: info / render / render-seq / commands / run / serve (JSON-lines)
   src/        L5  egui shell: menus (from registry), tools, stage, timeline, properties, library
   docs/           requirements, architecture, roadmap
@@ -123,7 +123,7 @@ DisplayList ──► for each item:
   rasterizes 32-row bands in parallel, each compositing all ops that touch it, in order.
   Output is bit-identical to serial. Numbers are in [performance.md](performance.md).
 
-**GPU stage** ([ADR 0014](adr/0014-gpu-stage.md), behind the shell's `gpu-stage` feature):
+**GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), behind the shell's `gpu-stage` feature):
 `render::plain_fills` hands the oracle's own prepared fills to `anicraft-gpu`, which bins edge
 pieces into 16 × 16 tiles with per-row backdrops (CPU, parallel) and computes each pixel's
 exact area coverage and src-over in one compute pass. Display lists with masks, groups or

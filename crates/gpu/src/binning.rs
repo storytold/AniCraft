@@ -1,4 +1,4 @@
-//! Tile binning: the CPU half of the GPU stage (ADR 0014).
+//! Tile binning: the CPU half of the GPU stage (ADR 0019).
 //!
 //! The surface is cut into 16 × 16 pixel tiles. Every fill's edges are split at tile rows and
 //! columns; each piece lands in the one tile it crosses. What a piece contributes to the tiles

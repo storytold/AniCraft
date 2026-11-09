@@ -269,7 +269,7 @@ impl std::fmt::Display for NeedsFull {
 /// [`TOLERANCE`], strokes already outlined by the stroker, the paint's shader (with its gradient
 /// table) built, and pixel bounds clamped to the surface. Drawing every fill in order, with
 /// analytic coverage, the fill rule and src-over, reproduces [`render`] for a display list that
-/// [`plain_fills`] accepts. Other renderers (the GPU stage, ADR 0014) start from these, so the
+/// [`plain_fills`] accepts. Other renderers (the GPU stage, ADR 0019) start from these, so the
 /// geometry and the colours are the oracle's own.
 pub struct Fill {
     pub polys: Vec<Vec<Vec2>>,

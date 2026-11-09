@@ -1,4 +1,4 @@
-// AniCraft GPU stage: fine rasterization (ADR 0014).
+// AniCraft GPU stage: fine rasterization (ADR 0019).
 //
 // One workgroup per 16 × 16 tile, one invocation per pixel. Each pixel walks its tile's entries
 // in drawing order. An entry's coverage is its backdrop (winding from edges left of the tile,

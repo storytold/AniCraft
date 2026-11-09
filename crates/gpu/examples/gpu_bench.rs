@@ -1,4 +1,4 @@
-//! GPU stage timings and parity against the CPU oracle (ADR 0014; numbers in
+//! GPU stage timings and parity against the CPU oracle (ADR 0019; numbers in
 //! docs/performance.md).
 //!
 //! ```sh

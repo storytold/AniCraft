@@ -8,7 +8,7 @@
 //! thanks to structural sharing. Keys hash the document *state id*, so undoing back to a state
 //! already rendered is a cache hit.
 //!
-//! The CPU oracle draws by default. A [`Rasterizer`] (the GPU stage, ADR 0014) can take over;
+//! The CPU oracle draws by default. A [`Rasterizer`] (the GPU stage, ADR 0019) can take over;
 //! whatever it hands back (content it doesn't draw yet, or a failed device) the oracle draws, so
 //! the picture is always complete. Keys include which rasterizer drew them.
 

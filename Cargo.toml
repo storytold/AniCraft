@@ -25,7 +25,7 @@ anicraft-svg = { path = "crates/svg" }
 anicraft-text = { path = "crates/text" }
 anicraft-plugins = { path = "crates/plugins" }
 anicraft-gpu = { path = "crates/gpu" }
-# The GPU stage (ADR 0014) uses the wgpu that eframe's egui-wgpu brings, with the same
+# The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
 pollster = "1"
@@ -72,7 +72,7 @@ name = "anicraft"
 path = "src/main.rs"
 
 [features]
-# GPU stage renderer (ADR 0014), off by default: Preferences › Stage › Renderer can then hand
+# GPU stage renderer (ADR 0019), off by default: Preferences › Stage › Renderer can then hand
 # the stage to the wgpu renderer. The CPU stays the default and the oracle.
 gpu-stage = ["dep:anicraft-gpu"]
 
