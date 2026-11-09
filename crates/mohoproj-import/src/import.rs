@@ -186,7 +186,7 @@ pub(crate) fn import_json(root: Value, read: &Reader<'_>, fonts: Option<&Fonts>)
     }
     let mut timeline = Timeline { layers: layers_out };
     timeline.repair_masks();
-    b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline }));
+    b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline, ..Scene::new("") }));
 
     // The sidecar: the untouched original, the `.maop` dialect's `maop_maohou` node, so a
     // later milestone re-projects bones, channels and effects without the source file.

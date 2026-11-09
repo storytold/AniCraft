@@ -117,9 +117,13 @@ pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
 }
 
 /// Evaluates scene `scene`'s timeline at its own `frame` (what the stage shows while editing).
+/// The scene's camera (ADR 0025) and each top-level layer's transform channels are composed
+/// into the items' transforms, so every renderer, exporter and picking test sees the same
+/// stage-space result.
 pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
-    let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None };
+    let cam = doc.scenes.get(scene).and_then(|s| s.camera.view(doc.stage.width as f32, doc.stage.height as f32, frame as f32)).unwrap_or(Affine::IDENTITY);
+    let cx = Ctx { xf: Affine::IDENTITY, cam, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None };
     eval_timeline(doc, doc.timeline(scene), frame, &cx, &mut out);
     out
 }
@@ -207,6 +211,8 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
 struct Ctx {
     /// Local → stage transform and colour effect of the enclosing instance.
     xf: Affine,
+    /// The scene camera's view, applied once to each top-level layer (never inside symbols).
+    cam: Affine,
     color: ColorEffect,
     depth: usize,
     /// The top-level layer and element everything inside belongs to (for picking).
@@ -308,9 +314,18 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
+        // Only a top-level layer moves as a whole: the scene camera looks past layers marked
+        // camera_immune, and the layer's own transform channels (ADR 0025) carry it. Inside
+        // symbols the enclosing instance's transform already says where everything is.
+        let layer_xf = if cx.depth == 0 {
+            let cam = if layer.camera_immune { Affine::IDENTITY } else { cx.cam };
+            cam.mul(&layer.transform_at(frame))
+        } else {
+            Affine::IDENTITY
+        };
         for el in elements.iter() {
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
-            let xf = cx.xf.mul(&el.transform);
+            let xf = layer_xf.mul(&cx.xf).mul(&el.transform);
             let color = cx.color.concat(&el.color);
             match &el.kind {
                 ElementKind::Shape(s) => out.items.push(DisplayItem {
@@ -372,7 +387,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     } else {
                         (color, cx.group)
                     };
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group };
+                    let inner = Ctx { xf, cam: Affine::IDENTITY, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group };
                     eval_timeline(doc, &sym.timeline, local, &inner, out);
                 }
             }

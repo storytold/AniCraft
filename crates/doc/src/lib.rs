@@ -619,6 +619,32 @@ pub struct Layer {
     pub color: Rgba,
     #[serde(default)]
     pub keyframes: Vec<Arc<Keyframe>>,
+    /// The layer's own transform over time (ADR 0025) — property channels, as Moho keeps
+    /// them. Stage pixels and screen-clockwise radians, pivoted around [`Layer::origin`];
+    /// every layer's artwork is drawn through them. All default (no keys) means no layer
+    /// transform, exactly as before they existed.
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub translation: Channel<Vec2>,
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub scale: Channel<Vec2>,
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub rotation: Channel<f32>,
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub shear: Channel<Vec2>,
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub flip_h: Channel<bool>,
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub flip_v: Channel<bool>,
+    /// The pivot the transform channels turn around (stage pixels; Moho's layer origin).
+    #[serde(default, skip_serializing_if = "is_zero2")]
+    pub origin: Vec2,
+    /// This layer ignores the scene camera (Moho's `camera_immune`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub camera_immune: bool,
+}
+
+fn is_zero2(v: &Vec2) -> bool {
+    *v == Vec2::ZERO
 }
 
 impl PartialEq for Layer {
@@ -632,6 +658,14 @@ impl PartialEq for Layer {
             && self.outline == o.outline
             && self.color == o.color
             && arcs_eq(&self.keyframes, &o.keyframes)
+            && self.translation == o.translation
+            && self.scale == o.scale
+            && self.rotation == o.rotation
+            && self.shear == o.shear
+            && self.flip_h == o.flip_h
+            && self.flip_v == o.flip_v
+            && self.origin == o.origin
+            && self.camera_immune == o.camera_immune
     }
 }
 
@@ -654,6 +688,62 @@ impl Layer {
             outline: false,
             color: default_layer_color(),
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
+            translation: Channel::default(),
+            scale: Channel::default(),
+            rotation: Channel::default(),
+            shear: Channel::default(),
+            flip_h: Channel::default(),
+            flip_v: Channel::default(),
+            origin: Vec2::ZERO,
+            camera_immune: false,
+        }
+    }
+    /// Whether any transform channel holds keys (or the pivot moved): the layer moves by
+    /// itself, as opposed to everything living in its elements.
+    pub fn has_transform(&self) -> bool {
+        !self.translation.is_empty() || !self.scale.is_empty() || !self.rotation.is_empty() || !self.shear.is_empty() || !self.flip_h.is_empty() || !self.flip_v.is_empty() || self.origin != Vec2::ZERO
+    }
+    /// The layer's transform channels, sampled at `frame` and composed the way Moho composes
+    /// them: translation, then rotation, shear and scale (flips included), all around the
+    /// pivot `origin`. Identity when the layer carries no channels.
+    pub fn transform_at(&self, frame: u32) -> Affine {
+        if !self.has_transform() {
+            return Affine::IDENTITY;
+        }
+        let f = frame as f32;
+        let t = self.translation.sample_or(f, Vec2::ZERO);
+        let rot = self.rotation.sample_or(f, 0.0);
+        let sh = self.shear.sample_or(f, Vec2::ZERO);
+        let s = self.scale.sample_or(f, Vec2::new(1.0, 1.0));
+        let (sx, sy) = (s.x, s.y);
+        let sx = if self.flip_h.sample_or(f, false) { -sx } else { sx };
+        let sy = if self.flip_v.sample_or(f, false) { -sy } else { sy };
+        if t == Vec2::ZERO && rot == 0.0 && sh == Vec2::ZERO && sx == 1.0 && sy == 1.0 {
+            return Affine::IDENTITY;
+        }
+        let shear = Affine { m: [1.0, sh.y, sh.x, 1.0, 0.0, 0.0] };
+        // p ↦ origin + t + R · SH · S · (p − origin), guarded against non-finite keys.
+        let m = Affine::translate(self.origin.x + t.x, self.origin.y + t.y)
+            .mul(&Affine::rotate(rot))
+            .mul(&shear)
+            .mul(&Affine::scale(sx, sy))
+            .mul(&Affine::translate(-self.origin.x, -self.origin.y));
+        if m.is_finite() {
+            m
+        } else {
+            Affine::IDENTITY
+        }
+    }
+    /// Repairs the transform channels after a load (sorted, finite, bounded).
+    pub fn sanitize_channels(&mut self) {
+        self.translation.sanitize();
+        self.scale.sanitize();
+        self.rotation.sanitize();
+        self.shear.sanitize();
+        self.flip_h.sanitize();
+        self.flip_v.sanitize();
+        if !self.origin.x.is_finite() || !self.origin.y.is_finite() {
+            self.origin = Vec2::ZERO;
         }
     }
     /// Mutable keyframe `i` (copy-on-write: clones it only if it is shared).
@@ -927,11 +1017,89 @@ pub struct Scene {
     pub name: String,
     #[serde(default)]
     pub timeline: Timeline,
+    /// The scene's camera over time (ADR 0025): Moho's `animated_values` camera channels.
+    /// An empty camera is the plain, unmoving view every document has always had. Pan/tilt
+    /// and the track's z (depth) have no 2D slot — importers report them.
+    #[serde(default, skip_serializing_if = "Camera::is_neutral")]
+    pub camera: Camera,
+    /// Timeline markers: `(frame, label)`, sorted, one per frame. Moho keeps them in a string
+    /// channel (`timeline_markers`); they are scene data, not keyframe labels, and a frame
+    /// with no marker need not hold artwork.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<(u32, String)>,
+    /// The playback frame range `(start, end)`, 0-based with `end` exclusive (Moho's
+    /// `project_data.start_frame`/`end_frame`). `None` runs to the timeline's content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<(u32, u32)>,
 }
 
 impl Scene {
     pub fn new(name: impl Into<String>) -> Scene {
-        Scene { name: name.into(), timeline: Timeline::default() }
+        Scene { name: name.into(), timeline: Timeline::default(), camera: Camera::default(), markers: Vec::new(), frames: None }
+    }
+    /// The frames this scene plays: the stored range, else the timeline's content.
+    pub fn frame_range(&self) -> (u32, u32) {
+        match self.frames {
+            Some((start, end)) if start < end => (start, end),
+            _ => (0, self.timeline.frame_count()),
+        }
+    }
+    /// How many frames this scene plays (at least 1).
+    pub fn frame_count(&self) -> u32 {
+        let (start, end) = self.frame_range();
+        end.saturating_sub(start).max(1)
+    }
+}
+
+/// A scene's camera (ADR 0025): where it sits on the canvas, its zoom and its roll, each on
+/// its own [`Channel`]. Stored the way evaluation uses them: the track in stage pixels
+/// (y down, origin top-left), the roll in screen-clockwise radians, the zoom in Moho's units
+/// where 2 is the neutral view. All channels empty = the plain unmoving view.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Camera {
+    /// Where the camera looks, stage pixels.
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub track: Channel<Vec2>,
+    /// Lens zoom: 2 is neutral, larger magnifies (the value Moho stores).
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub zoom: Channel<f32>,
+    /// Roll, screen-clockwise radians.
+    #[serde(default, skip_serializing_if = "Channel::is_empty")]
+    pub roll: Channel<f32>,
+}
+
+impl Camera {
+    /// Whether the camera does nothing (no channels): the stage needs no view transform.
+    pub fn is_neutral(&self) -> bool {
+        self.track.is_empty() && self.zoom.is_empty() && self.roll.is_empty()
+    }
+    /// The stage-space → screen-space view at `frame`, pivoting around the stage centre;
+    /// `None` when the camera is neutral. Track x/y move the view, roll turns it, zoom
+    /// scales it by `zoom/2` (so Moho's default zoom of 2 draws one-to-one, which the
+    /// corpus gate verified: its previews match our import at 320 px/inch with zoom 2).
+    pub fn view(&self, width: f32, height: f32, frame: f32) -> Option<Affine> {
+        if self.is_neutral() {
+            return None;
+        }
+        let centre = Vec2::new(width * 0.5, height * 0.5);
+        let track = self.track.sample_or(frame, centre);
+        let roll = self.roll.sample_or(frame, 0.0);
+        let zoom = self.zoom.sample_or(frame, 2.0);
+        let scale = if zoom.is_finite() { (zoom * 0.5).clamp(1e-3, 1e3) } else { 1.0 };
+        if track == centre && roll == 0.0 && scale == 1.0 {
+            return None;
+        }
+        let v = Affine::translate(centre.x, centre.y)
+            .mul(&Affine::rotate(roll))
+            .mul(&Affine::scale(scale, scale))
+            .mul(&Affine::translate(-track.x, -track.y));
+        v.is_finite().then_some(v)
+    }
+    /// Repairs the channels after a load.
+    pub fn sanitize(&mut self) {
+        self.track.sanitize();
+        self.zoom.sanitize();
+        self.roll.sanitize();
     }
 }
 
@@ -1007,7 +1175,7 @@ impl From<DocumentFile> for Document {
     fn from(f: DocumentFile) -> Document {
         let mut scenes = f.scenes;
         if let Some(tl) = f.timeline {
-            scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
+            scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl, camera: Camera::default(), markers: Vec::new(), frames: None }));
         }
         Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, maop_maohou: f.maop_maohou, next_id: f.next_id }
     }
@@ -1065,26 +1233,27 @@ impl Document {
         let i = i.min(self.scenes.len() - 1);
         &mut Arc::make_mut(&mut self.scenes[i]).timeline
     }
-    /// The whole movie's length: every scene, one after the other.
+    /// The whole movie's length: every scene, one after the other. A scene with a playback
+    /// range (`Scene::frames`) counts as that range, not its content.
     pub fn frame_count(&self) -> u32 {
-        self.scenes.iter().map(|s| s.timeline.frame_count()).fold(0u32, u32::saturating_add).max(1)
+        self.scenes.iter().map(|s| s.frame_count()).fold(0u32, u32::saturating_add).max(1)
     }
     /// Which scene a movie frame falls in, and the frame within that scene.
     pub fn locate(&self, movie_frame: u32) -> (usize, u32) {
         let mut f = movie_frame;
         for (i, s) in self.scenes.iter().enumerate() {
-            let n = s.timeline.frame_count();
+            let n = s.frame_count();
             if f < n {
-                return (i, f);
+                return (i, f.saturating_add(s.frame_range().0));
             }
             f -= n;
         }
         let last = self.scenes.len().saturating_sub(1);
-        (last, self.timeline(last).frame_count().saturating_sub(1))
+        (last, self.scenes.get(last).map_or(0, |s| s.frame_range().0 + s.frame_count().saturating_sub(1)))
     }
     /// The movie frame where scene `i` starts.
     pub fn scene_start(&self, i: usize) -> u32 {
-        self.scenes.iter().take(i).map(|s| s.timeline.frame_count()).fold(0u32, u32::saturating_add)
+        self.scenes.iter().take(i).map(|s| s.frame_count()).fold(0u32, u32::saturating_add)
     }
     /// Every timeline: the scenes', then the library symbols'.
     pub fn timelines(&self) -> impl Iterator<Item = &Timeline> {
@@ -1117,12 +1286,23 @@ impl Document {
             if scene.name.trim().is_empty() || scene.name.len() > 256 {
                 Arc::make_mut(scene).name = format!("Scene {}", i + 1);
             }
-            let tl = &mut Arc::make_mut(scene).timeline;
+            let scene = Arc::make_mut(scene);
+            let tl = &mut scene.timeline;
             for l in &mut tl.layers {
-                Arc::make_mut(l).normalize();
+                let l = Arc::make_mut(l);
+                l.normalize();
+                l.sanitize_channels();
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
+            scene.camera.sanitize();
+            scene.markers.retain(|(_, label)| !label.trim().is_empty() && label.len() <= 256);
+            scene.markers.sort_by_key(|(f, _)| *f);
+            scene.markers.dedup_by_key(|(f, _)| *f);
+            for (f, _) in &mut scene.markers {
+                *f = (*f).min(MAX_CHANNEL_FRAME);
+            }
+            scene.frames = scene.frames.filter(|(a, b)| a < b && *b <= MAX_CHANNEL_FRAME).map(|(a, b)| (a.min(MAX_CHANNEL_FRAME), b));
         }
         for sym in &mut self.library {
             max_id = max_id.max(sym.id.0);
