@@ -242,6 +242,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "anicraft-gpu"
+version = "0.1.0"
+dependencies = [
+ "anicraft-doc",
+ "anicraft-geom",
+ "anicraft-render",
+ "bytemuck",
+ "pollster 1.0.1",
+ "rayon",
+ "thiserror 2.0.21",
+ "wgpu",
+]
+
+[[package]]
 name = "anicraft-plugins"
 version = "0.1.0"
 dependencies = [
