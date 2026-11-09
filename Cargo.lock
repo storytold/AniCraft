@@ -219,6 +219,7 @@ version = "0.1.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
+ "anicraft-plugins",
  "anicraft-render",
  "anicraft-svg",
  "anicraft-text",
@@ -229,6 +230,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "wat",
 ]
 
 [[package]]
