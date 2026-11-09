@@ -7,6 +7,10 @@
 //! drag or a fast pan never builds a backlog. Jobs carry a `Document` clone, which is O(layers)
 //! thanks to structural sharing. Keys hash the document *state id*, so undoing back to a state
 //! already rendered is a cache hit.
+//!
+//! The CPU oracle draws by default. A [`Rasterizer`] (the GPU stage, ADR 0014) can take over;
+//! whatever it hands back (content it doesn't draw yet, or a failed device) the oracle draws, so
+//! the picture is always complete. Keys include which rasterizer drew them.
 
 use crate::history::StateId;
 use anicraft_doc::{ColorEffect, DisplayList, Document, Rgba, evaluate_scene};
@@ -22,6 +26,8 @@ use std::time::Instant;
 #[derive(Clone)]
 pub struct FrameJob {
     pub key: u64,
+    /// Which rasterizer the key was made for (0: the CPU oracle); see [`RenderService::job`].
+    pub raster: u64,
     /// Identity of the evaluated scene (`scene_key`): tiles of one frame share it.
     pub scene: u64,
     pub doc: Document,
@@ -40,7 +46,15 @@ pub struct FrameImage {
     pub ms: f32,
     pub stats: RenderStats,
     pub error: Option<String>,
+    /// Drawn by the rasterizer rather than the CPU oracle.
+    pub gpu: bool,
+    /// Why the oracle drew it although a rasterizer is set (for example "masks").
+    pub fallback: Option<String>,
 }
+
+/// Draws a display list as premultiplied RGBA8 in place of the CPU oracle, or says why it
+/// can't (then the oracle draws it).
+pub type Rasterizer = Arc<dyn Fn(&DisplayList, &View) -> Result<(Vec<u8>, RenderStats), String> + Send + Sync>;
 
 /// Identity of an evaluated scene: the display list depends on these and nothing else.
 pub fn scene_key(state: StateId, frame: u32, onion: bool) -> u64 {
@@ -68,7 +82,7 @@ pub fn frame_key(state: StateId, frame: u32, view: &View, onion: bool) -> u64 {
 
 /// A job whose `scene` is derived from the same inputs as its key.
 pub fn make_job(state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
-    FrameJob { key: frame_key(state, frame, &view, onion), scene: scene_key(state, frame, onion), doc: doc.clone(), frame, view, onion }
+    FrameJob { key: frame_key(state, frame, &view, onion), raster: 0, scene: scene_key(state, frame, onion), doc: doc.clone(), frame, view, onion }
 }
 
 /// Movie frame `frame`'s display list, with ±2 onion-skin frames (tinted red before, green after)
@@ -94,10 +108,27 @@ pub fn display_list_with_onion(doc: &Document, frame: u32, onion: bool) -> Displ
     dl
 }
 
-/// Renders a job against an already evaluated scene.
+/// Renders a job against an already evaluated scene, on the CPU oracle.
 pub fn render_job_with(job: &FrameJob, dl: &DisplayList) -> FrameImage {
+    render_job_by(job, dl, None)
+}
+
+/// Renders a job with `raster` when given (falling back to the oracle for what it hands back).
+fn render_job_by(job: &FrameJob, dl: &DisplayList, raster: Option<&Rasterizer>) -> FrameImage {
     let t0 = Instant::now();
-    // Last-resort guard: a renderer bug must not take the editor down with it.
+    let mut fallback = None;
+    if let Some(r) = raster {
+        // Last-resort guard: a renderer bug must not take the editor down with it.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r(dl, &job.view))) {
+            Ok(Ok((rgba, stats))) if rgba.len() == job.view.width as usize * job.view.height as usize * 4 => {
+                let ms = t0.elapsed().as_secs_f32() * 1000.0;
+                return FrameImage { key: job.key, frame: job.frame, width: job.view.width, height: job.view.height, rgba_premul: rgba, ms, stats, error: None, gpu: true, fallback: None };
+            }
+            Ok(Ok(_)) => fallback = Some("the GPU returned a wrong-sized image".to_string()),
+            Ok(Err(why)) => fallback = Some(why),
+            Err(_) => fallback = Some("the GPU renderer failed".to_string()),
+        }
+    }
     let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(dl, &job.view)));
     let (rgba, stats, error) = match out {
         Ok(Ok((pm, stats))) => (pm.to_premul_rgba8(), stats, None),
@@ -105,7 +136,7 @@ pub fn render_job_with(job: &FrameJob, dl: &DisplayList) -> FrameImage {
         Err(_) => (Vec::new(), RenderStats::default(), Some("the renderer failed on this frame".into())),
     };
     let (width, height) = if error.is_none() { (job.view.width, job.view.height) } else { (0, 0) };
-    FrameImage { key: job.key, frame: job.frame, width, height, rgba_premul: rgba, ms: t0.elapsed().as_secs_f32() * 1000.0, stats, error }
+    FrameImage { key: job.key, frame: job.frame, width, height, rgba_premul: rgba, ms: t0.elapsed().as_secs_f32() * 1000.0, stats, error, gpu: false, fallback }
 }
 
 /// Renders a job synchronously, evaluating its scene.
@@ -115,16 +146,32 @@ pub fn render_job(job: &FrameJob) -> FrameImage {
 
 /// Renders a batch: one scene evaluation per distinct `scene`, then all images in parallel.
 pub fn render_batch(jobs: &[FrameJob]) -> Vec<FrameImage> {
+    render_batch_by(jobs, &RasterSlot::default())
+}
+
+/// [`render_batch`] with the service's rasterizer for the jobs made for it.
+fn render_batch_by(jobs: &[FrameJob], slot: &RasterSlot) -> Vec<FrameImage> {
     let mut scenes: HashMap<u64, Arc<DisplayList>> = HashMap::new();
     for j in jobs {
         scenes.entry(j.scene).or_insert_with(|| Arc::new(display_list_with_onion(&j.doc, j.frame, j.onion)));
     }
     jobs.par_iter()
-        .map(|j| match scenes.get(&j.scene) {
-            Some(dl) => render_job_with(j, dl),
-            None => render_job(j),
+        .map(|j| {
+            // A job made for another rasterizer (queued before a switch) is drawn by the oracle.
+            let raster = slot.raster.as_ref().filter(|_| j.raster != 0 && j.raster == slot.id);
+            match scenes.get(&j.scene) {
+                Some(dl) => render_job_by(j, dl, raster),
+                None => render_job_by(j, &display_list_with_onion(&j.doc, j.frame, j.onion), raster),
+            }
         })
         .collect()
+}
+
+/// The rasterizer in use and its id (0 and `None`: the oracle).
+#[derive(Clone, Default)]
+struct RasterSlot {
+    id: u64,
+    raster: Option<Rasterizer>,
 }
 
 /// LRU cache of finished images, bounded by bytes.
@@ -196,6 +243,7 @@ struct Queue {
 
 struct Shared {
     queue: Mutex<Queue>,
+    raster: Mutex<RasterSlot>,
     wake: Condvar,
     cache: Mutex<FrameCache>,
     notify: Option<Box<dyn Fn() + Send + Sync>>,
@@ -216,7 +264,7 @@ impl RenderService {
     /// Starts the worker. `notify` runs on the worker after each finished batch (the UI passes
     /// "request a repaint"). If no thread can be spawned, requests render synchronously.
     pub fn new(cache_bytes: usize, notify: Option<Box<dyn Fn() + Send + Sync>>) -> RenderService {
-        let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), wake: Condvar::new(), cache: Mutex::new(FrameCache::new(cache_bytes)), notify });
+        let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), raster: Mutex::new(RasterSlot::default()), wake: Condvar::new(), cache: Mutex::new(FrameCache::new(cache_bytes)), notify });
         let s = shared.clone();
         let worker = std::thread::Builder::new().name("anicraft-render".into()).spawn(move || worker_loop(&s)).ok();
         RenderService { shared, worker }
@@ -228,6 +276,39 @@ impl RenderService {
 
     fn queue(&self) -> std::sync::MutexGuard<'_, Queue> {
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn slot(&self) -> RasterSlot {
+        self.shared.raster.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Draws with `raster` from now on (`None`: the CPU oracle). Pictures are keyed by who drew
+    /// them, so the stage keeps showing the previous ones as placeholders until the new ones
+    /// arrive, and switching back finds the oracle's pictures still cached.
+    pub fn set_rasterizer(&self, raster: Option<Rasterizer>) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let mut s = self.shared.raster.lock().unwrap_or_else(PoisonError::into_inner);
+        s.id = if raster.is_some() { NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) } else { 0 };
+        s.raster = raster;
+    }
+
+    /// Whether a rasterizer is set.
+    pub fn has_rasterizer(&self) -> bool {
+        self.slot().raster.is_some()
+    }
+
+    /// A job for the rasterizer in use: [`make_job`], keyed apart from the oracle's pictures
+    /// when a rasterizer draws.
+    pub fn job(&self, state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
+        let mut j = make_job(state, doc, frame, view, onion);
+        let id = self.slot().id;
+        if id != 0 {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (j.key, id).hash(&mut h);
+            j.key = h.finish();
+            j.raster = id;
+        }
+        j
     }
 
     /// Images that are ready, in order; the missing ones become the new urgent batch
@@ -252,7 +333,7 @@ impl RenderService {
         }
         if self.worker.is_none() {
             // No thread available: render here, so the caller still gets pictures.
-            let imgs: Vec<Arc<FrameImage>> = render_batch(&missing).into_iter().map(Arc::new).collect();
+            let imgs: Vec<Arc<FrameImage>> = render_batch_by(&missing, &self.slot()).into_iter().map(Arc::new).collect();
             let mut cache = self.cache();
             for img in &imgs {
                 cache.insert(img.clone());
@@ -295,7 +376,7 @@ impl RenderService {
                 .collect();
             (out, missing)
         };
-        let fresh: Vec<Arc<FrameImage>> = render_batch(&missing).into_iter().map(Arc::new).collect();
+        let fresh: Vec<Arc<FrameImage>> = render_batch_by(&missing, &self.slot()).into_iter().map(Arc::new).collect();
         {
             let mut cache = self.cache();
             for img in &fresh {
@@ -314,7 +395,7 @@ impl RenderService {
         let key = job.key;
         let frame = job.frame;
         self.render_now_batch(vec![job]).into_iter().next().unwrap_or_else(|| {
-            Arc::new(FrameImage { key, frame, width: 0, height: 0, rgba_premul: Vec::new(), ms: 0.0, stats: RenderStats::default(), error: Some("render failed".into()) })
+            Arc::new(FrameImage { key, frame, width: 0, height: 0, rgba_premul: Vec::new(), ms: 0.0, stats: RenderStats::default(), error: Some("render failed".into()), gpu: false, fallback: None })
         })
     }
 
@@ -401,7 +482,8 @@ fn worker_loop(s: &Shared) {
             let cache = s.cache.lock().unwrap_or_else(PoisonError::into_inner);
             jobs.iter().filter(|j| !cache.contains(j.key)).cloned().collect()
         };
-        let imgs = render_batch(&todo);
+        let slot = s.raster.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let imgs = render_batch_by(&todo, &slot);
         {
             let mut cache = s.cache.lock().unwrap_or_else(PoisonError::into_inner);
             for img in imgs {
@@ -528,10 +610,46 @@ mod tests {
     }
 
     #[test]
+    fn a_rasterizer_draws_what_it_can_and_the_oracle_the_rest() {
+        let doc = sample::demo();
+        let svc = RenderService::new(64 << 20, None);
+        let view = View { transform: Affine::scale(0.25, 0.25), width: 320, height: 180, background: Some(doc.stage.background) };
+        let cpu = svc.job(1, &doc, 9, view, false);
+        assert_eq!(cpu.key, make_job(1, &doc, 9, view, false).key, "no rasterizer: the oracle's keys");
+        // A stand-in GPU that paints everything one colour, and refuses onion-skinned frames.
+        let plain = display_list_with_onion(&doc, 9, false).items.len();
+        let flat: Rasterizer = Arc::new(move |dl: &DisplayList, v: &View| {
+            if dl.items.len() > plain {
+                return Err("too much".into());
+            }
+            Ok(([10u8, 20, 30, 255].repeat(v.width as usize * v.height as usize), RenderStats::default()))
+        });
+        svc.set_rasterizer(Some(flat));
+        assert!(svc.has_rasterizer());
+        let gpu = svc.job(1, &doc, 9, view, false);
+        assert_ne!(gpu.key, cpu.key, "pictures are keyed by who drew them");
+        let img = svc.render_now(gpu.clone());
+        assert!(img.gpu && img.fallback.is_none() && img.rgba_premul[..4] == [10, 20, 30, 255]);
+        // What it refuses, the oracle draws, saying why.
+        let onion = svc.job(1, &doc, 9, view, true);
+        let img = svc.render_now(onion.clone());
+        assert!(!img.gpu && img.fallback.as_deref() == Some("too much"));
+        assert_eq!(img.rgba_premul, render_job(&make_job(1, &doc, 9, view, true)).rgba_premul);
+        // Through the worker too; and a job made for an older rasterizer is drawn by the oracle.
+        let ahead = svc.job(1, &doc, 10, view, false);
+        svc.prefetch(vec![ahead.clone()]);
+        assert!(svc.wait_for(ahead.key, 10_000).is_some_and(|i| i.gpu));
+        svc.set_rasterizer(None);
+        let stale = FrameJob { key: 77, ..ahead };
+        assert!(!render_batch_by(&[stale], &svc.slot())[0].gpu);
+        assert_eq!(svc.job(1, &doc, 9, view, false).key, cpu.key, "back to the oracle's keys");
+    }
+
+    #[test]
     fn cache_respects_budget_lru() {
         let mut c = FrameCache::new(3 * 1000);
         for k in 0..10u64 {
-            c.insert(Arc::new(FrameImage { key: k, frame: 0, width: 0, height: 0, rgba_premul: vec![0; 800], ms: 0.0, stats: RenderStats::default(), error: None }));
+            c.insert(Arc::new(FrameImage { key: k, frame: 0, width: 0, height: 0, rgba_premul: vec![0; 800], ms: 0.0, stats: RenderStats::default(), error: None, gpu: false, fallback: None }));
         }
         assert!(c.bytes() <= 3000);
         assert!(c.contains(9) && !c.contains(0));
