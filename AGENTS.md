@@ -39,7 +39,7 @@ a new crate needs a row here and in its `LAYERS` table.
   (labels, menus, buttons, names, dialog text) is proportional. No raw font sizes or colours
   outside `theme.rs` (enforced by `guidelines_tests`). Typefaces: Inter + JetBrains Mono via
   `CRAFT_FONTS_DIR`, with egui defaults as fallback. Interface text is English in the code and
-  goes through `i18n` (`tl!`, ADR 0022); rows and dialogs use the `theme` right-to-left helpers.
+  goes through `i18n` (`tl!`, ADR 0023); rows and dialogs use the `theme` right-to-left helpers.
 * **Cross-platform** (ADR 0006): macOS, Windows and Linux are first-class. OS-specific
   behaviour lives only in `src/platform.rs` (shortcut labels with ⌘ on macOS, app menu,
   window chrome, settings folder, native dialogs, GPU backend fallback). Shortcut text always
@@ -71,7 +71,7 @@ a new crate needs a row here and in its `LAYERS` table.
 
 * AniCraft is **MIT OR Apache-2.0**, like PhotoCraft (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`).
 * **Dependencies**: permissive only, from crates.io only (plus storytold's craft-libs, egui and
-  winit at pinned revisions, ADR 0022). `deny.toml` is the policy, and
+  winit at pinned revisions, ADR 0023). `deny.toml` is the policy, and
   `cargo deny check licenses bans sources` must pass. Adding a crate with a new licence needs
   a deliberate `deny.toml` change and a note in `compliance.md`. No copyleft, "non-commercial"
   or source-available terms.
@@ -100,11 +100,19 @@ a new crate needs a row here and in its `LAYERS` table.
   agent per track (`docs/roadmap.md` › Parallel tracks). Each track works in its own git
   worktree under `.worktrees/<track>` (git-ignored), on branches named `m<N>/<topic>`, and
   every commit subject and PR title ends with its milestone, e.g.
-  `feat(audio): audio layers with waveforms (M5)`. Worktrees share the one `target/` through
-  `CARGO_TARGET_DIR`. Before opening or updating a PR, rebase on `origin/main` and keep shared
-  files (CHANGELOG, roadmap, Cargo.lock, the workspace map) conflict-free. A track never merges
-  its own PR: the lead reviews it (principal engineer and senior designer) and merges it when
-  CI is green.
+  `feat(audio): audio layers with waveforms (M5)`. Each worktree builds into its own folder
+  inside the shared `target/` (`CARGO_TARGET_DIR=target/tracks/<track>`): worktrees of one
+  workspace produce artifacts with the same names, so a single shared folder lets one track's
+  build overwrite another's and tests run against the wrong code. Before opening or updating
+  a PR, bring in `origin/main` and keep shared files (CHANGELOG, roadmap, Cargo.lock, the
+  workspace map) conflict-free. ADR numbers are assigned by the lead when a task starts, so
+  parallel tracks never collide. A track never merges its own PR: the lead reviews it
+  (principal engineer and senior designer) and merges it when CI is green, one at a time.
+* **At most three track agents at once.** All agents share one account's usage limit; seven
+  at once exhausted it within hours and stopped every track and the lead mid-merge. Three
+  keep work moving and leave the lead room to review and merge.
+* **A new command namespace** needs a plug-in policy (`plugin_may_call` in
+  `crates/engine/src/cmds_plugin.rs`); a test fails until it has one.
 * **Outside pull requests** that match a roadmap task are reviewed and their good ideas
   considered. The work stays first-party: a track waits on an outside PR only if it is
   complete and fits our architecture and flow.
@@ -115,8 +123,9 @@ a new crate needs a row here and in its `LAYERS` table.
 
 ## Build hygiene (disk first, then time; `docs/development.md` › Build footprint)
 
-* Use the **single shared `target/`**. No per-agent `CARGO_TARGET_DIR` copies (each is a
-  full build).
+* One checkout uses the **single `target/`**. Don't make extra target folders for one
+  checkout (each is a full build); parallel worktrees are the exception above
+  (`target/tracks/<track>`, removed with the worktree when its track is done).
 * Don't turn incremental compilation or full debug info back on in `Cargo.toml`. Do that
   locally if you need a debugger.
 * After profile or feature changes, run `cargo clean` once (with the app closed).

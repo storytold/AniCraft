@@ -58,6 +58,8 @@ impl StageRenderer {
 pub struct Prefs {
     pub ui_font: FontChoice,
     pub data_font: FontChoice,
+    /// Graphite or high contrast (ADR 0022).
+    pub theme: crate::theme::Palette,
     /// Interface scale (1.0 = 100%).
     pub ui_scale: f32,
     pub render_mode: RenderMode,
@@ -86,6 +88,7 @@ impl Default for Prefs {
         Prefs {
             ui_font: FontChoice::Bundled,
             data_font: FontChoice::Bundled,
+            theme: crate::theme::Palette::Graphite,
             ui_scale: 1.0,
             render_mode: RenderMode::Auto,
             stage_renderer: StageRenderer::Cpu,

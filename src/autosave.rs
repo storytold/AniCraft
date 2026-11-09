@@ -6,13 +6,13 @@
 //! left behind. This module only decides *when* (Preferences: every N seconds, or after N
 //! changes, whichever comes first) and shows the choices.
 
+use crate::a11y::Named;
 use crate::app::App;
 use crate::i18n::{self, tl};
 use crate::prefs::Prefs;
 use crate::theme::{T, Type, text};
 use anicraft_engine::recovery::{self, Autosaver, Entry, Outcome, SessionLock};
 use anicraft_engine::StateId;
-use egui::Color32;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -64,7 +64,7 @@ impl Recovery {
                 r.saver = Some(s);
                 None
             }
-            // The engine's reason stays English (ADR 0022).
+            // The engine's reason stays English (ADR 0023).
             Err(e) => Some(i18n::fmt("Autosave is off: {reason}", &[("reason", &e.to_string())])),
         };
         r.dir = Some(dir);
@@ -224,7 +224,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     let n = app.recovery.found.len();
     let confirm = app.recovery.confirm_discard.clone();
     let btn = egui::vec2(96.0, crate::theme::TARGET + 4.0);
-    egui::Window::new(tl!("Recover unsaved work"))
+    let shown = egui::Window::new(tl!("Recover unsaved work"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -269,7 +269,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                         });
                         ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
                             if confirm.as_deref() == Some(e.session.as_str()) {
-                                let discard = egui::Button::new(text(Type::Body, tl!("Discard")).color(Color32::WHITE).strong()).fill(T.danger).min_size(btn);
+                                let discard = egui::Button::new(text(Type::Body, tl!("Discard")).color(T.on_fill).strong()).fill(T.danger).min_size(btn);
                                 if ui.add(discard).clicked() {
                                     act = Some(Act::Discard(e.session.clone()));
                                 }
@@ -277,11 +277,12 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                                     act = Some(Act::KeepIt);
                                 }
                             } else {
-                                let restore = egui::Button::new(text(Type::Body, tl!("Restore")).color(Color32::WHITE).strong()).fill(T.accent).min_size(btn);
-                                if ui.add(restore).on_hover_text(tl!("Open it as unsaved work")).clicked() {
+                                let restore = egui::Button::new(text(Type::Body, tl!("Restore")).color(T.on_fill).strong()).fill(T.accent).min_size(btn);
+                                let name = [("name", e.meta.name.as_str())];
+                                if ui.add(restore).named(&i18n::fmt("Restore {name}", &name)).on_hover_text(tl!("Open it as unsaved work")).clicked() {
                                     act = Some(Act::Restore(e.session.clone()));
                                 }
-                                if ui.add(egui::Button::new(tl!("Discard…")).min_size(btn)).on_hover_text(tl!("Delete this autosaved copy")).clicked() {
+                                if ui.add(egui::Button::new(tl!("Discard…")).min_size(btn)).named(&i18n::fmt("Discard {name}…", &name)).on_hover_text(tl!("Delete this autosaved copy")).clicked() {
                                     act = Some(Act::AskDiscard(e.session.clone()));
                                 }
                             }
@@ -301,6 +302,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                 ui.label(text(Type::Caption, tl!("Later keeps them: File › Recover Autosaved Documents… brings this back.")));
             });
         }));
+    crate::a11y::name_title_bar(&shown, tl!("Recover unsaved work"));
     if !open {
         act = Some(Act::Later);
     }

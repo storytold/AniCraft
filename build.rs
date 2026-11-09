@@ -7,7 +7,7 @@
 //! repository. Without the variable the app uses egui's bundled defaults, and everything still
 //! works.
 //!
-//! `CRAFT_I18N_DIR=<craft-i18n checkout>` embeds the interface translations (ADR 0022) as
+//! `CRAFT_I18N_DIR=<craft-i18n checkout>` embeds the interface translations (ADR 0023) as
 //! `CRAFT_I18N`, following craft-i18n's `docs/integration.md`; without it the interface is
 //! English only. `CRAFT_I18N_REQUIRED=1` (set by CI once `craft-i18n.rev` exists) makes a missing
 //! or invalid checkout an error.

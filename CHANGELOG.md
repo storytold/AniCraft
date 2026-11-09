@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+* **Accessibility, first pass** (ADR 0022, `docs/accessibility.md`). **High contrast** theme in
+  Preferences › Appearance › Theme: white text on black, yellow focus, selection and active
+  tool, outlined buttons and fields, brighter timeline blocks; every text colour at 7:1 or more.
+  **Screen readers** (Narrator, VoiceOver, Orca through AccessKit) now hear a name and role for
+  every control: tools ("Pen tool (P)"), layer rows and their Show/Lock/Outline toggles,
+  transport and icon buttons, every Properties field ("Position X", "Fill colour"), Library rows,
+  the Motion Editor, every dialog; the stage reads as a canvas with the tool, frame and
+  selection, and status messages are announced. **Ctrl+F6 / Ctrl+Shift+F6** (⌘F6 on macOS)
+  move the keyboard between Stage, Timeline, Properties, Library and Tools, listed and
+  rebindable in the shortcut sheet; shortcuts keep working while a button has focus. **Interface
+  scale** holds up to 200 %: the stage refits, the tools column and timeline header scroll, the
+  status bar shortens its message instead of overlapping. The default theme now meets WCAG AA
+  everywhere (the playhead's frame number, the current-frame readout and faint hints were
+  below it). A test walks the AccessKit tree in 23 states of the interface and fails on any
+  unnamed control. `anicraft --theme high-contrast --scale 200` previews a look for one run.
+  Not yet: stage elements and single frames one by one for screen readers, following the
+  system's contrast setting, the menu bar from the keyboard.
 * **Variable-width strokes and the Width tool** (**U**, ADR 0018). A stroke's width can now
   vary along it: pick a profile in Properties › Width (Uniform, Taper both ends, Taper start,
   Taper end, Bulge, Pinch, each with a picture), or set one in the drawing tools' options so

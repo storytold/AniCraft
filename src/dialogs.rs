@@ -7,7 +7,8 @@ use crate::prefs::{FontChoice, RenderMode, StageRenderer};
 use crate::theme::{T, Type, text, with_type};
 use anicraft_engine::confirm::Confirmation;
 use anicraft_engine::{CommandSpec, commands};
-use egui::{Color32, Key};
+use crate::a11y::{self, Named};
+use egui::Key;
 use serde_json::{Value, json};
 
 /// A command waiting for the user's yes/no.
@@ -34,7 +35,7 @@ pub fn show_all(app: &mut App, ctx: &egui::Context) {
 }
 
 fn danger_button(label: &str) -> egui::Button<'static> {
-    egui::Button::new(text(Type::Body, label).color(Color32::WHITE).strong()).fill(T.danger).min_size(egui::vec2(120.0, crate::theme::TARGET + 4.0))
+    egui::Button::new(text(Type::Body, label).color(T.on_fill).strong()).fill(T.danger).min_size(egui::vec2(120.0, crate::theme::TARGET + 4.0))
 }
 
 /// The engine's confirmation message in the interface language: its template and counts
@@ -136,7 +137,7 @@ fn close_modal(app: &mut App, ctx: &egui::Context) {
                 choice = Some(Choice::Discard);
             }
             ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(text(Type::Body, tl!("Save")).strong().color(Color32::WHITE)).fill(T.accent).min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
+                if ui.add(egui::Button::new(text(Type::Body, tl!("Save")).strong().color(T.on_fill)).fill(T.accent).min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
                     choice = Some(Choice::Save);
                 }
                 if ui.add(egui::Button::new(tl!("Cancel")).min_size(egui::vec2(96.0, crate::theme::TARGET + 4.0))).clicked() {
@@ -292,7 +293,7 @@ fn palette(app: &mut App, ctx: &egui::Context) {
     egui::Area::new(egui::Id::unique("palette")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, [0.0, 70.0]).show(ctx, |ui| crate::theme::reading(ui, |ui| {
         egui::Frame::popup(ui.style()).fill(T.panel_alt).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
             ui.set_width(560.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut p.query).hint_text(tl!("Type a command, tool or setting…")).desired_width(f32::INFINITY).font(egui::TextStyle::Heading));
+            let r = ui.add(egui::TextEdit::singleline(&mut p.query).hint_text(tl!("Type a command, tool or setting…")).desired_width(f32::INFINITY).font(egui::TextStyle::Heading)).named(tl!("Command palette"));
             r.request_focus();
             if r.changed() {
                 p.selected = 0;
@@ -306,9 +307,13 @@ fn palette(app: &mut App, ctx: &egui::Context) {
                 let resp = ui
                     .horizontal(|ui| {
                         let lab = ui.selectable_label(sel, e.title());
-                        ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
-                            ui.label(text(Type::Key, crate::platform::shortcut_label(key)));
-                        });
+                        // No label for an entry without a shortcut: an empty one is an unnamed
+                        // node for screen readers (storytold's egui fork exposes it).
+                        if !key.is_empty() {
+                            ui.with_layout(crate::theme::end_row(egui::Align::Center), |ui| {
+                                ui.label(text(Type::Key, crate::platform::shortcut_label(key)));
+                            });
+                        }
                         lab
                     })
                     .inner;
@@ -341,7 +346,7 @@ fn palette(app: &mut App, ctx: &egui::Context) {
 // ----- preferences ------------------------------------------------------------------------------
 
 /// A font picker: the bundled default plus every installed family, filterable.
-fn font_picker(ui: &mut egui::Ui, id: &str, current: &FontChoice, families: Option<&[String]>, bundled: &str) -> Option<FontChoice> {
+fn font_picker(ui: &mut egui::Ui, id: &str, name: &str, current: &FontChoice, families: Option<&[String]>, bundled: &str) -> Option<FontChoice> {
     let mut picked = None;
     let filter_id = egui::Id::unique(("font_filter", id));
     let shown = match current {
@@ -359,7 +364,7 @@ fn font_picker(ui: &mut egui::Ui, id: &str, current: &FontChoice, families: Opti
             }
             Some(list) => {
                 let mut filter: String = ui.ctx().data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
-                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tl!("Filter fonts…")).desired_width(240.0));
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tl!("Filter fonts…")).desired_width(240.0)).set_name(tl!("Filter fonts"));
                 let f = filter.to_lowercase();
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                     for fam in list.iter().filter(|n| f.is_empty() || n.to_lowercase().contains(&f)) {
@@ -372,7 +377,9 @@ fn font_picker(ui: &mut egui::Ui, id: &str, current: &FontChoice, families: Opti
                 ui.ctx().data_mut(|d| d.insert_temp(filter_id, filter));
             }
         }
-    });
+    })
+    .response
+    .set_name(name);
     picked
 }
 
@@ -386,7 +393,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
     let (bundled_ui, bundled_mono) = crate::theme::bundled_names();
     let mut reset_confirms = false;
     let title = tl!(if crate::platform::OS == crate::platform::Os::Mac { "Settings" } else { "Preferences" });
-    egui::Window::new(title)
+    let shown = egui::Window::new(title)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -420,18 +427,30 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                                     p.language = crate::i18n::code(lang).to_string();
                                 }
                             }
-                        });
+                        })
+                        .response
+                        .set_name(tl!("Interface language"));
                     });
                     form_note(ui, LW, text(Type::Caption, tl!("Auto follows the system's language. Document text, file names and command ids stay as they are.")));
                     ui.add_space(4.0);
+                    form_row(ui, LW, "Theme", |ui| {
+                        crate::theme::column(ui, |ui| {
+                            for (palette, name, tip) in crate::theme::Palette::ALL {
+                                crate::theme::radio_value(ui, &mut p.theme, palette, text(Type::Body, tl!(name)));
+                                form_note(ui, toggle_indent, text(Type::Caption, tl!(tip)));
+                                ui.add_space(2.0);
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
                     form_row(ui, LW, "Interface font", |ui| {
-                        if let Some(c) = font_picker(ui, "pref_ui_font", &p.ui_font, sys.as_ref().map(|s| s.families.as_slice()), bundled_ui) {
+                        if let Some(c) = font_picker(ui, "pref_ui_font", "Interface font", &p.ui_font, sys.as_ref().map(|s| s.families.as_slice()), bundled_ui) {
                             p.ui_font = c;
                         }
                     });
                     form_row(ui, LW, "Data font", |ui| {
                         let list = sys.as_ref().map(|s| s.monospace.as_slice());
-                        if let Some(c) = font_picker(ui, "pref_data_font", &p.data_font, list, bundled_mono) {
+                        if let Some(c) = font_picker(ui, "pref_data_font", "Data font", &p.data_font, list, bundled_mono) {
                             p.data_font = c;
                         }
                     });
@@ -447,7 +466,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                     form_row(ui, LW, "Interface scale", |ui| {
                         let mut pct = p.ui_scale * 100.0;
                         let r = with_type(ui, Type::Data, |ui| {
-                            ui.add(egui::Slider::new(&mut pct, (crate::prefs::SCALE_RANGE.start() * 100.0)..=(crate::prefs::SCALE_RANGE.end() * 100.0)).step_by(5.0).suffix(" %"))
+                            a11y::slider(ui, &mut pct, (crate::prefs::SCALE_RANGE.start() * 100.0)..=(crate::prefs::SCALE_RANGE.end() * 100.0), "Interface scale", a11y::SliderLook { suffix: " %", step: Some(5.0), max_decimals: Some(0), ..Default::default() })
                         });
                         // Apply on release so the slider doesn't move under the pointer while dragging.
                         if r.drag_stopped() || (r.changed() && !r.dragged()) {
@@ -497,7 +516,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                 section(ui, "prefs_timeline", Section::Rule, tl!("Timeline"), None, |ui| {
                     form_row(ui, LW, "Extra start gap", |ui| {
                         with_type(ui, Type::Data, |ui| {
-                            ui.add(egui::DragValue::new(&mut p.timeline_start_gap).range(crate::prefs::GAP_RANGE).speed(0.5).max_decimals(0).suffix(" pt"));
+                            ui.add(egui::DragValue::new(&mut p.timeline_start_gap).range(crate::prefs::GAP_RANGE).speed(0.5).max_decimals(0).suffix(" pt")).set_name("Extra start gap");
                         });
                     });
                     form_note(ui, LW, text(Type::Caption, tl!("The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom.")));
@@ -531,11 +550,13 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                                 for (secs, label) in crate::prefs::AUTOSAVE_INTERVALS {
                                     ui.selectable_value(&mut p.autosave_secs, secs, text(Type::Body, tl!(label)));
                                 }
-                            });
+                            })
+                            .response
+                            .set_name("Autosave every");
                         });
                         form_row(ui, LW, "Or after", |ui| {
                             with_type(ui, Type::Data, |ui| {
-                                ui.add(egui::DragValue::new(&mut p.autosave_edits).range(crate::prefs::AUTOSAVE_EDITS_RANGE).speed(0.5).suffix(format!(" {}", tl!("changes"))));
+                                ui.add(egui::DragValue::new(&mut p.autosave_edits).range(crate::prefs::AUTOSAVE_EDITS_RANGE).speed(0.5).suffix(format!(" {}", tl!("changes")))).set_name(tl!("Autosave after this many changes"));
                             });
                         });
                         form_note(ui, LW, text(Type::Caption, tl!("Whichever comes first. 0 changes: by time only. Copies are written in the background, so drawing never waits.")));
@@ -555,6 +576,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
             ui.separator();
             ui.label(text(Type::Caption, i18n::fmt("{os} · settings stored in {place}", &[("os", crate::platform::OS.name()), ("place", &crate::platform::config_dir().map_or_else(|| tl!("memory only").to_string(), |d| craft_i18n::ltr(&d.display().to_string())))])));
         }));
+    a11y::name_title_bar(&shown, title);
     if reset_confirms {
         app.skip_confirm.clear();
     }
@@ -587,7 +609,7 @@ fn licenses(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let mut open = true;
-    egui::Window::new(tl!("Licenses & Notices"))
+    let shown = egui::Window::new(tl!("Licenses & Notices"))
         .open(&mut open)
         .collapsible(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -609,6 +631,7 @@ fn licenses(app: &mut App, ctx: &egui::Context) {
                 }
             });
         }));
+    a11y::name_title_bar(&shown, tl!("Licenses & Notices"));
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
         open = false;
     }
@@ -756,7 +779,7 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
     let mut acts: Vec<SheetAct> = Vec::new();
     let capture = app.key_capture;
     let changed = app.prefs.shortcuts.len();
-    egui::Window::new(tl!("Keyboard Shortcuts"))
+    let shown = egui::Window::new(tl!("Keyboard Shortcuts"))
         .open(&mut open)
         .collapsible(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -765,7 +788,7 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
         .default_height(600.0)
         .show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text(tl!("Filter by name or key…")).desired_width(ui.available_width() - 120.0));
+                ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text(tl!("Filter by name or key…")).desired_width(ui.available_width() - 120.0)).set_name(tl!("Filter shortcuts"));
                 let reset_all = ui.add_enabled(changed > 0, egui::Button::new(tl!("Reset all…"))).on_hover_text(tl!("Put every shortcut back to the defaults"));
                 if reset_all.clicked() {
                     st.confirm_reset_all = true;
@@ -773,7 +796,7 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
             });
             // One message line: what is happening, what just happened, or what needs a decision.
             if let Some(cap) = capture {
-                ui.label(text(Type::Label, i18n::fmt("Press the new keys for {action}. Esc cancels.", &[("action", tl!(action_label(&app.keymap, cap.id)))])).color(T.accent));
+                ui.label(text(Type::Label, i18n::fmt("Press the new keys for {action}. Esc cancels.", &[("action", tl!(action_label(&app.keymap, cap.id)))])).color(T.accent_text));
             } else if st.confirm_reset_all {
                 ui.horizontal(|ui| {
                     ui.label(text(Type::Label, i18n::trn(changed as u64, "Reset {n} changed shortcut to the defaults?", "Reset {n} changed shortcuts to the defaults?")));
@@ -831,7 +854,8 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                                         });
                                     },
                                     &mut |ui, _| {
-                                        ui.label("");
+                                        // An empty cell (an empty label would be an empty, clickable node for screen readers).
+                                        ui.allocate_space(egui::Vec2::ZERO);
                                     },
                                 ]);
                             }
@@ -844,11 +868,11 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                                             for (i, k) in keys.iter().enumerate() {
                                                 let recording = capture == Some(KeyCapture { id: a.id, replace: Some(i) });
                                                 let chip = if recording {
-                                                    egui::Button::new(text(Type::Key, tl!("Press keys…")).color(Color32::WHITE)).fill(T.accent)
+                                                    egui::Button::new(text(Type::Key, tl!("Press keys…")).color(T.on_fill)).fill(T.accent)
                                                 } else {
                                                     egui::Button::new(text(Type::Key, key(k)).color(T.text))
                                                 };
-                                                let r = ui.add(chip).on_hover_text(tl!("Click to change · right-click to remove"));
+                                                let r = ui.add(chip).named(&i18n::fmt("{action} shortcut {key}", &[("action", tl!(a.label)), ("key", &key(k))])).on_hover_text(tl!("Click to change · right-click to remove"));
                                                 if r.clicked() {
                                                     acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: Some(i) }));
                                                 }
@@ -864,10 +888,11 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                                                 });
                                             }
                                             if capture == Some(KeyCapture { id: a.id, replace: None }) {
-                                                ui.add(egui::Button::new(text(Type::Key, tl!("Press keys…")).color(Color32::WHITE)).fill(T.accent));
+                                                ui.add(egui::Button::new(text(Type::Key, tl!("Press keys…")).color(T.on_fill)).fill(T.accent));
                                             } else if keys.len() < crate::keymap::MAX_KEYS {
                                                 let tip = tl!(if keys.is_empty() { "Add a shortcut" } else { "Add another shortcut" });
-                                                if ui.add(egui::Button::new("+").min_size(egui::vec2(crate::theme::TARGET, crate::theme::TARGET))).on_hover_text(tip).clicked() {
+                                                let name = i18n::fmt(if keys.is_empty() { "Add a shortcut for {action}" } else { "Add another shortcut for {action}" }, &[("action", tl!(a.label))]);
+                                                if ui.add(egui::Button::new("+").min_size(egui::vec2(crate::theme::TARGET, crate::theme::TARGET))).named(&name).on_hover_text(tip).clicked() {
                                                     acts.push(SheetAct::Capture(KeyCapture { id: a.id, replace: None }));
                                                 }
                                             }
@@ -875,8 +900,9 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                                     },
                                     &mut |ui, acts| {
                                         if app.keymap.is_default(a.id) {
-                                            ui.label("");
-                                        } else if ui.button(tl!("Reset")).on_hover_text(i18n::fmt("Back to the default ({keys})", &[("keys", &if a.defaults.is_empty() { tl!("none").to_string() } else { a.defaults.iter().map(|k| key(k)).collect::<Vec<_>>().join(" · ") })])).clicked() {
+                                            // An empty cell (an empty label would be an empty, clickable node for screen readers).
+                                            ui.allocate_space(egui::Vec2::ZERO);
+                                        } else if ui.button(tl!("Reset")).named(&i18n::fmt("Reset {action}", &[("action", tl!(a.label))])).on_hover_text(i18n::fmt("Back to the default ({keys})", &[("keys", &if a.defaults.is_empty() { tl!("none").to_string() } else { a.defaults.iter().map(|k| key(k)).collect::<Vec<_>>().join(" · ") })])).clicked() {
                                             acts.push(SheetAct::Reset(a.id));
                                         }
                                     },
@@ -887,6 +913,7 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                 }
             });
         }));
+    a11y::name_title_bar(&shown, tl!("Keyboard Shortcuts"));
 
     for act in acts {
         let mut p = app.prefs.clone();

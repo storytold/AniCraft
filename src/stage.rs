@@ -13,6 +13,7 @@ use crate::theme::{T, to_color32};
 use anicraft_engine::geom::{Affine, Vec2};
 use anicraft_engine::render::View;
 use anicraft_engine::render_service::{DEFAULT_CACHE_BYTES, FrameImage, FrameJob, RenderService, make_job_for};
+use crate::a11y::Named;
 use egui::{Color32, CursorIcon, Key, Modifiers, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 
@@ -151,12 +152,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let canvas = ui.max_rect();
     app.stage_cache.canvas = canvas;
     let resp = ui.allocate_rect(canvas, Sense::click_and_drag());
+    // The drawing surface: Ctrl+F6 lands here, and screen readers hear the tool in hand.
+    crate::a11y::anchor(ui, crate::a11y::Region::Stage, canvas, &resp);
     let ppp = ui.ctx().pixels_per_point();
     let size = vec2(app.s.doc.stage.width as f32, app.s.doc.stage.height as f32);
-    if app.view.fit && canvas.width() > 10.0 {
+    // Still as fitted (nobody zoomed or panned since) but the canvas changed size: fit again, as
+    // Fit in Window stays fitted when the window or the interface scale changes.
+    if let Some((was, z)) = app.view.fitted
+        && was != vec2(canvas.width(), canvas.height())
+        && app.view.zoom == z
+        && app.view.pan == egui::Vec2::ZERO
+    {
+        app.view.fit = true;
+    }
+    if app.view.fit && canvas.width() > 10.0 && canvas.height() > 10.0 {
         app.view.zoom = ((canvas.width() - 64.0) / size.x).min((canvas.height() - 64.0) / size.y).clamp(0.05, 64.0);
         app.view.pan = egui::Vec2::ZERO;
         app.view.fit = false;
+        app.view.fitted = Some((vec2(canvas.width(), canvas.height()), app.view.zoom));
     }
 
     // ---- camera input -------------------------------------------------------------------
@@ -171,7 +184,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     }
-    if !ui.ctx().egui_wants_keyboard_input() {
+    if crate::a11y::keyboard(ui.ctx()) != crate::a11y::Keyboard::Text {
         let (zin, zout, fit, one) = ui.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::Equals) || i.consume_key(Modifiers::COMMAND, Key::Plus),
@@ -716,6 +729,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // zoom badge
     let badge = format!("{:.0}%", zoom * 100.0);
     painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
+    // Last, so the focus ring is drawn over the artwork.
+    let selected = app.s.selection.len();
+    let what = match selected {
+        0 => String::new(),
+        1 => " · 1 element selected".to_string(),
+        n => format!(" · {n} elements selected"),
+    };
+    crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
 }
 
 // ----- text ----------------------------------------------------------------------------------------
@@ -763,7 +784,7 @@ fn text_editor(app: &mut App, ui: &mut egui::Ui, stage_origin: Pos2, zoom: f32) 
     let mut done = false;
     egui::Area::new(egui::Id::unique("stage_text_edit")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         egui::Frame::new().fill(T.panel).stroke(Stroke::new(1.0, T.selection)).inner_margin(4.0).show(ui, |ui| {
-            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text(tl!("Type text")));
+            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text(tl!("Type text"))).named(tl!("Text on the stage"));
             if te.focus {
                 r.request_focus();
                 te.focus = false;

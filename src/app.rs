@@ -1,6 +1,7 @@
 //! The AniCraft shell: view state plus the frame loop. Document changes go through
 //! `Session::execute`, so everything here is also reachable headless.
 
+use crate::a11y::Named;
 use crate::i18n::{self, tl};
 use crate::theme::{self, T};
 use crate::{autosave, dialogs, keymap, menus, motion_editor, panels, pathtools, platform, prefs, stage, timeline};
@@ -149,6 +150,9 @@ pub struct StageView {
     pub zoom: f32,
     pub pan: egui::Vec2,
     pub fit: bool,
+    /// The canvas size and zoom of the last fit: while the view is still as fitted, it fits
+    /// again when the canvas changes size (window resized, panels or interface scale changed).
+    pub fitted: Option<(egui::Vec2, f32)>,
 }
 
 /// In-progress pointer gesture on the stage.
@@ -317,6 +321,8 @@ pub struct App {
     audio_clock: bool,
     /// The scene and frame last heard, so a moved playhead plays a snippet (scrubbing).
     heard: Option<(usize, u32)>,
+    /// The panel Ctrl+F6 last moved focus to (where the next press continues from).
+    pub last_panel: Option<crate::a11y::Region>,
 }
 
 /// How finished this version is, shown next to the version number (docs/release.md).
@@ -329,11 +335,20 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+Alt+A", "view.select_all_frames"),
     ("Ctrl+Alt+8", "view.align_to_stage"),
     ("Ctrl+Enter", "view.test"),
+    // Keyboard focus between the panels (ADR 0022). F6 alone is Insert Keyframe, as animators
+    // expect; Ctrl+F6 is the next-pane key of Windows apps.
+    ("Ctrl+F6", "view.next_panel"),
+    ("Ctrl+Shift+F6", "view.prev_panel"),
 ];
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>, lang_arg: Option<String>) -> App {
-        theme::apply(&cc.egui_ctx);
+        App::with_context(&cc.egui_ctx, session, shot, lang_arg)
+    }
+
+    /// The app on an egui context (the window's, or a headless one in tests).
+    pub fn with_context(ctx: &egui::Context, session: Session, shot: Option<PathBuf>, lang_arg: Option<String>) -> App {
+        theme::apply(ctx);
         let shot_mode = shot.is_some();
         // Screenshot runs use defaults so automated checks are reproducible.
         let prefs = if shot_mode { prefs::Prefs::default() } else { prefs::Prefs::load() };
@@ -350,7 +365,7 @@ impl App {
         let mut app = App {
             s: session,
             tool: Tool::Select,
-            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true },
+            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
             playing: false,
@@ -413,8 +428,9 @@ impl App {
             sound: crate::sound::SoundOut::new(),
             audio_clock: false,
             heard: None,
+            last_panel: None,
         };
-        app.apply_prefs(&cc.egui_ctx);
+        app.apply_prefs(ctx);
         app.decode_sounds();
         // The language is set every frame; the first message is written before the first frame.
         crate::i18n::set_current(crate::i18n::from_pref(app.lang_arg.as_deref().unwrap_or(&app.prefs.language)));
@@ -450,6 +466,7 @@ impl App {
     /// finishes the bundled fonts stay in place, and they are swapped in when it completes.
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
         ctx.set_zoom_factor(self.prefs.ui_scale);
+        theme::apply_palette(ctx, self.prefs.theme);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
         let wants_system = [&self.prefs.ui_font, &self.prefs.data_font].iter().any(|f| matches!(f, prefs::FontChoice::System(_)));
@@ -479,6 +496,19 @@ impl App {
         }
         theme::install_fonts(ctx, ui_font.as_ref(), data_font.as_ref());
         self.glyph_check = true;
+    }
+
+    /// `--theme` / `--scale`: a palette and interface scale for this run only (clamped like the
+    /// preference), not saved.
+    pub fn preview_look(&mut self, ctx: &egui::Context, theme: Option<theme::Palette>, scale: Option<f32>) {
+        if theme.is_none() && scale.is_none() {
+            return;
+        }
+        let mut p = self.prefs.clone();
+        p.theme = theme.unwrap_or(p.theme);
+        p.ui_scale = scale.unwrap_or(p.ui_scale);
+        self.prefs = p.sanitized();
+        self.apply_prefs(ctx);
     }
 
     pub fn open_prefs(&mut self) {
@@ -793,7 +823,7 @@ impl App {
             }
             "file.export_sprite_sheet" => self.status_ok(i18n::fmt("Exported {frames} frames to {path} ({columns}×{rows} grid) and its frame map {map}", &[("frames", &v["frames"].to_string()), ("path", &craft_i18n::ltr(v["written"].as_str().unwrap_or(""))), ("columns", &v["columns"].to_string()), ("rows", &v["rows"].to_string()), ("map", &craft_i18n::ltr(v["map"].as_str().unwrap_or("")))])),
             "file.export_lottie" => {
-                // The engine's report on what Lottie can't carry stays English (ADR 0022).
+                // The engine's report on what Lottie can't carry stays English (ADR 0023).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
                 let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
@@ -1041,6 +1071,24 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// Ctrl+F6 / Ctrl+Shift+F6: keyboard focus to the next or previous panel (Stage, Timeline,
+    /// Properties, Library, Tools). Cut, copy and paste follow it to frames or artwork.
+    pub fn focus_panel(&mut self, ctx: &egui::Context, forward: bool) {
+        match crate::a11y::cycle_focus(ctx, self.last_panel, forward) {
+            Some(region) => {
+                self.last_panel = Some(region);
+                match region {
+                    crate::a11y::Region::Timeline => self.timeline_focus = true,
+                    crate::a11y::Region::Stage => self.timeline_focus = false,
+                    _ => {}
+                }
+                let next = self.keymap.primary("view.next_panel").map(platform::shortcut_label).unwrap_or_default();
+                self.status_ok(format!("{}{}", region.label(), if next.is_empty() { String::new() } else { format!(" · {next} for the next panel") }));
+            }
+            None => self.status_err("No panel to move to yet"),
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // While the shortcut editor records a key, every key press belongs to it.
         if self.modal_open() || self.key_capture.is_some() {
@@ -1072,23 +1120,46 @@ impl App {
         if sheet {
             self.show_shortcuts = !self.show_shortcuts;
         }
-        if ctx.egui_wants_keyboard_input() || self.palette.is_some() {
+        // Moving between panels (Ctrl+F6) works from anywhere, a text field included.
+        let panel_step = ctx.input_mut(|i| {
+            self.shortcuts.iter().filter(|(_, _, id)| matches!(*id, "view.next_panel" | "view.prev_panel")).find_map(|(m, k, id)| i.consume_key(*m, *k).then_some(*id == "view.next_panel"))
+        });
+        if let Some(forward) = panel_step {
+            self.focus_panel(ctx, forward);
+        }
+        // Who has the keyboard (ADR 0022): nothing focused, or the stage or timeline, gets every
+        // shortcut. A focused control (button, checkbox, menu) keeps Enter, Space and the arrows
+        // for itself (press, move to the next control) but the other shortcuts still work. A
+        // text field keeps every key.
+        let keys = crate::a11y::keyboard(ctx);
+        if keys == crate::a11y::Keyboard::Text || self.palette.is_some() {
             return;
         }
-        pathtools::consume_keys(self, ctx);
-        crate::widthtool::consume_keys(self, ctx);
+        let control = keys == crate::a11y::Keyboard::Control;
+        if !control {
+            pathtools::consume_keys(self, ctx);
+            crate::widthtool::consume_keys(self, ctx);
+        }
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
         let mut play = false;
         let mut nudge = egui::Vec2::ZERO;
+        let surface_focused = ctx.memory(|m| m.focused().is_some());
         ctx.input_mut(|i| {
             for (m, k, id) in &self.shortcuts {
                 if i.consume_key(*m, *k) {
                     fire.push(id);
                 }
             }
+            if control {
+                return;
+            }
             if i.consume_key(Modifiers::NONE, Key::Enter) {
                 play = true;
+            }
+            // Space pans (held, `key_down`); its press must not "click" a focused stage.
+            if surface_focused {
+                i.consume_key(Modifiers::NONE, Key::Space);
             }
             let step = if i.modifiers.shift { 10.0 } else { 1.0 };
             for (k, d) in [(Key::ArrowLeft, egui::vec2(-step, 0.0)), (Key::ArrowRight, egui::vec2(step, 0.0)), (Key::ArrowUp, egui::vec2(0.0, -step)), (Key::ArrowDown, egui::vec2(0.0, step))] {
@@ -1191,7 +1262,7 @@ impl App {
         let mut cancel = false;
         egui::Window::new(tl!(p.title)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.set_min_width(360.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY));
+            let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY)).named(p.title);
             r.request_focus();
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 submit = true;
@@ -1218,7 +1289,7 @@ impl App {
 
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
-        egui::Window::new(tl!("About AniCraft")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| crate::theme::reading(ui, |ui| {
+        let shown = egui::Window::new(tl!("About AniCraft")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.add(egui::Image::new((app_mark(ctx).id(), egui::vec2(64.0, 64.0))));
             ui.heading("AniCraft");
             ui.label(i18n::fmt("Version {version} · {stage}", &[("version", env!("CARGO_PKG_VERSION")), ("stage", tl!(RELEASE_STAGE))]));
@@ -1227,6 +1298,7 @@ impl App {
             ui.colored_label(T.text_dim, "MIT OR Apache-2.0");
             ui.label(theme::text(theme::Type::Caption, i18n::fmt("Typefaces: {fonts}", &[("fonts", &theme::font_summary())])));
         }));
+        crate::a11y::name_title_bar(&shown, tl!("About AniCraft"));
         self.show_about = open;
     }
 
@@ -1249,7 +1321,7 @@ impl App {
             ("Screenshots", root.join("shots")),
         ];
         let mut opened: Option<Result<(), String>> = None;
-        egui::Window::new(tl!("Project Files")).open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| crate::theme::reading(ui, |ui| {
+        let shown = egui::Window::new(tl!("Project Files")).open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| crate::theme::reading(ui, |ui| {
             ui.label(theme::text(theme::Type::Label, tl!("Where AniCraft's documents and files are on this computer")));
             ui.add_space(4.0);
             crate::theme::ltr(ui, |ui| egui::Grid::new("files").num_columns(3).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
@@ -1260,7 +1332,7 @@ impl App {
                     let name = |ui: &mut egui::Ui| ui.label(theme::text(theme::Type::Body, tl!(label)).strong());
                     let at = |ui: &mut egui::Ui| ui.label(theme::text(theme::Type::Path, path.display().to_string()).color(if path.exists() { T.text } else { T.text_faint }));
                     let mut button = |ui: &mut egui::Ui| {
-                        if ui.add_enabled(path.exists(), egui::Button::new(tl!("Open"))).clicked() {
+                        if ui.add_enabled(path.exists(), egui::Button::new(tl!("Open"))).named(&i18n::fmt("Open {name}", &[("name", tl!(label))])).clicked() {
                             opened = Some(open_in_system(path));
                         }
                     };
@@ -1289,6 +1361,7 @@ impl App {
             ui.add_space(4.0);
             ui.label(theme::text(theme::Type::Caption, tl!("Saved documents and exports go where you type in the save box; a plain name lands in the folder AniCraft was started from.")));
         }));
+        crate::a11y::name_title_bar(&shown, tl!("Project Files"));
         match opened {
             Some(Err(e)) => self.status_err(e),
             Some(Ok(())) => self.status_ok(tl!("Opened in your system's file viewer")),
@@ -1341,9 +1414,16 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+}
+
+impl App {
+    /// One frame of the whole interface. Needs no window, so tests run it headless.
+    pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // The interface language, and its direction for egui's own parts (menus, scroll bars,
-        // combo boxes) (ADR 0022).
+        // combo boxes) (ADR 0023).
         crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         let rtl = crate::i18n::rtl();
         if ctx.global_style().right_to_left != rtl {
@@ -1379,12 +1459,20 @@ impl eframe::App for App {
         egui::Panel::top("menu_bar").frame(bar(T.chrome)).show(ui, |ui| menus::bar(self, ui));
         egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| theme::reading(ui, |ui| panels::edit_bar(self, ui)));
         egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| theme::reading(ui, |ui| panels::status_bar(self, ui)));
+        // Docks start at their usual size, but never take most of a small window or a large
+        // interface scale (200 % on a laptop leaves under 1000 × 600 points), and the stage
+        // always keeps room when the scale goes up later.
+        let room = ui.available_rect_before_wrap();
+        let room = egui::vec2(room.width(), room.height());
+        let (dock_w, timeline_h) = ((room.x * 0.3).clamp(220.0, 292.0), (room.y * 0.42).clamp(200.0, 292.0));
         // Tools where reading starts, the dock where it ends: mirrored in a right-to-left language.
         let (start, end) = if theme::rtl() { (egui::Panel::right("tools"), egui::Panel::left("properties")) } else { (egui::Panel::left("tools"), egui::Panel::right("properties")) };
-        start.resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(6, 8))).show(ui, |ui| panels::tools(self, ui));
-        end.resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| theme::reading(ui, |ui| panels::right(self, ui)));
-        egui::Panel::bottom("timeline").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
+        start.resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(0, 8))).show(ui, |ui| panels::tools(self, ui));
+        end.resizable(true).default_size(dock_w).max_size((room.x * 0.5).max(220.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| theme::reading(ui, |ui| panels::right(self, ui)));
+        egui::Panel::bottom("timeline").resizable(true).default_size(timeline_h).max_size((room.y * 0.6).max(200.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
+        crate::a11y::name_splitter(ui, "properties", tl!("Resize the right-hand panels"));
+        crate::a11y::name_splitter(ui, "timeline", tl!("Resize the timeline"));
 
         self.prompt_window(&ctx);
         self.about_window(&ctx);
