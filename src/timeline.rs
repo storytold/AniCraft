@@ -868,6 +868,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 pub fn easing_label(e: Easing) -> String {
     match e {
         Easing::Classic(s) => i18n::fmt("Classic {strength}", &[("strength", &format!("{s:+.0}"))]),
+        // A custom curve (not a preset): its numbers go into a template, the name is looked up.
+        Easing::CubicBezier(a, b, c, d) if !Easing::PRESETS.iter().any(|(_, p)| *p == e) => {
+            i18n::fmt("Bezier({curve})", &[("curve", &format!("{a:.2}, {b:.2}, {c:.2}, {d:.2}"))])
+        }
         other => tl!(&other.label()).to_string(),
     }
 }

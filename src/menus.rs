@@ -191,7 +191,7 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
                             let ctx = ui.ctx().clone();
                             app.set_prefs(&ctx, p);
                         }
-                        ui.label(text(Type::Caption, tip));
+                        ui.label(text(Type::Caption, tl!(tip)));
                     }
                 }
             });

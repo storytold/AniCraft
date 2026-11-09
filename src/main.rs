@@ -108,7 +108,14 @@ fn main() -> eframe::Result {
             },
             "--open" => open = args.next(),
             "--renderer" => renderer_arg = args.next(),
-            "--lang" => lang = args.next(),
+            "--lang" => match args.next() {
+                // A missing value or the next option is not a language.
+                Some(code) if !code.starts_with('-') => lang = Some(code),
+                other => {
+                    eprintln!("--lang takes a language code (en, ar, auto), not {}", other.as_deref().unwrap_or("nothing"));
+                    std::process::exit(2);
+                }
+            },
             "--theme" => match args.next().as_deref() {
                 Some("graphite") => look.theme = Some(theme::Palette::Graphite),
                 Some("high-contrast") => look.theme = Some(theme::Palette::HighContrast),

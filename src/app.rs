@@ -359,6 +359,8 @@ impl App {
         let keymap = keymap::Keymap::new(&prefs.shortcuts);
         let shortcuts = keymap.table();
         let library_sel = LibraryItem::first(&session.doc);
+        // The language first: recovery's start-up message is written in it.
+        crate::i18n::set_current(crate::i18n::from_pref(lang_arg.as_deref().unwrap_or(&prefs.language)));
         let (recovery, recovery_err) = autosave::Recovery::start(shot_mode);
         // Text lays out with the fonts on this computer plus the embedded interface font (so new
         // text has the same default everywhere). Scan them now, off the UI thread.

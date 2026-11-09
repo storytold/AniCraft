@@ -834,9 +834,10 @@ fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
                         .actions
                         .iter()
                         .filter(|a| a.group == group || (group == "Other" && !GROUP_ORDER.contains(&a.group)))
-                        .filter(|a| hit(a.label) || hit(group) || app.keymap.keys(a.id).iter().any(|k| hit(k) || hit(&key(k))))
+                        // The names as shown (translated) and in English, and the keys.
+                        .filter(|a| hit(a.label) || hit(tl!(a.label)) || hit(group) || hit(tl!(group)) || app.keymap.keys(a.id).iter().any(|k| hit(k) || hit(&key(k))))
                         .collect();
-                    let fixed: Vec<_> = fixed.iter().filter(|(g, l, ks)| *g == group && (hit(l) || hit(g) || ks.iter().any(|k| hit(k)))).collect();
+                    let fixed: Vec<_> = fixed.iter().filter(|(g, l, ks)| *g == group && (hit(l) || hit(tl!(l)) || hit(g) || hit(tl!(g)) || ks.iter().any(|k| hit(k)))).collect();
                     if actions.is_empty() && fixed.is_empty() {
                         continue;
                     }

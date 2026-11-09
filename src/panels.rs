@@ -95,7 +95,8 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
         // The scene being edited; the menu switches scenes and manages them.
         let name = app.s.doc.scenes.get(app.s.scene).map_or_else(|| tl!("Scene").to_string(), |s| s.name.clone());
-        egui::ComboBox::from_id_salt("scene").selected_text(text(Type::Body, name).strong()).height(480.0).show_ui(ui, |ui| {
+        // The popup is its own area: it reads from the right in a right-to-left language too.
+        egui::ComboBox::from_id_salt("scene").selected_text(text(Type::Body, name).strong()).height(480.0).show_ui(ui, |ui| theme::reading(ui, |ui| {
             ui.set_min_width(240.0);
             let scenes: Vec<(String, u32)> = app.s.doc.scenes.iter().map(|s| (s.name.clone(), s.timeline.frame_count())).collect();
             for (i, (n, frames)) in scenes.iter().enumerate() {
@@ -116,7 +117,7 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
             for id in ["scene.new", "scene.duplicate", "scene.rename", "scene.delete", "scene.move_up", "scene.move_down"] {
                 crate::menus::cmd_item(app, ui, id);
             }
-        })
+        }))
         .response
         .set_name(tl!("Scene"));
         // Scene › layer, pointing the way the row reads.

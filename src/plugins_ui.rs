@@ -106,11 +106,12 @@ fn preview(app: &mut App) {
 
 /// The Commands menu: the installed plug-ins, then the plug-in commands from the registry.
 pub fn menu(app: &mut App, ui: &mut egui::Ui, cmds: &[CommandSpec], item: impl Fn(&mut App, &mut egui::Ui, &CommandSpec)) {
-    ui.menu_button("Plug-ins", |ui| {
+    // The plug-ins' own names stay as their authors wrote them.
+    ui.menu_button(crate::i18n::t("Plug-ins"), |ui| {
         ui.set_min_width(220.0);
         let list: Vec<Arc<Plugin>> = app.s.plugins.list().cloned().collect();
         if list.is_empty() {
-            ui.label(text(Type::Caption, "No plug-ins installed yet"));
+            ui.label(text(Type::Caption, crate::i18n::t("No plug-ins installed yet")));
         }
         for p in list {
             let why = blocked(&app.s, &p);
