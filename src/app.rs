@@ -913,6 +913,10 @@ impl App {
         if !self.playing {
             self.sound.stop();
         }
+        // Said once: the device could not be opened, so playback is silent.
+        if let Some(e) = self.sound.error.take() {
+            self.status_err(format!("Playing without sound: {e}"));
+        }
     }
 
     /// Decodes the document's sounds on a background thread (each once; every copy of the
