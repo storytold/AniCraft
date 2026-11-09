@@ -123,7 +123,7 @@ fn main() -> eframe::Result {
             },
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|hints|hintsend|prefs|licenses|zoom|recovery|plugins|actions|testmovie]\n\
+                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|hints|hintsend|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer, in builds with the gpu-stage feature (ADR 0019)\n\
