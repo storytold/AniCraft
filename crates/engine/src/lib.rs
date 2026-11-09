@@ -13,7 +13,9 @@ mod cmds_motion;
 mod cmds_paint;
 mod cmds_path;
 mod cmds_recovery;
+pub mod cmds_plugin;
 mod cmds_scene;
+pub mod cmds_sound;
 pub mod cmds_text;
 mod cmds_timeline;
 pub mod confirm;
@@ -32,6 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use anicraft_doc as doc;
+pub use anicraft_plugins as plugins;
 pub use anicraft_text as text;
 pub use anicraft_geom as geom;
 pub use anicraft_render as render;
@@ -95,6 +98,8 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_path::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
+    v.extend(cmds_plugin::specs());
+    v.extend(cmds_sound::specs());
     v
 }
 
@@ -166,6 +171,12 @@ pub struct Session {
     pub frame_clipboard: cmds_frames::FrameClipboard,
     /// A command is editing a motion tween's target (auto-key, ADR 0016).
     motion_edit: Option<cmds_motion::MotionEdit>,
+    /// Installed WebAssembly plug-ins (ADR 0017). They belong to the session, not the
+    /// document: they survive New and Open.
+    pub plugins: anicraft_plugins::Registry,
+    /// A name for the undo step the running command records, set by the command
+    /// (`plugin.run` names its step after the plug-in).
+    pub(crate) step_label: Option<String>,
 }
 
 impl Default for Session {
@@ -204,6 +215,8 @@ impl Session {
             clipboard: cmds_modify::Clipboard::default(),
             frame_clipboard: cmds_frames::FrameClipboard::default(),
             motion_edit: None,
+            plugins: anicraft_plugins::Registry::default(),
+            step_label: None,
         }
     }
 
@@ -265,9 +278,11 @@ impl Session {
         let rev = self.revision;
         let budget = self.history.budget_bytes;
         let clipboard = std::mem::take(&mut self.clipboard);
+        let plugins = std::mem::take(&mut self.plugins);
         *self = Session::new(doc);
         // The clipboard survives New/Open, so artwork can move between documents.
         self.clipboard = clipboard;
+        self.plugins = plugins;
         self.style = style;
         self.revision = rev + 1;
         self.path = path;
@@ -287,10 +302,11 @@ impl Session {
         if !spec.mutates {
             return (spec.run)(self, params);
         }
-        let before = self.snapshot(spec.label);
+        let mut before = self.snapshot(spec.label);
         // A command must never observe a display list of the state it is changing.
         self.dl_cache.replace(None);
         self.motion_edit = None;
+        self.step_label = None;
         let result = (spec.run)(self, params);
         // Edits to a motion tween's target become property keys (auto-key).
         if let Some(edit) = self.motion_edit.take()
@@ -299,6 +315,9 @@ impl Session {
             cmds_motion::finish_edit(self, edit);
         }
         self.dl_cache.replace(None);
+        if let Some(label) = self.step_label.take() {
+            before.label = label;
+        }
         match result {
             Ok(v) => {
                 // O(changed): unchanged subtrees compare by pointer.
@@ -317,6 +336,52 @@ impl Session {
                 Err(e)
             }
         }
+    }
+
+    /// Runs a command inside another one (a plug-in's requests during `plugin.run`): checked
+    /// and atomic like [`Session::execute`], but it records no undo step of its own, so the
+    /// outer command stays one step.
+    pub(crate) fn execute_nested(&mut self, id: &str, params: &Value) -> Result<Value> {
+        let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        if let Some(c) = self.confirmation(id, params)
+            && c.irreversible
+        {
+            return Err(EngineError::NeedsConfirmation(format!("{} {}", c.title, c.message)));
+        }
+        if !spec.mutates {
+            return (spec.run)(self, params);
+        }
+        let before = self.snapshot("");
+        self.dl_cache.replace(None);
+        let result = (spec.run)(self, params);
+        self.dl_cache.replace(None);
+        match result {
+            Ok(v) => {
+                // Later requests must see this change (display list, hit tests): new state.
+                if self.doc != before.doc {
+                    self.state = history::fresh_state();
+                }
+                self.fix_selection();
+                Ok(v)
+            }
+            Err(e) => {
+                self.restore(before);
+                Err(e)
+            }
+        }
+    }
+
+    /// Puts the document back where the open gesture started, keeping the gesture open. A
+    /// live preview re-runs from the same start on every change, and Cancel leaves no step.
+    pub fn revert_gesture(&mut self) {
+        let Some(g) = &self.gesture else { return };
+        if g.doc == self.doc && g.selection == self.selection {
+            return;
+        }
+        let back = Snapshot { label: String::new(), doc: g.doc.clone(), state: g.state, scene: g.scene, frame: g.frame, layer: g.layer, selection: g.selection.clone(), bytes: 0 };
+        self.restore(back);
+        self.revision += 1;
+        self.fix_selection();
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
@@ -545,11 +610,12 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>())})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping}))})).collect::<Vec<_>>()
                 })
             })
             .collect();
         let symbols: Vec<Value> = self.doc.library.iter().map(|s| json!({"id": s.id.0, "name": s.name, "kind": format!("{:?}", s.kind), "frames": s.timeline.frame_count()})).collect();
+        let sounds: Vec<Value> = self.doc.sounds.iter().map(|x| json!({"id": x.id.0, "name": x.name, "format": x.format.label(), "rate": x.rate, "channels": x.channels, "seconds": x.seconds()})).collect();
         json!({
             "stage": {"width": self.doc.stage.width, "height": self.doc.stage.height, "fps": self.doc.stage.fps, "background": self.doc.stage.background.to_hex()},
             "frames": self.frame_count(),
@@ -561,6 +627,7 @@ impl Session {
             "selection": self.selection.iter().map(|e| e.0).collect::<Vec<_>>(),
             "layers": layers,
             "library": symbols,
+            "sounds": sounds,
             "revision": self.revision,
             "dirty": self.is_dirty(),
             "history": {"undo": self.history.undo_len(), "redo": self.history.redo_len(), "bytes": self.history.bytes(), "evicted": self.history.evicted},
@@ -587,3 +654,7 @@ mod tests;
 
 #[cfg(test)]
 mod motion_tests;
+#[cfg(test)]
+mod plugin_tests;
+#[cfg(test)]
+mod tests_sound;

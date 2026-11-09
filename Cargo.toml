@@ -23,6 +23,8 @@ anicraft-xfl = { path = "crates/xfl" }
 anicraft-xml = { path = "crates/xml" }
 anicraft-svg = { path = "crates/svg" }
 anicraft-text = { path = "crates/text" }
+anicraft-plugins = { path = "crates/plugins" }
+anicraft-audio = { path = "crates/audio" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -60,6 +62,11 @@ publish.workspace = true
 repository.workspace = true
 default-run = "anicraft"
 
+[features]
+# Plays sound during stage playback. Off: playback is silent (for builders without ALSA headers).
+default = ["sound-output"]
+sound-output = ["dep:cpal"]
+
 [[bin]]
 name = "anicraft"
 path = "src/main.rs"
@@ -74,6 +81,9 @@ egui.workspace = true
 rfd.workspace = true
 serde.workspace = true
 fontdb.workspace = true
+anicraft-audio.workspace = true
+# Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
+cpal = { version = "0.18", optional = true }
 serde_json.workspace = true
 
 [build-dependencies]

@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Import to Stage…",
             menu: "File/Import",
             shortcut: Some("Ctrl+R"),
-            params: "{path (.svg, .png, .jpg), x?, y? (top-left on the stage; default: centred)}",
+            params: "{path (.svg, .png, .jpg; or a .wav, .ogg or .mp3 sound: onto a new layer at the playhead), x?, y? (top-left on the stage; default: centred)}",
             mutates: true,
             run: import_to_stage,
         },
@@ -43,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Export Video…",
             menu: "File/Export",
             shortcut: None,
-            params: "{path (.mp4 or .webm), from?, to? (movie frames), scale?, ffmpeg? (path; else ANICRAFT_FFMPEG, else ffmpeg on the PATH), confirm?}",
+            params: "{path (.mp4 or .webm), from?, to? (movie frames), scale?, audio? (default true: the movie's sounds, Opus in WebM, AAC in MP4), ffmpeg? (path; else ANICRAFT_FFMPEG, else ffmpeg on the PATH), confirm?}",
             mutates: false,
             run: export_video,
         },
@@ -198,9 +198,12 @@ const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
 /// artwork they clip (ADR 0021). Centred on the stage unless `x`/`y` give its top-left corner.
 fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
+    if crate::cmds_sound::is_sound(&path) {
+        return crate::cmds_sound::import_to_stage(s, &path);
+    }
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     if !matches!(ext.as_deref(), Some("svg" | "png" | "jpg" | "jpeg")) {
-        return Err(EngineError::Param("Import to Stage reads SVG drawings and PNG or JPEG images".into()));
+        return Err(EngineError::Param("Import to Stage reads SVG drawings, PNG or JPEG images, and WAV, Ogg Vorbis or MP3 sounds".into()));
     }
     let size = std::fs::metadata(&path)?.len();
     if size > MAX_IMPORT_BYTES {
@@ -463,9 +466,10 @@ fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
     use std::io::Write;
     let path = PathBuf::from(str_req(p, "path")?);
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    let codec: &[&str] = match ext.as_deref() {
-        Some("webm") => &["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "30", "-row-mt", "1"],
-        Some("mp4" | "m4v" | "mov") => &["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-movflags", "+faststart"],
+    // Sound is encoded by the same ffmpeg: Opus in WebM (royalty-free), AAC in MP4.
+    let (codec, audio_codec): (&[&str], &[&str]) = match ext.as_deref() {
+        Some("webm") => (&["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "30", "-row-mt", "1"], &["-c:a", "libopus", "-b:a", "160k"]),
+        Some("mp4" | "m4v" | "mov") => (&["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-movflags", "+faststart"], &["-c:a", "aac", "-b:a", "192k"]),
         _ => return Err(EngineError::Param("video goes to .mp4 or .webm".into())),
     };
     let last = s.doc.frame_count().saturating_sub(1);
@@ -479,11 +483,26 @@ fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
     let program = ffmpeg_program(p)?;
     let size = format!("{w}x{h}");
     let rate = format!("{fps}");
+    // The soundtrack (when the movie has sounds) goes to ffmpeg as a WAV beside the frames.
+    let track = if opt_bool(p, "audio")?.unwrap_or(true) && anicraft_doc::sound::has_sounds(&s.doc) { Some(crate::cmds_sound::temp_track(s, from, to)?) } else { None };
     let mut args: Vec<&std::ffi::OsStr> = Vec::new();
-    for a in ["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &rate, "-i", "-", "-an", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p"] {
+    for a in ["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &rate, "-i", "-"] {
+        args.push(a.as_ref());
+    }
+    match &track {
+        Some(t) => {
+            args.extend(["-i".as_ref(), t.0.as_os_str()]);
+            args.extend(["-map", "0:v", "-map", "1:a"].map(std::ffi::OsStr::new));
+        }
+        None => args.push("-an".as_ref()),
+    }
+    for a in ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p"] {
         args.push(a.as_ref());
     }
     args.extend(codec.iter().map(std::ffi::OsStr::new));
+    if track.is_some() {
+        args.extend(audio_codec.iter().map(std::ffi::OsStr::new));
+    }
     args.push(path.as_os_str());
     let mut child = std::process::Command::new(&program)
         .args(&args)
@@ -536,7 +555,7 @@ fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Format(format!("ffmpeg could not make the video ({status}): {}", if tail.is_empty() { "no message".to_string() } else { tail.join(" | ") })));
     }
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    Ok(json!({"written": path.display().to_string(), "frames": written, "bytes": bytes, "width": w, "height": h, "fps": fps}))
+    Ok(json!({"written": path.display().to_string(), "frames": written, "bytes": bytes, "width": w, "height": h, "fps": fps, "audio": track.is_some()}))
 }
 
 fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {

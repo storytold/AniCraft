@@ -30,6 +30,10 @@ USAGE:
   anicraft-cli mcp [file|--sample]       Model Context Protocol server on stdin/stdout,
                                          for AI assistants (see docs/mcp.md)
 
+  --plugins <folder>   loads the WebAssembly plug-ins in a folder first (also the
+                       ANICRAFT_PLUGINS environment variable); see docs/plugins.md.
+                       Without it, headless runs use no plug-ins, so they are repeatable.
+
 Frames on the command line are 1-based, as in the timeline.";
 
 /// Parsed flags: positional args plus `--key value` pairs.
@@ -77,6 +81,19 @@ pub fn open_session(src: Option<&str>) -> Result<Session, String> {
     }
 }
 
+/// [`open_session`], with the plug-ins of `--plugins <folder>` (or `ANICRAFT_PLUGINS`) loaded.
+pub fn session(a: &Args, src: Option<&str>) -> Result<Session, String> {
+    let mut s = open_session(src)?;
+    let folder = a.flag("plugins").map(str::to_string).or_else(|| std::env::var("ANICRAFT_PLUGINS").ok().filter(|v| !v.trim().is_empty()));
+    if let Some(folder) = folder {
+        let r = exec(&mut s, "plugin.reload", &json!({"folder": folder}))?;
+        for f in r["failed"].as_array().into_iter().flatten() {
+            eprintln!("plug-in {} not loaded: {}", f["file"].as_str().unwrap_or(""), f["error"].as_str().unwrap_or(""));
+        }
+    }
+    Ok(s)
+}
+
 fn exec(s: &mut Session, id: &str, params: &Value) -> Result<Value, String> {
     s.execute(id, params).map_err(|e| format!("{id}: {e}"))
 }
@@ -101,11 +118,11 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             serde_json::to_string_pretty(&list).map_err(|e| e.to_string())
         }
         "info" => {
-            let s = open_session(Some(src.ok_or("info needs a file or --sample")?))?;
+            let s = session(&a, Some(src.ok_or("info needs a file or --sample")?))?;
             serde_json::to_string_pretty(&s.info()).map_err(|e| e.to_string())
         }
         "render" => {
-            let mut s = open_session(Some(src.ok_or("render needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("render needs a file or --sample")?))?;
             let out = a.flag("out").ok_or("render needs --out <file.png>")?;
             let mut p = json!({"path": out, "frame": one_based(&a, "frame")?.unwrap_or(0)});
             if let Some(sc) = a.num::<f32>("scale")? {
@@ -114,7 +131,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             exec(&mut s, "file.export_png", &p).map(|v| v.to_string())
         }
         "render-seq" => {
-            let mut s = open_session(Some(src.ok_or("render-seq needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("render-seq needs a file or --sample")?))?;
             let dir = a.flag("out-dir").ok_or("render-seq needs --out-dir <dir>")?;
             let mut p = json!({"dir": dir});
             if let Some(f) = one_based(&a, "from")? {
@@ -129,7 +146,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             exec(&mut s, "file.export_png_sequence", &p).map(|v| v.to_string())
         }
         "gif" => {
-            let mut s = open_session(Some(src.ok_or("gif needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("gif needs a file or --sample")?))?;
             let out = a.flag("out").ok_or("gif needs --out <anim.gif>")?;
             let mut p = json!({"path": out});
             if let Some(f) = one_based(&a, "from")? {
@@ -162,7 +179,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             exec(&mut s, "file.save", &json!({"path": out})).map(|v| v.to_string())
         }
         "exec" => {
-            let mut s = open_session(Some(src.ok_or("exec needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("exec needs a file or --sample")?))?;
             let id = a.positional.get(1).ok_or("exec needs a command id")?;
             let params: Value = match a.positional.get(2) {
                 Some(t) => serde_json::from_str(t).map_err(|e| format!("params are not JSON: {e}"))?,
@@ -175,7 +192,7 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             Ok(v.to_string())
         }
         "run" => {
-            let mut s = open_session(Some(src.ok_or("run needs a file or --sample")?))?;
+            let mut s = session(&a, Some(src.ok_or("run needs a file or --sample")?))?;
             let script = a.positional.get(1).ok_or("run needs a script.json")?;
             let text = std::fs::read_to_string(script).map_err(|e| format!("{script}: {e}"))?;
             // Windows editors often save UTF-8 with a byte-order mark; JSON parsers reject it.
@@ -193,14 +210,14 @@ pub fn run(argv: &[String]) -> Result<String, String> {
         }
         "bench" => bench(&a),
         "serve" => {
-            let mut s = open_session(src)?;
+            let mut s = session(&a, src)?;
             let stdin = std::io::stdin();
             let mut stdout = std::io::stdout();
             serve(&mut s, stdin.lock(), &mut stdout).map_err(|e| e.to_string())?;
             Ok(String::new())
         }
         "mcp" => {
-            let mut s = open_session(src)?;
+            let mut s = session(&a, src)?;
             let stdin = std::io::stdin();
             let mut stdout = std::io::stdout();
             mcp::serve(&mut s, stdin.lock(), &mut stdout).map_err(|e| e.to_string())?;
@@ -520,6 +537,17 @@ mod tests {
         if cfg!(debug_assertions) {
             assert!(run(&["bench".into(), "--check".into(), "yes".into()]).unwrap_err().contains("release"));
         }
+    }
+
+    #[test]
+    fn plugins_folder_flag() {
+        let dir = std::env::temp_dir().join(format!("anicraft-cli-plugins-{}", std::process::id()));
+        let argv: Vec<String> = ["--sample", "--plugins", dir.to_str().unwrap()].iter().map(|s| s.to_string()).collect();
+        let a = Args::parse(&argv).unwrap();
+        let s = session(&a, Some("--sample")).unwrap();
+        // A folder that doesn't exist yet is the plug-ins folder, with nothing in it.
+        assert_eq!(s.plugins.folder(), Some(dir.as_path()));
+        assert!(s.plugins.is_empty());
     }
 
     #[test]

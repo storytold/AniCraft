@@ -1,10 +1,11 @@
 //! Enforces docs/ui-guidelines.md: typography and colour come from `theme`, never raw values.
 
-const SOURCES: [(&str, &str); 13] = [
+const SOURCES: [(&str, &str); 14] = [
     ("autosave.rs", include_str!("autosave.rs")),
     ("icons.rs", include_str!("icons.rs")),
     ("pathtools.rs", include_str!("pathtools.rs")),
     ("platform.rs", include_str!("platform.rs")),
+    ("plugins_ui.rs", include_str!("plugins_ui.rs")),
     ("prefs.rs", include_str!("prefs.rs")),
     ("app.rs", include_str!("app.rs")),
     ("dialogs.rs", include_str!("dialogs.rs")),
@@ -83,6 +84,7 @@ fn palette_meets_contrast_and_target_minimums() {
     assert!(contrast(T.ink, T.span) >= 4.5 && contrast(T.ink, T.tween) >= 4.5 && contrast(T.ink, T.tween_shape) >= 4.5 && contrast(T.ink, T.tween_motion) >= 4.5, "ink on blocks");
     assert!(contrast(T.text, T.span_empty) >= 4.5);
     assert!(contrast(T.span, T.panel) >= 3.0 && contrast(T.tween, T.panel) >= 3.0 && contrast(T.tween_shape, T.panel) >= 3.0 && contrast(T.tween_motion, T.panel) >= 3.0);
+    assert!(contrast(T.waveform, T.span_empty) >= 4.5 && contrast(T.waveform, T.row_active) >= 4.5, "waveforms read on empty spans");
     // Focus and selection outlines, and checkbox edges, stand out from the panels (WCAG 1.4.11).
     assert!(contrast(T.control_edge, T.panel_alt) >= 3.0 && contrast(T.control_edge, T.panel) >= 3.0, "control edges");
     assert!(contrast(T.accent, T.panel) >= 3.0, "accent on panel: {:.2}", contrast(T.accent, T.panel));

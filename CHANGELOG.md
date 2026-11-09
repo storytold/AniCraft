@@ -15,6 +15,30 @@
   picture. Per-character positions, text on a path and dashed strokes are reported, not yet
   imported.
 
+* **Sound** (ADR 0020). Import WAV, Ogg Vorbis or MP3 sounds: **File › Import › Import to
+  Stage** puts one on a new layer at the playhead, its span as long as the sound; **Import to
+  Library** just adds it. A sound belongs to a keyframe, as in Animate: pick it under
+  **Properties › Sound**, with **Sync** (Event, Start, Stop, Stream) and **Repeat ×N** or
+  **Loop**. The timeline draws each sound's **waveform** over its frames. Playback plays the
+  sounds in sync (the playhead follows the sound), stream sounds pick up wherever the playhead
+  jumps, and dragging the playhead plays short snippets of them. The Library lists sounds with
+  Preview, Place on timeline and Delete. **File › Export › Export Audio** writes the
+  soundtrack as a WAV, and **Export Video** now includes it (Opus in WebM, AAC in MP4, by your
+  ffmpeg). Sounds are saved inside the `.anicraft` file as imported. Headless:
+  `file.import_to_library`, `sound.place`, `sound.set`, `sound.remove`, `sound.rename`,
+  `sound.delete`, `file.export_audio`. Linux builds need the ALSA development package (or
+  `--no-default-features` for silent playback).
+* **Plug-ins** (Commands › Plug-ins; ADR 0017, `docs/plugins.md`). Plug-ins are WebAssembly
+  files that add commands: generators such as the sample **Star Field**, and selection effects
+  such as the sample **Jitter Selection**. A plug-in with settings opens a dialog with a live
+  preview on the stage; OK keeps the result as one undo step named after the plug-in. Install
+  with Commands › Install Plug-in…, see and remove them in Commands › Manage Plug-ins…; they
+  load from the `plugins` folder in AniCraft's settings folder (or `ANICRAFT_PLUGINS`), and the
+  command palette finds them too. Plug-ins run sandboxed: they change the open document through
+  AniCraft's own commands, never files, the clipboard or the undo history, and a runaway or
+  broken plug-in stops with a message and leaves the document as it was. Headless:
+  `plugin.install/list/run/remove/reload`, `anicraft-cli --plugins <folder>`. The samples and a
+  small Rust SDK are in `examples/plugins`.
 * **Motion tweens and the Motion Editor** (ADR 0016). Insert › Create Motion Tween (also in
   the timeline header, the right-click menu and Properties) makes a span animate its object
   property by property: X, Y, scale, rotation, skew, alpha and tint each have their own curve

@@ -16,7 +16,9 @@ mod motion_editor;
 mod panels;
 mod pathtools;
 mod platform;
+mod plugins_ui;
 mod prefs;
+mod sound;
 mod stage;
 mod theme;
 mod timeline;
@@ -89,7 +91,7 @@ fn main() -> eframe::Result {
             "--renderer" => renderer_arg = args.next(),
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|prefs|licenses|zoom|recovery]\n\
+                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|prefs|licenses|zoom|recovery|plugins]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      Headless use: anicraft-cli --help"
