@@ -441,7 +441,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             if let Some(st) = &sh.stroke {
                 // The width profile, as Animate's Width menu: built-ins with a picture of each.
                 let current = st.profile.clone();
-                if let Some(pick) = profile_picker(ui, "prop_profile", current.as_ref()) {
+                if let Some(pick) = profile_picker(ui, ProfileRow::Selection, current.as_ref()) {
                     app.run("stroke.set_profile", json!({"profile": pick.key()}));
                 }
             }
@@ -781,7 +781,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         });
         // The width profile new strokes get.
         let current = st.stroke_profile.profile();
-        if let Some(pick) = profile_picker(ui, "tool_profile", current.as_ref()) {
+        if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref()) {
             st.stroke_profile = pick;
         }
     }
@@ -830,8 +830,15 @@ fn profile_preview(ui: &mut egui::Ui, profile: Option<&anicraft_engine::doc::Wid
     resp
 }
 
+/// Which Width row a profile menu is (each needs its own popup).
+#[derive(Clone, Copy, Debug, Hash)]
+enum ProfileRow {
+    Selection,
+    Tool,
+}
+
 /// The Width row: a profile menu with a picture of each built-in. Returns the one picked.
-fn profile_picker(ui: &mut egui::Ui, salt: &str, current: Option<&anicraft_engine::doc::WidthProfile>) -> Option<anicraft_engine::doc::ProfilePreset> {
+fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraft_engine::doc::WidthProfile>) -> Option<anicraft_engine::doc::ProfilePreset> {
     use anicraft_engine::doc::ProfilePreset;
     let preset = match current {
         None => Some(ProfilePreset::Uniform),
@@ -841,7 +848,8 @@ fn profile_picker(ui: &mut egui::Ui, salt: &str, current: Option<&anicraft_engin
     let mut picked = None;
     row_prose(ui, "Width", |ui| {
         profile_preview(ui, current, vec2(44.0, 12.0), T.text_dim);
-        egui::ComboBox::from_id_salt(salt).width(150.0).selected_text(label).show_ui(ui, |ui| {
+        let menu = ui.id().with(which);
+        egui::ComboBox::from_id_salt(menu).width(150.0).selected_text(label).show_ui(ui, |ui| {
             for pr in ProfilePreset::ALL {
                 let on = preset == Some(pr);
                 let r = ui.horizontal(|ui| {
