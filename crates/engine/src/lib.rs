@@ -9,6 +9,7 @@ mod cmds_draw;
 mod cmds_file;
 mod cmds_frames;
 mod cmds_modify;
+mod cmds_motion;
 mod cmds_paint;
 mod cmds_path;
 mod cmds_recovery;
@@ -86,6 +87,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_file::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
+    v.extend(cmds_motion::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
@@ -162,6 +164,8 @@ pub struct Session {
     pub clipboard: cmds_modify::Clipboard,
     /// Copied frames (Copy Frames), separate from copied artwork as in Animate.
     pub frame_clipboard: cmds_frames::FrameClipboard,
+    /// A command is editing a motion tween's target (auto-key, ADR 0014).
+    motion_edit: Option<cmds_motion::MotionEdit>,
 }
 
 impl Default for Session {
@@ -199,6 +203,7 @@ impl Session {
             dl_cache: RefCell::new(None),
             clipboard: cmds_modify::Clipboard::default(),
             frame_clipboard: cmds_frames::FrameClipboard::default(),
+            motion_edit: None,
         }
     }
 
@@ -285,7 +290,14 @@ impl Session {
         let before = self.snapshot(spec.label);
         // A command must never observe a display list of the state it is changing.
         self.dl_cache.replace(None);
+        self.motion_edit = None;
         let result = (spec.run)(self, params);
+        // Edits to a motion tween's target become property keys (auto-key).
+        if let Some(edit) = self.motion_edit.take()
+            && result.is_ok()
+        {
+            cmds_motion::finish_edit(self, edit);
+        }
         self.dl_cache.replace(None);
         match result {
             Ok(v) => {
@@ -484,13 +496,16 @@ impl Session {
                 return Err(EngineError::State(format!("layer '{}' is in a locked folder", l.name)));
             }
         }
-        let layer = self.layer_mut(None)?;
+        // Through the fields, not `layer_mut`, so `motion_edit` can be set below.
+        let (scene, active) = (self.scene, self.layer);
+        let layer = self.doc.timeline_mut(scene).layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
         if layer.locked {
             return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));
         }
+        // Inside a motion tween edits key properties, never the timeline.
         let needs_key = match layer.keyframe_at(frame) {
             None => true,
-            Some(k) => k.tween.is_some() && k.start != frame,
+            Some(k) => k.motion.is_none() && k.tween.is_some() && k.start != frame,
         };
         if needs_key {
             // Inside a tween: capture the tweened state. On an empty frame: start blank.
@@ -498,7 +513,16 @@ impl Session {
             cmds_timeline::insert_keyframe_at(layer, frame, copy)?;
         }
         let idx = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State("no keyframe at the playhead".into()))?;
-        layer.keyframe_mut(idx).ok_or_else(|| EngineError::State("no keyframe at the playhead".into()))
+        let lid = layer.id;
+        let kf = layer.keyframe_mut(idx).ok_or_else(|| EngineError::State("no keyframe at the playhead".into()))?;
+        // In a motion tween the command edits the target as it looks at the playhead; the
+        // session turns what changed into property keys when the command is done.
+        if self.motion_edit.is_none()
+            && let Some(edit) = cmds_motion::begin_edit(lid, kf, frame)
+        {
+            self.motion_edit = Some(edit);
+        }
+        Ok(kf)
     }
 
     /// Selected elements in the editable keyframe (copy-on-write: only these are cloned).
@@ -521,7 +545,7 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label())})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>())})).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -560,3 +584,6 @@ pub fn element_label(doc: &Document, e: &Element) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod motion_tests;

@@ -106,6 +106,11 @@ fn reid(s: &mut Session, tl: &Timeline) -> Timeline {
                         Arc::new(Element { id, ..(**e).clone() })
                     })
                     .collect();
+                if let Some(m) = nk.motion.as_mut()
+                    && let Some((_, n)) = emap.iter().find(|(o, _)| *o == m.target)
+                {
+                    m.target = *n;
+                }
                 Arc::new(nk)
             })
             .collect();
