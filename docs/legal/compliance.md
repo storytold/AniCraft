@@ -22,7 +22,7 @@ Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
 "source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed,
-plus three storytold git repositories pinned to immutable revisions (ADR 0014): craft-libs (the
+plus three storytold git repositories pinned to immutable revisions (ADR 0015): craft-libs (the
 shared `craft-i18n` crate) and the egui and winit forks, all MIT OR Apache-2.0. No other
 registries or git.
 
@@ -94,7 +94,8 @@ cargo deny check advisories              # RustSec security advisories (needs ne
 * "ActionScript" is also an Adobe trademark. Docs and compatibility messages (import reports,
   the language a kept script is written in) name it nominatively; the features themselves have
   generic names (Actions panel, frame scripts, Test Movie). See ADR 0013.
-* "AniCraft": a trademark clearance search has not been done yet (open item below).
+* "AniCraft": the project lead accepted the name (2026-11-09). No formal clearance search was
+  done; that was their decision.
 
 ## 6. Release checklist (before any public binary)
 
@@ -111,6 +112,6 @@ cargo deny check advisories              # RustSec security advisories (needs ne
 | Item | Status |
 |---|---|
 | Counsel review of this document (patents, XFL interoperability, ActionScript compatibility and naming) | Open, before the first public release |
-| "AniCraft" trademark clearance | Open |
+| "AniCraft" trademark clearance | Settled by the project lead (2026-11-09): the name is kept |
 | Freedom-to-operate patent search for core animation features | Open (recommended before 1.0) |
 | Full licence-text bundle generation (`cargo about`) in the release pipeline | Open (M8) |

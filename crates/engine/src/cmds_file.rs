@@ -145,6 +145,7 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         info["imported"] = json!(path.display().to_string());
         info["report"] = json!(report.summary());
         info["skipped"] = json!(report.skipped);
+        info["missing_fonts"] = json!(report.missing_fonts);
         return Ok(info);
     }
     let doc = format::load(&path)?;

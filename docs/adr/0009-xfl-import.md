@@ -44,5 +44,7 @@ own timelines, nested to any depth.
 
 * Imported documents render and animate in AniCraft immediately and can be edited with every
   tool, then saved as `.anicraft`.
-* Next slices: bitmaps (needs bitmap fills, M5), text (M5), masks (M2), motion tweens, shape
+* Text fields come across as text blocks (ADR 0014: one block per run of same-style lines,
+  missing fonts named in the report).
+* Next slices: bitmaps (needs bitmap fills, M5), masks (M2), motion tweens, shape
   tweens, more scenes, and a corpus of larger self-authored files.
