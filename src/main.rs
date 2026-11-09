@@ -9,6 +9,7 @@
 mod app;
 mod autosave;
 mod dialogs;
+mod gpu_stage;
 mod i18n;
 mod icons;
 mod keymap;
@@ -100,6 +101,7 @@ fn main() -> eframe::Result {
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --lang       the interface language for this run, over Preferences (needs CRAFT_I18N_DIR at build time)\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
+                     ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer, in builds with the gpu-stage feature (ADR 0019)\n\
                      Headless use: anicraft-cli --help"
                 );
                 return Ok(());

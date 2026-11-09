@@ -3,7 +3,7 @@
 
 use crate::app::{App, Tool};
 use crate::i18n::{self, tl};
-use crate::prefs::{FontChoice, RenderMode};
+use crate::prefs::{FontChoice, RenderMode, StageRenderer};
 use crate::theme::{T, Type, text, with_type};
 use anicraft_engine::confirm::Confirmation;
 use anicraft_engine::{CommandSpec, commands};
@@ -466,6 +466,32 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                             }
                         });
                     });
+                    if crate::gpu_stage::AVAILABLE {
+                        ui.add_space(4.0);
+                        form_row(ui, LW, "Renderer", |ui| {
+                            crate::theme::column(ui, |ui| {
+                                for (choice, name, tip) in StageRenderer::ALL {
+                                    crate::theme::radio_value(ui, &mut p.stage_renderer, choice, text(Type::Body, tl!(name)));
+                                    form_note(ui, toggle_indent, text(Type::Caption, tl!(tip)));
+                                    ui.add_space(2.0);
+                                }
+                            });
+                        });
+                        use crate::gpu_stage::State;
+                        let status = match app.stage_cache.gpu.state() {
+                            State::Off => None,
+                            State::Starting => Some(tl!("Starting the graphics card…").to_string()),
+                            // The adapter's name and the driver's reason stay as they are.
+                            State::Running(adapter) => Some(i18n::fmt("Drawing on {adapter}.", &[("adapter", &adapter.to_string())])),
+                            State::Failed(why) => Some(i18n::fmt("The graphics card can't draw the stage, so the CPU does: {reason}", &[("reason", &why.to_string())])),
+                        };
+                        if crate::gpu_stage::wanted(p.stage_renderer) != p.stage_renderer {
+                            form_note(ui, LW, text(Type::Caption, tl!("ANICRAFT_STAGE_RENDERER is set, and it takes precedence over this choice.")));
+                        }
+                        if let Some(s) = status {
+                            form_note(ui, LW, text(Type::Caption, s));
+                        }
+                    }
                 });
 
                 section(ui, "prefs_timeline", Section::Rule, tl!("Timeline"), None, |ui| {

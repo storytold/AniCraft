@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* **GPU stage, first slice** (M3, ADR 0019; build with `--features gpu-stage`). Preferences ›
+  Stage › Renderer (also View › Stage Rendering) can draw the stage on the graphics card
+  instead of the CPU. It draws fills, strokes and gradients from the CPU renderer's own
+  preparation and matches it to within one 8-bit step at a few edge pixels; masks, symbol
+  opacity, blend modes, filters and bitmaps still draw on the CPU, and the status bar says
+  which drew the stage and why. A 4K frame of 1,000 shapes takes about 9 ms instead of 18 ms.
+  Exports always use the CPU renderer. `ANICRAFT_STAGE_RENDERER=gpu|cpu` overrides the choice.
 * **Clip paths, masks and text in SVG drawings** (ADR 0021). Import to Stage (Ctrl+R) now
   brings clipped artwork across on mask layers: a drawing with clip paths comes in as a folder
   named after the file, with each clipped group on a masked layer under a mask layer holding
