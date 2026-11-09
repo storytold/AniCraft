@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod app;
+mod autosave;
 mod dialogs;
 mod icons;
 mod keymap;
@@ -87,7 +88,7 @@ fn main() -> eframe::Result {
             "--renderer" => renderer_arg = args.next(),
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom]\n\
+                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom|recovery]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      Headless use: anicraft-cli --help"

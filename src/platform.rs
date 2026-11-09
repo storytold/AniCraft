@@ -89,6 +89,20 @@ pub fn config_dir() -> Option<PathBuf> {
     }
 }
 
+/// Where crash-recovery copies live (ADR 0014): `Recovery` in the settings folder.
+/// `ANICRAFT_RECOVERY_DIR` points it elsewhere (tests, portable installs).
+pub fn recovery_dir() -> Option<PathBuf> {
+    match std::env::var_os("ANICRAFT_RECOVERY_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => Some(PathBuf::from(d)),
+        None => config_dir().map(|d| d.join("Recovery")),
+    }
+}
+
+/// Whether the recovery folder was chosen explicitly (screenshot runs only touch it then).
+pub fn recovery_dir_overridden() -> bool {
+    std::env::var_os("ANICRAFT_RECOVERY_DIR").is_some_and(|v| !v.is_empty())
+}
+
 /// Main-window chrome. macOS gets the unified look (content under a transparent title bar,
 /// traffic lights over our menu row); Windows and Linux keep their native frames.
 pub fn viewport(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
