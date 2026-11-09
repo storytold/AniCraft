@@ -52,7 +52,7 @@ titled with its milestone.
 | M3 | GPU stage renderer, first slice, behind a feature flag with parity tests | CPU oracle, tiled stage |
 | M4 | Text from Animate files | XFL import, text engine (M5 first slice) |
 | M5 | Audio layers: import, waveform, playback sync | timeline, layers |
-| M6 | WebAssembly plug-ins (U2) | command registry |
+| M6 | ~~WebAssembly plug-ins (U2)~~ ✅ first slice (ADR 0014); next: frame scripts and Test Movie on the plug-in host | command registry, plug-in host |
 | M7 | Variable-width strokes | strokes, Pen and Pencil |
 | M8 | Crash-recovery autosave | `.anicraft` format, session |
 
