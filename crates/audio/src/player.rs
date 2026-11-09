@@ -97,7 +97,7 @@ impl Player {
         mix(&self.voices, self.rate, self.opts, self.pos, &mut self.scratch);
         let ramp = RAMP_FRAMES as f32;
         let mut done = false;
-        for (k, (dst, src)) in out.chunks_exact_mut(channels).zip(self.scratch.chunks_exact(2)).enumerate() {
+        for (k, (dst, src)) in out.chunks_exact_mut(channels).zip(self.scratch.as_chunks::<2>().0).enumerate() {
             let p = self.pos + k as u64;
             let mut env = ((p - self.started) as f32 / ramp).min(1.0);
             if let Mode::Snippet { until } = self.mode {
@@ -112,10 +112,8 @@ impl Player {
                 dst.fill(0.0);
                 continue;
             }
-            let (l, r) = match src {
-                [l, r] => ((l * env).clamp(-1.0, 1.0), (r * env).clamp(-1.0, 1.0)),
-                _ => (0.0, 0.0),
-            };
+            let [l, r] = *src;
+            let (l, r) = ((l * env).clamp(-1.0, 1.0), (r * env).clamp(-1.0, 1.0));
             match dst {
                 [m] => *m = 0.5 * (l + r),
                 [a, b, rest @ ..] => {

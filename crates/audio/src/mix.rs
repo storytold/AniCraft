@@ -69,12 +69,10 @@ pub fn mix(voices: &[Voice], rate: u32, opts: MixOptions, start: u64, out: &mut 
         let g = v.gain;
         if v.pcm.rate == rate {
             let mut i = ((a - v.at) % len as u64) as usize;
-            for pair in dst.chunks_exact_mut(2) {
+            for [x, y] in dst.as_chunks_mut::<2>().0.iter_mut() {
                 let (l, r) = v.pcm.frame(i);
-                if let [x, y] = pair {
-                    *x += l * g;
-                    *y += r * g;
-                }
+                *x += l * g;
+                *y += r * g;
                 i += 1;
                 if i == len {
                     i = 0;
@@ -83,13 +81,11 @@ pub fn mix(voices: &[Voice], rate: u32, opts: MixOptions, start: u64, out: &mut 
         } else {
             let looping = v.end - v.at > Voice::play_frames(&v.pcm, rate);
             let step = f64::from(v.pcm.rate) / f64::from(rate.max(1));
-            for (k, pair) in dst.chunks_exact_mut(2).enumerate() {
+            for (k, [x, y]) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                 let t = (a - v.at + k as u64) as f64 * step;
                 let (l, r) = interpolate(&v.pcm, t, looping);
-                if let [x, y] = pair {
-                    *x += l * g;
-                    *y += r * g;
-                }
+                *x += l * g;
+                *y += r * g;
             }
         }
     }
