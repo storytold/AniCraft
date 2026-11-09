@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Bevel, Gradient Glow and Gradient Bevel filters** (ADR 0025). Properties › Filters ›
+  Add filter now offers all seven of Animate's filters on movie clip and button instances.
+  **Bevel** lights the edges that face the light and shades the others (shadow and highlight
+  colours with opacity, angle, distance, blur, strength, quality); **Gradient Glow** colours a
+  glow by a ramp, from where it fades out to where it is strongest; **Gradient Bevel** colours
+  a bevel by a ramp, highlight at the left, shadow at the right. Each can sit inside the
+  artwork's edge, outside it or both (Type), and Knockout shows only the effect. The gradient
+  filters open with a ramp editor: click the strip to add a colour stop, drag a marker to move
+  it, pick one to change its colour and opacity or remove it; the glow's first stop and the
+  bevel's middle stop stay transparent, as in Animate, so nothing is painted away from the
+  edges. SVG export writes them as standard SVG filters, Animate documents keep them, and
+  `.anicraft` files save them. Headless: `element.set_filters` with `bevel`, `gradient_glow`
+  and `gradient_bevel` (colours as `#rrggbbaa`).
+* **Fixed**: a filter reaching very far (a long drop shadow distance, or several large
+  filters) could stop the whole frame from drawing; it is now cut far off the stage instead.
 * **Shape hints** (Modify › Shape; ADR 0023). On a shape tween, Add Shape Hint (Ctrl+Shift+H)
   adds a lettered marker, `a` to `z`, at the shape's centre. Drag it onto an edge on the
   tween's first keyframe and onto the matching edge on its last: the morph then carries that
