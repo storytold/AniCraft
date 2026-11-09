@@ -102,24 +102,36 @@ fn sanitized_ramp(stops: &[GradientStop], rest: f32, fallback: fn() -> Vec<Gradi
     }
     v.sort_by(|a, b| a.offset.total_cmp(&b.offset));
     v.truncate(MAX_RAMP_STOPS);
-    if let Some(s) = v.iter_mut().find(|s| (s.offset - rest).abs() < 1e-3) {
-        s.offset = rest;
-        s.color.a = 0.0;
+    let far = |s: &GradientStop| (s.offset - rest).abs();
+    // The stop nearest the rest point, if it is close enough, becomes the pinned one; others
+    // that close step aside, so exactly one stop is pinned and sanitizing again changes nothing.
+    if let Some(pin) = (0..v.len()).filter(|&i| far(&v[i]) < REST_SNAP).min_by(|&a, &b| far(&v[a]).total_cmp(&far(&v[b]))) {
+        for (i, s) in v.iter_mut().enumerate() {
+            if i == pin {
+                s.offset = rest;
+                s.color.a = 0.0;
+            } else if far(s) < REST_SNAP {
+                s.offset = if i < pin { rest - REST_SNAP } else { rest + REST_SNAP }.clamp(0.0, 1.0);
+            }
+        }
+        v.sort_by(|a, b| a.offset.total_cmp(&b.offset));
         return v;
     }
     // Insert a transparent stop of the ramp's colour there, keeping within the limit (the
     // stop nearest the rest point makes room).
     let c = ramp_at(&v, rest);
-    if v.len() >= MAX_RAMP_STOPS {
-        let far = |s: &GradientStop| (s.offset - rest).abs();
-        if let Some(i) = (0..v.len()).min_by(|&a, &b| far(&v[a]).total_cmp(&far(&v[b]))) {
-            v.remove(i);
-        }
+    if v.len() >= MAX_RAMP_STOPS
+        && let Some(i) = (0..v.len()).min_by(|&a, &b| far(&v[a]).total_cmp(&far(&v[b])))
+    {
+        v.remove(i);
     }
     let at = v.iter().position(|s| s.offset > rest).unwrap_or(v.len());
     v.insert(at, stop(rest, c.with_alpha(0.0)));
     v
 }
+
+/// How near the rest point a stop counts as the pinned one.
+pub const REST_SNAP: f32 = 1e-3;
 
 /// The offset of the ramp stop that can't move, be removed or be seen: the Gradient Glow's
 /// start, the Gradient Bevel's middle.
@@ -377,11 +389,13 @@ impl Filter {
     pub fn margin(&self) -> f32 {
         match self.sanitized() {
             Filter::Blur { blur_x, blur_y, quality } => blur_x.max(blur_y) * 0.5 * f32::from(quality) + 1.0,
-            Filter::DropShadow { blur_x, blur_y, quality, distance, inner, .. } => if inner { 0.0 } else { blur_x.max(blur_y) * 0.5 * f32::from(quality) + distance.abs() + 1.0 },
-            Filter::Glow { blur_x, blur_y, quality, inner, .. } => if inner { 0.0 } else { blur_x.max(blur_y) * 0.5 * f32::from(quality) + 1.0 },
-            // A bevel samples the opacity a distance both ways, inner ones too.
-            Filter::Bevel { blur_x, blur_y, quality, distance, .. } | Filter::GradientBevel { blur_x, blur_y, quality, distance, .. } => blur_x.max(blur_y) * 0.5 * f32::from(quality) + distance.abs() + 1.0,
-            Filter::GradientGlow { blur_x, blur_y, quality, distance, side, .. } => if side == FilterSide::Inner { 0.0 } else { blur_x.max(blur_y) * 0.5 * f32::from(quality) + distance.abs() + 1.0 },
+            // Inner effects need the room too: their blur reads the transparency around the
+            // artwork (and a bevel reads a distance both ways), which must be in the buffer.
+            Filter::Glow { blur_x, blur_y, quality, .. } => blur_x.max(blur_y) * 0.5 * f32::from(quality) + 1.0,
+            Filter::DropShadow { blur_x, blur_y, quality, distance, .. }
+            | Filter::Bevel { blur_x, blur_y, quality, distance, .. }
+            | Filter::GradientGlow { blur_x, blur_y, quality, distance, .. }
+            | Filter::GradientBevel { blur_x, blur_y, quality, distance, .. } => blur_x.max(blur_y) * 0.5 * f32::from(quality) + distance.abs() + 1.0,
             Filter::AdjustColor { .. } => 0.0,
         }
     }
@@ -423,12 +437,12 @@ mod tests {
         }
         let side: FilterSide = serde_json::from_str(r#""full""#).unwrap();
         assert_eq!(side, FilterSide::Full);
-        // Bevels reach out by blur and distance (inner ones read that far); inner glows don't.
+        // Every side reaches out by blur and distance (inner ones read that far).
         let bevel = |side| Filter::Bevel { blur_x: 4.0, blur_y: 8.0, strength: 1.0, quality: 2, angle: 45.0, distance: -3.0, shadow_color: Rgba::BLACK, highlight_color: Rgba::WHITE, side, knockout: false };
         assert_eq!(bevel(FilterSide::Inner).margin(), 12.0);
         assert_eq!(bevel(FilterSide::Full).margin(), 12.0);
         let Some(Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, knockout, .. }) = Filter::new("gradient_glow") else { panic!() };
-        assert_eq!(Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, knockout, side: FilterSide::Inner }.margin(), 0.0);
+        assert_eq!(Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, knockout, side: FilterSide::Inner }.margin(), 8.5);
     }
 
     #[test]
@@ -452,6 +466,15 @@ mod tests {
         assert!(stops.iter().any(|s| s.offset == 0.5 && s.color.a == 0.0));
         assert!(stops.windows(2).all(|w| w[0].offset <= w[1].offset));
         assert_eq!(ramp_at(&default_bevel_ramp(), 0.25), Rgba::new(0.5, 0.5, 0.5, 0.5));
+        // Stops crowding the rest point: the nearest is pinned, the others step aside, in
+        // order, and sanitizing again changes nothing.
+        let crowd = vec![st(0.0, 0xffffff, 1.0), st(0.4995, 0xff0000, 1.0), st(0.4998, 0x00ff00, 1.0), st(0.5, 0x0000ff, 1.0), st(1.0, 0, 1.0)];
+        let f = Filter::GradientBevel { blur_x: 5.0, blur_y: 5.0, strength: 1.0, quality: 1, angle: 45.0, distance: 5.0, stops: crowd, side: FilterSide::Inner, knockout: false }.sanitized();
+        let Filter::GradientBevel { stops, .. } = &f else { panic!() };
+        assert_eq!(stops.iter().filter(|s| (s.offset - 0.5).abs() < 1e-4).count(), 1, "{stops:?}");
+        assert!(stops.iter().any(|s| s.offset == 0.5 && s.color == Rgba::hex(0x0000ff).with_alpha(0.0)));
+        assert!(stops.windows(2).all(|w| w[0].offset <= w[1].offset));
+        assert_eq!(f.sanitized(), f);
         assert_eq!(ramp_at(&[], 0.5), Rgba::TRANSPARENT);
     }
 }

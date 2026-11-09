@@ -18,7 +18,7 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
                   <color><Color alphaMultiplier="0.5"/></color>
                   <filters><DropShadowFilter distance="8" color="#333333" alpha="0.5"/><BlurFilter blurX="10" blurY="10" quality="2"/><GlowFilter enabled="false"/>
                     <BevelFilter blurX="4" blurY="6" distance="3" angle="135" highlightColor="#FFFF00" highlightAlpha="0.75" shadowAlpha="0.5" type="full" knockout="true"/>
-                    <GradientGlowFilter strength="2" type="inner"><GradientEntry color="#FFFFFF" alpha="0.5" ratio="0"/><GradientEntry color="#FF0000" ratio="128"/><GradientEntry color="#0000FF" ratio="255"/></GradientGlowFilter>
+                    <GradientGlowFilter strength="2" type="inner"><GradientEntry color="#FFFFFF" alpha="0.5" ratio="0"/><GradientEntry color="#FF0000" ratio="1"/><GradientEntry color="#00FF00" ratio="128"/><GradientEntry color="#0000FF" ratio="255"/></GradientGlowFilter>
                     <GradientBevelFilter quality="3"><GradientEntry color="#FFFFFF" ratio="0"/><GradientEntry color="#000000" ratio="1"/></GradientBevelFilter>
                     <SparkleFilter/></filters>
                 </DOMSymbolInstance>
@@ -154,7 +154,7 @@ fn symbols_instances_and_the_tween_between_them() {
     // transparent middle (as Animate's panel keeps them).
     let Filter::GradientGlow { stops, side: FilterSide::Inner, strength, .. } = &filters[3] else { panic!("{:?}", filters[3]) };
     assert_eq!(*strength, 2.0);
-    assert_eq!(stops.iter().map(|s| (s.offset, s.color.a)).collect::<Vec<_>>(), vec![(0.0, 0.0), (128.0 / 255.0, 1.0), (1.0, 1.0)]);
+    assert_eq!(stops.iter().map(|s| (s.offset, s.color.a)).collect::<Vec<_>>(), vec![(0.0, 0.0), (1.0 / 255.0, 1.0), (128.0 / 255.0, 1.0), (1.0, 1.0)], "one byte scale for every ratio");
     let Filter::GradientBevel { stops, side: FilterSide::Inner, quality: 3, .. } = &filters[4] else { panic!("{:?}", filters[4]) };
     assert_eq!(stops.len(), 3);
     assert_eq!((stops[1].offset, stops[1].color.a), (0.5, 0.0));

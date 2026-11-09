@@ -523,7 +523,8 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
 /// per gesture.
 fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc::Filter]) {
     use anicraft_engine::doc::Filter;
-    let mut list: Vec<Filter> = current.to_vec();
+    // As the renderer sees them (a file may hold values or ramps a command would refuse).
+    let mut list: Vec<Filter> = current.iter().map(Filter::sanitized).collect();
     let mut changed: Option<&'static str> = None;
     row_prose(ui, "Filters", |ui| {
         egui::ComboBox::from_id_salt("add_filter").selected_text(if list.is_empty() { "None" } else { "Add filter" }).show_ui(ui, |ui| {
@@ -711,13 +712,27 @@ fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
 
 /// A gradient filter's ramp, as Animate's: a strip of its colours over a checkerboard, a
 /// marker under it per stop. Click a marker to pick that stop (its colour, position and Remove
-/// below), drag it to move it, click the strip to add a stop there. The pinned stop (Gradient
-/// Glow's start, Gradient Bevel's middle) can't move or go, and stays transparent.
+/// below), drag it to move it (between its neighbours), click the strip to add a stop there.
+/// The pinned stop (Gradient Glow's start, Gradient Bevel's middle) can't move or go, and
+/// stays transparent.
 fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::doc::GradientStop>, pin: Option<f32>, changed: &mut Option<&'static str>) {
-    use anicraft_engine::doc::{GradientStop, MAX_RAMP_STOPS, ramp_at};
+    use anicraft_engine::doc::{GradientStop, MAX_RAMP_STOPS, REST_SNAP, ramp_at};
     let sel_id = ui.id().with("ramp_stop");
     let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0);
     let is_pinned = |s: &GradientStop| pin.is_some_and(|p| (s.offset - p).abs() < 1e-4);
+    // Where each stop may move (the ramp is in order): between its neighbours, and clear of the
+    // pinned stop, so stops keep their order (and the pick, and a drag, stay on the same stop).
+    let clear = 2.0 * REST_SNAP;
+    let room: Vec<(f32, f32)> = (0..stops.len())
+        .map(|i| {
+            let prev = i.checked_sub(1).and_then(|j| stops.get(j));
+            let next = stops.get(i + 1);
+            let lo = prev.map_or(0.0, |s| s.offset + if is_pinned(s) { clear } else { 0.0 });
+            let hi = next.map_or(1.0, |s| s.offset - if is_pinned(s) { clear } else { 0.0 });
+            let here = stops.get(i).map_or(0.0, |s| s.offset);
+            if lo <= hi { (lo, hi) } else { (here, here) }
+        })
+        .collect();
     row_prose(ui, "Gradient", |ui| {
         ui.vertical(|ui| {
             let w = ui.available_width().clamp(80.0, 200.0);
@@ -751,7 +766,6 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
             p.rect_stroke(strip, 0.0, Stroke::new(1.0, T.border), StrokeKind::Outside);
             // Markers: a small pointer per stop, under the strip.
             let (track, _) = ui.allocate_exact_size(vec2(w, 12.0), Sense::hover());
-            let mut moved = None;
             for (i, st) in stops.iter_mut().enumerate() {
                 let x = strip.left() + st.offset * strip.width();
                 let hit = Rect::from_center_size(pos2(x, track.center().y), vec2(10.0, 12.0));
@@ -766,9 +780,9 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
                     && !pinned
                     && let Some(at) = r.interact_pointer_pos()
                 {
-                    st.offset = ((at.x - strip.left()) / strip.width()).clamp(0.0, 1.0);
+                    let (lo, hi) = room.get(i).copied().unwrap_or((st.offset, st.offset));
+                    st.offset = ((at.x - strip.left()) / strip.width()).clamp(lo, hi);
                     sel = i;
-                    moved = Some(*st);
                     *changed = Some("Move colour stop");
                 }
                 let tip = pos2(x, track.top());
@@ -776,16 +790,16 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
                 let edge = if i == sel { T.accent } else if r.hovered() { T.text } else { T.control_edge };
                 ui.painter().add(egui::Shape::convex_polygon(body.to_vec(), to_color32(st.color.with_alpha(1.0)), Stroke::new(if i == sel { 2.0 } else { 1.0 }, edge)));
             }
-            // A dragged stop may pass another: keep the order, and the pick on it.
-            if let Some(m) = moved {
-                stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
-                sel = stops.iter().position(|s| *s == m).unwrap_or(sel);
-            }
-            if resp.clicked()
-                && stops.len() < MAX_RAMP_STOPS
-                && let Some(at) = resp.interact_pointer_pos()
-            {
-                let t = ((at.x - strip.left()) / strip.width()).clamp(0.0, 1.0);
+            if resp.clicked() && stops.len() < MAX_RAMP_STOPS {
+                // Where the pointer clicked; from the keyboard or a screen reader, the middle of
+                // the widest gap. Never on the pinned stop.
+                let gap = stops.windows(2).filter_map(|w| if let [a, b] = w { Some((b.offset - a.offset, (a.offset + b.offset) / 2.0)) } else { None }).max_by(|a, b| a.0.total_cmp(&b.0)).map_or(0.5, |g| g.1);
+                let mut t = resp.interact_pointer_pos().map_or(gap, |at| ((at.x - strip.left()) / strip.width()).clamp(0.0, 1.0));
+                if let Some(p) = pin
+                    && (t - p).abs() < clear
+                {
+                    t = if t < p || p >= 1.0 { p - clear } else { p + clear }.clamp(0.0, 1.0);
+                }
                 let new = GradientStop { offset: t, color: ramp_at(stops, t).with_alpha(1.0) };
                 let i = stops.iter().position(|s| s.offset > t).unwrap_or(stops.len());
                 stops.insert(i, new);
@@ -813,7 +827,8 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
             let mut pct = st.offset * 100.0;
             let r = ui.add_enabled(!pinned, egui::DragValue::new(&mut pct).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(&format!("{fname} stop position"));
             if r.changed() {
-                st.offset = pct / 100.0;
+                let (lo, hi) = room.get(sel).copied().unwrap_or((st.offset, st.offset));
+                st.offset = (pct / 100.0).clamp(lo, hi);
                 *changed = Some("Move colour stop");
             }
             if ui.add_enabled(!pinned && count > 2, egui::Button::new("Remove").small()).named(&format!("Remove {fname} colour stop")).on_hover_text("Remove this colour stop").clicked() {

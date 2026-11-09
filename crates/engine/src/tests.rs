@@ -1941,6 +1941,20 @@ fn hostile_bevel_and_gradient_filters_render_and_export() {
     }
 }
 
+/// A filtered instance on a surface as wide as the renderer allows keeps its shadow: the reach
+/// is cut only where the buffer would outgrow the renderer, not around the artwork.
+#[test]
+fn filters_keep_their_reach_on_large_surfaces() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "drop_shadow", "blur_x": 0, "blur_y": 0, "distance": 20, "angle": 0, "color": "#000000"}]}));
+    // The stage at 3.2× is 4096 px wide.
+    let img = anicraft_render::render_frame(&s.doc, 0, 3.2).unwrap();
+    assert_eq!(img.pixel(670, 480).unwrap(), [0.0, 0.0, 0.0, 1.0], "the shadow 20 px (64 px here) right of the box");
+}
+
 #[test]
 fn bevel_and_gradient_filters_render_save_and_export() {
     use anicraft_doc::{ElementKind, Filter, FilterSide};
@@ -1976,6 +1990,16 @@ fn bevel_and_gradient_filters_render_save_and_export() {
         assert!(svg.contains(want), "{want} in {svg}");
     }
     assert!(!svg.contains("NaN") && !svg.contains("inf"));
+    // The filter region is the stage grown by the filters' reach (in stage units), so a far
+    // bevel isn't cut; each margin is blur 5 × 0.5 + distance 5 + 1 = 8.5.
+    assert!(svg.contains("filterUnits=\"userSpaceOnUse\" x=\"-25.5\" y=\"-25.5\" width=\"1331\" height=\"771\""), "{svg}");
+    // A narrow ramp peak survives in the tables (one sample per CPU table step).
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "gradient_glow", "stops": [{"offset": 0, "color": "#00000000"}, {"offset": 0.015625, "color": "#ff0000"}, {"offset": 0.03125, "color": "#00000000"}, {"offset": 1, "color": "#00000000"}]}]}));
+    let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+    let alpha = svg.split("<feFuncA type=\"table\" tableValues=\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or("");
+    let values: Vec<&str> = alpha.split(' ').collect();
+    assert_eq!(values.len(), 257);
+    assert_eq!(values[4], "1", "the peak at 4/256");
     // Lottie reports them, as it does every filter.
     assert!(anicraft_render::lottie::to_lottie(&s.doc, "f", 0, 0, false).report.keys().any(|k| k.starts_with("filters")));
 }

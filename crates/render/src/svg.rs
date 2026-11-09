@@ -69,7 +69,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
                 Some(anicraft_doc::BlendMode::Add) => " style=\"mix-blend-mode:plus-lighter\"".to_string(),
                 _ => String::new(),
             };
-            let filter = dl.groups.get(g as usize).and_then(|x| svg_filter(&x.filters, &mut defs, &mut grad)).map_or_else(String::new, |id| format!(" filter=\"url(#{id})\""));
+            let filter = dl.groups.get(g as usize).and_then(|x| svg_filter(&x.filters, (w, h), &mut defs, &mut grad)).map_or_else(String::new, |id| format!(" filter=\"url(#{id})\""));
             let _ = write!(body, "<g opacity=\"{}\"{style}{filter}>", num(a));
             open.push(g);
         }
@@ -157,7 +157,7 @@ fn color_attrs(attr: &str, c: Rgba) -> String {
 /// glows become `feDropShadow`; Adjust Color becomes its colour matrix; bevels and gradient
 /// filters are built from standard primitives ([`effect_svg`]). Inner and knockout shadows and
 /// glows have no simple SVG equivalent and are left out.
-fn svg_filter(filters: &[anicraft_doc::Filter], defs: &mut String, n: &mut usize) -> Option<String> {
+fn svg_filter(filters: &[anicraft_doc::Filter], stage: (u32, u32), defs: &mut String, n: &mut usize) -> Option<String> {
     use anicraft_doc::Filter;
     let mut prims = String::new();
     for (i, f) in filters.iter().map(Filter::sanitized).enumerate() {
@@ -195,9 +195,23 @@ fn svg_filter(filters: &[anicraft_doc::Filter], defs: &mut String, n: &mut usize
     }
     let id = format!("f{n}");
     *n += 1;
-    let _ = write!(defs, "<filter id=\"{id}\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\" color-interpolation-filters=\"sRGB\">{prims}</filter>");
+    // The region: the stage, grown by how far the filters reach (what can show, and what an
+    // effect reaching in from outside needs), in stage units.
+    let m = filters.iter().map(Filter::margin).sum::<f32>().min(1e6);
+    let (sw, sh) = (stage.0 as f32, stage.1 as f32);
+    let _ = write!(
+        defs,
+        "<filter id=\"{id}\" filterUnits=\"userSpaceOnUse\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" color-interpolation-filters=\"sRGB\">{prims}</filter>",
+        num(-m),
+        num(-m),
+        num(sw + 2.0 * m),
+        num(sh + 2.0 * m)
+    );
     Some(id)
 }
+
+/// Steps in a ramp table: the CPU renderer's (`filters::RAMP_STEPS`).
+const RAMP_SAMPLES: usize = crate::filters::RAMP_STEPS;
 
 /// The Gaussian of the same spread as `q` box-blur passes of width `b` (a box of width `b` has
 /// variance (b² − 1) / 12; passes add).
@@ -230,7 +244,8 @@ fn effect_svg(f: &anicraft_doc::Filter, i: usize, prims: &mut String) {
     // `stops` over the opacity of `from`, into `to`: opaque ramp colours from tables, cut by
     // the ramp's own opacity.
     let ramp = |prims: &mut String, stops: &[anicraft_doc::GradientStop], from: &str, to: &str| {
-        let table = |ch: fn(anicraft_doc::Rgba) -> f32| (0..=32).map(|j| num(ch(anicraft_doc::ramp_at(stops, j as f32 / 32.0)))).collect::<Vec<_>>().join(" ");
+        // As many samples as the renderer's ramp table, so narrow stops come across.
+        let table = |ch: fn(anicraft_doc::Rgba) -> f32| (0..=RAMP_SAMPLES).map(|j| num(ch(anicraft_doc::ramp_at(stops, j as f32 / RAMP_SAMPLES as f32)))).collect::<Vec<_>>().join(" ");
         let _ = write!(
             prims,
             "<feColorMatrix in=\"{from}\" type=\"matrix\" values=\"0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 1\" result=\"{to}g\"/>\

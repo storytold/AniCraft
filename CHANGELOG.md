@@ -17,6 +17,9 @@
   and `gradient_bevel` (colours as `#rrggbbaa`).
 * **Fixed**: a filter reaching very far (a long drop shadow distance, or several large
   filters) could stop the whole frame from drawing; it is now cut far off the stage instead.
+  Inner glows and inner shadows came out weaker near the edge of their drawing area; blurs
+  of an even width were half a pixel off centre; and exported SVG cut shadows that reached
+  far from small artwork.
 * **Shape hints** (Modify › Shape; ADR 0023). On a shape tween, Add Shape Hint (Ctrl+Shift+H)
   adds a lettered marker, `a` to `z`, at the shape's centre. Drag it onto an edge on the
   tween's first keyframe and onto the matching edge on its last: the morph then carries that

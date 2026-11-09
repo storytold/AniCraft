@@ -121,13 +121,10 @@ fn filter_side(el: &X, default: FilterSide) -> FilterSide {
 /// ratios 0..1 (or Flash's 0..255).
 fn ramp(el: &X) -> Vec<GradientStop> {
     let entries = el.children.iter().flat_map(|c| if c.name == "GradientEntry" { std::slice::from_ref(c) } else { c.children.as_slice() }).filter(|g| g.name == "GradientEntry");
-    let mut stops: Vec<GradientStop> = entries
-        .take(anicraft_doc::MAX_RAMP_STOPS)
-        .map(|g| {
-            let r = g.f32("ratio").filter(|r| r.is_finite()).unwrap_or(0.0);
-            GradientStop { offset: if r > 1.0 { r / 255.0 } else { r }.clamp(0.0, 1.0), color: color(g, "color", "alpha") }
-        })
-        .collect();
+    let raw: Vec<(f32, Rgba)> = entries.take(anicraft_doc::MAX_RAMP_STOPS).map(|g| (g.f32("ratio").filter(|r| r.is_finite()).unwrap_or(0.0), color(g, "color", "alpha"))).collect();
+    // One scale for the whole ramp: any ratio past 1 means bytes.
+    let scale = if raw.iter().any(|(r, _)| *r > 1.0) { 1.0 / 255.0 } else { 1.0 };
+    let mut stops: Vec<GradientStop> = raw.into_iter().map(|(r, c)| GradientStop { offset: (r * scale).clamp(0.0, 1.0), color: c }).collect();
     stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
     stops
 }

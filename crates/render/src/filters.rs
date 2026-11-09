@@ -121,7 +121,7 @@ fn bevel_field(buf: &[Premul], w: usize, h: usize, bx: f32, by: f32, quality: u8
 
 /// Steps in a gradient filter's ramp table: even, so 0, ½ and 1 (the ends and the bevel's
 /// flat middle) are samples exactly.
-const RAMP_STEPS: usize = 256;
+pub(crate) const RAMP_STEPS: usize = 256;
 
 /// A gradient filter's ramp (sanitized stops) as `RAMP_STEPS + 1` premultiplied colours.
 fn ramp_lut(stops: &[GradientStop]) -> Vec<Premul> {
@@ -149,15 +149,18 @@ fn composite(buf: &mut [Premul], inner: &[Premul], outer: &[Premul], side: Filte
     }
 }
 
-/// Box blur of width `n` along rows (`stride` 1) or columns, `passes` times, of any number of
-/// channels per pixel. Outside the buffer is transparent.
+/// Box blur of width `n` along rows or columns, of any number of channels per pixel, centred
+/// on each pixel: an odd width covers `n / 2` pixels each side; an even width covers one more
+/// each side at half weight (so the blur never shifts and mirrored edges stay mirrored).
+/// Outside the buffer is transparent.
 fn box_pass<const C: usize>(buf: &mut [[f32; C]], w: usize, h: usize, n: usize, horizontal: bool, tmp: &mut Vec<[f32; C]>) {
     if n <= 1 {
         return;
     }
     let (len, lines) = if horizontal { (w, h) } else { (h, w) };
-    let lo = n / 2;
-    let hi = n - 1 - lo;
+    let r = n / 2;
+    let even = n.is_multiple_of(2);
+    let (lo, hi) = (r, r);
     let inv = 1.0 / n as f32;
     let idx = |line: usize, i: usize| if horizontal { line * w + i } else { i * w + line };
     tmp.clear();
@@ -177,8 +180,9 @@ fn box_pass<const C: usize>(buf: &mut [[f32; C]], w: usize, h: usize, n: usize, 
         }
         for i in 0..len {
             if let Some(out) = buf.get_mut(idx(line, i)) {
+                let ends = |c: usize| if even { 0.5 * (i.checked_sub(lo).and_then(|j| tmp.get(j)).map_or(0.0, |v| v[c]) + tmp.get(i + hi).map_or(0.0, |v| v[c])) } else { 0.0 };
                 for c in 0..C {
-                    out[c] = sum[c] * inv;
+                    out[c] = (sum[c] - ends(c)) * inv;
                 }
             }
             if let Some(add) = tmp.get(i + hi + 1) {
@@ -393,6 +397,12 @@ mod tests {
             let lit = p[1]; // white added (green was 0)
             let dark = 1.0 - q[0]; // red taken away by black
             assert!((lit - dark).abs() < 1e-5, "({x}, {y}): {p:?} vs {q:?}");
+        }
+        // Even blur widths stay centred: the same symmetry.
+        let even = filtered(&Filter::Bevel { blur_x: 4.0, blur_y: 6.0, strength: 1.0, quality: 2, angle: 45.0, distance: 3.0, shadow_color: Rgba::BLACK, highlight_color: Rgba::WHITE, side: FilterSide::Full, knockout: true });
+        for (x, y) in [(13, 13), (11, 20), (20, 10), (12, 27), (9, 9)] {
+            let (p, q) = (even[y * w + x], even[(39 - y) * w + (39 - x)]);
+            assert!((p[3] - q[3]).abs() < 1e-5, "even blur, ({x}, {y}): {p:?} vs {q:?}");
         }
         // The other diagonal corners see as much light as shade: they stay red.
         let tr = b[13 * w + 26];
