@@ -335,6 +335,10 @@ impl<'a> Builder<'a> {
                     Some("motion object") => self.report.skip("motion tweens (kept as keyframes)"),
                     _ => {}
                 }
+                // Frame scripts aren't kept yet (ADR 0013); say so instead of dropping them quietly.
+                if f.child("Actionscript").is_some() {
+                    self.report.skip("frame scripts (ActionScript isn't supported yet)");
+                }
                 let mut els = Vec::new();
                 self.elements(f.list("elements"), &Affine::IDENTITY, &mut els, 0);
                 k.elements = els;
