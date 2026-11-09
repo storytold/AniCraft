@@ -10,6 +10,7 @@ mod cmds_file;
 mod cmds_frames;
 mod cmds_modify;
 mod cmds_motion;
+mod cmds_hints;
 mod cmds_paint;
 mod cmds_path;
 mod cmds_recovery;
@@ -92,6 +93,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
     v.extend(cmds_motion::specs());
+    v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
@@ -662,3 +664,5 @@ mod motion_tests;
 mod plugin_tests;
 #[cfg(test)]
 mod tests_sound;
+#[cfg(test)]
+mod hint_tests;

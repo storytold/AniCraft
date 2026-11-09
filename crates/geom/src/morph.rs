@@ -327,6 +327,47 @@ fn increasing_run(v: &[f32]) -> Vec<usize> {
     out
 }
 
+/// Approximate length of a cubic: the mean of its chord and control polygon (exact for lines,
+/// close for the gentle segments outlines are made of).
+fn seg_len(a: Vec2, g: &Seg) -> f32 {
+    let poly = a.distance(g[0]) + g[0].distance(g[1]) + g[1].distance(g[2]);
+    (poly + a.distance(g[2])) * 0.5
+}
+
+/// How far along `s` each anchor is, as fractions of its length (0 first, 1 last). `None`
+/// for a piece of no length.
+fn fractions(s: &Sub) -> Option<Vec<f32>> {
+    let mut acc = vec![0.0f32];
+    let mut total = 0.0f32;
+    for (i, g) in s.segs.iter().enumerate() {
+        total += seg_len(seg_start(s, i), g);
+        acc.push(total);
+    }
+    if !(total > 1e-6 && total.is_finite()) {
+        return None;
+    }
+    Some(acc.into_iter().map(|c| c / total).collect())
+}
+
+/// Adds anchors to `s` (whose anchors sit at fractions `own`) at the fractions in `other`
+/// it doesn't have yet.
+fn cut_at_fractions(s: &mut Sub, own: &[f32], other: &[f32]) {
+    const SAME: f32 = 1e-4;
+    let mut at = Vec::new();
+    for &f in other {
+        if own.iter().any(|&g| (g - f).abs() <= SAME) {
+            continue;
+        }
+        // The segment it falls in, and how far into it (by length, taken as linear in t).
+        let Some(i) = own.windows(2).position(|w| f > w[0] && f < w[1]) else { continue };
+        let (Some(&lo), Some(&hi)) = (own.get(i), own.get(i + 1)) else { continue };
+        at.push(At { seg: i, t: ((f - lo) / (hi - lo).max(1e-9)).clamp(0.0, 1.0) });
+    }
+    if !at.is_empty() {
+        cut(s, &at);
+    }
+}
+
 /// A pair of subpaths made compatible so that each hint's two places meet: both are cut at
 /// the hinted places and the pieces between consecutive hints correspond in order. `None`
 /// when no hint survives (the caller aligns the pair the usual way).
@@ -386,9 +427,17 @@ fn hinted_pair(x: &Sub, y: &Sub, hints: &[(Vec2, Vec2)]) -> Option<(Sub, Sub)> {
         if py.segs.is_empty() {
             py = point_like(py.start, &px);
         }
-        if ox.segs.len() + n > MAX_SEGS {
+        // Points correspond by how far along the piece they are: each piece gets the other's
+        // anchors at the same fractions of its length.
+        if ox.segs.len() + px.segs.len() + py.segs.len() > MAX_SEGS {
             return None;
         }
+        let (fx, fy) = (fractions(&px), fractions(&py));
+        if let (Some(fx), Some(fy)) = (&fx, &fy) {
+            cut_at_fractions(&mut px, fx, fy);
+            cut_at_fractions(&mut py, fy, fx);
+        }
+        let n = px.segs.len().max(py.segs.len());
         subdivide(&mut px, n);
         subdivide(&mut py, n);
         if px.segs.len() != py.segs.len() {
@@ -671,6 +720,17 @@ mod tests {
         assert!(compatible(&Path::default(), &a).is_none());
     }
 
+    /// Unsigned area of a path's single flattened outline.
+    fn flat_area(p: &Path) -> f32 {
+        let pl = p.flatten(&Affine::IDENTITY, 0.05).into_iter().next().unwrap();
+        let pts = pl.points;
+        let mut a = 0.0;
+        for (i, q) in pts.iter().enumerate() {
+            a += q.cross(pts[(i + 1) % pts.len()]);
+        }
+        (a * 0.5).abs()
+    }
+
     fn anchors_of(p: &Path) -> Vec<Vec2> {
         p.cmds
             .iter()
@@ -699,6 +759,22 @@ mod tests {
         // Halfway, the corner's point is halfway along its way.
         let mid = morph_hinted(&a, &b, &[(corner, bottom)], 0.5).unwrap();
         assert!(close(anchors_of(&mid)[k], corner.lerp(bottom, 0.5)));
+        // Natural hints (corners to the matching points of the circle, some a hair off its
+        // anchors so one side has a tiny piece): points correspond by length along each piece,
+        // so the in-between shape stays full instead of folding (count-based splitting gives
+        // 8,100 to 8,600 here; a perfect blend about 8,950).
+        let r = 50.0f32;
+        let on = |deg: f32| Vec2::new(250.0 + r * deg.to_radians().cos(), 50.0 + r * deg.to_radians().sin());
+        let cases: [&[(Vec2, Vec2)]; 4] = [
+            &[(Vec2::new(100.0, 0.0), on(-45.0))],
+            &[(Vec2::new(100.0, 0.0), on(-44.0))],
+            &[(Vec2::new(100.0, 0.0), on(-45.0)), (Vec2::new(0.0, 100.0), on(135.8))],
+            &[(Vec2::new(100.0, 30.0), on(-20.0)), (Vec2::new(0.0, 0.0), on(-135.0))],
+        ];
+        for hints in cases {
+            let area = flat_area(&morph_hinted(&a, &b, hints, 0.5).unwrap());
+            assert!(area > 8_800.0, "{hints:?} {area}");
+        }
         // The ends are still the original shapes.
         for (orig, comp) in [(&a, &x), (&b, &y)] {
             let (ob, cb) = (orig.bounds(), comp.bounds());

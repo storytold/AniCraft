@@ -552,6 +552,9 @@ fn panic_hunt_every_command() {
         json!({"sound": SOUND, "frame": 3, "extend": true, "name": "renamed"}),
         json!({"sound": u64::MAX, "repeat": 1e9}),
         json!({"sound": "a", "sync": 3}),
+        json!({"hint": "a", "x": 1e7, "y": -1e7, "side": "end"}),
+        json!({"hint": u64::MAX, "side": "middle", "x": 0, "y": 0}),
+        json!({"hint": "zz", "frame": 0}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
