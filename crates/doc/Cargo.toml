@@ -14,6 +14,7 @@ serde = { workspace = true, features = ["rc"] }
 png.workspace = true
 # Imported JPEGs are decoded and kept as PNG.
 zune-jpeg.workspace = true
+anicraft-audio.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

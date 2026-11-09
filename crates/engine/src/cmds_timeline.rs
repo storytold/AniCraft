@@ -552,7 +552,7 @@ fn clear_keyframe_at(layer: &mut Layer, frame: u32) -> Result<()> {
     Ok(())
 }
 
-fn keyframe_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Keyframe> {
+pub(crate) fn keyframe_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Keyframe> {
     let (lid, frame) = target(s, p)?;
     let layer = s.layer_mut(lid)?;
     let i = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;

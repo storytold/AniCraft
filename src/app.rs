@@ -201,12 +201,13 @@ pub const SHOT_FRAMES: u32 = 120;
 pub enum LibraryItem {
     Symbol(anicraft_engine::doc::SymbolId),
     Bitmap(anicraft_engine::doc::BitmapId),
+    Sound(anicraft_engine::doc::SoundId),
 }
 
 impl LibraryItem {
-    /// The first item in the Library: its first symbol, else its first bitmap.
+    /// The first item in the Library: its first symbol, else its first bitmap, else sound.
     pub fn first(doc: &anicraft_engine::doc::Document) -> Option<LibraryItem> {
-        doc.library.first().map(|s| LibraryItem::Symbol(s.id)).or_else(|| doc.bitmaps.first().map(|b| LibraryItem::Bitmap(b.id)))
+        doc.library.first().map(|s| LibraryItem::Symbol(s.id)).or_else(|| doc.bitmaps.first().map(|b| LibraryItem::Bitmap(b.id))).or_else(|| doc.sounds.first().map(|s| LibraryItem::Sound(s.id)))
     }
 }
 
@@ -296,6 +297,12 @@ pub struct App {
     pub key_capture: Option<dialogs::KeyCapture>,
     /// Crash-recovery autosave and the copies earlier sessions left behind (ADR 0015).
     pub recovery: autosave::Recovery,
+    /// Sound output for playback, scrubbing and library previews.
+    pub sound: crate::sound::SoundOut,
+    /// Playback follows the sound's clock (the movie has sounds and the device plays them).
+    audio_clock: bool,
+    /// The scene and frame last heard, so a moved playhead plays a snippet (scrubbing).
+    heard: Option<(usize, u32)>,
 }
 
 /// How finished this version is, shown next to the version number (docs/release.md).
@@ -387,8 +394,12 @@ impl App {
             shortcuts,
             key_capture: None,
             recovery,
+            sound: crate::sound::SoundOut::new(),
+            audio_clock: false,
+            heard: None,
         };
         app.apply_prefs(&cc.egui_ctx);
+        app.decode_sounds();
         app.status_ok("Welcome to AniCraft. Press Enter to play the sample animation.");
         if let Some(e) = recovery_err {
             app.status_err(e);
@@ -584,6 +595,24 @@ impl App {
                 self.bucket_gap = GapSize::Small;
                 self.run("edit.deselect", json!({}));
             }
+            Some("sound") => {
+                // A two-second beat (made here: decaying 220 Hz pulses every half second)
+                // imported to the stage, stream sync, its keyframe's Sound properties showing.
+                let rate = 22_050u32;
+                let beat: Vec<f32> = (0..rate * 2)
+                    .map(|i| {
+                        let t = i as f32 / rate as f32;
+                        let env = (-(t % 0.5) * 9.0).exp() * if ((t / 0.5) as u32).is_multiple_of(2) { 0.9 } else { 0.5 };
+                        env * (t * 220.0 * std::f32::consts::TAU).sin()
+                    })
+                    .collect();
+                let path = std::env::temp_dir().join("anicraft-beat.wav");
+                if std::fs::write(&path, anicraft_audio::wav::encode(rate, 1, &beat, anicraft_audio::wav::Bits::Int16)).is_ok() {
+                    self.perform("file.import", json!({"path": path.display().to_string()}));
+                    self.run("sound.set", json!({"frame": 0, "sync": "stream"}));
+                    self.run("timeline.goto", json!({"frame": 14}));
+                }
+            }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.
                 self.tl_cell_w = 48.0;
@@ -665,6 +694,7 @@ impl App {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
                 self.library_sel = LibraryItem::first(&self.s.doc);
+                self.decode_sounds();
                 match v.get("report").and_then(Value::as_str) {
                     // An imported file: say what came across and what didn't, and that saving
                     // makes a new .anicraft document.
@@ -694,6 +724,24 @@ impl App {
                     self.allow_close = true;
                 }
             }
+            "file.import" | "file.import_to_library" if v.get("sound").is_some() => {
+                let id = anicraft_engine::doc::SoundId(v["sound"].as_u64().unwrap_or(0));
+                self.library_sel = Some(LibraryItem::Sound(id));
+                let name = v["name"].as_str().unwrap_or("");
+                let secs = v["seconds"].as_f64().unwrap_or(0.0);
+                self.status_ok(if v.get("layer").is_some() {
+                    format!("{name} ({secs:.2} s) is on a new layer from frame {}. Set its sync in Properties. Ctrl+Z to undo.", self.s.frame + 1)
+                } else {
+                    format!("{name} ({secs:.2} s) is in the Library. Select a keyframe and pick it under Sound in Properties.")
+                });
+            }
+            "file.import_to_library" => self.status_ok("Image added to the Library"),
+            "file.export_audio" => {
+                let n = v["sounds"].as_u64().unwrap_or(0);
+                let note = if n == 0 { " No sounds play in that range, so the file is silent." } else { "" };
+                self.status_ok(format!("Exported {} ({:.2} s).{note}", v["written"].as_str().unwrap_or(""), v["seconds"].as_f64().unwrap_or(0.0)));
+            }
+            "sound.delete" => self.status_ok("Deleted sound — Ctrl+Z to undo"),
             "file.import" => {
                 if let Some(b) = self.s.doc.bitmaps.last().filter(|b| v["bitmap"].as_u64() == Some(b.id.0)) {
                     self.library_sel = Some(LibraryItem::Bitmap(b.id));
@@ -796,7 +844,9 @@ impl App {
             "file.export_sprite_sheet" => Some(("Export sprite sheet (PNG + JSON frame map)", "path", "sprites.png".to_string())),
             "file.export_video" => Some(("Export video (.webm or .mp4, made with your ffmpeg)", "path", "animation.webm".to_string())),
             "file.export_lottie" => Some(("Export Lottie animation (JSON, for web and apps)", "path", "animation.json".to_string())),
-            "file.import" => Some(("Import to stage (SVG, PNG or JPEG)", "path", "drawing.svg".to_string())),
+            "file.export_audio" => Some(("Export audio (the movie's soundtrack as a WAV)", "path", "soundtrack.wav".to_string())),
+            "file.import_to_library" => Some(("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)", "path", "sound.wav".to_string())),
+            "file.import" => Some(("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)", "path", "drawing.svg".to_string())),
             "plugin.install" => Some(("Install plug-in (.wasm file)", "path", "plugin.wasm".to_string())),
             "modify.convert_to_symbol" => Some(("Convert to symbol — name", "name", format!("Symbol {}", self.s.doc.library.len() + 1))),
             _ => None,
@@ -848,11 +898,83 @@ impl App {
         if self.playing && self.s.frame + 1 >= self.s.frame_count() {
             self.s.set_frame(0);
         }
+        self.start_sound();
+    }
+
+    /// The playhead as a movie frame (scenes in order).
+    fn movie_frame(&self) -> u32 {
+        self.s.doc.scene_start(self.s.scene).saturating_add(self.s.frame)
+    }
+
+    /// Starts the sound from the playhead, or stops it; the playhead follows the sound's clock
+    /// while it plays.
+    fn start_sound(&mut self) {
+        self.audio_clock = self.playing && self.shot.is_none() && self.sound.play(&self.s.doc, self.s.state, self.movie_frame());
+        if !self.playing {
+            self.sound.stop();
+        }
+        // Said once: the device could not be opened, so playback is silent.
+        if let Some(e) = self.sound.error.take() {
+            self.status_err(format!("Playing without sound: {e}"));
+        }
+    }
+
+    /// Decodes the document's sounds on a background thread (each once; every copy of the
+    /// document shares the result), so opening a file never waits on it.
+    pub fn decode_sounds(&self) {
+        let sounds = self.s.doc.sounds.clone();
+        if !sounds.is_empty() {
+            let _ = std::thread::Builder::new().name("anicraft-decode".into()).spawn(move || {
+                for x in sounds {
+                    let _ = x.decoded();
+                }
+            });
+        }
+    }
+
+    /// Scrubbing: a moved playhead plays a frame's worth of the stream sounds there.
+    fn scrub_sound(&mut self) {
+        let here = (self.s.scene, self.s.frame);
+        if !self.playing && self.shot.is_none() && self.heard.is_some_and(|h| h != here) {
+            self.sound.scrub(&self.s.doc, self.s.state, self.movie_frame());
+        }
+        self.heard = Some(here);
     }
 
     fn tick_playback(&mut self, ctx: &egui::Context) {
         if !self.playing {
+            if self.audio_clock {
+                self.sound.stop();
+                self.audio_clock = false;
+            }
             return;
+        }
+        let n = self.s.frame_count();
+        if self.audio_clock {
+            // Picture follows sound: the frame is wherever the sound has got to (edits made
+            // while playing are heard at once).
+            self.sound.sync(&self.s.doc, self.s.state);
+            if let Some(mf) = self.sound.frame(self.s.doc.stage.fps) {
+                let local = mf.saturating_sub(self.s.doc.scene_start(self.s.scene));
+                if local >= n {
+                    if self.looping {
+                        self.s.set_frame(0);
+                        self.start_sound();
+                    } else {
+                        self.s.set_frame(n.saturating_sub(1));
+                        self.playing = false;
+                        self.start_sound();
+                    }
+                } else if local != self.s.frame {
+                    self.s.set_frame(local);
+                }
+                self.heard = Some((self.s.scene, self.s.frame));
+                ctx.request_repaint();
+                return;
+            }
+            // The device went away: carry on silently on the wall clock.
+            self.audio_clock = false;
+            self.play_acc = 0.0;
         }
         let fps = f64::from(self.s.doc.stage.fps.max(1.0));
         self.play_acc += f64::from(ctx.input(|i| i.stable_dt)).min(0.25);
@@ -870,6 +992,7 @@ impl App {
                 self.s.set_frame(self.s.frame + 1);
             }
         }
+        self.heard = Some((self.s.scene, self.s.frame));
         ctx.request_repaint();
     }
 
@@ -1169,6 +1292,7 @@ impl eframe::App for App {
         }
         pathtools::upkeep(self);
         self.tick_playback(&ctx);
+        self.scrub_sound();
         self.update_title(&ctx);
         if let Some(st) = &mut self.status
             && st.at == 0.0 {
