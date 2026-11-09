@@ -1,9 +1,11 @@
 //! AniCraft XML (layer L0): a small, strict-enough XML element reader shared by the importers.
 //!
 //! XFL and SVG keep everything that matters in elements and attributes (XFL even stores shape
-//! geometry as an attribute), so the reader builds a tree of elements with attributes and
-//! ignores text. It handles the prolog, comments, CDATA, doctype, processing instructions, the
-//! five standard entities and numeric character references. Limits on input size, depth and
+//! geometry as an attribute), so the reader builds a tree of elements with attributes. An
+//! element's own character data (text and CDATA, such as XFL's `<characters>`) is kept in
+//! [`Element::text`], except whitespace-only text between child elements (indentation). It
+//! handles the prolog, comments, CDATA, doctype, processing instructions, the five standard
+//! entities and numeric character references. Limits on input size, depth and
 //! element count keep a hostile file from exhausting memory or the stack. Never panics.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -19,6 +21,9 @@ pub struct Element {
     pub name: String,
     pub attrs: HashMap<String, String>,
     pub children: Vec<Element>,
+    /// The element's character data, entities resolved (XFL's `<characters>`). Whitespace
+    /// between child elements is dropped.
+    pub text: String,
 }
 
 impl Element {
@@ -98,16 +103,32 @@ impl P<'_> {
         }
         Ok(String::from_utf8_lossy(self.s.get(start..self.i).unwrap_or_default()).into_owned())
     }
-    /// Skips text, comments and other non-element content up to the next tag.
-    fn skip_misc(&mut self) -> Result<(), XmlError> {
+    /// Skips text, comments and other non-element content up to the next tag, adding text and
+    /// CDATA to `text` when there is one.
+    fn skip_misc(&mut self, mut text: Option<&mut String>) -> Result<(), XmlError> {
         loop {
+            let start = self.i;
             while self.peek().is_some_and(|c| c != b'<') {
                 self.i += 1;
+            }
+            if let Some(t) = text.as_deref_mut()
+                && self.i > start
+            {
+                let raw = String::from_utf8_lossy(self.s.get(start..self.i).unwrap_or_default());
+                if raw.contains('&') {
+                    t.push_str(&unescape(&raw));
+                } else {
+                    t.push_str(&raw);
+                }
             }
             if self.starts(b"<!--") {
                 self.skip_until(b"-->")?;
             } else if self.starts(b"<![CDATA[") {
+                let from = self.i + 9;
                 self.skip_until(b"]]>")?;
+                if let Some(t) = text.as_deref_mut() {
+                    t.push_str(&String::from_utf8_lossy(self.s.get(from..self.i.saturating_sub(3)).unwrap_or_default()));
+                }
             } else if self.starts(b"<?") {
                 self.skip_until(b"?>")?;
             } else if self.starts(b"<!") {
@@ -174,7 +195,7 @@ impl P<'_> {
         }
         // Content: children until the matching end tag.
         loop {
-            self.skip_misc()?;
+            self.skip_misc(Some(&mut el.text))?;
             if self.peek().is_none() {
                 return self.err("missing end tag");
             }
@@ -186,6 +207,9 @@ impl P<'_> {
                     return self.err("mismatched end tag");
                 }
                 self.i += 1;
+                if !el.children.is_empty() && el.text.trim().is_empty() {
+                    el.text = String::new();
+                }
                 return Ok(el);
             }
             el.children.push(self.element(depth + 1)?);
@@ -244,7 +268,7 @@ pub fn parse(src: &[u8]) -> Result<Element, XmlError> {
     // A UTF-8 byte-order mark is allowed.
     let src = src.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(src);
     let mut p = P { s: src, i: 0, count: 0 };
-    p.skip_misc()?;
+    p.skip_misc(None)?;
     if p.peek().is_none() {
         return p.err("no root element");
     }
@@ -271,7 +295,17 @@ mod tests {
         let tl = &root.list("timelines")[0];
         assert_eq!(tl.attr("name"), Some("Scene & \"1\" AB"));
         assert!(tl.list("layers").is_empty());
-        assert_eq!(root.children.len(), 1, "CDATA and text are skipped");
+        assert_eq!(root.children.len(), 1, "CDATA and text are not elements");
+        assert!(root.text.contains(" <ignored/> ") && root.text.contains("text is ignored"), "{:?}", root.text);
+    }
+
+    #[test]
+    fn character_data_is_kept_and_indentation_dropped() {
+        let x = b"<t>\n  <characters>a &lt;b&gt;&#xD;line 2</characters>\n  <characters> </characters><c><![CDATA[x<y]]>z</c>\n</t>";
+        let root = parse(x).unwrap();
+        assert_eq!(root.text, "", "whitespace between elements");
+        let texts: Vec<&str> = root.children.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["a <b>\rline 2", " ", "x<yz"]);
     }
 
     #[test]
