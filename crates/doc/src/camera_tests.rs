@@ -80,7 +80,7 @@ fn camera_keyframes_tween_like_any_instance() {
     let a = Camera::rest(&d.stage);
     let b = Camera { center: Vec2::new(150.0, 50.0), zoom: 3.0, ..a };
     with_camera(&mut d, &[(0, 10, a, true), (10, 10, b, false)]);
-    let cam = |d: &Document, f| d.timeline(0).camera_at(f, &d.stage).unwrap();
+    let cam = |d: &Document, f| d.timeline(0).camera_state_at(f, &d.stage).unwrap();
     assert_eq!(cam(&d, 0).zoom, 1.0);
     let half = cam(&d, 5);
     assert!((half.zoom - 2.0).abs() < 1e-5 && (half.center.x - 125.0).abs() < 1e-3, "{half:?}");

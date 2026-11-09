@@ -167,6 +167,9 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
                 app.onion = !app.onion;
             }
+            if ui_item(ui, "Preview Through Camera", "", Some(app.camera_preview)) {
+                app.toggle_camera_preview();
+            }
             ui.menu_button("Stage Rendering", |ui| {
                 for (mode, name, tip) in crate::prefs::RenderMode::ALL {
                     if ui_item(ui, name, "", Some(app.prefs.render_mode == mode)) {

@@ -15,8 +15,7 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
 
 /// A 200 × 100 white stage, 20 frames, holding `rects` (x, y, w, h) in black.
 fn stage_with(rects: &[(f32, f32, f32, f32)]) -> Session {
-    let mut d = Document::default();
-    d.stage = Stage { width: 200, height: 100, ..Stage::default() };
+    let d = Document { stage: Stage { width: 200, height: 100, ..Stage::default() }, ..Document::default() };
     let mut s = Session::new(d);
     for &(x, y, w, h) in rects {
         run(&mut s, "draw.rect", json!({"x": x, "y": y, "w": w, "h": h, "fill": "#000000", "stroke": null}));

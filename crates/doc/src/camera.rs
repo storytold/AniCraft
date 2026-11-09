@@ -147,9 +147,15 @@ impl Timeline {
     /// frame. A hidden camera layer is a camera turned off; a keyframe with no camera element is
     /// the camera at rest.
     pub fn camera_at(&self, frame: u32, stage: &Stage) -> Option<Camera> {
-        let layer = self.camera_layer().filter(|l| l.visible)?;
-        let (_, els) = evaluate_layer_elements(layer, frame)?;
-        els.iter().find(|e| matches!(e.kind, ElementKind::Camera)).map(|e| Camera::of_element(e, stage))
+        self.camera_layer().filter(|l| l.visible)?;
+        self.camera_state_at(frame, stage).filter(|c| !c.is_rest(stage))
+    }
+
+    /// The camera as its layer has it at `frame`, shown or hidden: the rest camera on a frame
+    /// whose keyframe holds none. `None` without a camera layer or past its last frame.
+    pub fn camera_state_at(&self, frame: u32, stage: &Stage) -> Option<Camera> {
+        let (_, els) = evaluate_layer_elements(self.camera_layer()?, frame)?;
+        Some(els.iter().find(|e| matches!(e.kind, ElementKind::Camera)).map_or_else(|| Camera::rest(stage), |e| Camera::of_element(e, stage)))
     }
 }
 

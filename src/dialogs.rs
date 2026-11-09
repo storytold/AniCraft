@@ -206,6 +206,7 @@ fn entries() -> Vec<Entry> {
     v.extend(Tool::ALL.iter().map(|t| Entry::Tool(*t)));
     v.push(Entry::View("Play / Stop", "Enter", App::toggle_play));
     v.push(Entry::View("Onion Skin", "", |a| a.onion = !a.onion));
+    v.push(Entry::View("Preview Through Camera", "", App::toggle_camera_preview));
     v.push(Entry::View("Fit Stage in Window", "Ctrl+0", |a| a.view.fit = true));
     v.push(Entry::View("Keyboard Shortcuts", "F1", |a| a.show_shortcuts = true));
     v.push(Entry::View("Project Files & Docs", "", |a| a.show_files = true));

@@ -55,7 +55,9 @@ fn add(s: &mut Session, _: &Value) -> Result<Value> {
     let frames = s.frame_count().max(1);
     let mut layer = Layer::new(id, "Camera");
     layer.kind = LayerKind::Camera;
-    layer.color = anicraft_doc::Rgba::hex(0x9aa4b2);
+    // The frame outline on the stage is drawn in the layer colour: an orange that reads on
+    // light and dark artwork alike.
+    layer.color = anicraft_doc::Rgba::hex(0xe8833a);
     let mut k = Keyframe::new(0, frames);
     k.elements.push(Arc::new(Camera::rest(&s.doc.stage).to_element(el)));
     layer.keyframes = vec![Arc::new(k)];
@@ -97,13 +99,6 @@ pub(crate) fn keys_fit<'a>(kind: LayerKind, mut keys: impl Iterator<Item = &'a K
     Ok(())
 }
 
-/// The camera as it is at `frame` (the rest camera on a keyframe without one).
-fn camera_at(s: &Session, frame: u32) -> Option<Camera> {
-    let tl = s.doc.timeline(s.scene);
-    let layer = tl.camera_layer()?;
-    let (_, els) = anicraft_doc::evaluate_layer_elements(layer, frame)?;
-    Some(els.iter().find(|e| matches!(e.kind, ElementKind::Camera)).map_or_else(|| Camera::rest(&s.doc.stage), |e| Camera::of_element(e, &s.doc.stage)))
-}
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let id = camera_layer(s).ok_or_else(no_camera)?;
@@ -194,7 +189,7 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(id) = camera_layer(s) else { return Ok(json!({"camera": false})) };
     let tl = s.doc.timeline(s.scene);
     let on = tl.camera_layer().is_some_and(|l| l.visible);
-    let mut v = camera_at(s, frame).map_or_else(|| json!({}), |c| camera_json(&c, &s.doc.stage));
+    let mut v = s.doc.timeline(s.scene).camera_state_at(frame, &s.doc.stage).map_or_else(|| json!({}), |c| camera_json(&c, &s.doc.stage));
     v["camera"] = json!(true);
     v["layer"] = json!(id.0);
     v["on"] = json!(on);
