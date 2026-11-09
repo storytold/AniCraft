@@ -1,0 +1,25 @@
+[package]
+name = "anicraft-plugins"
+description = "AniCraft L0: sandboxed WebAssembly plug-ins, a resource-limited wasmi host for the AniCraft plug-in ABI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Pure-Rust WebAssembly interpreter (MIT OR Apache-2.0), the Craft-family plug-in host. Without
+# `wat` (text parsing is test-only) and memory64; `validate` keeps full module validation on;
+# the portable dispatcher never overflows the host stack (see docs/plugins.md).
+wasmi = { version = "2.0.0", default-features = false, features = ["std", "validate", "stable", "portable-dispatch"] }
+
+[dev-dependencies]
+# WebAssembly text -> binary for the test fixtures, so no binary blobs are committed
+# (Apache-2.0 WITH LLVM-exception).
+wat = "1.228"
+
+[lints]
+workspace = true
