@@ -34,6 +34,7 @@ app/                         workspace root; the root package is the desktop app
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
+    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019; shell feature `gpu-stage`)
     cli       L4  `anicraft-cli`: info / render / render-seq / commands / run / serve (JSON-lines)
   src/        L5  egui shell: menus (from registry), tools, stage, timeline, properties, library
   docs/           requirements, architecture, roadmap
@@ -47,10 +48,11 @@ app/                         workspace root; the root package is the desktop app
 | L1 | `anicraft-doc` | geom, audio |
 | L2 | `anicraft-render` | geom, doc, rayon, png |
 | L3 | `anicraft-engine` | geom, doc, render, serde_json |
+| L3 | `anicraft-gpu` | geom, doc, render, wgpu (the version egui brings), pollster, bytemuck |
 | L4 | `anicraft-cli` | engine (+ lower) |
 | L5 | `anicraft` (shell) | engine (+ lower), eframe/egui |
 
-Planned crates: `gpu` (L2, wgpu renderer), `io` (L3, XFL/SVG/Lottie/GIF),
+Planned crates: `io` (L3, XFL/SVG/Lottie/GIF),
 `automation` (L4, MCP), `testkit`.
 
 ## 3. Document model (`anicraft-doc`)
@@ -136,9 +138,12 @@ DisplayList ──► for each item:
   rasterizes 32-row bands in parallel, each compositing all ops that touch it, in order.
   Output is bit-identical to serial. Numbers are in [performance.md](performance.md).
 
-Planned (see roadmap): sparse-strip coverage for huge shapes, tile binning, a glyph atlas for
-text, wgpu renderer with the same coverage model, filters on Movie Clips, mask layers through
-coverage multiplication.
+**GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), behind the shell's `gpu-stage` feature):
+`render::plain_fills` hands the oracle's own prepared fills to `anicraft-gpu`, which bins edge
+pieces into 16 × 16 tiles with per-row backdrops (CPU, parallel) and computes each pixel's
+exact area coverage and src-over in one compute pass. Display lists with masks, groups or
+bitmaps are drawn by the oracle instead. The engine's `RenderService` takes any `Rasterizer`
+and falls back to the oracle per job, so the engine itself never depends on the GPU.
 
 ## 5. Engine (`anicraft-engine`)
 

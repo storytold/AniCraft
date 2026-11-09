@@ -770,7 +770,15 @@ impl App {
                 }
                 let n = v["elements"].as_u64().unwrap_or(0);
                 let report = v["report"].as_str().unwrap_or("");
-                self.status_ok(format!("{n} {} on a new layer. {report} Ctrl+Z to undo.", if n == 1 { "shape" } else { "shapes" }));
+                let what = if n == 1 { "element" } else { "elements" };
+                let undo = platform::shortcut_label("Ctrl+Z");
+                // A drawing with clip paths or masks comes in as a folder of layers (ADR 0021).
+                let place = match (v["layers"].as_u64().unwrap_or(1), v["masks"].as_u64().unwrap_or(0)) {
+                    (0 | 1, _) => "on a new layer".to_string(),
+                    (l, 1) => format!("in a new folder of {l} layers with a mask"),
+                    (l, m) => format!("in a new folder of {l} layers with {m} masks"),
+                };
+                self.status_ok(format!("{n} {what} {place}. {report} {undo} to undo."));
             }
             "file.export_sprite_sheet" => self.status_ok(format!("Exported {} frames to {} ({}×{} grid) and its frame map {}", v["frames"], v["written"].as_str().unwrap_or(""), v["columns"], v["rows"], v["map"].as_str().unwrap_or(""))),
             "file.export_lottie" => {

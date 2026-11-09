@@ -244,6 +244,75 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
     Ok((pm, stats))
 }
 
+/// Why a display list needs the full renderer rather than plain fills (see [`plain_fills`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NeedsFull {
+    /// Mask layers: items drawn inside a clip, or mask artwork.
+    Clips,
+    /// Group opacity, blend modes or filters (symbol instances composited on their own).
+    Groups,
+    /// Bitmap fills.
+    Bitmaps,
+}
+
+impl std::fmt::Display for NeedsFull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            NeedsFull::Clips => "masks",
+            NeedsFull::Groups => "group opacity, blend modes or filters",
+            NeedsFull::Bitmaps => "bitmap fills",
+        })
+    }
+}
+
+/// One fill operation in surface pixels, exactly as this renderer prepares it: flattened at
+/// [`TOLERANCE`], strokes already outlined by the stroker, the paint's shader (with its gradient
+/// table) built, and pixel bounds clamped to the surface. Drawing every fill in order, with
+/// analytic coverage, the fill rule and src-over, reproduces [`render`] for a display list that
+/// [`plain_fills`] accepts. Other renderers (the GPU stage, ADR 0019) start from these, so the
+/// geometry and the colours are the oracle's own.
+pub struct Fill {
+    pub polys: Vec<Vec<Vec2>>,
+    pub rule: FillRule,
+    pub shader: Shader,
+    pub bounds: IRect,
+}
+
+/// The display list as plain fills, in drawing order, with the same culling and statistics as
+/// [`render`]; or why it needs the full renderer (masks, groups, bitmaps).
+pub fn plain_fills(dl: &DisplayList, view: &View) -> Result<(Vec<Fill>, RenderStats), NeedsFull> {
+    for it in &dl.items {
+        if it.clip.is_some() || it.masks.is_some() {
+            return Err(NeedsFull::Clips);
+        }
+        if it.group.is_some() {
+            return Err(NeedsFull::Groups);
+        }
+        if !it.guide && it.outline.is_none() && matches!(it.fill, Some(Paint::Bitmap { .. })) {
+            return Err(NeedsFull::Bitmaps);
+        }
+    }
+    let surface = IRect { x0: 0, y0: 0, x1: view.width as i32, y1: view.height as i32 };
+    let prepared: Vec<Vec<Prepared>> = dl.items.par_iter().map(|item| prepare(item, &view.transform, surface)).collect();
+    let mut stats = RenderStats { items: dl.items.len(), ..Default::default() };
+    let mut out = Vec::with_capacity(prepared.len());
+    for p in prepared {
+        if p.is_empty() {
+            stats.culled += 1;
+        }
+        for op in p {
+            if matches!(op.shader, Shader::Bitmap { .. } | Shader::Image { .. }) {
+                return Err(NeedsFull::Bitmaps);
+            }
+            stats.edges += op.polys.iter().map(Vec::len).sum::<usize>();
+            stats.pixels_touched += (op.bounds.width() * op.bounds.height()) as u64;
+            out.push(Fill { polys: op.polys, rule: op.rule, shader: op.shader, bounds: op.bounds });
+        }
+    }
+    stats.drawn = out.len();
+    Ok((out, stats))
+}
+
 /// A run of items inside a filtered group that has no filtered group around it.
 struct FilteredRun {
     group: u32,
@@ -780,6 +849,30 @@ mod tests {
         tall.group = Some(0);
         let (t, _) = render(&DisplayList { items: vec![tall], clip_parents: vec![], groups: vec![anicraft_doc::Group { parent: None, alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] }, &View { background: Some(Rgba::WHITE), ..view(4, 100) }).unwrap();
         assert!((0..100).all(|y| near(t.pixel(1, y).unwrap(), [0.75, 0.75, 0.75, 1.0])));
+    }
+
+    #[test]
+    fn plain_fills_match_the_renderers_preparation_and_name_what_needs_more() {
+        // A filled, stroked square and an off-screen circle: fill then stroke, one culled.
+        let mut sq = item(Path::rect(2.0, 2.0, 8.0, 8.0), Paint::Solid(Rgba::BLACK));
+        sq.stroke = Some(anicraft_doc::Stroke { color: Rgba::WHITE, width: 2.0, profile: None });
+        let off = item(Path::ellipse(500.0, 500.0, 10.0, 10.0), Paint::Solid(Rgba::BLACK));
+        let dl = list(vec![sq.clone(), off]);
+        let (fills, st) = plain_fills(&dl, &view(16, 16)).unwrap();
+        let (_, rst) = render(&dl, &view(16, 16)).unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!((st.drawn, st.culled, st.edges), (rst.drawn, rst.culled, rst.edges));
+        assert!(fills[0].shader.is_solid() == Some([0.0, 0.0, 0.0, 1.0]) && fills[1].shader.is_solid() == Some([1.0; 4]));
+        assert!(fills.iter().all(|f| f.bounds.x0 >= 0 && f.bounds.x1 <= 16));
+        // Masks, groups and bitmaps need the full renderer.
+        let mut clipped = sq.clone();
+        clipped.clip = Some(0);
+        assert_eq!(plain_fills(&list(vec![clipped]), &view(16, 16)).err(), Some(NeedsFull::Clips));
+        let mut grouped = sq.clone();
+        grouped.group = Some(0);
+        assert_eq!(plain_fills(&list(vec![grouped]), &view(16, 16)).err(), Some(NeedsFull::Groups));
+        let bm = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false, matrix: Affine::IDENTITY });
+        assert_eq!(plain_fills(&list(vec![bm]), &view(16, 16)).err(), Some(NeedsFull::Bitmaps));
     }
 
     #[test]

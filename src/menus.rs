@@ -175,6 +175,18 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
                     }
                     ui.label(text(Type::Caption, tip));
                 }
+                if crate::gpu_stage::AVAILABLE {
+                    ui.separator();
+                    for (choice, name, tip) in crate::prefs::StageRenderer::ALL {
+                        if ui_item(ui, name, "", Some(app.prefs.stage_renderer == choice)) {
+                            let mut p = app.prefs.clone();
+                            p.stage_renderer = choice;
+                            let ctx = ui.ctx().clone();
+                            app.set_prefs(&ctx, p);
+                        }
+                        ui.label(text(Type::Caption, tip));
+                    }
+                }
             });
         }
         "Control" => {

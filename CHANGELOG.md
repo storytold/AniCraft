@@ -15,6 +15,26 @@
   param on `element.set_stroke`, the drawing commands and `paint.ink`.
 * **Fixed**: perfectly horizontal or vertical lines inside a moved shape could not be picked
   (their flat bounds were not transformed).
+* **GPU stage, first slice** (M3, ADR 0019; build with `--features gpu-stage`). Preferences ›
+  Stage › Renderer (also View › Stage Rendering) can draw the stage on the graphics card
+  instead of the CPU. It draws fills, strokes and gradients from the CPU renderer's own
+  preparation and matches it to within one 8-bit step at a few edge pixels; masks, symbol
+  opacity, blend modes, filters and bitmaps still draw on the CPU, and the status bar says
+  which drew the stage and why. A 4K frame of 1,000 shapes takes about 9 ms instead of 18 ms.
+  Exports always use the CPU renderer. `ANICRAFT_STAGE_RENDERER=gpu|cpu` overrides the choice.
+* **Clip paths, masks and text in SVG drawings** (ADR 0021). Import to Stage (Ctrl+R) now
+  brings clipped artwork across on mask layers: a drawing with clip paths comes in as a folder
+  named after the file, with each clipped group on a masked layer under a mask layer holding
+  the clip's shape, so you can move or reshape the mask afterwards. Clips that cut nothing
+  (the frame clip design tools add) are dropped, and clips inside clips are combined exactly
+  when they can be. Masks come across when they are solid shapes (white for luminance masks);
+  soft or faded masks are drawn unmasked and reported. Text comes in as text you can edit,
+  one block per positioned line, with its font, size, weight, italic, colour, letter spacing
+  and anchor (start, middle, end); fonts that aren't on this computer fall back to the default
+  and the status bar names them. A frame exported as SVG with masks imports back as the same
+  picture. Per-character positions, text on a path and dashed strokes are reported, not yet
+  imported.
+
 * **Sound** (ADR 0020). Import WAV, Ogg Vorbis or MP3 sounds: **File › Import › Import to
   Stage** puts one on a new layer at the playhead, its span as long as the sound; **Import to
   Library** just adds it. A sound belongs to a keyframe, as in Animate: pick it under

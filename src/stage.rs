@@ -11,7 +11,7 @@ use crate::prefs::RenderMode;
 use crate::theme::{T, to_color32};
 use anicraft_engine::geom::{Affine, Vec2};
 use anicraft_engine::render::View;
-use anicraft_engine::render_service::{DEFAULT_CACHE_BYTES, FrameImage, FrameJob, RenderService, make_job};
+use anicraft_engine::render_service::{DEFAULT_CACHE_BYTES, FrameImage, FrameJob, RenderService, make_job_for};
 use egui::{Color32, CursorIcon, Key, Modifiers, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 
@@ -46,11 +46,15 @@ pub struct Cache {
     pub service: Option<RenderService>,
     /// Document state of the picture on screen (an edit makes it differ).
     pub shown_state: Option<anicraft_engine::StateId>,
+    /// The GPU stage (ADR 0019), when this build has it and Preferences ask for it.
+    pub gpu: crate::gpu_stage::GpuStage,
+    /// Who drew the newest visible tiles: the GPU, or the CPU and why (status bar).
+    pub drawn_by: Option<(bool, Option<String>)>,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None }
+        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None, gpu: Default::default(), drawn_by: None }
     }
 }
 
@@ -494,6 +498,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let ctx = ui.ctx().clone();
             app.stage_cache.service = Some(RenderService::new(DEFAULT_CACHE_BYTES, Some(Box::new(move || ctx.request_repaint()))));
         }
+        if let Some(svc) = &app.stage_cache.service {
+            app.stage_cache.gpu.sync(app.prefs.stage_renderer, svc, ui.ctx());
+        }
+        // Jobs are keyed by who draws them, so a renderer switch re-renders (old tiles stand in).
+        let raster = app.stage_cache.service.as_ref().map_or(0, RenderService::raster_id);
         // Tiles on a device-pixel grid at this zoom (ADR 0007).
         let z = zoom * ppp;
         let bg = app.s.doc.stage.background;
@@ -505,7 +514,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Render jobs take movie frames: the current scene starts at `start`.
         let start = app.s.doc.scene_start(app.s.scene);
         let frame = app.s.frame;
-        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job(state, &app.s.doc, start + frame, t.view, onion); (t, j) }).collect();
+        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion); (t, j) }).collect();
         let keys: Vec<u64> = jobs.iter().map(|(_, j)| j.key).collect();
         let missing: Vec<usize> = (0..jobs.len()).filter(|&i| !app.stage_cache.has(keys[i])).collect();
 
@@ -534,6 +543,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             for (&i, img) in missing.iter().zip(results) {
                 if let Some(img) = img {
                     ms += img.ms;
+                    if img.error.is_none() {
+                        app.stage_cache.drawn_by = Some((img.gpu, img.fallback.clone()));
+                    }
                     if let Some(e) = app.stage_cache.upload(ui.ctx(), &img, jobs[i].0.rect, &keys) {
                         error = Some(e);
                     }
@@ -567,10 +579,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let n = app.s.frame_count().max(1);
                 for d in 1..=LOOKAHEAD.min(n - 1) {
                     let f = (frame + d) % n;
-                    ahead.extend(jobs.iter().map(|(t, _)| make_job(state, &app.s.doc, start + f, t.view, false)));
+                    ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, false)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job(state, &app.s.doc, start + frame, t.view, onion)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion)));
             }
             svc.prefetch(ahead);
         }
