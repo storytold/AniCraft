@@ -180,10 +180,11 @@ fn nearest_on(s: &Sub, p: Vec2) -> Option<(At, Vec2, f32)> {
                 (bt, bdist) = (t, d);
             }
         }
-        // Ternary search around the best sample (the distance is unimodal that close).
+        // Ternary search around the best sample (the distance is unimodal that close); Newton
+        // below takes it the rest of the way.
         let h = 1.0 / NEAREST_SAMPLES as f32;
         let (mut lo, mut hi) = ((bt - h).max(0.0), (bt + h).min(1.0));
-        for _ in 0..24 {
+        for _ in 0..10 {
             let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
             if d2(point_at(a, g, m1)) < d2(point_at(a, g, m2)) {
                 hi = m2;
