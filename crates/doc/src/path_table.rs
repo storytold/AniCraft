@@ -44,7 +44,7 @@ pub fn build_table(doc: &Document) -> Vec<Arc<Path>> {
                     let path = match &e.kind {
                         ElementKind::Shape(s) => &s.path,
                         ElementKind::Text(t) => &t.outline,
-                        ElementKind::Symbol { .. } => continue,
+                        ElementKind::Symbol { .. } | ElementKind::Camera => continue,
                     };
                     if seen.insert(Arc::as_ptr(path) as usize, ()).is_none() {
                         out.push(path.clone());

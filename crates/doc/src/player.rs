@@ -276,7 +276,10 @@ pub fn input(doc: &Document, state: &PlayerState, events: &[Event], host: &mut d
 pub fn tree(doc: &Document, st: &PlayerState) -> Vec<Node> {
     let tl = doc.timeline(st.scene);
     let mut out = vec![Node { path: Vec::new(), parent: None, owner: 0, name: String::new(), symbol: None, kind: NodeKind::Root, frame: st.root.frame, frames: tl.frame_count(), xf: Affine::IDENTITY, hittable: true, events: Vec::new() }];
-    walk(doc, st, tl, st.root.frame, 0, 0, Affine::IDENTITY, 1, true, &mut out);
+    // The main timeline is seen through its camera (ADR 0027): instances are where the pointer
+    // sees them.
+    let camera = tl.camera_at(st.root.frame, &doc.stage);
+    walk(doc, st, tl, st.root.frame, 0, 0, Affine::IDENTITY, 1, true, camera, &mut out);
     out
 }
 
@@ -292,7 +295,7 @@ fn plays(tl: &Timeline, index: usize) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usize, owner: usize, xf: Affine, depth: usize, hittable: bool, out: &mut Vec<Node>) {
+fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usize, owner: usize, xf: Affine, depth: usize, hittable: bool, camera: Option<crate::Camera>, out: &mut Vec<Node>) {
     if depth > MAX_SYMBOL_DEPTH {
         return;
     }
@@ -304,6 +307,7 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
         let hit = hittable && layer.kind != LayerKind::Mask;
         let path_walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, els)) = evaluate_guided(layer, frame, path_walk.as_ref()) else { continue };
+        let layer_xf = camera.map_or(xf, |c| c.view(&doc.stage, layer.depth));
         for el in els.iter() {
             if out.len() >= MAX_NODES {
                 return;
@@ -323,12 +327,12 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
                 SymbolKind::Button => (NodeKind::Button, st.button_frame(&path, len)),
             };
             let idx = out.len();
-            let node_xf = xf.mul(&e.transform);
+            let node_xf = layer_xf.mul(&e.transform);
             out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, hittable: hit && shown, events: events.clone() });
             // Names inside a movie clip (or a button's states) are its own; a graphic's
             // contents belong to the timeline the graphic is on.
             let inner_owner = if kind == NodeKind::Graphic { owner } else { idx };
-            walk(doc, st, &sym.timeline, local, idx, inner_owner, node_xf, depth + 1, hit && shown, out);
+            walk(doc, st, &sym.timeline, local, idx, inner_owner, node_xf, depth + 1, hit && shown, None, out);
         }
     }
 }

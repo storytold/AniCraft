@@ -51,7 +51,7 @@ impl Clipboard {
 fn symbol_refs(e: &Element) -> Option<SymbolId> {
     match &e.kind {
         ElementKind::Symbol { symbol, .. } => Some(*symbol),
-        ElementKind::Shape(_) | ElementKind::Text(_) => None,
+        ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
     }
 }
 

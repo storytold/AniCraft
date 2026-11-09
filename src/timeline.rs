@@ -153,6 +153,18 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
     if icon_button(ui, "Onion skin", Some(onion), Icon::Onion).clicked() {
         app.onion = !app.onion;
     }
+    // Add Camera, as Animate has it on the timeline: on while the scene has a camera; a click
+    // then takes it away (asking first when the camera moves; undoable).
+    let has = app.s.doc.timeline(app.s.scene).camera_layer().is_some();
+    if icon_button(ui, if has { "Remove camera" } else { "Add camera" }, Some(has), Icon::Camera).clicked() {
+        if has {
+            app.request("camera.remove", json!({}));
+        } else if app.run("camera.add", json!({})).is_some() {
+            app.tool = crate::app::Tool::Camera;
+            app.last_tool = crate::app::Tool::Camera;
+            app.status_ok("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo.");
+        }
+    }
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -348,6 +360,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 type_icon(x0 + 7.0, Icon::Guide);
                 x0 + 20.0
             }
+            LayerKind::Camera => {
+                type_icon(x0 + 7.0, Icon::Camera);
+                x0 + 20.0
+            }
             _ => x0 + 4.0,
         };
         painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
@@ -356,7 +372,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let toggle = |k: f32| Rect::from_center_size(pos2(left.right() - 16.0 - k * (TOGGLE + 2.0), left.center().y), vec2(TOGGLE, TOGGLE));
         let (eye, lock, outl) = (toggle(2.0), toggle(1.0), toggle(0.0));
         let hover = ui.input(|inp| inp.pointer.hover_pos());
-        for r in [eye, lock, outl] {
+        // The camera has no artwork to outline: its row has the eye (camera on or off) and lock.
+        let is_camera = layer.kind == LayerKind::Camera;
+        for r in [eye, lock, outl].into_iter().take(if is_camera { 2 } else { 3 }) {
             if hover.is_some_and(|h| r.contains(h)) {
                 painter.rect_filled(r, T.rc(), T.hover);
             }
@@ -369,7 +387,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         icons::paint(&painter, glyph(lock), if layer.locked { Icon::Lock } else { Icon::Unlock }, if layer.locked { c_on } else { c_off });
         // outline swatch
         let sw = Rect::from_center_size(outl.center(), vec2(10.0, 10.0));
-        if layer.outline {
+        if is_camera {
+            // The swatch shows the frame's colour on the stage.
+            painter.rect_filled(sw.shrink(2.0), 0.0, to_color32(layer.color));
+        } else if layer.outline {
             painter.rect_stroke(sw, 0.0, Stroke::new(1.5, to_color32(layer.color)), StrokeKind::Inside);
         } else {
             painter.rect_filled(sw, 0.0, to_color32(layer.color));
@@ -381,6 +402,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             LayerKind::Folder => "folder",
             LayerKind::Mask => "mask layer",
             LayerKind::Guide => "guide layer",
+            LayerKind::Camera => "camera layer",
             LayerKind::Normal if masked => "masked layer",
             LayerKind::Normal => "layer",
         };
@@ -390,7 +412,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if is_active || r == first_row {
             a11y::anchor(ui, a11y::Region::Timeline, dock, &nr);
         }
-        for (r, id, salt, verb, on) in [(eye, "layer.toggle_visible", "eye", "Show", layer.visible), (lock, "layer.toggle_lock", "lock", "Lock", layer.locked), (outl, "layer.toggle_outline", "outline", "Outline", layer.outline)] {
+        for (r, id, salt, verb, on) in [(eye, "layer.toggle_visible", "eye", "Show", layer.visible), (lock, "layer.toggle_lock", "lock", "Lock", layer.locked), (outl, "layer.toggle_outline", "outline", "Outline", layer.outline)].into_iter().take(if is_camera { 2 } else { 3 }) {
             let rr = ui.interact(r, ui.id().with((salt, layer.id.0)), Sense::click());
             a11y::control(ui, &rr, WidgetType::Checkbox, &format!("{verb} {}", layer.name), Some(on));
             if rr.clicked() {
@@ -416,6 +438,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         nr.context_menu(|ui| {
             ui.set_min_width(200.0);
+            if is_camera {
+                // The camera layer: on or off, locked or not, or gone.
+                for id in ["layer.rename", "layer.toggle_visible", "layer.toggle_lock"] {
+                    menus::cmd_item(app, ui, id);
+                }
+                ui.separator();
+                if ui.button("Preview Through Camera").clicked() {
+                    app.toggle_camera_preview();
+                    ui.close();
+                }
+                if ui.button("Remove Camera").clicked() {
+                    app.request("camera.remove", json!({}));
+                    ui.close();
+                }
+                return;
+            }
             for id in ["layer.rename", "layer.new", "layer.new_folder", "layer.delete"] {
                 menus::cmd_item(app, ui, id);
             }

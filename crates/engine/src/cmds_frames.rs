@@ -162,6 +162,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
             keys.push(Arc::new(k));
         }
         let Some(layer) = s.doc.timeline_mut(s.scene).layers.get_mut(row).map(Arc::make_mut) else { continue };
+        crate::cmds_camera::keys_fit(layer.kind, keys.iter().map(|k| &**k))?;
         if layer.keyframe_index_at(frame).is_some() {
             insert_keyframe_at(layer, frame, true)?;
         }
