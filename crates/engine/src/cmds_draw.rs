@@ -29,7 +29,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..]}", true, set_stroke),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, set_alpha),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, set_blend),
-        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them)", true, set_filters),
+        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, set_filters),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, set_loop),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
         c("element.rename", "Instance Name", "", None, "{name}", true, rename),
@@ -320,14 +320,29 @@ const MAX_FILTERS: usize = 16;
 /// Filters for the selected movie clip and button instances (Animate offers them on those only).
 fn set_filters(s: &mut Session, p: &Value) -> Result<Value> {
     let mut list = p.get("filters").cloned().ok_or_else(|| EngineError::Param("param 'filters' is required (a list; [] removes them)".into()))?;
-    // Colours may be written "#rrggbb" (or "#rrggbbaa"), as everywhere in commands.
+    // Colours may be written "#rrggbb" (or "#rrggbbaa"), as everywhere in commands: the filter's
+    // own and its ramp stops'.
+    fn hex_colors(v: &mut Value, keys: &[&str]) -> Result<()> {
+        for k in keys {
+            if v.get(*k).is_some_and(Value::is_string) {
+                let c = opt_color(v, k)?.unwrap_or(anicraft_doc::Rgba::BLACK);
+                v[*k] = json!({"r": c.r, "g": c.g, "b": c.b, "a": c.a});
+            }
+        }
+        Ok(())
+    }
     for f in list.as_array_mut().into_iter().flatten() {
-        if f.get("color").is_some_and(Value::is_string) {
-            let c = opt_color(f, "color")?.unwrap_or(anicraft_doc::Rgba::BLACK);
-            f["color"] = json!({"r": c.r, "g": c.g, "b": c.b, "a": c.a});
+        hex_colors(f, &["color", "shadow_color", "highlight_color"])?;
+        if let Some(stops) = f.get_mut("stops").and_then(Value::as_array_mut) {
+            if stops.len() > anicraft_doc::MAX_RAMP_STOPS {
+                return Err(EngineError::Param(format!("a ramp has at most {} stops", anicraft_doc::MAX_RAMP_STOPS)));
+            }
+            for st in stops.iter_mut() {
+                hex_colors(st, &["color"])?;
+            }
         }
     }
-    let filters: Vec<anicraft_doc::Filter> = serde_json::from_value(list).map_err(|e| EngineError::Param(format!("'filters' must be a list of {{type: blur|drop_shadow|glow|adjust_color, …}}: {e}")))?;
+    let filters: Vec<anicraft_doc::Filter> = serde_json::from_value(list).map_err(|e| EngineError::Param(format!("'filters' must be a list of {{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …}}: {e}")))?;
     if filters.len() > MAX_FILTERS {
         return Err(EngineError::Param(format!("at most {MAX_FILTERS} filters per instance")));
     }
