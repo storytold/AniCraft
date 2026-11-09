@@ -132,6 +132,9 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder) {
         return Err(EngineError::State("a folder holds layers; it can't become another kind of layer".into()));
     }
+    if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Camera) {
+        return Err(EngineError::State("the camera layer holds the camera; it can't become another kind of layer (Remove Camera takes it away)".into()));
+    }
     // Whatever the type, the layer stays in the folder it is in.
     let folder = tl.folder_of(i);
     let (kind, parent) = match ty {
@@ -165,6 +168,7 @@ fn layer_type_json(s: &Session, id: LayerId) -> Value {
         LayerKind::Mask => "mask",
         LayerKind::Guide => "guide",
         LayerKind::Folder => "folder",
+        LayerKind::Camera => "camera",
         LayerKind::Normal if masked_by.is_some() => "masked",
         LayerKind::Normal if guided_by.is_some() => "guided",
         LayerKind::Normal => "normal",
@@ -476,6 +480,7 @@ fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, l
         }
         let (a, b) = (a as u32, b as u32);
         let layer = s.layer_mut(Some(dst))?;
+        crate::cmds_camera::keys_fit(layer.kind, keys.iter())?;
         // Cut the target at both ends of the landing range so what lies outside it stays.
         if layer.keyframe_index_at(a).is_some_and(|i| layer.keyframes.get(i).is_some_and(|k| k.start < a)) {
             insert_keyframe_at(layer, a, true)?;
@@ -678,7 +683,7 @@ fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let is_folder = tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder);
     let range = if is_folder { tl.group_range(i) } else { i..i + 1 };
-    let drawable_left = tl.layers.iter().enumerate().filter(|(j, l)| !range.contains(j) && l.kind != LayerKind::Folder).count();
+    let drawable_left = tl.layers.iter().enumerate().filter(|(j, l)| !range.contains(j) && !matches!(l.kind, LayerKind::Folder | LayerKind::Camera)).count();
     if drawable_left == 0 {
         return Err(EngineError::State("a document needs at least one layer to draw on".into()));
     }

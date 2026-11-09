@@ -6,6 +6,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod cmds_actions;
+mod cmds_camera;
 mod cmds_draw;
 mod cmds_file;
 mod cmds_frames;
@@ -94,6 +95,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_file::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
+    v.extend(cmds_camera::specs());
     v.extend(cmds_motion::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
@@ -560,11 +562,20 @@ impl Session {
     /// The keyframe on the active layer that edits at the playhead should change. Creates a
     /// keyframe when the playhead is inside a tween (auto-key) or past the layer's end.
     pub(crate) fn editable_keyframe(&mut self) -> Result<&mut Keyframe> {
+        self.editable_keyframe_in(false)
+    }
+
+    /// [`Session::editable_keyframe`]; with `camera`, on the camera layer (which holds only the
+    /// camera: every other edit is refused there, ADR 0027).
+    pub(crate) fn editable_keyframe_in(&mut self, camera: bool) -> Result<&mut Keyframe> {
         let frame = self.frame;
         let tl = self.doc.timeline(self.scene);
         if let Some(l) = tl.layer(self.layer) {
             if l.kind == LayerKind::Folder {
                 return Err(EngineError::State(format!("'{}' is a folder; pick a layer inside it to draw on", l.name)));
+            }
+            if (l.kind == LayerKind::Camera) != camera {
+                return Err(EngineError::State(if camera { "that is not the camera layer".into() } else { format!("'{}' is the camera layer: it holds the camera, not artwork. Pick another layer to draw on, or move the camera with the Camera tool", l.name) }));
             }
             if tl.locked_by_folder(l.id) {
                 return Err(EngineError::State(format!("layer '{}' is in a locked folder", l.name)));
@@ -657,6 +668,7 @@ pub fn element_label(doc: &Document, e: &Element) -> String {
             }, s.name),
             None => "Graphic: missing".to_string(),
         },
+        ElementKind::Camera => "Camera".to_string(),
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             format!("Text: {first}{}", if t.text.chars().count() > first.chars().count() { "…" } else { "" })
@@ -678,3 +690,5 @@ mod tests_sound;
 mod hint_tests;
 #[cfg(test)]
 mod tests_actions;
+#[cfg(test)]
+mod tests_camera;

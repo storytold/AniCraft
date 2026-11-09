@@ -381,6 +381,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             LayerKind::Folder => "folder",
             LayerKind::Mask => "mask layer",
             LayerKind::Guide => "guide layer",
+            LayerKind::Camera => "camera layer",
             LayerKind::Normal if masked => "masked layer",
             LayerKind::Normal => "layer",
         };

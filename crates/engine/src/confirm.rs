@@ -73,6 +73,17 @@ fn overwrite(path: &Path, what: &str) -> Confirmation {
     }
 }
 
+/// Removing the camera asks only when it moves (its keyframes are the animation lost).
+fn camera_removal(_: &Session, l: &Layer) -> Option<Confirmation> {
+    let n = crate::cmds_camera::camera_moves(l);
+    (n > 0).then(|| Confirmation {
+        title: "Remove camera?".into(),
+        message: format!("The camera moves over {}. Removing it removes those moves, and the movie shows the stage as it is. You can undo this.", plural(n, "keyframe")),
+        action: "Remove Camera".into(),
+        irreversible: false,
+    })
+}
+
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
     match id {
@@ -134,8 +145,12 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: false,
             })
         }
+        "camera.remove" => camera_removal(s, s.doc.timeline(s.scene).camera_layer()?),
         "layer.delete" => {
             let l = target_layer(s, p)?;
+            if l.kind == anicraft_doc::LayerKind::Camera {
+                return camera_removal(s, l);
+            }
             if l.kind == anicraft_doc::LayerKind::Folder {
                 // A folder goes with everything in it.
                 let tl = s.doc.timeline(s.scene);

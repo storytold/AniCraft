@@ -1,5 +1,6 @@
 //! Timeline evaluation: `(document, frame) -> DisplayList`. Pure, deterministic, no caching.
 
+use crate::camera::Camera;
 use crate::player::PlayerState;
 use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
 use anicraft_geom::walk::PathWalk;
@@ -111,25 +112,39 @@ impl DisplayList {
     }
 }
 
-/// Evaluates movie frame `frame` (0-based): the scenes play one after the other.
+/// Evaluates movie frame `frame` (0-based): the scenes play one after the other, each seen
+/// through its camera (ADR 0027). This is what every export draws.
 pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
     let (scene, local) = doc.locate(frame);
-    evaluate_scene(doc, scene, local)
+    evaluate_scene_camera(doc, scene, local)
 }
 
-/// Evaluates scene `scene`'s timeline at its own `frame` (what the stage shows while editing).
+/// Evaluates scene `scene`'s timeline at its own `frame` in stage space, the camera not
+/// applied: what the stage shows while editing (and what picking and bounds use).
 pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
     eval_timeline(doc, doc.timeline(scene), frame, &Ctx::top(Affine::IDENTITY), &mut out, None);
     out
 }
 
+/// Scene `scene` at its own `frame` as the movie shows it: through the scene's camera, each
+/// layer shifted by its depth, the camera's tint over everything (ADR 0027). Without a camera
+/// this is [`evaluate_scene`].
+pub fn evaluate_scene_camera(doc: &Document, scene: usize, frame: u32) -> DisplayList {
+    let tl = doc.timeline(scene);
+    let mut out = DisplayList::default();
+    eval_timeline(doc, tl, frame, &Ctx::through(tl.camera_at(frame, &doc.stage)), &mut out, None);
+    out
+}
+
 /// What the player shows (ADR 0024): the scene and frame its main timeline is on, each movie
-/// clip at its own playhead, buttons in their pointer state, and properties scripts set.
+/// clip at its own playhead, buttons in their pointer state, and properties scripts set, seen
+/// through the scene's camera.
 pub fn evaluate_player(doc: &Document, state: &PlayerState) -> DisplayList {
     let mut out = DisplayList::default();
     let play = Play { state, path: Vec::new() };
-    eval_timeline(doc, doc.timeline(state.scene), state.root.frame, &Ctx::top(Affine::IDENTITY), &mut out, Some(&play));
+    let tl = doc.timeline(state.scene);
+    eval_timeline(doc, tl, state.root.frame, &Ctx::through(tl.camera_at(state.root.frame, &doc.stage)), &mut out, Some(&play));
     out
 }
 
@@ -228,6 +243,7 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
         (ElementKind::Symbol { symbol: s1, .. }, ElementKind::Symbol { symbol: s2, .. }) if s1 == s2 => a.kind.clone(),
         // Text tweens its placement and colour effect; the words stay the first keyframe's.
         (ElementKind::Text(_), ElementKind::Text(_)) => a.kind.clone(),
+        (ElementKind::Camera, ElementKind::Camera) => ElementKind::Camera,
         _ => return None,
     };
     let mut transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
@@ -255,11 +271,24 @@ struct Ctx {
     guide: bool,
     /// The group everything inside fades with.
     group: Option<u32>,
+    /// The camera the scene's layers are seen through (main timeline only; each layer's
+    /// transform comes from it and the layer's depth, and `xf` is ignored).
+    camera: Option<Camera>,
 }
 
 impl Ctx {
     fn top(xf: Affine) -> Ctx {
-        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None }
+        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None }
+    }
+
+    /// A main timeline seen through `camera`: its tint colours everything.
+    fn through(camera: Option<Camera>) -> Ctx {
+        let mut cx = Ctx::top(Affine::IDENTITY);
+        if let Some(c) = camera {
+            cx.color = c.color();
+            cx.camera = Some(c);
+        }
+        cx
     }
 }
 
@@ -293,7 +322,7 @@ pub(crate) fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
             }
             PathWalk::new(&pts)
         }
-        ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
+        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
     })
 }
 
@@ -335,7 +364,8 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         // Guide artwork is listed (marked, for editing) but never drawn; inside mask artwork
         // it plays no part at all.
         let is_guide = layer.kind == LayerKind::Guide;
-        if !layer.visible || layer.kind == LayerKind::Folder || (is_guide && cx.masks.is_some()) || (has_folders && tl.hidden_by_folder(index)) {
+        // The camera layer holds the camera, not artwork (ADR 0027).
+        if !layer.visible || matches!(layer.kind, LayerKind::Folder | LayerKind::Camera) || (is_guide && cx.masks.is_some()) || (has_folders && tl.hidden_by_folder(index)) {
             continue;
         }
         let (clip, masks) = match (cx.masks, layer.kind) {
@@ -349,6 +379,8 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
+        // Through a camera, each layer is placed by the camera and its own depth.
+        let layer_xf = cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth));
         for el in elements.iter() {
             // In the player, a symbol instance has its own path, and maybe properties a script set.
             let child = match (&el.kind, play) {
@@ -365,7 +397,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                 None => el,
             };
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
-            let xf = cx.xf.mul(&el.transform);
+            let xf = layer_xf.mul(&el.transform);
             let color = cx.color.concat(&el.color);
             match &el.kind {
                 ElementKind::Shape(s) => out.items.push(DisplayItem {
@@ -403,6 +435,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     group: cx.group,
                     image: None,
                 }),
+                ElementKind::Camera => {}
                 ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
                     let len = sym.timeline.frame_count();
@@ -430,7 +463,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     } else {
                         (color, cx.group)
                     };
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group };
+                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group, camera: None };
                     eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
                 }
             }
