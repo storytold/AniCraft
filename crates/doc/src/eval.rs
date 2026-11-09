@@ -136,6 +136,15 @@ pub fn evaluate_layer_elements(layer: &Layer, frame: u32) -> Option<(u32, Cow<'_
 pub fn evaluate_guided<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf = layer.keyframes.get(idx)?;
+    // A motion tween: its target follows the property curves; anything else on the key holds.
+    if let Some(m) = &kf.motion {
+        let Some(i) = m.target_index(&kf.elements).filter(|_| !m.tracks.is_empty()) else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
+        let mut els = kf.elements.clone();
+        if let Some(slot) = els.get_mut(i) {
+            *slot = Arc::new(m.apply(slot, (frame - kf.start) as f32));
+        }
+        return Some((kf.start, Cow::Owned(els)));
+    }
     let Some(tween) = kf.tween else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
     let Some(next) = layer.keyframes.get(idx + 1) else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
     if next.start != kf.end() || frame == kf.start {

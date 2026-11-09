@@ -142,6 +142,10 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
             let small = |t: String| text(Type::Data, t).color(T.text_faint);
             ui.label(small(format!("undo {} · {:.1} MB", app.s.history().undo_len(), app.s.history().bytes() as f32 / (1024.0 * 1024.0))));
             ui.add_space(12.0);
+            if let Some(a) = crate::autosave::status(app, now) {
+                ui.label(small(a)).on_hover_text("A recovery copy of your unsaved work. If AniCraft closes unexpectedly, the next start offers it back.");
+                ui.add_space(12.0);
+            }
             if let Some((n, mb, hit)) = app.stage_cache.stats() {
                 ui.label(small(format!("cache {n} fr · {mb:.0} MB · {hit:.0}% hit")));
                 ui.add_space(12.0);
@@ -686,6 +690,24 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                         live(app, "Frame label", "timeline.set_label", json!({"label": label}));
                     }
                 });
+                if let Some(m) = &k.motion {
+                    // A motion tween: what is keyed, and the way to its curves.
+                    row_prose(ui, "Tween", |ui| {
+                        ui.label(text(Type::Body, "Motion"));
+                    });
+                    let keyed: Vec<&str> = m.tracks.iter().map(|t| t.property.label()).collect();
+                    let n = m.key_frames().len();
+                    ui.label(text(Type::Caption, if keyed.is_empty() { "No property keyframes yet: move or change the object at a later frame to add some.".to_string() } else { format!("{} · {n} {}", keyed.join(", "), if n == 1 { "key frame" } else { "key frames" }) }));
+                    ui.horizontal(|ui| {
+                        if ui.button("Motion Editor").on_hover_text("Edit the property curves and eases").clicked() {
+                            app.bottom = crate::app::BottomTab::MotionEditor;
+                        }
+                        if ui.button("Remove Tween").on_hover_text("The object stays as it is on the span's first frame").clicked() {
+                            app.run("timeline.remove_tween", json!({}));
+                        }
+                    });
+                    return;
+                }
                 match k.tween {
                     Some(t) => {
                         row_prose(ui, "Tween", |ui| {
@@ -719,7 +741,10 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                         ease_curve(ui, t.easing);
                     }
                     None => {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Create Motion Tween").on_hover_text("Animate this span's object property by property").clicked() {
+                                app.run("timeline.create_motion_tween", json!({}));
+                            }
                             if ui.button("Create Classic Tween").clicked() {
                                 app.run("timeline.create_tween", json!({}));
                             }

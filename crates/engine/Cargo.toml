@@ -14,6 +14,7 @@ anicraft-render.workspace = true
 anicraft-xfl.workspace = true
 anicraft-svg.workspace = true
 anicraft-text.workspace = true
+anicraft-plugins.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -23,6 +24,8 @@ gif.workspace = true
 [dev-dependencies]
 # Decodes exported sheets in tests (already in the tree through the renderer).
 png.workspace = true
+# Plug-in test fixtures written in WebAssembly text (Apache-2.0 WITH LLVM-exception).
+wat = "1.228"
 
 [lints]
 workspace = true

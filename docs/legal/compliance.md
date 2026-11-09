@@ -43,6 +43,12 @@ cargo deny check advisories              # RustSec security advisories (needs ne
 
 * Full per-crate list: [`third-party-inventory.txt`](third-party-inventory.txt) (regenerate when
   `Cargo.lock` changes).
+* **2026-11-09, WebAssembly plug-ins (ADR 0017)**: `wasmi` 2.0 and its `wasmi_core`,
+  `wasmi_ir`, `wasmi_collections` (MIT OR Apache-2.0), `wasmparser` 0.228 (Apache-2.0 WITH
+  LLVM-exception, already allowed) and `spin` (MIT). Tests only: `wat` and its
+  `wasm-encoder`/`wast` (Apache-2.0 WITH LLVM-exception). No new licence. Plug-ins are the
+  user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
+  `examples/plugins` (MIT OR Apache-2.0).
 
 ## 3. Fonts, graphics and other assets
 
@@ -80,6 +86,7 @@ cargo deny check advisories              # RustSec security advisories (needs ne
 | **Video export** | H.264/HEVC/AAC are covered by patent pools. VP9, AV1 and Opus are royalty-free. | **Never bundle encoders for patent-pool codecs.** MP4/H.264 only by piping to a user-installed ffmpeg. Default to WebM (VP9/AV1). **As built** (`file.export_video`): AniCraft starts the user's ffmpeg (found via a parameter, `ANICRAFT_FFMPEG` or the PATH) with an argument list, never a shell, writes raw RGBA frames to its stdin, and ships no codec code; the default file type is `.webm` (VP9). |
 | **XFL / FLA import** (M4) | Adobe's proprietary formats, without a public specification. | Clean room: work only from files users or we author, public community docs and observation. Never use Adobe code, SDKs or decompiled software. Interoperability-focused (generally protected in EU Software Directive art. 6 and US DMCA §1201(f)); **confirm with counsel before shipping**. |
 | **ActionScript compatibility** (M6, ADR 0013) | A programming language; no known patent pool. Implemented from ECMA-262 (3rd edition) and Adobe's public ActionScript 3.0 references. | Clean room as for XFL: public documents and self-authored files only; never Adobe compilers, SDKs or player code. Keep and run a timeline subset only; no bytecode VM. |
+| WebAssembly (plug-ins, ADR 0017) | W3C standard under the W3C Royalty-Free Patent Policy. | Allowed. Interpreted by `wasmi` (no code generation). |
 | SWF export (optional) | Adobe published the SWF specification and lifted its use restrictions in 2009 (Open Screen Project). | Allowed, low priority. |
 | Lottie | Open specification (Lottie Animation Community, Linux Foundation). | Allowed. |
 

@@ -8,12 +8,14 @@ mod bitmap;
 mod filter;
 mod easing;
 mod eval;
+pub mod motion;
 pub mod path_table;
 pub mod sample;
 
 pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
+pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
@@ -491,19 +493,23 @@ pub struct Keyframe {
     pub elements: Vec<Arc<Element>>,
     #[serde(default)]
     pub tween: Option<Tween>,
+    /// A motion tween over this span (ADR 0016). A span has a classic or shape tween (`tween`)
+    /// or a motion tween, never both; commands keep it so, and a motion tween wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<MotionTween>,
     #[serde(default)]
     pub label: String,
 }
 
 impl PartialEq for Keyframe {
     fn eq(&self, o: &Keyframe) -> bool {
-        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.label == o.label && arcs_eq(&self.elements, &o.elements)
+        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.label == o.label && arcs_eq(&self.elements, &o.elements)
     }
 }
 
 impl Keyframe {
     pub fn new(start: u32, duration: u32) -> Self {
-        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, label: String::new() }
+        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, label: String::new() }
     }
     /// Mutable access to the elements whose ids satisfy `pick`, cloning only those.
     pub fn elements_mut_where(&mut self, mut pick: impl FnMut(ElementId) -> bool) -> Vec<&mut Element> {
@@ -618,6 +624,16 @@ impl Layer {
     /// Restores invariants after edits: sorted, durations ≥ 1, no overlaps. Touches (and so
     /// un-shares) only keyframes whose duration actually changes.
     pub fn normalize(&mut self) {
+        // A loaded motion tween is repaired, and it replaces a classic tween on the same span.
+        for i in 0..self.keyframes.len() {
+            let bad = self.keyframes.get(i).is_some_and(|k| k.motion.as_ref().is_some_and(|m| !m.is_sane() || k.tween.is_some()));
+            if bad && let Some(k) = self.keyframe_mut(i) {
+                k.tween = None;
+                if let Some(m) = k.motion.as_mut() {
+                    m.sanitize();
+                }
+            }
+        }
         if !self.keyframes.is_sorted_by_key(|k| k.start) {
             self.keyframes.sort_by_key(|k| k.start);
         }

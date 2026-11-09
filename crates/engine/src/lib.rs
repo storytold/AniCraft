@@ -9,14 +9,18 @@ mod cmds_draw;
 mod cmds_file;
 mod cmds_frames;
 mod cmds_modify;
+mod cmds_motion;
 mod cmds_paint;
 mod cmds_path;
+mod cmds_recovery;
+pub mod cmds_plugin;
 mod cmds_scene;
 pub mod cmds_text;
 mod cmds_timeline;
 pub mod confirm;
 pub mod format;
 pub mod history;
+pub mod recovery;
 pub mod render_service;
 pub mod params;
 
@@ -29,6 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use anicraft_doc as doc;
+pub use anicraft_plugins as plugins;
 pub use anicraft_text as text;
 pub use anicraft_geom as geom;
 pub use anicraft_render as render;
@@ -82,7 +87,9 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
+    v.extend(cmds_motion::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
@@ -90,6 +97,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_path::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
+    v.extend(cmds_plugin::specs());
     v
 }
 
@@ -159,6 +167,14 @@ pub struct Session {
     pub clipboard: cmds_modify::Clipboard,
     /// Copied frames (Copy Frames), separate from copied artwork as in Animate.
     pub frame_clipboard: cmds_frames::FrameClipboard,
+    /// A command is editing a motion tween's target (auto-key, ADR 0016).
+    motion_edit: Option<cmds_motion::MotionEdit>,
+    /// Installed WebAssembly plug-ins (ADR 0017). They belong to the session, not the
+    /// document: they survive New and Open.
+    pub plugins: anicraft_plugins::Registry,
+    /// A name for the undo step the running command records, set by the command
+    /// (`plugin.run` names its step after the plug-in).
+    pub(crate) step_label: Option<String>,
 }
 
 impl Default for Session {
@@ -196,6 +212,9 @@ impl Session {
             dl_cache: RefCell::new(None),
             clipboard: cmds_modify::Clipboard::default(),
             frame_clipboard: cmds_frames::FrameClipboard::default(),
+            motion_edit: None,
+            plugins: anicraft_plugins::Registry::default(),
+            step_label: None,
         }
     }
 
@@ -208,6 +227,12 @@ impl Session {
     /// Marks the current state as saved.
     pub fn mark_saved(&mut self) {
         self.saved_state = Some(self.state);
+    }
+
+    /// Marks the document as not saved anywhere yet (a restored autosave), so the close guard
+    /// and the title treat it as unsaved work.
+    pub fn mark_unsaved(&mut self) {
+        self.saved_state = None;
     }
 
     /// The confirmation running `id` with `params` needs right now (ADR 0004).
@@ -251,9 +276,11 @@ impl Session {
         let rev = self.revision;
         let budget = self.history.budget_bytes;
         let clipboard = std::mem::take(&mut self.clipboard);
+        let plugins = std::mem::take(&mut self.plugins);
         *self = Session::new(doc);
         // The clipboard survives New/Open, so artwork can move between documents.
         self.clipboard = clipboard;
+        self.plugins = plugins;
         self.style = style;
         self.revision = rev + 1;
         self.path = path;
@@ -273,11 +300,22 @@ impl Session {
         if !spec.mutates {
             return (spec.run)(self, params);
         }
-        let before = self.snapshot(spec.label);
+        let mut before = self.snapshot(spec.label);
         // A command must never observe a display list of the state it is changing.
         self.dl_cache.replace(None);
+        self.motion_edit = None;
+        self.step_label = None;
         let result = (spec.run)(self, params);
+        // Edits to a motion tween's target become property keys (auto-key).
+        if let Some(edit) = self.motion_edit.take()
+            && result.is_ok()
+        {
+            cmds_motion::finish_edit(self, edit);
+        }
         self.dl_cache.replace(None);
+        if let Some(label) = self.step_label.take() {
+            before.label = label;
+        }
         match result {
             Ok(v) => {
                 // O(changed): unchanged subtrees compare by pointer.
@@ -296,6 +334,52 @@ impl Session {
                 Err(e)
             }
         }
+    }
+
+    /// Runs a command inside another one (a plug-in's requests during `plugin.run`): checked
+    /// and atomic like [`Session::execute`], but it records no undo step of its own, so the
+    /// outer command stays one step.
+    pub(crate) fn execute_nested(&mut self, id: &str, params: &Value) -> Result<Value> {
+        let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        if let Some(c) = self.confirmation(id, params)
+            && c.irreversible
+        {
+            return Err(EngineError::NeedsConfirmation(format!("{} {}", c.title, c.message)));
+        }
+        if !spec.mutates {
+            return (spec.run)(self, params);
+        }
+        let before = self.snapshot("");
+        self.dl_cache.replace(None);
+        let result = (spec.run)(self, params);
+        self.dl_cache.replace(None);
+        match result {
+            Ok(v) => {
+                // Later requests must see this change (display list, hit tests): new state.
+                if self.doc != before.doc {
+                    self.state = history::fresh_state();
+                }
+                self.fix_selection();
+                Ok(v)
+            }
+            Err(e) => {
+                self.restore(before);
+                Err(e)
+            }
+        }
+    }
+
+    /// Puts the document back where the open gesture started, keeping the gesture open. A
+    /// live preview re-runs from the same start on every change, and Cancel leaves no step.
+    pub fn revert_gesture(&mut self) {
+        let Some(g) = &self.gesture else { return };
+        if g.doc == self.doc && g.selection == self.selection {
+            return;
+        }
+        let back = Snapshot { label: String::new(), doc: g.doc.clone(), state: g.state, scene: g.scene, frame: g.frame, layer: g.layer, selection: g.selection.clone(), bytes: 0 };
+        self.restore(back);
+        self.revision += 1;
+        self.fix_selection();
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
@@ -475,13 +559,16 @@ impl Session {
                 return Err(EngineError::State(format!("layer '{}' is in a locked folder", l.name)));
             }
         }
-        let layer = self.layer_mut(None)?;
+        // Through the fields, not `layer_mut`, so `motion_edit` can be set below.
+        let (scene, active) = (self.scene, self.layer);
+        let layer = self.doc.timeline_mut(scene).layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
         if layer.locked {
             return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));
         }
+        // Inside a motion tween edits key properties, never the timeline.
         let needs_key = match layer.keyframe_at(frame) {
             None => true,
-            Some(k) => k.tween.is_some() && k.start != frame,
+            Some(k) => k.motion.is_none() && k.tween.is_some() && k.start != frame,
         };
         if needs_key {
             // Inside a tween: capture the tweened state. On an empty frame: start blank.
@@ -489,7 +576,16 @@ impl Session {
             cmds_timeline::insert_keyframe_at(layer, frame, copy)?;
         }
         let idx = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State("no keyframe at the playhead".into()))?;
-        layer.keyframe_mut(idx).ok_or_else(|| EngineError::State("no keyframe at the playhead".into()))
+        let lid = layer.id;
+        let kf = layer.keyframe_mut(idx).ok_or_else(|| EngineError::State("no keyframe at the playhead".into()))?;
+        // In a motion tween the command edits the target as it looks at the playhead; the
+        // session turns what changed into property keys when the command is done.
+        if self.motion_edit.is_none()
+            && let Some(edit) = cmds_motion::begin_edit(lid, kf, frame)
+        {
+            self.motion_edit = Some(edit);
+        }
+        Ok(kf)
     }
 
     /// Selected elements in the editable keyframe (copy-on-write: only these are cloned).
@@ -512,7 +608,7 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label())})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>())})).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -551,3 +647,8 @@ pub fn element_label(doc: &Document, e: &Element) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod motion_tests;
+#[cfg(test)]
+mod plugin_tests;
