@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+* **Camera layer with layer depth** (ADR 0027). Click the camera button in the timeline
+  header (or pick the **Camera tool**, C) to add a camera: a Camera layer on top of the
+  timeline whose frame shows on the stage as an orange outline of what the movie will show.
+  With the Camera tool, drag to pan it, turn it with the round handle above the frame and zoom
+  with the wheel (each drag is one undo step); Properties › Camera sets position, zoom (5–2,000
+  %), rotation and a tint over the whole view, or resets it. The camera animates like any
+  object: add keyframes on its layer and create a classic or motion tween (the zoom is Scale X
+  in the Motion Editor). Give layers a **Depth** (Properties › Frame, once there is a camera):
+  a layer behind the stage moves less as the camera pans, for parallax. **View › Preview
+  Through Camera** shows the stage as the movie will look. Every export (PNG, sequences, GIF,
+  video, sprite sheets, SVG, Lottie), Test Movie and the GPU stage see the camera; the stage
+  stays in stage space while you edit. Hiding the camera layer turns the camera off; removing
+  an animated camera asks first. Headless: `camera.add`, `camera.remove`, `camera.set`,
+  `camera.info`, `layer.set_depth`.
 * **Bevel, Gradient Glow and Gradient Bevel filters** (ADR 0025). Properties › Filters ›
   Add filter now offers all seven of Animate's filters on movie clip and button instances.
   **Bevel** lights the edges that face the light and shades the others (shadow and highlight
