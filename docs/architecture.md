@@ -29,6 +29,7 @@
 app/                         workspace root; the root package is the desktop app (`anicraft`)
   crates/
     geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test
+    plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0014)
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
@@ -40,6 +41,7 @@ app/                         workspace root; the root package is the desktop app
 | Layer | Crate | May depend on |
 |---|---|---|
 | L0 | `anicraft-geom` | std, serde |
+| L0 | `anicraft-plugins` | wasmi, serde_json (knows nothing of documents; the engine is its host) |
 | L1 | `anicraft-doc` | geom |
 | L2 | `anicraft-render` | geom, doc, rayon, png |
 | L3 | `anicraft-engine` | geom, doc, render, serde_json |

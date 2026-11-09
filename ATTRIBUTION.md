@@ -76,6 +76,7 @@ OR Apache-2.0) is noted in the table.
 | Shape morphing (cubic normalization, subdivision to equal segment counts, winding and start-point alignment) | `crates/geom/src/morph.rs` | Standard curve-blending techniques from the public computer-graphics literature (de Casteljau subdivision, exact degree elevation) | |
 | Affine QR decomposition for tweening | `crates/geom/src/affine.rs` | Standard linear algebra | |
 | Least-squares cubic Bézier curve fitting (Pencil "Smooth") | `crates/geom/src/fit.rs` | P. J. Schneider, *An Algorithm for Automatically Fitting Digitized Curves*, Graphics Gems (1990) | Ported from PhotoCraft's mask tracer and adapted for open strokes. Published algorithm. |
+| WebAssembly plug-in host (module validation, limits, fuel, resumable host calls) | `crates/plugins` | W3C WebAssembly Core Specification 1.0 / 2.0 (W3C Royalty-Free Patent Policy); the `wasmi` interpreter (MIT OR Apache-2.0) | Host model ported from PhotoCraft's filter plug-ins (same project family and licence) and extended with the AniCraft request ABI (ADR 0014). |
 | De Casteljau subdivision, Ramer–Douglas–Peucker simplification | `crates/geom/src/edit.rs` | Public mathematical results (de Casteljau 1959; Ramer 1972; Douglas & Peucker 1973) | |
 
 ## Rust dependencies

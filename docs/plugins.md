@@ -1,0 +1,227 @@
+# Plug-ins: the WebAssembly plug-in API (ABI v1)
+
+AniCraft plug-ins are **WebAssembly modules** run in a sandbox, the same host model as the other
+Craft apps (PhotoCraft's filter plug-ins). One `.wasm` file works on Windows, macOS, Linux and,
+later, the web build. A plug-in adds a command: it reads the open document and changes it
+through AniCraft's own command registry, so everything it does is checked like any other edit
+and can be undone in one step. The decision and the alternatives are in
+[ADR 0014](adr/0014-wasm-plugins.md).
+
+This page is the contract for plug-in authors and the reference for the host
+(`crates/plugins`, the `plugin.*` commands in `crates/engine/src/cmds_plugin.rs`).
+
+## Using plug-ins
+
+In the app: **Commands › Plug-ins** lists the installed plug-ins. One with settings opens a
+dialog generated from its parameters, with a live preview on the stage; **OK** (Enter) keeps
+the result as one undo step named after the plug-in, **Cancel** (Esc) leaves the document as it
+was. **Commands › Install Plug-in…** picks a `.wasm` file, **Manage Plug-ins…** shows what is
+installed (with Run, Remove, the plug-ins folder and Reload), and **Reload Plug-ins** re-reads
+the folder. The command palette (Ctrl+K) finds plug-ins by name too. A plug-in that works on
+the selection is greyed out until something is selected.
+
+| Command | Params | What it does |
+|---|---|---|
+| `plugin.install` | `{"path": "x.wasm", "confirm"?: true}` | Validates the module and installs it. With a plug-ins folder, the module is copied there as `<id>.wasm` (atomically). Replacing an installed plug-in's file is irreversible, so it needs `"confirm": true` (ADR 0004). |
+| `plugin.list` | `{}` | `{"plugins": [{id, name, version, author, description, kind, selection, params, notation, size, source, in_folder}], "folder", "abi"}`. In the app: the Plug-ins window. |
+| `plugin.run` | `{"id": "…", "params"?: {…}}` | Runs a plug-in. Missing params take their defaults; numbers are clamped to their range; a wrong type is an error. One undo step; on any failure the document is left exactly as it was. Returns the run's log, request count and instructions used. |
+| `plugin.remove` | `{"id": "…", "confirm"?: true}` | Uninstalls. When its file is in the plug-ins folder it is deleted, which needs `"confirm": true`. |
+| `plugin.reload` | `{"folder"?: "…"}` | Re-reads every `*.wasm` in the plug-ins folder (first making `folder` the plug-ins folder when given). A bad module is reported and skipped. |
+
+**Where plug-ins live.** The app uses a `plugins` folder in its settings folder:
+`%APPDATA%\AniCraft\plugins` on Windows, `~/Library/Application Support/AniCraft/plugins` on
+macOS, `$XDG_CONFIG_HOME/anicraft/plugins` (default `~/.config/anicraft/plugins`) on Linux. Every
+`*.wasm` in it loads at start. The `ANICRAFT_PLUGINS` environment variable points somewhere
+else instead (handy while writing a plug-in). Plug-ins belong to the session, not the
+document: they stay installed across New and Open, and documents never contain plug-ins.
+
+**Headless.** `anicraft-cli` loads plug-ins only when asked, so scripted runs are repeatable:
+`--plugins <folder>` (or `ANICRAFT_PLUGINS`) on any subcommand, or `plugin.reload` with a folder.
+Over MCP the same commands are available through `anicraft_run`.
+
+```sh
+anicraft-cli exec --sample plugin.run '{"id":"org.anicraft.star-field","params":{"count":200}}' \
+    --plugins examples/plugins/dist --save stars.anicraft
+```
+
+## The sandbox
+
+The host is [`wasmi`](https://github.com/wasmi-labs/wasmi), a pure-Rust WebAssembly interpreter
+(MIT OR Apache-2.0), built with full validation, its strict module limits and the portable
+dispatcher (the default tail-call dispatcher can overflow the host stack on a long-running
+module, which would abort the process). Limits (`anicraft_plugins::Limits`, defaults):
+
+| Limit | Default | On violation |
+|---|---|---|
+| Host imports | only `anicraft.call` and `anicraft.response` (no WASI, files, clock, randomness or network) | module rejected at install |
+| Module size | 16 MiB | rejected |
+| Linear memory | 256 MiB per instance | `memory.grow` returns −1; an oversized initial memory fails to load |
+| Instructions (fuel) | 1,000,000,000 per run (a tenth for loading) | the run stops: "exceeded its instruction budget" |
+| Wall clock | 5 s per run, host calls included (native builds; checked every 10 M instructions and at every request) | "exceeded its time budget" |
+| Requests | 100,000 per run | "exceeded its host-call budget" |
+| Request / response size | 1 MiB / 8 MiB | an oversized request traps; an oversized response becomes an error answer |
+| Params handed to `ac_run` | 64 KiB | error |
+| Log | 200 lines of ≤ 500 characters (more are counted, not kept) | dropped |
+| Call depth | 1,024 frames | trap |
+
+Every run gets a **fresh instance**, so nothing survives from one run to the next. Traps,
+exhausted budgets, malformed modules, bad manifests, out-of-range pointers and non-zero return
+codes all become errors, and the document goes back to how it was before the run. The CPU
+interpreter runs about 470 M simple instructions per second on the development machine, so the
+default fuel is roughly two seconds of computing.
+
+**What a plug-in may do.** Requests reach the same commands the menus, the CLI and MCP use,
+with the same parameter checks, except:
+
+* `file.*`: no opening, saving, importing or exporting files;
+* `plugin.*`: no installing, running or removing plug-ins;
+* `edit.undo`, `edit.redo`: the whole run is one undo step;
+* cut, copy and paste (artwork and frames): your clipboard is yours.
+
+Commands in a namespace the host doesn't know are refused, and a test fails when a new
+namespace appears without a decision. Commands that would need an irreversible confirmation
+are refused too.
+
+## ABI v1
+
+A plug-in is a core WebAssembly module (MVP plus the usual post-MVP features: bulk memory, sign
+extension, multi-value, saturating conversions; no SIMD, no memory64). All integers are `i32`
+unless noted; pointers are offsets into the module's memory.
+
+### Exports
+
+| Export | Signature | Meaning |
+|---|---|---|
+| `memory` | memory | The module's linear memory. |
+| `ac_abi_version` | `() -> i32` | Must return `1`. |
+| `ac_manifest` | `() -> i64` | `(len << 32) \| ptr` of the UTF-8 manifest JSON (≤ 64 KiB). |
+| `ac_alloc` | `(size) -> ptr` | A block of `size` bytes the host may write, or `0` on failure. Never freed: each run gets a fresh instance. |
+| `ac_run` | `(params_ptr, params_len) -> i32` | Runs the command with the validated parameters (UTF-8 JSON object). `0` = success; anything else fails the run (and undoes it), with the last log line as the message. |
+
+### Imports (module `anicraft`, both optional)
+
+| Import | Signature | Meaning |
+|---|---|---|
+| `call` | `(req_ptr, req_len) -> i32` | Sends one JSON request; returns the length of the response. |
+| `response` | `(dst_ptr, dst_cap) -> i32` | Copies up to `dst_cap` bytes of the last response to `dst_ptr`; returns the bytes copied. |
+
+Every response is JSON: `{"ok":true,"result":…}` or `{"ok":false,"error":"…"}` (`ok` always
+first). A refused or failed request is an answer, not a trap: the plug-in decides what to do.
+
+### Requests
+
+| Request | Result |
+|---|---|
+| `{"op":"command","id":"draw.star","params":{…}}` | The command's result (see `anicraft-cli commands` for ids and params). |
+| `{"op":"document"}` | `{abi, stage: {width, height, fps, background}, scene, scenes, frame, frames, layer, layers: [{id, name, kind, visible, locked, parent}], selection: [ids]}` |
+| `{"op":"elements","selected"?:bool,"paths"?:bool}` | The elements on the active layer at the playhead (tweens applied): `{layer, frame, elements: [{id, kind: shape\|symbol\|text, name, selected, transform: [a,b,c,d,e,f], bounds: [x,y,w,h] (stage), alpha, fill, stroke, path (SVG path data, local space, with "paths")}]}` (at most 10,000). |
+| `{"op":"log","message":"…"}` | `null`; the line goes into the run's report, and the last one explains a failure. |
+
+Unknown ops answer `{"ok":false,"error":"unknown op '…'"}`, so a plug-in can feature-detect.
+New ops and plug-in kinds are added without changing version 1; the version changes only
+when an existing contract changes.
+
+**Reserved for later kinds** (not in v1; ADR 0013 and 0014): timeline actions for frame
+scripts (`stop`, `play`, `goto` by frame or label, targeting named instances), the same IR the
+ActionScript front end lowers to; exporters (`kind: "exporter"`, frames in, bytes out); easing
+presets.
+
+### Manifest
+
+```json
+{
+  "id": "org.example.stars",
+  "name": "Star Field",
+  "version": "1.0.0",
+  "kind": "command",
+  "author": "Example",
+  "description": "What it does, one sentence.",
+  "selection": "optional",
+  "params": {
+    "count":  {"type": "int", "min": 1, "max": 1000, "default": 120, "label": "Stars"},
+    "size":   {"type": "number", "min": 1, "max": 50, "default": 4},
+    "twinkle":{"type": "bool", "default": true},
+    "shape":  {"type": "choice", "options": ["star", "dot"], "default": "star"},
+    "color":  {"type": "color", "default": "#fff4c2"}
+  }
+}
+```
+
+* `id`: 1–64 characters from `A-Z a-z 0-9 . _ -` (reverse-DNS recommended). Installing a
+  module with the same id replaces the old one.
+* `name`: the menu label, 1–64 printable characters (control characters and invisible
+  format characters such as bidi overrides are rejected). The app adds "…" when there are
+  parameters.
+* `kind`: `"command"` (the only kind in v1).
+* `selection`: `"optional"` (default; generators) or `"required"` (selection transforms: the
+  menu item is disabled without a selection and `plugin.run` refuses).
+* `params`: in dialog order, at most 32. Names are `[A-Za-z0-9_]`, 1–32 characters, not
+  starting with `_`, not `id`. `label` (optional) is the dialog label; by default the name with
+  underscores as spaces. Types: `number` and `int` (`min`, `max`, `default`; a slider),
+  `bool` (a checkbox), `choice` (`options`, `default`; a dropdown), `color` (`"#rrggbb"`; a
+  swatch).
+
+## Writing a plug-in in Rust
+
+[`examples/plugins`](../examples/plugins) has a small guest SDK and two complete plug-ins:
+
+* **Star Field** (`star-field/`): a generator. Scatters stars of varied size, angle and
+  brightness over the stage on a new layer (`layer.new`, `draw.star`,
+  `element.set_transform`, `element.set_alpha`).
+* **Jitter Selection** (`jitter/`): a selection transform. Moves, turns and scales each selected
+  element about its own centre (`elements`, `element.select`, `modify.transform`).
+
+```rust
+use anicraft_plugin_sdk::{self as ac, Rng};
+use serde_json::{Value, json};
+
+const MANIFEST: &str = r#"{"id":"org.example.dots","name":"Dots","kind":"command",
+  "params":{"count":{"type":"int","min":1,"max":100,"default":10}}}"#;
+
+ac::plugin!(MANIFEST, run);
+
+fn run(p: &Value) -> Result<(), String> {
+    let stage = &ac::document()?["stage"];
+    let (w, h) = (stage["width"].as_f64().unwrap_or(550.0), stage["height"].as_f64().unwrap_or(400.0));
+    let mut rng = Rng::new(1);
+    for _ in 0..p["count"].as_u64().unwrap_or(10) {
+        let (x, y) = (rng.unit() * w, rng.unit() * h);
+        ac::command("draw.ellipse", json!({"x": x, "y": y, "w": 8, "h": 8, "stroke": null}))?;
+    }
+    Ok(())
+}
+```
+
+Build them with `examples/plugins/build.sh` (needs `rustup target add wasm32-unknown-unknown`);
+the modules land in `examples/plugins/dist/`. `std` and `serde_json` are fine as long as nothing
+touches WASI. Plug-ins get no randomness: use a seed parameter (the SDK's `Rng`), which also
+makes every preview match the result. The only `unsafe` code a Rust plug-in needs is the two
+imports and the exports' raw pointers, all inside the SDK. Any language that compiles to core
+WebAssembly works (C, Zig, AssemblyScript, hand-written WAT; the host's tests are written in
+WAT).
+
+## Performance
+
+Measured on the development machine (Windows, debug build of AniCraft with optimised
+dependencies, `anicraft-cli run --sample … --plugins examples/plugins/dist`):
+
+| | |
+|---|---|
+| Load both sample modules (72 KB and 80 KB) | under 5 ms of the CLI's ~45 ms start-up |
+| Star Field, 120 stars (361 requests, 60 M instructions for 200) | ~27 ms, fast enough for the live preview |
+| Star Field, 1,000 stars (3,001 requests) | ~230 ms |
+| Jitter Selection on one element | ~1 ms (0.8 M instructions) |
+| A busy loop in the interpreter | ~470 M instructions/s (20 M in 43 ms) |
+
+A request costs about 75 µs here: most of it is the command itself plus the plug-in parsing
+and writing JSON. Generators that create thousands of elements should expect a fraction of a
+second per run.
+
+## Not in v1
+
+* Frame scripts, exporters and easing plug-ins (reserved above), panels and other UI plug-ins.
+* Runs on a background thread with progress and cancel: a run blocks the app for at most its
+  time budget (5 s).
+* A compact binary view of large documents (v1 answers JSON only), and requests that edit a
+  path's points directly by data (today: `path.*` commands, or redraw with `draw.path`).
+* Signing, a plug-in catalogue, and per-plug-in permissions beyond the fixed policy above.
