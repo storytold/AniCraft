@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **ActionScript on the roadmap** (ADR 0013, low priority, M6): first keep the scripts in
+  imported Animate files, with an Actions panel, then play the common timeline controls (stop,
+  play, go to a frame or label, button clicks) in Test Movie and HTML canvas export. Until
+  then, opening an Animate document now says how many frame scripts it left out instead of
+  dropping them silently.
 * **Filters** (Properties › Filters, on movie clip and button instances as in Animate): **Drop
   Shadow**, **Blur**, **Glow** and **Adjust Color**, in any order and combination, with blur
   X/Y, quality (Low, Medium, High), strength, colour, angle and distance, and inner, knockout
