@@ -58,11 +58,13 @@ pub enum Icon {
     Guide,
     Image,
     Type,
+    Sound,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 44] = [
+    pub const ALL: [Icon; 45] = [
+        Icon::Sound,
         Icon::Guide,
         Icon::Image,
         Icon::Type,
@@ -151,6 +153,7 @@ impl Icon {
             Icon::Guide => ("spline", false),
             Icon::Image => ("image", false),
             Icon::Type => ("type", false),
+            Icon::Sound => ("volume-2", false),
             // Lucide's object-align icons aren't in the local set; these are AniCraft originals
             // drawn on the same 24 grid with the same 2-unit round strokes.
             Icon::AlignLeft => ("anicraft-align-left", false),
@@ -193,6 +196,7 @@ static FILES: &[(&str, &str)] = &[
     ("spline", include_str!("../assets/icons/spline.svg")),
     ("image", include_str!("../assets/icons/image.svg")),
     ("type", include_str!("../assets/icons/type.svg")),
+    ("volume-2", include_str!("../assets/icons/volume-2.svg")),
     ("play", include_str!("../assets/icons/play.svg")),
     ("pause", include_str!("../assets/icons/pause.svg")),
     ("rotate-cw", include_str!("../assets/icons/rotate-cw.svg")),

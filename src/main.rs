@@ -19,6 +19,7 @@ mod pathtools;
 mod platform;
 mod plugins_ui;
 mod prefs;
+mod sound;
 mod stage;
 mod theme;
 mod timeline;

@@ -70,7 +70,7 @@ Priority: **P0** = M0–M2 skeleton must have, **P1** = parity core, **P2** = lo
 | Images | `png` crate for encode/decode; GIF encoder from M1 | Minimal dependencies. |
 | Parallelism | rayon | Row and tile parallelism in the renderer, batch export. |
 | Errors | thiserror per crate | Typed, propagatable, no panics. |
-| Audio (M5) | cpal for output, symphonia for decoding | Pure Rust, cross-platform. |
+| Audio (M5) | cpal for output; own WAV reader, `lewton` (Ogg Vorbis) and `nanomp3` (MP3) for decoding (ADR 0020) | Pure Rust, cross-platform, permissive (symphonia is MPL-2.0, not allowed). |
 | Video export (M4) | ffmpeg as an external process (pipe raw frames) | No codec licensing in the binary. |
 | Testing | `cargo test`, golden-image tests, property tests (proptest), adversarial command fuzz, criterion benches | Tests are the gate. |
 | Automation | CLI (`anicraft-cli`), JSON-lines `serve` mode, MCP server (M2) over the same command registry | Headless parity with the UI by construction. |

@@ -52,6 +52,8 @@ pub struct Tokens {
     pub tween: Color32,
     pub tween_shape: Color32,
     pub tween_motion: Color32,
+    /// Timeline: a sound's waveform on an empty span (on artwork spans it is drawn in ink).
+    pub waveform: Color32,
     pub tween_line: Color32,
     pub playhead: Color32,
     pub selection: Color32,
@@ -107,6 +109,7 @@ pub const T: Tokens = Tokens {
     tween: Color32::from_rgb(0x8a, 0x5c, 0xff),
     tween_shape: Color32::from_rgb(0xf2, 0xa1, 0x3b),
     tween_motion: Color32::from_rgb(0x4c, 0xb8, 0xf5),
+    waveform: Color32::from_rgb(0x7c, 0xc4, 0xff),
     tween_line: Color32::from_rgb(0x0e, 0x0e, 0x10),
     playhead: Color32::from_rgb(0xff, 0x4d, 0x3d),
     selection: Color32::from_rgb(0x2e, 0x66, 0xf0),

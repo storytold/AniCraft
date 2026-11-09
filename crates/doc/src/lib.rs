@@ -4,6 +4,8 @@
 //! a flat [`DisplayList`], which renderers draw. Nothing here mutates during playback.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub use anicraft_audio as audio;
+
 mod bitmap;
 mod filter;
 mod easing;
@@ -11,11 +13,13 @@ mod eval;
 pub mod motion;
 pub mod path_table;
 pub mod sample;
+pub mod sound;
 
 pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
 pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
+pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
@@ -499,17 +503,20 @@ pub struct Keyframe {
     pub motion: Option<MotionTween>,
     #[serde(default)]
     pub label: String,
+    /// The sound that starts (or, for Stop, ends) on this keyframe (ADR 0020).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<FrameSound>,
 }
 
 impl PartialEq for Keyframe {
     fn eq(&self, o: &Keyframe) -> bool {
-        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.label == o.label && arcs_eq(&self.elements, &o.elements)
+        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.label == o.label && self.sound == o.sound && arcs_eq(&self.elements, &o.elements)
     }
 }
 
 impl Keyframe {
     pub fn new(start: u32, duration: u32) -> Self {
-        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, label: String::new() }
+        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, label: String::new(), sound: None }
     }
     /// Mutable access to the elements whose ids satisfy `pick`, cloning only those.
     pub fn elements_mut_where(&mut self, mut pick: impl FnMut(ElementId) -> bool) -> Vec<&mut Element> {
@@ -895,6 +902,9 @@ pub struct Document {
     /// Images, shown through [`Paint::Bitmap`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bitmaps: Vec<Arc<Bitmap>>,
+    /// Sounds in the library, placed on keyframes through [`FrameSound`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sounds: Vec<Arc<Sound>>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
 }
@@ -912,6 +922,8 @@ struct DocumentFile {
     library: Vec<Arc<Symbol>>,
     #[serde(default)]
     bitmaps: Vec<Arc<Bitmap>>,
+    #[serde(default)]
+    sounds: Vec<Arc<Sound>>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -922,7 +934,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, next_id: f.next_id }
     }
 }
 
@@ -935,13 +947,13 @@ static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps)
+        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -957,6 +969,9 @@ impl Document {
     }
     pub fn bitmap(&self, id: BitmapId) -> Option<&Bitmap> {
         self.bitmaps.iter().find(|b| b.id == id).map(|b| &**b)
+    }
+    pub fn sound(&self, id: SoundId) -> Option<&Sound> {
+        self.sounds.iter().find(|s| s.id == id).map(|s| &**s)
     }
     pub fn symbol(&self, id: SymbolId) -> Option<&Symbol> {
         self.library.iter().find(|s| s.id == id).map(|s| &**s)
@@ -1045,6 +1060,9 @@ impl Document {
         }
         for b in &self.bitmaps {
             max_id = max_id.max(b.id.0);
+        }
+        for s in &self.sounds {
+            max_id = max_id.max(s.id.0);
         }
         self.next_id = self.next_id.max(max_id.saturating_add(1));
     }

@@ -565,6 +565,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             };
             let mark = if empty && !tweened { T.text } else { T.ink };
             cp.rect_filled(span, SQUARE, fill);
+            if let Some(fs) = k.sound
+                && !waveform(&cp, &app.s.doc, fs, span, x0, cell_w, if empty && !tweened { T.waveform } else { T.ink })
+            {
+                // Still decoding (just opened): draw it when it's ready.
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
             let kc = pos2(x0 + cell_w * 0.5, y + ROW_H * 0.5);
             if let Some(m) = motion {
                 // Property keyframes: small diamonds where any property has a key.
@@ -926,6 +932,50 @@ pub fn easing_label(e: Easing) -> String {
 }
 
 /// Engine param for an easing preset.
+/// A keyframe's sound over its span: the waveform from the keyframe on, repeated as the sound
+/// repeats, as far as the span reaches (all a stream sound plays; an event sound plays on past
+/// it). One line per point column, from the lowest to the highest sample under it. `false`
+/// while the sound is still being decoded.
+fn waveform(p: &egui::Painter, doc: &anicraft_engine::doc::Document, fs: anicraft_engine::doc::FrameSound, span: Rect, x0: f32, cell_w: f32, color: Color32) -> bool {
+    let Some(snd) = doc.sound(fs.sound) else { return true };
+    let Some(dec) = snd.decoded_if_ready() else { return false };
+    let len = dec.peaks.frames() as u64;
+    if len == 0 || cell_w <= 0.0 {
+        return true;
+    }
+    let total = if fs.looping { u64::MAX } else { len.saturating_mul(u64::from(fs.repeat.max(1))) };
+    let per_point = f64::from(dec.pcm.rate) / f64::from(doc.stage.fps.max(1.0)) / f64::from(cell_w);
+    let clip = p.clip_rect().intersect(span.shrink2(vec2(0.0, 1.0)));
+    let (cy, h) = (clip.center().y, clip.height() * 0.5);
+    let stroke = Stroke::new(1.0, color);
+    let mut x = clip.left().floor().max(span.left());
+    while x < clip.right() {
+        let a = (f64::from(x - x0) * per_point).max(0.0) as u64;
+        let b = (f64::from(x + 1.0 - x0) * per_point).max(0.0) as u64 + 1;
+        if a >= total {
+            break;
+        }
+        let b = b.min(total);
+        // The source frames under this column, within one play of the sound.
+        let (s, n) = ((a % len) as usize, (b - a).min(len) as usize);
+        let range = if s + n <= len as usize {
+            dec.peaks.range(s, s + n)
+        } else {
+            let (p1, p2) = (dec.peaks.range(s, len as usize), dec.peaks.range(0, s + n - len as usize));
+            match (p1, p2) {
+                (Some((l1, h1)), Some((l2, h2))) => Some((l1.min(l2), h1.max(h2))),
+                (one, other) => one.or(other),
+            }
+        };
+        if let Some((lo, hi)) = range {
+            let (top, bottom) = (cy - hi.clamp(-1.0, 1.0) * h, cy - lo.clamp(-1.0, 1.0) * h);
+            p.line_segment([pos2(x + 0.5, top.min(cy - 0.5)), pos2(x + 0.5, bottom.max(cy + 0.5))], stroke);
+        }
+        x += 1.0;
+    }
+    true
+}
+
 pub fn easing_param(e: Easing) -> serde_json::Value {
     match e {
         Easing::Linear => json!("Linear"),

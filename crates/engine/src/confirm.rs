@@ -153,7 +153,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && path.exists()).then(|| overwrite(path, SAVING_REPLACES))
         }
-        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" => {
+        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             path.exists().then(|| overwrite(path, EXPORTING_REPLACES))
         }
@@ -173,6 +173,21 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             has_frames.then(|| {
                 let template = "{dir} already contains exported frames. Matching files will be replaced; this cannot be undone.";
                 Confirmation::new("Replace exported frames?", template, vec![("dir", text(dir.display()))], "Replace", true)
+            })
+        }
+        "sound.delete" => {
+            // A sound in use comes off every keyframe that plays it.
+            let id = anicraft_doc::SoundId(p.get("sound").and_then(Value::as_u64)?);
+            let snd = s.doc.sound(id)?;
+            let used: usize = s.doc.timelines().map(|tl| crate::cmds_sound::uses_in(tl, id)).sum();
+            (used > 0).then(|| {
+                Confirmation::new(
+                    "Delete sound?",
+                    "“{name}” plays on {keyframes}. It comes off them and out of the library. You can undo this.",
+                    vec![("name", text(&snd.name)), ("keyframes", keyframes(used))],
+                    "Delete Sound",
+                    false,
+                )
             })
         }
         "layer.delete" => {

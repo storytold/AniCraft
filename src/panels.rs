@@ -702,6 +702,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                         live(app, "Frame label", "timeline.set_label", json!({"label": label}));
                     }
                 });
+                sound_rows(app, ui, k.sound);
                 if let Some(m) = &k.motion {
                     // A motion tween: what is keyed, and the way to its curves.
                     row_prose(ui, "Tween", |ui| {
@@ -771,6 +772,63 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                 ui.label(text(Type::Caption, tl!("Empty frame — press F7 for a blank keyframe")));
             }
         }
+    }
+}
+
+/// The keyframe's sound, as Animate's Sound section: which sound (or none), its sync, and
+/// whether it repeats a number of times or loops.
+fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine::doc::FrameSound>) {
+    use anicraft_engine::doc::SoundSync;
+    let sounds: Vec<(u64, String)> = app.s.doc.sounds.iter().map(|x| (x.id.0, x.name.clone())).collect();
+    if sounds.is_empty() && current.is_none() {
+        return;
+    }
+    let name = current.and_then(|f| app.s.doc.sound(f.sound)).map_or_else(|| "None".to_string(), |x| x.name.clone());
+    row_prose(ui, "Sound", |ui| {
+        egui::ComboBox::from_id_salt("prop_sound").width(150.0).selected_text(name).show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_none(), "None").clicked() && current.is_some() {
+                app.run("sound.remove", json!({}));
+            }
+            for (id, n) in &sounds {
+                if ui.selectable_label(current.is_some_and(|f| f.sound.0 == *id), n.as_str()).clicked() {
+                    app.run("sound.set", json!({"sound": id}));
+                }
+            }
+        });
+    });
+    let Some(f) = current else { return };
+    row_prose(ui, "Sync", |ui| {
+        egui::ComboBox::from_id_salt("prop_sync").width(150.0).selected_text(f.sync.label()).show_ui(ui, |ui| {
+            for m in SoundSync::ALL {
+                if ui.selectable_label(f.sync == m, m.label()).on_hover_text(m.hint()).clicked() {
+                    app.run("sound.set", json!({"sync": m.key()}));
+                }
+            }
+        });
+    });
+    if f.sync == SoundSync::Stop {
+        return;
+    }
+    row_prose(ui, "Repeat", |ui| {
+        egui::ComboBox::from_id_salt("prop_repeat").width(90.0).selected_text(if f.looping { "Loop" } else { "Repeat" }).show_ui(ui, |ui| {
+            if ui.selectable_label(!f.looping, "Repeat").clicked() && f.looping {
+                app.run("sound.set", json!({"loop": false}));
+            }
+            if ui.selectable_label(f.looping, "Loop").on_hover_text("Plays again and again: to the end of the movie (event) or of this span (stream)").clicked() && !f.looping {
+                app.run("sound.set", json!({"loop": true}));
+            }
+        });
+        if !f.looping {
+            let mut n = f.repeat;
+            let r = with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(&mut n).range(1..=anicraft_engine::doc::sound::MAX_REPEAT).suffix(" ×")));
+            if r.on_hover_text("Times it plays in a row").changed() {
+                live(app, "Sound repeat", "sound.set", json!({"repeat": n}));
+            }
+        }
+    });
+    if let Some(x) = app.s.doc.sound(f.sound) {
+        let ch = if x.channels == 2 { "stereo" } else { "mono" };
+        ui.label(text(Type::Data, format!("{:.2} s · {:.1} kHz {ch} · {}", x.seconds(), f64::from(x.rate) / 1000.0, x.format.label())).color(T.text_faint));
     }
 }
 
@@ -862,17 +920,20 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             kind: Some(sym.kind),
         })
         .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: i18n::fmt("Bitmap · {w}×{h}", &[("w", &b.width.to_string()), ("h", &b.height.to_string())]), kind: None }))
+        .chain(doc.sounds.iter().map(|x| LibraryRow { item: LibraryItem::Sound(x.id), name: x.name.clone(), detail: i18n::fmt("Sound · {secs} s", &[("secs", &format!("{:.1}", x.seconds()))]), kind: None }))
         .collect();
     if rows.is_empty() {
         let key = |id: &str| app.keymap.primary(id).map(crate::platform::shortcut_label).unwrap_or_default();
-        let tip = "No symbols or images yet. Select artwork and press {symbol} to make a symbol, or import an image with {import}.";
+        let tip = "No symbols, images or sounds yet. Select artwork and press {symbol} to make a symbol, or import an image or a sound with {import}.";
         ui.label(text(Type::Caption, i18n::fmt(tip, &[("symbol", &key("modify.convert_to_symbol")), ("import", &key("file.import"))])));
         return;
     }
     ui.label(text(Type::Caption, i18n::trn(rows.len() as u64, "{n} item", "{n} items")));
+    // Sounds go on the active layer's keyframe at the playhead, their span grown to fit.
     let place = |app: &mut App, item: LibraryItem| match item {
         LibraryItem::Symbol(id) => app.run("library.place", json!({"symbol": id.0})),
         LibraryItem::Bitmap(id) => app.run("library.place", json!({"bitmap": id.0})),
+        LibraryItem::Sound(id) => app.run("sound.place", json!({"sound": id.0, "extend": true})),
     };
     egui::ScrollArea::vertical().id_salt("lib").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
         for row in &rows {
@@ -886,8 +947,8 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
                 ui.painter().rect_filled(theme::mirror(r, Rect::from_min_size(r.left_top(), vec2(3.0, r.height()))), 0.0, T.accent);
             }
             let icon = theme::mirror(r, Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0)));
-            match row.kind {
-                Some(kind) => {
+            match (row.kind, row.item) {
+                (Some(kind), _) => {
                     let kind_color = match kind {
                         SymbolKind::Graphic => T.kind_graphic,
                         SymbolKind::MovieClip => T.kind_movie_clip,
@@ -896,7 +957,8 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
                     ui.painter().rect_stroke(icon, 2.0, Stroke::new(1.5, kind_color), StrokeKind::Inside);
                     ui.painter().circle_filled(icon.center(), 2.5, kind_color);
                 }
-                None => icons::paint(ui.painter(), icon.expand(1.0), Icon::Image, color(Type::Body)),
+                (None, LibraryItem::Sound(_)) => icons::paint(ui.painter(), icon.expand(1.0), Icon::Sound, color(Type::Body)),
+                (None, _) => icons::paint(ui.painter(), icon.expand(1.0), Icon::Image, color(Type::Body)),
             }
             let (start, end) = if theme::rtl() { (Align2::RIGHT_CENTER, Align2::LEFT_CENTER) } else { (Align2::LEFT_CENTER, Align2::RIGHT_CENTER) };
             let y = r.center().y;
@@ -908,14 +970,43 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             if resp.double_clicked() {
                 place(app, row.item);
             }
+            if let LibraryItem::Sound(id) = row.item {
+                resp.context_menu(|ui| {
+                    if ui.button(tl!("Delete Sound")).clicked() {
+                        ui.close();
+                        app.request("sound.delete", json!({"sound": id.0}));
+                    }
+                });
+            }
         }
     });
     ui.add_space(4.0);
     let can_place = app.library_sel.filter(|sel| rows.iter().any(|r| r.item == *sel));
-    if ui.add_enabled(can_place.is_some(), egui::Button::new(tl!("Place on stage"))).on_hover_text(tl!("Adds it at the stage centre (or double-click an item)")).clicked()
-        && let Some(item) = can_place {
-            place(app, item);
+    match can_place {
+        Some(LibraryItem::Sound(id)) => {
+            ui.horizontal(|ui| {
+                if ui.button(tl!("Preview")).on_hover_text(tl!("Plays the sound on its own")).clicked()
+                    && let Some(dec) = app.s.doc.sound(id).and_then(|x| x.decoded())
+                {
+                    app.playing = false;
+                    app.sound.preview(dec.pcm.clone());
+                    if let Some(e) = app.sound.error.take() {
+                        // The device's reason stays English, like the engine's.
+                        app.status_err(i18n::fmt("No sound: {reason}", &[("reason", &e.to_string())]));
+                    }
+                }
+                if ui.button(tl!("Place on timeline")).on_hover_text(tl!("Puts it on the active layer's keyframe at the playhead (or double-click it)")).clicked() {
+                    place(app, LibraryItem::Sound(id));
+                }
+            });
         }
+        _ => {
+            if ui.add_enabled(can_place.is_some(), egui::Button::new(tl!("Place on stage"))).on_hover_text(tl!("Adds it at the stage centre (or double-click an item)")).clicked()
+                && let Some(item) = can_place {
+                    place(app, item);
+                }
+        }
+    }
 }
 
 /// A symbol type's name (English; shown through `tl!`).
@@ -927,7 +1018,7 @@ fn kind_label(k: SymbolKind) -> &'static str {
     }
 }
 
-/// One Library row: a symbol (with its kind) or a bitmap.
+/// One Library row: a symbol (with its kind), a bitmap or a sound.
 struct LibraryRow {
     item: LibraryItem,
     name: String,
