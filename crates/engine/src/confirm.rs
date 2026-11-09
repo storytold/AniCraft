@@ -76,7 +76,18 @@ fn overwrite(path: &Path, what: &str) -> Confirmation {
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
     match id {
-        "file.new" | "file.new_sample" | "file.open" if s.is_dirty() => Some(Confirmation {
+        "file.discard_recovery" => {
+            // Always: the autosaved work is the last copy there is.
+            let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
+            let e = crate::recovery::find(dir, p.get("session").and_then(Value::as_str)?).ok()?;
+            Some(Confirmation {
+                title: "Discard autosaved document?".into(),
+                message: format!("The autosaved copy of “{}” will be deleted, with the work it holds.", e.meta.name),
+                action: "Discard".into(),
+                irreversible: true,
+            })
+        }
+        "file.new" | "file.new_sample" | "file.open" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
             action: "Discard Changes".into(),
