@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* **Clip paths, masks and text in SVG drawings** (ADR 0021). Import to Stage (Ctrl+R) now
+  brings clipped artwork across on mask layers: a drawing with clip paths comes in as a folder
+  named after the file, with each clipped group on a masked layer under a mask layer holding
+  the clip's shape, so you can move or reshape the mask afterwards. Clips that cut nothing
+  (the frame clip design tools add) are dropped, and clips inside clips are combined exactly
+  when they can be. Masks come across when they are solid shapes (white for luminance masks);
+  soft or faded masks are drawn unmasked and reported. Text comes in as text you can edit,
+  one block per positioned line, with its font, size, weight, italic, colour, letter spacing
+  and anchor (start, middle, end); fonts that aren't on this computer fall back to the default
+  and the status bar names them. A frame exported as SVG with masks imports back as the same
+  picture. Per-character positions, text on a path and dashed strokes are reported, not yet
+  imported.
+
 * **Motion tweens and the Motion Editor** (ADR 0016). Insert › Create Motion Tween (also in
   the timeline header, the right-click menu and Properties) makes a span animate its object
   property by property: X, Y, scale, rotation, skew, alpha and tint each have their own curve
