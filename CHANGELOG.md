@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+* **Shape hints** (Modify › Shape; ADR 0023). On a shape tween, Add Shape Hint (Ctrl+Shift+H)
+  adds a lettered marker, `a` to `z`, at the shape's centre. Drag it onto an edge on the
+  tween's first keyframe and onto the matching edge on its last: the morph then carries that
+  point there, so a square becomes a circle without turning and letters morph without folding.
+  Markers are rose until placed, amber once placed on the first keyframe and mint on the last;
+  they snap to the nearest edge as you drag, and right-click removes one or all (Ctrl+Z
+  undoes). Headless: `tween.add_hint`, `tween.move_hint`, `tween.remove_hint`,
+  `tween.clear_hints` and `tween.hints`. Hints are saved in `.anicraft` files (older files open
+  unchanged) and come across from XFL `shapeHints`.
+
 * **Accessibility, first pass** (ADR 0022, `docs/accessibility.md`). **High contrast** theme in
   Preferences › Appearance › Theme: white text on black, yellow focus, selection and active
   tool, outlined buttons and fields, brighter timeline blocks; every text colour at 7:1 or more.

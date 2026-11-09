@@ -15,12 +15,20 @@ use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
     Bitmap, BitmapId, BlendMode, ColorEffect, Filter, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    Scene, SymbolKind, Timeline, Tween, TweenKind,
+    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+
+/// A shape hint as one keyframe of a file lists it (see `Importer::raw_hints`).
+struct RawHint {
+    order: usize,
+    /// Its point on this keyframe, and the end point when the file gives both together.
+    here: Vec2,
+    end: Option<Vec2>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum XflError {
@@ -356,6 +364,7 @@ impl<'a> Builder<'a> {
             layer.outline = l.bool("outline").unwrap_or(false);
             layer.color = color(l, "color", "__none");
             let mut keys = Vec::new();
+            let mut raw_hints: HashMap<u32, Vec<RawHint>> = HashMap::new();
             for f in l.list("frames").iter().filter(|f| f.name == "DOMFrame") {
                 let start = f.u32("index").unwrap_or(0).min(MAX_FRAME);
                 let duration = f.u32("duration").unwrap_or(1).clamp(1, MAX_FRAME);
@@ -367,12 +376,13 @@ impl<'a> Builder<'a> {
                         let kind = if t == "shape" { TweenKind::Shape } else { TweenKind::Classic };
                         let orient = f.bool("motionTweenOrientToPath").unwrap_or(false);
                         k.tween = Some(Tween { easing: if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) }, kind, orient });
-                        if t == "shape" && f.child("shapeHints").is_some_and(|h| !h.children.is_empty()) {
-                            self.report.skip("shape hints (the tween morphs without them)");
-                        }
                     }
                     Some("motion object") => self.report.skip("motion tweens (kept as keyframes)"),
                     _ => {}
+                }
+                // Shape hints sit on both keyframes of a shape tween; they are paired up below.
+                if let Some(h) = f.child("shapeHints").filter(|h| !h.children.is_empty()) {
+                    raw_hints.insert(start, self.raw_hints(h));
                 }
                 // Frame scripts aren't kept yet (ADR 0013); say so instead of dropping them quietly.
                 if f.child("Actionscript").is_some() {
@@ -387,6 +397,9 @@ impl<'a> Builder<'a> {
                 layer.keyframes = keys;
             }
             layer.normalize();
+            if !raw_hints.is_empty() {
+                self.pair_hints(&mut layer, &raw_hints);
+            }
             layers.push(Arc::new(layer));
         }
         if layers.is_empty() {
@@ -396,6 +409,69 @@ impl<'a> Builder<'a> {
         // Links that do not form an unbroken run under their mask are dropped.
         tl.repair_masks();
         tl
+    }
+
+    /// The hints listed in a frame's `shapeHints`, in letter order (ADR 0023). Each child is a
+    /// hint; it gives its point on this keyframe as `x`/`y` (or `startPoint="x, y"`, or
+    /// `startX`/`startY`), and may carry its end point too (`endPoint`, or `endX`/`endY`);
+    /// otherwise the end comes from the same hint on the next keyframe. Points are in pixels.
+    /// The order is `index` (or a letter `name`), else the order in the file.
+    fn raw_hints(&mut self, list: &X) -> Vec<RawHint> {
+        let pt = |h: &X, joined: &str, x: &str, y: &str| -> Option<Vec2> {
+            let p = match h.attr(joined) {
+                Some(v) => {
+                    let mut it = v.split([',', ' ']).filter(|s| !s.trim().is_empty()).map(|s| s.trim().parse::<f32>().ok());
+                    Vec2::new(it.next()??, it.next()??)
+                }
+                None => Vec2::new(h.f32(x)?, h.f32(y)?),
+            };
+            (p.is_finite() && p.x.abs() < 1e6 && p.y.abs() < 1e6).then_some(p)
+        };
+        let mut out: Vec<RawHint> = Vec::new();
+        for (n, h) in list.children.iter().enumerate().take(anicraft_doc::MAX_SHAPE_HINTS * 4) {
+            let order = h.u32("index").map(|i| i as usize).or_else(|| h.attr("name").and_then(anicraft_doc::hint_index)).unwrap_or(n);
+            let Some(here) = pt(h, "startPoint", "startX", "startY").or_else(|| pt(h, "point", "x", "y")) else {
+                self.report.skip("shape hints without a position");
+                continue;
+            };
+            out.push(RawHint { order, here, end: pt(h, "endPoint", "endX", "endY") });
+        }
+        out.sort_by_key(|h| h.order);
+        if out.len() > anicraft_doc::MAX_SHAPE_HINTS {
+            self.report.skip("shape hints past z");
+            out.truncate(anicraft_doc::MAX_SHAPE_HINTS);
+        }
+        out
+    }
+
+    /// Gives each shape tween on `layer` the hints its keyframes list, snapped onto the edges
+    /// when they sit within a couple of pixels of one (the file's points are rounded).
+    fn pair_hints(&mut self, layer: &mut Layer, raw: &HashMap<u32, Vec<RawHint>>) {
+        const SNAP: f32 = 2.0;
+        let snap = |els: &[Arc<anicraft_doc::Element>], p: Vec2| match anicraft_doc::nearest_outline(els, p) {
+            Some((_, q, d)) if d <= SNAP => q,
+            _ => p,
+        };
+        for i in 0..layer.keyframes.len() {
+            let (Some(k), Some(next)) = (layer.keyframes.get(i), layer.keyframes.get(i + 1)) else { continue };
+            let Some(list) = raw.get(&k.start) else { continue };
+            if !layer.is_shape_tween(i) {
+                continue;
+            }
+            let ends = raw.get(&next.start);
+            let mut hints = Vec::new();
+            for (n, h) in list.iter().enumerate() {
+                // The same hint on the end keyframe: by position in its list.
+                let Some(end) = h.end.or_else(|| ends.and_then(|e| e.get(n)).map(|e| e.here)) else {
+                    self.report.skip("shape hints missing on the end keyframe");
+                    continue;
+                };
+                hints.push(ShapeHint { start: snap(&k.elements, h.here), end: snap(&next.elements, end) });
+            }
+            if let Some(k) = layer.keyframes.get_mut(i) {
+                Arc::make_mut(k).hints = hints;
+            }
+        }
     }
 
     /// Reads the document's bitmap library items. Each one's image is looked for as the

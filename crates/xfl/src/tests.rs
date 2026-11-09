@@ -283,3 +283,58 @@ fn bitmaps_come_across_when_their_image_is_png_or_jpeg() {
     let list = evaluate(&doc, 0);
     assert_eq!(list.items.iter().filter(|i| i.image.is_some()).count(), 3);
 }
+
+/// A square (0, 0)–(100, 100) shape-tweening to a triangle (200, 0), (300, 50), (200, 100),
+/// with `first` and `second` inside the two frames.
+fn hinted_doc(first: &str, second: &str) -> &'static str {
+    let shape = |edges: &str| {
+        format!(r##"<DOMShape><fills><FillStyle index="1"><SolidColor color="#3366FF"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="{edges}"/></edges></DOMShape>"##)
+    };
+    let doc = format!(
+        r#"<DOMDocument width="400" height="200"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Morph"><frames>
+          <DOMFrame index="0" duration="10" tweenType="shape">{first}<elements>{}</elements></DOMFrame>
+          <DOMFrame index="10">{second}<elements>{}</elements></DOMFrame>
+        </frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#,
+        shape("!0 0|2000 0|2000 2000|0 2000|0 0"),
+        shape("!4000 0|6000 1000|4000 2000|4000 0"),
+    );
+    Box::leak(doc.into_boxed_str())
+}
+
+#[test]
+fn shape_hints_come_across_in_either_form() {
+    use anicraft_geom::{PathCmd, Vec2};
+    let both_in_one = hinted_doc(r#"<shapeHints><ShapeHint index="0" startPoint="0, 0" endPoint="300, 50"/></shapeHints>"#, "");
+    // One list per keyframe, matched by letter; the second point a pixel off the edge snaps on.
+    let per_key = hinted_doc(r#"<shapeHints><ShapeHint name="a" x="0" y="0"/></shapeHints>"#, r#"<shapeHints><ShapeHint name="a" x="299" y="50.5"/></shapeHints>"#);
+    for doc in [both_in_one, per_key] {
+        let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
+        assert!(report.skipped.keys().all(|s| !s.contains("hint")), "{:?}", report.skipped);
+        let l = &d.timeline(0).layers[0];
+        let k = &l.keyframes[0];
+        assert_eq!(k.hints.len(), 1);
+        assert!(anicraft_doc::placed_on(&k.elements, k.hints[0].start).is_some());
+        assert!(anicraft_doc::placed_on(&l.keyframes[1].elements, k.hints[0].end).is_some(), "{:?}", k.hints[0].end);
+        // Halfway the square's corner is halfway to the triangle's tip.
+        let dl = evaluate(&d, 5);
+        let want = Vec2::new(0.0, 0.0).lerp(k.hints[0].end, 0.5);
+        let it = &dl.items[0];
+        let hit = it.path.cmds.iter().any(|c| matches!(*c, PathCmd::MoveTo(a) | PathCmd::CubicTo(_, _, a) if it.transform.apply(a).distance(want) < 0.05));
+        assert!(hit, "{want:?} {:?}", it.path.cmds);
+    }
+}
+
+#[test]
+fn odd_shape_hints_are_reported_not_fatal() {
+    let many: String = (0..30).map(|i| format!(r#"<ShapeHint index="{i}" startPoint="0, 0" endPoint="200, 0"/>"#)).collect();
+    let doc = hinted_doc(&format!("<shapeHints>{many}<ShapeHint/><ShapeHint x=\"nan\" y=\"1\"/></shapeHints>"), "");
+    let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
+    assert_eq!(d.timeline(0).layers[0].keyframes[0].hints.len(), 26);
+    assert!(report.skipped.contains_key("shape hints past z"), "{:?}", report.skipped);
+    assert!(report.skipped.contains_key("shape hints without a position"));
+    // Only start points and nothing on the end keyframe.
+    let doc = hinted_doc(r#"<shapeHints><ShapeHint x="0" y="0"/></shapeHints>"#, "");
+    let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
+    assert!(d.timeline(0).layers[0].keyframes[0].hints.is_empty());
+    assert!(report.skipped.contains_key("shape hints missing on the end keyframe"));
+}

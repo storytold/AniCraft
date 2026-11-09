@@ -153,20 +153,30 @@ pub fn evaluate_guided<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk
     let t = tween.easing.apply((frame - kf.start) as f32 / kf.duration.max(1) as f32);
     let morph = tween.kind == TweenKind::Shape;
     let path = guide.map(|g| (g, tween.orient));
-    let els = kf.elements.iter().enumerate().map(|(i, a)| next.elements.get(i).and_then(|b| interpolate(a, b, t, morph, path)).map_or_else(|| a.clone(), Arc::new)).collect();
+    let pairs = if morph && !kf.hints.is_empty() { crate::hints::hint_pairs(kf, next) } else { Vec::new() };
+    let els = kf
+        .elements
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let hints: Vec<_> = pairs.iter().filter(|h| h.0 == i).map(|h| (h.1, h.2)).collect();
+            next.elements.get(i).and_then(|b| interpolate(a, b, t, morph, &hints, path)).map_or_else(|| a.clone(), Arc::new)
+        })
+        .collect();
     Some((kf.start, Cow::Owned(els)))
 }
 
 /// Interpolates two elements; `None` when they cannot tween. With `morph` (a shape tween),
-/// shapes of different structure blend through [`anicraft_geom::morph`]; otherwise a shape
-/// changes only when both keyframes share its structure.
-fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, guide: Option<(&PathWalk, bool)>) -> Option<Element> {
+/// shapes of different structure blend through [`anicraft_geom::morph`], steered by `hints`
+/// (shape hints in each element's own space, ADR 0023); otherwise a shape changes only when
+/// both keyframes share its structure.
+fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft_geom::Vec2, anicraft_geom::Vec2)], guide: Option<(&PathWalk, bool)>) -> Option<Element> {
     let kind = match (&a.kind, &b.kind) {
         (ElementKind::Shape(sa), ElementKind::Shape(sb)) => {
-            let path = if Arc::ptr_eq(&sa.path, &sb.path) {
+            let path = if Arc::ptr_eq(&sa.path, &sb.path) && hints.is_empty() {
                 sa.path.clone()
             } else if morph {
-                anicraft_geom::morph::morph(&sa.path, &sb.path, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
+                anicraft_geom::morph::morph_hinted(&sa.path, &sb.path, hints, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
             } else {
                 sa.path.lerp(&sb.path, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
             };

@@ -1,6 +1,6 @@
 //! Enforces docs/ui-guidelines.md: typography and colour come from `theme`, never raw values.
 
-const SOURCES: [(&str, &str); 16] = [
+const SOURCES: [(&str, &str); 17] = [
     ("autosave.rs", include_str!("autosave.rs")),
     ("icons.rs", include_str!("icons.rs")),
     ("pathtools.rs", include_str!("pathtools.rs")),
@@ -16,6 +16,7 @@ const SOURCES: [(&str, &str); 16] = [
     ("timeline.rs", include_str!("timeline.rs")),
     ("widthtool.rs", include_str!("widthtool.rs")),
     ("motion_editor.rs", include_str!("motion_editor.rs")),
+    ("shape_hints.rs", include_str!("shape_hints.rs")),
     ("main.rs", ""),
 ];
 
@@ -101,6 +102,10 @@ fn palette_failures(name: &str, t: &crate::theme::Tokens) -> Vec<String> {
     for (b, bg) in [("span", t.span), ("tween", t.tween), ("tween_shape", t.tween_shape), ("tween_motion", t.tween_motion), ("playhead", t.playhead)] {
         need(&format!("ink on {b}"), t.ink, bg, 4.5);
         need(&format!("{b} on panel"), bg, t.panel, 3.0);
+    }
+    // Shape hint letters (ink) on every marker colour.
+    for (h, bg) in [("hint_unplaced", t.hint_unplaced), ("hint_start", t.hint_start), ("hint_end", t.hint_end)] {
+        need(&format!("ink on {h}"), t.ink, bg, 4.5);
     }
     need("text on span_empty", t.text, t.span_empty, 4.5);
     // Sound layers: waveforms on empty spans and on the active row.

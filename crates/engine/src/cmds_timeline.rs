@@ -541,6 +541,7 @@ fn clear_keyframe_at(layer: &mut Layer, frame: u32) -> Result<()> {
             k.elements.clear();
             k.tween = None;
             k.motion = None;
+            k.hints.clear();
         }
     } else {
         let removed = layer.keyframes.remove(i);
@@ -579,6 +580,10 @@ fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
     // It replaces a motion tween, keeping the object as it is on the first frame.
     crate::cmds_motion::bake_first_frame(k);
     k.tween = Some(Tween { easing, kind, orient });
+    // Shape hints only mean something to a shape tween.
+    if kind != TweenKind::Shape {
+        k.hints.clear();
+    }
     let kind = if kind == TweenKind::Shape { "shape" } else { "classic" };
     Ok(json!({"tween": k.start, "easing": easing.label(), "kind": kind}))
 }
@@ -586,6 +591,7 @@ fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
 fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {
     let k = keyframe_mut(s, p)?;
     k.tween = None;
+    k.hints.clear();
     crate::cmds_motion::bake_first_frame(k);
     Ok(json!({"removed": k.start}))
 }

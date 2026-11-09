@@ -71,6 +71,11 @@ pub struct Tokens {
     pub danger: Color32,
     pub error: Color32,
     pub ok: Color32,
+    /// Shape hint markers on the stage (ADR 0023): not on an edge yet (rose), placed on the
+    /// tween's first keyframe (amber, like the shape tween span) and on its last (mint).
+    pub hint_unplaced: Color32,
+    pub hint_start: Color32,
+    pub hint_end: Color32,
     /// Library symbol kinds.
     pub kind_graphic: Color32,
     pub kind_movie_clip: Color32,
@@ -134,6 +139,9 @@ pub const GRAPHITE: Tokens = Tokens {
     danger: Color32::from_rgb(0xd8, 0x34, 0x2a),
     error: Color32::from_rgb(0xff, 0x6e, 0x60),
     ok: Color32::from_rgb(0x5f, 0xe0, 0x9a),
+    hint_unplaced: Color32::from_rgb(0xff, 0x5c, 0x8a),
+    hint_start: Color32::from_rgb(0xff, 0xc2, 0x3d),
+    hint_end: Color32::from_rgb(0x4f, 0xe3, 0xa8),
     kind_graphic: Color32::from_rgb(0x22, 0xc7, 0xa9),
     kind_movie_clip: Color32::from_rgb(0x5a, 0x8f, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xb5, 0x3d),
@@ -185,6 +193,9 @@ pub const HIGH_CONTRAST: Tokens = Tokens {
     danger: Color32::from_rgb(0xff, 0x70, 0x63),
     error: Color32::from_rgb(0xff, 0x9a, 0x8f),
     ok: Color32::from_rgb(0x74, 0xff, 0xb0),
+    hint_unplaced: Color32::from_rgb(0xff, 0x7a, 0xa3),
+    hint_start: Color32::from_rgb(0xff, 0xd8, 0x1a),
+    hint_end: Color32::from_rgb(0x74, 0xff, 0xb0),
     kind_graphic: Color32::from_rgb(0x3d, 0xf0, 0xcf),
     kind_movie_clip: Color32::from_rgb(0x85, 0xad, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xc8, 0x5c),
