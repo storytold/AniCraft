@@ -22,7 +22,7 @@ Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
 "source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed,
-plus three storytold git repositories pinned to immutable revisions (ADR 0027): craft-libs (the
+plus three storytold git repositories pinned to immutable revisions (ADR 0029): craft-libs (the
 shared `craft-i18n` crate) and the egui and winit forks, all MIT OR Apache-2.0. No other
 registries or git.
 
@@ -51,6 +51,16 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   `wasm-encoder`/`wast` (Apache-2.0 WITH LLVM-exception). No new licence. Plug-ins are the
   user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
   `examples/plugins` (MIT OR Apache-2.0).
+
+### HTML canvas export (2026-11-09, ADR 0028)
+
+Tests only: `boa_engine` 0.22 (0.21 pins ICU 2.0, craft-i18n 2.3; a JavaScript engine in pure Rust, Unlicense OR MIT) and its tree
+(`boa_*`, `icu_*` and `zerovec`-family crates under Unicode-3.0 or MIT/Apache-2.0, `ryu-js`
+Apache-2.0 OR BSL-1.0, `regress`, `intrusive-collections`, `num-bigint`, `time` and others
+under MIT/Apache-2.0), as a dev-dependency of `anicraft-render`: the tests run the exported
+page's player in it. Nothing of it is in the app or the CLI. No new licence. The page's
+JavaScript is our own code (`crates/render/src/html/`), MIT OR Apache-2.0 like the rest, and
+uses no npm packages.
 
 ### Sound (2026-11-09, ADR 0020)
 
@@ -122,6 +132,7 @@ No new crate. The installers are built with tools that are not Rust dependencies
 | WebAssembly (plug-ins, ADR 0017) | W3C standard under the W3C Royalty-Free Patent Policy. | Allowed. Interpreted by `wasmi` (no code generation). |
 | SWF export (optional) | Adobe published the SWF specification and lifted its use restrictions in 2009 (Open Screen Project). | Allowed, low priority. |
 | Lottie | Open specification (Lottie Animation Community, Linux Foundation). | Allowed. |
+| HTML canvas export (ADR 0028) | HTML, the canvas 2D context and Web Audio are W3C/WHATWG standards under royalty-free policies. | Allowed. The page's player and drawing code are our own, written from those specifications and our own Rust player; nothing taken from Adobe's CreateJS runtime or other publishers' output. |
 
 ## 5. Trademarks
 

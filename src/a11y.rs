@@ -354,9 +354,14 @@ mod tests {
         for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::PaintBucket, Tool::InkBottle, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
-        for panel in ["select", "motion", "motionspan", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames"] {
+        for panel in ["select", "motion", "motionspan", "camera", "cameraview", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
+        // The layer depth row shows on artwork layers once the scene has a camera.
+        found.extend(check("layer depth", |a, _| {
+            a.open_panel(Some("camera"));
+            a.run("layer.select", serde_json::json!({"index": 1}));
+        }));
         found.extend(check("movie clip with filters", |a, _| {
             a.run("layer.select", serde_json::json!({"index": 0}));
             a.run("edit.select_all", serde_json::json!({}));

@@ -150,6 +150,9 @@ fn to_v(p: Pos2) -> Vec2 {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let canvas = ui.max_rect();
+    let now = ui.input(|i| i.time);
+    crate::camera_tool::on_tool_change(app);
+    crate::camera_tool::tick(app, ui.ctx(), now);
     app.stage_cache.canvas = canvas;
     let resp = ui.allocate_rect(canvas, Sense::click_and_drag());
     // The drawing surface: Ctrl+F6 lands here, and screen readers hear the tool in hand.
@@ -179,6 +182,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if (zoom_delta - 1.0).abs() > 1e-4 {
                 let z = app.view.zoom * zoom_delta;
                 app.zoom_about(canvas, p, z);
+            } else if app.tool == Tool::Camera && scroll.y != 0.0 {
+                // With the Camera tool the wheel zooms the camera, not the view.
+                crate::camera_tool::wheel(app, scroll.y, now);
             } else if scroll != egui::Vec2::ZERO {
                 app.view.pan += scroll;
             }
@@ -219,6 +225,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let to_stage = |p: Pos2| pos2((p.x - origin.x) / zoom, (p.y - origin.y) / zoom);
     let stage_rect = Rect::from_min_size(origin, size * zoom);
     let painter = ui.painter_at(canvas);
+    // View > Preview Through Camera: the stage shows the movie's picture (ADR 0027). Artwork
+    // tools pause meanwhile (what they'd edit is in stage space, not where it shows).
+    let preview = crate::camera_tool::previewing(app);
+    let cam_geo = crate::camera_tool::Geo { origin, zoom, stage_rect, preview };
 
 
     // ---- tools ----------------------------------------------------------------------------
@@ -226,11 +236,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
     app.cursor_stage = pointer.filter(|p| canvas.contains(*p)).map(to_stage);
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
+    let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom);
+    if paused && (resp.drag_started() || resp.clicked()) {
+        app.status_ok("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit.");
+    }
     // Selection box in screen space (free transform handles live on it).
     let sel_bounds = bounds_arr(app.s.selection_bounds());
     let sel_rect = sel_bounds.map(|b| Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))));
     // Shape hint markers take the pointer first with the selection tools (ADR 0023).
-    let hint_tools = matches!(app.tool, Tool::Select | Tool::Transform | Tool::Subselect) && !panning;
+    let hint_tools = matches!(app.tool, Tool::Select | Tool::Transform | Tool::Subselect) && !panning && !preview;
     let hint_marks = if hint_tools { crate::shape_hints::markers(app) } else { Vec::new() };
     let hint_at = |p: Pos2| crate::shape_hints::hit(&hint_marks, p, to_screen);
     let hint_hot = pointer.and_then(hint_at);
@@ -239,7 +253,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
-            _ if matches!(app.drag, Drag::Hint { .. }) => CursorIcon::Grabbing,
+            _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. }) => CursorIcon::Grabbing,
+            _ if paused => CursorIcon::NotAllowed,
+            Tool::Camera if app.drag == Drag::None && pointer.is_some_and(|p| crate::camera_tool::on_knob(app, &cam_geo, p)) => CursorIcon::Alias,
+            Tool::Camera => CursorIcon::Grab,
             _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
@@ -275,7 +292,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Ctrl+X/C/V go back to artwork.
         app.timeline_focus = false;
     }
-    if app.tool == Tool::Pen && !panning {
+    if app.tool == Tool::Pen && !panning && !paused {
         crate::pathtools::pen_input(app, ui, &resp, xf);
     }
 
@@ -284,6 +301,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let sp = to_stage(press);
         app.drag = if panning {
             Drag::Pan
+        } else if paused {
+            Drag::None
         } else if let Some(m) = hint_at(press) {
             app.s.begin_gesture("Move Shape Hint");
             Drag::Hint { index: m.index, side: m.side }
@@ -330,12 +349,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle => Drag::None,
                 Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => Drag::Shape { start: sp, cur: sp },
+                Tool::Camera => crate::camera_tool::drag_start(app, &cam_geo, press),
                 Tool::Hand => Drag::Pan,
                 Tool::Zoom => Drag::None,
             }
         };
     }
 
+    if resp.dragged()
+        && let Some(p) = resp.interact_pointer_pos()
+        && matches!(app.drag, Drag::CameraPan { .. } | Drag::CameraRotate { .. })
+    {
+        let mut d = app.drag;
+        crate::camera_tool::drag_to(app, &cam_geo, &mut d, p);
+        app.drag = d;
+    }
     if resp.dragged() {
         let cur = resp.interact_pointer_pos().map(to_stage);
         match (&mut app.drag, cur) {
@@ -387,7 +415,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } => app.s.end_gesture(),
+            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
@@ -409,12 +437,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             Drag::Shape { start, cur } => create_shape(app, start, cur),
-            Drag::Pan | Drag::None => {}
+            Drag::Pan | Drag::None | Drag::CameraWheel { .. } => {}
         }
         app.drag = Drag::None;
     }
 
     if resp.clicked()
+        && !paused
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
@@ -455,6 +484,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     if resp.secondary_clicked()
         && app.hint_menu.is_none()
+        && !preview
         && let Some(p) = resp.interact_pointer_pos()
     {
         let sp = to_stage(p);
@@ -465,6 +495,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Double-clicking text with the Selection tool edits it, as in Animate.
     if app.tool == Tool::Select
+        && !preview
         && resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -472,6 +503,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         open_text_at(app, to_stage(p), 3.0 / zoom.max(1e-3));
     }
     if app.tool == Tool::Subselect
+        && !preview
         && resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -548,7 +580,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Render jobs take movie frames: the current scene starts at `start`.
         let start = app.s.doc.scene_start(app.s.scene);
         let frame = app.s.frame;
-        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion); (t, j) }).collect();
+        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion).through_camera(preview); (t, j) }).collect();
         let keys: Vec<u64> = jobs.iter().map(|(_, j)| j.key).collect();
         let missing: Vec<usize> = (0..jobs.len()).filter(|&i| !app.stage_cache.has(keys[i])).collect();
 
@@ -613,10 +645,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let n = app.s.frame_count().max(1);
                 for d in 1..=LOOKAHEAD.min(n - 1) {
                     let f = (frame + d) % n;
-                    ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, false)));
+                    ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, false).through_camera(preview)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion).through_camera(preview)));
             }
             svc.prefetch(ahead);
         }
@@ -641,7 +673,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
         // While a background render catches up with a drag, outline where the selection is now,
         // so the artwork never seems to lag the pointer.
-        if ready < keys.len() && matches!(app.drag, Drag::Move { .. } | Drag::Transform { .. }) {
+        if ready < keys.len() && !preview && matches!(app.drag, Drag::Move { .. } | Drag::Transform { .. }) {
             let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
             let dl = app.s.display_list();
             let stroke = Stroke::new(1.5, T.selection);
@@ -656,6 +688,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_stroke(stage_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
 
     // ---- overlays -------------------------------------------------------------------------
+    // The camera frame (or, previewing, the Camera tool's handle) comes first, under the
+    // selection.
+    crate::camera_tool::draw(app, &painter, &cam_geo, pointer);
+    if preview {
+        // The movie's picture: stage-space overlays don't belong on it.
+        painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, "Camera view", crate::theme::font(crate::theme::Type::Caption), T.text_dim);
+        let badge = format!("{:.0}%", zoom * 100.0);
+        painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
+        crate::a11y::surface(ui, &resp, &format!("Stage · previewing through the camera · {} tool · frame {}", app.tool.label(), app.s.frame + 1));
+        return;
+    }
     // Mask artwork is never painted; while its layer is unlocked (editable), its edge shows in
     // the layer colour so it can be seen, picked and reshaped. Locking the mask hides the edge.
     // Guide artwork never renders either: it always shows here, as a line in the guide's layer

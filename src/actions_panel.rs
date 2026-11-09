@@ -43,7 +43,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
     let mut open = app.show_actions;
     let at = ctx.content_rect().right_top() + egui::vec2(-760.0, 96.0);
-    egui::Window::new("Actions").id(egui::Id::unique("actions_panel")).open(&mut open).default_pos(at).default_width(420.0).resizable(true).collapsible(false).show(ctx, |ui| {
+    egui::Window::new(crate::i18n::tl!("Actions")).id(egui::Id::unique("actions_panel")).open(&mut open).default_pos(at).default_width(420.0).resizable(true).collapsible(false).show(ctx, |ui| {
         egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).auto_shrink([false, true]).show(ui, |ui| panel(app, ui));
     });
     app.show_actions = open;

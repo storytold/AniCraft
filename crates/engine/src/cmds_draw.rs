@@ -253,7 +253,7 @@ fn shapes_mut(s: &mut Session) -> Result<Vec<&mut Shape>> {
         .into_iter()
         .filter_map(|e| match &mut e.kind {
             ElementKind::Shape(sh) => Some(sh),
-            ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
         })
         .collect();
     if shapes.is_empty() {
@@ -450,7 +450,7 @@ fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
                 .find(|e| e.id == sel)
                 .and_then(|e| match e.kind {
                     ElementKind::Symbol { symbol, .. } => Some(symbol),
-                    ElementKind::Shape(_) | ElementKind::Text(_) => None,
+                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
                 })
                 .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
         }

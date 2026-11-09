@@ -18,7 +18,7 @@ pub struct Confirmation {
     /// True when undo cannot bring the loss back (unsaved work, files on disk).
     pub irreversible: bool,
     /// `message` before its values go in, with `{name}` placeholders, and those values: what a
-    /// front end translates to show the message in another language (ADR 0027).
+    /// front end translates to show the message in another language (ADR 0029).
     pub template: &'static str,
     pub args: Vec<(&'static str, Arg)>,
 }
@@ -125,6 +125,14 @@ fn overwrite(path: &Path, template: &'static str) -> Confirmation {
 
 const SAVING_REPLACES: &str = "{path} already exists. Saving will replace it; this cannot be undone.";
 const EXPORTING_REPLACES: &str = "{path} already exists. Exporting will replace it; this cannot be undone.";
+/// Removing the camera asks only when it moves (its keyframes are the animation lost).
+fn camera_removal(_: &Session, l: &Layer) -> Option<Confirmation> {
+    let n = crate::cmds_camera::camera_moves(l);
+    (n > 0).then(|| {
+        let template = "The camera moves over {keyframes}. Removing it removes those moves, and the movie shows the stage as it is. You can undo this.";
+        Confirmation::new("Remove camera?", template, vec![("keyframes", keyframes(n))], "Remove Camera", false)
+    })
+}
 
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
@@ -153,7 +161,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && path.exists()).then(|| overwrite(path, SAVING_REPLACES))
         }
-        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_audio" => {
+        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             path.exists().then(|| overwrite(path, EXPORTING_REPLACES))
         }
@@ -190,8 +198,12 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 )
             })
         }
+        "camera.remove" => camera_removal(s, s.doc.timeline(s.scene).camera_layer()?),
         "layer.delete" => {
             let l = target_layer(s, p)?;
+            if l.kind == anicraft_doc::LayerKind::Camera {
+                return camera_removal(s, l);
+            }
             if l.kind == anicraft_doc::LayerKind::Folder {
                 // A folder goes with everything in it.
                 let tl = s.doc.timeline(s.scene);

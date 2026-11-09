@@ -27,6 +27,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Line => Icon::Line,
         Tool::PaintBucket => Icon::Bucket,
         Tool::InkBottle => Icon::Ink,
+        Tool::Camera => Icon::Camera,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
     }
@@ -222,7 +223,18 @@ fn hex(c: [u8; 3]) -> String {
 fn element_title(doc: &anicraft_engine::doc::Document, e: &anicraft_engine::doc::Element) -> String {
     let kind = match &e.kind {
         ElementKind::Shape(_) => tl!("Shape").to_string(),
-        ElementKind::Symbol { symbol, .. } => i18n::fmt("Graphic: {name}", &[("name", doc.symbol(*symbol).map_or(tl!("missing"), |s| s.name.as_str()))]),
+        ElementKind::Symbol { symbol, .. } => match doc.symbol(*symbol) {
+            Some(s) => {
+                let template = match s.kind {
+                    anicraft_engine::doc::SymbolKind::Graphic => "Graphic: {name}",
+                    anicraft_engine::doc::SymbolKind::MovieClip => "Movie clip: {name}",
+                    anicraft_engine::doc::SymbolKind::Button => "Button: {name}",
+                };
+                i18n::fmt(template, &[("name", &s.name)])
+            }
+            None => i18n::fmt("Graphic: {name}", &[("name", tl!("missing"))]),
+        },
+        ElementKind::Camera => tl!("Camera").to_string(),
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             let more = if t.text.chars().count() > first.chars().count() { "…" } else { "" };
@@ -353,6 +365,11 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle) {
         let title = i18n::fmt("{tool} tool", &[("tool", tl!(app.tool.label()))]);
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
+    }
+    // ---- the camera, with the Camera tool or its layer active (ADR 0027) ----
+    let camera_layer = app.s.doc.timeline(app.s.scene).camera_layer().map(|l| l.id);
+    if camera_layer.is_some() && (app.tool == Tool::Camera || camera_layer == Some(app.s.layer)) {
+        section(ui, "prop_camera", Section::Rule, "Camera", None, |ui| camera_props(app, ui));
     }
     if let Some(e) = sel.first() {
         let title = if sel.len() > 1 { i18n::trn(sel.len() as u64, "{n} element", "{n} elements") } else { element_title(&app.s.doc, e) };
@@ -961,6 +978,54 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
     out
 }
 
+/// The camera at the playhead: where it looks, its zoom, turn and tint, and the preview switch.
+/// Edits key the playhead like any edit of a tweened object.
+fn camera_props(app: &mut App, ui: &mut egui::Ui) {
+    let Some(cam) = crate::camera_tool::camera(app) else { return };
+    let (mut x, mut y) = (cam.center.x, cam.center.y);
+    row(ui, "Position", |ui| {
+        let a = ui.add(egui::DragValue::new(&mut x).prefix("x ").suffix(" px").speed(1.0).max_decimals(1)).named("Camera X");
+        let b = ui.add(egui::DragValue::new(&mut y).prefix("y ").suffix(" px").speed(1.0).max_decimals(1)).named("Camera Y");
+        if a.changed() || b.changed() {
+            live(app, "Move Camera", "camera.set", json!({"x": x, "y": y}));
+        }
+    });
+    let mut zoom = cam.zoom * 100.0;
+    let (lo, hi) = (anicraft_engine::doc::camera::MIN_ZOOM * 100.0, anicraft_engine::doc::camera::MAX_ZOOM * 100.0);
+    row(ui, "Zoom", |ui| {
+        ui.spacing_mut().slider_width = 96.0;
+        if a11y::slider(ui, &mut zoom, lo..=hi, "Camera zoom", a11y::SliderLook { suffix: " %", max_decimals: Some(0), logarithmic: true, ..Default::default() }).changed() {
+            live(app, "Zoom Camera", "camera.set", json!({"zoom": zoom}));
+        }
+    });
+    let mut rot = cam.rotation.to_degrees();
+    row(ui, "Rotation", |ui| {
+        if ui.add(egui::DragValue::new(&mut rot).suffix("°").speed(0.5).max_decimals(1)).named("Camera rotation").changed() {
+            live(app, "Rotate Camera", "camera.set", json!({"rotation": rot}));
+        }
+    });
+    let mut tint = rgb(cam.tint);
+    let mut amount = cam.tint_amount * 100.0;
+    row(ui, "Tint", |ui| {
+        let a = ui.color_edit_button_srgb(&mut tint).named("Camera tint colour");
+        let b = ui.add(egui::DragValue::new(&mut amount).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named("Camera tint amount");
+        if a.changed() || b.changed() {
+            live(app, "Camera Tint", "camera.set", json!({"tint": hex(tint), "tint_amount": amount}));
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        let mut on = app.camera_preview;
+        if crate::theme::checkbox(ui, &mut on, "Preview through camera").on_hover_text("Show the stage as the movie shows it (View › Preview Through Camera)").changed() {
+            app.toggle_camera_preview();
+        }
+        if ui.button("Reset").named("Reset camera").on_hover_text("Back to the stage as it is: centred, 100 %, no turn, no tint").clicked() {
+            app.run("camera.set", json!({"reset": true}));
+        }
+    });
+    let hidden = app.s.doc.timeline(app.s.scene).camera_layer().is_some_and(|l| !l.visible);
+    ui.label(text(Type::Caption, if hidden { "The camera layer is hidden: the movie shows the stage as it is." } else { "The movie shows what the frame on the stage shows. Layer depth (in Frame, per layer) moves far layers less." }));
+}
+
 fn document_props(app: &mut App, ui: &mut egui::Ui) {
     {
         let st = app.s.doc.stage;
@@ -995,6 +1060,17 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
         ui.label(text(Type::Label, i18n::fmt("Folder · {what}", &[("what", &what)])));
         ui.label(text(Type::Caption, tl!("Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down.")));
         return;
+    }
+    // Layer depth matters once the scene has a camera: deeper layers move less as it pans.
+    if layer.kind != anicraft_engine::doc::LayerKind::Camera && app.s.doc.timeline(app.s.scene).camera_layer().is_some() {
+        let mut depth = layer.depth;
+        let (lo, hi) = (anicraft_engine::doc::camera::MIN_DEPTH, anicraft_engine::doc::camera::MAX_DEPTH);
+        row(ui, "Depth", |ui| {
+            let r = ui.add(egui::DragValue::new(&mut depth).suffix(" px").speed(2.0).range(lo..=hi).max_decimals(0)).named("Layer depth");
+            if r.on_hover_text("How far behind the stage this layer is: when the camera pans, a deeper layer moves less (parallax). Negative is in front.").changed() {
+                live(app, "Layer Depth", "layer.set_depth", json!({"depth": depth}));
+            }
+        });
     }
     {
         match layer.keyframe_at(frame) {

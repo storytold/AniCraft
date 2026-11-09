@@ -60,11 +60,13 @@ pub enum Icon {
     Type,
     Width,
     Sound,
+    Camera,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 46] = [
+    pub const ALL: [Icon; 47] = [
+        Icon::Camera,
         Icon::Width,
         Icon::Sound,
         Icon::Guide,
@@ -172,6 +174,8 @@ impl Icon {
             Icon::Mask => ("anicraft-mask", false),
             Icon::Masked => ("anicraft-masked", false),
             Icon::Folder => ("folder", false),
+            // A film camera with its two reels (AniCraft original, on Lucide's grid).
+            Icon::Camera => ("anicraft-camera", false),
             Icon::FolderOpen => ("folder-open", false),
         }
     }
@@ -220,6 +224,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-mask", include_str!("../assets/icons/anicraft-mask.svg")),
     ("anicraft-width", include_str!("../assets/icons/anicraft-width.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
+    ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
 ];

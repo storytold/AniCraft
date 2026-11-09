@@ -1766,6 +1766,33 @@ fn lottie_export_writes_the_movie_and_asks_before_replacing() {
 }
 
 #[test]
+fn html_export_writes_one_page_that_holds_the_interactive_movie() {
+    let dir = std::env::temp_dir().join(format!("anicraft-html-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("menu.html");
+    let mut s = Session::new(sample::interactive());
+    let v = run(&mut s, "file.export_html", json!({"path": path.display().to_string()}));
+    let html = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(v["bytes"].as_u64(), Some(html.len() as u64));
+    assert!(html.starts_with("<!DOCTYPE html>") && html.contains("<title>menu</title>"), "the title defaults to the file name");
+    assert!(html.contains("\"op\":\"goto_and_play\"") && html.contains("new AniCraft.Player"), "actions and the player are in the page");
+    assert_eq!((v["scenes"].as_u64(), v["frames"].as_u64()), (Some(1), Some(u64::from(s.doc.frame_count()))));
+    assert!(v["timelines"].as_u64().unwrap() >= 3, "the scene, the button and the spinner: {v}");
+    assert_eq!(v["report"], "");
+    // Replacing needs consent; params are checked.
+    let p = json!({"path": path.display().to_string(), "title": "Menu", "fit": false, "sound": false});
+    assert!(s.execute("file.export_html", &p).is_err());
+    let mut p = p;
+    p["confirm"] = json!(true);
+    run(&mut s, "file.export_html", p);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("<title>Menu</title>"));
+    assert!(s.execute("file.export_html", &json!({"path": dir.join("x.html").display().to_string(), "title": "t".repeat(300)})).is_err());
+    assert!(s.execute("file.export_html", &json!({"path": dir.join("x.html").display().to_string(), "fit": "yes"})).is_err());
+    assert!(s.execute("file.export_html", &json!({})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     if anicraft_text::Fonts::get().families().is_empty() {
         eprintln!("no fonts on this computer: text test skipped");

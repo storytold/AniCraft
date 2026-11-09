@@ -77,7 +77,7 @@ fn targets(app: &App, zoom: f32) -> Vec<Target> {
                 let walks = stroke_walks(&sh.path, 0.25 / (zoom.max(1e-3) * scale));
                 Some(Target { id: e.id, m: e.transform, walks, stroke })
             }
-            ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
         })
         .take(MAX_TARGETS)
         .collect()

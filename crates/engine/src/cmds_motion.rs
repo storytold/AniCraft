@@ -157,11 +157,19 @@ pub(crate) fn create(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(m) = &k.motion {
             return Ok(json!({"motion": k.start, "target": m.target.0, "frames": k.duration, "converted": false}));
         }
-        if k.elements.is_empty() {
+        if k.elements.is_empty() && layer.kind != LayerKind::Camera {
             return Err(EngineError::State("there is nothing on this keyframe to tween: draw or place something first".into()));
         }
         (k.start, k.elements.iter().map(|e| e.id).collect::<Vec<_>>())
     };
+    // A camera keyframe without a camera holds the camera at rest: that is what moves.
+    if ids.is_empty() {
+        let el = anicraft_doc::Camera::rest(&s.doc.stage).to_element(ElementId(s.doc.alloc_id()));
+        let layer = s.layer_mut(Some(lid))?;
+        if let Some(k) = layer.keyframe_starting_at(start).and_then(|i| layer.keyframe_mut(i)) {
+            k.elements.push(Arc::new(el));
+        }
+    }
     let converted = ids.len() > 1;
     if converted {
         // A motion tween moves one object: the key's artwork becomes one instance.
