@@ -73,7 +73,7 @@ pub fn run_or_ask(app: &mut App, id: &str) {
         return;
     };
     if let Some(why) = blocked(&app.s, &p) {
-        app.status_err(format!("{}: {why}", p.manifest().name));
+        app.status_err(format!("{}: {}", p.manifest().name, crate::i18n::t(why)));
         return;
     }
     if p.manifest().params.is_empty() {
@@ -126,7 +126,7 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui, cmds: &[CommandSpec], item: impl F
             let r = ui.add_enabled(why.is_none(), egui::Button::new(label(&p)));
             let r = if p.manifest().description.is_empty() { r } else { r.on_hover_text(&p.manifest().description) };
             let r = match why {
-                Some(w) => r.on_disabled_hover_text(w),
+                Some(w) => r.on_disabled_hover_text(crate::i18n::t(w)),
                 None => r,
             };
             if r.clicked() {

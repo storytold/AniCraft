@@ -539,6 +539,8 @@ impl App {
         }
         self.prefs = p;
         self.apply_prefs(ctx);
+        // A new language takes effect now, so a save error below is written in it.
+        crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         if self.shot.is_none()
             && let Err(e) = self.prefs.save()
         {
