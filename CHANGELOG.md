@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **App icon**: an engraved rabbit on AniCraft yellow, on the same rounded tile as the other
+  Crafting Apps. It shows on the window, the macOS Dock (on Apple's icon grid), the Windows
+  taskbar and `anicraft.exe`, and in Help › About. Files and how to regenerate them are in
+  `assets/app-icon/`.
+* **README**: screenshots of the app and the sample animation, and a quick start.
 * **ActionScript on the roadmap** (ADR 0013, low priority, M6): first keep the scripts in
   imported Animate files, with an Actions panel, then play the common timeline controls (stop,
   play, go to a frame or label, button clicks) in Test Movie and HTML canvas export. Until

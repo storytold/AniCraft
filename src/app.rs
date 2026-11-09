@@ -476,6 +476,7 @@ impl App {
             }
             Some("files") => self.show_files = true,
             Some("licenses") => self.show_licenses = true,
+            Some("about") => self.show_about = true,
             Some("zoom") => {
                 // 300% on the ball: many tiles, edges cross shapes (seam check).
                 self.view.fit = false;
@@ -943,6 +944,7 @@ impl App {
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
         egui::Window::new("About AniCraft").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.add(egui::Image::new((app_mark(ctx).id(), egui::vec2(64.0, 64.0))));
             ui.heading("AniCraft");
             ui.label(format!("Version {} · {RELEASE_STAGE}", env!("CARGO_PKG_VERSION")));
             ui.label("Open-source 2D vector animation studio, written in Rust.");
@@ -999,6 +1001,22 @@ impl App {
         }
         self.show_files = open;
     }
+}
+
+/// The app icon (`assets/app-icon/`; the PNG carries its rounded corners) as a texture, decoded on
+/// first use and kept in the context. 128 px stays sharp at 64 pt on a 2× display.
+fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
+    const PNG: &[u8] = include_bytes!("../assets/app-icon/hicolor/128x128/apps/ai.storyteller.anicraft.png");
+    let id = egui::Id::new("anicraft-app-mark");
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return tex;
+    }
+    let icon = eframe::icon_data::from_png_bytes(PNG).unwrap_or_default();
+    let image = egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba);
+    let options = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
+    let tex = ctx.load_texture("anicraft-app-mark", image, options);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
 }
 
 /// Opens a file or folder with the operating system's default handler.

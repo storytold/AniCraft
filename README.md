@@ -7,6 +7,11 @@
   </a>
 </p>
 
+
+<p align="center">
+  <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.anicraft.png" width="128" height="128" alt="AniCraft icon: an engraved rabbit on a yellow tile">
+</p>
+
 <h1 align="center">AniCraft</h1>
 
 <p align="center">
@@ -16,16 +21,15 @@
 <p align="center">
   A native 2D vector animation editor with timeline, layers, keyframes, classic and shape tweens,
   onion skinning, and an egui stage. It runs natively on macOS, Windows, Linux and FreeBSD,
-  and in the browser via WebAssembly.<br>
-  <i>By the ArtCraft team.</i>
+  and in the browser via WebAssembly. Built by the ArtCraft team.
 </p>
 
 <p align="center">
-  <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
-  <img alt="egui" src="https://img.shields.io/badge/UI-egui-14a9c4?style=flat-square">
-  <img alt="macOS · Windows · Linux · FreeBSD · Web" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20FreeBSD%20%C2%B7%20Web-native-2f7bf5?style=flat-square">
-  <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: early alpha" src="https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square">
+  <img alt="Status: early alpha" src="https://img.shields.io/badge/status-early%20alpha-dac604?style=flat-square">
+  <img alt="Written in pure Rust" src="https://img.shields.io/badge/pure-Rust-b7410e?style=flat-square&logo=rust&logoColor=white">
+  <img alt="Runs on macOS, Windows, Linux, FreeBSD and the web" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20FreeBSD%20%C2%B7%20Web-555555?style=flat-square">
+  <img alt="MCP server for agents" src="https://img.shields.io/badge/agents-MCP%20server-555555?style=flat-square">
+  <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-555555?style=flat-square">
 </p>
 
 <p align="center">
@@ -40,117 +44,157 @@
 
 <br>
 
-> [!NOTE]
-> **ArtCraft is a community of artists from all walks of life.** Painters, photographers,
-> filmmakers, illustrators, designers, animators, hobbyists, and people who picked up a pencil
-> last week. If you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
-
 <p align="center">
-  <a href="#why-anicraft">Why AniCraft</a> ·
-  <a href="#features">Features</a> ·
-  <a href="#build-and-run">Build and run</a> ·
-  <a href="#headless--agents">Headless &amp; Agents</a> ·
-  <a href="#architecture">Architecture</a> ·
-  <a href="#status">Status</a> ·
-  <a href="#downloads">Downloads</a> ·
-  <a href="#the-crafting-apps">Crafting Apps</a> ·
-  <a href="https://discord.gg/artcraft">Discord</a>
+  <img src="docs/images/shot-1-stage.png" alt="AniCraft with the sample animation open: the stage shows a ball, a star and a sun over hills at dusk; the timeline below has five layers with violet classic-tween spans, and the Properties panel shows the selected tween's easing curve" width="100%">
+  <br><sub><b>The sample animation</b>: stage, tools, timeline with classic tweens, and Properties with the easing curve · <code>cargo run</code></sub>
 </p>
 
-<br>
+> [!NOTE]
+> **ArtCraft is a community of artists from all walks of life.** Painters, animators, filmmakers,
+> illustrators, game makers &mdash; if you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
+
+<p align="center">
+  <a href="#a-look-around">A look around</a> ·
+  <a href="#made-in-anicraft">Made in AniCraft</a> ·
+  <a href="#why-anicraft">Why AniCraft</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#status">Status</a> ·
+  <a href="#downloads">Downloads</a> ·
+  <a href="#the-crafting-apps">The Crafting Apps</a> ·
+  <a href="#license-and-credits">License</a>
+</p>
+
+## A look around
 
 <table>
-  <tr>
-    <td width="25%" valign="top">
-      <h3>🎛️ Familiar by design</h3>
-      Stage, tools, timeline, layers, keyframes, properties and library are where your hands expect them. If you know Adobe Animate or Flash, you already know AniCraft.
-    </td>
-    <td width="25%" valign="top">
-      <h3>⚡ Native and fast</h3>
-      A pure Rust engine with a deterministic analytic anti-aliasing CPU oracle renderer, GPU-ready via wgpu / egui, and rayon row parallelism. No Electron, no webview, no waiting.
-    </td>
-    <td width="25%" valign="top">
-      <h3>🎞️ Vector tweens</h3>
-      Classic tweens with easing presets and shape tweens with arbitrary contour morphing (<code>geom::morph</code>). The document is plain data, and the picture at a frame is a pure function <code>evaluate(doc, frame)</code>.
-    </td>
-    <td width="25%" valign="top">
-      <h3>🤖 Headless first</h3>
-      Every action is an engine command. Drive the exact same engine from the UI, the CLI or the JSON-lines agent channel.
-    </td>
-  </tr>
+<tr>
+<td width="50%" valign="top">
+  <img src="docs/images/shot-2-subselection.png" alt="The Subselection tool showing anchor points and Bézier handles on a blue shape, next to a wavy line drawn with the Pencil; the Properties panel shows the shape's position, scale, fill and stroke" width="100%">
+  <p align="center"><sub><b>Subselection, Pen and Pencil</b>: real Bézier anchors and handles, curve-fitted freehand lines</sub></p>
+</td>
+<td width="50%" valign="top">
+  <img src="docs/images/shot-3-frames.png" alt="A block of frames selected across three layers in the timeline, with the ball squashed mid-tween on the stage" width="100%">
+  <p align="center"><sub><b>Timeline</b>: frame ranges across layers, keyframes you drag, classic and shape tweens</sub></p>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+  <img src="docs/images/shot-4-transform.png" alt="Free Transform on the ball with corner and edge handles; the Properties panel shows the symbol instance's position, scale, rotation, alpha and looping" width="100%">
+  <p align="center"><sub><b>Free Transform and symbols</b>: scale, rotate and move instances with nested timelines</sub></p>
+</td>
+<td width="50%" valign="top">
+  <img src="docs/images/shot-5-palette.png" alt="The command palette open over the stage, searching for key and listing the keyframe commands with their shortcuts" width="100%">
+  <p align="center"><sub><b>Command palette</b>: every engine command, one search away (<code>Ctrl+K</code>)</sub></p>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+  <img src="docs/images/shot-6-shortcuts.png" alt="The Keyboard Shortcuts editor listing essentials and tools with their keys, a filter box and reset buttons" width="100%">
+  <p align="center"><sub><b>Shortcut editor</b>: rebind, add or clear the key for any command or tool (<code>F1</code>)</sub></p>
+</td>
+<td width="50%" valign="top">
+  <img src="docs/images/shot-7-preferences.png" alt="The Preferences window with interface and data fonts, interface scale, stage rendering mode, timeline, file dialog and safety settings" width="100%">
+  <p align="center"><sub><b>Preferences</b>: fonts, interface scale, stage rendering and confirmations</sub></p>
+</td>
+</tr>
 </table>
 
-<br>
+## Made in AniCraft
+
+The sample animation, exported as an animated GIF by AniCraft's own renderer from the command line
+(`anicraft-cli gif --sample --out sample.gif --scale 0.5`).
+
+<p align="center">
+  <img src="docs/images/sample-animation.gif" alt="The sample animation: a ball bounces and squashes across hills at dusk while a star spins and the sun pulses" width="640">
+  <br><sub><b>Sample animation</b>: classic tweens with easing, symbols with their own timelines, 48 frames at 24 fps</sub>
+</p>
 
 ## Why AniCraft
 
-AniCraft is a clean-room, native 2D vector animation studio designed for animators, motion designers,
-and game developers. Built from scratch in pure Rust, it delivers a modern, lightweight, high-performance
-alternative to Adobe Animate with zero runtime bloat:
-
-* **Pure Rust & memory safe**: No webviews, no Electron, and no unsafe code (`unsafe_code = "forbid"`).
-* **Deterministic CPU oracle renderer**: Analytic anti-aliasing via signed-area coverage accumulation, non-zero and even-odd fill rules, linear and radial gradients, round-join strokes, and multi-threaded band rendering.
-* **Non-destructive & live**: Edits render live in the same frame. Layered architecture with structural sharing (`Arc`) keeps undo and history instant and memory-proportional.
-* **Interchange ready**: Open Adobe Animate documents (`.fla`, `.xfl`, XFL folders), import SVG drawings straight to the stage, export PNG frames and sequences, animated GIFs with palette quantization, and SVG vector frames.
+- **Familiar.** Stage, tools, timeline, layers, keyframes, Properties and Library are where your hands
+  expect them. If you know Adobe Animate or Flash, you already know AniCraft.
+- **Fast.** A pure Rust engine with a deterministic, analytic anti-aliasing CPU renderer, band-parallel
+  rendering, a tiled stage and a background render worker. No Electron, no webview, no waiting.
+- **Robust.** No `unsafe` code (`unsafe_code = "forbid"`), no panics on input, every command fuzzed, and
+  undo with structural sharing (`Arc`), so history stays instant and memory-proportional.
+- **Time is a function.** The document is plain data, and the picture at a frame is a pure function,
+  `evaluate(doc, frame)`. Classic tweens with easing presets and shape tweens with contour morphing.
+- **Open.** A documented native format (`.anicraft`, JSON). Opens Adobe Animate documents (`.fla`,
+  `.xfl`, XFL folders), imports SVG to the stage, and exports PNG frames and sequences, animated GIF,
+  SVG frames, sprite sheets, Lottie, and WebM/MP4 through your own ffmpeg.
+- **Agent-native.** Every action is an engine command. Drive the same engine from the UI, the CLI, a
+  JSON-lines channel or the **MCP server**, so Claude and other agents can draw, animate and export.
 
 ## Features
 
-### Stage and Drawing Tools
-* **Selection & Subselection**: Select, move, nudge with arrow keys, anchor and Bézier handle editing on paths (`Subselection (A)`), add and delete points.
-* **Vector Drawing**: Pen (`P`) with smooth handles and corner conversion, Pencil (`Shift+Y`) with Schneider curve fitting and smoothing, Rectangle (with corner radii), Oval, PolyStar, and Line tools.
-* **Free Transform (`Q`)**: Interactive scaling, corner/edge handles with proportional Shift and centre Alt modifiers, and rotation with 15° snapping.
-* **Fills and Strokes**: Paint Bucket (`K`) with smart gap closure detection, Ink Bottle (`S`), solid colors, linear/radial gradients, and stroke styling.
-* **Arrangement & Alignment**: Align left/center/right/top/middle/bottom (with stage alignment support), distribute, rotate 90° CW/CCW, and horizontal/vertical flipping.
+### Stage and drawing tools
+* **Selection & Subselection**: select, move, nudge with arrow keys, anchor and Bézier handle editing on paths (`Subselection (A)`), add and delete points.
+* **Vector drawing**: Pen (`P`) with smooth handles and corner conversion, Pencil (`Shift+Y`) with Schneider curve fitting and smoothing, Rectangle (with corner radii), Oval, PolyStar, Line and Text (`T`).
+* **Free Transform (`Q`)**: interactive scaling, corner/edge handles with proportional Shift and centre Alt modifiers, and rotation with 15° snapping.
+* **Fills and strokes**: Paint Bucket (`K`) with gap closing, Ink Bottle (`S`), solid colours, linear/radial gradients, bitmap fills and stroke styling.
+* **Arrangement & alignment**: align left/center/right/top/middle/bottom (with stage alignment), distribute, rotate 90° CW/CCW, and horizontal/vertical flipping.
 
-### Timeline & Animation
-* **Layers & Organization**: Normal layers, guide layers, and mask layers (stencil grouping where masked layers clip cleanly under the mask).
-* **Frame Management**: Keyframes (`F6`), blank keyframes (`F7`), frame insertion (`F5`), frame span dragging, multi-frame selection across layers, and cut/copy/paste frames.
-* **Classic & Shape Tweens**: Classic tweens with 8 easing presets and custom ease curves; shape tweens morphing between arbitrary vector contours.
-* **Onion Skinning**: Visual range before and after the playhead for precise in-betweening.
-* **Symbols & Instances**: Graphic symbols with nested timelines, independent loop modes (Loop, Play Once, Single Frame), and first-frame offsets.
+### Timeline and animation
+* **Layers & organization**: normal, guide, motion-guide and mask layers, and nestable layer folders.
+* **Frame management**: keyframes (`F6`), blank keyframes (`F7`), frame insertion (`F5`), span dragging, multi-frame selection across layers, and cut/copy/paste frames.
+* **Classic & shape tweens**: classic tweens with 8 easing presets and custom ease curves; shape tweens morphing between arbitrary vector contours.
+* **Onion skinning**: a visual range before and after the playhead for in-betweening.
+* **Symbols & instances**: graphic symbols with nested timelines and loop modes (Loop, Play Once, Single Frame), movie clips, filters and blend modes, and scenes.
 
-### Workflow & Customization
-* **Shortcut Editor (`F1`)**: Interactive keymap editor to customize, rebind, or clear any tool or command shortcut.
-* **Command Palette (`Ctrl+K`)**: Quick fuzzy search and execution of all engine commands.
-* **Safety & Recovery**: Tiered confirmation for destructive actions, unsaved changes guards, and non-overwriting untitled imports.
+### Workflow and customization
+* **Shortcut editor (`F1`)**: interactive keymap editor to customize, rebind or clear any tool or command shortcut.
+* **Command palette (`Ctrl+K`)**: quick fuzzy search and execution of all engine commands.
+* **Safety & recovery**: tiered confirmation for destructive actions, unsaved-changes guards, and non-overwriting untitled imports.
 
-## Build and run
-
-```sh
-cargo build                       # whole workspace
-cargo run                         # desktop app with the sample animation
-cargo run -- --screenshot shots/now.png   # draw ~120 frames, save the window, exit
-cargo test                        # all crates
-```
-
-## Headless / agents
-
-AniCraft is headless first: every action in the UI is an engine command, accessible through the CLI or over JSON-lines.
+## Quick start
 
 ```sh
-cargo run -p anicraft-cli -- info --sample
-cargo run -p anicraft-cli -- render --sample --frame 12 --out frame12.png
-cargo run -p anicraft-cli -- render-seq --sample --out-dir frames --scale 0.5
-cargo run -p anicraft-cli -- gif --sample --out animation.gif --fps 24
-cargo run -p anicraft-cli -- commands                 # the registry as JSON
-cargo run -p anicraft-cli -- exec --sample draw.rect '{"x":10,"y":10,"w":80,"h":40}' --save out.anicraft
-cargo run -p anicraft-cli -- serve --sample           # JSON-lines on stdin/stdout
-cargo run -p anicraft-cli -- mcp --sample             # MCP server for AI assistants (docs/mcp.md)
+git clone https://github.com/storytold/anicraft
+cd anicraft
+
+cargo run --release                                     # desktop app with the sample animation
+cargo run --release -- --screenshot shots/now.png       # draw ~120 frames, save the window, exit
+cargo run --release -p anicraft-cli -- info --sample
+cargo run --release -p anicraft-cli -- render --sample --frame 12 --out frame12.png
+cargo run --release -p anicraft-cli -- render-seq --sample --out-dir frames --scale 0.5
+cargo run --release -p anicraft-cli -- gif --sample --out animation.gif
+cargo run --release -p anicraft-cli -- commands         # the command registry as JSON
+cargo run --release -p anicraft-cli -- exec --sample draw.rect '{"x":10,"y":10,"w":80,"h":40}' --save out.anicraft
+cargo run --release -p anicraft-cli -- serve --sample   # JSON-lines on stdin/stdout
+cargo test                                              # all crates
 ```
 
-The `serve` protocol accepts one JSON request per line:
-```json
-{"id": 1, "cmd": "timeline.insert_keyframe", "params": {"frame": 10}}
-```
-And returns structured status:
-```json
-{"id": 1, "ok": true, "result": {}, "revision": 7, "frame": 0}
-```
-Send `{"cmd": "quit"}` to exit.
+The interface typefaces (Inter and JetBrains Mono) come from [storytold/craft-fonts](https://github.com/storytold/craft-fonts),
+an optional build input: `CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run --release` (an absolute path). Without it, AniCraft
+uses egui's built-in fonts. See [`docs/development.md`](docs/development.md).
 
-## Architecture
+The `serve` protocol takes one JSON request per line, `{"id": 1, "cmd": "timeline.insert_keyframe", "params": {"frame": 10}}`,
+and answers with its status, `{"id": 1, "ok": true, "result": {}, "revision": 7, "frame": 0}`. Send `{"cmd": "quit"}` to exit.
 
-The codebase enforces strict downward-only layering:
+### Use it from Claude Code and other agents
+
+Register the MCP server with Claude Code:
+
+```sh
+claude mcp add anicraft -- /path/to/anicraft-cli mcp
+```
+
+The details, including the server entry for other MCP clients, are in [`docs/mcp.md`](docs/mcp.md).
+
+## Status
+
+> [!IMPORTANT]
+> **Early alpha: not yet for production animation work.** The core document model, vector renderer,
+> egui shell, classic and shape tweens, and the first XFL and SVG imports work; much is still to come.
+
+[**docs/roadmap.md**](docs/roadmap.md) has the honest status by dimension, milestones M0–M8 and what's next.
+
+**What's missing:** motion tweens and the Motion Editor, shape hints, audio layers, ActionScript (frame scripts are counted
+on import but not kept yet, ADR 0013), text and motion tweens from XFL, a GPU renderer, and macOS and Linux CI runners
+(AniCraft is verified on Windows so far).
+
+**Workspace:** strict downward-only layering, checked by `cargo test`:
 
 ```text
 crates/geom     L0  Vec2, Affine (decompose/compose), Rect, Path, flattening, hit testing
@@ -165,28 +209,19 @@ crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/s
 src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
 ```
 
-No code below `src/` depends on egui, eframe, or windowing libraries.
+No code below `src/` depends on egui, eframe or windowing libraries.
 
-### Documents
-* [`docs/requirements.md`](docs/requirements.md): Scope, functional requirements, and technology choices
-* [`docs/architecture.md`](docs/architecture.md): Philosophy, crate map, document model, renderer, and engine
-* [`docs/roadmap.md`](docs/roadmap.md): Milestones M0–M8 and current progress
-* [`docs/product-principles.md`](docs/product-principles.md): Design and user experience principles
-* [`docs/development.md`](docs/development.md): Development setup, testing, and build hygiene
-* [`AGENTS.md`](AGENTS.md): Guide for contributors and AI agents
-
-## Status
-
-> [!IMPORTANT]
-> **Status: Early Alpha (Not yet for public consumption).**
-> AniCraft is under active early development. The core document model, vector rendering oracle,
-> egui shell, classic and shape tweens, and initial XFL/SVG imports are functional, but it is not yet
-> ready for production animation work. See [`docs/roadmap.md`](docs/roadmap.md) for milestones M0–M8
-> and honest progress.
+Agent and contributor rules (clean room, the asset policy, no panics in shipped code) are in [`AGENTS.md`](AGENTS.md).
+[`docs/requirements.md`](docs/requirements.md) has the scope, [`docs/architecture.md`](docs/architecture.md) the design,
+[`docs/product-principles.md`](docs/product-principles.md) the design and user experience principles, and
+[`docs/development.md`](docs/development.md) the setup, testing and build hygiene. Every bundled asset is listed
+with its licence in [`ATTRIBUTION.md`](ATTRIBUTION.md).
 
 ## Downloads
 
-On GitHub, the [latest release](https://github.com/storytold/anicraft/releases/latest) has every build listed below, and [all releases](https://github.com/storytold/anicraft/releases) has earlier versions and their notes. `<ver>` in the file names is the version number, and `SHA256SUMS.txt` lists a checksum for every file.
+**New to AniCraft?** Download it from the [AniCraft page on getartcraft.com](https://getartcraft.com/apps/anicraft). That's the easiest way to install it.
+
+**Want a specific build or format?** On GitHub, the [latest release](https://github.com/storytold/anicraft/releases/latest) has every build listed below, and [all releases](https://github.com/storytold/anicraft/releases) has earlier versions and their notes. `<ver>` in the file names is the version number, and `SHA256SUMS.txt` lists a checksum for every file.
 
 ### Windows
 
@@ -244,8 +279,16 @@ stand on its own.
 | <img src="https://raw.githubusercontent.com/storytold/pdfcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.pdfcraft.png" alt="" width="32" height="32"> | **PdfCraft** | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/pdfcraft) | [Website](https://getartcraft.com/apps/pdfcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/cadcraft/main/assets/app-icon/cadcraft-64.png" alt="" width="32" height="32"> | **CADCraft** | Computer-aided design and drafting | [GitHub](https://github.com/storytold/cadcraft) | [Website](https://getartcraft.com/apps/cadcraft) |
-| <img src="docs/brand/artcraft-mark.svg" alt="" width="32" height="32"> | **AniCraft** | **2D vector animation studio · you are here** | [GitHub](https://github.com/storytold/anicraft) | [Website](https://getartcraft.com/apps/anicraft) |
+| <img src="https://raw.githubusercontent.com/storytold/figcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.figcraft.png" alt="" width="32" height="32"> | **FigCraft** | Interface design and prototyping | [GitHub](https://github.com/storytold/figcraft) | [Website](https://getartcraft.com/apps/figcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/wordcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.wordcraft.png" alt="" width="32" height="32"> | **WordCraft** | Word processing and documents | [GitHub](https://github.com/storytold/wordcraft) | [Website](https://getartcraft.com/apps/wordcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/soundcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.soundcraft.png" alt="" width="32" height="32"> | **SoundCraft** | Audio recording and editing | [GitHub](https://github.com/storytold/soundcraft) | [Website](https://getartcraft.com/apps/soundcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/deckcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.deckcraft.png" alt="" width="32" height="32"> | **DeckCraft** | Presentations and slide decks | [GitHub](https://github.com/storytold/deckcraft) | [Website](https://getartcraft.com/apps/deckcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/cadcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.cadcraft.png" alt="" width="32" height="32"> | **CADCraft** | Computer-aided design | [GitHub](https://github.com/storytold/cadcraft) | [Website](https://getartcraft.com/apps/cadcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/gridcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.gridcraft.png" alt="" width="32" height="32"> | **GridCraft** | Spreadsheets and data | [GitHub](https://github.com/storytold/gridcraft) | [Website](https://getartcraft.com/apps/gridcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/texturecraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.texturecraft.png" alt="" width="32" height="32"> | **TextureCraft** | 3D texture painting | [GitHub](https://github.com/storytold/texturecraft) | [Website](https://getartcraft.com/apps/texturecraft) |
+| <img src="https://raw.githubusercontent.com/storytold/craft-anything/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.craft-anything.png" alt="" width="32" height="32"> | **Craft Anything** | See how any software works, then build your own | [GitHub](https://github.com/storytold/craft-anything) | [Website](https://getartcraft.com/apps/craft-anything) |
+| <img src="assets/app-icon/hicolor/64x64/apps/ai.storyteller.anicraft.png" alt="" width="32" height="32"> | **AniCraft** | **2D vector animation · you are here** | [GitHub](https://github.com/storytold/anicraft) | [Website](https://getartcraft.com/apps/anicraft) |
+| <img src="https://raw.githubusercontent.com/tangency-labs/solidcraft/main/assets/icons/app/linux/exports/hicolor/64x64/apps/io.tangencylabs.solidcraft.png" alt="" width="32" height="32"> | **SolidCraft** | Parametric 3D CAD by Tangency Labs (community app) | [GitHub](https://github.com/tangency-labs/solidcraft) | |
 
 And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
 
@@ -271,7 +314,9 @@ And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video stud
   <a href="https://getartcraft.com/apps/anicraft">AniCraft</a>
 </p>
 
----
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=storytold/anicraft&type=Date&legend=top-left)](https://www.star-history.com/?repos=storytold%2Fanicraft&type=date&legend=top-left)
 
 ## License and credits
 
@@ -280,6 +325,9 @@ Copyright (c) 2026 ArtCraft Team and the AniCraft contributors. Required notices
 
 Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
 with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md).
+
+The app icon (an engraved rabbit on AniCraft yellow, `#dac604`) is the owner's original artwork; its
+palette and files are in [`assets/app-icon/`](assets/app-icon/README.md).
 
 The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
 ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
