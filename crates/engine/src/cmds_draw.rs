@@ -521,7 +521,7 @@ fn arrange_step(s: &mut Session, forward: bool) -> Result<Value> {
 
 // ----- symbols ----------------------------------------------------------------------------
 
-fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     let sel = s.selection.clone();
     if sel.is_empty() {
         return Err(EngineError::State("select something to convert".into()));

@@ -186,6 +186,14 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             }
         }
         "Window" => {
+            use crate::app::BottomTab;
+            if ui_item(ui, "Timeline", "", Some(app.bottom == BottomTab::Timeline)) {
+                app.bottom = BottomTab::Timeline;
+            }
+            if ui_item(ui, "Motion Editor", "", Some(app.bottom == BottomTab::MotionEditor)) {
+                app.bottom = BottomTab::MotionEditor;
+            }
+            ui.separator();
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
                 app.onion = !app.onion;
             }

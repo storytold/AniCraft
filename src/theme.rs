@@ -47,9 +47,11 @@ pub struct Tokens {
     pub span_empty: Color32,
     /// Timeline: frame cells of the active layer.
     pub row_active: Color32,
-    /// Timeline: classic tween span (violet) and shape tween span (amber).
+    /// Timeline: classic tween span (violet), shape tween span (amber) and motion tween span
+    /// (sky blue, also its curves in the Motion Editor).
     pub tween: Color32,
     pub tween_shape: Color32,
+    pub tween_motion: Color32,
     pub tween_line: Color32,
     pub playhead: Color32,
     pub selection: Color32,
@@ -104,6 +106,7 @@ pub const T: Tokens = Tokens {
     row_active: Color32::from_rgb(0x24, 0x27, 0x33),
     tween: Color32::from_rgb(0x8a, 0x5c, 0xff),
     tween_shape: Color32::from_rgb(0xf2, 0xa1, 0x3b),
+    tween_motion: Color32::from_rgb(0x4c, 0xb8, 0xf5),
     tween_line: Color32::from_rgb(0x0e, 0x0e, 0x10),
     playhead: Color32::from_rgb(0xff, 0x4d, 0x3d),
     selection: Color32::from_rgb(0x2e, 0x66, 0xf0),
@@ -231,7 +234,7 @@ pub type UserFont = (String, Vec<u8>, u32);
 /// Installs the UI typefaces (ADR 0005). Order in each family: the user's system font (from
 /// Preferences), then the craft-fonts pair (when embedded at build time), then egui's bundled
 /// fonts, which stay as fallbacks for glyph coverage, then Noto Sans Arabic for the Arabic
-/// letters none of them has (ADR 0016).
+/// letters none of them has (ADR 0017).
 pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&UserFont>, data_font: Option<&UserFont>) {
     use egui::{FontData, FontDefinitions, FontFamily};
     use std::sync::Arc;
@@ -350,7 +353,7 @@ pub fn radio_value<V: PartialEq>(ui: &mut egui::Ui, current: &mut V, value: V, l
     with_control_edges(ui, |ui| ui.radio_value(current, value, label))
 }
 
-// ----- right to left (ADR 0016) -------------------------------------------------------------
+// ----- right to left (ADR 0017) -------------------------------------------------------------
 // In a right-to-left language (Arabic) the window mirrors: rows start at the right, the tools
 // sit on the right and the dock on the left. The stage, the timeline's frames and the playback
 // buttons keep their direction: they follow time and the artwork, not the reading order.

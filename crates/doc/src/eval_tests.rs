@@ -326,3 +326,70 @@ fn movie_clips_play_their_own_timeline_graphics_keep_step_buttons_hold_up() {
     layer0(&mut d).keyframes[1] = Arc::new(k1b);
     assert_eq!(x(&d, 7), 1020.0);
 }
+
+/// A 24-frame motion tween on one shape: X keyed at 0, 12 (ease in) and 23; alpha keyed at 23.
+fn motion_doc() -> Document {
+    use crate::{MotionTween, Property};
+    let mut d = Document::default();
+    let mut k = Keyframe::new(0, 24);
+    k.elements.push(Arc::new(shape_el(10, 0.0)));
+    let mut m = MotionTween::new(ElementId(10));
+    m.set_key(Property::X, 12, 120.0, 0.0);
+    m.set_key(Property::X, 23, 120.0, 0.0);
+    if let Some(t) = m.track_mut(Property::X) {
+        t.keys[0].ease = Easing::QuadIn;
+    }
+    m.set_key(Property::Alpha, 23, 0.0, 100.0);
+    k.motion = Some(m);
+    // A classic tween on the same span is ignored: the motion tween wins.
+    k.tween = Some(Tween::default());
+    layer0(&mut d).keyframes = vec![Arc::new(k)];
+    d
+}
+
+#[test]
+fn a_motion_tween_drives_each_property_on_its_own_curve() {
+    let d = motion_doc();
+    let at = |f| {
+        let dl = evaluate(&d, f);
+        (dl.items[0].transform.translation().x, dl.items[0].color.alpha)
+    };
+    assert_eq!(at(0), (0.0, 1.0));
+    // X eases in over 0..12 (a quarter of the way at half time); alpha runs linearly over 0..23.
+    let (x6, a6) = at(6);
+    assert!((x6 - 30.0).abs() < 1e-3, "{x6}");
+    assert!((a6 - (1.0 - 6.0 / 23.0)).abs() < 1e-5, "{a6}");
+    // X holds on 12..23 while alpha keeps fading.
+    let (x18, a18) = at(18);
+    assert!((x18 - 120.0).abs() < 1e-3 && a18 < a6);
+    assert_eq!(at(23).1, 0.0);
+    // Y, scale and rotation were never keyed: they stay the element's own.
+    let item = &evaluate(&d, 18).items[0];
+    let dc = item.transform.decompose();
+    assert!(dc.ty.abs() < 1e-4 && (dc.sx - 1.0).abs() < 1e-5 && dc.rotation.abs() < 1e-5);
+}
+
+#[test]
+fn motion_tweens_survive_a_file_round_trip_and_old_files_have_none() {
+    let d = motion_doc();
+    let json = serde_json::to_string(&d).unwrap();
+    let back: Document = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, d);
+    assert!(back.timeline(0).layers[0].keyframes[0].motion.is_some());
+    // A keyframe written before motion tweens existed loads with none.
+    let old: Keyframe = serde_json::from_str(r#"{"start": 0, "duration": 3}"#).unwrap();
+    assert!(old.motion.is_none());
+    // Loading repairs a hostile tween and drops a classic tween beside it.
+    let mut d2 = d.clone();
+    let k = layer0(&mut d2).keyframe_mut(0).unwrap();
+    if let Some(m) = k.motion.as_mut() {
+        m.tracks[0].keys.reverse();
+        m.tracks[0].keys[0].value = f32::INFINITY;
+    }
+    d2.sanitize();
+    let k = &d2.timeline(0).layers[0].keyframes[0];
+    assert!(k.tween.is_none() && k.motion.as_ref().is_some_and(crate::MotionTween::is_sane));
+    for f in 0..30 {
+        assert!(evaluate(&d2, f).items.iter().all(|i| i.transform.is_finite()));
+    }
+}

@@ -64,7 +64,7 @@ impl Recovery {
                 r.saver = Some(s);
                 None
             }
-            // The engine's reason stays English (ADR 0016).
+            // The engine's reason stays English (ADR 0017).
             Err(e) => Some(i18n::fmt("Autosave is off: {reason}", &[("reason", &e.to_string())])),
         };
         r.dir = Some(dir);

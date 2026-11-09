@@ -3,7 +3,7 @@
 
 use crate::i18n::{self, tl};
 use crate::theme::{self, T};
-use crate::{autosave, dialogs, keymap, menus, panels, pathtools, platform, prefs, stage, timeline};
+use crate::{autosave, dialogs, keymap, menus, motion_editor, panels, pathtools, platform, prefs, stage, timeline};
 use std::collections::HashSet;
 use anicraft_engine::{Session, commands};
 use egui::{Key, Modifiers};
@@ -117,6 +117,14 @@ impl Tool {
             Tool::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere.",
         }
     }
+}
+
+/// What the timeline dock shows: the timeline, or the Motion Editor beside it (as in Animate).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BottomTab {
+    #[default]
+    Timeline,
+    MotionEditor,
 }
 
 /// Text being typed on the stage (view state until it is committed as one command).
@@ -252,6 +260,13 @@ pub struct App {
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
+    /// Timeline or Motion Editor, and the Motion Editor's view state: the property whose curve
+    /// it shows, the picked key (frames into the span), its drag and its list scroll.
+    pub bottom: BottomTab,
+    pub me_prop: anicraft_engine::doc::Property,
+    pub me_key: Option<u32>,
+    pub me_drag: Option<motion_editor::MeDrag>,
+    pub me_vscroll: f32,
     /// The frame grid was clicked more recently than the stage: Ctrl+X/C/V act on frames.
     pub timeline_focus: bool,
     /// A destructive command waiting for the user's decision (ADR 0004).
@@ -348,6 +363,11 @@ impl App {
             points: Vec::new(),
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
+            bottom: BottomTab::Timeline,
+            me_prop: anicraft_engine::doc::Property::X,
+            me_key: None,
+            me_drag: None,
+            me_vscroll: 0.0,
             timeline_focus: false,
             confirm: None,
             skip_confirm: HashSet::new(),
@@ -576,6 +596,29 @@ impl App {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
                 }
             }
+            Some(which @ ("motion" | "motionspan")) => {
+                // The Star layer's span as a motion tween: it moves, turns and fades out, with
+                // an eased X and a custom Bezier on Y, shown in the Motion Editor.
+                self.run("layer.select", json!({"index": 1}));
+                if self.run("timeline.create_motion_tween", json!({"frame": 0})).is_some() {
+                    let frames = self.s.active_layer().and_then(|l| l.keyframes.first()).map_or(24, |k| k.duration);
+                    let (mid, end) = (frames / 2, frames.saturating_sub(1));
+                    let x0 = self.run("motion.info", json!({"frame": 0})).and_then(|v| v["values"]["x"].as_f64()).unwrap_or(0.0);
+                    let y0 = self.run("motion.info", json!({"frame": 0})).and_then(|v| v["values"]["y"].as_f64()).unwrap_or(0.0);
+                    for (p, f, v) in [("x", mid, x0 + 260.0), ("x", end, x0 + 420.0), ("y", mid, y0 + 160.0), ("y", end, y0), ("rotation", end, 270.0), ("alpha", end, 20.0)] {
+                        self.run("motion.set_key", json!({"property": p, "frame": f, "value": v}));
+                    }
+                    self.run("motion.set_ease", json!({"property": "x", "frame": 1, "easing": "CubicOut"}));
+                    self.run("motion.set_ease", json!({"property": "y", "frame": 1, "easing": {"bezier": [0.2, 1.6, 0.6, 1.0]}}));
+                    self.s.mark_saved();
+                }
+                if which == "motion" {
+                    self.bottom = BottomTab::MotionEditor;
+                }
+                self.me_prop = anicraft_engine::doc::Property::Y;
+                self.me_key = Some(0);
+                self.run("timeline.goto", json!({"frame": 6}));
+            }
             Some("pen") => {
                 // A pen path still being drawn: a corner, a smooth point with handles, a corner.
                 self.tool = Tool::Pen;
@@ -654,7 +697,7 @@ impl App {
             }
             "file.export_sprite_sheet" => self.status_ok(i18n::fmt("Exported {frames} frames to {path} ({columns}×{rows} grid) and its frame map {map}", &[("frames", &v["frames"].to_string()), ("path", &craft_i18n::ltr(v["written"].as_str().unwrap_or(""))), ("columns", &v["columns"].to_string()), ("rows", &v["rows"].to_string()), ("map", &craft_i18n::ltr(v["map"].as_str().unwrap_or("")))])),
             "file.export_lottie" => {
-                // The engine's report on what Lottie can't carry stays English (ADR 0016).
+                // The engine's report on what Lottie can't carry stays English (ADR 0017).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
                 let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
@@ -1121,7 +1164,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // The interface language, and its direction for egui's own parts (menus, scroll bars,
-        // combo boxes) (ADR 0016).
+        // combo boxes) (ADR 0017).
         crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         let rtl = crate::i18n::rtl();
         if ctx.global_style().right_to_left != rtl {

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Motion tweens and the Motion Editor** (ADR 0016). Insert › Create Motion Tween (also in
+  the timeline header, the right-click menu and Properties) makes a span animate its object
+  property by property: X, Y, scale, rotation, skew, alpha and tint each have their own curve
+  with property keyframes anywhere in the span. Move, scale, rotate or fade the object at a
+  later frame and it keys those properties there (no timeline keyframes); F6 inside the span
+  keys every property. The Motion Editor (a tab beside the Timeline, Window › Motion Editor, or
+  double-click a motion span) lists the properties with their values at the playhead (drag one
+  to key it) and draws the selected property's curve: drag keys up and down, drag a segment's
+  two Bézier handles to shape its ease (overshoot allowed), pick an ease preset, click to move
+  the playhead, double-click to add a key. Each drag is one undo step. Motion spans are sky blue
+  on the timeline with a diamond at each property keyframe. Several objects become one graphic
+  symbol first, and a one-frame span grows to a second, as in Animate. Every export sees the
+  motion. Headless: `timeline.create_motion_tween`, `motion.set_key`, `motion.remove_key`,
+  `motion.set_ease`, `motion.info`. Not yet: motion paths on the stage, moving keys in time,
+  importing motion tweens from Animate files.
 * **Crash recovery.** AniCraft keeps a recovery copy of unsaved work in the background (every
   minute, or after 25 changes, whichever comes first; Preferences › Files › Autosave changes
   both or turns it off). If AniCraft closes unexpectedly, the next start shows what was left
