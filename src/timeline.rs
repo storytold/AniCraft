@@ -967,6 +967,14 @@ pub fn easing_param(e: Easing) -> serde_json::Value {
 }
 
 /// The timeline header, left to right: tabs, transport, readouts, frame and tween buttons.
+/// The frame rate as the header shows it: whole rates without decimals ("24 fps"), others
+/// with as many as they need ("29.97 fps", "12.5 fps").
+fn fps_label(fps: f32) -> String {
+    let s = format!("{fps:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{s} fps")
+}
+
 fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
     // Two tabs share the dock: the timeline and the Motion Editor.
     for (tab, name, tip) in [(BottomTab::Timeline, "Timeline", "Layers and frames"), (BottomTab::MotionEditor, "Motion Editor", "Property curves of the motion tween at the playhead (double-click a motion span)")] {
@@ -979,16 +987,16 @@ fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
             app.bottom = tab;
         }
     }
-    ui.add_space(8.0);
+    ui.add_space(4.0);
     transport(app, ui);
-    ui.add_space(8.0);
+    ui.add_space(4.0);
     let fps = app.s.doc.stage.fps;
     let f = app.s.frame;
     // Fixed-width readouts: digits stay put while the playhead moves.
     let digits = app.s.frame_count().max(f + 1).to_string().len().max(3);
     ui.label(text(Type::DataLarge, format!("{:>digits$}", f + 1)).color(T.accent_text)).named("Current frame").on_hover_text("Current frame");
-    ui.label(text(Type::Data, format!("{fps:.2} fps")).color(T.text_dim)).on_hover_text("Frame rate");
-    ui.label(text(Type::Data, format!("{:>7.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text("Time at the playhead");
+    ui.label(text(Type::Data, fps_label(fps)).color(T.text_dim)).on_hover_text("Frame rate");
+    ui.label(text(Type::Data, format!("{:>6.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text("Time at the playhead");
     ui.separator();
     // Through `invoke`, so the buttons act on the frame selection like the keys do.
     let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
@@ -1075,6 +1083,15 @@ mod tests {
 
     fn layers(n: u64) -> Vec<Arc<Layer>> {
         (1..=n).map(|i| Arc::new(Layer::new(LayerId(i), format!("L{i}")))).collect()
+    }
+
+    #[test]
+    fn frame_rates_read_without_needless_decimals() {
+        assert_eq!(fps_label(24.0), "24 fps");
+        assert_eq!(fps_label(30.0), "30 fps");
+        assert_eq!(fps_label(29.97), "29.97 fps");
+        assert_eq!(fps_label(12.5), "12.5 fps");
+        assert_eq!(fps_label(120.0), "120 fps");
     }
 
     #[test]
