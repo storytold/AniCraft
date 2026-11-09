@@ -3,7 +3,7 @@
 
 use crate::i18n::{self, tl};
 use crate::theme::{self, T};
-use crate::{dialogs, keymap, menus, panels, pathtools, platform, prefs, stage, timeline};
+use crate::{autosave, dialogs, keymap, menus, panels, pathtools, platform, prefs, stage, timeline};
 use std::collections::HashSet;
 use anicraft_engine::{Session, commands};
 use egui::{Key, Modifiers};
@@ -280,6 +280,8 @@ pub struct App {
     shortcuts: Vec<(Modifiers, Key, &'static str)>,
     /// The shortcut editor is waiting for a key press: global shortcuts pause.
     pub key_capture: Option<dialogs::KeyCapture>,
+    /// Crash-recovery autosave and the copies earlier sessions left behind (ADR 0015).
+    pub recovery: autosave::Recovery,
 }
 
 /// How finished this version is, shown next to the version number (docs/release.md).
@@ -303,6 +305,7 @@ impl App {
         let keymap = keymap::Keymap::new(&prefs.shortcuts);
         let shortcuts = keymap.table();
         let library_sel = LibraryItem::first(&session.doc);
+        let (recovery, recovery_err) = autosave::Recovery::start(shot_mode);
         // Text lays out with the fonts on this computer plus the embedded interface font (so new
         // text has the same default everywhere). Scan them now, off the UI thread.
         anicraft_engine::text::Fonts::register(crate::theme::embedded_fonts());
@@ -363,11 +366,15 @@ impl App {
             keymap,
             shortcuts,
             key_capture: None,
+            recovery,
         };
         app.apply_prefs(&cc.egui_ctx);
         // The language is set every frame; the first message is written before the first frame.
         crate::i18n::set_current(crate::i18n::from_pref(app.lang_arg.as_deref().unwrap_or(&app.prefs.language)));
         app.status_ok(tl!("Welcome to AniCraft. Press Enter to play the sample animation."));
+        if let Some(e) = recovery_err {
+            app.status_err(e);
+        }
         app
     }
 
@@ -483,6 +490,14 @@ impl App {
                 self.run("scene.select", json!({"scene": last}));
             }
             Some("files") => self.show_files = true,
+            Some("recovery") => {
+                // Work left behind by a session that didn't close cleanly (sample entries
+                // unless ANICRAFT_RECOVERY_DIR holds real ones).
+                if self.recovery.found.is_empty() {
+                    self.recovery.found = autosave::sample_entries();
+                }
+                self.recovery.show = true;
+            }
             Some("licenses") => self.show_licenses = true,
             Some("about") => self.show_about = true,
             Some("zoom") => {
@@ -607,6 +622,22 @@ impl App {
                     None => self.status_ok(tl!(if id == "file.open" { "Opened" } else { "New document" })),
                 }
             }
+            "file.recover" => {
+                self.view.fit = true;
+                self.frame_sel = None;
+                self.library_sel = LibraryItem::first(&self.s.doc);
+                self.recovery.restored(v["recovered"].as_str().unwrap_or(""));
+                let name = v["name"].as_str().unwrap_or("Untitled");
+                self.status_ok(if v["original_newer"].as_bool() == Some(true) {
+                    format!("Restored “{name}” as a new document (the file on disk is newer). Save to keep it.")
+                } else {
+                    format!("Restored “{name}”. It isn't saved yet: Save to keep it.")
+                });
+            }
+            "file.discard_recovery" => {
+                self.recovery.discarded(v["discarded"].as_str().unwrap_or(""));
+                self.status_ok("Discarded the autosaved copy");
+            }
             "file.save" | "file.save_as" => {
                 self.status_ok(i18n::fmt("Saved {path}", &[("path", &craft_i18n::ltr(v["saved"].as_str().unwrap_or("")))]));
                 if self.close_after_save {
@@ -623,7 +654,7 @@ impl App {
             }
             "file.export_sprite_sheet" => self.status_ok(i18n::fmt("Exported {frames} frames to {path} ({columns}×{rows} grid) and its frame map {map}", &[("frames", &v["frames"].to_string()), ("path", &craft_i18n::ltr(v["written"].as_str().unwrap_or(""))), ("columns", &v["columns"].to_string()), ("rows", &v["rows"].to_string()), ("map", &craft_i18n::ltr(v["map"].as_str().unwrap_or("")))])),
             "file.export_lottie" => {
-                // The engine's report on what Lottie can't carry stays English (ADR 0015).
+                // The engine's report on what Lottie can't carry stays English (ADR 0016).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
                 let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
@@ -684,6 +715,14 @@ impl App {
             && let Some(p) = timeline::paste_params(self)
         {
             self.request(id, p);
+            return;
+        }
+        if id == "file.recovery_list" {
+            self.recovery.rescan();
+            self.recovery.show = !self.recovery.found.is_empty();
+            if !self.recovery.show {
+                self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
+            }
             return;
         }
         if id == "edit.paste" {
@@ -1072,10 +1111,17 @@ fn open_in_system(path: &std::path::Path) -> Result<(), String> {
 }
 
 impl eframe::App for App {
+    /// A clean exit (saved, or the user chose Don't Save) removes this session's recovery
+    /// copy; otherwise the work is written once more and offered at the next start.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let clean = !self.s.is_dirty() || self.allow_close || self.shot.is_some();
+        self.recovery.finish(&self.s, clean);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // The interface language, and its direction for egui's own parts (menus, scroll bars,
-        // combo boxes) (ADR 0015).
+        // combo boxes) (ADR 0016).
         crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         let rtl = crate::i18n::rtl();
         if ctx.global_style().right_to_left != rtl {
@@ -1119,6 +1165,7 @@ impl eframe::App for App {
         self.prompt_window(&ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
+        autosave::window(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {
@@ -1138,6 +1185,9 @@ impl eframe::App for App {
         if self.s.in_gesture() && self.drag == Drag::None && !ctx.egui_is_using_pointer() && ctx.memory(|m| m.focused().is_none()) {
             self.s.end_gesture();
         }
+
+        // After this frame's edits: start a recovery copy when one is due (off this thread).
+        autosave::tick(self, &ctx);
 
         // An edit late in this frame (after the stage drew) must be shown without waiting for
         // the next input event: egui only repaints on demand. This was the "drag commits after a

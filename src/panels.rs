@@ -143,6 +143,10 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
             let small = |t: String| text(Type::Data, t).color(T.text_faint);
             ui.label(small(i18n::fmt("undo {n} · {mb} MB", &[("n", &app.s.history().undo_len().to_string()), ("mb", &format!("{:.1}", app.s.history().bytes() as f32 / (1024.0 * 1024.0)))])));
             ui.add_space(12.0);
+            if let Some(a) = crate::autosave::status(app, now) {
+                ui.label(small(a)).on_hover_text("A recovery copy of your unsaved work. If AniCraft closes unexpectedly, the next start offers it back.");
+                ui.add_space(12.0);
+            }
             if let Some((n, mb, hit)) = app.stage_cache.stats() {
                 ui.label(small(i18n::fmt("cache {n} fr · {mb} MB · {hit}% hit", &[("n", &n.to_string()), ("mb", &format!("{mb:.0}")), ("hit", &format!("{hit:.0}"))])));
                 ui.add_space(12.0);

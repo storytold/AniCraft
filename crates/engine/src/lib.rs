@@ -11,12 +11,14 @@ mod cmds_frames;
 mod cmds_modify;
 mod cmds_paint;
 mod cmds_path;
+mod cmds_recovery;
 mod cmds_scene;
 pub mod cmds_text;
 mod cmds_timeline;
 pub mod confirm;
 pub mod format;
 pub mod history;
+pub mod recovery;
 pub mod render_service;
 pub mod params;
 
@@ -82,6 +84,7 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
@@ -208,6 +211,12 @@ impl Session {
     /// Marks the current state as saved.
     pub fn mark_saved(&mut self) {
         self.saved_state = Some(self.state);
+    }
+
+    /// Marks the document as not saved anywhere yet (a restored autosave), so the close guard
+    /// and the title treat it as unsaved work.
+    pub fn mark_unsaved(&mut self) {
+        self.saved_state = None;
     }
 
     /// The confirmation running `id` with `params` needs right now (ADR 0004).

@@ -145,7 +145,7 @@ The sample animation, exported as an animated GIF by AniCraft's own renderer fro
 ### Workflow and customization
 * **Shortcut editor (`F1`)**: interactive keymap editor to customize, rebind or clear any tool or command shortcut.
 * **Command palette (`Ctrl+K`)**: quick fuzzy search and execution of all engine commands.
-* **Safety & recovery**: tiered confirmation for destructive actions, unsaved-changes guards, and non-overwriting untitled imports.
+* **Safety & recovery**: tiered confirmation for destructive actions, unsaved-changes guards, crash-recovery autosave, and non-overwriting untitled imports.
 
 ## Quick start
 

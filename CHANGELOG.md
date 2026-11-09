@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+* **Crash recovery.** AniCraft keeps a recovery copy of unsaved work in the background (every
+  minute, or after 25 changes, whichever comes first; Preferences › Files › Autosave changes
+  both or turns it off). If AniCraft closes unexpectedly, the next start shows what was left
+  behind: **Restore** opens it as unsaved work, and Save puts it back where it was (or asks for
+  a name if that file was saved after the copy); **Discard** deletes it after a second click;
+  **Later** keeps it for File › Recover Autosaved Documents…. Copies live in the settings
+  folder, are written atomically, never replace your own files, and go away when you save or
+  close normally. Drawing never waits for them: the 65 MB stress document is copied in 0.18 s
+  on a background thread. Headless: `file.recovery_list`, `file.recover`,
+  `file.discard_recovery`, `file.autosave`.
 * **App icon**: an engraved rabbit on AniCraft yellow, on the same rounded tile as the other
   Crafting Apps. It shows on the window, the macOS Dock (on Apple's icon grid), the Windows
   taskbar and `anicraft.exe`, and in Help › About. Files and how to regenerate them are in

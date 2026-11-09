@@ -18,7 +18,7 @@ pub struct Confirmation {
     /// True when undo cannot bring the loss back (unsaved work, files on disk).
     pub irreversible: bool,
     /// `message` before its values go in, with `{name}` placeholders, and those values: what a
-    /// front end translates to show the message in another language (ADR 0015).
+    /// front end translates to show the message in another language (ADR 0016).
     pub template: &'static str,
     pub args: Vec<(&'static str, Arg)>,
 }
@@ -129,7 +129,19 @@ const EXPORTING_REPLACES: &str = "{path} already exists. Exporting will replace 
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
     match id {
-        "file.new" | "file.new_sample" | "file.open" if s.is_dirty() => Some(Confirmation::new(
+        "file.discard_recovery" => {
+            // Always: the autosaved work is the last copy there is.
+            let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
+            let e = crate::recovery::find(dir, p.get("session").and_then(Value::as_str)?).ok()?;
+            Some(Confirmation::new(
+                "Discard autosaved document?",
+                "The autosaved copy of “{name}” will be deleted, with the work it holds.",
+                vec![("name", text(e.meta.name))],
+                "Discard",
+                true,
+            ))
+        }
+        "file.new" | "file.new_sample" | "file.open" | "file.recover" if s.is_dirty() => Some(Confirmation::new(
             "Discard unsaved changes?",
             "“{name}” has changes that are not saved. They will be lost, and its undo history is cleared.",
             vec![("name", text(doc_name(s)))],

@@ -54,6 +54,12 @@ pub struct Prefs {
     pub shortcuts: std::collections::BTreeMap<String, Vec<String>>,
     /// Interface language: a craft-i18n code (`en`, `ar`), or `auto` for the system's (`i18n`).
     pub language: String,
+    /// Keep a crash-recovery copy of unsaved work (ADR 0015).
+    pub autosave: bool,
+    /// Longest time unsaved work goes without a recovery copy, in seconds.
+    pub autosave_secs: u32,
+    /// Also make a copy after this many changes (0: by time only).
+    pub autosave_edits: u32,
 }
 
 impl Default for Prefs {
@@ -67,9 +73,17 @@ impl Default for Prefs {
             timeline_start_gap: 0.0,
             shortcuts: Default::default(),
             language: crate::i18n::AUTO.to_string(),
+            autosave: true,
+            autosave_secs: 60,
+            autosave_edits: 25,
         }
     }
 }
+
+/// Autosave intervals offered in Preferences: `(seconds, label)`.
+pub const AUTOSAVE_INTERVALS: [(u32, &str); 5] = [(30, "30 seconds"), (60, "1 minute"), (120, "2 minutes"), (300, "5 minutes"), (600, "10 minutes")];
+pub const AUTOSAVE_SECS_RANGE: std::ops::RangeInclusive<u32> = 15..=600;
+pub const AUTOSAVE_EDITS_RANGE: std::ops::RangeInclusive<u32> = 0..=1000;
 
 pub const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
 pub const GAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
@@ -95,6 +109,8 @@ impl Prefs {
         if self.language.trim().is_empty() || self.language.len() > 32 {
             self.language = crate::i18n::AUTO.to_string();
         }
+        self.autosave_secs = self.autosave_secs.clamp(*AUTOSAVE_SECS_RANGE.start(), *AUTOSAVE_SECS_RANGE.end());
+        self.autosave_edits = self.autosave_edits.min(*AUTOSAVE_EDITS_RANGE.end());
         self
     }
 
@@ -186,5 +202,12 @@ mod tests {
         let p = Prefs::from_json(r#"{"shortcuts": {"tool.pen": ["F9", "Ctrl+K"], "nope": ["F2"]}}"#);
         assert_eq!(p.shortcuts.len(), 1);
         assert_eq!(p.shortcuts.get("tool.pen"), Some(&vec!["F9".to_string()]));
+        // Older preference files have no autosave settings: autosave is on, every minute.
+        let p = Prefs::from_json(r#"{"ui_scale": 1.25}"#);
+        assert!(p.autosave);
+        assert_eq!((p.autosave_secs, p.autosave_edits), (60, 25));
+        let p = Prefs::from_json(r#"{"autosave": false, "autosave_secs": 1, "autosave_edits": 99999999}"#);
+        assert!(!p.autosave);
+        assert_eq!((p.autosave_secs, p.autosave_edits), (15, 1000));
     }
 }

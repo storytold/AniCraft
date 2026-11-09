@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod app;
+mod autosave;
 mod dialogs;
 mod i18n;
 mod icons;
@@ -92,7 +93,7 @@ fn main() -> eframe::Result {
             "--lang" => lang = args.next(),
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--lang en|ar|auto] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom]\n\
+                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--lang en|ar|auto] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|prefs|licenses|zoom|recovery]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --lang       the interface language for this run, over Preferences (needs CRAFT_I18N_DIR at build time)\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
