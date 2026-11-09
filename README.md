@@ -190,7 +190,7 @@ The details, including the server entry for other MCP clients, are in [`docs/mcp
 
 [**docs/roadmap.md**](docs/roadmap.md) has the honest status by dimension, milestones M0–M8 and what's next.
 
-**What's missing:** motion tweens and the Motion Editor, shape hints, audio layers, ActionScript (frame scripts are counted
+**What's missing:** audio layers, ActionScript (frame scripts are counted
 on import but not kept yet, ADR 0013), motion tweens from XFL, a GPU renderer, and macOS and Linux CI runners
 (AniCraft is verified on Windows so far).
 
