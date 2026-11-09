@@ -7,6 +7,17 @@
   taskbar and `anicraft.exe`, and in Help › About. Files and how to regenerate them are in
   `assets/app-icon/`.
 * **README**: screenshots of the app and the sample animation, and a quick start.
+* **Text in Animate documents.** Opening a `.fla` or XFL now brings its text across as text
+  you can edit: titles, captions and paragraphs keep their font, size, colour, bold and
+  italic, alignment, letter and line spacing, position, and fixed width (wrapping) or
+  auto-size. A field whose lines use different styles (a big title over smaller lines)
+  becomes one text block per style, stacked as in Animate; a line that mixes styles takes
+  the style of most of its characters, and the report counts it. Fonts that aren't on this
+  computer fall back to the default, and the status bar names them ("Fonts not on this
+  computer, drawn in Arial: Futura."). Dynamic and input text come across as static text and
+  are reported. The import report now also shows in the status bar when a document is
+  opened from the command line (ADR 0014).
+
 * **ActionScript on the roadmap** (ADR 0013, low priority, M6): first keep the scripts in
   imported Animate files, with an Actions panel, then play the common timeline controls (stop,
   play, go to a frame or label, button clicks) in Test Movie and HTML canvas export. Until

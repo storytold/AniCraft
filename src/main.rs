@@ -23,20 +23,22 @@ use anicraft_engine::Session;
 use std::path::{Path, PathBuf};
 
 /// The session to start with: the file given on the command line (through `file.open`, so
-/// `.fla` / `.xfl` import works the same as from the menu), else the sample.
-fn open_session(file: Option<&Path>) -> Session {
-    let Some(p) = file else { return Session::new(anicraft_engine::doc::sample::demo()) };
+/// `.fla` / `.xfl` import works the same as from the menu), else the sample. Also the import
+/// report of an Animate document, for the status bar.
+fn open_session(file: Option<&Path>) -> (Session, Option<String>) {
+    let Some(p) = file else { return (Session::new(anicraft_engine::doc::sample::demo()), None) };
     let mut s = Session::default();
     match s.execute("file.open", &serde_json::json!({"path": p.display().to_string()})) {
         Ok(v) => {
-            if let Some(r) = v.get("report").and_then(|r| r.as_str()) {
+            let report = v.get("report").and_then(|r| r.as_str()).map(str::to_string);
+            if let Some(r) = &report {
                 println!("{r}");
             }
-            s
+            (s, report)
         }
         Err(e) => {
             eprintln!("could not open {}: {e}; starting with the sample", p.display());
-            Session::new(anicraft_engine::doc::sample::demo())
+            (Session::new(anicraft_engine::doc::sample::demo()), None)
         }
     }
 }
@@ -47,13 +49,20 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         renderer,
         ..Default::default()
     };
-    let session = open_session(file);
+    // The embedded interface font joins the text library before anything lays text out:
+    // opening an Animate document from the command line lays its text out right here.
+    anicraft_engine::text::Fonts::register(theme::embedded_fonts());
+    let (session, report) = open_session(file);
     eframe::run_native(
         "AniCraft",
         options,
         Box::new(move |cc| {
             let mut a = app::App::new(cc, session, shot);
             a.open_panel(open.as_deref());
+            // An imported document says what came across, as opening it from the menu does.
+            if let Some(r) = report {
+                a.status_ok(format!("{r} Save to keep it as an AniCraft document."));
+            }
             Ok(Box::new(a))
         }),
     )
