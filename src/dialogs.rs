@@ -269,7 +269,10 @@ fn palette(app: &mut App, ctx: &egui::Context) {
     let mut matches: Vec<(i32, Entry, String)> =
         all.into_iter().filter_map(|e| {
             let key = e.shortcut(km);
-            fuzzy(&p.query, &format!("{} {} {key}", e.title(), e.title_en())).map(|s| (s, e, key))
+            // The interface-language and English names scored apart, so a query can't match across both.
+            let local = fuzzy(&p.query, &format!("{} {key}", e.title()));
+            let en = fuzzy(&p.query, &format!("{} {key}", e.title_en()));
+            local.max(en).map(|s| (s, e, key))
         }).collect();
     matches.sort_by_key(|m| std::cmp::Reverse(m.0));
     matches.truncate(14);
