@@ -39,6 +39,25 @@ milestone ends with a green tree: build, tests, clippy, a `--screenshot` check a
 **v0.1.0 (early alpha)** marks M0 + M1 complete (see `CHANGELOG.md`). `main` starts with
 that one commit; publishing it follows the checklist in `docs/release.md`.
 
+## Parallel tracks (from 2026-11-09)
+
+Milestones whose next task needs no unfinished work from another milestone run at the same time,
+one agent per track (AGENTS.md › Milestone tracks). Each task is still its own PR to `main`,
+titled with its milestone.
+
+| Track | Next task | Depends on (all done) |
+|---|---|---|
+| M2 | Motion tweens with property curves and the Motion Editor | timeline evaluation, classic tweens |
+| M3 | GPU stage renderer, first slice, behind a feature flag with parity tests | CPU oracle, tiled stage |
+| M4 | Text from Animate files | XFL import, text engine (M5 first slice) |
+| M5 | Audio layers: import, waveform, playback sync | timeline, layers |
+| M6 | WebAssembly plug-ins (U2) | command registry |
+| M7 | Variable-width strokes | strokes, Pen and Pencil |
+| M8 | Crash-recovery autosave | `.anicraft` format, session |
+
+Tasks that wait on an open track: XFL motion tweens (on M2's motion tweens); frame scripts and
+ActionScript (on M6's plug-in host); GPU as the default stage (on M3's parity).
+
 ## Current focus (after M0 + scale foundations)
 
 The person confirmed that opening Animate files (XFL) is the first interchange priority. The
