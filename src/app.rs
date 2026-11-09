@@ -14,6 +14,7 @@ pub enum Tool {
     Select,
     Subselect,
     Transform,
+    Width,
     Pen,
     Text,
     Pencil,
@@ -59,13 +60,14 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 15] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => "Selection",
             Tool::Subselect => "Subselection",
             Tool::Transform => "Free Transform",
+            Tool::Width => "Width",
             Tool::Pen => "Pen",
             Tool::Text => "Text",
             Tool::Pencil => "Pencil",
@@ -85,6 +87,7 @@ impl Tool {
             Tool::Select => Some("V"),
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
+            Tool::Width => Some("U"),
             Tool::Pen => Some("P"),
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
@@ -105,6 +108,7 @@ impl Tool {
             Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
+            Tool::Width => "Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it.",
             Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
             Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
             Tool::Oval => "Drag to draw an oval. Shift draws a circle.",
@@ -159,6 +163,9 @@ pub enum Drag {
     PointMarquee { start: egui::Pos2, cur: egui::Pos2 },
     /// Pencil stroke; the samples are in `App::pencil`.
     Pencil,
+    /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
+    /// `sub`; `start` is its left and right width when the drag began.
+    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     Pan,
@@ -253,6 +260,8 @@ pub struct App {
     pub align_to_stage: bool,
     /// Subselection: selected anchors and handles.
     pub points: Vec<pathtools::PointRef>,
+    /// Width tool: the selected width point (shape, index).
+    pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
@@ -366,6 +375,7 @@ impl App {
             bucket_gap: GapSize::default(),
             align_to_stage: false,
             points: Vec::new(),
+            width_sel: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
             bottom: BottomTab::Timeline,
@@ -631,6 +641,18 @@ impl App {
                 {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
                 }
+            }
+            Some("width") => {
+                // A tapered brush-like stroke being shaped with the Width tool: one width point
+                // pushed out on its left side and selected.
+                let wave: Vec<[f32; 2]> = (0..=200).map(|i| [180.0 + i as f32 * 4.0, 420.0 - (i as f32 * 0.035).sin() * 110.0]).collect();
+                if let Some(v) = self.run("draw.freehand", json!({"points": wave, "stroke": "#1b2a4a", "stroke_width": 14, "profile": "taper_both"})) {
+                    let id = anicraft_engine::doc::ElementId(v["element"].as_u64().unwrap_or(0));
+                    if let Some(w) = self.run("stroke.set_width_point", json!({"id": id.0, "t": 0.3, "left": 2.4, "right": 0.9})) {
+                        self.width_sel = w["index"].as_u64().map(|i| (id, i as usize));
+                    }
+                }
+                self.tool = Tool::Width;
             }
             Some(which @ ("motion" | "motionspan")) => {
                 // The Star layer's span as a motion tween: it moves, turns and fades out, with
@@ -1039,6 +1061,7 @@ impl App {
             return;
         }
         pathtools::consume_keys(self, ctx);
+        crate::widthtool::consume_keys(self, ctx);
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
         let mut play = false;
@@ -1299,6 +1322,7 @@ impl eframe::App for App {
             self.points.clear();
         }
         pathtools::upkeep(self);
+        crate::widthtool::upkeep(self);
         self.tick_playback(&ctx);
         self.scrub_sound();
         self.update_title(&ctx);

@@ -23,6 +23,7 @@ mod sound;
 mod stage;
 mod theme;
 mod timeline;
+mod widthtool;
 
 use anicraft_engine::Session;
 use std::path::{Path, PathBuf};

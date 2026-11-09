@@ -216,9 +216,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let sel_bounds = bounds_arr(app.s.selection_bounds());
     let sel_rect = sel_bounds.map(|b| Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))));
 
+    let xf = crate::pathtools::Xf { origin, zoom };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
+            Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
                     Drag::Transform { kind, .. } => Some(kind),
@@ -248,7 +250,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.ctx().set_cursor_icon(icon);
     }
 
-    let xf = crate::pathtools::Xf { origin, zoom };
     if resp.clicked() || resp.drag_started() || resp.secondary_clicked() {
         // Ctrl+X/C/V go back to artwork.
         app.timeline_focus = false;
@@ -298,6 +299,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 Tool::Subselect => crate::pathtools::subselect_drag_start(app, press, shift, xf),
+                Tool::Width => crate::widthtool::drag_start(app, press, xf),
                 Tool::Pencil => {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
@@ -343,6 +345,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             (Drag::PointMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (d @ Drag::Width { .. }, Some(c)) => {
+                let d = *d;
+                crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
+            }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
@@ -353,6 +359,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if resp.drag_stopped() {
         match app.drag {
             Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } => app.s.end_gesture(),
+            Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Marquee { start, cur } => {
@@ -383,6 +390,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let sp = to_stage(p);
             match app.tool {
                 Tool::Subselect if !panning => crate::pathtools::subselect_click(app, p, shift, xf),
+                Tool::Width if !panning => crate::widthtool::click(app, p, xf),
                 Tool::PaintBucket if !panning => {
                     // The gap size is set in screen points, so it feels the same at any zoom.
                     let gap = app.bucket_gap.screen_px() / zoom.max(1e-3);
@@ -650,8 +658,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max)).expand(1.0);
-        if app.tool == Tool::Subselect {
-            // Subselection shows outlines and points instead (below).
+        if matches!(app.tool, Tool::Subselect | Tool::Width) {
+            // Subselection and Width show outlines and points instead (below).
             continue;
         }
         if transforming {
@@ -687,6 +695,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         painter.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(1.0, T.selection));
     }
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
+    crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     match app.drag {
         Drag::Marquee { start, cur } => {
             let r = Rect::from_two_pos(to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)));
