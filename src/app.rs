@@ -627,16 +627,16 @@ impl App {
                 self.frame_sel = None;
                 self.library_sel = LibraryItem::first(&self.s.doc);
                 self.recovery.restored(v["recovered"].as_str().unwrap_or(""));
-                let name = v["name"].as_str().unwrap_or("Untitled");
+                let name = v["name"].as_str().unwrap_or(tl!("Untitled"));
                 self.status_ok(if v["original_newer"].as_bool() == Some(true) {
-                    format!("Restored “{name}” as a new document (the file on disk is newer). Save to keep it.")
+                    i18n::fmt("Restored “{name}” as a new document (the file on disk is newer). Save to keep it.", &[("name", name)])
                 } else {
-                    format!("Restored “{name}”. It isn't saved yet: Save to keep it.")
+                    i18n::fmt("Restored “{name}”. It isn't saved yet: Save to keep it.", &[("name", name)])
                 });
             }
             "file.discard_recovery" => {
                 self.recovery.discarded(v["discarded"].as_str().unwrap_or(""));
-                self.status_ok("Discarded the autosaved copy");
+                self.status_ok(tl!("Discarded the autosaved copy"));
             }
             "file.save" | "file.save_as" => {
                 self.status_ok(i18n::fmt("Saved {path}", &[("path", &craft_i18n::ltr(v["saved"].as_str().unwrap_or("")))]));
@@ -721,7 +721,7 @@ impl App {
             self.recovery.rescan();
             self.recovery.show = !self.recovery.found.is_empty();
             if !self.recovery.show {
-                self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
+                self.status_ok(tl!(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" }));
             }
             return;
         }
