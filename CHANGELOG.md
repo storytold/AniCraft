@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+* **HTML canvas export** (ADR 0028). File › Export › Export HTML Canvas… writes the movie as
+  one web page that plays in any modern browser: open it from your disk, put it on a server or
+  send it as one file. Everything moves exactly as on the stage, because every frame of every
+  timeline is computed by AniCraft (classic, shape and motion tweens, easing, motion guides,
+  shape hints); shapes, gradients, strokes (variable-width ones too), text, bitmaps, masks,
+  symbols that fade or blend as one, alpha and tint all come across. It is interactive: movie
+  clips play on their own timelines, buttons show Up, Over and Down and answer in their Hit
+  area, and frame actions and button events (stop, play, go to a frame or label in any scene,
+  next/previous frame and scene, trace, set properties, instance paths like `panel.door`)
+  behave as in Test Movie: the page's player is a port of AniCraft's and the tests run both
+  side by side. Sounds play with the first click (Event, Start, Stop; Stream over its span).
+  The movie fits the browser window, sharp on high-density screens. The demo exports in 1 ms
+  to a 59 KB page (18 KB of movie data). Filters, Subtract and Invert blending, tints on
+  bitmaps and plug-in frame scripts are reported, not exported. Headless:
+  `file.export_html {path, title?, sound?, fit?}`.
+
 * **Camera layer with layer depth** (ADR 0027). Click the camera button in the timeline
   header (or pick the **Camera tool**, C) to add a camera: a Camera layer on top of the
   timeline whose frame shows on the stage as an orange outline of what the movie will show.
