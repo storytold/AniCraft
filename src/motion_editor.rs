@@ -1,4 +1,4 @@
-//! Motion Editor (ADR 0014): the property curves of the motion tween at the playhead.
+//! Motion Editor (ADR 0016): the property curves of the motion tween at the playhead.
 //!
 //! It shares the timeline's dock (a tab beside it, as in Animate) and follows the active layer
 //! and the playhead. Left: the properties, with their value at the playhead (drag to key it)

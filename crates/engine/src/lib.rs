@@ -164,7 +164,7 @@ pub struct Session {
     pub clipboard: cmds_modify::Clipboard,
     /// Copied frames (Copy Frames), separate from copied artwork as in Animate.
     pub frame_clipboard: cmds_frames::FrameClipboard,
-    /// A command is editing a motion tween's target (auto-key, ADR 0014).
+    /// A command is editing a motion tween's target (auto-key, ADR 0016).
     motion_edit: Option<cmds_motion::MotionEdit>,
 }
 

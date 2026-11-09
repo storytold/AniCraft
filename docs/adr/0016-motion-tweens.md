@@ -1,4 +1,4 @@
-# ADR 0014: Motion tweens and the Motion Editor
+# ADR 0016: Motion tweens and the Motion Editor
 
 * Status: accepted (2026-11-09)
 * Relates to: roadmap M2 (motion tween + Motion Editor curves), ADR 0001 (persistent document),

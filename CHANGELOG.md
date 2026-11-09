@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **Motion tweens and the Motion Editor** (ADR 0014). Insert › Create Motion Tween (also in
+* **Motion tweens and the Motion Editor** (ADR 0016). Insert › Create Motion Tween (also in
   the timeline header, the right-click menu and Properties) makes a span animate its object
   property by property: X, Y, scale, rotation, skew, alpha and tint each have their own curve
   with property keyframes anywhere in the span. Move, scale, rotate or fade the object at a

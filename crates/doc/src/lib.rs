@@ -493,7 +493,7 @@ pub struct Keyframe {
     pub elements: Vec<Arc<Element>>,
     #[serde(default)]
     pub tween: Option<Tween>,
-    /// A motion tween over this span (ADR 0014). A span has a classic or shape tween (`tween`)
+    /// A motion tween over this span (ADR 0016). A span has a classic or shape tween (`tween`)
     /// or a motion tween, never both; commands keep it so, and a motion tween wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion: Option<MotionTween>,

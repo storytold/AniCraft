@@ -1,4 +1,4 @@
-//! Motion tweens through the command registry (ADR 0014): creation, auto-key, property keys and
+//! Motion tweens through the command registry (ADR 0016): creation, auto-key, property keys and
 //! eases, F6 inside a span, removal, conversion, frames clipboard and the file round trip.
 
 use super::*;

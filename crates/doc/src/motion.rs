@@ -1,4 +1,4 @@
-//! Motion tweens (ADR 0014): one object's properties, each on its own curve.
+//! Motion tweens (ADR 0016): one object's properties, each on its own curve.
 //!
 //! A classic tween interpolates a whole keyframe into the next one. A motion tween instead
 //! belongs to one keyframe span and one object in it (its *target*). Each property (x, y,

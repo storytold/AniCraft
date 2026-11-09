@@ -1,4 +1,4 @@
-//! Motion tweens (ADR 0014): creating one on a span, property keyframes, per-segment eases,
+//! Motion tweens (ADR 0016): creating one on a span, property keyframes, per-segment eases,
 //! and auto-keying edits made to the tweened object.
 //!
 //! Auto-key works for every command without the commands knowing: when a command asks for the
