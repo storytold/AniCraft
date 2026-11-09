@@ -1,4 +1,4 @@
-//! Sound during stage playback (ADR 0015). The movie's sounds are laid out by the engine
+//! Sound during stage playback (ADR 0020). The movie's sounds are laid out by the engine
 //! (`doc::sound::voices`, pure), handed to an `anicraft_audio::Player` that the audio device's
 //! callback pulls from, and the playhead follows the player's clock while sound plays, so
 //! picture keeps time with sound.

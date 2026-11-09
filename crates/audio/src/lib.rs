@@ -9,7 +9,7 @@
 //! * [`wav`] writes WAV files; [`Peaks`] summarises a sound for waveform drawing; [`Player`]
 //!   is the device-independent half of playback (an audio callback calls [`Player::fill`]).
 //!
-//! Nothing here opens an audio device: the desktop shell owns that (ADR 0015).
+//! Nothing here opens an audio device: the desktop shell owns that (ADR 0020).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable, clippy::indexing_slicing)]
 
 pub mod mix;

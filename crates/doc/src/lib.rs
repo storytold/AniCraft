@@ -503,7 +503,7 @@ pub struct Keyframe {
     pub motion: Option<MotionTween>,
     #[serde(default)]
     pub label: String,
-    /// The sound that starts (or, for Stop, ends) on this keyframe (ADR 0015).
+    /// The sound that starts (or, for Stop, ends) on this keyframe (ADR 0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<FrameSound>,
 }
