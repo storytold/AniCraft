@@ -340,8 +340,8 @@ fn filtered_runs(dl: &DisplayList) -> Vec<FilteredRun> {
     out
 }
 
-/// Largest buffer a filtered group is drawn into (pixels).
-const MAX_FILTER_PIXELS: i64 = 64 * 1024 * 1024;
+/// Largest buffer a filtered group is drawn into (pixels): what [`render`] accepts.
+const MAX_FILTER_PIXELS: i64 = MAX_PIXELS as i64;
 
 /// Draws a filtered group's items on their own (the group neutral, clips from outside it
 /// left for later), applies its filters, and returns the result as one image op in the group,
@@ -360,9 +360,21 @@ fn filtered_group(dl: &DisplayList, run: &FilteredRun, view: &View, surface: IRe
     if r.is_empty() || !r.min.x.is_finite() || !r.max.y.is_finite() {
         return Ok(None);
     }
-    let reach = margin as i32;
-    let limit = IRect { x0: surface.x0 - reach, y0: surface.y0 - reach, x1: surface.x1 + reach, y1: surface.y1 + reach };
-    let b = IRect { x0: r.min.x.floor() as i32 - reach, y0: r.min.y.floor() as i32 - reach, x1: r.max.x.ceil() as i32 + reach, y1: r.max.y.ceil() as i32 + reach }.intersect(&limit);
+    let reach = margin.clamp(0.0, (i32::MAX / 4) as f32) as i32;
+    // How far past the surface it draws: the reach, but no further than keeps the buffer within
+    // what `render` accepts (the largest `c` with (w + 2c)(h + 2c) <= the limit); a filter
+    // reaching further is cut there, off the surface.
+    let (sw, sh) = (surface.width() as f64, surface.height() as f64);
+    let room = ((((sw + sh).powi(2) - 4.0 * (sw * sh - MAX_FILTER_PIXELS as f64)).max(0.0).sqrt() - (sw + sh)) / 4.0).floor().max(0.0) as i32;
+    let around = reach.min(room);
+    let limit = IRect { x0: surface.x0.saturating_sub(around), y0: surface.y0.saturating_sub(around), x1: surface.x1.saturating_add(around), y1: surface.y1.saturating_add(around) };
+    let b = IRect {
+        x0: (r.min.x.floor() as i32).saturating_sub(reach),
+        y0: (r.min.y.floor() as i32).saturating_sub(reach),
+        x1: (r.max.x.ceil() as i32).saturating_add(reach),
+        y1: (r.max.y.ceil() as i32).saturating_add(reach),
+    }
+    .intersect(&limit);
     if b.is_empty() || (b.width() as i64) * (b.height() as i64) > MAX_FILTER_PIXELS {
         return Ok(None);
     }

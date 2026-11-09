@@ -549,7 +549,8 @@ fn instance_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Ele
 /// per gesture.
 fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc::Filter]) {
     use anicraft_engine::doc::Filter;
-    let mut list: Vec<Filter> = current.to_vec();
+    // As the renderer sees them (a file may hold values or ramps a command would refuse).
+    let mut list: Vec<Filter> = current.iter().map(Filter::sanitized).collect();
     let mut changed: Option<&'static str> = None;
     row_prose(ui, "Filters", |ui| {
         egui::ComboBox::from_id_salt("add_filter").selected_text(if list.is_empty() { "None" } else { "Add filter" }).show_ui(ui, |ui| {
@@ -593,18 +594,13 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
                     }
                 });
             };
+            let pin = anicraft_engine::doc::pinned_stop(f);
             match f {
                 Filter::Blur { blur_x, blur_y, quality } => blur_rows(ui, blur_x, blur_y, quality, &mut changed),
                 Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner, knockout, hide_object } => {
                     blur_rows(ui, blur_x, blur_y, quality, &mut changed);
                     shadow_rows(ui, fname, strength, color, &mut changed);
-                    row(ui, "Offset", |ui| {
-                        let a = ui.add(egui::DragValue::new(angle).prefix("Angle ").suffix("°").speed(1.0).range(0.0..=360.0).max_decimals(0)).named("Shadow angle");
-                        let b = ui.add(egui::DragValue::new(distance).prefix("Distance ").suffix(" px").speed(0.25).range(-1000.0..=1000.0).max_decimals(1)).named("Shadow distance");
-                        if a.changed() || b.changed() {
-                            changed = Some("Shadow offset");
-                        }
-                    });
+                    offset_row(ui, fname, angle, distance, "Shadow offset", &mut changed);
                     row_prose(ui, "Options", |ui| {
                         for (v, label) in [(inner, "Inner"), (knockout, "Knockout"), (hide_object, "Hide object")] {
                             if crate::theme::checkbox(ui, v, label).changed() {
@@ -623,6 +619,28 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
                             }
                         }
                     });
+                }
+                Filter::Bevel { blur_x, blur_y, strength, quality, angle, distance, shadow_color, highlight_color, side, knockout } => {
+                    blur_rows(ui, blur_x, blur_y, quality, &mut changed);
+                    strength_row(ui, fname, strength, &mut changed);
+                    row_prose(ui, "Colours", |ui| {
+                        for (c, label, undo) in [(shadow_color, "Shadow", "Bevel shadow colour"), (highlight_color, "Highlight", "Bevel highlight colour")] {
+                            ui.label(label);
+                            if alpha_swatch(ui, c, &format!("{fname} {} colour", label.to_lowercase())) {
+                                changed = Some(undo);
+                            }
+                        }
+                    });
+                    offset_row(ui, fname, angle, distance, "Bevel offset", &mut changed);
+                    side_rows(ui, fname, side, knockout, &mut changed);
+                }
+                Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout } | Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout } => {
+                    // The ramp first: it is what makes the filter.
+                    ramp_editor(ui, fname, stops, pin, &mut changed);
+                    blur_rows(ui, blur_x, blur_y, quality, &mut changed);
+                    strength_row(ui, fname, strength, &mut changed);
+                    offset_row(ui, fname, angle, distance, "Filter offset", &mut changed);
+                    side_rows(ui, fname, side, knockout, &mut changed);
                 }
                 Filter::AdjustColor { brightness, contrast, saturation, hue } => {
                     for (v, label, range) in [(brightness, "Brightness", 100.0), (contrast, "Contrast", 100.0), (saturation, "Saturation", 100.0), (hue, "Hue", 180.0)] {
@@ -661,6 +679,195 @@ fn shadow_rows(ui: &mut egui::Ui, fname: &str, strength: &mut f32, color: &mut R
             *changed = Some("Filter colour");
         }
     });
+}
+
+/// The Strength row of a bevel or gradient filter.
+fn strength_row(ui: &mut egui::Ui, fname: &str, strength: &mut f32, changed: &mut Option<&'static str>) {
+    row(ui, "Strength", |ui| {
+        let mut pct = *strength * 100.0;
+        if ui.add(egui::DragValue::new(&mut pct).suffix(" %").speed(1.0).range(0.0..=1000.0).max_decimals(0)).named(&format!("{fname} strength")).changed() {
+            *strength = pct / 100.0;
+            *changed = Some("Filter strength");
+        }
+    });
+}
+
+/// Angle and distance of a shadow, bevel or gradient filter.
+fn offset_row(ui: &mut egui::Ui, fname: &str, angle: &mut f32, distance: &mut f32, undo: &'static str, changed: &mut Option<&'static str>) {
+    row(ui, "Offset", |ui| {
+        let a = ui
+            .add(egui::DragValue::new(angle).prefix("Angle ").suffix("°").speed(1.0).range(0.0..=360.0).max_decimals(0))
+            .named(&format!("{fname} angle"))
+            .on_hover_text("The direction the shadow falls (the light comes from the opposite side)");
+        let b = ui.add(egui::DragValue::new(distance).prefix("Distance ").suffix(" px").speed(0.25).range(-1000.0..=1000.0).max_decimals(1)).named(&format!("{fname} distance"));
+        if a.changed() || b.changed() {
+            *changed = Some(undo);
+        }
+    });
+}
+
+/// The Type (inner, outer, full) and Knockout rows of a bevel or gradient filter.
+fn side_rows(ui: &mut egui::Ui, fname: &str, side: &mut anicraft_engine::doc::FilterSide, knockout: &mut bool, changed: &mut Option<&'static str>) {
+    use anicraft_engine::doc::FilterSide;
+    row_prose(ui, "Type", |ui| {
+        for (v, tip) in [(FilterSide::Inner, "Inside the artwork's edge"), (FilterSide::Outer, "Outside the artwork's edge"), (FilterSide::Full, "Inside and outside the edge")] {
+            if ui.selectable_label(*side == v, v.label()).named(&format!("{fname} type {}", v.label())).on_hover_text(tip).clicked() && *side != v {
+                *side = v;
+                *changed = Some("Filter type");
+            }
+        }
+    });
+    row_prose(ui, "Options", |ui| {
+        if crate::theme::checkbox(ui, knockout, "Knockout").named(&format!("{fname} knockout")).on_hover_text("Show only the effect, not the artwork").changed() {
+            *changed = Some("Filter options");
+        }
+    });
+}
+
+/// A colour swatch with opacity (Animate's bevel colours carry alpha). True when changed.
+fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
+    let s = c.sanitized();
+    let b = |v: f32| (v * 255.0).round() as u8;
+    let mut px = [b(s.r), b(s.g), b(s.b), b(s.a)];
+    let r = ui.color_edit_button_srgba_unmultiplied(&mut px).named(name).on_hover_text(name);
+    if r.changed() {
+        *c = Rgba::new(f32::from(px[0]) / 255.0, f32::from(px[1]) / 255.0, f32::from(px[2]) / 255.0, f32::from(px[3]) / 255.0);
+    }
+    r.changed()
+}
+
+/// A gradient filter's ramp, as Animate's: a strip of its colours over a checkerboard, a
+/// marker under it per stop. Click a marker to pick that stop (its colour, position and Remove
+/// below), drag it to move it (between its neighbours), click the strip to add a stop there.
+/// The pinned stop (Gradient Glow's start, Gradient Bevel's middle) can't move or go, and
+/// stays transparent.
+fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::doc::GradientStop>, pin: Option<f32>, changed: &mut Option<&'static str>) {
+    use anicraft_engine::doc::{GradientStop, MAX_RAMP_STOPS, REST_SNAP, ramp_at};
+    let sel_id = ui.id().with("ramp_stop");
+    let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0);
+    let is_pinned = |s: &GradientStop| pin.is_some_and(|p| (s.offset - p).abs() < 1e-4);
+    // Where each stop may move (the ramp is in order): between its neighbours, and clear of the
+    // pinned stop, so stops keep their order (and the pick, and a drag, stay on the same stop).
+    let clear = 2.0 * REST_SNAP;
+    let room: Vec<(f32, f32)> = (0..stops.len())
+        .map(|i| {
+            let prev = i.checked_sub(1).and_then(|j| stops.get(j));
+            let next = stops.get(i + 1);
+            let lo = prev.map_or(0.0, |s| s.offset + if is_pinned(s) { clear } else { 0.0 });
+            let hi = next.map_or(1.0, |s| s.offset - if is_pinned(s) { clear } else { 0.0 });
+            let here = stops.get(i).map_or(0.0, |s| s.offset);
+            if lo <= hi { (lo, hi) } else { (here, here) }
+        })
+        .collect();
+    row_prose(ui, "Gradient", |ui| {
+        ui.vertical(|ui| {
+            let w = ui.available_width().clamp(80.0, 200.0);
+            let (strip, resp) = ui.allocate_exact_size(vec2(w, 16.0), Sense::click());
+            a11y::control(ui, &resp, WidgetType::Button, &format!("{fname} gradient: add a colour stop"), None);
+            let resp = resp.on_hover_text("Click to add a colour stop");
+            let p = ui.painter();
+            // A checkerboard under the ramp shows its opacity.
+            let cell = 4.0;
+            let (cols, rows) = ((strip.width() / cell).ceil() as usize, (strip.height() / cell).ceil() as usize);
+            p.rect_filled(strip, 0.0, T.header);
+            for (cx, cy) in (0..cols).flat_map(|x| (0..rows).map(move |y| (x, y))).filter(|(x, y)| (x + y) % 2 == 0) {
+                let r = Rect::from_min_size(pos2(strip.left() + cx as f32 * cell, strip.top() + cy as f32 * cell), vec2(cell, cell)).intersect(strip);
+                p.rect_filled(r, 0.0, T.text_faint);
+            }
+            let mut mesh = egui::Mesh::default();
+            let steps = 48u32;
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                let c = to_color32(ramp_at(stops, t));
+                let x = strip.left() + t * strip.width();
+                mesh.colored_vertex(pos2(x, strip.top()), c);
+                mesh.colored_vertex(pos2(x, strip.bottom()), c);
+                if i > 0 {
+                    let k = 2 * i;
+                    mesh.add_triangle(k - 2, k - 1, k);
+                    mesh.add_triangle(k - 1, k, k + 1);
+                }
+            }
+            p.add(mesh);
+            p.rect_stroke(strip, 0.0, Stroke::new(1.0, T.border), StrokeKind::Outside);
+            // Markers: a small pointer per stop, under the strip.
+            let (track, _) = ui.allocate_exact_size(vec2(w, 12.0), Sense::hover());
+            for (i, st) in stops.iter_mut().enumerate() {
+                let x = strip.left() + st.offset * strip.width();
+                let hit = Rect::from_center_size(pos2(x, track.center().y), vec2(10.0, 12.0));
+                let pinned = is_pinned(st);
+                let r = ui.interact(hit, ui.id().with(("ramp_marker", i)), if pinned { Sense::click() } else { Sense::click_and_drag() });
+                let label = format!("{fname} colour stop {} at {:.0}%{}", i + 1, st.offset * 100.0, if pinned { " (fixed)" } else { "" });
+                a11y::control(ui, &r, WidgetType::Button, &label, Some(i == sel));
+                if r.clicked() || r.drag_started() {
+                    sel = i;
+                }
+                if r.dragged()
+                    && !pinned
+                    && let Some(at) = r.interact_pointer_pos()
+                {
+                    let (lo, hi) = room.get(i).copied().unwrap_or((st.offset, st.offset));
+                    st.offset = ((at.x - strip.left()) / strip.width()).clamp(lo, hi);
+                    sel = i;
+                    *changed = Some("Move colour stop");
+                }
+                let tip = pos2(x, track.top());
+                let body = [tip, pos2(x + 5.0, track.top() + 5.0), pos2(x + 5.0, track.bottom()), pos2(x - 5.0, track.bottom()), pos2(x - 5.0, track.top() + 5.0)];
+                let edge = if i == sel { T.accent } else if r.hovered() { T.text } else { T.control_edge };
+                ui.painter().add(egui::Shape::convex_polygon(body.to_vec(), to_color32(st.color.with_alpha(1.0)), Stroke::new(if i == sel { 2.0 } else { 1.0 }, edge)));
+            }
+            if resp.clicked() && stops.len() < MAX_RAMP_STOPS {
+                // Where the pointer clicked; from the keyboard or a screen reader, the middle of
+                // the widest gap. Never on the pinned stop.
+                let gap = stops.windows(2).filter_map(|w| if let [a, b] = w { Some((b.offset - a.offset, (a.offset + b.offset) / 2.0)) } else { None }).max_by(|a, b| a.0.total_cmp(&b.0)).map_or(0.5, |g| g.1);
+                let mut t = resp.interact_pointer_pos().map_or(gap, |at| ((at.x - strip.left()) / strip.width()).clamp(0.0, 1.0));
+                if let Some(p) = pin
+                    && (t - p).abs() < clear
+                {
+                    t = if t < p || p >= 1.0 { p - clear } else { p + clear }.clamp(0.0, 1.0);
+                }
+                let new = GradientStop { offset: t, color: ramp_at(stops, t).with_alpha(1.0) };
+                let i = stops.iter().position(|s| s.offset > t).unwrap_or(stops.len());
+                stops.insert(i, new);
+                sel = i;
+                *changed = Some("Add colour stop");
+            }
+        });
+    });
+    sel = sel.min(stops.len().saturating_sub(1));
+    let mut remove = false;
+    let count = stops.len();
+    if let Some(st) = stops.get_mut(sel) {
+        let pinned = is_pinned(st);
+        row(ui, "Stop", |ui| {
+            if pinned {
+                // Colour only: this stop stays transparent.
+                let mut c = rgb(st.color);
+                if ui.color_edit_button_srgb(&mut c).named(&format!("{fname} stop colour")).on_hover_text("Stop colour (this stop stays transparent)").changed() {
+                    st.color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 0.0);
+                    *changed = Some("Colour stop");
+                }
+            } else if alpha_swatch(ui, &mut st.color, &format!("{fname} stop colour")) {
+                *changed = Some("Colour stop");
+            }
+            let mut pct = st.offset * 100.0;
+            let r = ui.add_enabled(!pinned, egui::DragValue::new(&mut pct).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(&format!("{fname} stop position"));
+            if r.changed() {
+                let (lo, hi) = room.get(sel).copied().unwrap_or((st.offset, st.offset));
+                st.offset = (pct / 100.0).clamp(lo, hi);
+                *changed = Some("Move colour stop");
+            }
+            if ui.add_enabled(!pinned && count > 2, egui::Button::new("Remove").small()).named(&format!("Remove {fname} colour stop")).on_hover_text("Remove this colour stop").clicked() {
+                remove = true;
+            }
+        });
+    }
+    if remove && sel < stops.len() {
+        stops.remove(sel);
+        sel = sel.saturating_sub(1);
+        *changed = Some("Remove colour stop");
+    }
+    ui.data_mut(|d| d.insert_temp(sel_id, sel));
 }
 
 /// Font, size, style, colour, alignment and spacing rows for text. Returns the edit made, as
