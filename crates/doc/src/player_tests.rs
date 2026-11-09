@@ -274,3 +274,11 @@ fn plug_in_frame_scripts_run_through_the_host() {
     let s = run(&d, 3);
     assert!(s.state.root.playing);
 }
+
+#[test]
+fn input_between_frames_moves_no_playhead() {
+    let d = button_doc();
+    let s = start(&d, &mut NoScripts);
+    let s = input(&d, &s.state, &[Event::Move(Vec2::new(150.0, 150.0)), Event::Down(Vec2::new(150.0, 150.0)), Event::Up(Vec2::new(150.0, 150.0))], &mut NoScripts);
+    assert_eq!((s.state.root.frame, s.state.tick), (4, 0), "the click ran, no frame advanced");
+}

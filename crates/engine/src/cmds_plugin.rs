@@ -31,7 +31,7 @@ const MAX_ELEMENTS: usize = 10_000;
 /// a namespace this list doesn't know is refused until someone decides (a test checks that
 /// every registered namespace is known).
 pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
-    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke", "tween"];
+    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke", "tween", "actions", "instance"];
     match id {
         "edit.undo" | "edit.redo" => Err("a plug-in run is one undo step; it can't undo or redo"),
         "edit.cut" | "edit.copy" | "edit.paste" | "edit.paste_in_place" | "timeline.cut_frames" | "timeline.copy_frames" | "timeline.paste_frames" => {
@@ -40,6 +40,7 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
         _ => match id.split('.').next().unwrap_or("") {
             "file" => Err("plug-ins can't open, save, import or export files"),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
+            "control" => Err("plug-ins can't play the movie"),
             ns if DOCUMENT.contains(&ns) => Ok(()),
             _ => Err("plug-ins can't call this command"),
         },
@@ -173,7 +174,8 @@ pub fn describe(s: &Session, p: &Plugin) -> Value {
         "version": m.version,
         "author": m.author,
         "description": m.description,
-        "kind": "command",
+        "kind": m.kind.key(),
+        "entries": m.entries,
         "selection": if m.selection == SelectionNeed::Required { "required" } else { "optional" },
         "params": m.params.iter().map(|(k, spec)| param_json(k, spec)).collect::<Vec<_>>(),
         "notation": m.params_notation(),
@@ -209,6 +211,9 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_req(p, "id")?;
     let plugin = s.plugins.get(id).ok_or_else(|| EngineError::State(format!("no plug-in “{id}” is installed (see plugin.list)")))?;
     let m = plugin.manifest();
+    if m.kind == anicraft_plugins::Kind::FrameScript {
+        return Err(EngineError::State(format!("{} is a frame script: it runs while the movie plays, from a keyframe (Window › Actions)", m.name)));
+    }
     if m.selection == SelectionNeed::Required && s.selection.is_empty() {
         return Err(EngineError::State(format!("{} works on the selection: select some artwork first", m.name)));
     }

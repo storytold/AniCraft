@@ -258,6 +258,19 @@ pub fn step(doc: &Document, state: &PlayerState, events: &[Event], host: &mut dy
     r.finish()
 }
 
+/// Pointer events between frames: routed to buttons (and their handlers run) at once, without
+/// moving any playhead, so a window can answer the pointer as it moves. `step` handles the
+/// same events the same way.
+pub fn input(doc: &Document, state: &PlayerState, events: &[Event], host: &mut dyn ScriptHost) -> Step {
+    host.begin_step();
+    let mut r = Run::new(doc, state.clone(), host);
+    r.refresh();
+    for e in events.iter().take(MAX_EVENTS_PER_STEP) {
+        r.event(*e);
+    }
+    r.finish()
+}
+
 /// The instance tree at `state`: the main timeline (index 0), then every symbol instance in
 /// drawing order (parents before their contents).
 pub fn tree(doc: &Document, st: &PlayerState) -> Vec<Node> {

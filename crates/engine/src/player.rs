@@ -1,0 +1,231 @@
+//! The player's engine side (ADR 0024): plug-in frame scripts run on the WebAssembly host, a
+//! JSON view of the player state for scripts and agents, and headless test runs.
+//!
+//! The player itself is pure (`anicraft_doc::player`); this module gives it a
+//! [`ScriptHost`] over the session's plug-in registry. A frame script is a `frame-script`
+//! plug-in entry point: it runs in a fresh instance when the playhead enters its keyframe,
+//! reads the player state (`{"op":"player"}`), emits actions (`{"op":"action"}`) and logs to
+//! the Output panel; it can't call commands. Every frame shares one instruction budget among
+//! its scripts, so a script that loops forever costs one frame's budget, then stops with a
+//! message.
+
+use anicraft_doc::actions::{Action, MAX_ACTIONS, PluginScript, check_actions};
+use anicraft_doc::player::{Event, Node, NodeKind, PlayerState, ScriptContext, ScriptHost, ScriptRun, Step};
+use anicraft_doc::{Document, player};
+use anicraft_geom::Vec2;
+use anicraft_plugins::{Host, Kind, Limits, Registry};
+use serde_json::{Map, Value, json};
+
+/// Most movie clips the `player` view lists.
+const MAX_VIEW_CLIPS: usize = 1_000;
+
+/// Runs frame scripts with the session's installed plug-ins.
+pub struct ScriptRunner<'a> {
+    plugins: &'a Registry,
+    limits: Limits,
+    /// Instructions left for this frame's scripts.
+    fuel_left: u64,
+    /// Instructions frame scripts have used since the runner was made.
+    pub fuel_used: u64,
+    /// Frame-script runs since the runner was made.
+    pub runs: u64,
+}
+
+impl<'a> ScriptRunner<'a> {
+    pub fn new(plugins: &'a Registry) -> ScriptRunner<'a> {
+        let limits = Limits::frame_script();
+        ScriptRunner { plugins, fuel_left: limits.fuel, limits, fuel_used: 0, runs: 0 }
+    }
+
+    /// Other limits (tests use a small budget); `limits.fuel` is the per-frame budget.
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.fuel_left = limits.fuel;
+        self.limits = limits;
+        self
+    }
+}
+
+impl ScriptHost for ScriptRunner<'_> {
+    fn begin_step(&mut self) {
+        self.fuel_left = self.limits.fuel;
+    }
+
+    fn run(&mut self, script: &PluginScript, cx: &ScriptContext<'_>) -> ScriptRun {
+        let fail = |msg: String| ScriptRun { actions: Vec::new(), output: vec![msg] };
+        let Some(p) = self.plugins.get(&script.id) else { return fail(format!("Frame script: no plug-in “{}” is installed", script.id)) };
+        let m = p.manifest();
+        if m.kind != Kind::FrameScript {
+            return fail(format!("Frame script: “{}” is a command plug-in, not a frame script", m.name));
+        }
+        if !m.entries.contains(&script.entry) {
+            return fail(format!("Frame script: {} has no entry point “{}” (it has {})", m.name, script.entry, m.entries.join(", ")));
+        }
+        if self.fuel_left == 0 {
+            return fail(format!("Frame script {} · {} not run: this frame's script budget is used up", m.name, script.entry));
+        }
+        let mut params = Map::new();
+        params.insert("entry".into(), json!(script.entry));
+        params.insert("frame".into(), json!(cx.frame));
+        params.insert("label".into(), json!(cx.label));
+        params.insert("timeline".into(), json!(path_name(cx.nodes, cx.timeline)));
+        let mut host = FrameHost { cx, actions: Vec::new() };
+        let mut limits = self.limits.clone();
+        limits.fuel = self.fuel_left;
+        self.runs += 1;
+        match p.run_with(&mut host, &params, &limits) {
+            Ok(rep) => {
+                self.fuel_left = self.fuel_left.saturating_sub(rep.fuel);
+                self.fuel_used = self.fuel_used.saturating_add(rep.fuel);
+                let mut output = rep.log;
+                if rep.log_dropped > 0 {
+                    output.push(format!("… {} more lines from {}", rep.log_dropped, m.name));
+                }
+                ScriptRun { actions: host.actions, output }
+            }
+            Err(e) => {
+                // A failed script does nothing: its actions are dropped, and it used this
+                // frame's budget.
+                self.fuel_used = self.fuel_used.saturating_add(self.fuel_left);
+                self.fuel_left = 0;
+                fail(format!("Frame script {} · {}: {e}", m.name, script.entry))
+            }
+        }
+    }
+}
+
+/// What a running frame script talks to.
+struct FrameHost<'c, 'd> {
+    cx: &'c ScriptContext<'d>,
+    actions: Vec<Action>,
+}
+
+impl Host for FrameHost<'_, '_> {
+    fn request(&mut self, op: &str, req: &Value) -> Result<Value, String> {
+        match op {
+            "player" => Ok(state_view(self.cx.doc, self.cx.state, self.cx.nodes, Some((self.cx.timeline, self.cx.frame, self.cx.label)))),
+            "action" | "actions" => {
+                let list: Vec<Action> = if op == "action" {
+                    vec![serde_json::from_value(req.get("action").cloned().unwrap_or(Value::Null)).map_err(|e| format!("not an action: {e} (e.g. {{\"op\":\"action\",\"action\":{{\"op\":\"stop\"}}}})"))?]
+                } else {
+                    serde_json::from_value(req.get("actions").cloned().unwrap_or(Value::Null)).map_err(|e| format!("not a list of actions: {e}"))?
+                };
+                check_actions(&list)?;
+                if self.actions.len() + list.len() > MAX_ACTIONS {
+                    return Err(format!("a frame script emits at most {MAX_ACTIONS} actions"));
+                }
+                let n = list.len();
+                self.actions.extend(list);
+                Ok(json!({"queued": n}))
+            }
+            "command" | "document" | "elements" => Err("frame scripts run while the movie plays and can't read or change the document; read {\"op\":\"player\"} and emit {\"op\":\"action\"}".into()),
+            _ => Err(format!("unknown op '{op}' (frame scripts have player, action, actions and log)")),
+        }
+    }
+}
+
+/// The dot path of instance names from the main timeline to node `i` (`""` for the main
+/// timeline; an unnamed instance shows as `?`).
+pub fn path_name(nodes: &[Node], i: usize) -> String {
+    let mut names = Vec::new();
+    let mut cur = i;
+    for _ in 0..=anicraft_doc::MAX_SYMBOL_DEPTH {
+        let Some(n) = nodes.get(cur) else { break };
+        if n.kind == NodeKind::Root {
+            break;
+        }
+        names.push(if n.name.is_empty() { "?" } else { n.name.as_str() });
+        // Up to the timeline it is on (graphics are see-through).
+        cur = n.owner;
+    }
+    names.reverse();
+    names.join(".")
+}
+
+/// The player state as JSON (for frame scripts, `control.test_movie` and the app's readouts).
+/// `here` is the script's own timeline, frame and label.
+pub fn state_view(doc: &Document, st: &PlayerState, nodes: &[Node], here: Option<(usize, u32, &str)>) -> Value {
+    let clips: Vec<Value> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.kind == NodeKind::MovieClip)
+        .take(MAX_VIEW_CLIPS)
+        .map(|(i, n)| json!({"path": path_name(nodes, i), "name": n.name, "frame": n.frame, "frames": n.frames, "playing": st.clips.get(&n.path).is_some_and(|c| c.playing)}))
+        .collect();
+    let path_of = |p: &Option<Vec<anicraft_doc::ElementId>>| p.as_ref().and_then(|p| nodes.iter().position(|n| &n.path == p)).map(|i| path_name(nodes, i));
+    let mut v = json!({
+        "scene": st.scene,
+        "scene_name": doc.scenes.get(st.scene).map(|s| s.name.clone()),
+        "scenes": doc.scenes.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+        "frame": st.root.frame,
+        "frames": doc.timeline(st.scene).frame_count(),
+        "playing": st.root.playing,
+        "clips": clips,
+        "pointer": st.pointer.map(|p| json!({"x": p.x, "y": p.y, "down": st.down})),
+        "hover": path_of(&st.hover),
+        "tick": st.tick,
+    });
+    if let Some((i, frame, label)) = here {
+        let n = nodes.get(i);
+        v["timeline"] = json!({"path": path_name(nodes, i), "frame": frame, "frames": n.map_or(1, |n| n.frames), "label": label, "playing": n.and_then(|n| st.playhead(&n.path)).is_some_and(|c| c.playing)});
+    }
+    v
+}
+
+/// A movie playing headless: the player, the frame scripts and the Output panel's lines.
+pub struct Movie {
+    pub state: PlayerState,
+    /// Every output line so far, with the step it was written in.
+    pub output: Vec<(u64, String)>,
+}
+
+/// Most output lines a [`Movie`] keeps.
+pub const MAX_MOVIE_OUTPUT: usize = 10_000;
+
+impl Movie {
+    pub fn start(doc: &Document, scripts: &mut dyn ScriptHost) -> Movie {
+        let mut m = Movie { state: PlayerState::default(), output: Vec::new() };
+        let s = player::start(doc, scripts);
+        m.take(s);
+        m
+    }
+
+    pub fn step(&mut self, doc: &Document, events: &[Event], scripts: &mut dyn ScriptHost) {
+        let s = player::step(doc, &self.state, events, scripts);
+        self.take(s);
+    }
+
+    /// Pointer events between frames (no playhead moves).
+    pub fn input(&mut self, doc: &Document, events: &[Event], scripts: &mut dyn ScriptHost) {
+        if !events.is_empty() {
+            let s = player::input(doc, &self.state, events, scripts);
+            self.take(s);
+        }
+    }
+
+    fn take(&mut self, s: Step) {
+        self.state = s.state;
+        for line in s.output {
+            if self.output.len() < MAX_MOVIE_OUTPUT {
+                self.output.push((self.state.tick, line));
+            }
+        }
+    }
+}
+
+/// Parses a pointer event `{type: move|down|up|click|leave, x, y}` (a click is a press and
+/// a release at one point).
+pub fn parse_events(v: &Value) -> Result<Vec<Event>, String> {
+    let kind = v.get("type").and_then(Value::as_str).ok_or("an event needs a \"type\": move, down, up, click or leave")?;
+    let num = |k: &str| -> Result<f32, String> { v.get(k).and_then(Value::as_f64).filter(|f| f.is_finite() && f.abs() <= 1e7).map(|f| f as f32).ok_or(format!("a {kind} event needs a finite \"{k}\"")) };
+    Ok(match kind {
+        "leave" => vec![Event::Leave],
+        "move" => vec![Event::Move(Vec2::new(num("x")?, num("y")?))],
+        "down" => vec![Event::Down(Vec2::new(num("x")?, num("y")?))],
+        "up" => vec![Event::Up(Vec2::new(num("x")?, num("y")?))],
+        "click" => {
+            let p = Vec2::new(num("x")?, num("y")?);
+            vec![Event::Move(p), Event::Down(p), Event::Up(p)]
+        }
+        other => return Err(format!("unknown event type '{other}' (move, down, up, click or leave)")),
+    })
+}
