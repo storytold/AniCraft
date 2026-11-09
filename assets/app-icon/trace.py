@@ -43,8 +43,8 @@ def main() -> None:
     yellow = (np.minimum(r, g) - b) > 0.55 * np.maximum(r, 1)
     dark = 0.299 * r + 0.587 * g + 0.114 * b < 120
 
-    # The tile's rounding is the SVG clip (rx 112 of 512, the Crafting Apps tile), so the art runs past
-    # it. Only the source's own dark olive margin goes: the dark regions joined to an image corner.
+    # The tile's rounding is done by SVG clips, so the art runs past it here. Only the source's own
+    # dark olive margin goes: the dark regions joined to an image corner.
     olive, _ = ndimage.label(dark & (b < 0.25 * np.maximum(r, 1)))
     margin = np.isin(olive, [c for c in {olive[0, 0], olive[0, -1], olive[-1, 0], olive[-1, -1]} if c])
     inside = ~ndimage.binary_dilation(margin, iterations=2)
@@ -57,11 +57,13 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as d:
         paper = trace(silhouette & inside, speckle, Path(d))
         ink = trace(inside & dark, speckle, Path(d))
+    # The Crafting Apps tile (rx 112 of 512) filled with the field, and the art clipped 6 units inside
+    # it (a concentric rx 106), so a band of field colour runs round every edge as on the other icons.
     out.write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
-        '<defs><clipPath id="t"><rect width="512" height="512" rx="112"/></clipPath></defs>'
-        f'<g clip-path="url(#t)"><rect width="512" height="512" fill="{FIELD}"/>'
-        f'<g transform="scale({512 / n:g})" fill-rule="evenodd">'
+        '<defs><clipPath id="a"><rect x="6" y="6" width="500" height="500" rx="106"/></clipPath></defs>'
+        f'<rect width="512" height="512" rx="112" fill="{FIELD}"/>'
+        f'<g clip-path="url(#a)"><g transform="scale({512 / n:g})" fill-rule="evenodd">'
         f'<g fill="{PAPER}">{paper}</g><g fill="{INK}">{ink}</g></g></g></svg>\n',
         encoding="utf-8",
     )
