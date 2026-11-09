@@ -544,10 +544,23 @@ fn panic_hunt_every_command() {
         json!({"d": "M 0 0 C", "points": [[0, 0]], "mode": "straighten", "tolerance": 0}),
         json!({"id": 3, "points": [[0, 0], [99, 9], [1, 2]], "dx": 1e30, "dy": 0, "cmds": [0, 1, 2, 3, 4, 5, 99], "cmd": 0, "smooth": true}),
         json!({"id": 5, "points": [[1, 1]], "dx": 3, "dy": 4, "x": 0, "y": 0, "slop": 1e9, "cmds": [1, 1, 0], "cmd": 1, "smooth": false}),
+        json!({"sound": SOUND, "sync": "stream", "repeat": 9999, "loop": true, "extend": true, "frame": 99_999}),
+        json!({"sound": SOUND, "sync": "nope", "repeat": 0, "loop": "x", "name": ""}),
+        json!({"sound": SOUND, "frame": 3, "extend": true, "name": "renamed"}),
+        json!({"sound": u64::MAX, "repeat": 1e9}),
+        json!({"sound": "a", "sync": 3}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
-    for start in [Session::default(), Session::new(sample::demo())] {
+    // A document with a sound in the library and on a keyframe.
+    const SOUND: u64 = 900_000;
+    let mut with_sound = sample::demo();
+    let wav = crate::cmds_sound::test_wav(8000, &[0.25; 4000]);
+    with_sound.sounds.push(Arc::new(anicraft_doc::Sound::from_data(anicraft_doc::SoundId(SOUND), "t.wav", wav).unwrap()));
+    if let Some(k) = Arc::make_mut(&mut with_sound.timeline_mut(0).layers[0]).keyframe_mut(0) {
+        k.sound = Some(anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)));
+    }
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound)] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {

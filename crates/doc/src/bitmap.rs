@@ -154,7 +154,7 @@ fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Bytes as base64 text in files.
-mod base64_bytes {
+pub(crate) mod base64_bytes {
     use super::*;
 
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

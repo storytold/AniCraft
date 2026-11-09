@@ -41,7 +41,7 @@ fn key(start: u32, duration: u32, elements: Vec<Arc<Element>>, tween: Option<Eas
 
 /// Builds the demo document: a bouncing ball, a spinning star, a pulsing sun over hills.
 pub fn demo() -> Document {
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
     let (w, h) = (1280.0, 720.0);
 
     // --- library -------------------------------------------------------------------------
@@ -146,7 +146,7 @@ pub fn demo() -> Document {
 /// `shapes` shapes each, keyed every 12 frames over `frames` frames with classic tweens.
 /// Every element keeps one `Arc<Path>` across its keyframes, as a real tweened shape does.
 pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
-    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
     let (layers, shapes, frames) = (layers.clamp(1, 1000), shapes.clamp(1, 100_000), frames.clamp(1, 10_000));
     let mut seed = 0x2545_f491_u32;
     let mut rnd = move || {
