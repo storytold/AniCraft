@@ -5,6 +5,7 @@ const SOURCES: [(&str, &str); 13] = [
     ("icons.rs", include_str!("icons.rs")),
     ("pathtools.rs", include_str!("pathtools.rs")),
     ("platform.rs", include_str!("platform.rs")),
+    ("plugins_ui.rs", include_str!("plugins_ui.rs")),
     ("prefs.rs", include_str!("prefs.rs")),
     ("app.rs", include_str!("app.rs")),
     ("dialogs.rs", include_str!("dialogs.rs")),

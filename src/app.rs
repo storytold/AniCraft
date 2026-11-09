@@ -269,6 +269,10 @@ pub struct App {
     /// Undoable-tier confirmations the user chose not to see again this session.
     pub skip_confirm: HashSet<String>,
     pub palette: Option<dialogs::Palette>,
+    /// The open plug-in dialog (its preview is an open gesture).
+    pub plugin_dialog: Option<crate::plugins_ui::Dialog>,
+    /// Commands › Manage Plug-ins.
+    pub show_plugins: bool,
     pub show_shortcuts: bool,
     /// The window close was intercepted because of unsaved changes.
     pub close_dialog: bool,
@@ -366,6 +370,8 @@ impl App {
             confirm: None,
             skip_confirm: HashSet::new(),
             palette: None,
+            plugin_dialog: None,
+            show_plugins: false,
             show_shortcuts: false,
             close_dialog: false,
             allow_close: false,
@@ -387,6 +393,7 @@ impl App {
         if let Some(e) = recovery_err {
             app.status_err(e);
         }
+        crate::plugins_ui::load_at_start(&mut app);
         app
     }
 
@@ -523,6 +530,14 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some("plugins") => {
+                // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
+                let first = self.s.plugins.list().find(|p| !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
+                match first {
+                    Some(id) => crate::plugins_ui::open(self, &id),
+                    None => self.show_plugins = true,
+                }
+            }
             Some("select") => {
                 // The top layer's artwork selected, for its Properties.
                 self.run("layer.select", json!({"index": 0}));
@@ -626,7 +641,7 @@ impl App {
 
     /// Any modal (prompt, confirmation, close guard) is open: global shortcuts pause.
     pub fn modal_open(&self) -> bool {
-        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog
+        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
     }
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
@@ -722,6 +737,7 @@ impl App {
                     _ => format!("Pasted {what} — Ctrl+Z to undo"),
                 });
             }
+            "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, &v),
             "timeline.remove_frame" => {
                 let n = v["removed"].as_u64().unwrap_or(1);
                 self.status_ok(format!("Removed {} — Ctrl+Z to undo", if n == 1 { "frame".to_string() } else { format!("{n} frames") }));
@@ -756,6 +772,11 @@ impl App {
             }
             return;
         }
+        if id == "plugin.list" {
+            // Commands › Manage Plug-ins (headless, the same command lists them).
+            self.show_plugins = true;
+            return;
+        }
         if id == "edit.paste" {
             // Paste in the centre of what you are looking at.
             let c = self.view_center_stage();
@@ -776,11 +797,12 @@ impl App {
             "file.export_video" => Some(("Export video (.webm or .mp4, made with your ffmpeg)", "path", "animation.webm".to_string())),
             "file.export_lottie" => Some(("Export Lottie animation (JSON, for web and apps)", "path", "animation.json".to_string())),
             "file.import" => Some(("Import to stage (SVG, PNG or JPEG)", "path", "drawing.svg".to_string())),
+            "plugin.install" => Some(("Install plug-in (.wasm file)", "path", "plugin.wasm".to_string())),
             "modify.convert_to_symbol" => Some(("Convert to symbol — name", "name", format!("Symbol {}", self.s.doc.library.len() + 1))),
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
-            let is_file = matches!(key, "path" | "dir") && id.starts_with("file.");
+            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || id == "plugin.install");
             if is_file && self.prefs.native_dialogs && self.shot.is_none() {
                 // The platform's own dialog (it blocks, as native dialogs do). Cancel = no-op.
                 self.playing = false;
@@ -1102,7 +1124,7 @@ fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
 }
 
 /// Opens a file or folder with the operating system's default handler.
-fn open_in_system(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new("explorer");
         c.arg(path);
@@ -1166,6 +1188,7 @@ impl eframe::App for App {
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
+        crate::plugins_ui::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {
@@ -1182,7 +1205,8 @@ impl eframe::App for App {
         self.files_window(&ctx);
 
         // Close a coalesced edit (property drags) once nothing is being dragged or typed.
-        if self.s.in_gesture() && self.drag == Drag::None && !ctx.egui_is_using_pointer() && ctx.memory(|m| m.focused().is_none()) {
+        // (A plug-in dialog keeps its preview gesture open until OK or Cancel.)
+        if self.s.in_gesture() && self.plugin_dialog.is_none() && self.drag == Drag::None && !ctx.egui_is_using_pointer() && ctx.memory(|m| m.focused().is_none()) {
             self.s.end_gesture();
         }
 

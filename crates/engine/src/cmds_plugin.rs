@@ -16,7 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
         c("plugin.install", "Install Plug-in…", "Commands", None, "{path: a .wasm plug-in, confirm? (when it replaces an installed plug-in's file)} validates and installs it; with a plug-ins folder it is copied there", false, install as crate::RunFn),
-        c("plugin.list", "Plug-ins", "", None, "{}", false, list),
+        c("plugin.list", "Manage Plug-ins…", "Commands", None, "{} lists the installed plug-ins (the app shows them in a window)", false, list),
         c("plugin.run", "Run Plug-in", "", None, "{id, params?: {…} (see plugin.list; missing ones take their defaults)} one undo step", true, run),
         c("plugin.remove", "Remove Plug-in", "", None, "{id, confirm? (when it deletes the plug-in's file from the plug-ins folder)}", false, remove),
         c("plugin.reload", "Reload Plug-ins", "Commands", None, "{folder? (makes it the plug-ins folder first)} re-reads every .wasm in the plug-ins folder", false, reload),
