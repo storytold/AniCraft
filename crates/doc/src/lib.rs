@@ -10,6 +10,7 @@ mod bitmap;
 mod filter;
 mod easing;
 mod eval;
+mod hints;
 pub mod motion;
 pub mod path_table;
 pub mod width;
@@ -19,6 +20,7 @@ pub mod sound;
 pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
+pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
 pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
 pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
@@ -543,6 +545,9 @@ pub struct Keyframe {
     /// or a motion tween, never both; commands keep it so, and a motion tween wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion: Option<MotionTween>,
+    /// Shape hints for the shape tween this keyframe starts (ADR 0023), `a` first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<ShapeHint>,
     #[serde(default)]
     pub label: String,
     /// The sound that starts (or, for Stop, ends) on this keyframe (ADR 0020).
@@ -552,13 +557,13 @@ pub struct Keyframe {
 
 impl PartialEq for Keyframe {
     fn eq(&self, o: &Keyframe) -> bool {
-        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.label == o.label && self.sound == o.sound && arcs_eq(&self.elements, &o.elements)
+        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && arcs_eq(&self.elements, &o.elements)
     }
 }
 
 impl Keyframe {
     pub fn new(start: u32, duration: u32) -> Self {
-        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, label: String::new(), sound: None }
+        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None }
     }
     /// Mutable access to the elements whose ids satisfy `pick`, cloning only those.
     pub fn elements_mut_where(&mut self, mut pick: impl FnMut(ElementId) -> bool) -> Vec<&mut Element> {

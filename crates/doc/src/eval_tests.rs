@@ -393,3 +393,73 @@ fn motion_tweens_survive_a_file_round_trip_and_old_files_have_none() {
         assert!(evaluate(&d2, f).items.iter().all(|i| i.transform.is_finite()));
     }
 }
+
+/// A square on frame 0 shape-tweening to a circle on frame 10 (the square moved 200 right,
+/// so element transforms count too).
+fn square_to_circle(hints: Vec<crate::ShapeHint>) -> Document {
+    let mut d = Document::default();
+    let el = |id, x, path| Element { id: ElementId(id), name: String::new(), transform: Affine::translate(x, 0.0), color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(path, Paint::Solid(Rgba::BLACK))) };
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(el(1, 0.0, Path::rect(0.0, 0.0, 100.0, 100.0))));
+    k0.tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Shape, ..Default::default() });
+    k0.hints = hints;
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(el(1, 200.0, Path::ellipse(50.0, 50.0, 50.0, 50.0))));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    d
+}
+
+fn has_anchor(p: &Path, m: &Affine, q: anicraft_geom::Vec2) -> bool {
+    p.cmds.iter().any(|c| match *c {
+        anicraft_geom::PathCmd::MoveTo(a) | anicraft_geom::PathCmd::CubicTo(_, _, a) => m.apply(a).distance(q) < 1e-2,
+        _ => false,
+    })
+}
+
+#[test]
+fn shape_hints_carry_the_hinted_corner_where_asked() {
+    use anicraft_geom::Vec2;
+    let (corner, bottom) = (Vec2::new(0.0, 0.0), Vec2::new(250.0, 100.0));
+    let hinted = square_to_circle(vec![crate::ShapeHint { start: corner, end: bottom }]);
+    let at = |d: &Document, f| {
+        let dl = evaluate(d, f);
+        let i = &dl.items[0];
+        ((*i.path).clone(), i.transform)
+    };
+    // Halfway the corner is exactly halfway along its way (stage space).
+    let (p, m) = at(&hinted, 5);
+    assert!(has_anchor(&p, &m, corner.lerp(bottom, 0.5)), "{p:?}");
+    // Without the hint it goes elsewhere.
+    let (p, m) = at(&square_to_circle(Vec::new()), 5);
+    assert!(!has_anchor(&p, &m, corner.lerp(bottom, 0.5)));
+    // An unplaced hint (off the outline, as when just added) changes nothing.
+    let off = square_to_circle(vec![crate::ShapeHint { start: Vec2::new(50.0, 50.0), end: bottom }]);
+    let plain = square_to_circle(Vec::new());
+    assert_eq!(*evaluate(&off, 5).items[0].path, *evaluate(&plain, 5).items[0].path);
+    // The keyframes themselves are untouched by hints.
+    assert_eq!(*evaluate(&hinted, 0).items[0].path, Path::rect(0.0, 0.0, 100.0, 100.0));
+    // Placement and the hinted tween lookup.
+    let l = &hinted.timeline(0).layers[0];
+    assert_eq!(l.hint_tween_at(0), Some((0, crate::HintSide::Start)));
+    assert_eq!(l.hint_tween_at(9), Some((0, crate::HintSide::Start)));
+    assert_eq!(l.hint_tween_at(10), Some((0, crate::HintSide::End)));
+    assert_eq!(crate::placed_on(&l.keyframes[0].elements, corner), Some(0));
+    assert_eq!(crate::placed_on(&l.keyframes[1].elements, bottom), Some(0));
+    assert_eq!(crate::placed_on(&l.keyframes[0].elements, Vec2::new(50.0, 50.0)), None);
+    assert!(crate::shapes_centre(&l.keyframes[1].elements).unwrap().distance(Vec2::new(250.0, 50.0)) < 1e-3);
+}
+
+#[test]
+fn shape_hints_survive_a_round_trip_and_old_files_have_none() {
+    let d = square_to_circle(vec![crate::ShapeHint { start: anicraft_geom::Vec2::new(0.0, 0.0), end: anicraft_geom::Vec2::new(250.0, 100.0) }]);
+    let k = &d.timeline(0).layers[0].keyframes[0];
+    let json = serde_json::to_string(&**k).unwrap();
+    assert!(json.contains("\"hints\""));
+    let back: Keyframe = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, **k);
+    // A keyframe without hints writes none, and a file from before hints reads with none.
+    let plain = serde_json::to_string(&Keyframe::new(0, 1)).unwrap();
+    assert!(!plain.contains("hints"));
+    let old: Keyframe = serde_json::from_str(r#"{"start":0,"duration":3}"#).unwrap();
+    assert!(old.hints.is_empty());
+}
