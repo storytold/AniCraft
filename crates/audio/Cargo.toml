@@ -1,0 +1,17 @@
+[package]
+name = "anicraft-audio"
+description = "AniCraft L0: sound decoding (WAV, Ogg Vorbis, MP3), deterministic mixing and resampling, WAV writing, waveform peaks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Ogg Vorbis decoding, pure Rust (MIT OR Apache-2.0; its `ogg` reader is BSD-3-Clause).
+lewton = { version = "0.10", default-features = false, features = ["ogg"] }
+# MP3 decoding, pure Rust port of minimp3 (MIT OR Apache-2.0). No SIMD helper crates.
+nanomp3 = { version = "0.2", default-features = false, features = ["std", "layer12"] }
+
+[lints]
+workspace = true
