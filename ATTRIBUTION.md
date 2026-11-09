@@ -74,6 +74,8 @@ OR Apache-2.0) is noted in the table.
 | Shape morphing (cubic normalization, subdivision to equal segment counts, winding and start-point alignment) | `crates/geom/src/morph.rs` | Standard curve-blending techniques from the public computer-graphics literature (de Casteljau subdivision, exact degree elevation) | |
 | Affine QR decomposition for tweening | `crates/geom/src/affine.rs` | Standard linear algebra | |
 | Least-squares cubic Bézier curve fitting (Pencil "Smooth") | `crates/geom/src/fit.rs` | P. J. Schneider, *An Algorithm for Automatically Fitting Digitized Curves*, Graphics Gems (1990) | Ported from PhotoCraft's mask tracer and adapted for open strokes. Published algorithm. |
+| Monotone cubic interpolation of stroke widths (width profiles) | `crates/doc/src/width.rs` | F. N. Fritsch and R. E. Carlson, *Monotone Piecewise Cubic Interpolation*, SIAM J. Numer. Anal. 17(2), 1980 | Published algorithm (harmonic-mean tangents). |
+| Variable-width stroke outlines (trapezoids, outer round joins, caps) | `crates/render/src/stroke.rs` | Standard stroking construction from the public computer-graphics literature | Own implementation (ADR 0014); built-in profiles are AniCraft's own. |
 | De Casteljau subdivision, Ramer–Douglas–Peucker simplification | `crates/geom/src/edit.rs` | Public mathematical results (de Casteljau 1959; Ramer 1972; Douglas & Peucker 1973) | |
 
 ## Rust dependencies
