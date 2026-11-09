@@ -1,4 +1,4 @@
-//! Variable-width strokes (ADR 0014): width profiles and the Width tool's width points.
+//! Variable-width strokes (ADR 0018): width profiles and the Width tool's width points.
 //!
 //! Width points are addressed by index on a shape's profile (sorted by position). Positions
 //! `t` are fractions of each subpath's arc length; widths are factors of the stroke's nominal

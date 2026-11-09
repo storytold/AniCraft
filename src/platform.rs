@@ -89,14 +89,43 @@ pub fn config_dir() -> Option<PathBuf> {
     }
 }
 
+/// Where crash-recovery copies live (ADR 0015): `Recovery` in the settings folder.
+/// `ANICRAFT_RECOVERY_DIR` points it elsewhere (tests, portable installs).
+pub fn recovery_dir() -> Option<PathBuf> {
+    match std::env::var_os("ANICRAFT_RECOVERY_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => Some(PathBuf::from(d)),
+        None => config_dir().map(|d| d.join("Recovery")),
+    }
+}
+
+/// Whether the recovery folder was chosen explicitly (screenshot runs only touch it then).
+pub fn recovery_dir_overridden() -> bool {
+    std::env::var_os("ANICRAFT_RECOVERY_DIR").is_some_and(|v| !v.is_empty())
+}
+
+/// Where installed plug-ins live: a `plugins` folder in the settings folder (ADR 0017).
+pub fn plugins_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("plugins"))
+}
+
 /// Main-window chrome. macOS gets the unified look (content under a transparent title bar,
 /// traffic lights over our menu row); Windows and Linux keep their native frames.
 pub fn viewport(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
-    let b = b.with_app_id("anicraft"); // Wayland/X11 window class, for docks and window rules
+    let b = b.with_app_id("anicraft").with_icon(app_icon()); // app ID: Wayland/X11 window class, for docks and window rules
     match OS {
         Os::Mac => b.with_fullsize_content_view(true).with_title_shown(false),
         _ => b,
     }
+}
+
+/// The window, Dock, taskbar and app-switcher icon (`assets/app-icon/`, see its README). macOS gets
+/// the tile on Apple's grid (with its transparent margin); elsewhere the full-bleed tile.
+fn app_icon() -> egui::IconData {
+    #[cfg(target_os = "macos")]
+    let png: &[u8] = include_bytes!("../assets/app-icon/anicraft-macos-512.png");
+    #[cfg(not(target_os = "macos"))]
+    let png: &[u8] = include_bytes!("../assets/app-icon/hicolor/256x256/apps/ai.storyteller.anicraft.png");
+    eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
 /// Space left of the menu row for the macOS traffic-light buttons.
@@ -123,11 +152,14 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" => ("SVG image", &["svg"]),
         "file.export_lottie" => ("Lottie animation", &["json"]),
-        "file.import" => ("SVG drawing or image", &["svg", "png", "jpg", "jpeg"]),
+        "file.import" => ("Drawing, image or sound", &["svg", "png", "jpg", "jpeg", "wav", "ogg", "mp3"]),
+        "file.import_to_library" => ("Sound or image", &["wav", "ogg", "mp3", "png", "jpg", "jpeg"]),
+        "file.export_audio" => ("WAV sound", &["wav"]),
         "file.export_sprite_sheet" => ("PNG sprite sheet", &["png"]),
         "file.export_video" => ("Video (WebM or MP4)", &["webm", "mp4"]),
         // Opening also imports .fla archives and .xfl packages.
         "file.open" => ("Documents", &["anicraft", "fla", "xfl"]),
+        "plugin.install" => ("WebAssembly plug-in", &["wasm"]),
         _ => ("AniCraft document", &["anicraft"]),
     }
 }
@@ -138,7 +170,7 @@ pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf
     let (label, exts) = filters(cmd);
     let d = rfd::FileDialog::new().set_title(title);
     match cmd {
-        "file.open" => d.add_filter(label, exts).pick_file(),
+        "file.open" | "plugin.install" | "file.import" | "file.import_to_library" => d.add_filter(label, exts).pick_file(),
         "file.export_png_sequence" => d.pick_folder(),
         _ => d.add_filter(label, exts).set_file_name(default_name).save_file(),
     }

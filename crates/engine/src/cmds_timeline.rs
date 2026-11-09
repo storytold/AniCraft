@@ -15,9 +15,10 @@ pub fn specs() -> Vec<CommandSpec> {
         c("timeline.insert_blank_keyframe", "Blank Keyframe", "Insert/Timeline", Some("F7"), "{layer? | layers?: [..], frame?}", true, insert_blank_keyframe),
         c("timeline.clear_keyframe", "Clear Keyframe", "Insert/Timeline", Some("Shift+F6"), "{layer? | layers?: [..], frame?, count?}", true, clear_keyframe),
         c("timeline.move_keyframes", "Move Keyframes", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}", true, move_keyframes),
+        c("timeline.create_motion_tween", "Create Motion Tween", "Insert", None, "{layer?, frame?} (several objects on the key become one graphic symbol; a one-frame span grows to a second)", true, crate::cmds_motion::create),
         c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_tween),
         c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_shape_tween),
-        c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?}", true, remove_tween),
+        c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?} (a motion tween leaves its object as it is on the first frame)", true, remove_tween),
         c("timeline.set_easing", "Set Tween Easing", "", None, "{easing, layer?, frame?}", true, set_easing),
         c("timeline.set_orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}", true, set_orient),
         c("timeline.set_label", "Frame Label", "", None, "{label, layer?, frame?}", true, set_label),
@@ -238,7 +239,7 @@ fn insert_frame(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"frames": frames}))
 }
 
-fn insert_frame_at(layer: &mut Layer, frame: u32) -> Result<()> {
+pub(crate) fn insert_frame_at(layer: &mut Layer, frame: u32) -> Result<()> {
     if layer.end_frame() >= MAX_FRAME {
         return Err(EngineError::State("the timeline is at its maximum length".into()));
     }
@@ -320,20 +321,31 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
             if let Some(k) = layer.keyframe_starting_at(frame).and_then(|i| layer.keyframe_mut(i)) {
                 k.elements.clear();
                 k.tween = None;
+                k.motion = None;
             }
         }
         return Ok(());
     }
     let elements = if copy { evaluate_layer_elements(layer, frame).map(|(_, e)| e.into_owned()) } else { None };
+    // Past the end of a motion tween, a copy starts from how its object looks at the end.
+    let last_state = match layer.keyframes.iter().rposition(|k| k.start < frame) {
+        Some(i) if copy && layer.keyframe_index_at(frame).is_none() => {
+            layer.keyframes.get(i).filter(|k| k.motion.is_some()).and_then(|k| evaluate_layer_elements(layer, k.end() - 1)).map(|(_, e)| e.into_owned())
+        }
+        _ => None,
+    };
     match layer.keyframe_index_at(frame) {
         Some(i) => {
             let Some(k) = layer.keyframe_mut(i) else { return Ok(()) };
             let end = k.end();
             let tween = if copy { k.tween } else { None };
+            // A motion tween split in two keeps moving the same way in both halves.
+            let motion = if copy { k.motion.as_ref().map(|m| m.split_at(frame - k.start)) } else { None };
             k.duration = frame - k.start;
             let mut nk = Keyframe::new(frame, end - frame);
             nk.elements = elements.unwrap_or_default();
             nk.tween = tween;
+            nk.motion = motion;
             layer.keyframes.insert(i + 1, Arc::new(nk));
         }
         None => {
@@ -344,7 +356,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
                 let next_start = layer.keyframes.get(i + 1).map(|k| k.start);
                 if let Some(k) = layer.keyframe_mut(i) {
                     if copy {
-                        nk.elements = k.elements.clone();
+                        nk.elements = last_state.unwrap_or_else(|| k.elements.clone());
                     }
                     k.duration = frame - k.start;
                 }
@@ -363,7 +375,11 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
 fn insert_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
     let (_, frame) = target(s, p)?;
     for id in target_layers(s, p)? {
-        insert_keyframe_at(s.layer_mut(Some(id))?, frame, true)?;
+        let layer = s.layer_mut(Some(id))?;
+        // Inside a motion tween F6 keys every property there; the span stays whole.
+        if !crate::cmds_motion::key_all_at(layer, frame) {
+            insert_keyframe_at(layer, frame, true)?;
+        }
     }
     Ok(json!({"keyframe": frame}))
 }
@@ -524,6 +540,7 @@ fn clear_keyframe_at(layer: &mut Layer, frame: u32) -> Result<()> {
         if let Some(k) = layer.keyframe_mut(0) {
             k.elements.clear();
             k.tween = None;
+            k.motion = None;
         }
     } else {
         let removed = layer.keyframes.remove(i);
@@ -535,7 +552,7 @@ fn clear_keyframe_at(layer: &mut Layer, frame: u32) -> Result<()> {
     Ok(())
 }
 
-fn keyframe_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Keyframe> {
+pub(crate) fn keyframe_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Keyframe> {
     let (lid, frame) = target(s, p)?;
     let layer = s.layer_mut(lid)?;
     let i = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;
@@ -559,6 +576,8 @@ fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
         None => k.tween.map(|t| t.easing).unwrap_or_default(),
     };
     let orient = k.tween.is_some_and(|t| t.orient);
+    // It replaces a motion tween, keeping the object as it is on the first frame.
+    crate::cmds_motion::bake_first_frame(k);
     k.tween = Some(Tween { easing, kind, orient });
     let kind = if kind == TweenKind::Shape { "shape" } else { "classic" };
     Ok(json!({"tween": k.start, "easing": easing.label(), "kind": kind}))
@@ -567,6 +586,7 @@ fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
 fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {
     let k = keyframe_mut(s, p)?;
     k.tween = None;
+    crate::cmds_motion::bake_first_frame(k);
     Ok(json!({"removed": k.start}))
 }
 

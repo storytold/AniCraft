@@ -1,4 +1,4 @@
-# ADR 0014: Variable-width strokes
+# ADR 0018: Variable-width strokes
 
 * Status: accepted (2026-11-09)
 * Relates to: roadmap M7 (variable-width strokes and brush library), ADR 0002 (render

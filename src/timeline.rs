@@ -1,6 +1,6 @@
 //! Timeline panel: transport, layer list and a virtualised frame grid.
 
-use crate::app::App;
+use crate::app::{App, BottomTab};
 use crate::icons::{self, Icon};
 use crate::menus;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, to_color32, with_type};
@@ -157,7 +157,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- header ---------------------------------------------------------------------------
     egui::Frame::NONE.fill(T.panel_alt).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(text(Type::Heading, "Timeline"));
+            // Two tabs share the dock: the timeline and the Motion Editor.
+            for (tab, name, tip) in [(BottomTab::Timeline, "Timeline", "Layers and frames"), (BottomTab::MotionEditor, "Motion Editor", "Property curves of the motion tween at the playhead (double-click a motion span)")] {
+                if ui.selectable_label(app.bottom == tab, text(Type::Heading, name)).on_hover_text(tip).clicked() {
+                    app.bottom = tab;
+                }
+            }
             ui.add_space(8.0);
             transport(app, ui);
             ui.add_space(8.0);
@@ -178,10 +183,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             cmd(app, ui, "Frame", "Insert frame (F5)", "timeline.insert_frame");
             cmd(app, ui, "Keyframe", "Insert keyframe (F6)", "timeline.insert_keyframe");
             cmd(app, ui, "Blank", "Insert blank keyframe (F7)", "timeline.insert_blank_keyframe");
-            let in_tween = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).and_then(|k| k.tween);
-            match in_tween {
+            let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
+            let in_tween = here.and_then(|k| k.tween);
+            let in_motion = here.is_some_and(|k| k.motion.is_some());
+            if in_motion {
+                egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text("Motion tween").show_ui(ui, |ui| {
+                    if ui.selectable_label(false, "Motion Editor").on_hover_text("Edit the property curves").clicked() {
+                        app.bottom = BottomTab::MotionEditor;
+                    }
+                    ui.separator();
+                    if ui.selectable_label(false, "Classic tween").on_hover_text("Tween to the next keyframe instead").clicked() {
+                        app.run("timeline.create_tween", json!({}));
+                    }
+                    if ui.selectable_label(false, "Remove tween").clicked() {
+                        app.invoke("timeline.remove_tween");
+                    }
+                });
+            }
+            match in_tween.filter(|_| !in_motion) {
                 Some(tw) => {
-                    egui::ComboBox::from_id_salt("tl_ease").width(150.0).selected_text(tw.easing.label()).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("tl_ease").width(112.0).selected_text(tw.easing.label()).show_ui(ui, |ui| {
                         for (name, e) in Easing::PRESETS {
                             if ui.selectable_label(tw.easing == e, name).clicked() {
                                 app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
@@ -190,12 +211,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     });
                     // The tween's kind: classic ⇄ shape (keeping the easing), or none.
                     let shape = tw.kind == TweenKind::Shape;
-                    egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text(if shape { "Shape tween" } else { "Classic tween" }).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("tl_kind").width(104.0).selected_text(if shape { "Shape tween" } else { "Classic tween" }).show_ui(ui, |ui| {
                         if ui.selectable_label(!shape, "Classic tween").on_hover_text("Moves, scales, rotates and recolours").clicked() && shape {
                             app.run("timeline.create_tween", json!({}));
                         }
                         if ui.selectable_label(shape, "Shape tween").on_hover_text("Also morphs one shape into another").clicked() && !shape {
                             app.run("timeline.create_shape_tween", json!({}));
+                        }
+                        if ui.selectable_label(false, "Motion tween").on_hover_text("Animate each property on its own curve").clicked() {
+                            app.run("timeline.create_motion_tween", json!({}));
                         }
                         ui.separator();
                         if ui.selectable_label(false, "Remove tween").clicked() {
@@ -203,20 +227,32 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                 }
+                None if in_motion => {}
                 None => {
-                    cmd(app, ui, "Create Tween", "Create a classic tween to the next keyframe", "timeline.create_tween");
-                    cmd(app, ui, "Shape Tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween");
+                    // One menu for the three kinds keeps the header short.
+                    egui::ComboBox::from_id_salt("tl_create").width(120.0).selected_text("Create tween").show_ui(ui, |ui| {
+                        for (label, tip, id) in [
+                            ("Motion tween", "Animate this span's object property by property (edit the curves in the Motion Editor)", "timeline.create_motion_tween"),
+                            ("Classic tween", "Tween to the next keyframe", "timeline.create_tween"),
+                            ("Shape tween", "Morph this keyframe's shapes into the next keyframe's", "timeline.create_shape_tween"),
+                        ] {
+                            if ui.selectable_label(false, label).on_hover_text(tip).clicked() {
+                                app.run(id, json!({}));
+                            }
+                        }
+                    });
                 }
             }
             // Frame zoom, at the right end of the header.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
                 let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
+                ui.spacing_mut().slider_width = 64.0;
                 let r = with_type(ui, Type::Data, |ui| ui.add(egui::Slider::new(&mut pct, lo..=hi).logarithmic(true).max_decimals(0).suffix(" %")));
-                if r.on_hover_text("Frame width (Ctrl+wheel over the frames)").changed() {
+                if r.on_hover_text("Frame zoom: frame width (Ctrl+wheel over the frames)").changed() {
                     app.tl_cell_w = (pct / 100.0 * CELL_DEFAULT).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
                 }
-                ui.label(text(Type::Label, "Zoom"));
+
             });
         });
     });
@@ -228,6 +264,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if gone || app.playing || (app.tl_drag == TlDrag::None && !(f0..=f1).contains(&app.s.frame)) {
             app.frame_sel = None;
         }
+    }
+
+    if app.bottom == BottomTab::MotionEditor {
+        crate::motion_editor::show(app, ui);
+        return;
     }
 
     // ---- body -----------------------------------------------------------------------------
@@ -506,9 +547,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let x1 = x_of(k.end());
             let span = Rect::from_min_max(pos2(x0, y + 3.0), pos2(x1 - 1.0, y + ROW_H - 3.0));
             let next_adjacent = layer.keyframes.get(ki + 1).is_some_and(|n| n.start == k.end());
-            let tweened = k.tween.is_some() && next_adjacent;
+            let motion = k.motion.as_ref();
+            let tweened = k.tween.is_some() && next_adjacent && motion.is_none();
             let empty = k.elements.is_empty();
-            let fill = if tweened {
+            let fill = if motion.is_some() {
+                T.tween_motion
+            } else if tweened {
                 if k.tween.is_some_and(|t| t.kind == TweenKind::Shape) { T.tween_shape } else { T.tween }
             } else if empty {
                 T.span_empty
@@ -517,12 +561,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             };
             let mark = if empty && !tweened { T.text } else { T.ink };
             cp.rect_filled(span, SQUARE, fill);
+            if let Some(fs) = k.sound
+                && !waveform(&cp, &app.s.doc, fs, span, x0, cell_w, if empty && !tweened { T.waveform } else { T.ink })
+            {
+                // Still decoding (just opened): draw it when it's ready.
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
             let kc = pos2(x0 + cell_w * 0.5, y + ROW_H * 0.5);
-            if tweened && k.duration > 1 {
+            if let Some(m) = motion {
+                // Property keyframes: small diamonds where any property has a key.
+                for f in m.key_frames().into_iter().filter(|f| *f > 0 && *f < k.duration) {
+                    let c = pos2(x_of(k.start + f) + cell_w * 0.5, kc.y);
+                    let r = (cell_w * 0.35).clamp(2.5, 4.5);
+                    cp.add(egui::Shape::convex_polygon(vec![c + vec2(0.0, -r), c + vec2(r, 0.0), c + vec2(0.0, r), c + vec2(-r, 0.0)], T.ink, Stroke::NONE));
+                }
+            } else if tweened && k.duration > 1 {
                 let end = pos2(x1 - cell_w * 0.5 - 4.0, kc.y);
                 cp.line_segment([kc + vec2(5.0, 0.0), end], Stroke::new(1.5, T.tween_line));
                 cp.add(egui::Shape::convex_polygon(vec![end + vec2(0.0, -3.5), end + vec2(5.0, 0.0), end + vec2(0.0, 3.5)], T.tween_line, Stroke::NONE));
-            } else if k.tween.is_some() && !next_adjacent && k.duration > 1 {
+            } else if k.tween.is_some() && motion.is_none() && !next_adjacent && k.duration > 1 {
                 // broken tween: dashed line
                 let mut x = kc.x + 6.0;
                 while x < x1 - 6.0 {
@@ -588,6 +645,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let shift = ui.input(|inp| inp.modifiers.shift);
         if cr.clicked() || cr.drag_started() || cr.secondary_clicked() {
             app.timeline_focus = true;
+        }
+        // Double-click a motion tween span: its curves open in the Motion Editor.
+        if cr.double_clicked()
+            && let Some(p) = cr.interact_pointer_pos()
+            && layer.keyframe_at(frame_at(p.x)).is_some_and(|k| k.motion.is_some())
+        {
+            app.bottom = BottomTab::MotionEditor;
         }
         // The right edge of a span is a handle: drag it to make the span longer or shorter
         // (later frames move with it, as with F5 / Shift+F5).
@@ -731,9 +795,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 menus::cmd_item(app, ui, id);
             }
             ui.separator();
-            let tween = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).and_then(|k| k.tween);
+            let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
+            if here.is_some_and(|k| k.motion.is_some()) {
+                if ui.button("Motion Editor").clicked() {
+                    app.bottom = BottomTab::MotionEditor;
+                    ui.close();
+                }
+                menus::cmd_item(app, ui, "timeline.create_tween");
+                menus::cmd_item(app, ui, "timeline.remove_tween");
+                return;
+            }
+            let tween = here.and_then(|k| k.tween);
             match tween {
                 Some(t) => {
+                    menus::cmd_item(app, ui, "timeline.create_motion_tween");
                     menus::cmd_item(app, ui, if t.kind == TweenKind::Shape { "timeline.create_tween" } else { "timeline.create_shape_tween" });
                     menus::cmd_item(app, ui, "timeline.remove_tween");
                     ui.menu_button("Ease", |ui| {
@@ -746,6 +821,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     });
                 }
                 None => {
+                    menus::cmd_item(app, ui, "timeline.create_motion_tween");
                     menus::cmd_item(app, ui, "timeline.create_tween");
                     menus::cmd_item(app, ui, "timeline.create_shape_tween");
                 }
@@ -843,6 +919,50 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Engine param for an easing preset.
+/// A keyframe's sound over its span: the waveform from the keyframe on, repeated as the sound
+/// repeats, as far as the span reaches (all a stream sound plays; an event sound plays on past
+/// it). One line per point column, from the lowest to the highest sample under it. `false`
+/// while the sound is still being decoded.
+fn waveform(p: &egui::Painter, doc: &anicraft_engine::doc::Document, fs: anicraft_engine::doc::FrameSound, span: Rect, x0: f32, cell_w: f32, color: Color32) -> bool {
+    let Some(snd) = doc.sound(fs.sound) else { return true };
+    let Some(dec) = snd.decoded_if_ready() else { return false };
+    let len = dec.peaks.frames() as u64;
+    if len == 0 || cell_w <= 0.0 {
+        return true;
+    }
+    let total = if fs.looping { u64::MAX } else { len.saturating_mul(u64::from(fs.repeat.max(1))) };
+    let per_point = f64::from(dec.pcm.rate) / f64::from(doc.stage.fps.max(1.0)) / f64::from(cell_w);
+    let clip = p.clip_rect().intersect(span.shrink2(vec2(0.0, 1.0)));
+    let (cy, h) = (clip.center().y, clip.height() * 0.5);
+    let stroke = Stroke::new(1.0, color);
+    let mut x = clip.left().floor().max(span.left());
+    while x < clip.right() {
+        let a = (f64::from(x - x0) * per_point).max(0.0) as u64;
+        let b = (f64::from(x + 1.0 - x0) * per_point).max(0.0) as u64 + 1;
+        if a >= total {
+            break;
+        }
+        let b = b.min(total);
+        // The source frames under this column, within one play of the sound.
+        let (s, n) = ((a % len) as usize, (b - a).min(len) as usize);
+        let range = if s + n <= len as usize {
+            dec.peaks.range(s, s + n)
+        } else {
+            let (p1, p2) = (dec.peaks.range(s, len as usize), dec.peaks.range(0, s + n - len as usize));
+            match (p1, p2) {
+                (Some((l1, h1)), Some((l2, h2))) => Some((l1.min(l2), h1.max(h2))),
+                (one, other) => one.or(other),
+            }
+        };
+        if let Some((lo, hi)) = range {
+            let (top, bottom) = (cy - hi.clamp(-1.0, 1.0) * h, cy - lo.clamp(-1.0, 1.0) * h);
+            p.line_segment([pos2(x + 0.5, top.min(cy - 0.5)), pos2(x + 0.5, bottom.max(cy + 0.5))], stroke);
+        }
+        x += 1.0;
+    }
+    true
+}
+
 pub fn easing_param(e: Easing) -> serde_json::Value {
     match e {
         Easing::Linear => json!("Linear"),

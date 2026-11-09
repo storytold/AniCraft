@@ -1,0 +1,353 @@
+//! Sound commands (ADR 0020): import sounds into the library, put them on keyframes and set
+//! their sync and repeats, delete them, and mix the movie's soundtrack to a WAV file.
+
+use crate::cmds_timeline::{keyframe_mut, target};
+use crate::params::*;
+use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
+use anicraft_doc::audio::{Voice, mix, wav};
+use anicraft_doc::sound::{self, MAX_REPEAT, frame_start};
+use anicraft_doc::{FrameSound, LayerKind, Sound, SoundId, SoundSync, Timeline};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub fn specs() -> Vec<CommandSpec> {
+    let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
+    vec![
+        c(
+            "file.import_to_library",
+            "Import to Library…",
+            "File/Import",
+            None,
+            "{path (.wav, .ogg or .mp3 sound; .png or .jpg image), name?}",
+            true,
+            import_to_library as crate::RunFn,
+        ),
+        c(
+            "file.export_audio",
+            "Export Audio…",
+            "File/Export",
+            None,
+            "{path (.wav), from?, to? (movie frames), rate? (Hz, default 44100), bits? (16, 24 or 32 = float; default 16), confirm?}",
+            false,
+            export_audio,
+        ),
+        c(
+            "sound.place",
+            "Place Sound",
+            "",
+            None,
+            "{sound, layer?, frame? (a blank keyframe is made there if the frame is empty), sync?: event|start|stop|stream, repeat?, loop?, extend? (lengthen the layer's last span to the sound's length)}",
+            true,
+            place,
+        ),
+        c("sound.set", "Sound Settings", "", None, "{layer?, frame?, sound?: id | null (null takes the sound off), sync?, repeat?, loop?}", true, set),
+        c("sound.remove", "Remove Sound", "", None, "{layer?, frame?}", true, |s, p| set(s, &with_null_sound(p))),
+        c("sound.delete", "Delete Sound", "", None, "{sound} (from the library and every keyframe that uses it)", true, delete),
+        c("sound.rename", "Rename Sound", "", None, "{sound, name}", true, rename),
+    ]
+}
+
+fn with_null_sound(p: &Value) -> Value {
+    let mut q = match p {
+        Value::Object(m) => m.clone(),
+        _ => serde_json::Map::new(),
+    };
+    q.insert("sound".into(), Value::Null);
+    Value::Object(q)
+}
+
+/// Largest sound file read.
+const MAX_SOUND_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Whether `path` names a sound file AniCraft reads.
+pub fn is_sound(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    matches!(ext.as_deref(), Some("wav" | "wave" | "ogg" | "oga" | "mp3"))
+}
+
+fn file_name(path: &Path, fallback: &str) -> String {
+    path.file_name().map_or_else(|| fallback.into(), |n| n.to_string_lossy().chars().take(128).collect())
+}
+
+/// Reads a sound file into the library; its id.
+pub(crate) fn add_sound(s: &mut Session, path: &Path, name: Option<&str>) -> Result<SoundId> {
+    if std::fs::metadata(path)?.len() > MAX_SOUND_BYTES {
+        return Err(EngineError::Format(format!("{} is too large to import", path.display())));
+    }
+    let bytes = std::fs::read(path)?;
+    let id = SoundId(s.doc.alloc_id());
+    let name = name.map_or_else(|| file_name(path, "sound"), |n| n.chars().take(128).collect());
+    let sound = Sound::from_data(id, name, bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    s.doc.sounds.push(Arc::new(sound));
+    Ok(id)
+}
+
+fn sound_json(s: &Sound) -> Value {
+    json!({"sound": s.id.0, "name": s.name, "format": s.format.label(), "rate": s.rate, "channels": s.channels, "seconds": s.seconds()})
+}
+
+/// Import to Library: a sound (or an image) goes into the library without being placed.
+fn import_to_library(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    if is_sound(&path) {
+        let id = add_sound(s, &path, opt_str(p, "name")?)?;
+        let snd = s.doc.sound(id).ok_or_else(|| EngineError::State("the sound vanished".into()))?;
+        return Ok(sound_json(snd));
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    if matches!(ext.as_deref(), Some("png" | "jpg" | "jpeg")) {
+        let bytes = std::fs::read(&path)?;
+        let id = anicraft_doc::BitmapId(s.doc.alloc_id());
+        let bitmap = anicraft_doc::Bitmap::from_image(id, file_name(&path, "image"), bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+        let (w, h) = (bitmap.width, bitmap.height);
+        s.doc.bitmaps.push(Arc::new(bitmap));
+        return Ok(json!({"bitmap": id.0, "width": w, "height": h}));
+    }
+    Err(EngineError::Param("Import to Library reads WAV, Ogg Vorbis and MP3 sounds, and PNG and JPEG images".into()))
+}
+
+/// Import to Stage with a sound: into the library, and onto a new layer named after the file,
+/// at the playhead, its span as long as the sound (so its waveform shows in full).
+pub(crate) fn import_to_stage(s: &mut Session, path: &Path) -> Result<Value> {
+    let id = add_sound(s, path, None)?;
+    let name: String = path.file_stem().map_or_else(|| "Sound".into(), |n| n.to_string_lossy().chars().take(128).collect());
+    crate::cmds_timeline::new_layer(s, &json!({"name": name}))?;
+    let v = place(s, &json!({"sound": id.0, "frame": s.frame, "extend": true}))?;
+    let snd = s.doc.sound(id).ok_or_else(|| EngineError::State("the sound vanished".into()))?;
+    let mut out = sound_json(snd);
+    out["layer"] = v["layer"].clone();
+    out["frames"] = v["frames"].clone();
+    Ok(out)
+}
+
+/// `sync`, `repeat` and `loop` from params over `fs`.
+fn apply_settings(p: &Value, mut fs: FrameSound) -> Result<FrameSound> {
+    if let Some(x) = opt_str(p, "sync")? {
+        fs.sync = SoundSync::from_key(x).ok_or_else(|| EngineError::Param("param 'sync' must be event, start, stop or stream".into()))?;
+    }
+    if let Some(n) = opt_u32(p, "repeat")? {
+        if !(1..=MAX_REPEAT).contains(&n) {
+            return Err(EngineError::Param(format!("param 'repeat' must be between 1 and {MAX_REPEAT}")));
+        }
+        // Choosing a count is choosing Repeat over Loop (one menu in Properties).
+        fs.repeat = n;
+        fs.looping = false;
+    }
+    if let Some(b) = opt_bool(p, "loop")? {
+        fs.looping = b;
+    }
+    Ok(fs)
+}
+
+fn sound_param(s: &Session, p: &Value) -> Result<SoundId> {
+    let id = SoundId(opt_u64(p, "sound")?.ok_or_else(|| EngineError::Param("param 'sound' is required (a sound id from the library)".into()))?);
+    s.doc.sound(id).map(|_| id).ok_or_else(|| EngineError::State(format!("no sound with id {} in the library", id.0)))
+}
+
+/// Place Sound: the sound goes on the keyframe covering the frame (a blank keyframe is made
+/// on an empty frame), Animate-style. With `extend`, the layer's last span grows to the sound's
+/// length so its waveform shows in full.
+fn place(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = sound_param(s, p)?;
+    let fs = apply_settings(p, FrameSound::new(id))?;
+    let (lid, frame) = target(s, p)?;
+    let extend = opt_bool(p, "extend")?.unwrap_or(false);
+    let want = s.doc.sound(id).map_or(1, |x| x.movie_frames(s.doc.stage.fps));
+    let layer = s.layer_mut(lid)?;
+    if layer.kind == LayerKind::Folder {
+        return Err(EngineError::State(format!("'{}' is a folder; sounds go on a layer's keyframes", layer.name)));
+    }
+    if layer.keyframe_index_at(frame).is_none() {
+        crate::cmds_timeline::insert_keyframe_at(layer, frame, false)?;
+    }
+    let i = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State("no keyframe there".into()))?;
+    let last = i + 1 == layer.keyframes.len();
+    let layer_id = layer.id;
+    let k = layer.keyframe_mut(i).ok_or_else(|| EngineError::State("no keyframe there".into()))?;
+    if extend && last && k.duration < want {
+        k.duration = want.min(MAX_FRAME.saturating_sub(k.start).saturating_add(1)).max(1);
+    }
+    k.sound = Some(fs);
+    Ok(json!({"layer": layer_id.0, "keyframe": k.start, "duration": k.duration, "sound": id.0, "sync": fs.sync.key(), "frames": want}))
+}
+
+/// Sound Settings: changes the keyframe's sound (keeping its settings), its sync, repeats or
+/// loop; `sound: null` takes it off.
+fn set(s: &mut Session, p: &Value) -> Result<Value> {
+    let new_id = match p.get("sound") {
+        Some(Value::Null) => None,
+        None => Some(None),
+        Some(_) => Some(Some(sound_param(s, p)?)),
+    };
+    let k = keyframe_mut(s, p)?;
+    let Some(change) = new_id else {
+        let had = k.sound.take().is_some();
+        return Ok(json!({"keyframe": k.start, "removed": had}));
+    };
+    let base = match (change, k.sound) {
+        (Some(id), Some(cur)) => FrameSound { sound: id, ..cur },
+        (Some(id), None) => FrameSound::new(id),
+        (None, Some(cur)) => cur,
+        (None, None) => return Err(EngineError::State(format!("the keyframe at frame {} has no sound; pass \"sound\"", k.start + 1))),
+    };
+    let fs = apply_settings(p, base)?;
+    k.sound = Some(fs);
+    Ok(json!({"keyframe": k.start, "sound": fs.sound.0, "sync": fs.sync.key(), "repeat": fs.repeat, "loop": fs.looping}))
+}
+
+/// Keyframes in `tl` that use sound `id`.
+pub fn uses_in(tl: &Timeline, id: SoundId) -> usize {
+    tl.layers.iter().map(|l| l.keyframes.iter().filter(|k| k.sound.is_some_and(|f| f.sound == id)).count()).sum()
+}
+
+/// Takes sound `id` off every keyframe of `tl`, touching (un-sharing) only those keyframes.
+fn strip(tl: &mut Timeline, id: SoundId) {
+    for l in tl.layers.iter_mut().filter(|l| l.keyframes.iter().any(|k| k.sound.is_some_and(|f| f.sound == id))) {
+        let l = Arc::make_mut(l);
+        for k in l.keyframes.iter_mut().filter(|k| k.sound.is_some_and(|f| f.sound == id)) {
+            Arc::make_mut(k).sound = None;
+        }
+    }
+}
+
+fn delete(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = sound_param(s, p)?;
+    let mut used = 0;
+    for scene in &mut s.doc.scenes {
+        let n = uses_in(&scene.timeline, id);
+        if n > 0 {
+            used += n;
+            strip(&mut Arc::make_mut(scene).timeline, id);
+        }
+    }
+    for sym in &mut s.doc.library {
+        if uses_in(&sym.timeline, id) > 0 {
+            strip(&mut Arc::make_mut(sym).timeline, id);
+        }
+    }
+    s.doc.sounds.retain(|x| x.id != id);
+    Ok(json!({"deleted": id.0, "keyframes": used}))
+}
+
+fn rename(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = sound_param(s, p)?;
+    let name: String = str_req(p, "name")?.trim().chars().take(128).collect();
+    if name.is_empty() {
+        return Err(EngineError::Param("a sound needs a name".into()));
+    }
+    if let Some(snd) = s.doc.sounds.iter_mut().find(|x| x.id == id) {
+        Arc::make_mut(snd).name = name.clone();
+    }
+    Ok(json!({"sound": id.0, "name": name}))
+}
+
+/// Mix a stretch of output frames to a WAV file in blocks (memory stays bounded however long
+/// the movie is). Written beside the target, then renamed. Returns the bytes written.
+pub(crate) fn write_mix(path: &Path, voices: &[Voice], rate: u32, from: u64, to: u64, bits: wav::Bits) -> Result<u64> {
+    use std::io::Write;
+    let frames = to.saturating_sub(from);
+    let header = wav::header(rate, 2, bits, frames).ok_or_else(|| EngineError::Param("that much audio does not fit in a WAV file (4 GB); lower 'rate' or the frame range".into()))?;
+    let tmp = path.with_extension("wav.tmp");
+    let result = (|| -> Result<u64> {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        f.write_all(&header)?;
+        const BLOCK: u64 = 65_536;
+        let mut buf = vec![0f32; BLOCK as usize * 2];
+        let mut bytes = Vec::new();
+        let mut at = from;
+        while at < to {
+            let n = (to - at).min(BLOCK) as usize;
+            let out = buf.get_mut(..n * 2).unwrap_or_default();
+            mix(voices, rate, anicraft_doc::audio::MixOptions::default(), at, out);
+            bytes.clear();
+            wav::append(&mut bytes, out, bits);
+            f.write_all(&bytes)?;
+            at += n as u64;
+        }
+        f.flush()?;
+        Ok(header.len() as u64 + frames * 2 * u64::from(match bits {
+            wav::Bits::Int16 => 2u8,
+            wav::Bits::Int24 => 3,
+            wav::Bits::Float32 => 4,
+        }))
+    })();
+    match result {
+        Ok(n) => {
+            std::fs::rename(&tmp, path)?;
+            Ok(n)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Output frames `from..to` of movie frames `first..=last` at `rate`.
+pub(crate) fn movie_span(s: &Session, first: u32, last: u32, rate: u32) -> (u64, u64) {
+    let fps = s.doc.stage.fps;
+    (frame_start(u64::from(first), fps, rate), frame_start(u64::from(last) + 1, fps, rate))
+}
+
+/// The voices of movie frames `first..=last` as heard playing from `first` (event sounds that
+/// began earlier are left out; stream sounds join mid-way), and their output frame span.
+pub(crate) fn soundtrack(s: &Session, first: u32, last: u32, rate: u32) -> (Vec<Voice>, u64, u64) {
+    let mut voices = sound::voices(&s.doc, rate);
+    let (a, b) = movie_span(s, first, last, rate);
+    voices.retain(|v| (v.kind == anicraft_doc::audio::VoiceKind::Stream || v.at >= a) && v.at < b && v.end > a);
+    (voices, a, b)
+}
+
+/// A soundtrack WAV in the temp folder (for ffmpeg), removed when dropped.
+pub(crate) struct TempTrack(pub PathBuf);
+
+impl Drop for TempTrack {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The soundtrack of movie frames `first..=last` as a 48 kHz 16-bit WAV in the temp folder.
+pub(crate) fn temp_track(s: &Session, first: u32, last: u32) -> Result<TempTrack> {
+    const RATE: u32 = 48_000;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let track = TempTrack(std::env::temp_dir().join(format!("anicraft-track-{}-{nanos}.wav", std::process::id())));
+    let (voices, a, b) = soundtrack(s, first, last, RATE);
+    write_mix(&track.0, &voices, RATE, a, b, wav::Bits::Int16)?;
+    Ok(track)
+}
+
+/// Export Audio: the movie's soundtrack, as heard playing it from the first frame of the range
+/// (event sounds that started earlier are not included), as a stereo WAV.
+fn export_audio(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    if !matches!(ext.as_deref(), Some("wav" | "wave")) {
+        return Err(EngineError::Param("audio goes to a .wav file".into()));
+    }
+    let rate = opt_u32(p, "rate")?.unwrap_or(44_100);
+    if !(8_000..=192_000).contains(&rate) {
+        return Err(EngineError::Param("param 'rate' must be between 8000 and 192000".into()));
+    }
+    let bits = match opt_u32(p, "bits")?.unwrap_or(16) {
+        16 => wav::Bits::Int16,
+        24 => wav::Bits::Int24,
+        32 => wav::Bits::Float32,
+        _ => return Err(EngineError::Param("param 'bits' must be 16, 24 or 32 (float)".into())),
+    };
+    let last = s.doc.frame_count().saturating_sub(1);
+    let first = opt_u32(p, "from")?.unwrap_or(0).min(last);
+    let to = opt_u32(p, "to")?.unwrap_or(last).min(last);
+    if to < first {
+        return Err(EngineError::Param("'to' must not be before 'from'".into()));
+    }
+    let (voices, a, b) = soundtrack(s, first, to, rate);
+    let bytes = write_mix(&path, &voices, rate, a, b, bits)?;
+    Ok(json!({"written": path.display().to_string(), "bytes": bytes, "rate": rate, "seconds": (b - a) as f64 / f64::from(rate), "frames": to - first + 1, "sounds": voices.len()}))
+}
+
+#[cfg(test)]
+pub(crate) fn test_wav(rate: u32, samples: &[f32]) -> Vec<u8> {
+    wav::encode(rate, 1, samples, wav::Bits::Int16)
+}

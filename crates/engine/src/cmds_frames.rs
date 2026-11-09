@@ -42,6 +42,8 @@ pub struct FrameClipboard {
     pub layers: Vec<FrameSlice>,
     pub count: u32,
     pub symbols: Vec<Arc<Symbol>>,
+    /// Sounds the copied keyframes play, so they paste into other documents too.
+    pub sounds: Vec<Arc<anicraft_doc::Sound>>,
 }
 
 impl FrameClipboard {
@@ -88,14 +90,20 @@ fn copy_frames(s: &mut Session, p: &Value) -> Result<Value> {
         let l = s.doc.timeline(s.scene).layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
         layers.push(FrameSlice { name: l.name.clone(), keys: slice(l, frame, count)? });
     }
-    let clip = FrameClipboard { layers, count, symbols: Vec::new() };
+    let clip = FrameClipboard { layers, count, symbols: Vec::new(), sounds: Vec::new() };
     if clip.is_empty() {
         return Err(EngineError::State("no frames there to copy".into()));
     }
     let elements: Vec<Element> = clip.layers.iter().flat_map(|l| l.keys.iter().flat_map(|k| k.elements.iter().map(|e| (**e).clone()))).collect();
     let symbols = collect_symbols(s, &elements);
     let n = clip.layers.len();
-    s.frame_clipboard = FrameClipboard { symbols, ..clip };
+    let mut sounds: Vec<Arc<anicraft_doc::Sound>> = Vec::new();
+    for id in clip.layers.iter().flat_map(|l| l.keys.iter().filter_map(|k| k.sound.map(|f| f.sound))) {
+        if let Some(x) = s.doc.sounds.iter().find(|x| x.id == id) && !sounds.iter().any(|y| y.id == id) {
+            sounds.push(x.clone());
+        }
+    }
+    s.frame_clipboard = FrameClipboard { symbols, sounds, ..clip };
     Ok(json!({"copied": count, "layers": n}))
 }
 
@@ -117,6 +125,12 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut row = s.doc.timeline(s.scene).layers.iter().position(|l| l.id == top).ok_or_else(|| EngineError::State(format!("no layer with id {}", top.0)))?;
     import_symbols(s, &clip.symbols);
+    for x in &clip.sounds {
+        if s.doc.sound(x.id).is_none() {
+            s.doc.next_id = s.doc.next_id.max(x.id.0.saturating_add(1));
+            s.doc.sounds.push(x.clone());
+        }
+    }
     let mut remap: HashMap<ElementId, ElementId> = HashMap::new();
     let mut pasted = Vec::new();
     for sl in &clip.layers {
@@ -141,6 +155,9 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
                 let old = e.id;
                 let new = *remap.entry(old).or_insert_with(|| ElementId(s.doc.alloc_id()));
                 Arc::make_mut(e).id = new;
+            }
+            if let Some(m) = k.motion.as_mut() {
+                m.target = *remap.entry(m.target).or_insert_with(|| ElementId(s.doc.alloc_id()));
             }
             keys.push(Arc::new(k));
         }

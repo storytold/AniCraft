@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **Variable-width strokes and the Width tool** (**U**, ADR 0014). A stroke's width can now
+* **Variable-width strokes and the Width tool** (**U**, ADR 0018). A stroke's width can now
   vary along it: pick a profile in Properties › Width (Uniform, Taper both ends, Taper start,
   Taper end, Bulge, Pinch, each with a picture), or set one in the drawing tools' options so
   new lines start tapered. With the Width tool, hover a stroke to see its width points; drag a
@@ -15,6 +15,70 @@
   param on `element.set_stroke`, the drawing commands and `paint.ink`.
 * **Fixed**: perfectly horizontal or vertical lines inside a moved shape could not be picked
   (their flat bounds were not transformed).
+* **Sound** (ADR 0020). Import WAV, Ogg Vorbis or MP3 sounds: **File › Import › Import to
+  Stage** puts one on a new layer at the playhead, its span as long as the sound; **Import to
+  Library** just adds it. A sound belongs to a keyframe, as in Animate: pick it under
+  **Properties › Sound**, with **Sync** (Event, Start, Stop, Stream) and **Repeat ×N** or
+  **Loop**. The timeline draws each sound's **waveform** over its frames. Playback plays the
+  sounds in sync (the playhead follows the sound), stream sounds pick up wherever the playhead
+  jumps, and dragging the playhead plays short snippets of them. The Library lists sounds with
+  Preview, Place on timeline and Delete. **File › Export › Export Audio** writes the
+  soundtrack as a WAV, and **Export Video** now includes it (Opus in WebM, AAC in MP4, by your
+  ffmpeg). Sounds are saved inside the `.anicraft` file as imported. Headless:
+  `file.import_to_library`, `sound.place`, `sound.set`, `sound.remove`, `sound.rename`,
+  `sound.delete`, `file.export_audio`. Linux builds need the ALSA development package (or
+  `--no-default-features` for silent playback).
+* **Plug-ins** (Commands › Plug-ins; ADR 0017, `docs/plugins.md`). Plug-ins are WebAssembly
+  files that add commands: generators such as the sample **Star Field**, and selection effects
+  such as the sample **Jitter Selection**. A plug-in with settings opens a dialog with a live
+  preview on the stage; OK keeps the result as one undo step named after the plug-in. Install
+  with Commands › Install Plug-in…, see and remove them in Commands › Manage Plug-ins…; they
+  load from the `plugins` folder in AniCraft's settings folder (or `ANICRAFT_PLUGINS`), and the
+  command palette finds them too. Plug-ins run sandboxed: they change the open document through
+  AniCraft's own commands, never files, the clipboard or the undo history, and a runaway or
+  broken plug-in stops with a message and leaves the document as it was. Headless:
+  `plugin.install/list/run/remove/reload`, `anicraft-cli --plugins <folder>`. The samples and a
+  small Rust SDK are in `examples/plugins`.
+* **Motion tweens and the Motion Editor** (ADR 0016). Insert › Create Motion Tween (also in
+  the timeline header, the right-click menu and Properties) makes a span animate its object
+  property by property: X, Y, scale, rotation, skew, alpha and tint each have their own curve
+  with property keyframes anywhere in the span. Move, scale, rotate or fade the object at a
+  later frame and it keys those properties there (no timeline keyframes); F6 inside the span
+  keys every property. The Motion Editor (a tab beside the Timeline, Window › Motion Editor, or
+  double-click a motion span) lists the properties with their values at the playhead (drag one
+  to key it) and draws the selected property's curve: drag keys up and down, drag a segment's
+  two Bézier handles to shape its ease (overshoot allowed), pick an ease preset, click to move
+  the playhead, double-click to add a key. Each drag is one undo step. Motion spans are sky blue
+  on the timeline with a diamond at each property keyframe. Several objects become one graphic
+  symbol first, and a one-frame span grows to a second, as in Animate. Every export sees the
+  motion. Headless: `timeline.create_motion_tween`, `motion.set_key`, `motion.remove_key`,
+  `motion.set_ease`, `motion.info`. Not yet: motion paths on the stage, moving keys in time,
+  importing motion tweens from Animate files.
+* **Crash recovery.** AniCraft keeps a recovery copy of unsaved work in the background (every
+  minute, or after 25 changes, whichever comes first; Preferences › Files › Autosave changes
+  both or turns it off). If AniCraft closes unexpectedly, the next start shows what was left
+  behind: **Restore** opens it as unsaved work, and Save puts it back where it was (or asks for
+  a name if that file was saved after the copy); **Discard** deletes it after a second click;
+  **Later** keeps it for File › Recover Autosaved Documents…. Copies live in the settings
+  folder, are written atomically, never replace your own files, and go away when you save or
+  close normally. Drawing never waits for them: the 65 MB stress document is copied in 0.18 s
+  on a background thread. Headless: `file.recovery_list`, `file.recover`,
+  `file.discard_recovery`, `file.autosave`.
+* **App icon**: an engraved rabbit on AniCraft yellow, on the same rounded tile as the other
+  Crafting Apps. It shows on the window, the macOS Dock (on Apple's icon grid), the Windows
+  taskbar and `anicraft.exe`, and in Help › About. Files and how to regenerate them are in
+  `assets/app-icon/`.
+* **README**: screenshots of the app and the sample animation, and a quick start.
+* **Text in Animate documents.** Opening a `.fla` or XFL now brings its text across as text
+  you can edit: titles, captions and paragraphs keep their font, size, colour, bold and
+  italic, alignment, letter and line spacing, position, and fixed width (wrapping) or
+  auto-size. A field whose lines use different styles (a big title over smaller lines)
+  becomes one text block per style, stacked as in Animate; a line that mixes styles takes
+  the style of most of its characters, and the report counts it. Fonts that aren't on this
+  computer fall back to the default, and the status bar names them ("Fonts not on this
+  computer, drawn in Arial: Futura."). Dynamic and input text come across as static text and
+  are reported. The import report now also shows in the status bar when a document is
+  opened from the command line (ADR 0014).
 
 * **ActionScript on the roadmap** (ADR 0013, low priority, M6): first keep the scripts in
   imported Animate files, with an Actions panel, then play the common timeline controls (stop,

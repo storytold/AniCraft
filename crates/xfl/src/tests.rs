@@ -90,7 +90,7 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(doc.timeline(0).frame_count(), 15);
     assert_eq!(doc.frame_count(), 16, "the movie: scene 1, then the one-frame scene 2");
     // What couldn't come across is reported, not guessed.
-    assert_eq!(report.skipped.get("text fields"), Some(&1));
+    assert!(report.skipped.keys().all(|k| !k.contains("text")), "an empty text field makes nothing and reports nothing");
     assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
     // Frame scripts, on the scene's frames and inside symbols, are counted (ADR 0013).

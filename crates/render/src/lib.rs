@@ -598,7 +598,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
         }
         let shader = |fx: &ColorEffect| Shader::new(&Paint::Solid(st.color), &m, fx, None);
         if let Some(profile) = &st.profile {
-            // Variable width (ADR 0014). Thin strokes fade by their widest part instead.
+            // Variable width (ADR 0018). Thin strokes fade by their widest part instead.
             let widest = pw * profile.max_factor();
             if !(widest.is_finite() && widest > 0.0) {
                 return None;

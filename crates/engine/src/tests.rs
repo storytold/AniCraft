@@ -547,10 +547,23 @@ fn panic_hunt_every_command() {
         json!({"id": 3, "profile": [[0, 1e30, -5], ["x"], [0.5, 16, 16]], "index": u64::MAX, "t": -0.5, "left": 1e9, "width": f64::MAX}),
         json!({"id": 3, "profile": "taper_both", "index": 0, "t": 1, "x": 1e30, "y": -1e30, "left": 0, "right": 16}),
         json!({"profile": (0..500).map(|i| json!([f64::from(i) / 500.0, 2, 2])).collect::<Vec<_>>()}),
+        json!({"sound": SOUND, "sync": "stream", "repeat": 9999, "loop": true, "extend": true, "frame": 99_999}),
+        json!({"sound": SOUND, "sync": "nope", "repeat": 0, "loop": "x", "name": ""}),
+        json!({"sound": SOUND, "frame": 3, "extend": true, "name": "renamed"}),
+        json!({"sound": u64::MAX, "repeat": 1e9}),
+        json!({"sound": "a", "sync": 3}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
-    for start in [Session::default(), Session::new(sample::demo())] {
+    // A document with a sound in the library and on a keyframe.
+    const SOUND: u64 = 900_000;
+    let mut with_sound = sample::demo();
+    let wav = crate::cmds_sound::test_wav(8000, &[0.25; 4000]);
+    with_sound.sounds.push(Arc::new(anicraft_doc::Sound::from_data(anicraft_doc::SoundId(SOUND), "t.wav", wav).unwrap()));
+    if let Some(k) = Arc::make_mut(&mut with_sound.timeline_mut(0).layers[0]).keyframe_mut(0) {
+        k.sound = Some(anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)));
+    }
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound)] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -578,6 +591,129 @@ fn file_commands_reject_bad_params() {
     assert!(s.execute("file.open", &json!({"path": "/definitely/not/here.anicraft"})).is_err());
     assert!(s.execute("file.new", &json!({"width": 0})).is_err());
     assert!(s.execute("no.such.command", &json!({})).is_err());
+}
+
+// ----- crash recovery (ADR 0015) -------------------------------------------------------------
+
+/// A crash simulated end to end: a session autosaves unsaved work and dies without a clean
+/// exit; the next session finds the copy, restores it as unsaved work with its original path,
+/// and the copy can then be discarded (only with consent).
+#[test]
+fn crash_recovery_round_trip() {
+    use crate::recovery::{Autosaver, Outcome, SessionLock};
+    let dir = std::env::temp_dir().join(format!("anicraft-crash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = dir.join("walk.anicraft");
+    let d = dir.display().to_string();
+
+    // Session 1: saves, keeps working, autosaves in the background, then "crashes".
+    let mut s1 = Session::new(sample::demo());
+    run(&mut s1, "file.save", json!({"path": original.display().to_string()}));
+    run(&mut s1, "draw.rect", json!({"x": 10, "y": 10, "w": 50, "h": 40}));
+    assert!(s1.is_dirty());
+    let mut saver = Autosaver::start(SessionLock::acquire(&dir).unwrap()).unwrap();
+    saver.write(s1.doc.clone(), s1.path.as_deref());
+    let mut done = false;
+    for _ in 0..500 {
+        if saver.poll().iter().any(|o| matches!(o, Outcome::Written { .. })) {
+            done = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(done, "autosave finished");
+    // While it runs, nobody else is offered its copy.
+    let mut s2 = Session::default();
+    assert_eq!(run(&mut s2, "file.recovery_list", json!({"dir": d}))["documents"].as_array().unwrap().len(), 0);
+    drop(saver); // the crash: no clean finish, the OS drops the lock
+
+    // Session 2 (the next start) finds it.
+    let list = run(&mut s2, "file.recovery_list", json!({"dir": d}));
+    let docs = list["documents"].as_array().unwrap();
+    assert_eq!(docs.len(), 1, "{list}");
+    assert_eq!(docs[0]["name"], "walk.anicraft");
+    assert_eq!(docs[0]["original_newer"], false);
+    let id = docs[0]["session"].as_str().unwrap().to_string();
+
+    // Restoring over unsaved work asks first (irreversible), like Open.
+    run(&mut s2, "draw.rect", json!({"x": 0, "y": 0, "w": 5, "h": 5}));
+    assert!(matches!(s2.execute("file.recover", &json!({"dir": d, "session": id})), Err(EngineError::NeedsConfirmation(_))));
+    let v = run(&mut s2, "file.recover", json!({"dir": d, "session": id, "confirm": true}));
+    assert_eq!(v["recovered"], json!(id));
+    assert_eq!(s2.doc, s1.doc, "the work is back exactly");
+    assert!(s2.is_dirty(), "restored work is unsaved");
+    assert_eq!(s2.path.as_deref(), Some(original.as_path()), "Save goes back to the original");
+    assert_eq!(s2.history_len(), 0);
+
+    // Discarding needs explicit consent, whoever asks.
+    assert!(matches!(s2.execute("file.discard_recovery", &json!({"dir": d, "session": id})), Err(EngineError::NeedsConfirmation(_))));
+    assert!(s2.confirmation("file.discard_recovery", &json!({"dir": d, "session": id})).is_some_and(|c| c.irreversible));
+    run(&mut s2, "file.discard_recovery", json!({"dir": d, "session": id, "confirm": true}));
+    assert_eq!(run(&mut s2, "file.recovery_list", json!({"dir": d}))["documents"].as_array().unwrap().len(), 0);
+    assert!(original.exists(), "the user's own file is untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The original was saved after the autosave (a save just before the crash): restoring must
+/// not point Save at it, or older work would replace newer work.
+#[test]
+fn recovery_never_replaces_a_newer_original() {
+    let dir = std::env::temp_dir().join(format!("anicraft-crash-newer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = dir.join("a.anicraft");
+    let d = dir.display().to_string();
+    let mut s = Session::new(sample::demo());
+    s.path = Some(original.clone());
+    let mut meta = crate::recovery::RecoveryMeta::describe("old", &s.doc, Some(&original));
+    meta.saved_at = 1; // long ago
+    crate::recovery::write(&dir, "old", &s.doc, &meta).unwrap();
+    std::fs::write(&original, b"newer").unwrap();
+    let mut s2 = Session::default();
+    let v = run(&mut s2, "file.recover", json!({"dir": d, "session": "old"}));
+    assert_eq!(v["original_newer"], true);
+    assert!(s2.path.is_none(), "Save asks for a name instead");
+    assert!(s2.is_dirty());
+    assert_eq!(std::fs::read(&original).unwrap(), b"newer");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recovery_commands_survive_hostile_params() {
+    let dir = std::env::temp_dir().join(format!("anicraft-crash-hostile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = dir.display().to_string();
+    let mut s = Session::new(sample::demo());
+    let hostile = [
+        Value::Null,
+        json!({}),
+        json!({"dir": 5}),
+        json!({"dir": ""}),
+        json!({"dir": "   "}),
+        json!({"dir": d, "session": "../../etc/passwd"}),
+        json!({"dir": d, "session": "a\\..\\b"}),
+        json!({"dir": d, "session": ""}),
+        json!({"dir": d, "session": "x".repeat(10_000)}),
+        json!({"dir": d, "session": 7, "confirm": "yes"}),
+        json!({"dir": d, "session": "missing", "confirm": true}),
+        json!({"dir": "/no/such/folder/at/all", "session": "abc", "confirm": true}),
+    ];
+    for id in ["file.recovery_list", "file.recover", "file.discard_recovery", "file.autosave"] {
+        for p in &hostile {
+            let _ = s.execute(id, p);
+        }
+    }
+    // Nothing escaped the folder, and the document is intact.
+    assert!(!dir.join("..").join("etc").exists() || std::path::Path::new("/etc").exists());
+    // Headless autosave writes a copy that lists (no lock: headless sessions are not "live").
+    let v = run(&mut s, "file.autosave", json!({"dir": d}));
+    assert!(v["bytes"].as_u64().unwrap() > 0);
+    let list = run(&mut s, "file.recovery_list", json!({"dir": d}));
+    let ids: Vec<&str> = list["documents"].as_array().unwrap().iter().filter_map(|e| e["session"].as_str()).collect();
+    assert!(ids.contains(&format!("headless-{}", std::process::id()).as_str()), "{ids:?}");
+    assert!(ids.iter().all(|i| crate::recovery::valid_id(i)));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 
@@ -962,7 +1098,8 @@ fn opening_an_xfl_folder_imports_it_untitled() {
         dir.join("DOMDocument.xml"),
         r##"<DOMDocument width="320" height="240" frameRate="12"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Art"><frames><DOMFrame index="0" duration="6"><elements>
         <DOMShape><fills><FillStyle index="1"><SolidColor color="#FF8800"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="!0 0|2000 0|2000 2000|0 2000|0 0"/></edges></DOMShape>
-        <DOMStaticText/></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"##,
+        <DOMDynamicText name="title" width="200"><matrix><Matrix tx="20" ty="30"/></matrix><textRuns><DOMTextRun><characters>Hello</characters><textAttrs><DOMTextAttrs face="NoSuchFamilyAtAll-Bold" size="20" fillColor="#0000FF"/></textAttrs></DOMTextRun></textRuns></DOMDynamicText>
+        </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"##,
     )
     .unwrap();
     let mut s = Session::default();
@@ -970,12 +1107,30 @@ fn opening_an_xfl_folder_imports_it_untitled() {
     assert_eq!((s.doc.stage.width, s.doc.stage.fps), (320, 12.0));
     assert_eq!(s.doc.timeline(s.scene).layers[0].name, "Art");
     assert_eq!(s.doc.frame_count(), 6);
-    assert!(v["report"].as_str().unwrap().contains("1 text fields"), "{v}");
+    assert!(v["report"].as_str().unwrap().contains("1 dynamic and input text fields (imported as static text)"), "{v}");
     assert!(s.path.is_none(), "imported documents are untitled: Save never writes over the original");
     assert!(s.execute("file.save", &json!({})).is_err());
     // It renders.
     let dl = s.display_list();
     assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0xff8800))));
+    // Text comes across as an editable text block when this computer has fonts (ADR 0015),
+    // with the missing family named.
+    if !anicraft_text::Fonts::get().families().is_empty() {
+        assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"), "{v}");
+        assert_eq!(v["missing_fonts"], json!(["No Such Family At All"]));
+        let text = s.doc.timeline(s.scene).layers[0].keyframes[0].elements.iter().find(|e| matches!(e.kind, ElementKind::Text(_))).cloned().expect("a text element");
+        assert_eq!(text.name, "title");
+        assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0x0000ff))), "the text renders");
+        s.selection = vec![text.id];
+        run(&mut s, "text.edit", json!({"text": "Hello again"}));
+        // Saved and opened again, it is the same text.
+        let file = dir.join("imported.anicraft");
+        run(&mut s, "file.save", json!({"path": file.display().to_string()}));
+        let mut back = Session::default();
+        run(&mut back, "file.open", json!({"path": file.display().to_string()}));
+        let ElementKind::Text(t) = &back.doc.timeline(0).layers[0].keyframes[0].elements.iter().find(|e| e.id == text.id).unwrap().kind else { panic!("text") };
+        assert_eq!((t.text.as_str(), t.size, t.bold), ("Hello again", 20.0, true));
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 

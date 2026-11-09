@@ -1,4 +1,4 @@
-//! Width tool (U): varies a stroke's width along its length (ADR 0014).
+//! Width tool (U): varies a stroke's width along its length (ADR 0018).
 //!
 //! Hover a stroke on the active layer to see its width points: each is a cross-section across
 //! the stroke with a handle on either side and a dot on the line. Drag a handle to widen or

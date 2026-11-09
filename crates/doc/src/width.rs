@@ -1,4 +1,4 @@
-//! Variable-width strokes (ADR 0014): a stroke's width profile.
+//! Variable-width strokes (ADR 0018): a stroke's width profile.
 //!
 //! A profile is a list of width points along each subpath of the stroke: a position `t`
 //! (0 at the subpath's start, 1 at its end, by arc length in the shape's own space) and the

@@ -76,7 +76,18 @@ fn overwrite(path: &Path, what: &str) -> Confirmation {
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
     match id {
-        "file.new" | "file.new_sample" | "file.open" if s.is_dirty() => Some(Confirmation {
+        "file.discard_recovery" => {
+            // Always: the autosaved work is the last copy there is.
+            let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
+            let e = crate::recovery::find(dir, p.get("session").and_then(Value::as_str)?).ok()?;
+            Some(Confirmation {
+                title: "Discard autosaved document?".into(),
+                message: format!("The autosaved copy of “{}” will be deleted, with the work it holds.", e.meta.name),
+                action: "Discard".into(),
+                irreversible: true,
+            })
+        }
+        "file.new" | "file.new_sample" | "file.open" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
             action: "Discard Changes".into(),
@@ -87,7 +98,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && path.exists()).then(|| overwrite(path, "Saving"))
         }
-        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" => {
+        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             path.exists().then(|| overwrite(path, "Exporting"))
         }
@@ -109,6 +120,18 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 message: format!("{} already contains exported frames. Matching files will be replaced; this cannot be undone.", dir.display()),
                 action: "Replace".into(),
                 irreversible: true,
+            })
+        }
+        "sound.delete" => {
+            // A sound in use comes off every keyframe that plays it.
+            let id = anicraft_doc::SoundId(p.get("sound").and_then(Value::as_u64)?);
+            let snd = s.doc.sound(id)?;
+            let used: usize = s.doc.timelines().map(|tl| crate::cmds_sound::uses_in(tl, id)).sum();
+            (used > 0).then(|| Confirmation {
+                title: "Delete sound?".into(),
+                message: format!("“{}” plays on {}. It comes off them and out of the library. You can undo this.", snd.name, plural(used, "keyframe")),
+                action: "Delete Sound".into(),
+                irreversible: false,
             })
         }
         "layer.delete" => {
@@ -178,6 +201,33 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 },
                 action: if n == 1 { "Remove Frame".into() } else { "Remove Frames".into() },
                 irreversible: false,
+            })
+        }
+        "plugin.install" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            let (m, dest) = s.plugins.install_overwrites(path)?;
+            let old = s.plugins.get(&m.id).map(|o| o.manifest().version.clone()).filter(|v| !v.is_empty());
+            Some(Confirmation {
+                title: "Replace plug-in?".into(),
+                message: format!(
+                    "“{}”{} is already installed. Installing {} replaces its file in the plug-ins folder ({}); this cannot be undone.",
+                    m.name,
+                    old.map_or_else(String::new, |v| format!(" {v}")),
+                    path.display(),
+                    dest.display()
+                ),
+                action: "Replace Plug-in".into(),
+                irreversible: true,
+            })
+        }
+        "plugin.remove" => {
+            let plugin = s.plugins.get(p.get("id").and_then(Value::as_str)?)?;
+            let file = plugin.source().filter(|_| s.plugins.owns_file(&plugin))?;
+            Some(Confirmation {
+                title: "Remove plug-in?".into(),
+                message: format!("“{}” is uninstalled and its file is deleted from the plug-ins folder ({}). This cannot be undone.", plugin.manifest().name, file.display()),
+                action: "Remove Plug-in".into(),
+                irreversible: true,
             })
         }
         _ => None,

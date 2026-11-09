@@ -5,7 +5,8 @@ use crate::platform::{self, Os};
 use crate::theme::{Type, text};
 use anicraft_engine::{CommandSpec, commands};
 
-const TOP_MENUS: [&str; 8] = ["File", "Edit", "View", "Insert", "Modify", "Control", "Window", "Help"];
+// Commands sits where Animate has it: after Modify, before Control.
+const TOP_MENUS: [&str; 9] = ["File", "Edit", "View", "Insert", "Modify", "Commands", "Control", "Window", "Help"];
 
 pub fn bar(app: &mut App, ui: &mut egui::Ui) {
     let cmds = commands();
@@ -102,6 +103,11 @@ fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>
 }
 
 fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
+    if top == "Commands" {
+        // Installed plug-ins first (they change at run time), then the registry's items.
+        crate::plugins_ui::menu(app, ui, cmds, item);
+        return;
+    }
     // Direct items first, then one submenu per "Top/Sub" path, in registry order.
     for spec in cmds.iter().filter(|c| c.menu == top) {
         item(app, ui, spec);
@@ -181,6 +187,14 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             }
         }
         "Window" => {
+            use crate::app::BottomTab;
+            if ui_item(ui, "Timeline", "", Some(app.bottom == BottomTab::Timeline)) {
+                app.bottom = BottomTab::Timeline;
+            }
+            if ui_item(ui, "Motion Editor", "", Some(app.bottom == BottomTab::MotionEditor)) {
+                app.bottom = BottomTab::MotionEditor;
+            }
+            ui.separator();
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
                 app.onion = !app.onion;
             }

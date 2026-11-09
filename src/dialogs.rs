@@ -162,6 +162,8 @@ enum Entry {
     Command(CommandSpec),
     Tool(Tool),
     View(&'static str, &'static str, fn(&mut App)),
+    /// An installed plug-in: `(id, menu label)`.
+    Plugin(String, String),
 }
 
 impl Entry {
@@ -176,6 +178,7 @@ impl Entry {
             }
             Entry::Tool(t) => format!("Tool › {}", t.label()),
             Entry::View(name, _, _) => format!("View › {name}"),
+            Entry::Plugin(_, label) => format!("Commands › Plug-ins › {label}"),
         }
     }
     fn shortcut(&self, km: &crate::keymap::Keymap) -> String {
@@ -183,13 +186,14 @@ impl Entry {
             Entry::Command(c) => km.primary(c.id).unwrap_or("").to_string(),
             Entry::Tool(t) => km.primary(crate::keymap::tool_id(*t)).unwrap_or("").to_string(),
             Entry::View(_, sc, _) => (*sc).to_string(),
+            Entry::Plugin(..) => String::new(),
         }
     }
 }
 
 /// Commands the palette can run without extra input (everything optional, or prompted).
 fn runnable(c: &CommandSpec) -> bool {
-    if matches!(c.id, "file.open" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename") {
+    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
         return true;
     }
     let inner = c.params.trim().trim_start_matches('{').trim_end_matches('}');
@@ -229,7 +233,8 @@ fn fuzzy(query: &str, text: &str) -> Option<i32> {
 fn palette(app: &mut App, ctx: &egui::Context) {
     let km = &app.keymap;
     let Some(p) = &mut app.palette else { return };
-    let all = entries();
+    let mut all = entries();
+    all.extend(app.s.plugins.list().map(|p| Entry::Plugin(p.id().to_string(), crate::plugins_ui::label(p))));
     let mut matches: Vec<(i32, Entry, String)> =
         all.into_iter().filter_map(|e| {
             let key = e.shortcut(km);
@@ -299,6 +304,7 @@ fn palette(app: &mut App, ctx: &egui::Context) {
         Some(Entry::Command(c)) => app.invoke(c.id),
         Some(Entry::Tool(t)) => app.tool = t,
         Some(Entry::View(_, _, f)) => f(app),
+        Some(Entry::Plugin(id, _)) => crate::plugins_ui::run_or_ask(app, &id),
         None => {}
     }
 }
@@ -359,86 +365,117 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
         .default_pos(ctx.content_rect().center())
         .default_width(560.0)
         .show(ctx, |ui| {
-            // A two-column form: labels in a fixed left column, controls and the notes that
-            // explain them in the right one.
-            use crate::theme::{FORM_LABEL_DIALOG as LW, Section, form_note, form_row, section};
-            // Under a radio button or checkbox, notes line up with its text, not its box.
-            // (`form_note` adds one item spacing after its indent, like a row's label column.)
-            let toggle_indent = (ui.spacing().icon_width + ui.spacing().icon_spacing - ui.spacing().item_spacing.x).max(0.0);
+            // Taller than small windows: the sections scroll, the footer stays.
+            let max_h = (ctx.content_rect().height() - 160.0).max(200.0);
+            egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                // A two-column form: labels in a fixed left column, controls and the notes that
+                // explain them in the right one.
+                use crate::theme::{FORM_LABEL_DIALOG as LW, Section, form_note, form_row, section};
+                // Under a radio button or checkbox, notes line up with its text, not its box.
+                // (`form_note` adds one item spacing after its indent, like a row's label column.)
+                let toggle_indent = (ui.spacing().icon_width + ui.spacing().icon_spacing - ui.spacing().item_spacing.x).max(0.0);
 
-            section(ui, "prefs_appearance", Section::Rule, "Appearance", None, |ui| {
-                form_row(ui, LW, "Interface font", |ui| {
-                    if let Some(c) = font_picker(ui, "pref_ui_font", &p.ui_font, sys.as_ref().map(|s| s.families.as_slice()), bundled_ui) {
-                        p.ui_font = c;
-                    }
-                });
-                form_row(ui, LW, "Data font", |ui| {
-                    let list = sys.as_ref().map(|s| s.monospace.as_slice());
-                    if let Some(c) = font_picker(ui, "pref_data_font", &p.data_font, list, bundled_mono) {
-                        p.data_font = c;
-                    }
-                });
-                form_note(ui, LW, text(Type::Caption, "The data font shows numbers, timecode, rulers and shortcuts; only monospaced families are listed so digits stay aligned."));
-                ui.add_space(4.0);
-                form_row(ui, LW, "Preview", |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(text(Type::Body, "Layer names, menus and dialog text read like this."));
-                        ui.label(text(Type::Data, "Frame 0042 · 1.75 s · X 1280.5 Y 720.0 · Ctrl+Shift+S"));
+                section(ui, "prefs_appearance", Section::Rule, "Appearance", None, |ui| {
+                    form_row(ui, LW, "Interface font", |ui| {
+                        if let Some(c) = font_picker(ui, "pref_ui_font", &p.ui_font, sys.as_ref().map(|s| s.families.as_slice()), bundled_ui) {
+                            p.ui_font = c;
+                        }
                     });
-                });
-                ui.add_space(4.0);
-                form_row(ui, LW, "Interface scale", |ui| {
-                    let mut pct = p.ui_scale * 100.0;
-                    let r = with_type(ui, Type::Data, |ui| {
-                        ui.add(egui::Slider::new(&mut pct, (crate::prefs::SCALE_RANGE.start() * 100.0)..=(crate::prefs::SCALE_RANGE.end() * 100.0)).step_by(5.0).suffix(" %"))
+                    form_row(ui, LW, "Data font", |ui| {
+                        let list = sys.as_ref().map(|s| s.monospace.as_slice());
+                        if let Some(c) = font_picker(ui, "pref_data_font", &p.data_font, list, bundled_mono) {
+                            p.data_font = c;
+                        }
                     });
-                    // Apply on release so the slider doesn't move under the pointer while dragging.
-                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                        p.ui_scale = pct / 100.0;
-                    }
-                });
-            });
-
-            section(ui, "prefs_stage", Section::Rule, "Stage", None, |ui| {
-                form_row(ui, LW, "Rendering", |ui| {
-                    ui.vertical(|ui| {
-                        for (mode, name, tip) in RenderMode::ALL {
-                            crate::theme::radio_value(ui, &mut p.render_mode, mode, text(Type::Body, name));
-                            form_note(ui, toggle_indent, text(Type::Caption, tip));
-                            ui.add_space(2.0);
+                    form_note(ui, LW, text(Type::Caption, "The data font shows numbers, timecode, rulers and shortcuts; only monospaced families are listed so digits stay aligned."));
+                    ui.add_space(4.0);
+                    form_row(ui, LW, "Preview", |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(text(Type::Body, "Layer names, menus and dialog text read like this."));
+                            ui.label(text(Type::Data, "Frame 0042 · 1.75 s · X 1280.5 Y 720.0 · Ctrl+Shift+S"));
+                        });
+                    });
+                    ui.add_space(4.0);
+                    form_row(ui, LW, "Interface scale", |ui| {
+                        let mut pct = p.ui_scale * 100.0;
+                        let r = with_type(ui, Type::Data, |ui| {
+                            ui.add(egui::Slider::new(&mut pct, (crate::prefs::SCALE_RANGE.start() * 100.0)..=(crate::prefs::SCALE_RANGE.end() * 100.0)).step_by(5.0).suffix(" %"))
+                        });
+                        // Apply on release so the slider doesn't move under the pointer while dragging.
+                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            p.ui_scale = pct / 100.0;
                         }
                     });
                 });
-            });
 
-            section(ui, "prefs_timeline", Section::Rule, "Timeline", None, |ui| {
-                form_row(ui, LW, "Extra start gap", |ui| {
-                    with_type(ui, Type::Data, |ui| {
-                        ui.add(egui::DragValue::new(&mut p.timeline_start_gap).range(crate::prefs::GAP_RANGE).speed(0.5).max_decimals(0).suffix(" pt"));
+                section(ui, "prefs_stage", Section::Rule, "Stage", None, |ui| {
+                    form_row(ui, LW, "Rendering", |ui| {
+                        ui.vertical(|ui| {
+                            for (mode, name, tip) in RenderMode::ALL {
+                                crate::theme::radio_value(ui, &mut p.render_mode, mode, text(Type::Body, name));
+                                form_note(ui, toggle_indent, text(Type::Caption, tip));
+                                ui.add_space(2.0);
+                            }
+                        });
                     });
                 });
-                form_note(ui, LW, text(Type::Caption, "The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom."));
-            });
 
-            section(ui, "prefs_files", Section::Rule, "Files", None, |ui| {
-                form_row(ui, LW, "File dialogs", |ui| {
-                    ui.vertical(|ui| {
-                        crate::theme::checkbox(ui, &mut p.native_dialogs, text(Type::Body, "Use the system's open and save dialogs"));
-                        form_note(ui, toggle_indent, text(Type::Caption, "Turn off on Linux desktops without an XDG desktop portal; AniCraft then asks for a path instead."));
+                section(ui, "prefs_timeline", Section::Rule, "Timeline", None, |ui| {
+                    form_row(ui, LW, "Extra start gap", |ui| {
+                        with_type(ui, Type::Data, |ui| {
+                            ui.add(egui::DragValue::new(&mut p.timeline_start_gap).range(crate::prefs::GAP_RANGE).speed(0.5).max_decimals(0).suffix(" pt"));
+                        });
+                    });
+                    form_note(ui, LW, text(Type::Caption, "The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom."));
+                });
+
+                section(ui, "prefs_files", Section::Rule, "Files", None, |ui| {
+                    form_row(ui, LW, "File dialogs", |ui| {
+                        ui.vertical(|ui| {
+                            crate::theme::checkbox(ui, &mut p.native_dialogs, text(Type::Body, "Use the system's open and save dialogs"));
+                            form_note(ui, toggle_indent, text(Type::Caption, "Turn off on Linux desktops without an XDG desktop portal; AniCraft then asks for a path instead."));
+                        });
+                    });
+                    ui.add_space(4.0);
+                    form_row(ui, LW, "Autosave", |ui| {
+                        ui.vertical(|ui| {
+                            crate::theme::checkbox(ui, &mut p.autosave, text(Type::Body, "Keep a recovery copy of unsaved work"));
+                            form_note(
+                                ui,
+                                toggle_indent,
+                                text(Type::Caption, "If AniCraft closes unexpectedly, the next start offers to restore it. Copies stay in the settings folder, never over your files, and go away when you save."),
+                            );
+                        });
+                    });
+                    ui.add_enabled_ui(p.autosave, |ui| {
+                        form_row(ui, LW, "Every", |ui| {
+                            let shown = crate::prefs::AUTOSAVE_INTERVALS.iter().find(|(s, _)| *s == p.autosave_secs).map_or_else(|| format!("{} seconds", p.autosave_secs), |(_, l)| (*l).to_string());
+                            egui::ComboBox::from_id_salt("pref_autosave_secs").width(160.0).selected_text(text(Type::Body, shown)).show_ui(ui, |ui| {
+                                for (secs, label) in crate::prefs::AUTOSAVE_INTERVALS {
+                                    ui.selectable_value(&mut p.autosave_secs, secs, text(Type::Body, label));
+                                }
+                            });
+                        });
+                        form_row(ui, LW, "Or after", |ui| {
+                            with_type(ui, Type::Data, |ui| {
+                                ui.add(egui::DragValue::new(&mut p.autosave_edits).range(crate::prefs::AUTOSAVE_EDITS_RANGE).speed(0.5).suffix(" changes"));
+                            });
+                        });
+                        form_note(ui, LW, text(Type::Caption, "Whichever comes first. 0 changes: by time only. Copies are written in the background, so drawing never waits."));
                     });
                 });
-            });
 
-            section(ui, "prefs_safety", Section::Rule, "Safety", None, |ui| {
-                form_row(ui, LW, "Confirmations", |ui| {
-                    let n = app.skip_confirm.len();
-                    if ui.add_enabled(n > 0, egui::Button::new(text(Type::Body, "Show all again"))).clicked() {
-                        reset_confirms = true;
-                    }
-                    ui.label(text(Type::Caption, format!("{n} silenced this session")));
+                section(ui, "prefs_safety", Section::Rule, "Safety", None, |ui| {
+                    form_row(ui, LW, "Confirmations", |ui| {
+                        let n = app.skip_confirm.len();
+                        if ui.add_enabled(n > 0, egui::Button::new(text(Type::Body, "Show all again"))).clicked() {
+                            reset_confirms = true;
+                        }
+                        ui.label(text(Type::Caption, format!("{n} silenced this session")));
+                    });
                 });
-            });
 
+            });
             ui.separator();
             ui.label(text(Type::Caption, format!("{} · settings stored in {}", crate::platform::OS.name(), crate::platform::config_dir().map_or_else(|| "memory only".to_string(), |d| d.display().to_string()))));
         });
@@ -552,7 +589,7 @@ fn fixed_rows() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     ]
 }
 
-const GROUP_ORDER: [&str; 12] = ["Essentials", "Tools", "File", "Edit", "View", "Insert", "Modify", "Control", "Window", "Help", "Other", "Editing"];
+const GROUP_ORDER: [&str; 13] = ["Essentials", "Tools", "File", "Edit", "View", "Insert", "Modify", "Commands", "Control", "Window", "Help", "Other", "Editing"];
 
 /// The action-name column: left-aligned, one row tall, cut off with an ellipsis when long.
 fn name_cell(ui: &mut egui::Ui, label: &str) {

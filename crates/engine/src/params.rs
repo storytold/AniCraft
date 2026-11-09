@@ -114,7 +114,7 @@ pub fn opt_easing(p: &Value, key: &str) -> Result<Option<Easing>> {
     Err(bad(key, "an easing name, {\"classic\": n} or {\"bezier\": [x1, y1, x2, y2]}"))
 }
 
-/// A width profile (ADR 0014): a preset name (`"uniform"`, `"taper_both"`, `"taper_start"`,
+/// A width profile (ADR 0018): a preset name (`"uniform"`, `"taper_both"`, `"taper_start"`,
 /// `"taper_end"`, `"bulge"`, `"pinch"`) or width points as `[[t, left, right], ..]` (or
 /// `{t, left, right}` objects; factors of the nominal width, 1 = as set). `Some(None)` is
 /// uniform; `None` when the param is absent.
