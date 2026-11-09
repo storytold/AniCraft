@@ -59,6 +59,27 @@ Apache-2.0), and in the desktop app `cpal` (sound output, Apache-2.0) with its p
 bindings on macOS). No new licence. `symphonia`, the usual Rust decoder, is MPL-2.0 and was not
 used.
 
+### Installers (2026-11-09, ADR 0026)
+
+No new crate. The installers are built with tools that are not Rust dependencies, so
+`cargo deny` doesn't see them; they are listed here:
+
+* **WiX Toolset 5** (Windows MSI), Microsoft Reciprocal Licence (MS-RL). A build tool, but the
+  MSI also carries parts of it: the WixUI dialog definitions and, for the Finish page's "Launch
+  AniCraft", the `Wix4UtilCA` custom-action DLL. MS-RL asks that files containing its code be
+  distributed with that licence and their source, which is public at
+  <https://github.com/wixtoolset/wix>. Every Craft app ships the same; **counsel to confirm** (open
+  item below).
+* **AppImage type2-runtime** (prepended to each AppImage), MIT, statically linking libfuse3
+  (LGPL-2.1) and squashfuse (BSD-2-Clause). A separate program in the same file, not linked
+  with AniCraft. Pinned by version and SHA-256 in `packaging/linux/package.sh`.
+* **appimagetool** (MIT), **nfpm** (MIT), **flatpak-builder** (LGPL-2.1), Apple's `hdiutil`,
+  `codesign`, `notarytool`, `sips` and `iconutil`, Microsoft's `signtool`: build tools only;
+  nothing of them ships.
+* The Flatpak runs on the freedesktop runtime from Flathub; the runtime isn't in our bundle.
+* `packaging/macos/dmg/generate.py` uses Pillow (MIT-CMU), `ds_store` and `mac_alias` (MIT) to
+  write committed files; none of them ships.
+
 ## 3. Fonts, graphics and other assets
 
 * **Fonts**: only the four fonts embedded by egui (`epaint_default_fonts`): Ubuntu Light
@@ -129,4 +150,5 @@ used.
 | Counsel review of this document (patents, XFL interoperability, ActionScript compatibility and naming) | Open, before the first public release |
 | "AniCraft" trademark clearance | Settled by the project lead (2026-11-09): the name is kept |
 | Freedom-to-operate patent search for core animation features | Open (recommended before 1.0) |
-| Full licence-text bundle generation (`cargo about`) in the release pipeline | Open (M8) |
+| Full licence-text bundle generation (`cargo about`) in the release pipeline | Open (M8; the installers ship `LICENSE-*`, `NOTICE`, `ATTRIBUTION.md` and the font OFLs today) |
+| WiX's MS-RL parts inside the MSI (WixUI, `Wix4UtilCA`) and the AppImage runtime's LGPL libfuse3 | Open: family-wide practice, counsel to confirm (ADR 0026) |

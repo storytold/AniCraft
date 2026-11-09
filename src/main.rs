@@ -3,9 +3,14 @@
 //! ```text
 //! anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open <panel>]
 //!          [--theme graphite|high-contrast] [--scale <percent>]
+//! anicraft --version
 //! ```
 //! `--screenshot` starts normally, draws ~120 frames, saves the window as PNG and exits.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Release builds are Windows GUI programs, so no console window opens beside the app (the
+// packaging checks the PE subsystem, ADR 0026). Debug builds keep the console for logs; the
+// headless front end is anicraft-cli.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod a11y;
 mod actions_panel;
@@ -122,9 +127,14 @@ fn main() -> eframe::Result {
                     std::process::exit(2);
                 }
             },
+            // Printed by the release packaging checks and for bug reports.
+            "--version" | "-V" => {
+                println!("AniCraft {} ({})", env!("CARGO_PKG_VERSION"), app::RELEASE_STAGE);
+                return Ok(());
+            }
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie]\n\
+                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer, in builds with the gpu-stage feature (ADR 0019)\n\
@@ -155,3 +165,5 @@ fn main() -> eframe::Result {
 mod guidelines_tests;
 #[cfg(test)]
 mod architecture_tests;
+#[cfg(test)]
+mod packaging_tests;
