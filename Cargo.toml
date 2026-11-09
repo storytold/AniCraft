@@ -71,11 +71,17 @@ default-run = "anicraft"
 name = "anicraft"
 path = "src/main.rs"
 
+[features]
+# GPU stage renderer (ADR 0014), off by default: Preferences › Stage › Renderer can then hand
+# the stage to the wgpu renderer. The CPU stays the default and the oracle.
+gpu-stage = ["dep:anicraft-gpu"]
+
 [dependencies]
 anicraft-geom.workspace = true
 anicraft-doc.workspace = true
 anicraft-render.workspace = true
 anicraft-engine.workspace = true
+anicraft-gpu = { workspace = true, optional = true }
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true

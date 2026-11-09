@@ -9,6 +9,7 @@
 mod app;
 mod autosave;
 mod dialogs;
+mod gpu_stage;
 mod icons;
 mod keymap;
 mod menus;

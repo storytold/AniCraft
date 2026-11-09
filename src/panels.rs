@@ -151,12 +151,28 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                 ui.add_space(12.0);
             }
             let (ready, needed) = app.stage_cache.ready;
-            ui.label(small(format!("render {:.1} ms · tiles {ready}/{needed}", app.stage_cache.ms)));
+            ui.label(small(format!("render {:.1} ms{} · tiles {ready}/{needed}", app.stage_cache.ms, renderer_tag(app))));
             if let Some(p) = app.cursor_stage {
                 ui.label(small(format!("x {:.0}  y {:.0}", p.x, p.y)));
             }
         });
     });
+}
+
+/// Who draws the stage, when this build can draw it on the GPU (ADR 0014): " GPU", or " CPU"
+/// with what kept the GPU out.
+fn renderer_tag(app: &App) -> String {
+    use crate::gpu_stage::State;
+    if !crate::gpu_stage::AVAILABLE {
+        return String::new();
+    }
+    match (app.stage_cache.gpu.state(), &app.stage_cache.drawn_by) {
+        (State::Starting, _) => " · GPU starting".into(),
+        (State::Failed(_), _) => " · CPU (GPU unavailable)".into(),
+        (State::Running(_), Some((true, _))) => " · GPU".into(),
+        (State::Running(_), Some((false, Some(why)))) => format!(" · CPU for {why}"),
+        _ => " · CPU".into(),
+    }
 }
 
 // ----- right dock ---------------------------------------------------------------------------

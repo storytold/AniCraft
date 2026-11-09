@@ -181,6 +181,7 @@ dependencies = [
  "anicraft-doc",
  "anicraft-engine",
  "anicraft-geom",
+ "anicraft-gpu",
  "anicraft-render",
  "eframe",
  "egui",

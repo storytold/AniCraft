@@ -85,6 +85,19 @@ pub fn make_job(state: StateId, doc: &Document, frame: u32, view: View, onion: b
     FrameJob { key: frame_key(state, frame, &view, onion), raster: 0, scene: scene_key(state, frame, onion), doc: doc.clone(), frame, view, onion }
 }
 
+/// A job for rasterizer `raster` (from [`RenderService::raster_id`]; 0 is the CPU oracle, and
+/// gives [`make_job`]'s key), keyed apart from other rasterizers' pictures.
+pub fn make_job_for(raster: u64, state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
+    let mut j = make_job(state, doc, frame, view, onion);
+    if raster != 0 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (j.key, raster).hash(&mut h);
+        j.key = h.finish();
+        j.raster = raster;
+    }
+    j
+}
+
 /// Movie frame `frame`'s display list, with ±2 onion-skin frames (tinted red before, green after)
 /// underneath, taken from the same scene only.
 pub fn display_list_with_onion(doc: &Document, frame: u32, onion: bool) -> DisplayList {
@@ -297,18 +310,14 @@ impl RenderService {
         self.slot().raster.is_some()
     }
 
-    /// A job for the rasterizer in use: [`make_job`], keyed apart from the oracle's pictures
-    /// when a rasterizer draws.
+    /// The rasterizer in use (0: the CPU oracle), for [`make_job_for`].
+    pub fn raster_id(&self) -> u64 {
+        self.slot().id
+    }
+
+    /// A job for the rasterizer in use ([`make_job_for`] with [`RenderService::raster_id`]).
     pub fn job(&self, state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
-        let mut j = make_job(state, doc, frame, view, onion);
-        let id = self.slot().id;
-        if id != 0 {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (j.key, id).hash(&mut h);
-            j.key = h.finish();
-            j.raster = id;
-        }
-        j
+        make_job_for(self.raster_id(), state, doc, frame, view, onion)
     }
 
     /// Images that are ready, in order; the missing ones become the new urgent batch

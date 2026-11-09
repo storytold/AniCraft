@@ -2,7 +2,7 @@
 //! guard on close, the command palette (Ctrl+K) and the keyboard-shortcut sheet (F1).
 
 use crate::app::{App, Tool};
-use crate::prefs::{FontChoice, RenderMode};
+use crate::prefs::{FontChoice, RenderMode, StageRenderer};
 use crate::theme::{T, Type, text, with_type};
 use anicraft_engine::confirm::Confirmation;
 use anicraft_engine::{CommandSpec, commands};
@@ -418,6 +418,31 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                             }
                         });
                     });
+                    if crate::gpu_stage::AVAILABLE {
+                        ui.add_space(4.0);
+                        form_row(ui, LW, "Renderer", |ui| {
+                            ui.vertical(|ui| {
+                                for (choice, name, tip) in StageRenderer::ALL {
+                                    crate::theme::radio_value(ui, &mut p.stage_renderer, choice, text(Type::Body, name));
+                                    form_note(ui, toggle_indent, text(Type::Caption, tip));
+                                    ui.add_space(2.0);
+                                }
+                            });
+                        });
+                        use crate::gpu_stage::State;
+                        let status = match app.stage_cache.gpu.state() {
+                            State::Off => None,
+                            State::Starting => Some("Starting the graphics card…".to_string()),
+                            State::Running(adapter) => Some(format!("Drawing on {adapter}.")),
+                            State::Failed(why) => Some(format!("The graphics card can't draw the stage, so the CPU does: {why}")),
+                        };
+                        if crate::gpu_stage::wanted(p.stage_renderer) != p.stage_renderer {
+                            form_note(ui, LW, text(Type::Caption, "ANICRAFT_STAGE_RENDERER is set, and it takes precedence over this choice."));
+                        }
+                        if let Some(s) = status {
+                            form_note(ui, LW, text(Type::Caption, s));
+                        }
+                    }
                 });
 
                 section(ui, "prefs_timeline", Section::Rule, "Timeline", None, |ui| {
