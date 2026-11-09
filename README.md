@@ -190,7 +190,7 @@ The details, including the server entry for other MCP clients, are in [`docs/mcp
 
 [**docs/roadmap.md**](docs/roadmap.md) has the honest status by dimension, milestones M0–M8 and what's next.
 
-**What's missing:** motion tweens and the Motion Editor, shape hints, audio layers, ActionScript (frame scripts are counted
+**What's missing:** audio layers, ActionScript (frame scripts are counted
 on import but not kept yet, ADR 0013), motion tweens from XFL, a GPU renderer, and macOS and Linux CI runners
 (AniCraft is verified on Windows so far).
 
@@ -213,7 +213,8 @@ No code below `src/` depends on egui, eframe or windowing libraries.
 
 Agent and contributor rules (clean room, the asset policy, no panics in shipped code) are in [`AGENTS.md`](AGENTS.md).
 [`docs/requirements.md`](docs/requirements.md) has the scope, [`docs/architecture.md`](docs/architecture.md) the design,
-[`docs/product-principles.md`](docs/product-principles.md) the design and user experience principles, and
+[`docs/product-principles.md`](docs/product-principles.md) the design and user experience principles,
+[`docs/accessibility.md`](docs/accessibility.md) keyboard, screen-reader, high-contrast and scaling support, and
 [`docs/development.md`](docs/development.md) the setup, testing and build hygiene. Every bundled asset is listed
 with its licence in [`ATTRIBUTION.md`](ATTRIBUTION.md).
 

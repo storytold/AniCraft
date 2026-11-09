@@ -6,12 +6,12 @@
 //! left behind. This module only decides *when* (Preferences: every N seconds, or after N
 //! changes, whichever comes first) and shows the choices.
 
+use crate::a11y::Named;
 use crate::app::App;
 use crate::prefs::Prefs;
 use crate::theme::{T, Type, text};
 use anicraft_engine::recovery::{self, Autosaver, Entry, Outcome, SessionLock};
 use anicraft_engine::StateId;
-use egui::Color32;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -221,7 +221,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     let n = app.recovery.found.len();
     let confirm = app.recovery.confirm_discard.clone();
     let btn = egui::vec2(96.0, crate::theme::TARGET + 4.0);
-    egui::Window::new("Recover unsaved work")
+    let shown = egui::Window::new("Recover unsaved work")
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -259,7 +259,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if confirm.as_deref() == Some(e.session.as_str()) {
-                                let discard = egui::Button::new(text(Type::Body, "Discard").color(Color32::WHITE).strong()).fill(T.danger).min_size(btn);
+                                let discard = egui::Button::new(text(Type::Body, "Discard").color(T.on_fill).strong()).fill(T.danger).min_size(btn);
                                 if ui.add(discard).clicked() {
                                     act = Some(Act::Discard(e.session.clone()));
                                 }
@@ -267,11 +267,11 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                                     act = Some(Act::KeepIt);
                                 }
                             } else {
-                                let restore = egui::Button::new(text(Type::Body, "Restore").color(Color32::WHITE).strong()).fill(T.accent).min_size(btn);
-                                if ui.add(restore).on_hover_text("Open it as unsaved work").clicked() {
+                                let restore = egui::Button::new(text(Type::Body, "Restore").color(T.on_fill).strong()).fill(T.accent).min_size(btn);
+                                if ui.add(restore).named(&format!("Restore {}", e.meta.name)).on_hover_text("Open it as unsaved work").clicked() {
                                     act = Some(Act::Restore(e.session.clone()));
                                 }
-                                if ui.add(egui::Button::new("Discard…").min_size(btn)).on_hover_text("Delete this autosaved copy").clicked() {
+                                if ui.add(egui::Button::new("Discard…").min_size(btn)).named(&format!("Discard {}…", e.meta.name)).on_hover_text("Delete this autosaved copy").clicked() {
                                     act = Some(Act::AskDiscard(e.session.clone()));
                                 }
                             }
@@ -291,6 +291,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                 ui.label(text(Type::Caption, "Later keeps them: File › Recover Autosaved Documents… brings this back."));
             });
         });
+    crate::a11y::name_title_bar(&shown, "Recover unsaved work");
     if !open {
         act = Some(Act::Later);
     }

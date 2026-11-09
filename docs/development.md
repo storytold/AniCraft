@@ -7,6 +7,7 @@ cargo build                                   # app + CLI (debug)
 cargo run                                     # desktop app with the sample
 cargo run -- --screenshot shots/now.png       # draw ~120 frames, save the window, exit
 cargo run -- --open <panel> --screenshot x.png  # palette|shortcuts|files|confirm|transform|points|pen|frames|span|bucket|sound|tlzoom|tlwide|prefs|licenses|zoom
+cargo run -- --theme high-contrast --scale 200 --screenshot x.png  # a palette and interface scale for one run (not saved)
 cargo test                                    # every crate
 cargo clippy --all-targets -- -D warnings
 cargo deny check licenses bans sources
@@ -21,6 +22,12 @@ Sound output (ADR 0020) uses `cpal`, which on Linux and the BSDs builds against 
 `libasound2-dev` and `pkg-config` (Debian/Ubuntu), `alsa-lib-devel` (Fedora) or `alsa-lib`
 (Arch, FreeBSD). `cargo build --no-default-features` leaves sound output out (playback is
 silent; import, waveforms and audio export still work). Tests never open an audio device.
+
+### GPU stage (optional)
+
+`cargo run --features gpu-stage` adds Preferences › Stage › Renderer (ADR 0019). The
+`anicraft-gpu` crate builds and tests in every build (its GPU tests skip without an adapter);
+`cargo run --release -p anicraft-gpu --example gpu_bench` prints timings and parity.
 
 ## Build footprint (biased for disk space, then time)
 

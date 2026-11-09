@@ -5,11 +5,13 @@
 //! JSON params, so headless and interactive behaviour cannot drift apart.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod cmds_actions;
 mod cmds_draw;
 mod cmds_file;
 mod cmds_frames;
 mod cmds_modify;
 mod cmds_motion;
+mod cmds_hints;
 mod cmds_paint;
 mod cmds_path;
 mod cmds_recovery;
@@ -18,12 +20,14 @@ mod cmds_scene;
 pub mod cmds_sound;
 pub mod cmds_text;
 mod cmds_timeline;
+mod cmds_width;
 pub mod confirm;
 pub mod format;
 pub mod history;
 pub mod recovery;
 pub mod render_service;
 pub mod params;
+pub mod player;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
 use anicraft_geom::{Rect, Vec2};
@@ -91,6 +95,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
     v.extend(cmds_motion::specs());
+    v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
@@ -98,8 +103,10 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_path::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
+    v.extend(cmds_width::specs());
     v.extend(cmds_plugin::specs());
     v.extend(cmds_sound::specs());
+    v.extend(cmds_actions::specs());
     v
 }
 
@@ -128,11 +135,13 @@ pub struct ToolStyle {
     pub stroke_width: f32,
     pub use_fill: bool,
     pub use_stroke: bool,
+    /// The width profile new strokes get (ADR 0018).
+    pub stroke_profile: anicraft_doc::ProfilePreset,
 }
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform }
     }
 }
 
@@ -486,7 +495,7 @@ impl Session {
     pub fn hit_test(&self, p: Vec2, slop: f32) -> Option<(LayerId, ElementId)> {
         let dl = self.display_list();
         for item in dl.items.iter().rev() {
-            let hw = item.stroke.map_or(0.0, |s| s.width * 0.5 * item.transform.mean_scale());
+            let hw = item.stroke.as_ref().map_or(0.0, |s| s.reach() * item.transform.mean_scale());
             let bounds = item.path.bounds().transformed(&item.transform).inflate(hw + slop);
             if !bounds.contains(p) {
                 continue;
@@ -512,7 +521,7 @@ impl Session {
     pub fn element_bounds(&self, id: ElementId) -> Rect {
         let mut r = Rect::EMPTY;
         for item in self.display_list().items.iter().filter(|i| i.element == id) {
-            let pad = item.stroke.map_or(0.0, |s| s.width * 0.5);
+            let pad = item.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach);
             r = r.union(&item.path.bounds().inflate(pad).transformed(&item.transform));
         }
         r
@@ -610,7 +619,7 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping}))})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -640,7 +649,14 @@ impl Session {
 pub fn element_label(doc: &Document, e: &Element) -> String {
     let kind = match &e.kind {
         ElementKind::Shape(_) => "Shape".to_string(),
-        ElementKind::Symbol { symbol, .. } => format!("Graphic: {}", doc.symbol(*symbol).map_or("missing", |s| s.name.as_str())),
+        ElementKind::Symbol { symbol, .. } => match doc.symbol(*symbol) {
+            Some(s) => format!("{}: {}", match s.kind {
+                anicraft_doc::SymbolKind::Graphic => "Graphic",
+                anicraft_doc::SymbolKind::MovieClip => "Movie clip",
+                anicraft_doc::SymbolKind::Button => "Button",
+            }, s.name),
+            None => "Graphic: missing".to_string(),
+        },
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             format!("Text: {first}{}", if t.text.chars().count() > first.chars().count() { "…" } else { "" })
@@ -658,3 +674,7 @@ mod motion_tests;
 mod plugin_tests;
 #[cfg(test)]
 mod tests_sound;
+#[cfg(test)]
+mod hint_tests;
+#[cfg(test)]
+mod tests_actions;

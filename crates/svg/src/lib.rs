@@ -1,34 +1,55 @@
-//! AniCraft SVG import (layer L2): an SVG drawing into editable vector shapes.
+//! AniCraft SVG import (layer L2): an SVG drawing into editable vector shapes and text.
 //!
-//! Written from the public W3C SVG 1.1 / SVG 2 specifications. Supported: `svg`, `g`, `a`,
-//! `switch`, `use`, `path`, `rect` (rounded), `circle`, `ellipse`, `line`, `polyline` and
-//! `polygon`, read in document order. Styling comes from presentation attributes and `style=""`
-//! declarations, with inheritance. Colours can be hex, `rgb()`/`rgba()`, CSS names, `none`,
-//! `transparent` or `currentColor`. Also supported: `opacity`, `fill-opacity` and
+//! Written from the public W3C SVG 1.1 / SVG 2 and CSS Masking specifications. Supported: `svg`,
+//! `g`, `a`, `switch`, `use`, `path`, `rect` (rounded), `circle`, `ellipse`, `line`, `polyline`
+//! and `polygon`, read in document order. Styling comes from presentation attributes and
+//! `style=""` declarations, with inheritance. Colours can be hex, `rgb()`/`rgba()`, CSS names,
+//! `none`, `transparent` or `currentColor`. Also supported: `opacity`, `fill-opacity` and
 //! `stroke-opacity`, `fill-rule`, `stroke-width` with units, the transform list (`matrix`,
 //! `translate`, `scale`, `rotate`, `skewX`, `skewY`), `viewBox` with `preserveAspectRatio`, and
 //! linear and radial gradients (both unit systems, `gradientTransform`, stops inherited through
 //! `href`).
 //!
-//! What AniCraft cannot represent yet is reported, never guessed silently: text, images,
-//! filters, clip paths and masks (drawn unclipped), patterns, dashes, style sheets,
-//! reflected/repeated gradients and skewed gradient transforms (approximated).
+//! **Clip paths and masks** (`clip`, ADR 0015) become AniCraft mask layers: the drawing comes
+//! out as layers, bottom first, and artwork under a clip is a masked layer under a mask layer
+//! holding the clip's shapes. A clip that cuts nothing is dropped, artwork it hides entirely is
+//! left out, and clips inside clips are intersected exactly when all but one are convex
+//! polygons. A `mask` comes across when its content is opaque (and white, for a luminance mask),
+//! so that it is the coverage of its shapes. **Text** (`text`) becomes text blocks laid out by
+//! `anicraft-text`, one per text chunk, with the missing-font reporting of Animate import
+//! (ADR 0014).
+//!
+//! What AniCraft cannot represent yet is reported, never guessed silently: images, filters,
+//! soft masks, patterns, dashes, style sheets, text on a path, reflected/repeated gradients and
+//! skewed gradient transforms (approximated).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use anicraft_doc::{GradientStop, Paint, Rgba, Shape, Stroke};
+use anicraft_doc::{ElementKind, GradientStop, Paint, Rgba, Shape, Stroke};
 use anicraft_geom::svg::parse_path_data;
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
+use anicraft_text::{FaceMatch, Fonts};
 use anicraft_xml::Element as X;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 use std::sync::Arc;
 
+mod clip;
+mod text;
+
+#[cfg(test)]
+mod clip_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_tests;
 
 /// Most shapes read from one file.
 pub const MAX_SHAPES: usize = 200_000;
 const MAX_DEPTH: usize = 64;
 const MAX_USE_DEPTH: usize = 16;
+/// Most elements visited while reading one file. Masks draw their content again, so this, not
+/// the file's size, bounds the work.
+const MAX_VISITS: usize = 2_000_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SvgError {
@@ -38,35 +59,66 @@ pub enum SvgError {
     NotSvg(String),
 }
 
-/// What could not come across, by kind ("2 text elements").
+/// What could not come across, by kind ("2 images"), and the fonts the text asks for that
+/// aren't on this computer.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Report {
     pub skipped: BTreeMap<String, usize>,
+    /// Font families the drawing's text asks for that aren't on this computer.
+    pub missing_fonts: BTreeSet<String>,
+    /// The family that text was laid out in instead.
+    pub fallback_font: Option<String>,
 }
 
 impl Report {
     fn skip(&mut self, what: &str) {
         *self.skipped.entry(what.to_string()).or_default() += 1;
     }
-    /// One line for a status bar.
+    /// One line for a status bar: "Imported. Not yet supported: 2 images. Fonts not on this
+    /// computer, drawn in Inter: Futura."
     pub fn summary(&self) -> String {
-        if self.skipped.is_empty() {
+        if self.skipped.is_empty() && self.missing_fonts.is_empty() {
             return "Imported everything in the drawing.".into();
         }
-        let parts: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{n} {k}")).collect();
-        format!("Imported. Not yet supported: {}.", parts.join(", "))
+        let mut out = String::from("Imported.");
+        if !self.skipped.is_empty() {
+            let parts: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{n} {k}")).collect();
+            out.push_str(&format!(" Not yet supported: {}.", parts.join(", ")));
+        }
+        if !self.missing_fonts.is_empty() {
+            let names: Vec<&str> = self.missing_fonts.iter().map(String::as_str).collect();
+            let instead = self.fallback_font.as_deref().map(|f| format!(", drawn in {f}")).unwrap_or_default();
+            out.push_str(&format!(" Fonts not on this computer{instead}: {}.", names.join(", ")));
+        }
+        out
     }
 }
 
-/// One shape, ready to become an element: its path in local coordinates, the local → drawing
-/// transform, and the opacity of the shape and its groups.
+/// One shape or text block, ready to become an element: its geometry in local coordinates,
+/// the local → drawing transform, and the opacity of the element and its groups.
 #[derive(Clone, Debug)]
-pub struct ImportedShape {
+pub struct ImportedElement {
     /// The element's `id`, if it had one.
     pub name: String,
     pub transform: Affine,
     pub alpha: f32,
-    pub shape: Shape,
+    /// A shape or a text block.
+    pub kind: ElementKind,
+}
+
+/// The artwork of a mask layer: its fills make the mask (ADR 0010).
+#[derive(Clone, Debug)]
+pub struct ImportedMask {
+    /// The clip path's or mask's `id`, if it had one.
+    pub name: String,
+    pub elements: Vec<ImportedElement>,
+}
+
+/// Artwork drawn together on one layer, bottom first; masked by `mask` when there is one.
+#[derive(Clone, Debug)]
+pub struct ImportedLayer {
+    pub mask: Option<ImportedMask>,
+    pub elements: Vec<ImportedElement>,
 }
 
 /// An imported drawing. Coordinates are SVG user units (CSS pixels) of the drawing, with the
@@ -75,13 +127,42 @@ pub struct ImportedShape {
 pub struct SvgImport {
     pub width: f32,
     pub height: f32,
-    pub shapes: Vec<ImportedShape>,
+    /// Bottom layer first. A drawing without clips or masks is one unmasked layer.
+    pub layers: Vec<ImportedLayer>,
     pub report: Report,
 }
 
-/// Reads an SVG document.
+impl SvgImport {
+    /// A drawing of these elements on one layer.
+    pub fn single(width: f32, height: f32, elements: Vec<ImportedElement>) -> SvgImport {
+        SvgImport { width, height, layers: vec![ImportedLayer { mask: None, elements }], report: Report::default() }
+    }
+    /// Every element that draws (not mask artwork), bottom first.
+    pub fn elements(&self) -> impl Iterator<Item = &ImportedElement> {
+        self.layers.iter().flat_map(|l| l.elements.iter())
+    }
+    /// Whether nothing in the drawing could be imported.
+    pub fn is_empty(&self) -> bool {
+        self.layers.iter().all(|l| l.elements.is_empty())
+    }
+}
+
+/// Elements whose character data keeps its place among their children (SVG text content).
+const TEXT_CONTENT: &[&str] = &["text", "tspan", "a", "textPath"];
+
+/// Reads an SVG document, laying any text out with this computer's fonts.
 pub fn import(bytes: &[u8]) -> Result<SvgImport, SvgError> {
-    let root = anicraft_xml::parse(bytes)?;
+    import_from(bytes, None)
+}
+
+/// Reads an SVG document, laying text out with `fonts` (tests, and hosts with their own font
+/// library).
+pub fn import_with_fonts(bytes: &[u8], fonts: &Fonts) -> Result<SvgImport, SvgError> {
+    import_from(bytes, Some(fonts))
+}
+
+fn import_from(bytes: &[u8], fonts: Option<&Fonts>) -> Result<SvgImport, SvgError> {
+    let root = anicraft_xml::parse_mixed(bytes, TEXT_CONTENT)?;
     if local(&root.name) != "svg" {
         return Err(SvgError::NotSvg(root.name.clone()));
     }
@@ -92,14 +173,34 @@ pub fn import(bytes: &[u8]) -> Result<SvgImport, SvgError> {
     let fallback = vb.map_or((300.0, 150.0), |r| (r.width(), r.height()));
     let size = |key: &str, d: f32| root.attr(key).and_then(|v| length(v, d)).filter(|v| *v > 0.0).unwrap_or(d);
     let (w, h) = (size("width", fallback.0), size("height", fallback.1));
-    let mut b = Builder { ids, report: Report::default(), shapes: Vec::new(), viewport: vb.map_or((w, h), |r| (r.width(), r.height())) };
+    let mut b = Builder {
+        ids,
+        report: Report::default(),
+        items: Vec::new(),
+        viewport: vb.map_or((w, h), |r| (r.width(), r.height())),
+        fonts,
+        faces: HashMap::new(),
+        visits: 0,
+        resolving: Vec::new(),
+    };
     let base = match vb {
         Some(r) => view_box_transform(r, w, h, root.attr("preserveAspectRatio").unwrap_or("")),
         None => Affine::IDENTITY,
     };
     let style = Style::default().with(&root, &mut b.report);
     b.children(&root, &base, &style, 1.0, 0, 0);
-    Ok(SvgImport { width: w, height: h, shapes: b.shapes, report: b.report })
+    let layers = b.layers();
+    Ok(SvgImport { width: w, height: h, layers, report: b.report })
+}
+
+/// The element's `id`, as an element name.
+fn name_of(el: &X) -> String {
+    el.attr("id").unwrap_or("").chars().take(128).collect()
+}
+
+/// Whether `visibility` hides the element.
+fn hidden(d: &[(String, String)]) -> bool {
+    get(d, "visibility").is_some_and(|v| v == "hidden" || v == "collapse")
 }
 
 /// An element name without its namespace prefix (`svg:path` → `path`).
@@ -347,16 +448,35 @@ fn paint_spec(v: &str) -> Option<PaintSpec> {
     color(v).map(PaintSpec::Color)
 }
 
+/// Where a text chunk sits relative to its position (`text-anchor`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Anchor {
+    #[default]
+    Start,
+    Middle,
+    End,
+}
+
 /// Inherited presentation properties.
 #[derive(Clone, Debug)]
 struct Style {
     fill: PaintSpec,
     fill_opacity: f32,
     fill_rule: FillRule,
+    clip_rule: FillRule,
     stroke: PaintSpec,
     stroke_opacity: f32,
     stroke_width: f32,
     current: Rgba,
+    /// The CSS `font-family` list, as written.
+    font_family: String,
+    font_size: f32,
+    bold: bool,
+    italic: bool,
+    anchor: Anchor,
+    letter_spacing: f32,
+    /// `xml:space="preserve"`: keep every space.
+    preserve: bool,
 }
 
 impl Default for Style {
@@ -365,20 +485,29 @@ impl Default for Style {
             fill: PaintSpec::Color(Rgba::BLACK),
             fill_opacity: 1.0,
             fill_rule: FillRule::NonZero,
+            clip_rule: FillRule::NonZero,
             stroke: PaintSpec::None,
             stroke_opacity: 1.0,
             stroke_width: 1.0,
             current: Rgba::BLACK,
+            font_family: String::new(),
+            font_size: 16.0,
+            bold: false,
+            italic: false,
+            anchor: Anchor::Start,
+            letter_spacing: 0.0,
+            preserve: false,
         }
     }
 }
 
 /// An element's declarations: presentation attributes, overridden by `style=""`.
 fn declarations(el: &X) -> Vec<(String, String)> {
-    const KEYS: [&str; 16] = [
+    const KEYS: &[&str] = &[
         "fill",
         "fill-opacity",
         "fill-rule",
+        "clip-rule",
         "stroke",
         "stroke-opacity",
         "stroke-width",
@@ -390,8 +519,17 @@ fn declarations(el: &X) -> Vec<(String, String)> {
         "filter",
         "clip-path",
         "mask",
+        "mask-type",
         "stop-color",
         "stop-opacity",
+        "font-family",
+        "font-size",
+        "font-weight",
+        "font-style",
+        "text-anchor",
+        "letter-spacing",
+        "text-decoration",
+        "writing-mode",
     ];
     let mut out: Vec<(String, String)> = KEYS.iter().filter_map(|k| el.attr(k).map(|v| (k.to_string(), v.trim().to_string()))).collect();
     if let Some(style) = el.attr("style") {
@@ -419,6 +557,26 @@ fn opacity(v: &str) -> Option<f32> {
     x.is_finite().then(|| x.clamp(0.0, 1.0))
 }
 
+/// A `font-size`: a keyword, a length, or relative to the parent's size (`em`, `ex`, `%`).
+fn font_size(v: &str, parent: f32) -> Option<f32> {
+    let v = v.trim();
+    let keyword = match v {
+        "xx-small" => Some(9.0),
+        "x-small" => Some(10.0),
+        "small" => Some(13.0),
+        "medium" => Some(16.0),
+        "large" => Some(18.0),
+        "x-large" => Some(24.0),
+        "xx-large" => Some(32.0),
+        "larger" => Some(parent * 1.2),
+        "smaller" => Some(parent / 1.2),
+        _ => None,
+    };
+    let rel = |suffix: &str, k: f32| v.strip_suffix(suffix).and_then(|n| n.trim().parse::<f32>().ok()).map(|n| n * k);
+    let size = keyword.or_else(|| rel("em", parent)).or_else(|| rel("ex", parent * 0.5)).or_else(|| rel("%", parent / 100.0)).or_else(|| length(v, parent))?;
+    size.is_finite().then(|| size.clamp(0.0, 2000.0))
+}
+
 impl Style {
     /// This style inherited by `el`, with `el`'s own declarations applied.
     fn with(&self, el: &X, report: &mut Report) -> Style {
@@ -442,9 +600,53 @@ impl Style {
         if let Some(w) = get(&d, "stroke-width").and_then(|v| length(v, 100.0)).filter(|w| *w >= 0.0) {
             s.stroke_width = w;
         }
-        match get(&d, "fill-rule") {
-            Some("evenodd") => s.fill_rule = FillRule::EvenOdd,
-            Some("nonzero") => s.fill_rule = FillRule::NonZero,
+        let rule = |v: Option<&str>, old: FillRule| match v {
+            Some("evenodd") => FillRule::EvenOdd,
+            Some("nonzero") => FillRule::NonZero,
+            _ => old,
+        };
+        s.fill_rule = rule(get(&d, "fill-rule"), s.fill_rule);
+        s.clip_rule = rule(get(&d, "clip-rule"), s.clip_rule);
+        if let Some(f) = get(&d, "font-family").filter(|f| !f.is_empty() && *f != "inherit") {
+            s.font_family = f.chars().take(512).collect();
+        }
+        if let Some(z) = get(&d, "font-size").and_then(|v| font_size(v, self.font_size)) {
+            s.font_size = z;
+        }
+        match get(&d, "font-weight") {
+            Some("bold" | "bolder") => s.bold = true,
+            Some("normal" | "lighter") => s.bold = false,
+            Some(n) => {
+                if let Ok(w) = n.trim().parse::<f32>() {
+                    s.bold = w >= 600.0;
+                }
+            }
+            None => {}
+        }
+        match get(&d, "font-style") {
+            Some("italic" | "oblique") => s.italic = true,
+            Some("normal") => s.italic = false,
+            _ => {}
+        }
+        match get(&d, "text-anchor") {
+            Some("start") => s.anchor = Anchor::Start,
+            Some("middle") => s.anchor = Anchor::Middle,
+            Some("end") => s.anchor = Anchor::End,
+            _ => {}
+        }
+        match get(&d, "letter-spacing") {
+            Some("normal") => s.letter_spacing = 0.0,
+            Some(v) => {
+                let em = v.strip_suffix("em").and_then(|n| n.trim().parse::<f32>().ok()).map(|n| n * s.font_size);
+                if let Some(x) = em.or_else(|| length(v, s.font_size)).filter(|x| x.is_finite()) {
+                    s.letter_spacing = x.clamp(-1000.0, 1000.0);
+                }
+            }
+            None => {}
+        }
+        match el.attr("xml:space") {
+            Some("preserve") => s.preserve = true,
+            Some("default") => s.preserve = false,
             _ => {}
         }
         if get(&d, "stroke-dasharray").is_some_and(|v| v != "none") {
@@ -453,21 +655,34 @@ impl Style {
         if get(&d, "filter").is_some_and(|v| v != "none") {
             report.skip("filters");
         }
-        if get(&d, "clip-path").is_some_and(|v| v != "none") || get(&d, "mask").is_some_and(|v| v != "none") {
-            report.skip("clip paths and masks (drawn unclipped)");
-        }
         s
     }
 }
 
 // ----- building ---------------------------------------------------------------------------------
 
+/// Something drawn, and the clips (clip paths and masks) of everything around it, innermost
+/// first. The clips are resolved into layers at the end ([`Builder::layers`]).
+struct Item {
+    el: ImportedElement,
+    clips: Vec<Rc<clip::Region>>,
+}
+
 struct Builder<'a> {
     ids: HashMap<&'a str, &'a X>,
     report: Report,
-    shapes: Vec<ImportedShape>,
+    items: Vec<Item>,
     /// The size percentages refer to (the viewBox, or the drawing size).
     viewport: (f32, f32),
+    /// The fonts text is laid out with; this computer's, found on the first text.
+    fonts: Option<&'a Fonts>,
+    /// Font name → what it is on this computer, looked up once per name.
+    faces: HashMap<String, FaceMatch>,
+    /// Elements visited so far (see [`MAX_VISITS`]).
+    visits: usize,
+    /// The clip paths and masks being read, innermost last (a reference back to one of them is
+    /// a loop).
+    resolving: Vec<&'a X>,
 }
 
 impl<'a> Builder<'a> {
@@ -478,7 +693,14 @@ impl<'a> Builder<'a> {
     }
 
     fn node(&mut self, el: &'a X, parent: &Affine, inherited: &Style, alpha: f32, depth: usize, uses: usize) {
-        if depth > MAX_DEPTH || self.shapes.len() >= MAX_SHAPES {
+        if depth > MAX_DEPTH || self.items.len() >= MAX_SHAPES {
+            return;
+        }
+        self.visits += 1;
+        if self.visits > MAX_VISITS {
+            if self.visits == MAX_VISITS + 1 {
+                self.report.skip("parts of a drawing too complex to read (left out)");
+            }
             return;
         }
         let d = declarations(el);
@@ -489,12 +711,9 @@ impl<'a> Builder<'a> {
         // Containers that never draw by themselves.
         match name {
             "defs" | "linearGradient" | "radialGradient" | "stop" | "symbol" | "metadata" | "title" | "desc" | "clipPath" | "mask" | "marker" | "pattern" | "filter" | "script" => return,
+            anicraft_xml::TEXT_NODE => return,
             "style" => {
                 self.report.skip("style sheets (inline styles are read)");
-                return;
-            }
-            "text" => {
-                self.report.skip("text elements");
                 return;
             }
             "image" => {
@@ -510,6 +729,16 @@ impl<'a> Builder<'a> {
         let style = inherited.with(el, &mut self.report);
         let alpha = alpha * get(&d, "opacity").and_then(opacity).unwrap_or(1.0);
         let m = parent.mul(&el.attr("transform").map_or(Affine::IDENTITY, transform));
+        let start = self.items.len();
+        self.draw(el, name, &d, &m, &style, alpha, depth, uses);
+        if self.items.len() > start {
+            self.clip(&d, &m, start, depth);
+        }
+    }
+
+    /// What `el` draws, into `items`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw(&mut self, el: &'a X, name: &str, d: &[(String, String)], m: &Affine, style: &Style, alpha: f32, depth: usize, uses: usize) {
         match name {
             "svg" if depth > 0 => {
                 // A nested viewport: x/y offset, then its own viewBox.
@@ -523,9 +752,9 @@ impl<'a> Builder<'a> {
                     None => Affine::IDENTITY,
                 };
                 let m = m.mul(&Affine::translate(x, y)).mul(&inner);
-                self.children(el, &m, &style, alpha, depth, uses);
+                self.children(el, &m, style, alpha, depth, uses);
             }
-            "svg" | "g" | "a" | "switch" => self.children(el, &m, &style, alpha, depth, uses),
+            "svg" | "g" | "a" | "switch" => self.children(el, m, style, alpha, depth, uses),
             "use" => {
                 let href = el.attr("href").or_else(|| el.attr("xlink:href")).unwrap_or("").trim_start_matches('#');
                 let Some(target) = self.ids.get(href).copied() else {
@@ -544,29 +773,42 @@ impl<'a> Builder<'a> {
                     let inner = style.with(target, &mut self.report);
                     self.children(target, &m, &inner, alpha, depth, uses + 1);
                 } else {
-                    self.node(target, &m, &style, alpha, depth + 1, uses + 1);
+                    self.node(target, &m, style, alpha, depth + 1, uses + 1);
+                }
+            }
+            "text" => {
+                if hidden(d) {
+                    return;
+                }
+                for el in self.text(el, m, style, alpha) {
+                    self.items.push(Item { el, clips: Vec::new() });
                 }
             }
             _ => {
                 let Some((path, closed_shape)) = self.geometry(el, name) else { return };
-                if !m.is_finite() || path.is_empty() {
-                    return;
-                }
-                if get(&d, "visibility").is_some_and(|v| v == "hidden" || v == "collapse") {
+                if !m.is_finite() || path.is_empty() || hidden(d) {
                     return;
                 }
                 let bounds = path.bounds();
-                let fill = if closed_shape { self.paint(&style.fill, style.fill_opacity, &style, &bounds) } else { None };
-                let stroke = self.stroke(&style, &bounds);
+                let fill = if closed_shape { self.paint(&style.fill, style.fill_opacity, style, &bounds) } else { None };
+                let stroke = self.stroke(style, &bounds);
                 if fill.is_none() && stroke.is_none() {
                     return;
                 }
-                self.shapes.push(ImportedShape {
-                    name: el.attr("id").unwrap_or("").chars().take(128).collect(),
-                    transform: m,
-                    alpha,
-                    shape: Shape { path: Arc::new(path), fill, stroke, fill_rule: style.fill_rule },
-                });
+                let shape = Shape { path: Arc::new(path), fill, stroke, fill_rule: style.fill_rule };
+                self.items.push(Item { el: ImportedElement { name: name_of(el), transform: *m, alpha, kind: ElementKind::Shape(shape) }, clips: Vec::new() });
+            }
+        }
+    }
+
+    /// The fonts to lay text out with: the ones given, else this computer's (scanned once).
+    fn fonts(&mut self) -> &'a Fonts {
+        match self.fonts {
+            Some(f) => f,
+            None => {
+                let f = Fonts::get();
+                self.fonts = Some(f);
+                f
             }
         }
     }
@@ -637,7 +879,7 @@ impl<'a> Builder<'a> {
                 other.primary_color()
             }
         };
-        Some(Stroke { color, width: style.stroke_width })
+        Some(Stroke::new(color, style.stroke_width))
     }
 
     /// A fill or stroke paint, with `opacity` folded in; `None` draws nothing.

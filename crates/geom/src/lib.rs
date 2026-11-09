@@ -5,6 +5,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod affine;
+pub mod clip;
 pub mod edit;
 pub mod morph;
 mod fit;
@@ -144,7 +145,9 @@ impl Rect {
     }
     /// Bounds of this rectangle after a transform.
     pub fn transformed(&self, m: &Affine) -> Rect {
-        if self.is_empty() {
+        // Only a rectangle with no points stays as it is: a flat one (a horizontal or vertical
+        // line's bounds) still moves with the transform.
+        if !(self.min.x <= self.max.x && self.min.y <= self.max.y) {
             return *self;
         }
         let mut r = Rect::EMPTY;
@@ -163,6 +166,16 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flat_rects_transform_and_empty_ones_stay_empty() {
+        let flat = Rect::new(-10.0, 0.0, 10.0, 0.0);
+        let r = flat.transformed(&Affine::translate(100.0, 50.0));
+        assert_eq!((r.min, r.max), (Vec2::new(90.0, 50.0), Vec2::new(110.0, 50.0)));
+        assert!(r.inflate(2.0).contains(Vec2::new(100.0, 51.0)));
+        let e = Rect::EMPTY.transformed(&Affine::translate(1.0, 1.0));
+        assert!(e.is_empty() && e.min.x.is_infinite());
+    }
 
     #[test]
     fn rect_union_and_intersect() {

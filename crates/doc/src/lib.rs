@@ -5,22 +5,29 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub use anicraft_audio as audio;
+pub use anicraft_actions as actions;
 
 mod bitmap;
 mod filter;
 mod easing;
 mod eval;
+mod hints;
 pub mod motion;
 pub mod path_table;
+pub mod width;
+pub mod player;
 pub mod sample;
 pub mod sound;
 
 pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
+pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
 pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
 pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
-pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
+pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene};
+pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, PluginScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use serde::{Deserialize, Serialize};
@@ -136,11 +143,51 @@ impl Paint {
     }
 }
 
-/// Stroke style. M0: round joins and caps.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Stroke style: round joins and caps, one width or a width profile (ADR 0018).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StrokeFile")]
 pub struct Stroke {
     pub color: Rgba,
+    /// Nominal width; a profile varies it along the stroke.
     pub width: f32,
+    /// How the width varies along each subpath (`None`: the same everywhere). Never uniform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<WidthProfile>,
+}
+
+/// What a file may hold for a stroke (a uniform profile is dropped on load).
+#[derive(Deserialize)]
+struct StrokeFile {
+    color: Rgba,
+    width: f32,
+    #[serde(default)]
+    profile: Option<WidthProfile>,
+}
+
+impl From<StrokeFile> for Stroke {
+    fn from(f: StrokeFile) -> Stroke {
+        Stroke { color: f.color, width: f.width, profile: f.profile.filter(|p| !p.is_uniform()) }
+    }
+}
+
+impl Stroke {
+    /// A stroke of one width.
+    pub fn new(color: Rgba, width: f32) -> Stroke {
+        Stroke { color, width, profile: None }
+    }
+    pub fn with_profile(self, profile: Option<WidthProfile>) -> Stroke {
+        Stroke { profile: profile.filter(|p| !p.is_uniform()), ..self }
+    }
+    /// The farthest the stroke reaches from its path (local units): half its nominal width
+    /// times the profile's widest factor.
+    pub fn reach(&self) -> f32 {
+        let w = if self.width.is_finite() { self.width.max(0.0) } else { 0.0 };
+        w * 0.5 * self.profile.as_ref().map_or(1.0, WidthProfile::max_factor)
+    }
+    /// The stroke `t` of the way to `o` (shape tweens): colour, width and profile blend.
+    pub fn lerp(&self, o: &Stroke, t: f32) -> Stroke {
+        Stroke { color: self.color.lerp(o.color, t), width: anicraft_geom::lerp(self.width, o.width, t), profile: WidthProfile::lerp(self.profile.as_ref(), o.profile.as_ref(), t) }
+    }
 }
 
 /// `Arc` equality that short-circuits on shared pointers. Unchanged subtrees of two document
@@ -178,7 +225,7 @@ impl Shape {
         Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
-        self.stroke = Some(Stroke { color, width });
+        self.stroke = Some(Stroke::new(color, width));
         self
     }
 }
@@ -232,6 +279,10 @@ pub enum ElementKind {
         /// Filters, applied in order (movie clips and buttons).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         filters: Vec<Filter>,
+        /// What the instance does on pointer events in the player (buttons and movie clips;
+        /// ADR 0024), one handler per event.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        events: Vec<EventHandler>,
     },
     /// A block of text (ADR 0012).
     Text(Arc<TextBlock>),
@@ -432,7 +483,7 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
     }
     match &el.kind {
         ElementKind::Shape(s) => {
-            let pad = s.stroke.map_or(0.0, |st| st.width * 0.5);
+            let pad = s.stroke.as_ref().map_or(0.0, Stroke::reach);
             s.path.bounds().inflate(pad).transformed(xf)
         }
         ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),
@@ -501,22 +552,29 @@ pub struct Keyframe {
     /// or a motion tween, never both; commands keep it so, and a motion tween wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion: Option<MotionTween>,
+    /// Shape hints for the shape tween this keyframe starts (ADR 0023), `a` first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<ShapeHint>,
     #[serde(default)]
     pub label: String,
     /// The sound that starts (or, for Stop, ends) on this keyframe (ADR 0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<FrameSound>,
+    /// What runs when the player enters this keyframe: frame actions or a plug-in frame
+    /// script (ADR 0024). Rendering and exports ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<FrameScript>,
 }
 
 impl PartialEq for Keyframe {
     fn eq(&self, o: &Keyframe) -> bool {
-        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.label == o.label && self.sound == o.sound && arcs_eq(&self.elements, &o.elements)
+        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && self.script == o.script && arcs_eq(&self.elements, &o.elements)
     }
 }
 
 impl Keyframe {
     pub fn new(start: u32, duration: u32) -> Self {
-        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, label: String::new(), sound: None }
+        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None, script: None }
     }
     /// Mutable access to the elements whose ids satisfy `pick`, cloning only those.
     pub fn elements_mut_where(&mut self, mut pick: impl FnMut(ElementId) -> bool) -> Vec<&mut Element> {
@@ -1045,6 +1103,7 @@ impl Document {
             let tl = &mut Arc::make_mut(scene).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
+                sanitize_scripts(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1054,6 +1113,7 @@ impl Document {
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
+                sanitize_scripts(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1065,6 +1125,40 @@ impl Document {
             max_id = max_id.max(s.id.0);
         }
         self.next_id = self.next_id.max(max_id.saturating_add(1));
+    }
+}
+
+/// Repairs a loaded layer's frame scripts and instance event handlers (ADR 0024). Touches (and
+/// so un-shares) only keyframes that need it.
+fn sanitize_scripts(layer: &mut Arc<Layer>) {
+    let bad_script = |k: &Keyframe| match &k.script {
+        Some(FrameScript::Actions(a)) => a.is_empty() || actions::check_actions(a).is_err(),
+        Some(FrameScript::Plugin(p)) => p.check().is_err(),
+        None => false,
+    };
+    let bad_events = |e: &Element| match &e.kind {
+        ElementKind::Symbol { events, .. } => {
+            events.len() > actions::MAX_HANDLERS || events.iter().enumerate().any(|(i, h)| events.iter().take(i).any(|o| o.event == h.event) || actions::check_actions(&h.actions).is_err())
+        }
+        _ => false,
+    };
+    if !layer.keyframes.iter().any(|k| bad_script(k) || k.elements.iter().any(|e| bad_events(e))) {
+        return;
+    }
+    let l = Arc::make_mut(layer);
+    for k in &mut l.keyframes {
+        if !(bad_script(k) || k.elements.iter().any(|e| bad_events(e))) {
+            continue;
+        }
+        let k = Arc::make_mut(k);
+        if k.script.as_mut().is_some_and(|s| !s.sanitize()) {
+            k.script = None;
+        }
+        for e in k.elements.iter_mut().filter(|e| bad_events(e)) {
+            if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(e).kind {
+                actions::sanitize_handlers(events);
+            }
+        }
     }
 }
 

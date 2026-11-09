@@ -18,7 +18,7 @@ fn el(doc: &mut Document, name: &str, transform: Affine, kind: ElementKind) -> A
 }
 
 fn instance(symbol: SymbolId) -> ElementKind {
-    ElementKind::Symbol { symbol, loop_mode: LoopMode::Loop, first_frame: 0, blend: crate::BlendMode::Normal, filters: Vec::new() }
+    ElementKind::Symbol { symbol, loop_mode: LoopMode::Loop, first_frame: 0, blend: crate::BlendMode::Normal, filters: Vec::new(), events: Vec::new() }
 }
 
 fn pose(tx: f32, ty: f32, sx: f32, sy: f32, rotation_deg: f32) -> Affine {
@@ -139,6 +139,71 @@ pub fn demo() -> Document {
     Arc::make_mut(&mut sky).locked = true;
 
     d.timeline_mut(0).layers = vec![ball, star, sun, hills, sky];
+    d
+}
+
+/// A small interactive movie (ADR 0024): a menu that stops on its first frame with a Play
+/// button; clicking it plays a short show (a spinning movie clip and a ball rolling across),
+/// whose last frame traces a line and goes back to the menu.
+pub fn interactive() -> Document {
+    use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, Target};
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
+    const LEN: u32 = 36;
+    let solid = |c: u32| Paint::Solid(Rgba::hex(c));
+
+    // The Play button: Up, Over and Down looks, and a Hit area a little larger than the art.
+    let button_id = SymbolId(d.alloc_id());
+    let face = |d: &mut Document, c: u32| {
+        let body = el(d, "face", Affine::IDENTITY, ElementKind::Shape(Shape::filled(Path::rounded_rect(-110.0, -40.0, 220.0, 80.0, 18.0), solid(c))));
+        let arrow = el(d, "arrow", Affine::IDENTITY, ElementKind::Shape(Shape::filled({ let mut p = Path::new(); p.move_to(Vec2::new(-14.0, -20.0)).line_to(Vec2::new(22.0, 0.0)).line_to(Vec2::new(-14.0, 20.0)).close(); p }, solid(0xffffff))));
+        vec![body, arrow]
+    };
+    let (up, over, down) = (face(&mut d, 0x3d8bfd), face(&mut d, 0x6aa8ff), face(&mut d, 0x2a64c0));
+    let hit_area = el(&mut d, "hit", Affine::IDENTITY, ElementKind::Shape(Shape::filled(Path::rect(-120.0, -50.0, 240.0, 100.0), solid(0x000000))));
+    let states = layer(d.alloc_id(), "states", 0x4fa3ff, vec![key(0, 1, up, None), key(1, 1, over, None), key(2, 1, down, None), key(3, 1, vec![hit_area], None)]);
+    d.library.push(Arc::new(Symbol { id: button_id, name: "Play Button".into(), kind: SymbolKind::Button, timeline: Timeline { layers: vec![states] } }));
+
+    // A movie clip that spins on its own timeline.
+    let spinner_id = SymbolId(d.alloc_id());
+    let star_shape = Shape::filled(Path::star(0.0, 0.0, 70.0, 30.0, 5), solid(0xffd54a)).with_stroke(Rgba::hex(0xe0a400), 3.0);
+    let star_el = ElementId(d.alloc_id());
+    let spin_keys = [(0u32, 0.0f32), (12, 360.0)]
+        .into_iter()
+        .map(|(start, deg)| {
+            let e = Element { id: star_el, name: String::new(), transform: pose(0.0, 0.0, 1.0, 1.0, deg), color: ColorEffect::default(), kind: ElementKind::Shape(star_shape.clone()) };
+            key(start, if start == 0 { 12 } else { 1 }, vec![Arc::new(e)], (start == 0).then_some(Easing::Linear))
+        })
+        .collect();
+    let spin = layer(d.alloc_id(), "spin", 0xffd54a, spin_keys);
+    d.library.push(Arc::new(Symbol { id: spinner_id, name: "Spinner".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![spin] } }));
+
+    // Main timeline: actions on top, then the button (menu frame), the show, the backdrop.
+    let mut menu = key(0, 1, Vec::new(), None);
+    menu.label = "menu".into();
+    menu.script = Some(FrameScript::Actions(vec![Action::Stop { target: Target::this() }]));
+    let mut show = key(1, LEN - 2, Vec::new(), None);
+    show.label = "show".into();
+    show.script = Some(FrameScript::Actions(vec![Action::Trace { message: "The show starts".into() }]));
+    let mut back = key(LEN - 1, 1, Vec::new(), None);
+    back.script = Some(FrameScript::Actions(vec![Action::Trace { message: "Back to the menu".into() }, Action::GotoAndStop { target: Target::this(), frame: FrameRef::Label("menu".into()), scene: None }]));
+    let actions = layer(d.alloc_id(), "Actions", 0xb39ddb, vec![menu, show, back]);
+
+    let mut play_btn = (*el(&mut d, "play_btn", pose(640.0, 400.0, 1.0, 1.0, 0.0), instance(button_id))).clone();
+    if let ElementKind::Symbol { events, .. } = &mut play_btn.kind {
+        events.push(EventHandler { event: ButtonEvent::Click, actions: vec![Action::GotoAndPlay { target: Target::this(), frame: FrameRef::Label("show".into()), scene: None }] });
+    }
+    let title = el(&mut d, "title bar", Affine::IDENTITY, ElementKind::Shape(Shape::filled(Path::rounded_rect(440.0, 220.0, 400.0, 24.0, 12.0), solid(0x8a93a8))));
+    let buttons = layer(d.alloc_id(), "Menu", 0x4fa3ff, vec![key(0, 1, vec![title, Arc::new(play_btn)], None), key(1, LEN - 1, Vec::new(), None)]);
+
+    let spinner = el(&mut d, "spinner", pose(640.0, 300.0, 1.0, 1.0, 0.0), instance(spinner_id));
+    let ball_id = ElementId(d.alloc_id());
+    let ball = |x: f32| Arc::new(Element { id: ball_id, name: "ball".into(), transform: pose(x, 560.0, 1.0, 1.0, 0.0), color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::ellipse(0.0, 0.0, 36.0, 36.0), solid(0xff6b4a))) });
+    let show_layer = layer(d.alloc_id(), "Show", 0xff6b4a, vec![key(0, 1, Vec::new(), None), key(1, LEN - 2, vec![spinner.clone(), ball(160.0)], Some(Easing::QuadInOut)), key(LEN - 1, 1, vec![spinner, ball(1120.0)], None)]);
+
+    let floor = el(&mut d, "floor", Affine::IDENTITY, ElementKind::Shape(Shape::filled(Path::rect(0.0, 600.0, 1280.0, 120.0), solid(0x2a3247))));
+    let backdrop = layer(d.alloc_id(), "Backdrop", 0x66bb6a, vec![key(0, LEN, vec![floor], None)]);
+
+    d.timeline_mut(0).layers = vec![actions, buttons, show_layer, backdrop];
     d
 }
 

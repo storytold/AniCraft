@@ -2,6 +2,84 @@
 
 ## Unreleased
 
+* **Interactivity: actions, buttons and Test Movie** (ADR 0024). Make a movie stop on a
+  frame, wait for a click and go on, without writing code. **Window › Actions** (F9) edits
+  what a keyframe does when the playhead reaches it and what a button or movie clip does on
+  Click, Press, Release, Pointer over and Pointer out: add Stop, Play, Go to and play, Go to
+  and stop, Next/Previous frame or scene, Trace or Set property from a menu, and pick the
+  target instance, frame, label or scene from your document. Name instances under
+  **Properties › Instance** to steer movie clips by name (`hero.arm`); keyframes with actions
+  show an "a" on the timeline. **Control › Test Movie** (Ctrl+Enter) plays the movie in its
+  own window at its frame rate, with buttons showing their Up, Over and Down frames and
+  answering clicks within their Hit area, and an **Output** panel for traces and anything
+  that couldn't run; Restart, Pause and Step are at the top, and your stage stays as it was.
+  **Frame scripts**: a WebAssembly plug-in of kind `frame-script` can run on a keyframe,
+  read where the movie is and send actions back, within 20 million instructions per frame
+  (`docs/plugins.md`). Headless: `actions.set`, `actions.clear`, `actions.list`,
+  `instance.set_name`, `control.test_movie` (plays with timed clicks and returns the output),
+  and `file.new_sample {"which": "interactive"}`. Exports still show the timeline as
+  authored.
+
+* **Shape hints** (Modify › Shape; ADR 0023). On a shape tween, Add Shape Hint (Ctrl+Shift+H)
+  adds a lettered marker, `a` to `z`, at the shape's centre. Drag it onto an edge on the
+  tween's first keyframe and onto the matching edge on its last: the morph then carries that
+  point there, so a square becomes a circle without turning and letters morph without folding.
+  Markers are rose until placed, amber once placed on the first keyframe and mint on the last;
+  they snap to the nearest edge as you drag, and right-click removes one or all (Ctrl+Z
+  undoes). Headless: `tween.add_hint`, `tween.move_hint`, `tween.remove_hint`,
+  `tween.clear_hints` and `tween.hints`. Hints are saved in `.anicraft` files (older files open
+  unchanged) and come across from XFL `shapeHints`.
+
+* **Accessibility, first pass** (ADR 0022, `docs/accessibility.md`). **High contrast** theme in
+  Preferences › Appearance › Theme: white text on black, yellow focus, selection and active
+  tool, outlined buttons and fields, brighter timeline blocks; every text colour at 7:1 or more.
+  **Screen readers** (Narrator, VoiceOver, Orca through AccessKit) now hear a name and role for
+  every control: tools ("Pen tool (P)"), layer rows and their Show/Lock/Outline toggles,
+  transport and icon buttons, every Properties field ("Position X", "Fill colour"), Library rows,
+  the Motion Editor, every dialog; the stage reads as a canvas with the tool, frame and
+  selection, and status messages are announced. **Ctrl+F6 / Ctrl+Shift+F6** (⌘F6 on macOS)
+  move the keyboard between Stage, Timeline, Properties, Library and Tools, listed and
+  rebindable in the shortcut sheet; shortcuts keep working while a button has focus. **Interface
+  scale** holds up to 200 %: the stage refits, the tools column and timeline header scroll, the
+  status bar shortens its message instead of overlapping. The default theme now meets WCAG AA
+  everywhere (the playhead's frame number, the current-frame readout and faint hints were
+  below it). A test walks the AccessKit tree in 23 states of the interface and fails on any
+  unnamed control. `anicraft --theme high-contrast --scale 200` previews a look for one run.
+  Not yet: stage elements and single frames one by one for screen readers, following the
+  system's contrast setting, the menu bar from the keyboard.
+* **Variable-width strokes and the Width tool** (**U**, ADR 0018). A stroke's width can now
+  vary along it: pick a profile in Properties › Width (Uniform, Taper both ends, Taper start,
+  Taper end, Bulge, Pinch, each with a picture), or set one in the drawing tools' options so
+  new lines start tapered. With the Width tool, hover a stroke to see its width points; drag a
+  point's handle to widen or narrow the line there (Alt: one side only), drag its dot to slide
+  it along, or drag anywhere on the line to add a point. Delete removes the selected point, and
+  each drag is one undo step. Changing the stroke width scales the whole profile. Shape tweens
+  blend profiles, SVG and Lottie export write the strokes as filled outlines matching the
+  stage, and `.anicraft` files keep them. Headless: `stroke.set_profile`,
+  `stroke.set_width_point`, `stroke.delete_width_point`, `stroke.width_at`, and a `profile`
+  param on `element.set_stroke`, the drawing commands and `paint.ink`.
+* **Fixed**: perfectly horizontal or vertical lines inside a moved shape could not be picked
+  (their flat bounds were not transformed).
+* **GPU stage, first slice** (M3, ADR 0019; build with `--features gpu-stage`). Preferences ›
+  Stage › Renderer (also View › Stage Rendering) can draw the stage on the graphics card
+  instead of the CPU. It draws fills, strokes and gradients from the CPU renderer's own
+  preparation and matches it to within one 8-bit step at a few edge pixels; masks, symbol
+  opacity, blend modes, filters and bitmaps still draw on the CPU, and the status bar says
+  which drew the stage and why. A 4K frame of 1,000 shapes takes about 9 ms instead of 18 ms.
+  Exports always use the CPU renderer. `ANICRAFT_STAGE_RENDERER=gpu|cpu` overrides the choice.
+* **Clip paths, masks and text in SVG drawings** (ADR 0021). Import to Stage (Ctrl+R) now
+  brings clipped artwork across on mask layers: a drawing with clip paths comes in as a folder
+  named after the file, with each clipped group on a masked layer under a mask layer holding
+  the clip's shape, so you can move or reshape the mask afterwards. Clips that cut nothing
+  (the frame clip design tools add) are dropped, and clips inside clips are combined exactly
+  when they can be. Masks come across when they are solid shapes (white for luminance masks);
+  soft or faded masks are drawn unmasked and reported. Text comes in as text you can edit,
+  one block per positioned line, with its font, size, weight, italic, colour, letter spacing
+  and anchor (start, middle, end); fonts that aren't on this computer fall back to the default
+  and the status bar names them. A frame exported as SVG with masks imports back as the same
+  picture. Per-character positions, text on a path and dashed strokes are reported, not yet
+  imported.
+
 * **Sound** (ADR 0020). Import WAV, Ogg Vorbis or MP3 sounds: **File › Import › Import to
   Stage** puts one on a new layer at the playhead, its span as long as the sound; **Import to
   Library** just adds it. A sound belongs to a keyframe, as in Animate: pick it under

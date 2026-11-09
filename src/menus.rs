@@ -54,6 +54,8 @@ fn enabled(app: &App, id: &str) -> bool {
             None => app.s.active_layer().is_some_and(|l| l.keyframe_starting_at(app.s.frame).is_some()),
         },
         "timeline.paste_frames" => !app.s.frame_clipboard.is_empty(),
+        "tween.add_hint" => app.s.active_layer().and_then(|l| l.hint_tween_at(app.s.frame)).is_some(),
+        "tween.clear_hints" => app.s.active_layer().and_then(|l| l.hint_tween_at(app.s.frame).and_then(|(i, _)| l.keyframes.get(i))).is_some_and(|k| !k.hints.is_empty()),
         "timeline.remove_frame" | "timeline.create_tween" | "timeline.create_shape_tween" => app.s.active_layer().is_some_and(|l| l.keyframe_at(app.s.frame).is_some()),
         _ => true,
     }
@@ -175,6 +177,18 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
                     }
                     ui.label(text(Type::Caption, tip));
                 }
+                if crate::gpu_stage::AVAILABLE {
+                    ui.separator();
+                    for (choice, name, tip) in crate::prefs::StageRenderer::ALL {
+                        if ui_item(ui, name, "", Some(app.prefs.stage_renderer == choice)) {
+                            let mut p = app.prefs.clone();
+                            p.stage_renderer = choice;
+                            let ctx = ui.ctx().clone();
+                            app.set_prefs(&ctx, p);
+                        }
+                        ui.label(text(Type::Caption, tip));
+                    }
+                }
             });
         }
         "Control" => {
@@ -193,6 +207,9 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             }
             if ui_item(ui, "Motion Editor", "", Some(app.bottom == BottomTab::MotionEditor)) {
                 app.bottom = BottomTab::MotionEditor;
+            }
+            if ui_item(ui, "Actions", app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
+                app.show_actions = !app.show_actions;
             }
             ui.separator();
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {

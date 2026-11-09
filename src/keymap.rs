@@ -46,6 +46,7 @@ pub fn tool_id(t: Tool) -> &'static str {
         Tool::Select => "tool.selection",
         Tool::Subselect => "tool.subselection",
         Tool::Transform => "tool.free_transform",
+        Tool::Width => "tool.width",
         Tool::Pen => "tool.pen",
         Tool::Text => "tool.text",
         Tool::Pencil => "tool.pencil",
@@ -70,7 +71,9 @@ fn view_label(id: &str) -> &'static str {
         "view.onion" => "Onion Skin On / Off",
         "view.select_all_frames" => "Select All Frames",
         "view.align_to_stage" => "Align to Stage On / Off",
-        "view.test" => "Test (Play from Frame 1)",
+        "view.next_panel" => "Next Panel",
+        "view.prev_panel" => "Previous Panel",
+        "view.actions" => "Actions Panel",
         _ => "View action",
     }
 }

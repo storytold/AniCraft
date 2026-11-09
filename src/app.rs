@@ -1,6 +1,7 @@
 //! The AniCraft shell: view state plus the frame loop. Document changes go through
 //! `Session::execute`, so everything here is also reachable headless.
 
+use crate::a11y::Named;
 use crate::theme::{self, T};
 use crate::{autosave, dialogs, keymap, menus, motion_editor, panels, pathtools, platform, prefs, stage, timeline};
 use std::collections::HashSet;
@@ -14,6 +15,7 @@ pub enum Tool {
     Select,
     Subselect,
     Transform,
+    Width,
     Pen,
     Text,
     Pencil,
@@ -59,13 +61,14 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 15] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => "Selection",
             Tool::Subselect => "Subselection",
             Tool::Transform => "Free Transform",
+            Tool::Width => "Width",
             Tool::Pen => "Pen",
             Tool::Text => "Text",
             Tool::Pencil => "Pencil",
@@ -85,6 +88,7 @@ impl Tool {
             Tool::Select => Some("V"),
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
+            Tool::Width => Some("U"),
             Tool::Pen => Some("P"),
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
@@ -105,6 +109,7 @@ impl Tool {
             Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
+            Tool::Width => "Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it.",
             Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
             Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
             Tool::Oval => "Drag to draw an oval. Shift draws a circle.",
@@ -144,6 +149,9 @@ pub struct StageView {
     pub zoom: f32,
     pub pan: egui::Vec2,
     pub fit: bool,
+    /// The canvas size and zoom of the last fit: while the view is still as fitted, it fits
+    /// again when the canvas changes size (window resized, panels or interface scale changed).
+    pub fitted: Option<(egui::Vec2, f32)>,
 }
 
 /// In-progress pointer gesture on the stage.
@@ -159,8 +167,13 @@ pub enum Drag {
     PointMarquee { start: egui::Pos2, cur: egui::Pos2 },
     /// Pencil stroke; the samples are in `App::pencil`.
     Pencil,
+    /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
+    /// `sub`; `start` is its left and right width when the drag began.
+    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
+    /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
+    Hint { index: usize, side: anicraft_engine::doc::HintSide },
     Pan,
 }
 
@@ -217,6 +230,8 @@ pub struct App {
     pub view: StageView,
     pub stage_cache: stage::Cache,
     pub drag: Drag,
+    /// The shape hint a right-click landed on (its menu is showing).
+    pub hint_menu: Option<usize>,
     pub playing: bool,
     pub looping: bool,
     play_acc: f64,
@@ -253,6 +268,8 @@ pub struct App {
     pub align_to_stage: bool,
     /// Subselection: selected anchors and handles.
     pub points: Vec<pathtools::PointRef>,
+    /// Width tool: the selected width point (shape, index).
+    pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
@@ -274,6 +291,11 @@ pub struct App {
     pub plugin_dialog: Option<crate::plugins_ui::Dialog>,
     /// Commands › Manage Plug-ins.
     pub show_plugins: bool,
+    /// Window › Actions (F9), and what it addresses.
+    pub show_actions: bool,
+    pub actions: crate::actions_panel::State,
+    /// Control › Test Movie: the movie playing in its own window.
+    pub test_movie: Option<crate::test_movie::TestMovie>,
     pub show_shortcuts: bool,
     /// The window close was intercepted because of unsaved changes.
     pub close_dialog: bool,
@@ -303,6 +325,8 @@ pub struct App {
     audio_clock: bool,
     /// The scene and frame last heard, so a moved playhead plays a snippet (scrubbing).
     heard: Option<(usize, u32)>,
+    /// The panel Ctrl+F6 last moved focus to (where the next press continues from).
+    pub last_panel: Option<crate::a11y::Region>,
 }
 
 /// How finished this version is, shown next to the version number (docs/release.md).
@@ -314,12 +338,21 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
     ("Alt+Shift+O", "view.onion"),
     ("Ctrl+Alt+A", "view.select_all_frames"),
     ("Ctrl+Alt+8", "view.align_to_stage"),
-    ("Ctrl+Enter", "view.test"),
+    // Keyboard focus between the panels (ADR 0022). F6 alone is Insert Keyframe, as animators
+    // expect; Ctrl+F6 is the next-pane key of Windows apps.
+    ("Ctrl+F6", "view.next_panel"),
+    ("Ctrl+Shift+F6", "view.prev_panel"),
+    ("F9", "view.actions"),
 ];
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
-        theme::apply(&cc.egui_ctx);
+        App::with_context(&cc.egui_ctx, session, shot)
+    }
+
+    /// The app on an egui context (the window's, or a headless one in tests).
+    pub fn with_context(ctx: &egui::Context, session: Session, shot: Option<PathBuf>) -> App {
+        theme::apply(ctx);
         let shot_mode = shot.is_some();
         // Screenshot runs use defaults so automated checks are reproducible.
         let prefs = if shot_mode { prefs::Prefs::default() } else { prefs::Prefs::load() };
@@ -336,9 +369,10 @@ impl App {
         let mut app = App {
             s: session,
             tool: Tool::Select,
-            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true },
+            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
+            hint_menu: None,
             playing: false,
             looping: true,
             play_acc: 0.0,
@@ -366,6 +400,7 @@ impl App {
             bucket_gap: GapSize::default(),
             align_to_stage: false,
             points: Vec::new(),
+            width_sel: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
             bottom: BottomTab::Timeline,
@@ -379,6 +414,9 @@ impl App {
             palette: None,
             plugin_dialog: None,
             show_plugins: false,
+            show_actions: false,
+            actions: crate::actions_panel::State::default(),
+            test_movie: None,
             show_shortcuts: false,
             close_dialog: false,
             allow_close: false,
@@ -397,8 +435,9 @@ impl App {
             sound: crate::sound::SoundOut::new(),
             audio_clock: false,
             heard: None,
+            last_panel: None,
         };
-        app.apply_prefs(&cc.egui_ctx);
+        app.apply_prefs(ctx);
         app.decode_sounds();
         app.status_ok("Welcome to AniCraft. Press Enter to play the sample animation.");
         if let Some(e) = recovery_err {
@@ -432,6 +471,7 @@ impl App {
     /// finishes the bundled fonts stay in place, and they are swapped in when it completes.
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
         ctx.set_zoom_factor(self.prefs.ui_scale);
+        theme::apply_palette(ctx, self.prefs.theme);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
         let wants_system = [&self.prefs.ui_font, &self.prefs.data_font].iter().any(|f| matches!(f, prefs::FontChoice::System(_)));
@@ -461,6 +501,19 @@ impl App {
         }
         theme::install_fonts(ctx, ui_font.as_ref(), data_font.as_ref());
         self.glyph_check = true;
+    }
+
+    /// `--theme` / `--scale`: a palette and interface scale for this run only (clamped like the
+    /// preference), not saved.
+    pub fn preview_look(&mut self, ctx: &egui::Context, theme: Option<theme::Palette>, scale: Option<f32>) {
+        if theme.is_none() && scale.is_none() {
+            return;
+        }
+        let mut p = self.prefs.clone();
+        p.theme = theme.unwrap_or(p.theme);
+        p.ui_scale = scale.unwrap_or(p.ui_scale);
+        self.prefs = p.sanitized();
+        self.apply_prefs(ctx);
     }
 
     pub fn open_prefs(&mut self) {
@@ -543,10 +596,27 @@ impl App {
             Some("confirm") => self.request("layer.delete", json!({})),
             Some("plugins") => {
                 // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
-                let first = self.s.plugins.list().find(|p| !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
+                let first = self.s.plugins.list().find(|p| crate::plugins_ui::is_command(p) && !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
                 match first {
                     Some(id) => crate::plugins_ui::open(self, &id),
                     None => self.show_plugins = true,
+                }
+            }
+            Some(which @ ("actions" | "testmovie")) => {
+                // The interactive sample: its Play button selected with the Actions panel on
+                // its events, or playing in Test Movie with the pointer over the button.
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 1}));
+                if which == "actions" {
+                    if let Some(id) = self.s.visible_elements().iter().find(|e| e.name == "play_btn").map(|e| e.id.0) {
+                        self.run("element.select", json!({"ids": [id]}));
+                    }
+                    crate::actions_panel::open(self, crate::actions_panel::Tab::Instance);
+                } else {
+                    self.run("layer.select", json!({"index": 0}));
+                    crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_pointer(self);
                 }
             }
             Some("select") => {
@@ -613,6 +683,30 @@ impl App {
                     self.run("timeline.goto", json!({"frame": 14}));
                 }
             }
+            Some(which @ ("hints" | "hintsend")) => {
+                // A square shape-tweening into a circle on a new layer, with three shape hints:
+                // a placed on both keyframes, b on the first only, c just added (unplaced).
+                self.run("layer.new", json!({"name": "Morph"}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.run("draw.rect", json!({"x": 420, "y": 220, "w": 200, "h": 200, "fill": "#ff9f43"}));
+                self.run("timeline.insert_blank_keyframe", json!({"frame": 15}));
+                self.run("timeline.goto", json!({"frame": 15}));
+                self.run("draw.ellipse", json!({"x": 750, "y": 210, "w": 220, "h": 220, "fill": "#ff9f43"}));
+                self.run("timeline.create_shape_tween", json!({"frame": 0}));
+                self.run("edit.deselect", json!({}));
+                let d = 110.0 * std::f32::consts::FRAC_1_SQRT_2;
+                for (start, end) in [(Some((420.0, 220.0)), Some((860.0 - d, 320.0 - d))), (Some((620.0, 330.0)), None), (None, None)] {
+                    let Some(v) = self.run("tween.add_hint", json!({"frame": 0})) else { break };
+                    let hint = v["hint"].clone();
+                    if let Some((x, y)) = start {
+                        self.run("tween.move_hint", json!({"hint": hint, "frame": 0, "side": "start", "x": x, "y": y}));
+                    }
+                    if let Some((x, y)) = end {
+                        self.run("tween.move_hint", json!({"hint": hint, "frame": 0, "side": "end", "x": x, "y": y}));
+                    }
+                }
+                self.run("timeline.goto", json!({"frame": if which == "hints" { 0 } else { 15 }}));
+            }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.
                 self.tl_cell_w = 48.0;
@@ -631,6 +725,18 @@ impl App {
                 {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
                 }
+            }
+            Some("width") => {
+                // A tapered brush-like stroke being shaped with the Width tool: one width point
+                // pushed out on its left side and selected.
+                let wave: Vec<[f32; 2]> = (0..=200).map(|i| [180.0 + i as f32 * 4.0, 420.0 - (i as f32 * 0.035).sin() * 110.0]).collect();
+                if let Some(v) = self.run("draw.freehand", json!({"points": wave, "stroke": "#1b2a4a", "stroke_width": 14, "profile": "taper_both"})) {
+                    let id = anicraft_engine::doc::ElementId(v["element"].as_u64().unwrap_or(0));
+                    if let Some(w) = self.run("stroke.set_width_point", json!({"id": id.0, "t": 0.3, "left": 2.4, "right": 0.9})) {
+                        self.width_sel = w["index"].as_u64().map(|i| (id, i as usize));
+                    }
+                }
+                self.tool = Tool::Width;
             }
             Some(which @ ("motion" | "motionspan")) => {
                 // The Star layer's span as a motion tween: it moves, turns and fades out, with
@@ -748,7 +854,15 @@ impl App {
                 }
                 let n = v["elements"].as_u64().unwrap_or(0);
                 let report = v["report"].as_str().unwrap_or("");
-                self.status_ok(format!("{n} {} on a new layer. {report} Ctrl+Z to undo.", if n == 1 { "shape" } else { "shapes" }));
+                let what = if n == 1 { "element" } else { "elements" };
+                let undo = platform::shortcut_label("Ctrl+Z");
+                // A drawing with clip paths or masks comes in as a folder of layers (ADR 0021).
+                let place = match (v["layers"].as_u64().unwrap_or(1), v["masks"].as_u64().unwrap_or(0)) {
+                    (0 | 1, _) => "on a new layer".to_string(),
+                    (l, 1) => format!("in a new folder of {l} layers with a mask"),
+                    (l, m) => format!("in a new folder of {l} layers with {m} masks"),
+                };
+                self.status_ok(format!("{n} {what} {place}. {report} {undo} to undo."));
             }
             "file.export_sprite_sheet" => self.status_ok(format!("Exported {} frames to {} ({}×{} grid) and its frame map {}", v["frames"], v["written"].as_str().unwrap_or(""), v["columns"], v["rows"], v["map"].as_str().unwrap_or(""))),
             "file.export_lottie" => {
@@ -818,6 +932,16 @@ impl App {
             if !self.recovery.show {
                 self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
             }
+            return;
+        }
+        if id == "tween.add_hint" {
+            crate::shape_hints::add(self);
+            return;
+        }
+        if id == "control.test_movie" {
+            // Control › Test Movie: the player in its own window (headless, the command plays
+            // the movie and reports).
+            crate::test_movie::open(self);
             return;
         }
         if id == "plugin.list" {
@@ -996,6 +1120,24 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// Ctrl+F6 / Ctrl+Shift+F6: keyboard focus to the next or previous panel (Stage, Timeline,
+    /// Properties, Library, Tools). Cut, copy and paste follow it to frames or artwork.
+    pub fn focus_panel(&mut self, ctx: &egui::Context, forward: bool) {
+        match crate::a11y::cycle_focus(ctx, self.last_panel, forward) {
+            Some(region) => {
+                self.last_panel = Some(region);
+                match region {
+                    crate::a11y::Region::Timeline => self.timeline_focus = true,
+                    crate::a11y::Region::Stage => self.timeline_focus = false,
+                    _ => {}
+                }
+                let next = self.keymap.primary("view.next_panel").map(platform::shortcut_label).unwrap_or_default();
+                self.status_ok(format!("{}{}", region.label(), if next.is_empty() { String::new() } else { format!(" · {next} for the next panel") }));
+            }
+            None => self.status_err("No panel to move to yet"),
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // While the shortcut editor records a key, every key press belongs to it.
         if self.modal_open() || self.key_capture.is_some() {
@@ -1027,22 +1169,46 @@ impl App {
         if sheet {
             self.show_shortcuts = !self.show_shortcuts;
         }
-        if ctx.egui_wants_keyboard_input() || self.palette.is_some() {
+        // Moving between panels (Ctrl+F6) works from anywhere, a text field included.
+        let panel_step = ctx.input_mut(|i| {
+            self.shortcuts.iter().filter(|(_, _, id)| matches!(*id, "view.next_panel" | "view.prev_panel")).find_map(|(m, k, id)| i.consume_key(*m, *k).then_some(*id == "view.next_panel"))
+        });
+        if let Some(forward) = panel_step {
+            self.focus_panel(ctx, forward);
+        }
+        // Who has the keyboard (ADR 0022): nothing focused, or the stage or timeline, gets every
+        // shortcut. A focused control (button, checkbox, menu) keeps Enter, Space and the arrows
+        // for itself (press, move to the next control) but the other shortcuts still work. A
+        // text field keeps every key.
+        let keys = crate::a11y::keyboard(ctx);
+        if keys == crate::a11y::Keyboard::Text || self.palette.is_some() {
             return;
         }
-        pathtools::consume_keys(self, ctx);
+        let control = keys == crate::a11y::Keyboard::Control;
+        if !control {
+            pathtools::consume_keys(self, ctx);
+            crate::widthtool::consume_keys(self, ctx);
+        }
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
         let mut play = false;
         let mut nudge = egui::Vec2::ZERO;
+        let surface_focused = ctx.memory(|m| m.focused().is_some());
         ctx.input_mut(|i| {
             for (m, k, id) in &self.shortcuts {
                 if i.consume_key(*m, *k) {
                     fire.push(id);
                 }
             }
+            if control {
+                return;
+            }
             if i.consume_key(Modifiers::NONE, Key::Enter) {
                 play = true;
+            }
+            // Space pans (held, `key_down`); its press must not "click" a focused stage.
+            if surface_focused {
+                i.consume_key(Modifiers::NONE, Key::Space);
             }
             let step = if i.modifiers.shift { 10.0 } else { 1.0 };
             for (k, d) in [(Key::ArrowLeft, egui::vec2(-step, 0.0)), (Key::ArrowRight, egui::vec2(step, 0.0)), (Key::ArrowUp, egui::vec2(0.0, -step)), (Key::ArrowDown, egui::vec2(0.0, step))] {
@@ -1069,13 +1235,7 @@ impl App {
                         self.run("timeline.goto", json!({"frame": 0}));
                     }
                 }
-                "view.test" => {
-                    // Test: play from frame 1.
-                    self.run("timeline.goto", json!({"frame": 0}));
-                    if !self.playing {
-                        self.toggle_play();
-                    }
-                }
+                "view.actions" => self.show_actions = !self.show_actions,
                 id if id.starts_with("tool.") => tool = keymap::tool_for(id).or(tool),
                 _ => self.invoke(id),
             }
@@ -1143,7 +1303,7 @@ impl App {
         let mut cancel = false;
         egui::Window::new(p.title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| {
             ui.set_min_width(360.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY));
+            let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY)).named(p.title);
             r.request_focus();
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 submit = true;
@@ -1170,7 +1330,7 @@ impl App {
 
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
-        egui::Window::new("About AniCraft").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        let shown = egui::Window::new("About AniCraft").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.add(egui::Image::new((app_mark(ctx).id(), egui::vec2(64.0, 64.0))));
             ui.heading("AniCraft");
             ui.label(format!("Version {} · {RELEASE_STAGE}", env!("CARGO_PKG_VERSION")));
@@ -1179,6 +1339,7 @@ impl App {
             ui.colored_label(T.text_dim, "MIT OR Apache-2.0");
             ui.label(theme::text(theme::Type::Caption, format!("Typefaces: {}", theme::font_summary())));
         });
+        crate::a11y::name_title_bar(&shown, "About AniCraft");
         self.show_about = open;
     }
 
@@ -1201,14 +1362,14 @@ impl App {
             ("Screenshots", root.join("shots")),
         ];
         let mut opened: Option<Result<(), String>> = None;
-        egui::Window::new("Project Files").open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| {
+        let shown = egui::Window::new("Project Files").open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| {
             ui.label(theme::text(theme::Type::Label, "Where AniCraft's documents and files are on this computer"));
             ui.add_space(4.0);
             egui::Grid::new("files").num_columns(3).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
                 for (label, path) in &entries {
                     ui.label(theme::text(theme::Type::Body, *label).strong());
                     ui.label(theme::text(theme::Type::Path, path.display().to_string()).color(if path.exists() { T.text } else { T.text_faint }));
-                    if ui.add_enabled(path.exists(), egui::Button::new("Open")).clicked() {
+                    if ui.add_enabled(path.exists(), egui::Button::new("Open")).named(&format!("Open {label}")).clicked() {
                         opened = Some(open_in_system(path));
                     }
                     ui.end_row();
@@ -1221,6 +1382,7 @@ impl App {
             ui.add_space(4.0);
             ui.label(theme::text(theme::Type::Caption, "Saved documents and exports go where you type in the save box; a plain name lands in the folder AniCraft was started from."));
         });
+        crate::a11y::name_title_bar(&shown, "Project Files");
         match opened {
             Some(Err(e)) => self.status_err(e),
             Some(Ok(())) => self.status_ok("Opened in your system's file viewer"),
@@ -1273,6 +1435,13 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+}
+
+impl App {
+    /// One frame of the whole interface. Needs no window, so tests run it headless.
+    pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
@@ -1291,6 +1460,7 @@ impl eframe::App for App {
             self.points.clear();
         }
         pathtools::upkeep(self);
+        crate::widthtool::upkeep(self);
         self.tick_playback(&ctx);
         self.scrub_sound();
         self.update_title(&ctx);
@@ -1303,16 +1473,26 @@ impl eframe::App for App {
         egui::Panel::top("menu_bar").frame(bar(T.chrome)).show(ui, |ui| menus::bar(self, ui));
         egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| panels::edit_bar(self, ui));
         egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| panels::status_bar(self, ui));
-        egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(6, 8))).show(ui, |ui| panels::tools(self, ui));
-        egui::Panel::right("properties").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
-        egui::Panel::bottom("timeline").resizable(true).default_size(292.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
+        // Docks start at their usual size, but never take most of a small window or a large
+        // interface scale (200 % on a laptop leaves under 1000 × 600 points), and the stage
+        // always keeps room when the scale goes up later.
+        let room = ui.available_rect_before_wrap();
+        let room = egui::vec2(room.width(), room.height());
+        let (dock_w, timeline_h) = ((room.x * 0.3).clamp(220.0, 292.0), (room.y * 0.42).clamp(200.0, 292.0));
+        egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(0, 8))).show(ui, |ui| panels::tools(self, ui));
+        egui::Panel::right("properties").resizable(true).default_size(dock_w).max_size((room.x * 0.5).max(220.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
+        egui::Panel::bottom("timeline").resizable(true).default_size(timeline_h).max_size((room.y * 0.6).max(200.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
+        crate::a11y::name_splitter(&ctx, "properties", "Resize the right-hand panels");
+        crate::a11y::name_splitter(&ctx, "timeline", "Resize the timeline");
 
         self.prompt_window(&ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
+        crate::actions_panel::show(self, &ctx);
+        crate::test_movie::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {

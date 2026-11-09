@@ -1,10 +1,36 @@
 use super::*;
 
-fn imp(svg: &str) -> SvgImport {
-    match import(svg.as_bytes()) {
+/// An imported shape, flattened out of its layer.
+#[derive(Clone, Debug)]
+struct ImportedShape {
+    name: String,
+    transform: Affine,
+    alpha: f32,
+    shape: Shape,
+}
+
+/// An import whose layers are flattened into its shapes.
+#[derive(Clone, Debug)]
+struct Flat {
+    width: f32,
+    height: f32,
+    shapes: Vec<ImportedShape>,
+    report: Report,
+}
+
+fn imp(svg: &str) -> Flat {
+    let i = match import_with_fonts(svg.as_bytes(), &Fonts::from_faces(Vec::new())) {
         Ok(i) => i,
         Err(e) => panic!("{e}: {svg}"),
-    }
+    };
+    let shapes = i
+        .elements()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Shape(s) => Some(ImportedShape { name: e.name.clone(), transform: e.transform, alpha: e.alpha, shape: s.clone() }),
+            _ => None,
+        })
+        .collect();
+    Flat { width: i.width, height: i.height, shapes, report: i.report }
 }
 
 fn solid(s: &ImportedShape) -> Rgba {
@@ -31,7 +57,7 @@ fn shapes_styles_and_inheritance() {
     let r = &i.shapes[0];
     assert_eq!(r.name, "box");
     assert_eq!(solid(r), Rgba::hex(0xff0000));
-    assert_eq!(r.shape.stroke, Some(Stroke { color: Rgba::hex(0x0000ff), width: 4.0 }));
+    assert_eq!(r.shape.stroke, Some(Stroke::new(Rgba::hex(0x0000ff), 4.0)));
     assert_eq!(r.alpha, 0.5, "group opacity reaches every child");
     assert_eq!(r.shape.path.bounds(), Rect::new(10.0, 10.0, 60.0, 40.0));
     let c = &i.shapes[1];
@@ -82,7 +108,7 @@ fn gradients_in_both_unit_systems_with_inherited_stops() {
       <circle cx="50" cy="50" r="25" fill="url(#r)" fill-opacity="0.5"/>
       <rect width="5" height="5" fill="url(#nothing) red"/>
     </svg>"##);
-    let i = SvgImport { shapes: i.shapes[1..].to_vec(), ..i };
+    let i = Flat { shapes: i.shapes[1..].to_vec(), ..i };
     match &i.shapes[0].shape.fill {
         Some(Paint::Linear { start, end, stops }) => {
             assert_eq!((*start, *end), (Vec2::new(20.0, 10.0), Vec2::new(60.0, 10.0)), "bounding-box units map onto the shape");
@@ -121,7 +147,7 @@ fn use_references_and_reported_leftovers() {
     assert_eq!(first.transform.apply(Vec2::new(0.0, 0.0)), Vec2::new(10.0, 20.0));
     assert_eq!(solid(first), Rgba::hex(0x123456));
     assert_eq!(i.shapes.len(), 4, "the dot, the symbol's two rects and the plain rect");
-    for k in ["text elements", "images", "references to missing elements", "dashed strokes (drawn solid)", "filters", "clip paths and masks (drawn unclipped)", "style sheets (inline styles are read)"] {
+    for k in ["text (no fonts on this computer)", "images", "references to missing elements", "dashed strokes (drawn solid)", "filters", "references to missing clip paths (drawn unclipped)", "style sheets (inline styles are read)"] {
         assert_eq!(i.report.skipped.get(k), Some(&1), "{k}: {:?}", i.report);
     }
     assert!(i.report.summary().starts_with("Imported. Not yet supported: "));

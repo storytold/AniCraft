@@ -544,11 +544,17 @@ fn panic_hunt_every_command() {
         json!({"d": "M 0 0 C", "points": [[0, 0]], "mode": "straighten", "tolerance": 0}),
         json!({"id": 3, "points": [[0, 0], [99, 9], [1, 2]], "dx": 1e30, "dy": 0, "cmds": [0, 1, 2, 3, 4, 5, 99], "cmd": 0, "smooth": true}),
         json!({"id": 5, "points": [[1, 1]], "dx": 3, "dy": 4, "x": 0, "y": 0, "slop": 1e9, "cmds": [1, 1, 0], "cmd": 1, "smooth": false}),
+        json!({"id": 3, "profile": [[0, 1e30, -5], ["x"], [0.5, 16, 16]], "index": u64::MAX, "t": -0.5, "left": 1e9, "width": f64::MAX}),
+        json!({"id": 3, "profile": "taper_both", "index": 0, "t": 1, "x": 1e30, "y": -1e30, "left": 0, "right": 16}),
+        json!({"profile": (0..500).map(|i| json!([f64::from(i) / 500.0, 2, 2])).collect::<Vec<_>>()}),
         json!({"sound": SOUND, "sync": "stream", "repeat": 9999, "loop": true, "extend": true, "frame": 99_999}),
         json!({"sound": SOUND, "sync": "nope", "repeat": 0, "loop": "x", "name": ""}),
         json!({"sound": SOUND, "frame": 3, "extend": true, "name": "renamed"}),
         json!({"sound": u64::MAX, "repeat": 1e9}),
         json!({"sound": "a", "sync": 3}),
+        json!({"hint": "a", "x": 1e7, "y": -1e7, "side": "end"}),
+        json!({"hint": u64::MAX, "side": "middle", "x": 0, "y": 0}),
+        json!({"hint": "zz", "frame": 0}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -1000,7 +1006,7 @@ fn shapes_on_layer(s: &Session) -> Vec<(u64, Option<anicraft_doc::Paint>, Option
     s.visible_elements()
         .iter()
         .filter_map(|e| match &e.kind {
-            ElementKind::Shape(sh) => Some((e.id.0, sh.fill.clone(), sh.stroke)),
+            ElementKind::Shape(sh) => Some((e.id.0, sh.fill.clone(), sh.stroke.clone())),
             _ => None,
         })
         .collect()
@@ -1051,7 +1057,7 @@ fn ink_bottle_strokes_the_clicked_shape() {
     run(&mut s, "draw.ellipse", json!({"x": 0, "y": 0, "w": 40, "h": 40, "stroke": null}));
     assert!(shapes_on_layer(&s)[0].2.is_none());
     run(&mut s, "paint.ink", json!({"x": 20, "y": 20, "color": "#123456", "width": 4}));
-    let st = shapes_on_layer(&s)[0].2.expect("stroked");
+    let st = shapes_on_layer(&s)[0].2.clone().expect("stroked");
     assert_eq!((st.color, st.width), (anicraft_doc::Rgba::hex(0x123456), 4.0));
     assert!(s.execute("paint.ink", &json!({"x": 300, "y": 300})).is_err(), "nothing there");
     // Symbols keep their colours.
@@ -1110,7 +1116,7 @@ fn opening_an_xfl_folder_imports_it_untitled() {
     // It renders.
     let dl = s.display_list();
     assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0xff8800))));
-    // Text comes across as an editable text block when this computer has fonts (ADR 0015),
+    // Text comes across as an editable text block when this computer has fonts (ADR 0014),
     // with the missing family named.
     if !anicraft_text::Fonts::get().families().is_empty() {
         assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"), "{v}");
@@ -1159,6 +1165,7 @@ fn animate_default_keys_map_to_the_same_commands() {
         ("Shift+,", "timeline.first_frame"),
         ("Shift+.", "timeline.last_frame"),
         ("F8", "modify.convert_to_symbol"),
+        ("Ctrl+Enter", "control.test_movie"),
         ("Ctrl+B", "modify.break_apart"),
         ("Ctrl+Shift+Z", "modify.remove_transform"),
         ("Ctrl+Shift+9", "modify.rotate_cw"),
@@ -1212,6 +1219,72 @@ fn bring_forward_send_backward_and_remove_transform() {
     let t = s.visible_elements().iter().find(|e| e.id.0 == ids[0]).unwrap().transform;
     assert_eq!(t.m[..4], [1.0, 0.0, 0.0, 1.0]);
     assert_eq!(t.translation(), before);
+}
+
+#[test]
+fn masked_frames_round_trip_through_svg_onto_mask_layers() {
+    // A drawing with a mask: a background, artwork under an ellipse mask, a layer on top.
+    let mut src = Session::default();
+    run(&mut src, "draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 360, "fill": "#20304a"}));
+    run(&mut src, "layer.new", json!({"name": "Art"}));
+    run(&mut src, "draw.rect", json!({"x": 100, "y": 60, "w": 400, "h": 240, "fill": "#ff6b4a"}));
+    run(&mut src, "draw.star", json!({"cx": 300, "cy": 180, "outer": 150, "inner": 60, "points": 5, "fill": "#ffd54a"}));
+    run(&mut src, "layer.new", json!({"name": "Mask"}));
+    run(&mut src, "draw.ellipse", json!({"x": 180, "y": 80, "w": 260, "h": 200}));
+    run(&mut src, "layer.toggle_mask", json!({}));
+    run(&mut src, "layer.new", json!({"name": "Top"}));
+    run(&mut src, "draw.rect", json!({"x": 20, "y": 20, "w": 60, "h": 60, "fill": "#66bb6a"}));
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-mask-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("masked.svg");
+    std::fs::write(&svg, crate::cmds_file::frame_svg(&src.doc, 0)).unwrap();
+
+    // Import it at the origin of an empty document of the same size.
+    let mut s = Session::default();
+    let before = s.doc.timeline(s.scene).layers.len();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    assert_eq!((v["masks"].as_u64(), v["layers"].as_u64()), (Some(1), Some(5)), "{v}");
+    let tl = s.doc.timeline(s.scene);
+    use anicraft_doc::LayerKind;
+    let kinds: Vec<(LayerKind, usize)> = tl.layers.iter().take(5).map(|l| (l.kind, tl.depth(tl.layers.iter().position(|x| x.id == l.id).unwrap()))).collect();
+    assert_eq!(kinds, [(LayerKind::Folder, 0), (LayerKind::Normal, 1), (LayerKind::Mask, 1), (LayerKind::Normal, 2), (LayerKind::Normal, 1)], "folder › top art, mask › masked art, background");
+    assert_eq!(tl.layers[0].name, "masked");
+    assert_eq!(tl.layers.len(), before + 5);
+    assert_eq!(s.selection.len(), 2, "the top layer's artwork (exported as a fill and a stroke) is selected");
+
+    // The same picture comes back.
+    let a = anicraft_render::render_frame(&src.doc, 0, 0.5).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&s.doc, 0, 0.5).unwrap().to_rgba8();
+    let worst = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs()).max().unwrap();
+    let mean = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs() as f64).sum::<f64>() / a.len() as f64;
+    assert!(mean < 0.01 && worst <= 2, "mean {mean:.3}, worst {worst} of 255");
+    // Exporting the import again gives the same masks.
+    assert_eq!(crate::cmds_file::frame_svg(&s.doc, 0).matches("<clipPath").count(), 1);
+
+    // One undo step removes the folder and all its layers.
+    s.undo().unwrap();
+    assert_eq!(s.doc.timeline(s.scene).layers.len(), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn imported_svg_text_is_editable_text() {
+    if anicraft_text::Fonts::get().families().is_empty() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-text-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("title.svg");
+    std::fs::write(&svg, r##"<svg width="300" height="80"><text x="150" y="50" text-anchor="middle" font-family="Zz Not Installed" font-size="32" fill="#ff0000">Title</text><rect width="10" height="10"/></svg>"##).unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string()}));
+    assert_eq!((v["texts"].as_u64(), v["elements"].as_u64(), v["layers"].as_u64()), (Some(1), Some(2), Some(1)));
+    assert_eq!(v["missing_fonts"], json!(["Zz Not Installed"]));
+    assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"));
+    let text = s.visible_elements().into_iter().find(|e| matches!(e.kind, anicraft_doc::ElementKind::Text(_))).unwrap();
+    run(&mut s, "element.select", json!({"ids": [text.id.0]}));
+    run(&mut s, "text.edit", json!({"text": "Longer title"}));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

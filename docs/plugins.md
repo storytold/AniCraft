@@ -23,7 +23,7 @@ the selection is greyed out until something is selected.
 | Command | Params | What it does |
 |---|---|---|
 | `plugin.install` | `{"path": "x.wasm", "confirm"?: true}` | Validates the module and installs it. With a plug-ins folder, the module is copied there as `<id>.wasm` (atomically). Replacing an installed plug-in's file is irreversible, so it needs `"confirm": true` (ADR 0004). |
-| `plugin.list` | `{}` | `{"plugins": [{id, name, version, author, description, kind, selection, params, notation, size, source, in_folder}], "folder", "abi"}`. In the app: the Plug-ins window. |
+| `plugin.list` | `{}` | `{"plugins": [{id, name, version, author, description, kind, entries, selection, params, notation, size, source, in_folder}], "folder", "abi"}`. In the app: the Plug-ins window. |
 | `plugin.run` | `{"id": "…", "params"?: {…}}` | Runs a plug-in. Missing params take their defaults; numbers are clamped to their range; a wrong type is an error. One undo step; on any failure the document is left exactly as it was. Returns the run's log, request count and instructions used. |
 | `plugin.remove` | `{"id": "…", "confirm"?: true}` | Uninstalls. When its file is in the plug-ins folder it is deleted, which needs `"confirm": true`. |
 | `plugin.reload` | `{"folder"?: "…"}` | Re-reads every `*.wasm` in the plug-ins folder (first making `folder` the plug-ins folder when given). A bad module is reported and skipped. |
@@ -122,10 +122,69 @@ Unknown ops answer `{"ok":false,"error":"unknown op '…'"}`, so a plug-in can f
 New ops and plug-in kinds are added without changing version 1; the version changes only
 when an existing contract changes.
 
-**Reserved for later kinds** (not in v1; ADR 0013 and 0014): timeline actions for frame
-scripts (`stop`, `play`, `goto` by frame or label, targeting named instances), the same IR the
-ActionScript front end lowers to; exporters (`kind: "exporter"`, frames in, bytes out); easing
-presets.
+**Reserved for later kinds**: exporters (`kind: "exporter"`, frames in, bytes out); easing
+presets. Frame scripts are below.
+
+## Frame scripts (`kind: "frame-script"`)
+
+A frame script runs **while the movie plays** (Test Movie, `control.test_movie`), when the
+playhead enters a keyframe that names one of its entry points, and steers playback with the
+same timeline actions the Actions panel edits ([ADR 0024](adr/0024-frame-scripts-and-test-movie.md)).
+It never changes the document, so the stage and every export stay as authored.
+
+```json
+{"id": "org.example.menu", "name": "Menu Logic", "kind": "frame-script", "entries": ["main", "intro"]}
+```
+
+* `entries`: 1-32 entry points (`[A-Za-z0-9_]{1,32}`), `["main"]` when left out. A keyframe
+  picks one: **Window › Actions › Frame › Runs: Frame script**, or
+  `actions.set {"layer": …, "frame": …, "plugin": "org.example.menu", "entry": "intro"}`.
+* Frame scripts are not commands: they are not in Commands › Plug-ins and `plugin.run`
+  refuses them.
+* Each run is a **fresh instance**; `ac_run` gets `{"entry", "frame", "label", "timeline"}`
+  (the keyframe's frame, 0-based, the label there, and the dot path of the timeline it is on,
+  `""` for the main timeline).
+
+| Request | Result |
+|---|---|
+| `{"op":"player"}` | The player state: `{scene, scene_name, scenes, frame, frames, playing, clips: [{path, name, frame, frames, playing}], pointer: {x, y, down} \| null, hover, tick, timeline: {path, frame, frames, label, playing}}` (`timeline` is the script's own). |
+| `{"op":"action","action":{…}}` | Queues one action: `{"queued": 1}`. A malformed action is an error answer. |
+| `{"op":"actions","actions":[…]}` | Queues several (at most 256 per run). |
+| `{"op":"log","message":"…"}` | A line in the Output panel. |
+| `command`, `document`, `elements` | Refused: a frame script can't read or change the document. |
+
+Actions are JSON objects with an `op` (the same as `actions.set` takes; frames are 0-based):
+
+| Action | Fields |
+|---|---|
+| `{"op":"stop"}`, `{"op":"play"}` | `target?` |
+| `{"op":"goto_and_play"}`, `{"op":"goto_and_stop"}` | `frame`: a number or a label; `scene?` (main timeline); `target?` |
+| `{"op":"next_frame"}`, `{"op":"prev_frame"}` | `target?` |
+| `{"op":"next_scene"}`, `{"op":"prev_scene"}` | — |
+| `{"op":"trace","message":"…"}` | — |
+| `{"op":"set_property","property":"x\|y\|alpha\|visible\|rotation\|scale_x\|scale_y","value":n}` | `target?` |
+
+`target` is a dot path of instance names from the script's timeline: `""` (itself),
+`hero`, `hero.arm`, `parent`, `root`. The queued actions run after the script returns, in
+order; if the script fails (a trap, a non-zero return, a budget), none of them run.
+
+**Limits** (`Limits::frame_script`): **20,000,000 instructions per frame, shared** by all the
+frame scripts of that frame; 100 ms wall clock per run; 1,000 requests; 64 KiB per request,
+1 MiB per response, 1 MiB in all; 50 log lines. A script that runs out writes one Output line
+(“exceeded its instruction budget”), the rest of the frame's scripts don't run, and the movie
+plays on. A script that reads the player and sends an action takes about 50 µs (debug build).
+
+```rust
+// The guest SDK's request helper sends one JSON request and returns the answer.
+fn run(p: &Value) -> Result<(), String> {
+    let st = ac::request(&json!({"op": "player"}))?;
+    if st["frame"].as_u64() == Some(0) && st["pointer"].is_null() {
+        ac::request(&json!({"op": "action", "action": {"op": "stop"}}))?;
+        ac::request(&json!({"op": "log", "message": format!("waiting on {}", p["entry"])}))?;
+    }
+    Ok(())
+}
+```
 
 ### Manifest
 
@@ -153,7 +212,7 @@ presets.
 * `name`: the menu label, 1–64 printable characters (control characters and invisible
   format characters such as bidi overrides are rejected). The app adds "…" when there are
   parameters.
-* `kind`: `"command"` (the only kind in v1).
+* `kind`: `"command"`, or `"frame-script"` (see Frame scripts above, with its `entries`).
 * `selection`: `"optional"` (default; generators) or `"required"` (selection transforms: the
   menu item is disabled without a selection and `plugin.run` refuses).
 * `params`: in dialog order, at most 32. Names are `[A-Za-z0-9_]`, 1–32 characters, not
@@ -220,7 +279,8 @@ second per run.
 
 ## Not in v1
 
-* Frame scripts, exporters and easing plug-ins (reserved above), panels and other UI plug-ins.
+* Exporters and easing plug-ins (reserved above), panels and other UI plug-ins.
+* State that survives between frame-script runs (each run is a fresh instance).
 * Runs on a background thread with progress and cancel: a run blocks the app for at most its
   time budget (5 s).
 * A compact binary view of large documents (v1 answers JSON only), and requests that edit a
