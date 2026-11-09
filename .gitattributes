@@ -7,3 +7,6 @@
 *.png binary
 # shell hooks must keep LF endings or /bin/sh rejects them
 scripts/git-hooks/* text eol=lf
+*.wav binary
+*.ogg binary
+*.mp3 binary

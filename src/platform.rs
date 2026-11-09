@@ -152,7 +152,9 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_gif" => ("Animated GIF", &["gif"]),
         "file.export_svg" => ("SVG image", &["svg"]),
         "file.export_lottie" => ("Lottie animation", &["json"]),
-        "file.import" => ("SVG drawing or image", &["svg", "png", "jpg", "jpeg"]),
+        "file.import" => ("Drawing, image or sound", &["svg", "png", "jpg", "jpeg", "wav", "ogg", "mp3"]),
+        "file.import_to_library" => ("Sound or image", &["wav", "ogg", "mp3", "png", "jpg", "jpeg"]),
+        "file.export_audio" => ("WAV sound", &["wav"]),
         "file.export_sprite_sheet" => ("PNG sprite sheet", &["png"]),
         "file.export_video" => ("Video (WebM or MP4)", &["webm", "mp4"]),
         // Opening also imports .fla archives and .xfl packages.
@@ -168,7 +170,7 @@ pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf
     let (label, exts) = filters(cmd);
     let d = rfd::FileDialog::new().set_title(title);
     match cmd {
-        "file.open" | "plugin.install" => d.add_filter(label, exts).pick_file(),
+        "file.open" | "plugin.install" | "file.import" | "file.import_to_library" => d.add_filter(label, exts).pick_file(),
         "file.export_png_sequence" => d.pick_folder(),
         _ => d.add_filter(label, exts).set_file_name(default_name).save_file(),
     }

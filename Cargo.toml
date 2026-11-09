@@ -62,6 +62,11 @@ publish.workspace = true
 repository.workspace = true
 default-run = "anicraft"
 
+[features]
+# Plays sound during stage playback. Off: playback is silent (for builders without ALSA headers).
+default = ["sound-output"]
+sound-output = ["dep:cpal"]
+
 [[bin]]
 name = "anicraft"
 path = "src/main.rs"
@@ -76,6 +81,9 @@ egui.workspace = true
 rfd.workspace = true
 serde.workspace = true
 fontdb.workspace = true
+anicraft-audio.workspace = true
+# Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
+cpal = { version = "0.18", optional = true }
 serde_json.workspace = true
 
 [build-dependencies]
