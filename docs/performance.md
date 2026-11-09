@@ -99,10 +99,4 @@ buffer is tiny; the stage never waits on sound.
 * [ADR 0001](adr/0001-undo-persistent-snapshots.md): persistent document and snapshot undo
 * [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
 * [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
-
-## Decisions
-
-* [ADR 0001](adr/0001-undo-persistent-snapshots.md): persistent document and snapshot undo
-* [ADR 0002](adr/0002-render-pipeline.md): render worker, frame cache, band parallelism, culling
-* [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
 * [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
