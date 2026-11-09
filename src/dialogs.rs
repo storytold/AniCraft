@@ -179,6 +179,8 @@ enum Entry {
     Command(CommandSpec),
     Tool(Tool),
     View(&'static str, &'static str, fn(&mut App)),
+    /// An installed plug-in: `(id, menu label)`.
+    Plugin(String, String),
 }
 
 impl Entry {
@@ -190,6 +192,8 @@ impl Entry {
             Entry::Command(c) => format!("{} › {}", path(c.menu), tr(c.label)),
             Entry::Tool(t) => format!("{} › {}", tr("Tool"), tr(t.label())),
             Entry::View(name, _, _) => format!("{} › {}", tr("View"), tr(name)),
+            // The plug-in's own name stays as its author wrote it.
+            Entry::Plugin(_, label) => format!("{} › {} › {label}", tr("Commands"), tr("Plug-ins")),
         }
     }
 
@@ -211,13 +215,14 @@ impl Entry {
             Entry::Command(c) => km.primary(c.id).unwrap_or("").to_string(),
             Entry::Tool(t) => km.primary(crate::keymap::tool_id(*t)).unwrap_or("").to_string(),
             Entry::View(_, sc, _) => (*sc).to_string(),
+            Entry::Plugin(..) => String::new(),
         }
     }
 }
 
 /// Commands the palette can run without extra input (everything optional, or prompted).
 fn runnable(c: &CommandSpec) -> bool {
-    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename") {
+    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
         return true;
     }
     let inner = c.params.trim().trim_start_matches('{').trim_end_matches('}');
@@ -257,7 +262,8 @@ fn fuzzy(query: &str, text: &str) -> Option<i32> {
 fn palette(app: &mut App, ctx: &egui::Context) {
     let km = &app.keymap;
     let Some(p) = &mut app.palette else { return };
-    let all = entries();
+    let mut all = entries();
+    all.extend(app.s.plugins.list().map(|p| Entry::Plugin(p.id().to_string(), crate::plugins_ui::label(p))));
     let mut matches: Vec<(i32, Entry, String)> =
         all.into_iter().filter_map(|e| {
             let key = e.shortcut(km);
@@ -327,6 +333,7 @@ fn palette(app: &mut App, ctx: &egui::Context) {
         Some(Entry::Command(c)) => app.invoke(c.id),
         Some(Entry::Tool(t)) => app.tool = t,
         Some(Entry::View(_, _, f)) => f(app),
+        Some(Entry::Plugin(id, _)) => crate::plugins_ui::run_or_ask(app, &id),
         None => {}
     }
 }
@@ -632,7 +639,7 @@ fn fixed_rows() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     ]
 }
 
-const GROUP_ORDER: [&str; 12] = ["Essentials", "Tools", "File", "Edit", "View", "Insert", "Modify", "Control", "Window", "Help", "Other", "Editing"];
+const GROUP_ORDER: [&str; 13] = ["Essentials", "Tools", "File", "Edit", "View", "Insert", "Modify", "Commands", "Control", "Window", "Help", "Other", "Editing"];
 
 /// The action-name column: left-aligned, one row tall, cut off with an ellipsis when long.
 /// One row of the shortcut sheet's grid, its cells given in reading order (name, keys, reset) and

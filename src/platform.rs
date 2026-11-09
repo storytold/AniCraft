@@ -103,6 +103,11 @@ pub fn recovery_dir_overridden() -> bool {
     std::env::var_os("ANICRAFT_RECOVERY_DIR").is_some_and(|v| !v.is_empty())
 }
 
+/// Where installed plug-ins live: a `plugins` folder in the settings folder (ADR 0017).
+pub fn plugins_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("plugins"))
+}
+
 /// Main-window chrome. macOS gets the unified look (content under a transparent title bar,
 /// traffic lights over our menu row); Windows and Linux keep their native frames.
 pub fn viewport(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
@@ -152,6 +157,7 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_video" => ("Video (WebM or MP4)", &["webm", "mp4"]),
         // Opening also imports .fla archives and .xfl packages.
         "file.open" => ("Documents", &["anicraft", "fla", "xfl"]),
+        "plugin.install" => ("WebAssembly plug-in", &["wasm"]),
         _ => ("AniCraft document", &["anicraft"]),
     }
 }
@@ -163,7 +169,7 @@ pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf
     let label = crate::i18n::t(label);
     let d = rfd::FileDialog::new().set_title(title);
     match cmd {
-        "file.open" => d.add_filter(label, exts).pick_file(),
+        "file.open" | "plugin.install" => d.add_filter(label, exts).pick_file(),
         "file.export_png_sequence" => d.pick_folder(),
         _ => d.add_filter(label, exts).set_file_name(default_name).save_file(),
     }

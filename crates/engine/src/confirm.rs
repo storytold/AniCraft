@@ -18,7 +18,7 @@ pub struct Confirmation {
     /// True when undo cannot bring the loss back (unsaved work, files on disk).
     pub irreversible: bool,
     /// `message` before its values go in, with `{name}` placeholders, and those values: what a
-    /// front end translates to show the message in another language (ADR 0017).
+    /// front end translates to show the message in another language (ADR 0018).
     pub template: &'static str,
     pub args: Vec<(&'static str, Arg)>,
 }
@@ -238,6 +238,31 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 let (title, action) = if n == 1 { ("Remove frame?", "Remove Frame") } else { ("Remove frames?", "Remove Frames") };
                 Confirmation::new(title, template, args, action, false)
             })
+        }
+        "plugin.install" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            let (m, dest) = s.plugins.install_overwrites(path)?;
+            let old = s.plugins.get(&m.id).map(|o| o.manifest().version.clone()).filter(|v| !v.is_empty());
+            let mut args = vec![("name", text(&m.name)), ("path", text(path.display())), ("dest", text(dest.display()))];
+            let template = match old {
+                Some(v) => {
+                    args.push(("version", text(v)));
+                    "“{name}” {version} is already installed. Installing {path} replaces its file in the plug-ins folder ({dest}); this cannot be undone."
+                }
+                None => "“{name}” is already installed. Installing {path} replaces its file in the plug-ins folder ({dest}); this cannot be undone.",
+            };
+            Some(Confirmation::new("Replace plug-in?", template, args, "Replace Plug-in", true))
+        }
+        "plugin.remove" => {
+            let plugin = s.plugins.get(p.get("id").and_then(Value::as_str)?)?;
+            let file = plugin.source().filter(|_| s.plugins.owns_file(&plugin))?;
+            Some(Confirmation::new(
+                "Remove plug-in?",
+                "“{name}” is uninstalled and its file is deleted from the plug-ins folder ({path}). This cannot be undone.",
+                vec![("name", text(&plugin.manifest().name)), ("path", text(file.display()))],
+                "Remove Plug-in",
+                true,
+            ))
         }
         _ => None,
     }

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+* **Plug-ins** (Commands › Plug-ins; ADR 0017, `docs/plugins.md`). Plug-ins are WebAssembly
+  files that add commands: generators such as the sample **Star Field**, and selection effects
+  such as the sample **Jitter Selection**. A plug-in with settings opens a dialog with a live
+  preview on the stage; OK keeps the result as one undo step named after the plug-in. Install
+  with Commands › Install Plug-in…, see and remove them in Commands › Manage Plug-ins…; they
+  load from the `plugins` folder in AniCraft's settings folder (or `ANICRAFT_PLUGINS`), and the
+  command palette finds them too. Plug-ins run sandboxed: they change the open document through
+  AniCraft's own commands, never files, the clipboard or the undo history, and a runaway or
+  broken plug-in stops with a message and leaves the document as it was. Headless:
+  `plugin.install/list/run/remove/reload`, `anicraft-cli --plugins <folder>`. The samples and a
+  small Rust SDK are in `examples/plugins`.
 * **Motion tweens and the Motion Editor** (ADR 0016). Insert › Create Motion Tween (also in
   the timeline header, the right-click menu and Properties) makes a span animate its object
   property by property: X, Y, scale, rotation, skew, alpha and tint each have their own curve
