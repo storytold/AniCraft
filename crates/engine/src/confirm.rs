@@ -98,7 +98,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && path.exists()).then(|| overwrite(path, "Saving"))
         }
-        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" => {
+        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             path.exists().then(|| overwrite(path, "Exporting"))
         }
@@ -120,6 +120,18 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 message: format!("{} already contains exported frames. Matching files will be replaced; this cannot be undone.", dir.display()),
                 action: "Replace".into(),
                 irreversible: true,
+            })
+        }
+        "sound.delete" => {
+            // A sound in use comes off every keyframe that plays it.
+            let id = anicraft_doc::SoundId(p.get("sound").and_then(Value::as_u64)?);
+            let snd = s.doc.sound(id)?;
+            let used: usize = s.doc.timelines().map(|tl| crate::cmds_sound::uses_in(tl, id)).sum();
+            (used > 0).then(|| Confirmation {
+                title: "Delete sound?".into(),
+                message: format!("“{}” plays on {}. It comes off them and out of the library. You can undo this.", snd.name, plural(used, "keyframe")),
+                action: "Delete Sound".into(),
+                irreversible: false,
             })
         }
         "layer.delete" => {
