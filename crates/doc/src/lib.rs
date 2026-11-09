@@ -935,6 +935,25 @@ impl Scene {
 /// Most scenes in a document.
 pub const MAX_SCENES: usize = 1_000;
 
+/// The `maop_maohou` section a document may carry (the `.maop` dialect's extension node,
+/// dual-write rule: the mapped document above stays standard, everything the mapper couldn't
+/// bring across stays here). An importer fills `raw` with the source file's whole JSON, so a
+/// later milestone can re-project what the document model doesn't hold yet without the
+/// original file; Moho ignores the node when reading a dialect file and strips it on save,
+/// which is exactly the graceful degradation the dialect plans for. `None` for native
+/// documents.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaohouSidecar {
+    /// The sidecar's own schema version.
+    pub schema: u32,
+    /// What wrote it ("AniCraft 0.1.0").
+    pub saved_by: String,
+    /// What it was made from ("mohoproj 1045").
+    pub source: String,
+    /// The source document's whole JSON.
+    pub raw: serde_json::Value,
+}
+
 /// A whole AniCraft document: a persistent (structurally shared) tree.
 ///
 /// `clone()` is O(scenes + layers + symbols) pointer copies, which makes undo snapshots and
@@ -952,6 +971,10 @@ pub struct Document {
     /// Sounds in the library, placed on keyframes through [`FrameSound`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sounds: Vec<Arc<Sound>>,
+    /// The `maop_maohou` extension node a Moho import (or a future dialect writer) keeps
+    /// beside the mapped document; see [`MaohouSidecar`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maop_maohou: Option<Arc<MaohouSidecar>>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
 }
@@ -971,6 +994,8 @@ struct DocumentFile {
     bitmaps: Vec<Arc<Bitmap>>,
     #[serde(default)]
     sounds: Vec<Arc<Sound>>,
+    #[serde(default)]
+    maop_maohou: Option<Arc<MaohouSidecar>>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -981,7 +1006,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, maop_maohou: f.maop_maohou, next_id: f.next_id }
     }
 }
 
@@ -994,13 +1019,13 @@ static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds)
+        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && self.maop_maohou == o.maop_maohou
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), maop_maohou: None, next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d

@@ -10,6 +10,8 @@ repository.workspace = true
 [dependencies]
 anicraft-geom.workspace = true
 serde = { workspace = true, features = ["rc"] }
+# The maop_maohou sidecar keeps the raw source document JSON (Moho imports).
+serde_json.workspace = true
 # Bitmaps are kept as PNG and decoded on first use.
 png.workspace = true
 # Imported JPEGs are decoded and kept as PNG.

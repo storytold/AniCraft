@@ -1,0 +1,25 @@
+[package]
+name = "anicraft-mohoproj-import"
+description = "AniCraft Moho import: .mohoproj/.moho documents (inline layer tree, mesh curves, gradients, text) into the AniCraft document model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anicraft-geom.workspace = true
+anicraft-doc.workspace = true
+# Lays imported text out with the fonts on this computer (ADR 0012, as in the XFL importer).
+anicraft-text.workspace = true
+# Inflate for .moho (zip) archives; same PKWARE subset the .fla reader takes (MIT OR Zlib OR Apache-2.0).
+miniz_oxide = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+png.workspace = true
+
+[lints]
+workspace = true
