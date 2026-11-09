@@ -35,14 +35,35 @@ impl RenderMode {
     ];
 }
 
+/// Which renderer draws the stage (ADR 0019). The GPU only takes part in builds with the
+/// `gpu-stage` feature; elsewhere the setting is kept but the CPU draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StageRenderer {
+    /// The reference renderer: exact, and what every export uses.
+    #[default]
+    Cpu,
+    /// The graphics card, for what it draws today (the CPU draws the rest).
+    Gpu,
+}
+
+impl StageRenderer {
+    pub const ALL: [(StageRenderer, &'static str, &'static str); 2] = [
+        (StageRenderer::Cpu, "CPU (reference)", "The reference renderer. Exports always use it."),
+        (StageRenderer::Gpu, "GPU (preview)", "Draws the stage on the graphics card. Masks, symbol opacity, blend modes, filters and bitmaps still draw on the CPU; the picture is the same either way."),
+    ];
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     pub ui_font: FontChoice,
     pub data_font: FontChoice,
+    /// Graphite or high contrast (ADR 0022).
+    pub theme: crate::theme::Palette,
     /// Interface scale (1.0 = 100%).
     pub ui_scale: f32,
     pub render_mode: RenderMode,
+    pub stage_renderer: StageRenderer,
     /// Native open/save dialogs; off = a built-in path field (for Linux setups without an XDG
     /// desktop portal).
     pub native_dialogs: bool,
@@ -65,8 +86,10 @@ impl Default for Prefs {
         Prefs {
             ui_font: FontChoice::Bundled,
             data_font: FontChoice::Bundled,
+            theme: crate::theme::Palette::Graphite,
             ui_scale: 1.0,
             render_mode: RenderMode::Auto,
+            stage_renderer: StageRenderer::Cpu,
             native_dialogs: true,
             timeline_start_gap: 0.0,
             shortcuts: Default::default(),
@@ -191,9 +214,11 @@ mod tests {
         assert_eq!(p.render_mode, RenderMode::Background);
         assert_eq!(p.data_font, FontChoice::System("Consolas".into()));
         assert!(p.native_dialogs, "missing fields keep their defaults");
-        let p = Prefs::from_json(r#"{"shortcuts": {"tool.pen": ["F9", "Ctrl+K"], "nope": ["F2"]}}"#);
+        assert_eq!(p.stage_renderer, StageRenderer::Cpu, "files from before the GPU stage draw on the CPU");
+        assert_eq!(Prefs::from_json(r#"{"stage_renderer": "Gpu"}"#).stage_renderer, StageRenderer::Gpu);
+        let p = Prefs::from_json(r#"{"shortcuts": {"tool.pen": ["F10", "Ctrl+K"], "nope": ["F2"]}}"#);
         assert_eq!(p.shortcuts.len(), 1);
-        assert_eq!(p.shortcuts.get("tool.pen"), Some(&vec!["F9".to_string()]));
+        assert_eq!(p.shortcuts.get("tool.pen"), Some(&vec!["F10".to_string()]));
         // Older preference files have no autosave settings: autosave is on, every minute.
         let p = Prefs::from_json(r#"{"ui_scale": 1.25}"#);
         assert!(p.autosave);

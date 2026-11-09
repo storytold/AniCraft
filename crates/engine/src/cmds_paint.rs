@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
         c("paint.bucket", "Paint Bucket", "", None, "{x, y, color?, gap? (stage units: how wide an opening still counts as closed)}", true, bucket as crate::RunFn),
-        c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?}", true, ink),
+        c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?, profile?}", true, ink),
     ]
 }
 
@@ -46,7 +46,7 @@ fn layer_items(s: &Session) -> Vec<DisplayItem> {
 /// Topmost item of the active layer under `p`: `(element, inside its fill)`.
 fn pick(items: &[DisplayItem], p: Vec2, slop: f32) -> Option<(ElementId, bool)> {
     items.iter().rev().find_map(|it| {
-        let hw = it.stroke.map_or(0.0, |s| s.width * 0.5 * it.transform.mean_scale());
+        let hw = it.stroke.as_ref().map_or(0.0, |s| s.reach() * it.transform.mean_scale());
         if !it.path.bounds().transformed(&it.transform).inflate(hw + slop).contains(p) {
             return None;
         }
@@ -118,7 +118,7 @@ impl Grid {
 fn enclosed_region(items: &[DisplayItem], at: Vec2, gap: f32) -> Result<Option<Path>> {
     let mut bounds = Rect::EMPTY;
     for it in items {
-        let pad = it.stroke.map_or(0.0, |s| s.width * 0.5 * it.transform.mean_scale());
+        let pad = it.stroke.as_ref().map_or(0.0, |s| s.reach() * it.transform.mean_scale());
         bounds = bounds.union(&it.path.bounds().inflate(pad).transformed(&it.transform));
     }
     if bounds.is_empty() || !bounds.contains(at) || !(bounds.min.is_finite() && bounds.max.is_finite()) {
@@ -141,9 +141,14 @@ fn enclosed_region(items: &[DisplayItem], at: Vec2, gap: f32) -> Result<Option<P
         if it.fill.is_some() {
             polys.push((lines.iter().map(|l| l.points.clone()).collect(), it.fill_rule));
         }
-        if let Some(st) = it.stroke {
+        if let Some(st) = &it.stroke {
             let hw = (st.width * 0.5 * it.transform.mean_scale() / cell).max(0.5);
-            polys.push((stroke_polygons(&lines, hw), FillRule::NonZero));
+            let walls = match &st.profile {
+                // A variable-width line walls off what it covers.
+                Some(pr) => anicraft_render::stroke::variable_polygons(&lines, hw, pr, to_px.inverse().as_ref(), to_px.determinant() < 0.0),
+                None => stroke_polygons(&lines, hw),
+            };
+            polys.push((walls, FillRule::NonZero));
         }
         for (pp, rule) in polys {
             let mut bb = Rect::EMPTY;
@@ -275,6 +280,10 @@ fn ink(s: &mut Session, p: &Value) -> Result<Value> {
     let slop = opt_f32(p, "slop")?.unwrap_or(3.0).clamp(0.0, 100.0);
     let items = layer_items(s);
     let (id, _) = pick(&items, at, slop).ok_or_else(|| EngineError::State("click a shape to give it this stroke".into()))?;
-    element_shape_mut(s, id)?.stroke = Some(Stroke { color, width });
+    let profile = match opt_profile(p, "profile")? {
+        Some(pr) => pr,
+        None => s.style.stroke_profile.profile(),
+    };
+    element_shape_mut(s, id)?.stroke = Some(Stroke::new(color, width).with_profile(profile));
     Ok(json!({"element": id.0}))
 }

@@ -11,7 +11,8 @@ use crate::prefs::RenderMode;
 use crate::theme::{T, to_color32};
 use anicraft_engine::geom::{Affine, Vec2};
 use anicraft_engine::render::View;
-use anicraft_engine::render_service::{DEFAULT_CACHE_BYTES, FrameImage, FrameJob, RenderService, make_job};
+use anicraft_engine::render_service::{DEFAULT_CACHE_BYTES, FrameImage, FrameJob, RenderService, make_job_for};
+use crate::a11y::Named;
 use egui::{Color32, CursorIcon, Key, Modifiers, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 
@@ -46,11 +47,15 @@ pub struct Cache {
     pub service: Option<RenderService>,
     /// Document state of the picture on screen (an edit makes it differ).
     pub shown_state: Option<anicraft_engine::StateId>,
+    /// The GPU stage (ADR 0019), when this build has it and Preferences ask for it.
+    pub gpu: crate::gpu_stage::GpuStage,
+    /// Who drew the newest visible tiles: the GPU, or the CPU and why (status bar).
+    pub drawn_by: Option<(bool, Option<String>)>,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None }
+        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None, gpu: Default::default(), drawn_by: None }
     }
 }
 
@@ -146,12 +151,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let canvas = ui.max_rect();
     app.stage_cache.canvas = canvas;
     let resp = ui.allocate_rect(canvas, Sense::click_and_drag());
+    // The drawing surface: Ctrl+F6 lands here, and screen readers hear the tool in hand.
+    crate::a11y::anchor(ui, crate::a11y::Region::Stage, canvas, &resp);
     let ppp = ui.ctx().pixels_per_point();
     let size = vec2(app.s.doc.stage.width as f32, app.s.doc.stage.height as f32);
-    if app.view.fit && canvas.width() > 10.0 {
+    // Still as fitted (nobody zoomed or panned since) but the canvas changed size: fit again, as
+    // Fit in Window stays fitted when the window or the interface scale changes.
+    if let Some((was, z)) = app.view.fitted
+        && was != vec2(canvas.width(), canvas.height())
+        && app.view.zoom == z
+        && app.view.pan == egui::Vec2::ZERO
+    {
+        app.view.fit = true;
+    }
+    if app.view.fit && canvas.width() > 10.0 && canvas.height() > 10.0 {
         app.view.zoom = ((canvas.width() - 64.0) / size.x).min((canvas.height() - 64.0) / size.y).clamp(0.05, 64.0);
         app.view.pan = egui::Vec2::ZERO;
         app.view.fit = false;
+        app.view.fitted = Some((vec2(canvas.width(), canvas.height()), app.view.zoom));
     }
 
     // ---- camera input -------------------------------------------------------------------
@@ -166,7 +183,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     }
-    if !ui.ctx().egui_wants_keyboard_input() {
+    if crate::a11y::keyboard(ui.ctx()) != crate::a11y::Keyboard::Text {
         let (zin, zout, fit, one) = ui.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::Equals) || i.consume_key(Modifiers::COMMAND, Key::Plus),
@@ -211,10 +228,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // Selection box in screen space (free transform handles live on it).
     let sel_bounds = bounds_arr(app.s.selection_bounds());
     let sel_rect = sel_bounds.map(|b| Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))));
+    // Shape hint markers take the pointer first with the selection tools (ADR 0023).
+    let hint_tools = matches!(app.tool, Tool::Select | Tool::Transform | Tool::Subselect) && !panning;
+    let hint_marks = if hint_tools { crate::shape_hints::markers(app) } else { Vec::new() };
+    let hint_at = |p: Pos2| crate::shape_hints::hit(&hint_marks, p, to_screen);
+    let hint_hot = pointer.and_then(hint_at);
 
+    let xf = crate::pathtools::Xf { origin, zoom };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
+            _ if matches!(app.drag, Drag::Hint { .. }) => CursorIcon::Grabbing,
+            _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
+            Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
                     Drag::Transform { kind, .. } => Some(kind),
@@ -244,7 +270,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.ctx().set_cursor_icon(icon);
     }
 
-    let xf = crate::pathtools::Xf { origin, zoom };
     if resp.clicked() || resp.drag_started() || resp.secondary_clicked() {
         // Ctrl+X/C/V go back to artwork.
         app.timeline_focus = false;
@@ -258,6 +283,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let sp = to_stage(press);
         app.drag = if panning {
             Drag::Pan
+        } else if let Some(m) = hint_at(press) {
+            app.s.begin_gesture("Move Shape Hint");
+            Drag::Hint { index: m.index, side: m.side }
         } else {
             match app.tool {
                 Tool::Select => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
@@ -294,6 +322,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 Tool::Subselect => crate::pathtools::subselect_drag_start(app, press, shift, xf),
+                Tool::Width => crate::widthtool::drag_start(app, press, xf),
                 Tool::Pencil => {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
@@ -331,6 +360,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
+            (Drag::Hint { index, side }, Some(c)) => {
+                // Live: the hint snaps to the nearest edge as the pointer moves.
+                let (index, side) = (*index, *side);
+                app.run("tween.move_hint", json!({"hint": index, "side": side.key(), "x": c.x, "y": c.y}));
+            }
             (Drag::Points { last }, Some(c)) => {
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
@@ -339,6 +373,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             (Drag::PointMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (d @ Drag::Width { .. }, Some(c)) => {
+                let d = *d;
+                crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
+            }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
@@ -348,7 +386,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } => app.s.end_gesture(),
+            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } => app.s.end_gesture(),
+            Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Marquee { start, cur } => {
@@ -379,6 +418,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let sp = to_stage(p);
             match app.tool {
                 Tool::Subselect if !panning => crate::pathtools::subselect_click(app, p, shift, xf),
+                Tool::Width if !panning => crate::widthtool::click(app, p, xf),
                 Tool::PaintBucket if !panning => {
                     // The gap size is set in screen points, so it feels the same at any zoom.
                     let gap = app.bucket_gap.screen_px() / zoom.max(1e-3);
@@ -395,7 +435,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         app.text_edit = Some(crate::app::TextEditing { at: sp, element: None, text: String::new(), original: String::new(), focus: true });
                     }
                 }
-                Tool::Select | Tool::Transform if !panning => {
+                // A click on a hint marker leaves the selection alone.
+                Tool::Select | Tool::Transform if !panning && hint_at(p).is_none() => {
                     app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                 }
                 Tool::Zoom => {
@@ -408,7 +449,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     // Right-click: select what is under the cursor (keeping an existing multi-selection), then
     // offer the actions that apply to it.
+    if resp.secondary_clicked() {
+        app.hint_menu = resp.interact_pointer_pos().and_then(hint_at).map(|m| m.index);
+    }
     if resp.secondary_clicked()
+        && app.hint_menu.is_none()
         && let Some(p) = resp.interact_pointer_pos()
     {
         let sp = to_stage(p);
@@ -434,7 +479,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     resp.context_menu(|ui| {
         ui.set_min_width(220.0);
-        if crate::pathtools::point_menu(app, ui) {
+        if crate::shape_hints::menu(app, ui) || crate::pathtools::point_menu(app, ui) {
             return;
         }
         if app.s.selection.is_empty() {
@@ -486,6 +531,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let ctx = ui.ctx().clone();
             app.stage_cache.service = Some(RenderService::new(DEFAULT_CACHE_BYTES, Some(Box::new(move || ctx.request_repaint()))));
         }
+        if let Some(svc) = &app.stage_cache.service {
+            app.stage_cache.gpu.sync(app.prefs.stage_renderer, svc, ui.ctx());
+        }
+        // Jobs are keyed by who draws them, so a renderer switch re-renders (old tiles stand in).
+        let raster = app.stage_cache.service.as_ref().map_or(0, RenderService::raster_id);
         // Tiles on a device-pixel grid at this zoom (ADR 0007).
         let z = zoom * ppp;
         let bg = app.s.doc.stage.background;
@@ -497,7 +547,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Render jobs take movie frames: the current scene starts at `start`.
         let start = app.s.doc.scene_start(app.s.scene);
         let frame = app.s.frame;
-        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job(state, &app.s.doc, start + frame, t.view, onion); (t, j) }).collect();
+        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion); (t, j) }).collect();
         let keys: Vec<u64> = jobs.iter().map(|(_, j)| j.key).collect();
         let missing: Vec<usize> = (0..jobs.len()).filter(|&i| !app.stage_cache.has(keys[i])).collect();
 
@@ -526,6 +576,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             for (&i, img) in missing.iter().zip(results) {
                 if let Some(img) = img {
                     ms += img.ms;
+                    if img.error.is_none() {
+                        app.stage_cache.drawn_by = Some((img.gpu, img.fallback.clone()));
+                    }
                     if let Some(e) = app.stage_cache.upload(ui.ctx(), &img, jobs[i].0.rect, &keys) {
                         error = Some(e);
                     }
@@ -559,10 +612,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let n = app.s.frame_count().max(1);
                 for d in 1..=LOOKAHEAD.min(n - 1) {
                     let f = (frame + d) % n;
-                    ahead.extend(jobs.iter().map(|(t, _)| make_job(state, &app.s.doc, start + f, t.view, false)));
+                    ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, false)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job(state, &app.s.doc, start + frame, t.view, onion)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion)));
             }
             svc.prefetch(ahead);
         }
@@ -638,8 +691,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max)).expand(1.0);
-        if app.tool == Tool::Subselect {
-            // Subselection shows outlines and points instead (below).
+        if matches!(app.tool, Tool::Subselect | Tool::Width) {
+            // Subselection and Width show outlines and points instead (below).
             continue;
         }
         if transforming {
@@ -675,6 +728,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         painter.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(1.0, T.selection));
     }
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
+    crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     match app.drag {
         Drag::Marquee { start, cur } => {
             let r = Rect::from_two_pos(to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)));
@@ -689,11 +743,29 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         _ => {}
     }
 
+    // Shape hints sit on top of the artwork and the selection (fresh: a drag just moved one).
+    if hint_tools {
+        let marks = crate::shape_hints::markers(app);
+        let hot = match app.drag {
+            Drag::Hint { index, .. } => Some(index),
+            _ => hint_hot.map(|m| m.index),
+        };
+        crate::shape_hints::draw(&painter, &marks, to_screen, hot);
+    }
+
     text_editor(app, ui, to_screen(Vec2::new(0.0, 0.0)), zoom);
 
     // zoom badge
     let badge = format!("{:.0}%", zoom * 100.0);
     painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
+    // Last, so the focus ring is drawn over the artwork.
+    let selected = app.s.selection.len();
+    let what = match selected {
+        0 => String::new(),
+        1 => " · 1 element selected".to_string(),
+        n => format!(" · {n} elements selected"),
+    };
+    crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
 }
 
 // ----- text ----------------------------------------------------------------------------------------
@@ -741,7 +813,7 @@ fn text_editor(app: &mut App, ui: &mut egui::Ui, stage_origin: Pos2, zoom: f32) 
     let mut done = false;
     egui::Area::new(egui::Id::new("stage_text_edit")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         egui::Frame::new().fill(T.panel).stroke(Stroke::new(1.0, T.selection)).inner_margin(4.0).show(ui, |ui| {
-            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text("Type text"));
+            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text("Type text")).named("Text on the stage");
             if te.focus {
                 r.request_focus();
                 te.focus = false;

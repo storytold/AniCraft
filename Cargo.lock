@@ -204,6 +204,7 @@ dependencies = [
  "anicraft-doc",
  "anicraft-engine",
  "anicraft-geom",
+ "anicraft-gpu",
  "anicraft-render",
  "cpal",
  "eframe",
@@ -213,6 +214,14 @@ dependencies = [
  "serde",
  "serde_json",
  "winresource",
+]
+
+[[package]]
+name = "anicraft-actions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -238,6 +247,7 @@ dependencies = [
 name = "anicraft-doc"
 version = "0.1.0"
 dependencies = [
+ "anicraft-actions",
  "anicraft-audio",
  "anicraft-geom",
  "png 0.17.16",
@@ -275,6 +285,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "anicraft-gpu"
+version = "0.1.0"
+dependencies = [
+ "anicraft-doc",
+ "anicraft-geom",
+ "anicraft-render",
+ "bytemuck",
+ "pollster 1.0.1",
+ "rayon",
+ "thiserror 2.0.21",
+ "wgpu",
+]
+
+[[package]]
 name = "anicraft-plugins"
 version = "0.1.0"
 dependencies = [
@@ -303,6 +327,7 @@ version = "0.1.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
+ "anicraft-text",
  "anicraft-xml",
  "thiserror 2.0.21",
 ]
