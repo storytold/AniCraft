@@ -16,7 +16,11 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
                 <DOMSymbolInstance libraryItemName="Characters/Ball" loop="play once" firstFrame="2" blendMode="hardlight">
                   <matrix><Matrix a="2" d="2" tx="100" ty="50"/></matrix>
                   <color><Color alphaMultiplier="0.5"/></color>
-                  <filters><DropShadowFilter distance="8" color="#333333" alpha="0.5"/><BlurFilter blurX="10" blurY="10" quality="2"/><BevelFilter/><GlowFilter enabled="false"/></filters>
+                  <filters><DropShadowFilter distance="8" color="#333333" alpha="0.5"/><BlurFilter blurX="10" blurY="10" quality="2"/><GlowFilter enabled="false"/>
+                    <BevelFilter blurX="4" blurY="6" distance="3" angle="135" highlightColor="#FFFF00" highlightAlpha="0.75" shadowAlpha="0.5" type="full" knockout="true"/>
+                    <GradientGlowFilter strength="2" type="inner"><GradientEntry color="#FFFFFF" alpha="0.5" ratio="0"/><GradientEntry color="#FF0000" ratio="128"/><GradientEntry color="#0000FF" ratio="255"/></GradientGlowFilter>
+                    <GradientBevelFilter quality="3"><GradientEntry color="#FFFFFF" ratio="0"/><GradientEntry color="#000000" ratio="1"/></GradientBevelFilter>
+                    <SparkleFilter/></filters>
                 </DOMSymbolInstance>
               </elements>
             </DOMFrame>
@@ -93,6 +97,7 @@ fn stage_layers_frames_and_tweens() {
     assert!(report.skipped.keys().all(|k| !k.contains("text")), "an empty text field makes nothing and reports nothing");
     assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
+    assert_eq!(report.skipped.get("unknown filters"), Some(&1));
     // Frame scripts, on the scene's frames and inside symbols, are counted (ADR 0013).
     assert_eq!(report.skipped.get("frame scripts (ActionScript isn't supported yet)"), Some(&2));
     // Every scene comes across, in order.
@@ -138,9 +143,21 @@ fn symbols_instances_and_the_tween_between_them() {
     let inst = &doc.timeline(0).layers[0].keyframes[0].elements[0];
     let ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters } = &inst.kind else { panic!("an instance") };
     assert_eq!(*blend, anicraft_doc::BlendMode::HardLight, "Animate's blend mode names");
-    assert_eq!(filters.len(), 2, "{filters:?}");
+    assert_eq!(filters.len(), 5, "{filters:?}");
     assert!(matches!(filters[0], anicraft_doc::Filter::DropShadow { distance, inner: false, .. } if distance == 8.0));
     assert!(matches!(filters[1], anicraft_doc::Filter::Blur { blur_x, quality: 2, .. } if blur_x == 10.0));
+    use anicraft_doc::{Filter, FilterSide};
+    let Filter::Bevel { blur_x, blur_y, distance, angle, highlight_color, shadow_color, side, knockout, strength, .. } = filters[2] else { panic!("{:?}", filters[2]) };
+    assert_eq!((blur_x, blur_y, distance, angle, side, knockout, strength), (4.0, 6.0, 3.0, 135.0, FilterSide::Full, true, 1.0));
+    assert_eq!((highlight_color, shadow_color), (Rgba::hex(0xffff00).with_alpha(0.75), Rgba::BLACK.with_alpha(0.5)));
+    // Ramps: ratios 0..1 or 0..255; the glow's start pinned transparent, the bevel given a
+    // transparent middle (as Animate's panel keeps them).
+    let Filter::GradientGlow { stops, side: FilterSide::Inner, strength, .. } = &filters[3] else { panic!("{:?}", filters[3]) };
+    assert_eq!(*strength, 2.0);
+    assert_eq!(stops.iter().map(|s| (s.offset, s.color.a)).collect::<Vec<_>>(), vec![(0.0, 0.0), (128.0 / 255.0, 1.0), (1.0, 1.0)]);
+    let Filter::GradientBevel { stops, side: FilterSide::Inner, quality: 3, .. } = &filters[4] else { panic!("{:?}", filters[4]) };
+    assert_eq!(stops.len(), 3);
+    assert_eq!((stops[1].offset, stops[1].color.a), (0.5, 0.0));
     assert_eq!((*symbol, *loop_mode, *first_frame), (sym.id, LoopMode::PlayOnce, 2));
     assert_eq!(inst.transform.m, [2.0, 0.0, 0.0, 2.0, 100.0, 50.0]);
     assert_eq!(inst.color.alpha, 0.5);

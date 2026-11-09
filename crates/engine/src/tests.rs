@@ -555,6 +555,9 @@ fn panic_hunt_every_command() {
         json!({"hint": "a", "x": 1e7, "y": -1e7, "side": "end"}),
         json!({"hint": u64::MAX, "side": "middle", "x": 0, "y": 0}),
         json!({"hint": "zz", "frame": 0}),
+        json!({"filters": [{"type": "bevel", "blur_x": 1e30, "distance": -1e30, "angle": f64::MAX, "side": "full", "shadow_color": "#zz"}]}),
+        json!({"filters": [{"type": "gradient_glow", "stops": [1, "x", null]}, {"type": "gradient_bevel", "stops": "x"}]}),
+        json!({"filters": [{"type": "gradient_bevel", "stops": [{"offset": 1e30, "color": {"r": 9, "g": -9, "b": 0, "a": 2}}], "strength": -1, "quality": 255}]}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -1902,4 +1905,77 @@ fn filters_render_on_movie_clips_clip_after_masks_and_save() {
     run(&mut s, "edit.undo", json!({}));
     run(&mut s, "edit.undo", json!({}));
     assert!(px(&s, 160, 150)[1] < 0.5, "unmasked again: the box shows");
+}
+
+/// Extreme values in every new filter, on a movie clip: sanitized, rendered at several scales
+/// and exported, never a panic or a non-number.
+#[test]
+fn hostile_bevel_and_gradient_filters_render_and_export() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 30, "h": 20, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    let stops = json!([{"offset": -5, "color": "#ff000000"}, {"offset": 0.5, "color": "#00ff00"}, {"offset": 0.5, "color": "#0000ff"}, {"offset": 99, "color": "#ffffff"}]);
+    for side in ["inner", "outer", "full"] {
+        for knockout in [false, true] {
+            // Huge values once (they clamp to the largest reach, which is slow to draw).
+            let huge = side == "full" && knockout;
+            let cases: &[(f64, f64, f64)] = if huge { &[(1e30, 1e30, 1e30), (255.0, -1000.0, 10.0)] } else { &[(0.0, 0.0, 0.0), (0.5, 0.3, 0.001), (12.0, -40.0, 3.0)] };
+            for &(blur, distance, strength) in cases {
+                let common = json!({"blur_x": blur, "blur_y": blur / 3.0, "distance": distance, "strength": strength, "quality": 3, "angle": -720, "side": side, "knockout": knockout});
+                let with = |t: &str| {
+                    let mut f = common.clone();
+                    f["type"] = json!(t);
+                    f["stops"] = stops.clone();
+                    f
+                };
+                run(&mut s, "element.set_filters", json!({"filters": [with("bevel"), with("gradient_glow"), with("gradient_bevel")]}));
+                for scale in [0.05, if huge { 0.25 } else { 1.0 }] {
+                    let img = anicraft_render::render_frame(&s.doc, 0, scale).unwrap();
+                    assert!(img.pixel(0, 0).unwrap().iter().all(|v| v.is_finite()));
+                }
+                let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+                assert!(!svg.contains("NaN") && !svg.contains("inf"));
+            }
+        }
+    }
+}
+
+#[test]
+fn bevel_and_gradient_filters_render_save_and_export() {
+    use anicraft_doc::{ElementKind, Filter, FilterSide};
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    let px = |s: &Session, x, y| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(x, y).unwrap();
+    // A bevel lit from the top left, hex colours as in every command.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "blur_x": 0, "blur_y": 0, "distance": 6, "highlight_color": "#00ff00", "shadow_color": "#0000ff"}]}));
+    assert_eq!(px(&s, 102, 102), [0.0, 1.0, 0.0, 1.0], "highlight inside the top-left corner");
+    assert_eq!(px(&s, 197, 197), [0.0, 0.0, 1.0, 1.0], "shadow inside the bottom-right corner");
+    assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(px(&s, 95, 95), [1.0, 1.0, 1.0, 1.0], "inner: nothing outside");
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "blur_x": 0, "blur_y": 0, "distance": 6, "side": "outer", "knockout": true, "highlight_color": "#00ff00"}]}));
+    assert_eq!(px(&s, 97, 97), [0.0, 1.0, 0.0, 1.0], "outer: highlight outside the lit corner");
+    assert_eq!(px(&s, 150, 150), [1.0, 1.0, 1.0, 1.0], "knocked out");
+    // A gradient glow whose ramp ends in blue; its start stays transparent whatever is sent.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "gradient_glow", "blur_x": 0, "blur_y": 0, "distance": 0, "stops": [{"offset": 0, "color": "#ff00ffff"}, {"offset": 1, "color": "#0000ff"}]}]}));
+    let ElementKind::Symbol { filters, .. } = &s.doc.timeline(s.scene).layers[0].keyframes[0].elements[0].kind else { panic!() };
+    let Some(Filter::GradientGlow { stops, side: FilterSide::Outer, .. }) = filters.first() else { panic!("{filters:?}") };
+    assert_eq!(stops[0].color.a, 0.0, "pinned transparent");
+    assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0]);
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "gradient_bevel", "stops": vec![json!({"offset": 0.5, "color": "#ffffff"}); 16]}]})).is_err(), "too many stops");
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "bevel", "side": "sideways"}]})).is_err());
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "gradient_glow", "stops": [{"offset": 0, "color": "red"}]}]})).is_err());
+    // All three save, load and export to SVG with standard primitives.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "side": "full"}, {"type": "gradient_glow", "side": "full", "knockout": true}, {"type": "gradient_bevel"}]}));
+    let text = crate::format::to_json(&s.doc).unwrap();
+    assert_eq!(crate::format::from_json(&text).unwrap(), s.doc);
+    let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+    for want in ["operator=\"arithmetic\" k2=\"1\" k3=\"-1\"", "<feFuncA type=\"table\"", "operator=\"atop\"", "k4=\"0.5\"", "result=\"ei1\"", "result=\"eo1\""] {
+        assert!(svg.contains(want), "{want} in {svg}");
+    }
+    assert!(!svg.contains("NaN") && !svg.contains("inf"));
+    // Lottie reports them, as it does every filter.
+    assert!(anicraft_render::lottie::to_lottie(&s.doc, "f", 0, 0, false).report.keys().any(|k| k.starts_with("filters")));
 }

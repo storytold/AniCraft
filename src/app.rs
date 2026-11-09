@@ -594,6 +594,20 @@ impl App {
                     None => self.show_plugins = true,
                 }
             }
+            Some("filters") => {
+                // A movie clip with a bevel and a gradient glow, selected: Properties › Filters
+                // shows both (scrolled to the glow's ramp editor).
+                self.run("draw.rect", json!({"x": 960, "y": 470, "w": 200, "h": 130, "fill": "#e8553b", "stroke": null}));
+                self.run("modify.convert_to_symbol", json!({"name": "Badge"}));
+                self.run("symbol.set_kind", json!({"kind": "movie_clip"}));
+                self.run(
+                    "element.set_filters",
+                    json!({"filters": [
+                        {"type": "bevel", "blur_x": 8, "blur_y": 8, "distance": 6, "strength": 1.2, "quality": 2},
+                        {"type": "gradient_glow", "blur_x": 28, "blur_y": 28, "quality": 2, "distance": 0, "stops": [{"offset": 0, "color": "#ffffff00"}, {"offset": 0.55, "color": "#ffd36b"}, {"offset": 1, "color": "#ff4d3d"}]},
+                    ]}),
+                );
+            }
             Some("select") => {
                 // The top layer's artwork selected, for its Properties.
                 self.run("layer.select", json!({"index": 0}));

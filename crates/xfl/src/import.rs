@@ -8,13 +8,13 @@
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
 //! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014).
-//! Everything else (sound, motion tweens with property curves, bevel and gradient filters,
+//! Everything else (sound, motion tweens with property curves, unknown filters,
 //! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at.
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Bitmap, BitmapId, BlendMode, ColorEffect, Filter, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
@@ -105,6 +105,31 @@ struct Builder<'a> {
     fonts: Option<&'a Fonts>,
     /// Face name → what it is on this computer, looked up once per name.
     faces: HashMap<String, FaceMatch>,
+}
+
+/// A bevel or gradient filter's `type`: `inner`, `outer` or `full` (`default` when missing).
+fn filter_side(el: &X, default: FilterSide) -> FilterSide {
+    match el.attr("type").map(str::trim) {
+        Some("inner") => FilterSide::Inner,
+        Some("outer") => FilterSide::Outer,
+        Some("full") => FilterSide::Full,
+        _ => default,
+    }
+}
+
+/// A gradient filter's ramp: its `GradientEntry` children (directly, or in a wrapper), with
+/// ratios 0..1 (or Flash's 0..255).
+fn ramp(el: &X) -> Vec<GradientStop> {
+    let entries = el.children.iter().flat_map(|c| if c.name == "GradientEntry" { std::slice::from_ref(c) } else { c.children.as_slice() }).filter(|g| g.name == "GradientEntry");
+    let mut stops: Vec<GradientStop> = entries
+        .take(anicraft_doc::MAX_RAMP_STOPS)
+        .map(|g| {
+            let r = g.f32("ratio").filter(|r| r.is_finite()).unwrap_or(0.0);
+            GradientStop { offset: if r > 1.0 { r / 255.0 } else { r }.clamp(0.0, 1.0), color: color(g, "color", "alpha") }
+        })
+        .collect();
+    stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+    stops
 }
 
 pub(crate) fn color(el: &X, key: &str, alpha_key: &str) -> Rgba {
@@ -229,8 +254,8 @@ impl<'a> Builder<'a> {
         out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)), ColorEffect::default()));
     }
 
-    /// An instance's filters, by Animate's element names. Bevel and gradient filters are
-    /// reported, and switched-off filters left out.
+    /// An instance's filters, by Animate's element names; switched-off filters are left out,
+    /// and unknown ones reported.
     fn filters(&mut self, el: &X) -> Vec<Filter> {
         let mut out = Vec::new();
         for f in el.list("filters") {
@@ -256,8 +281,30 @@ impl<'a> Builder<'a> {
                 },
                 "GlowFilter" => Filter::Glow { blur_x: num("blurX", 5.0), blur_y: num("blurY", 5.0), strength: num("strength", 1.0), quality, color: color(f, "color", "alpha"), inner: flag("inner"), knockout: flag("knockout") },
                 "AdjustColorFilter" => Filter::AdjustColor { brightness: num("brightness", 0.0), contrast: num("contrast", 0.0), saturation: num("saturation", 0.0), hue: num("hue", 0.0) },
+                "BevelFilter" => Filter::Bevel {
+                    blur_x: num("blurX", 5.0),
+                    blur_y: num("blurY", 5.0),
+                    strength: num("strength", 1.0),
+                    quality,
+                    angle: num("angle", 45.0),
+                    distance: num("distance", 5.0),
+                    shadow_color: color(f, "shadowColor", "shadowAlpha"),
+                    highlight_color: if f.attr("highlightColor").is_some() { color(f, "highlightColor", "highlightAlpha") } else { Rgba::WHITE.with_alpha(num("highlightAlpha", 1.0).clamp(0.0, 1.0)) },
+                    side: filter_side(f, FilterSide::Inner),
+                    knockout: flag("knockout"),
+                },
+                "GradientGlowFilter" | "GradientBevelFilter" => {
+                    let glow = f.name == "GradientGlowFilter";
+                    let (blur_x, blur_y, strength, angle, distance, knockout) = (num("blurX", 5.0), num("blurY", 5.0), num("strength", 1.0), num("angle", 45.0), num("distance", 5.0), flag("knockout"));
+                    let stops = ramp(f);
+                    if glow {
+                        Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops: if stops.is_empty() { anicraft_doc::default_glow_ramp() } else { stops }, side: filter_side(f, FilterSide::Outer), knockout }
+                    } else {
+                        Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, stops: if stops.is_empty() { anicraft_doc::default_bevel_ramp() } else { stops }, side: filter_side(f, FilterSide::Inner), knockout }
+                    }
+                }
                 _ => {
-                    self.report.skip("bevel and gradient filters");
+                    self.report.skip("unknown filters");
                     continue;
                 }
             };
