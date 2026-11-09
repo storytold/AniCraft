@@ -907,6 +907,34 @@ mod tests {
         assert_eq!(f.pixel(50, 17).unwrap()[3], 0.0);
     }
 
+    /// `cargo test -p anicraft-render --release -- --ignored --nocapture variable_stroke_cost`
+    #[test]
+    #[ignore = "measurement"]
+    fn variable_stroke_cost() {
+        let strokes = |profile: Option<anicraft_doc::WidthProfile>| {
+            let items = (0..300)
+                .map(|i| {
+                    let (x, y) = ((i % 20) as f32 * 64.0, (i / 20) as f32 * 48.0);
+                    let mut p = Path::new();
+                    p.move_to(Vec2::new(x, y + 40.0)).cubic_to(Vec2::new(x + 10.0, y - 20.0), Vec2::new(x + 50.0, y + 80.0), Vec2::new(x + 60.0, y + 10.0));
+                    stroked(p, 6.0, profile.clone())
+                })
+                .collect();
+            list(items)
+        };
+        for (name, dl) in [("uniform", strokes(None)), ("taper_both", strokes(anicraft_doc::ProfilePreset::TaperBoth.profile())), ("bulge", strokes(anicraft_doc::ProfilePreset::Bulge.profile()))] {
+            let mut ms: Vec<f64> = (0..9)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    let _ = render(&dl, &view(1280, 720)).unwrap();
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            ms.sort_by(f64::total_cmp);
+            println!("300 strokes, 1280x720, {name}: median {:.2} ms", ms[4]);
+        }
+    }
+
     #[test]
     fn src_over_order() {
         let a = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0)));
