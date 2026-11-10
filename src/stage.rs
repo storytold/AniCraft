@@ -311,7 +311,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBucket | Tool::InkBottle => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -387,7 +387,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     Drag::Pencil
                 }
                 Tool::Brush => crate::brushtool::start(app, to_v(sp), pressure),
-                Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle => Drag::None,
+                // With the Faucet on, the eraser deletes on a click instead.
+                Tool::Eraser if !app.eraser.faucet => crate::erasertool::start(app, to_v(sp)),
+                Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Eraser => Drag::None,
                 Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => Drag::Shape { start: sp, cur: sp },
                 Tool::Camera => crate::camera_tool::drag_start(app, &cam_geo, press),
                 Tool::Hand => Drag::Pan,
@@ -452,6 +454,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
             (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf),
+            (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
             _ => {}
@@ -470,6 +473,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Brush => crate::brushtool::commit(app, xf),
+            Drag::Eraser => crate::erasertool::commit(app, xf),
             Drag::Marquee { start, cur } => {
                 let r = Rect::from_two_pos(start, cur);
                 let ids: Vec<u64> = app
@@ -516,6 +520,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     crate::brushtool::start(app, to_v(sp), pressure);
                     crate::brushtool::commit(app, xf);
                 }
+                Tool::Eraser if !panning => {
+                    if app.eraser.faucet {
+                        crate::erasertool::faucet(app, to_v(sp), zoom);
+                    } else {
+                        // A click erases a dab.
+                        crate::erasertool::start(app, to_v(sp));
+                        crate::erasertool::commit(app, xf);
+                    }
+                }
+                Tool::Eyedropper if !panning => crate::erasertool::eyedropper(app, to_v(sp), shift, zoom),
                 Tool::InkBottle if !panning => {
                     app.run("paint.ink", json!({"x": sp.x, "y": sp.y, "slop": 4.0 / zoom.max(1e-3)}));
                 }
@@ -852,6 +866,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
+    crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     // After this frame's edits, so a drag on the path shows where it is now.
     if !preview
         && let Some(shown) = crate::motion_path::shown(app)
@@ -1179,7 +1194,7 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
 }
 
 fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32) {
-    let st = app.s.style;
+    let st = &app.s.style;
     let fill = if st.use_fill { crate::theme::to_color32(st.fill).gamma_multiply(0.6) } else { Color32::TRANSPARENT };
     let stroke = Stroke::new((st.stroke_width * zoom).max(1.0), if st.use_stroke { crate::theme::to_color32(st.stroke) } else { T.selection });
     match app.tool {

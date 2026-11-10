@@ -18,7 +18,7 @@ pub struct Confirmation {
     /// True when undo cannot bring the loss back (unsaved work, files on disk).
     pub irreversible: bool,
     /// `message` before its values go in, with `{name}` placeholders, and those values: what a
-    /// front end translates to show the message in another language (ADR 0034).
+    /// front end translates to show the message in another language (ADR 0035).
     pub template: &'static str,
     pub args: Vec<(&'static str, Arg)>,
 }
@@ -194,6 +194,24 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                     "“{name}” plays on {keyframes}. It comes off them and out of the library. You can undo this.",
                     vec![("name", text(&snd.name)), ("keyframes", keyframes(used))],
                     "Delete Sound",
+                    false,
+                )
+            })
+        }
+        "draw.erase_all" => {
+            // Double-clicking the Eraser: everything on the stage at this frame (ADR 0034).
+            let layers = crate::cmds_erase::erasable_layers(s);
+            let elements: usize = layers.iter().map(|(_, n)| n).sum();
+            (elements > 0).then(|| {
+                Confirmation::new(
+                    "Erase everything?",
+                    "Everything on the stage at frame {frame} goes: {elements} on {layers}. Locked and hidden layers are kept. You can undo this.",
+                    vec![
+                        ("frame", text(s.frame + 1)),
+                        ("elements", self::elements(elements)),
+                        ("layers", Arg::Count(layers.len(), "{n} layer", "{n} layers")),
+                    ],
+                    "Erase Everything",
                     false,
                 )
             })

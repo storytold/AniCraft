@@ -39,7 +39,7 @@ pub const SIZE_MAX: f32 = 400.0;
 
 impl BrushOptions {
     /// The tip mapped onto the stage, for previews: unit circle or square → the tip at `at`.
-    fn tip_to_stage(&self, at: Vec2, factor: f32) -> Affine {
+    pub fn tip_to_stage(&self, at: Vec2, factor: f32) -> Affine {
         let tip = anicraft_engine::geom::brush::Tip { shape: self.shape, size: self.size * factor, angle: self.angle, roundness: self.roundness / 100.0 };
         Affine::translate(at.x, at.y).mul(&tip.to_stage())
     }
@@ -63,13 +63,19 @@ pub fn step_size(size: f32, larger: bool) -> f32 {
     ((next / g).round() * g).clamp(SIZE_MIN, SIZE_MAX)
 }
 
-/// Changes the size from the keyboard and says so.
+/// Changes the Brush's or the Eraser's size from the keyboard and says so.
 pub fn resize(app: &mut App, larger: bool) {
-    if app.tool != Tool::Brush {
-        return;
+    match app.tool {
+        Tool::Brush => {
+            app.brush.size = step_size(app.brush.size, larger);
+            app.status_ok(format!("Brush size {} px", app.brush.size));
+        }
+        Tool::Eraser => {
+            app.eraser.size = step_size(app.eraser.size, larger);
+            app.status_ok(format!("Eraser size {} px", app.eraser.size));
+        }
+        _ => {}
     }
-    app.brush.size = step_size(app.brush.size, larger);
-    app.status_ok(format!("Brush size {} px", app.brush.size));
 }
 
 /// The pen's pressure this frame, when a tablet reports it (egui gives it with touch events).
@@ -87,6 +93,20 @@ pub fn start(app: &mut App, p: Vec2, pressure: Option<f32>) -> Drag {
     app.pen_pressure = pressure;
     app.brush_samples = vec![(p, pressure)];
     Drag::Brush
+}
+
+/// The stroke's samples as command points (with pressure when a pen gave any).
+pub fn points(samples: &[(Vec2, Option<f32>)]) -> Vec<serde_json::Value> {
+    let pen = samples.iter().any(|(_, p)| p.is_some());
+    samples.iter().map(|(v, p)| if pen { json!([v.x, v.y, p.unwrap_or(1.0)]) } else { json!([v.x, v.y]) }).collect()
+}
+
+/// A tip shape's name in commands.
+pub fn shape_key(s: TipShape) -> &'static str {
+    match s {
+        TipShape::Round => "round",
+        TipShape::Square => "square",
+    }
 }
 
 /// Adds a sample (closer than half a screen point adds nothing unless the pressure moved).
@@ -107,14 +127,9 @@ pub fn commit(app: &mut App, xf: Xf) {
     if samples.is_empty() {
         return;
     }
-    let pen = samples.iter().any(|(_, p)| p.is_some());
-    let points: Vec<serde_json::Value> = samples.iter().map(|(v, p)| if pen { json!([v.x, v.y, p.unwrap_or(1.0)]) } else { json!([v.x, v.y]) }).collect();
+    let points = points(&samples);
     let o = app.brush;
-    let shape = match o.shape {
-        TipShape::Round => "round",
-        TipShape::Square => "square",
-    };
-    let params = json!({"points": points, "size": o.size, "shape": shape, "angle": o.angle, "roundness": o.roundness, "smoothing": o.smoothing, "mode": o.mode.key(), "unit": xf.unit()});
+    let params = json!({"points": points, "size": o.size, "shape": shape_key(o.shape), "angle": o.angle, "roundness": o.roundness, "smoothing": o.smoothing, "mode": o.mode.key(), "unit": xf.unit()});
     if let Some(v) = app.run("draw.brush", params)
         && v["elements"].as_array().is_some_and(Vec::is_empty)
     {
@@ -159,36 +174,48 @@ pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, hover: Option<Po
     if app.tool != Tool::Brush {
         return;
     }
-    let o = app.brush;
+    if app.drag == Drag::Brush {
+        // Opaque, so overlapping pieces don't darken each other.
+        let color = to_color32(anicraft_engine::doc::Rgba { a: 1.0, ..app.s.style.fill });
+        draw_sweep(painter, xf, &app.brush, &app.brush_samples, color);
+    }
+    if let Some(h) = hover {
+        // The tip's size and shape at the pointer, as Animate shows it.
+        draw_tip(painter, xf, &app.brush, xf.to_stage(h));
+    }
+}
+
+/// The tip swept along `samples` (shared with the Eraser, ADR 0034), filled with `color`.
+pub fn draw_sweep(painter: &egui::Painter, xf: Xf, o: &BrushOptions, samples: &[(Vec2, Option<f32>)], color: egui::Color32) {
+    if samples.is_empty() {
+        return;
+    }
     let unit = o.unit_outline();
     let screen = |at: Vec2, pressure: Option<f32>| -> Vec<Pos2> {
         let m = o.tip_to_stage(at, size_factor(pressure.unwrap_or(1.0)));
         unit.iter().map(|u| xf.to_screen(m.apply(*u))).collect()
     };
-    if app.drag == Drag::Brush && !app.brush_samples.is_empty() {
-        // Opaque, so overlapping pieces don't darken each other.
-        let color = to_color32(anicraft_engine::doc::Rgba { a: 1.0, ..app.s.style.fill });
-        let step = app.brush_samples.len().div_ceil(MAX_PREVIEW).max(1);
-        let picked: Vec<&(Vec2, Option<f32>)> = app.brush_samples.iter().step_by(step).chain(app.brush_samples.last()).collect();
-        if let [only] = picked.as_slice() {
-            painter.add(egui::Shape::convex_polygon(hull(screen(only.0, only.1)), color, Stroke::NONE));
-        }
-        for pair in picked.windows(2) {
-            let &[a, b] = pair else { continue };
-            let mut pts = screen(a.0, a.1);
-            pts.extend(screen(b.0, b.1));
-            painter.add(egui::Shape::convex_polygon(hull(pts), color, Stroke::NONE));
-        }
+    let step = samples.len().div_ceil(MAX_PREVIEW).max(1);
+    let picked: Vec<&(Vec2, Option<f32>)> = samples.iter().step_by(step).chain(samples.last()).collect();
+    if let [only] = picked.as_slice() {
+        painter.add(egui::Shape::convex_polygon(hull(screen(only.0, only.1)), color, Stroke::NONE));
     }
-    if let Some(h) = hover {
-        // The tip's size and shape at the pointer, as Animate shows it.
-        let at = xf.to_stage(h);
-        let mut outline = screen(at, None);
-        if let Some(first) = outline.first().copied() {
-            outline.push(first);
-        }
-        painter.add(egui::Shape::line(outline, Stroke::new(1.0, T.selection)));
+    for pair in picked.windows(2) {
+        let &[a, b] = pair else { continue };
+        let mut pts = screen(a.0, a.1);
+        pts.extend(screen(b.0, b.1));
+        painter.add(egui::Shape::convex_polygon(hull(pts), color, Stroke::NONE));
     }
+}
+
+/// The tip's outline at stage point `at`.
+pub fn draw_tip(painter: &egui::Painter, xf: Xf, o: &BrushOptions, at: Vec2) {
+    let m = o.tip_to_stage(at, 1.0);
+    let mut outline: Vec<Pos2> = o.unit_outline().iter().map(|u| xf.to_screen(m.apply(*u))).collect();
+    if let Some(first) = outline.first().copied() {
+        outline.push(first);
+    }
+    painter.add(egui::Shape::line(outline, Stroke::new(1.0, T.selection)));
 }
 
 #[cfg(test)]

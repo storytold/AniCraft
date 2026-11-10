@@ -72,7 +72,7 @@ impl PaintMode {
     }
 }
 
-fn samples(p: &Value) -> Result<Vec<Sample>> {
+pub(crate) fn samples(p: &Value) -> Result<Vec<Sample>> {
     let bad = || EngineError::Param("param 'points' must be a list of [x, y] or [x, y, pressure]".into());
     let list = p.get("points").and_then(Value::as_array).ok_or_else(bad)?;
     if list.is_empty() {
@@ -97,7 +97,7 @@ fn samples(p: &Value) -> Result<Vec<Sample>> {
         .collect()
 }
 
-fn ranged(p: &Value, key: &str, range: std::ops::RangeInclusive<f32>, default: f32) -> Result<f32> {
+pub(crate) fn ranged(p: &Value, key: &str, range: std::ops::RangeInclusive<f32>, default: f32) -> Result<f32> {
     match opt_f32(p, key)? {
         None => Ok(default),
         Some(v) if range.contains(&v) => Ok(v),
@@ -105,24 +105,37 @@ fn ranged(p: &Value, key: &str, range: std::ops::RangeInclusive<f32>, default: f
     }
 }
 
-fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
+/// The stroke's samples, refused when they reach too far.
+pub(crate) fn bounded_samples(p: &Value) -> Result<Vec<Sample>> {
     let pts = samples(p)?;
     let mut bounds = anicraft_geom::Rect::EMPTY;
     pts.iter().for_each(|x| bounds.include(x.at));
     if bounds.width() > MAX_EXTENT || bounds.height() > MAX_EXTENT || bounds.min.x.abs().max(bounds.max.x.abs()).max(bounds.min.y.abs()).max(bounds.max.y.abs()) > MAX_EXTENT {
         return Err(EngineError::Param("the stroke is too large".into()));
     }
+    Ok(pts)
+}
+
+/// The tip from `size`, `shape`, `angle` and `roundness` (shared with the Eraser, ADR 0034).
+pub(crate) fn tip(p: &Value) -> Result<Tip> {
     let size = ranged(p, "size", SIZE_RANGE, 10.0)?;
     let shape = match opt_str(p, "shape")?.unwrap_or("round") {
         "round" => TipShape::Round,
         "square" => TipShape::Square,
-        other => return Err(EngineError::Param(format!("unknown brush shape '{other}' (round or square)"))),
+        other => return Err(EngineError::Param(format!("unknown tip shape '{other}' (round or square)"))),
     };
     let angle = opt_f32(p, "angle")?.unwrap_or(0.0);
     if !angle.is_finite() || angle.abs() > 1e6 {
         return Err(EngineError::Param("param 'angle' must be a finite number of degrees".into()));
     }
     let roundness = ranged(p, "roundness", 5.0..=100.0, 100.0)?;
+    Ok(Tip { shape, size, angle, roundness: roundness / 100.0 })
+}
+
+fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
+    let pts = bounded_samples(p)?;
+    let tip = tip(p)?;
+    let size = tip.size;
     let smoothing = ranged(p, "smoothing", 0.0..=100.0, 50.0)?;
     let unit = ranged(p, "unit", 0.001..=1000.0, 1.0)?;
     let mode_key = opt_str(p, "mode")?.unwrap_or("normal");
@@ -130,7 +143,6 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
     let color = opt_color(p, "color")?.unwrap_or(s.style.fill);
     let object = object_param(s, p)?;
 
-    let tip = Tip { shape, size, angle, roundness: roundness / 100.0 };
     // Smoothing and accuracy are screen distances, so a stroke looks the same at any zoom: at 50
     // the centre line may wander 3.3 screen points from the hand, at 0 a third of a point.
     // The outline is fitted within a third of a screen point, or a hundredth of the size for

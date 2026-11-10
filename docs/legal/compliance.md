@@ -22,7 +22,7 @@ Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
 "source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed,
-plus three storytold git repositories pinned to immutable revisions (ADR 0034): craft-libs (the
+plus three storytold git repositories pinned to immutable revisions (ADR 0035): craft-libs (the
 shared `craft-i18n` crate) and the egui and winit forks, all MIT OR Apache-2.0. No other
 registries or git.
 
