@@ -1,27 +1,36 @@
-//! Motion paths on the stage (ADR 0030). When a motion tween's object is selected, or a frame
-//! of its span is, the stage shows the path its registration point travels, in the motion
+//! Motion paths on the stage (ADR 0030, 0038). When a motion tween's object is selected, or a
+//! frame of its span is, the stage shows the path its registration point travels, in the motion
 //! colour, with a dot on every frame (larger on position keys).
 //!
 //! * **Selection (V)**: drag the path to bend it, or drag either end to move where the motion
 //!   starts or ends. Dragging the object itself still moves it (auto-key).
 //! * **Subselection (A)**: drag any anchor, or a selected anchor's handles (Alt breaks a smooth
-//!   pair). A click on an anchor selects it and shows its handles.
+//!   pair). A click on an anchor selects it and shows its handles (Shift adds to the selection);
+//!   a double-click on the path adds an anchor there; Delete removes the selected anchors (the
+//!   ends stay); right-click makes them smooth or corners.
+//! * **Pen (P)**: Alt-click the path to add an anchor, as on shapes.
+//! * **Ctrl-drag** (⌘ on macOS) the path or its object, with Selection or Subselection, to move
+//!   the whole path; the timing stays.
 //!
 //! A tween without a path of its own shows the straight path its X/Y curves trace; the first
-//! edit makes it a path. Every change is `motion.set_path`, and a drag is one undo step (a
+//! edit makes it a path. Every change is a `motion.*` command, and a drag is one undo step (a
 //! session gesture). Only the anchor selection and the drag in progress live here.
 
+use crate::i18n::{self, tl};
 use crate::app::{App, Drag, Tool};
 use crate::pathtools::Xf;
 use crate::theme::T;
-use anicraft_engine::doc::Props;
+use anicraft_engine::doc::{ElementId, Props};
 use anicraft_engine::geom::edit::{ANCHOR, C1, C2};
 use anicraft_engine::geom::{Affine, Path, PathCmd, Vec2};
-use egui::{Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
+use egui::{Key, Modifiers, Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 
 /// Grab radius for anchors, handles and the path, in screen points.
 const PICK: f32 = 6.0;
+
+/// Most selected anchors whose handles show (a marquee of hundreds would bury the path).
+const MAX_SHOWN_HANDLES: usize = 64;
 
 /// What a press on the path took hold of.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,6 +53,8 @@ pub struct Shown {
     pub keys: Vec<u32>,
     /// The playhead's frame in the span.
     pub offset: u32,
+    /// The object travelling it.
+    pub target: ElementId,
 }
 
 /// The motion path of the active layer's motion tween at the playhead, when its object or a
@@ -67,14 +78,15 @@ pub fn shown(app: &App) -> Option<Shown> {
     let mut keys: Vec<u32> = [anicraft_engine::doc::Property::X, anicraft_engine::doc::Property::Y].into_iter().filter_map(|p| m.track(p)).flat_map(|t| t.keys.iter().map(|k| k.frame)).filter(|f| *f < k.duration).collect();
     keys.sort_unstable();
     keys.dedup();
-    Some(Shown { path, dots, keys, offset: app.s.frame - k.start })
+    Some(Shown { path, dots, keys, offset: app.s.frame - k.start, target: target.id })
 }
 
-/// The anchors the tool can take: both ends with Selection, every anchor with Subselection.
+/// The anchors the tool can take: both ends with Selection, every anchor with Subselection
+/// (and shown to the Pen, which adds between them).
 fn grabbable_anchors(path: &Path, tool: Tool) -> Vec<(usize, Vec2)> {
     let all = path.anchors();
     match tool {
-        Tool::Subselect => all,
+        Tool::Subselect | Tool::Pen => all,
         _ => {
             let n = all.len();
             all.into_iter().enumerate().filter(|(i, _)| *i == 0 || *i + 1 == n).map(|(_, a)| a).collect()
@@ -82,18 +94,25 @@ fn grabbable_anchors(path: &Path, tool: Tool) -> Vec<(usize, Vec2)> {
     }
 }
 
-/// The handles shown for the selected anchor: `(cmd, slot)`.
-fn handles(path: &Path, anchor: Option<usize>) -> Vec<(usize, u8)> {
-    let Some(a) = anchor else { return Vec::new() };
-    let (i, o) = path.anchor_segments(a);
+/// The handles shown for the selected anchors: `(cmd, slot, anchor)`.
+fn handles(path: &Path, anchors: &[usize]) -> Vec<(usize, u8, usize)> {
     let mut v = Vec::new();
-    if let Some(i) = i.filter(|&i| matches!(path.cmds.get(i), Some(PathCmd::CubicTo(..)))) {
-        v.push((i, C2));
-    }
-    if let Some(o) = o.filter(|&o| matches!(path.cmds.get(o), Some(PathCmd::CubicTo(..)))) {
-        v.push((o, C1));
+    for &a in anchors.iter().take(MAX_SHOWN_HANDLES) {
+        let (i, o) = path.anchor_segments(a);
+        if let Some(i) = i.filter(|&i| matches!(path.cmds.get(i), Some(PathCmd::CubicTo(..)))) {
+            v.push((i, C2, a));
+        }
+        if let Some(o) = o.filter(|&o| matches!(path.cmds.get(o), Some(PathCmd::CubicTo(..)))) {
+            v.push((o, C1, a));
+        }
     }
     v
+}
+
+/// The stretch of path under screen point `p`: `(cmd, t)`.
+fn on_segment(shown: &Shown, p: Pos2, xf: Xf) -> Option<(usize, f32)> {
+    let (cmd, t, d) = shown.path.nearest_segment(xf.to_stage(p), &Affine::IDENTITY)?;
+    (d * xf.zoom <= PICK).then_some((cmd, t))
 }
 
 /// The handle, anchor or (with Selection) the stretch of path under screen point `p`.
@@ -101,7 +120,7 @@ fn handles(path: &Path, anchor: Option<usize>) -> Vec<(usize, u8)> {
 pub fn hit(app: &App, shown: &Shown, p: Pos2, xf: Xf, segments: bool) -> Option<Grab> {
     let near = |q: Vec2| xf.to_screen(q).distance(p) <= PICK;
     if app.tool == Tool::Subselect {
-        for (cmd, slot) in handles(&shown.path, app.motion_anchor) {
+        for (cmd, slot, _) in handles(&shown.path, &app.motion_anchors) {
             if shown.path.point(cmd, slot).is_some_and(near) {
                 return Some(Grab::Handle(cmd, slot));
             }
@@ -111,18 +130,18 @@ pub fn hit(app: &App, shown: &Shown, p: Pos2, xf: Xf, segments: bool) -> Option<
         return Some(Grab::Anchor(cmd));
     }
     if segments && app.tool == Tool::Select {
-        let (cmd, t, d) = shown.path.nearest_segment(xf.to_stage(p), &Affine::IDENTITY)?;
-        if d * xf.zoom <= PICK {
-            return Some(Grab::Segment(cmd, t));
-        }
+        return on_segment(shown, p, xf).map(|(cmd, t)| Grab::Segment(cmd, t));
     }
     None
 }
 
-/// Starts dragging `grab`: one undo step until the drag ends.
+/// Starts dragging `grab`: one undo step until the drag ends. An anchor not yet selected becomes
+/// the selection.
 pub fn drag_start(app: &mut App, shown: Shown, grab: Grab, at: Vec2) -> Drag {
-    if let Grab::Anchor(a) = grab {
-        app.motion_anchor = Some(a);
+    if let Grab::Anchor(a) = grab
+        && !app.motion_anchors.contains(&a)
+    {
+        app.motion_anchors = vec![a];
     }
     app.motion_drag = Some(shown.path);
     app.s.begin_gesture("Edit Motion Path");
@@ -175,27 +194,222 @@ pub fn drag_end(app: &mut App) {
     app.s.end_gesture();
 }
 
-/// A click with Subselection on an anchor selects it (showing its handles); false when the
-/// click wasn't on one.
-pub fn click(app: &mut App, p: Pos2, xf: Xf) -> bool {
+// ----- moving the whole path ---------------------------------------------------------------
+
+/// Whether a Ctrl-press at screen point `p` takes the whole path: on the path, an anchor, or
+/// the object travelling it.
+pub fn move_hit(app: &App, p: Pos2, xf: Xf) -> bool {
     let Some(shown) = shown(app) else { return false };
-    match hit(app, &shown, p, xf, false) {
-        Some(Grab::Anchor(a)) => {
-            app.motion_anchor = Some(a);
-            true
-        }
-        Some(_) => true,
-        None => false,
+    let near_anchor = shown.path.anchors().iter().any(|(_, q)| xf.to_screen(*q).distance(p) <= PICK);
+    near_anchor || on_segment(&shown, p, xf).is_some() || app.s.hit_test(xf.to_stage(p), 3.0 * xf.unit()).is_some_and(|(_, e)| e == shown.target)
+}
+
+/// Starts moving the whole path from stage point `at`: one undo step until the drag ends.
+pub fn move_start(app: &mut App, at: Vec2) -> Drag {
+    app.s.begin_gesture("Move Motion Path");
+    Drag::MotionMove { last: pos2(at.x, at.y) }
+}
+
+/// Moves the whole path by the pointer's move since the last frame.
+pub fn move_to(app: &mut App, d: Vec2) {
+    if d.x != 0.0 || d.y != 0.0 {
+        app.run("motion.move_path", json!({"dx": d.x, "dy": d.y}));
     }
 }
 
-/// Forgets an anchor selection the path no longer has.
-pub fn upkeep(app: &mut App) {
-    if let Some(a) = app.motion_anchor
-        && shown(app).is_none_or(|s| s.path.point(a, ANCHOR).is_none())
-    {
-        app.motion_anchor = None;
+// ----- adding, deleting and converting points --------------------------------------------
+
+/// Adds an anchor where screen point `p` is on the path and selects it; false when `p` isn't on
+/// the path (or is on an anchor already).
+fn add_at(app: &mut App, p: Pos2, xf: Xf) -> bool {
+    let Some(shown) = shown(app) else { return false };
+    if shown.path.anchors().iter().any(|(_, q)| xf.to_screen(*q).distance(p) <= PICK) || on_segment(&shown, p, xf).is_none() {
+        return false;
     }
+    let sp = xf.to_stage(p);
+    if let Some(v) = app.run("motion.add_point", json!({"x": sp.x, "y": sp.y, "slop": PICK * xf.unit()})) {
+        app.motion_anchors = v["anchor"].as_u64().map(|a| vec![a as usize]).unwrap_or_default();
+        app.points.clear();
+        app.status_ok(i18n::fmt("Added a point to the motion path. {undo} to undo.", &[("undo", &crate::platform::shortcut_label("Ctrl+Z"))]));
+    }
+    true
+}
+
+/// Double-click with Subselection: on the path it adds an anchor there. False when the
+/// double-click wasn't on the path.
+pub fn double_click(app: &mut App, p: Pos2, xf: Xf) -> bool {
+    app.tool == Tool::Subselect && add_at(app, p, xf)
+}
+
+/// Alt-click with the Pen (no path being drawn): on the path it adds an anchor there, as on a
+/// shape. False when the click wasn't on the path.
+pub fn pen_alt_click(app: &mut App, p: Pos2, xf: Xf) -> bool {
+    app.tool == Tool::Pen && app.pen.is_none() && add_at(app, p, xf)
+}
+
+/// With the Pen and Alt held: the stretch of path an Alt-click would add a point to.
+pub fn pen_hot(app: &App, p: Pos2, xf: Xf) -> Option<Grab> {
+    if app.pen.is_some() {
+        return None;
+    }
+    let shown = shown(app)?;
+    if shown.path.anchors().iter().any(|(_, q)| xf.to_screen(*q).distance(p) <= PICK) {
+        return None;
+    }
+    on_segment(&shown, p, xf).map(|(cmd, t)| Grab::Segment(cmd, t))
+}
+
+/// The selected anchors that are on the path now (an older selection may name others).
+fn selected(app: &App) -> Vec<usize> {
+    let Some(shown) = shown(app) else { return Vec::new() };
+    let n = shown.path.cmds.len();
+    app.motion_anchors.iter().copied().filter(|a| *a < n).collect()
+}
+
+/// Whether anchor `a` of an `n`-command path is an end.
+fn is_end(a: usize, n: usize) -> bool {
+    a == 0 || a + 1 == n
+}
+
+/// Deletes the selected anchors; the ends stay (the status says why).
+pub fn delete_selected(app: &mut App) {
+    let anchors = selected(app);
+    if anchors.is_empty() {
+        return;
+    }
+    if let Some(v) = app.run("motion.delete_points", json!({"anchors": anchors})) {
+        let n = v["deleted"].as_u64().unwrap_or(0);
+        let what = i18n::trn(n, "{n} point", "{n} points");
+        let undo = crate::platform::shortcut_label("Ctrl+Z");
+        app.status_ok(i18n::fmt(
+            if v["kept_ends"].as_bool() == Some(true) { "Deleted {what} from the motion path; its ends stay, as they are where the motion starts and ends. {undo} to undo." } else { "Deleted {what} from the motion path. {undo} to undo." },
+            &[("what", &what), ("undo", &undo)],
+        ));
+        app.motion_anchors.clear();
+    }
+}
+
+/// Makes the selected anchors smooth or corners (one undo step).
+pub fn convert_selected(app: &mut App, smooth: bool) {
+    let anchors = selected(app);
+    if anchors.is_empty() {
+        return;
+    }
+    app.s.begin_gesture(if smooth { "Make Smooth" } else { "Make Corner" });
+    for a in anchors {
+        app.run("motion.convert_point", json!({"anchor": a, "smooth": smooth}));
+    }
+    app.s.end_gesture();
+}
+
+/// A click with Subselection: on an anchor it selects it (Shift adds or removes), on a handle
+/// or the path it keeps the selection. False when the click wasn't on the path, which then
+/// drops the anchor selection.
+pub fn click(app: &mut App, p: Pos2, xf: Xf, shift: bool) -> bool {
+    let Some(shown) = shown(app) else { return false };
+    match hit(app, &shown, p, xf, false) {
+        Some(Grab::Anchor(a)) => {
+            if !shift {
+                app.motion_anchors = vec![a];
+            } else if let Some(i) = app.motion_anchors.iter().position(|x| *x == a) {
+                app.motion_anchors.remove(i);
+            } else {
+                app.motion_anchors.push(a);
+            }
+            app.points.clear();
+            true
+        }
+        Some(_) => true,
+        None if on_segment(&shown, p, xf).is_some() => {
+            if !shift {
+                app.motion_anchors.clear();
+            }
+            true
+        }
+        None => {
+            app.motion_anchors.clear();
+            false
+        }
+    }
+}
+
+/// A right-click with Subselection on an anchor selects it (keeping a selection it is part of),
+/// so the menu acts on it; on the path it keeps the selection. False when it wasn't on the path.
+pub fn secondary_click(app: &mut App, p: Pos2, xf: Xf) -> bool {
+    if app.tool != Tool::Subselect {
+        return false;
+    }
+    let Some(shown) = shown(app) else { return false };
+    match hit(app, &shown, p, xf, false) {
+        Some(Grab::Anchor(a)) => {
+            if !app.motion_anchors.contains(&a) {
+                app.motion_anchors = vec![a];
+            }
+            app.points.clear();
+            true
+        }
+        Some(_) => true,
+        None => on_segment(&shown, p, xf).is_some(),
+    }
+}
+
+/// The right-click menu for selected motion path anchors; false when none is selected.
+pub fn menu(app: &mut App, ui: &mut egui::Ui) -> bool {
+    if app.tool != Tool::Subselect {
+        return false;
+    }
+    let anchors = selected(app);
+    let Some(n) = shown(app).map(|s| s.path.cmds.len()) else { return false };
+    if anchors.is_empty() {
+        return false;
+    }
+    if ui.button(tl!("Make Smooth")).clicked() {
+        convert_selected(app, true);
+        ui.close();
+    }
+    if ui.button(tl!("Make Corner")).clicked() {
+        convert_selected(app, false);
+        ui.close();
+    }
+    ui.separator();
+    let deletable = anchors.iter().any(|a| !is_end(*a, n));
+    let label = tl!(if anchors.len() > 1 { "Delete Points" } else { "Delete Point" });
+    let resp = ui.add_enabled(deletable, egui::Button::new(label));
+    let resp = if deletable { resp } else { resp.on_disabled_hover_text(tl!("The ends of a motion path are where the motion starts and ends: drag them to move them")) };
+    if resp.clicked() {
+        delete_selected(app);
+        ui.close();
+    }
+    if ui.button(tl!("Straighten Path")).on_hover_text(tl!("Back to the straight path the X and Y curves trace")).clicked() {
+        app.run("motion.clear_path", json!({}));
+        app.motion_anchors.clear();
+        ui.close();
+    }
+    true
+}
+
+/// Keys for the selected anchors with Subselection, taken before the global shortcuts (so
+/// Delete removes points, not the object).
+pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
+    if app.tool != Tool::Subselect || app.motion_anchors.is_empty() || shown(app).is_none() {
+        return;
+    }
+    let take = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
+    if take(Key::Delete) || take(Key::Backspace) {
+        delete_selected(app);
+    }
+    if take(Key::Escape) {
+        app.motion_anchors.clear();
+    }
+}
+
+/// Forgets selected anchors the path no longer has.
+pub fn upkeep(app: &mut App) {
+    if app.motion_anchors.is_empty() {
+        return;
+    }
+    let n = shown(app).map_or(0, |s| s.path.cmds.len());
+    app.motion_anchors.retain(|a| *a < n);
 }
 
 fn anchor_box(painter: &Painter, c: Pos2, filled: bool) {
@@ -206,10 +420,11 @@ fn anchor_box(painter: &Painter, c: Pos2, filled: bool) {
 
 /// Draws the path: a line in the motion colour on a dark halo (it reads on any artwork), a dot
 /// per frame, larger on position keys and ringed at the playhead, and the anchors the tool can
-/// take (with the selected anchor's handles under Subselection).
+/// take (with the selected anchors' handles under Subselection). `hot` is what the pointer is
+/// over; a segment there (or the whole path, being moved) draws wider.
 pub fn draw(app: &App, painter: &Painter, shown: &Shown, xf: Xf, hot: Option<Grab>) {
     let to_px = Affine::translate(xf.origin.x, xf.origin.y).mul(&Affine::scale(xf.zoom, xf.zoom));
-    let wide = matches!(hot, Some(Grab::Segment(..))) || matches!(app.drag, Drag::MotionPath { grab: Grab::Segment(..), .. });
+    let wide = matches!(hot, Some(Grab::Segment(..))) || matches!(app.drag, Drag::MotionPath { grab: Grab::Segment(..), .. } | Drag::MotionMove { .. });
     for pl in shown.path.flatten(&to_px, 0.35) {
         let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
         painter.add(egui::Shape::line(pts.clone(), Stroke::new(if wide { 4.5 } else { 3.0 }, T.ink)));
@@ -230,8 +445,7 @@ pub fn draw(app: &App, painter: &Painter, shown: &Shown, xf: Xf, hot: Option<Gra
         }
     }
     if app.tool == Tool::Subselect {
-        for (cmd, slot) in handles(&shown.path, app.motion_anchor) {
-            let anchor = if slot == C2 { cmd } else { cmd.saturating_sub(1) };
+        for (cmd, slot, anchor) in handles(&shown.path, &app.motion_anchors) {
             if let (Some(h), Some(a)) = (shown.path.point(cmd, slot), shown.path.point(anchor, ANCHOR)) {
                 let (hs, as_) = (xf.to_screen(h), xf.to_screen(a));
                 painter.line_segment([as_, hs], Stroke::new(1.0, T.tween_motion));
@@ -240,9 +454,9 @@ pub fn draw(app: &App, painter: &Painter, shown: &Shown, xf: Xf, hot: Option<Gra
             }
         }
     }
-    if matches!(app.tool, Tool::Select | Tool::Subselect) {
+    if matches!(app.tool, Tool::Select | Tool::Subselect | Tool::Pen) {
         for (cmd, q) in grabbable_anchors(&shown.path, app.tool) {
-            anchor_box(painter, xf.to_screen(q), app.motion_anchor == Some(cmd) || hot == Some(Grab::Anchor(cmd)));
+            anchor_box(painter, xf.to_screen(q), app.motion_anchors.contains(&cmd) || hot == Some(Grab::Anchor(cmd)));
         }
     }
 }
@@ -281,10 +495,13 @@ mod tests {
         let q = dragged(&p, Grab::Segment(1, 0.5), Vec2::new(0.0, 20.0), false);
         assert!(q.segment_point(1, 0.5).unwrap().distance(before + Vec2::new(0.0, 20.0)) < 1e-3);
         assert_eq!(q.point(1, ANCHOR), p.point(1, ANCHOR));
-        // Selection takes only the ends; Subselection every anchor.
+        // Selection takes only the ends; Subselection every anchor, and the Pen sees them all.
         assert_eq!(grabbable_anchors(&p, Tool::Select).iter().map(|a| a.0).collect::<Vec<_>>(), vec![0, 2]);
         assert_eq!(grabbable_anchors(&p, Tool::Subselect).len(), 3);
-        assert_eq!(handles(&p, Some(1)), vec![(1, C2), (2, C1)]);
-        assert_eq!(handles(&p, Some(0)), vec![(1, C1)]);
+        assert_eq!(grabbable_anchors(&p, Tool::Pen).len(), 3);
+        assert_eq!(handles(&p, &[1]), vec![(1, C2, 1), (2, C1, 1)]);
+        assert_eq!(handles(&p, &[0]), vec![(1, C1, 0)]);
+        assert_eq!(handles(&p, &[0, 2]), vec![(1, C1, 0), (2, C2, 2)], "every selected anchor shows its handles");
+        assert!(is_end(0, 3) && is_end(2, 3) && !is_end(1, 3));
     }
 }

@@ -118,8 +118,8 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => "Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection.",
-            Tool::Subselect => "Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner.",
-            Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
+            Tool::Subselect => "Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner. A motion path's points edit the same way (its ends stay).",
+            Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape or a motion path to add a point to it.",
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
             Tool::Brush => "Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode.",
@@ -198,6 +198,8 @@ pub enum Drag {
     /// Editing the motion path (ADR 0030) from stage point `start`; the path as it was when the
     /// drag began is `App::motion_drag`.
     MotionPath { grab: crate::motion_path::Grab, start: egui::Pos2 },
+    /// Moving the whole motion path (ADR 0038), from stage point `last` last frame.
+    MotionMove { last: egui::Pos2 },
     /// Camera tool (ADR 0027): panning from screen point `last`, turning from pointer angle
     /// `last` (radians about the camera centre), or zooming with the wheel until `until`
     /// (seconds; the turns of one burst are one undo step).
@@ -315,8 +317,8 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
-    /// Subselection: the motion path anchor whose handles show (ADR 0030).
-    pub motion_anchor: Option<usize>,
+    /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
+    pub motion_anchors: Vec<usize>,
     /// The motion path as it was when the drag on it began.
     pub motion_drag: Option<anicraft_engine::geom::Path>,
     /// Selected frames on the timeline, and the drag on the frame grid.
@@ -472,7 +474,7 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
-            motion_anchor: None,
+            motion_anchors: Vec::new(),
             motion_drag: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
@@ -989,7 +991,7 @@ impl App {
                 self.me_key = Some(0);
                 self.run("timeline.goto", json!({"frame": 6}));
             }
-            Some(which @ ("motionpath" | "motionpoints")) => {
+            Some(which @ ("motionpath" | "motionpoints" | "motionedit")) => {
                 // The Star layer's span as a motion tween along a curved, oriented motion path,
                 // the star selected half way along it (ADR 0030); with Subselection, the
                 // middle anchor's handles show.
@@ -1005,12 +1007,20 @@ impl App {
                 }
                 self.run("timeline.goto", json!({"frame": 9}));
                 self.run("edit.select_all", json!({}));
-                if which == "motionpoints" {
+                if which != "motionpath" {
                     // The span selected instead of the star: Properties shows the tween's rows.
                     self.run("element.select", json!({"ids": []}));
                     self.frame_sel = Some(timeline::FrameSel::cell(self.s.layer, 9));
                     self.tool = Tool::Subselect;
-                    self.motion_anchor = Some(1);
+                    self.motion_anchors = vec![1];
+                }
+                if which == "motionedit" {
+                    // Points edited (ADR 0038): one added on the second segment, the middle
+                    // anchor made a corner, both selected with their handles showing.
+                    self.run("motion.add_point", json!({"segment": 2, "t": 0.45}));
+                    self.run("motion.convert_point", json!({"anchor": 1, "smooth": false}));
+                    self.motion_anchors = vec![1, 2];
+                    self.status_ok(i18n::fmt("Added a point to the motion path. {undo} to undo.", &[("undo", &platform::shortcut_label("Ctrl+Z"))]));
                 }
             }
             Some("pen") => {
@@ -1492,6 +1502,7 @@ impl App {
         }
         let control = keys == crate::a11y::Keyboard::Control;
         if !control {
+            crate::motion_path::consume_keys(self, ctx);
             pathtools::consume_keys(self, ctx);
             crate::widthtool::consume_keys(self, ctx);
         }
