@@ -21,7 +21,7 @@
     [
       "-1",
       "Software\\Classes\\Anicraft.Import\\shell\\open\\command",
-      "",
+      "tryValue Root=",
       "\"[#AnicraftExe]\" \"%1\""
     ],
     [
@@ -38,6 +38,18 @@
     ],
     [
       "-1",
+      "Software\\Classes\\.moho\\OpenWithProgids",
+      "Anicraft.Import",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.mohoproj\\OpenWithProgids",
+      "Anicraft.Import",
+      ""
+    ],
+    [
+      "-1",
       "Software\\Classes\\Applications\\anicraft.exe",
       "FriendlyAppName",
       "AniCraft"
@@ -45,7 +57,7 @@
     [
       "-1",
       "Software\\Classes\\Applications\\anicraft.exe\\shell\\open\\command",
-      "",
+      "tryValue Root=",
       "\"[#AnicraftExe]\" \"%1\""
     ],
     [
@@ -68,8 +80,20 @@
     ],
     [
       "-1",
+      "Software\\Classes\\Applications\\anicraft.exe\\SupportedTypes",
+      ".moho",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\anicraft.exe\\SupportedTypes",
+      ".mohoproj",
+      ""
+    ],
+    [
+      "-1",
       "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\anicraft.exe",
-      "",
+      "tryValue Root=",
       "[#AnicraftExe]"
     ],
     [
