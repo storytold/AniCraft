@@ -20,4 +20,14 @@
     <generic-icon name="x-office-document"/>
     <glob pattern="*.xfl"/>
   </mime-type>
+  <mime-type type="application/x-moho">
+    <comment>Moho document</comment>
+    <generic-icon name="x-office-document"/>
+    <glob pattern="*.moho"/>
+  </mime-type>
+  <mime-type type="application/x-mohoproj">
+    <comment>Moho project document</comment>
+    <generic-icon name="x-office-document"/>
+    <glob pattern="*.mohoproj"/>
+  </mime-type>
 </mime-info>
