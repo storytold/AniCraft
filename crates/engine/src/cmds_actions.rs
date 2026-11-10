@@ -25,13 +25,22 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// What a keyframe command may address: frames that run (actions and plug-in frame scripts:
+/// the main timeline and movie clips, not guides), or frames that keep a script (any symbol
+/// and guide layers too: kept scripts are content, ADR 0013 tier 1).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    Runs,
+    Keeps,
+}
+
 /// A timeline commands address: a scene's (the one being edited) or a library symbol's.
-fn timeline_mut(s: &mut Session, symbol: Option<SymbolId>) -> Result<&mut Timeline> {
+fn timeline_mut(s: &mut Session, symbol: Option<SymbolId>, scope: Scope) -> Result<&mut Timeline> {
     match symbol {
         None => Ok(s.doc.timeline_mut(s.scene)),
         Some(id) => {
             let sym = s.doc.library.iter_mut().find(|x| x.id == id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
-            if sym.kind != SymbolKind::MovieClip {
+            if scope == Scope::Runs && sym.kind != SymbolKind::MovieClip {
                 return Err(EngineError::State(format!("“{}” is not a movie clip: only the main timeline and movie clips run frame actions", sym.name)));
             }
             Ok(&mut Arc::make_mut(sym).timeline)
@@ -41,6 +50,12 @@ fn timeline_mut(s: &mut Session, symbol: Option<SymbolId>) -> Result<&mut Timeli
 
 /// The keyframe covering `frame` on `layer` of the addressed timeline.
 fn keyframe_at<'a>(s: &'a mut Session, p: &Value) -> Result<(LayerId, &'a mut Keyframe)> {
+    keyframe_in(s, p, Scope::Runs)
+}
+
+/// The keyframe covering `{symbol?, layer?, frame?}`: on the active layer at the playhead by
+/// default, or a symbol's first layer at its first frame.
+pub(crate) fn keyframe_in<'a>(s: &'a mut Session, p: &Value, scope: Scope) -> Result<(LayerId, &'a mut Keyframe)> {
     let symbol = opt_u64(p, "symbol")?.map(SymbolId);
     let frame = opt_u32(p, "frame")?.unwrap_or(if symbol.is_some() { 0 } else { s.frame });
     if frame > crate::MAX_FRAME {
@@ -48,14 +63,14 @@ fn keyframe_at<'a>(s: &'a mut Session, p: &Value) -> Result<(LayerId, &'a mut Ke
     }
     let active = s.layer;
     let layer_param = opt_u64(p, "layer")?.map(LayerId);
-    let tl = timeline_mut(s, symbol)?;
+    let tl = timeline_mut(s, symbol, scope)?;
     let lid = match (layer_param, symbol) {
         (Some(l), _) => l,
         (None, None) => active,
         (None, Some(_)) => tl.layers.iter().find(|l| l.kind != LayerKind::Folder).map(|l| l.id).ok_or_else(|| EngineError::State("the symbol has no layers".into()))?,
     };
     let layer = tl.layer_mut(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
-    if matches!(layer.kind, LayerKind::Folder | LayerKind::Guide) {
+    if layer.kind == LayerKind::Folder || (scope == Scope::Runs && layer.kind == LayerKind::Guide) {
         return Err(EngineError::State(format!("'{}' is a {} layer: its frames don't run actions", layer.name, if layer.kind == LayerKind::Folder { "folder" } else { "guide" })));
     }
     let i = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on '{}': add a keyframe first (F6 or F7)", frame + 1, layer.name)))?;
@@ -181,6 +196,8 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
                     match script {
                         FrameScript::Actions(a) => v["actions"] = serde_json::to_value(a).unwrap_or(Value::Null),
                         FrameScript::Plugin(ps) => v["plugin"] = json!({"id": ps.id, "entry": ps.entry}),
+                        // The text is in `script.list`.
+                        FrameScript::Source(src) => v["script"] = json!({"language": src.language.key(), "lines": src.lines()}),
                     }
                     frames.push(v);
                 }

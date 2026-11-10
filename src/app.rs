@@ -748,6 +748,21 @@ impl App {
                     crate::test_movie::demo_pointer(self);
                 }
             }
+            Some("script") => {
+                // The interactive sample as an imported Animate document might bring it: a
+                // frame script kept on the Actions layer's first keyframe (in place of its
+                // Stop action), a linkage class and a document class; the Actions panel shows
+                // the Script view (ADR 0013 tier 1).
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 0}));
+                let code = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tgotoAndPlay(\"show\");\n}\n";
+                self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
+                self.run("script.set_class", json!({"class": "com.example.Menu"}));
+                if let Some(button) = self.s.doc.library.iter().find(|s| s.kind == anicraft_engine::doc::SymbolKind::Button).map(|s| s.id.0) {
+                    self.run("script.set_class", json!({"symbol": button, "class": "com.example.PlayButton", "base": "flash.display.SimpleButton"}));
+                }
+                crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
+            }
             Some("exporthtml") => {
                 // File › Export › Export HTML Canvas… on the interactive sample (the in-app
                 // prompt: screenshots never open native dialogs).
@@ -1111,11 +1126,15 @@ impl App {
                 self.library_sel = Some(LibraryItem::Sound(id));
                 let name = v["name"].as_str().unwrap_or("");
                 let secs = v["seconds"].as_f64().unwrap_or(0.0);
-                self.status_ok(if v.get("layer").is_some() {
-                    format!("{name} ({secs:.2} s) is on a new layer from frame {}. Set its sync in Properties. Ctrl+Z to undo.", self.s.frame + 1)
-                } else {
-                    format!("{name} ({secs:.2} s) is in the Library. Select a keyframe and pick it under Sound in Properties.")
-                });
+                let (secs, frame) = (format!("{secs:.2}"), (self.s.frame + 1).to_string());
+                self.status_ok(i18n::fmt(
+                    if v.get("layer").is_some() {
+                        "{name} ({secs} s) is on a new layer from frame {frame}. Set its sync in Properties. Ctrl+Z to undo."
+                    } else {
+                        "{name} ({secs} s) is in the Library. Select a keyframe and pick it under Sound in Properties."
+                    },
+                    &[("name", name), ("secs", &secs), ("frame", &frame)],
+                ));
             }
             "file.import_to_library" => self.status_ok(tl!("Image added to the Library")),
             "file.export_audio" => {

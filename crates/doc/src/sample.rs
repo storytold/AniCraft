@@ -41,7 +41,7 @@ fn key(start: u32, duration: u32, elements: Vec<Arc<Element>>, tween: Option<Eas
 
 /// Builds the demo document: a bouncing ball, a spinning star, a pulsing sun over hills.
 pub fn demo() -> Document {
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), document_class: String::new(), next_id: 1 };
     let (w, h) = (1280.0, 720.0);
 
     // --- library -------------------------------------------------------------------------
@@ -53,7 +53,7 @@ pub fn demo() -> Document {
     .with_stroke(Rgba::hex(0x5a1410), 3.0);
     let ball_el = el(&mut d, "ball body", Affine::IDENTITY, ElementKind::Shape(ball_shape));
     let ball_layer = layer(d.alloc_id(), "body", 0x4fa3ff, vec![key(0, 1, vec![ball_el], None)]);
-    d.library.push(Arc::new(Symbol { id: ball_id, name: "Ball".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![ball_layer] } }));
+    d.library.push(Arc::new(Symbol { id: ball_id, name: "Ball".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![ball_layer] } }));
 
     let star_id = SymbolId(d.alloc_id());
     let star_shape = Shape::filled(Path::star(0.0, 0.0, 60.0, 26.0, 5), Paint::Solid(Rgba::hex(0xfff6a8))).with_stroke(Rgba::hex(0xe0a400), 2.5);
@@ -67,7 +67,7 @@ pub fn demo() -> Document {
         })
         .collect();
     let star_layer = layer(d.alloc_id(), "spin", 0x4fa3ff, star_keys);
-    d.library.push(Arc::new(Symbol { id: star_id, name: "Star".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![star_layer] } }));
+    d.library.push(Arc::new(Symbol { id: star_id, name: "Star".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![star_layer] } }));
 
     // --- main timeline (index 0 = top) ---------------------------------------------------
     const LEN: u32 = 48;
@@ -147,7 +147,7 @@ pub fn demo() -> Document {
 /// whose last frame traces a line and goes back to the menu.
 pub fn interactive() -> Document {
     use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, Target};
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), document_class: String::new(), next_id: 1 };
     const LEN: u32 = 36;
     let solid = |c: u32| Paint::Solid(Rgba::hex(c));
 
@@ -161,7 +161,7 @@ pub fn interactive() -> Document {
     let (up, over, down) = (face(&mut d, 0x3d8bfd), face(&mut d, 0x6aa8ff), face(&mut d, 0x2a64c0));
     let hit_area = el(&mut d, "hit", Affine::IDENTITY, ElementKind::Shape(Shape::filled(Path::rect(-120.0, -50.0, 240.0, 100.0), solid(0x000000))));
     let states = layer(d.alloc_id(), "states", 0x4fa3ff, vec![key(0, 1, up, None), key(1, 1, over, None), key(2, 1, down, None), key(3, 1, vec![hit_area], None)]);
-    d.library.push(Arc::new(Symbol { id: button_id, name: "Play Button".into(), kind: SymbolKind::Button, timeline: Timeline { layers: vec![states] } }));
+    d.library.push(Arc::new(Symbol { id: button_id, name: "Play Button".into(), kind: SymbolKind::Button, linkage: None, timeline: Timeline { layers: vec![states] } }));
 
     // A movie clip that spins on its own timeline.
     let spinner_id = SymbolId(d.alloc_id());
@@ -175,7 +175,7 @@ pub fn interactive() -> Document {
         })
         .collect();
     let spin = layer(d.alloc_id(), "spin", 0xffd54a, spin_keys);
-    d.library.push(Arc::new(Symbol { id: spinner_id, name: "Spinner".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![spin] } }));
+    d.library.push(Arc::new(Symbol { id: spinner_id, name: "Spinner".into(), kind: SymbolKind::MovieClip, linkage: None, timeline: Timeline { layers: vec![spin] } }));
 
     // Main timeline: actions on top, then the button (menu frame), the show, the backdrop.
     let mut menu = key(0, 1, Vec::new(), None);
@@ -211,7 +211,7 @@ pub fn interactive() -> Document {
 /// `shapes` shapes each, keyed every 12 frames over `frames` frames with classic tweens.
 /// Every element keeps one `Arc<Path>` across its keyframes, as a real tweened shape does.
 pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
-    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), document_class: String::new(), next_id: 1 };
     let (layers, shapes, frames) = (layers.clamp(1, 1000), shapes.clamp(1, 100_000), frames.clamp(1, 10_000));
     let mut seed = 0x2545_f491_u32;
     let mut rnd = move || {

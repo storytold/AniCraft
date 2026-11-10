@@ -3,13 +3,17 @@
 //! list. Targets come from the document's instance names, frames and labels from its
 //! timelines, scenes from its scene list, so nothing needs typing but a trace message.
 //! Every change is one `actions.set` (or `instance.set_name`) command, so it undoes in one step.
+//!
+//! A keyframe may instead keep a **script** written in another language (an Animate document's
+//! ActionScript; ADR 0013 tier 1): the Script view shows and edits it in a monospace editor
+//! with line numbers (`script.set`, typing coalesced into one undo step). Nothing runs it yet.
 
 use crate::i18n::{self, tl};
 use crate::a11y::Named;
 use crate::app::App;
 use crate::icons::Icon;
-use crate::theme::{FORM_LABEL_DOCK, T, Type, form_row, text, with_type};
-use anicraft_engine::doc::actions::{Action, ButtonEvent, FrameRef, FrameScript, KINDS, Property, Seg, Target};
+use crate::theme::{FORM_LABEL_DOCK, T, Type, font, form_row, text, with_type};
+use anicraft_engine::doc::actions::{Action, ButtonEvent, FrameRef, FrameScript, KINDS, Language, Property, Seg, SourceScript, Target};
 use anicraft_engine::doc::{Document, Element, ElementKind, LayerId, LayerKind, SymbolId, SymbolKind, Timeline};
 use anicraft_engine::plugins::Kind;
 use serde_json::{Value, json};
@@ -30,6 +34,20 @@ pub struct State {
     pub symbol: Option<SymbolId>,
     pub layer: Option<LayerId>,
     pub frame: u32,
+    /// The keyframe whose Script view is open while it keeps no script yet (the editor stays
+    /// up while the first line is typed, or after the last is deleted).
+    pub script_at: Option<KeyAt>,
+}
+
+/// A keyframe: its timeline (a symbol's, or the scene's), layer and first frame.
+pub type KeyAt = (Option<SymbolId>, LayerId, u32);
+
+/// What a keyframe holds, as the Frame tab's Type row offers it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Holds {
+    Actions,
+    Plugin,
+    Script,
 }
 
 /// Opens the panel on a tab.
@@ -44,9 +62,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
     let mut open = app.show_actions;
     let at = ctx.content_rect().right_top() + egui::vec2(-760.0, 96.0);
-    egui::Window::new(crate::i18n::tl!("Actions")).id(egui::Id::unique("actions_panel")).open(&mut open).default_pos(at).default_width(420.0).resizable(true).collapsible(false).show(ctx, |ui| {
+    let shown = egui::Window::new(tl!("Actions")).id(egui::Id::unique("actions_panel")).open(&mut open).default_pos(at).default_width(420.0).resizable(true).collapsible(false).show(ctx, |ui| {
         egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).auto_shrink([false, true]).show(ui, |ui| panel(app, ui));
     });
+    crate::a11y::name_title_bar(&shown, "Actions");
     app.show_actions = open;
 }
 
@@ -94,66 +113,254 @@ struct FrameTarget {
     script: Option<FrameScript>,
     timeline: Timeline,
     main: bool,
+    /// Whether the keyframe's actions run (the main timeline or a movie clip, not a guide).
+    runs: bool,
+    at: KeyAt,
+}
+
+/// Library symbols the Frame tab can show: movie clips (their frames run actions), and any
+/// other symbol with a kept script on its timeline (shown, not run).
+fn symbol_timelines(doc: &Document) -> Vec<(SymbolId, String, SymbolKind)> {
+    doc.library.iter().filter(|s| s.kind == SymbolKind::MovieClip || keeps_script(&s.timeline)).map(|s| (s.id, s.name.clone(), s.kind)).collect()
+}
+
+/// Kept scripts in the document (ADR 0013 tier 1), in every scene and symbol.
+pub fn kept_scripts(doc: &Document) -> usize {
+    doc.timelines().flat_map(|tl| tl.layers.iter()).flat_map(|l| l.keyframes.iter()).filter(|k| is_kept(k)).count()
+}
+
+/// Whether the document uses scripts at all (a kept script, a linkage class or a document
+/// class), so the class fields in Properties are worth showing.
+pub fn scripted(doc: &Document) -> bool {
+    !doc.document_class.is_empty() || doc.library.iter().any(|s| s.linkage.is_some()) || doc.timelines().any(keeps_script)
+}
+
+/// A class-name field (a symbol's linkage class, the document class). It edits a draft and
+/// commits when focus leaves (Enter, Tab or a click elsewhere), since a half-typed name
+/// ("com.") isn't a class name yet; a draft that isn't one shows in the error colour.
+pub fn class_field(ui: &mut egui::Ui, field: &str, current: &str, name: &str, hint: &str) -> Option<String> {
+    let id = ui.make_persistent_id(field);
+    let mut draft: String = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.to_string());
+    let ok = draft.trim().is_empty() || anicraft_engine::doc::actions::valid_class_name(draft.trim());
+    let mut edit = egui::TextEdit::singleline(&mut draft).desired_width(170.0).font(font(Type::Path)).hint_text(tl!("none"));
+    if !ok {
+        edit = edit.text_color(T.error);
+    }
+    let r = ui.add(edit).named(name).on_hover_text(hint);
+    if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, draft.clone()));
+    }
+    if r.lost_focus() {
+        ui.data_mut(|d| d.remove::<String>(id));
+        let v = draft.trim().to_string();
+        if v != current {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn keeps_script(tl: &Timeline) -> bool {
+    tl.layers.iter().any(|l| l.keyframes.iter().any(|k| is_kept(k)))
+}
+
+fn is_kept(k: &anicraft_engine::doc::Keyframe) -> bool {
+    matches!(k.script, Some(FrameScript::Source(_)))
+}
+
+fn kind_name(k: SymbolKind) -> &'static str {
+    match k {
+        SymbolKind::MovieClip => "movie clip",
+        SymbolKind::Button => "button",
+        SymbolKind::Graphic => "graphic",
+    }
 }
 
 fn frame_tab(app: &mut App, ui: &mut egui::Ui) {
     let doc = app.s.doc.clone();
     let scene_name = doc.scenes.get(app.s.scene).map_or_else(|| "Scene".to_string(), |s| s.name.clone());
-    // Which timeline: the scene being edited, or a movie clip's.
-    let clips: Vec<(SymbolId, String)> = doc.library.iter().filter(|s| s.kind == SymbolKind::MovieClip).map(|s| (s.id, s.name.clone())).collect();
-    if app.actions.symbol.is_some_and(|id| !clips.iter().any(|(c, _)| *c == id)) {
+    // Which timeline: the scene being edited, or a symbol's.
+    let symbols = symbol_timelines(&doc);
+    if app.actions.symbol.is_some_and(|id| !symbols.iter().any(|(c, _, _)| *c == id)) {
         app.actions.symbol = None;
     }
-    let current = app.actions.symbol.and_then(|id| clips.iter().find(|(c, _)| *c == id)).map_or(scene_name.clone(), |(_, n)| i18n::fmt("{name} (movie clip)", &[("name", n)]));
+    let current = app.actions.symbol.and_then(|id| symbols.iter().find(|(c, _, _)| *c == id)).map_or(scene_name.clone(), |(_, n, k)| i18n::fmt("{name} ({kind})", &[("name", n), ("kind", tl!(kind_name(*k)))]));
     form_row(ui, FORM_LABEL_DOCK, "Timeline", |ui| {
         egui::ComboBox::from_id_salt("act_timeline").width(220.0).selected_text(current).show_ui(ui, |ui| {
             if ui.selectable_label(app.actions.symbol.is_none(), i18n::fmt("{name} (main timeline)", &[("name", &scene_name)])).clicked() {
                 app.actions.symbol = None;
             }
-            for (id, n) in &clips {
-                if ui.selectable_label(app.actions.symbol == Some(*id), i18n::fmt("{name} (movie clip)", &[("name", n)])).clicked() {
-                    app.actions = State { tab: Tab::Frame, symbol: Some(*id), layer: None, frame: 0 };
+            for (id, n, k) in &symbols {
+                if ui.selectable_label(app.actions.symbol == Some(*id), i18n::fmt("{name} ({kind})", &[("name", n), ("kind", tl!(kind_name(*k)))])).clicked() {
+                    app.actions = State { tab: Tab::Frame, symbol: Some(*id), ..State::default() };
                 }
             }
-        });
+        })
+        .response
+        .set_name(tl!("Timeline"));
     });
     let Some(t) = frame_target(app, ui, &doc) else { return };
-    // Actions, or a plug-in frame script.
-    let is_plugin = matches!(t.script, Some(FrameScript::Plugin(_)));
-    let mut to_plugin = None;
-    form_row(ui, FORM_LABEL_DOCK, "Runs", |ui| {
-        if ui.selectable_label(!is_plugin, tl!("Actions")).on_hover_text(tl!("A list of actions, in order")).clicked() && is_plugin {
-            to_plugin = Some(false);
-        }
-        if ui.selectable_label(is_plugin, tl!("Frame script")).on_hover_text(tl!("An entry point of a frame-script plug-in (WebAssembly)")).clicked() && !is_plugin {
-            to_plugin = Some(true);
+    let source = t.script.as_ref().and_then(FrameScript::source).cloned();
+    let kind = match &t.script {
+        Some(FrameScript::Plugin(_)) => Holds::Plugin,
+        Some(FrameScript::Source(_)) => Holds::Script,
+        _ if app.actions.script_at == Some(t.at) => Holds::Script,
+        _ => Holds::Actions,
+    };
+    if !t.runs {
+        // Graphics, buttons and guides never run frame scripts; a kept one is still shown.
+        ui.label(text(Type::Caption, tl!("Frames here don't run (graphic and button timelines, guide layers); the script is kept with the document.")));
+        script_view(app, ui, &t, source.as_ref());
+        return;
+    }
+    let mut to = None;
+    form_row(ui, FORM_LABEL_DOCK, "Type", |ui| {
+        for (k, label, hint) in [
+            (Holds::Actions, "Actions", "A list of actions, in order"),
+            (Holds::Plugin, "Plug-in", "An entry point of a frame-script plug-in (WebAssembly)"),
+            (Holds::Script, "Script", "Code in a scripting language (such as an Animate document's ActionScript), kept with the document. It doesn't run yet"),
+        ] {
+            if ui.selectable_label(kind == k, tl!(label)).on_hover_text(tl!(hint)).clicked() && kind != k {
+                to = Some(k);
+            }
         }
     });
-    match to_plugin {
-        Some(false) => set_frame(app, &t.base, json!({"actions": []})),
-        Some(true) => {
+    if let Some(to) = to {
+        switch_kind(app, &t, kind, to);
+        return;
+    }
+    match (kind, &t.script) {
+        (Holds::Plugin, Some(FrameScript::Plugin(ps))) => plugin_rows(app, ui, &t.base, &ps.id, &ps.entry),
+        (Holds::Script, _) => script_view(app, ui, &t, source.as_ref()),
+        _ => {
+            let list = t.script.as_ref().map(|s| s.actions().to_vec()).unwrap_or_default();
+            let cx = Choices::new(&doc, &t.timeline, t.main);
+            if list.is_empty() {
+                ui.label(text(Type::Caption, tl!("No actions yet. Add one: Stop on a frame holds the movie there; a button's Click can then go on.")));
+            }
+            if let Some((new, live)) = edit_list(ui, "frame", &list, &cx) {
+                let mut p = t.base.clone();
+                p["actions"] = serde_json::to_value(&new).unwrap_or(Value::Null);
+                run(app, live, "Edit actions", "actions.set", p);
+            }
+        }
+    }
+}
+
+/// Changes what the keyframe holds. What it held goes (one undo step, with a hint).
+fn switch_kind(app: &mut App, t: &FrameTarget, from: Holds, to: Holds) {
+    app.actions.script_at = None;
+    let had = match &t.script {
+        Some(FrameScript::Actions(a)) => !a.is_empty(),
+        Some(_) => true,
+        None => false,
+    };
+    match to {
+        Holds::Actions => {
+            if had {
+                set_frame(app, &t.base, json!({"actions": []}));
+            }
+        }
+        Holds::Plugin => {
             if let Some((id, entry)) = frame_scripts(app).first().map(|(id, _, e)| (id.clone(), e.first().cloned().unwrap_or_else(|| "main".into()))) {
                 set_frame(app, &t.base, json!({"plugin": id, "entry": entry}));
                 app.status_ok(tl!("Frame script set — Ctrl+Z to undo"));
             } else {
                 app.status_err(tl!("No frame-script plug-ins are installed (Commands › Install Plug-in…)"));
             }
+            return;
         }
-        None => {}
+        Holds::Script => {
+            // The editor opens empty; the first line typed keeps the script.
+            if had {
+                set_frame(app, &t.base, json!({"actions": []}));
+            }
+            app.actions.script_at = Some(t.at);
+        }
     }
-    if let Some(FrameScript::Plugin(ps)) = &t.script {
-        plugin_rows(app, ui, &t.base, &ps.id, &ps.entry);
-        return;
+    if had {
+        let template = match from {
+            Holds::Actions => "Removed the actions — Ctrl+Z to undo",
+            Holds::Plugin => "Removed the plug-in frame script — Ctrl+Z to undo",
+            Holds::Script => "Removed the script — Ctrl+Z to undo",
+        };
+        app.status_ok(tl!(template));
     }
-    let list = t.script.as_ref().map(|s| s.actions().to_vec()).unwrap_or_default();
-    let cx = Choices::new(&doc, &t.timeline, t.main);
-    if list.is_empty() {
-        ui.label(text(Type::Caption, tl!("No actions yet. Add one: Stop on a frame holds the movie there; a button's Click can then go on.")));
-    }
-    if let Some((new, live)) = edit_list(ui, "frame", &list, &cx) {
+}
+
+/// Space above the first line of the script editor (and its line numbers).
+const EDITOR_MARGIN: i8 = 4;
+
+/// The Script view: the kept script's language, and its text in a monospace editor with line
+/// numbers. Typing edits the document live (`script.set`, one undo step per burst of typing).
+fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&SourceScript>) {
+    let language = src.map_or(Language::default(), |s| s.language);
+    let mut pick = None;
+    form_row(ui, FORM_LABEL_DOCK, "Language", |ui| {
+        ui.add_enabled_ui(src.is_some(), |ui| {
+            egui::ComboBox::from_id_salt("act_language").width(180.0).selected_text(language.label()).show_ui(ui, |ui| {
+                for l in Language::ALL {
+                    if ui.selectable_label(l == language, l.label()).clicked() && l != language {
+                        pick = Some(l);
+                    }
+                }
+            })
+            .response
+            .set_name(tl!("Script language"));
+        });
+        if let Some(s) = src {
+            let n = s.lines();
+            ui.label(text(Type::Data, format!("{n} {}", if n == 1 { "line" } else { "lines" })).color(T.text_dim));
+        }
+    });
+    if let Some(l) = pick {
         let mut p = t.base.clone();
-        p["actions"] = serde_json::to_value(&new).unwrap_or(Value::Null);
-        run(app, live, "Edit actions", "actions.set", p);
+        p["language"] = json!(l.key());
+        app.run("script.set", p);
+    }
+    // The text, with line endings shown as typed (a file's CR LF reads as one break).
+    let shown = src.map(|s| if s.text.contains('\r') { s.text.replace("\r\n", "\n") } else { s.text.clone() }).unwrap_or_default();
+    let mut edited = shown.clone();
+    let code = font(Type::Path);
+    let rows = shown.split('\n').count().max(1);
+    let changed = egui::ScrollArea::both()
+        .id_salt("act_script")
+        .max_height(320.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                // Line numbers, right-aligned in a gutter, on the same rows as the text.
+                let digits = rows.to_string().len().max(2);
+                let numbers: String = (1..=rows).map(|i| format!("{i:>digits$}")).collect::<Vec<_>>().join("\n");
+                ui.vertical(|ui| {
+                    ui.add_space(f32::from(EDITOR_MARGIN));
+                    ui.add(egui::Label::new(text(Type::Path, numbers).color(T.text_faint)).selectable(false));
+                });
+                let editor = egui::TextEdit::multiline(&mut edited)
+                    .code_editor()
+                    .font(code.clone())
+                    .margin(egui::Margin::symmetric(6, EDITOR_MARGIN))
+                    .desired_rows(12)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(tl!("// Type or paste a frame script"));
+                ui.add(editor).named(tl!("Frame script")).changed()
+            })
+            .inner
+        })
+        .inner;
+    if changed && edited != shown {
+        app.actions.script_at = Some(t.at);
+        let mut p = t.base.clone();
+        p["text"] = json!(edited);
+        if src.is_none() {
+            p["language"] = json!(language.key());
+        }
+        run(app, true, "Edit script", "script.set", p);
+    }
+    ui.label(text(Type::Caption, tl!("Kept with the document as written. AniCraft doesn't run scripts yet: Test Movie and exports skip it. Use actions for what should happen while the movie plays.")));
+    if src.is_some() && ui.small_button(tl!("Remove script")).on_hover_text(tl!("Delete this keyframe's script")).clicked() {
+        app.run("script.clear", t.base.clone());
+        app.status_ok(tl!("Removed the script — Ctrl+Z to undo"));
     }
 }
 
@@ -169,7 +376,7 @@ fn frame_target(app: &mut App, ui: &mut egui::Ui, doc: &Document) -> Option<Fram
                 ui.label(text(Type::Data, format!("{}", frame + 1)));
                 ui.label(text(Type::Body, layer.name.as_str()).color(T.text_dim));
             });
-            if matches!(layer.kind, LayerKind::Folder | LayerKind::Guide) {
+            if layer.kind == LayerKind::Folder || (layer.kind == LayerKind::Guide && !layer.keyframe_at(frame).is_some_and(is_kept)) {
                 ui.label(text(Type::Caption, tl!("Folders and guide layers don't run actions. Pick another layer in the timeline.")));
                 return None;
             }
@@ -182,11 +389,15 @@ fn frame_target(app: &mut App, ui: &mut egui::Ui, doc: &Document) -> Option<Fram
                 let key = app.keymap.primary("timeline.insert_keyframe").map(crate::platform::shortcut_label).unwrap_or_default();
                 ui.label(text(Type::Caption, i18n::fmt("These run when the playhead enters frame {start} (the keyframe). For frame {frame}, add a keyframe there ({key}).", &[("start", &(k.start + 1).to_string()), ("frame", &(frame + 1).to_string()), ("key", &key)])));
             }
-            Some(FrameTarget { base: json!({"layer": layer.id.0, "frame": k.start}), script: k.script.clone(), timeline: tl.clone(), main: true })
+            let runs = layer.kind != LayerKind::Guide;
+            Some(FrameTarget { base: json!({"layer": layer.id.0, "frame": k.start}), script: k.script.clone(), timeline: tl.clone(), main: true, runs, at: (None, layer.id, k.start) })
         }
         Some(sid) => {
             let sym = doc.symbol(sid)?;
-            let layers: Vec<(LayerId, String)> = sym.timeline.layers.iter().filter(|l| !matches!(l.kind, LayerKind::Folder | LayerKind::Guide)).map(|l| (l.id, l.name.clone())).collect();
+            let clip = sym.kind == SymbolKind::MovieClip;
+            // A movie clip's layers that run; on other symbols, the layers that keep a script.
+            let offered = |l: &anicraft_engine::doc::Layer| if clip { !matches!(l.kind, LayerKind::Folder | LayerKind::Guide) } else { l.keyframes.iter().any(|k| is_kept(k)) };
+            let layers: Vec<(LayerId, String)> = sym.timeline.layers.iter().filter(|l| offered(l)).map(|l| (l.id, l.name.clone())).collect();
             let lid = app.actions.layer.filter(|l| layers.iter().any(|(x, _)| x == l)).or_else(|| layers.first().map(|(l, _)| *l))?;
             app.actions.layer = Some(lid);
             let layer = sym.timeline.layer(lid)?;
@@ -197,7 +408,9 @@ fn frame_target(app: &mut App, ui: &mut egui::Ui, doc: &Document) -> Option<Fram
                             app.actions.layer = Some(*id);
                         }
                     }
-                });
+                })
+                .response
+                .set_name(tl!("Layer"));
             });
             let k = layer.keyframe_at(app.actions.frame).or_else(|| layer.keyframes.first().map(|k| &**k))?;
             app.actions.frame = k.start;
@@ -211,10 +424,12 @@ fn frame_target(app: &mut App, ui: &mut egui::Ui, doc: &Document) -> Option<Fram
                                 app.actions.frame = kk.start;
                             }
                         }
-                    });
+                    })
+                    .response
+                    .set_name(tl!("Keyframe"));
                 });
             });
-            Some(FrameTarget { base: json!({"symbol": sid.0, "layer": lid.0, "frame": k.start}), script: k.script.clone(), timeline: sym.timeline.clone(), main: false })
+            Some(FrameTarget { base: json!({"symbol": sid.0, "layer": lid.0, "frame": k.start}), script: k.script.clone(), timeline: sym.timeline.clone(), main: false, runs: clip, at: (Some(sid), lid, k.start) })
         }
     }
 }
@@ -236,7 +451,9 @@ fn plugin_rows(app: &mut App, ui: &mut egui::Ui, base: &Value, id: &str, entry: 
                     pick = Some((pid.clone(), entries.first().cloned().unwrap_or_else(|| "main".into())));
                 }
             }
-        });
+        })
+        .response
+        .set_name(tl!("Plug-in"));
     });
     let entries = installed.map(|(_, _, e)| e.clone()).unwrap_or_default();
     form_row(ui, FORM_LABEL_DOCK, "Entry", |ui| {
@@ -247,7 +464,9 @@ fn plugin_rows(app: &mut App, ui: &mut egui::Ui, base: &Value, id: &str, entry: 
                         pick = Some((id.to_string(), e.clone()));
                     }
                 }
-            });
+            })
+            .response
+            .set_name(tl!("Entry point"));
         });
     });
     if installed.is_none() {
@@ -503,7 +722,9 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                         changed = Some(false);
                     }
                 }
-            });
+            })
+            .response
+            .set_name(tl!("Target"));
         });
     }
     let target = a.target().cloned().unwrap_or_default();
@@ -541,7 +762,9 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                                     changed = Some(false);
                                 }
                             }
-                        });
+                        })
+                        .response
+                        .set_name(tl!("Frame label"));
                     }
                 }
             });
@@ -559,7 +782,9 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                                 changed = Some(false);
                             }
                         }
-                    });
+                    })
+                    .response
+                    .set_name(tl!("Scene"));
                 });
             }
         }
@@ -583,7 +808,9 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                             changed = Some(false);
                         }
                     }
-                });
+                })
+                .response
+                .set_name(tl!("Property"));
                 match property {
                     Property::Visible => {
                         let mut on = *value != 0.0;
