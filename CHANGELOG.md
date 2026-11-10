@@ -1,5 +1,15 @@
 # Changelog
 
+* **Moho import** (ADR 0101). `File › Open` now reads Moho documents: `.moho` packages and
+  bare `.mohoproj` files, alongside `.fla`/`.xfl` and AniCraft's own format. The stage, the
+  inline layer tree (flattened, folders kept), vector meshes as paths with solid and linear/
+  radial gradient fills, solid strokes, text layers (laid out with this computer's fonts) and
+  image layers all come across; what the document model can't hold yet — bones, keyframed
+  channels, layer effect stacks, reflected/angle gradients, physics, camera animation — is
+  counted in the import report instead of guessed at, and the untouched original JSON rides
+  in the file as the `maop_maohou` sidecar (`.anicraft` format v4; older files open
+  unchanged) so later milestones can re-project it.
+
 ## Unreleased
 
 * **Eraser and Eyedropper** (E and I, ADR 0034, first slice).
