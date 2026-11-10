@@ -107,11 +107,6 @@ a new crate needs a row here and in its `LAYERS` table.
   workspace map) conflict-free. ADR numbers are assigned by the lead when a task starts, so
   parallel tracks never collide. A track never merges its own PR: the lead reviews it
   (principal engineer and senior designer) and merges it when CI is green, one at a time.
-* **One track agent at a time.** All agents share one account's usage limit; seven at once
-  exhausted it within hours and stopped every track and the lead mid-merge, and three, then
-  two, plus the lead still ran it out. One agent works through the roadmap queue in order
-  while the lead reviews and merges, so a task is never lost to a limit halfway. Parallel
-  tracks stay possible when the limit allows; the worktree rules above still apply.
 * **A new command namespace** needs a plug-in policy (`plugin_may_call` in
   `crates/engine/src/cmds_plugin.rs`); a test fails until it has one.
 * **Outside pull requests** that match a roadmap task are reviewed and their good ideas
