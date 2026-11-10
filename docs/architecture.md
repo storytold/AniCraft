@@ -35,7 +35,7 @@ app/                         workspace root; the root package is the desktop app
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols) + player
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
-    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019; shell feature `gpu-stage`)
+    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019, 0029, 0031; shell feature `gpu-stage`, on by default)
     cli       L4  `anicraft-cli`: info / render / render-seq / commands / run / serve (JSON-lines)
   src/        L5  egui shell: menus (from registry), tools, stage, timeline, properties, library
   docs/           requirements, architecture, roadmap
@@ -167,14 +167,18 @@ DisplayList ──► for each item:
   Output is bit-identical to serial. Numbers are in [performance.md](performance.md).
 
 **GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md),
-behind the shell's `gpu-stage` feature): `render::prepare_scene` hands the oracle's own
-prepared fills, with their clips and groups, to `anicraft-gpu`, which bins edge pieces into
+[ADR 0031](adr/0031-gpu-stage-bitmaps-filters-default.md); the shell's `gpu-stage` feature, on
+by default, and the default stage renderer): `render::prepare_scene` hands the oracle's own
+prepared fills, with their clips, groups, bitmap shaders and filtered layers, to `anicraft-gpu`, which bins edge pieces into
 16 × 16 tiles with per-row backdrops (CPU, parallel) and writes each tile's stream of entries
 in drawing order, with clip-coverage and group open/close entries. One compute pass computes
 each pixel's exact area coverage and composites it as the oracle's band compositor does (clip
 coverage, a per-pixel group stack, the W3C blend modes). On the window's wgpu device it draws
 each stage tile into a texture egui shows as it is (no readback); otherwise on a headless
-device of its own, read back. Filters and bitmaps are drawn by the oracle instead. The
+device of its own, read back. Bitmaps are textures uploaded once per image and sampled with
+the oracle's bilinear filter; a filtered symbol is drawn into a layer of its own, filtered by
+compute passes that run the steps `render::filters::resolve` gives (the same the oracle runs),
+and composited like any fill. A tile past the GPU's limits is drawn by the oracle. The
 engine's `RenderService` takes any `Rasterizer`, whose pictures may be bytes or an opaque GPU
 image (`Raster::Native`) only the shell can show, and falls back to the oracle per job, so the
 engine itself never depends on the GPU.

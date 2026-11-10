@@ -543,20 +543,16 @@ impl GpuRenderer {
         if !shown.is_empty() && depth >= MAX_FILTER_DEPTH {
             return Err(GpuError::NeedsFull(NeedsFull::Filters));
         }
-        let planned: Vec<Result<(LayerJob, f32), GpuError>> = shown
+        // Layers plan in parallel; their binning counts as preparation (the timings are wall
+        // clock, and `bin` is the scene's own).
+        let planned: Vec<Result<LayerJob, GpuError>> = shown
             .into_par_iter()
             .map(|(at, l)| {
-                let mut ms = 0.0;
-                let (job, _) = self.plan(&l.list, &l.view, depth + 1, &mut ms)?;
-                Ok((LayerJob { at, job: Box::new(job), view: l.view, ops: l.filters }, ms))
+                let (job, _) = self.plan(&l.list, &l.view, depth + 1, &mut 0.0)?;
+                Ok(LayerJob { at, job: Box::new(job), view: l.view, ops: l.filters })
             })
             .collect();
-        let mut layers = Vec::with_capacity(planned.len());
-        for p in planned {
-            let (l, ms) = p?;
-            *bin_ms += ms;
-            layers.push(l);
-        }
+        let layers = planned.into_iter().collect::<Result<Vec<_>, _>>()?;
         Ok((Job { binned, layers }, stats))
     }
 

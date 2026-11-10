@@ -1,8 +1,10 @@
-//! The GPU stage switch (ADR 0019, ADR 0029). With the `gpu-stage` feature, Preferences ›
-//! Stage › Renderer can hand the stage to the wgpu renderer (`anicraft-gpu`): it starts off the
-//! UI thread, draws what it can, and the CPU oracle draws the rest (filters, bitmaps) and
-//! everything when the GPU is missing or fails. Without the feature this is a stub and the CPU
-//! always draws. Exports never use it.
+//! The GPU stage switch (ADR 0019, ADR 0029, ADR 0031). With the `gpu-stage` feature (on by
+//! default), the stage is drawn by the wgpu renderer (`anicraft-gpu`) unless Preferences ›
+//! Stage › Renderer chooses the CPU: it starts off the UI thread (the CPU draws until it is
+//! ready), draws masks, groups, blend modes, bitmaps and filters, and the CPU oracle draws a
+//! tile it can't (nesting or bitmap counts past its limits) and everything when the GPU is
+//! missing or fails. Without the feature this is a stub and the CPU always draws. Exports never
+//! use it.
 //!
 //! When the window runs on wgpu, the renderer shares the window's device and draws each stage
 //! tile into a texture the window shows as it is (no copy back to the CPU, ADR 0029). When it

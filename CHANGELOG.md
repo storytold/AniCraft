@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+* **The stage draws on the graphics card by default** (GPU stage, third slice, ADR 0031).
+  Bitmap fills and all seven filters (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient
+  Bevel, Adjust Color) are now drawn on the GPU too, so documents imported from Animate no
+  longer fall back to the CPU. A 4K stage with filtered symbols and a bitmap backdrop draws in
+  about 4 ms (the CPU needs 31 ms), and 200 bitmap fills in about 4 ms (37 ms). Bitmaps are
+  uploaded to the graphics card once and kept. The picture is the same as the CPU's, within
+  one 8-bit step (bitmaps exactly the same). Windows that run on Direct3D 12 now get the GPU
+  stage as well. The GPU stage is in every build and on by default: Preferences › Stage ›
+  Renderer offers *Graphics card (GPU)* (the default) and *CPU (reference)*. The CPU still
+  draws whenever there is no usable graphics card (or only a software one), anything fails, or
+  a tile needs more than the GPU handles (more than 16 different images, or filtered symbols
+  nested more than 4 deep); the status bar says which. Exports always use the CPU.
+
 ## 0.1.0 (2026-11-09)
 
 * **Motion paths for motion tweens** (ADR 0030). Select a motion tween's object (or a frame of
