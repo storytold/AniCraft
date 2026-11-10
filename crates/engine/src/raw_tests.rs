@@ -441,3 +441,56 @@ fn raw_edits_never_panic_on_odd_input() {
     let _ = anicraft_render::render_frame(&s.doc, 0, 0.1);
     let _ = Affine::IDENTITY;
 }
+
+/// Per-frame cost of the Selection tool's drags on a busy raw drawing (run by hand:
+/// `cargo test -p anicraft-engine raw_drag_timings -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn raw_drag_timings() {
+    let mut s = Session::new(anicraft_doc::Document::default());
+    run(&mut s, "draw.object_drawing", json!({"on": false}));
+    // 12 × 12 outlined squares, and lines across every row: 144 fills, ~1,000 stroke pieces.
+    for i in 0..12 {
+        for j in 0..12 {
+            run(&mut s, "draw.rect", json!({"x": i * 50, "y": j * 50, "w": 40, "h": 40, "fill": "#ff0000", "stroke": "#000000"}));
+        }
+        run(&mut s, "draw.line", json!({"x0": -10, "y0": i * 50 + 20, "x1": 610, "y1": i * 50 + 20, "stroke": "#0000ff"}));
+    }
+    run(&mut s, "edit.deselect", json!({}));
+    let n = s.visible_elements().len();
+    let time = |s: &mut Session, label: &str, f: &dyn Fn(&mut Session)| {
+        let t = std::time::Instant::now();
+        let reps = 20;
+        for _ in 0..reps {
+            f(s);
+        }
+        eprintln!("{label}: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / f64::from(reps));
+    };
+    eprintln!("{n} raw shapes");
+    time(&mut s, "raw_grab (hover)", &|s| {
+        let _ = s.raw_grab(Vec2::new(300.0, 300.0), 3.0, 6.0);
+    });
+    s.begin_gesture("Bend");
+    time(&mut s, "bend frame (no merge)", &|s| {
+        let _ = s.execute("path.bend_segment", &json!({"x": 320, "y": 300, "dx": 0, "dy": -0.5, "merge": false}));
+    });
+    s.end_gesture();
+    let r = run(&mut s, "raw.move_point", json!({"x": 340, "y": 340, "to_x": 341, "to_y": 341, "snap": 10, "merge": false}));
+    let points = r["points"].clone();
+    time(&mut s, "point frame with snapping", &|s| {
+        let _ = s.execute("raw.move_point", &json!({"x": 341, "y": 341, "to_x": 341, "to_y": 341, "snap": 10, "points": points, "merge": false}));
+    });
+    // Once: it replaces the shapes it merges.
+    let ids: Vec<Value> = points.as_array().into_iter().flatten().map(|p| p[0].clone()).collect();
+    let t = std::time::Instant::now();
+    run(&mut s, "raw.merge", json!({"ids": ids}));
+    eprintln!("merge at release: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+    time(&mut s, "marquee cut and heal", &|s| {
+        let _ = s.execute("raw.select_rect", &json!({"x0": 125, "y0": 125, "x1": 425, "y1": 425}));
+        let _ = s.execute("edit.deselect", &json!({}));
+    });
+    run(&mut s, "raw.select_rect", json!({"x0": 0, "y0": 0, "x1": 45, "y1": 45}));
+    time(&mut s, "selection move frame with snapping", &|s| {
+        let _ = s.execute("element.translate", &json!({"dx": 0.5, "dy": 0, "snap": 10, "from": [10, 10]}));
+    });
+}

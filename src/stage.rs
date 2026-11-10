@@ -13,6 +13,7 @@ use anicraft_engine::geom::{Affine, Vec2};
 use anicraft_engine::render::View;
 use anicraft_engine::render_service::{DEFAULT_CACHE_BYTES, FrameImage, FrameJob, RenderService, make_job_for};
 use crate::a11y::Named;
+use anicraft_engine::cmds_raw::Grab;
 use egui::{Color32, CursorIcon, Key, Modifiers, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 
@@ -354,13 +355,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             crate::motion_path::drag_start(app, shown, grab, to_v(sp))
         } else {
             match app.tool {
-                Tool::Select => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
-                    Some((_, el)) => {
-                        if !app.s.selection.contains(&el) {
+                // Raw shapes (ADR 0041): an unselected corner or end moves, an unselected segment
+                // or fill edge bends; anything else is picked (unless it already is) and moved.
+                Tool::Select => match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
+                    Some((_, Grab::Point { at })) => {
+                        app.s.begin_gesture("Move Point");
+                        app.raw_points = serde_json::Value::Null;
+                        app.raw_touched.clear();
+                        Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
+                    }
+                    Some((layer, Grab::Segment { id, cmd, t, .. })) => {
+                        if layer != app.s.layer {
+                            app.s.layer = layer;
+                            app.s.selection.clear();
+                        }
+                        app.s.begin_gesture("Bend");
+                        app.raw_touched.clear();
+                        Drag::Bend { id, cmd, t, last: sp }
+                    }
+                    Some((_, Grab::Fill { id } | Grab::Object { id })) => {
+                        if !app.s.selection.contains(&id) {
                             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                         }
                         app.s.begin_gesture("Move");
-                        Drag::Move { last: sp }
+                        Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
                     }
                     None => Drag::Marquee { start: sp, cur: sp },
                 },
@@ -424,6 +442,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.run("element.translate", json!({"dx": d.x, "dy": d.y}));
                 }
             }
+            (Drag::SnapMove { .. }, Some(c)) => snap_move(app, c, zoom),
+            (Drag::Bend { id, cmd, t, last }, Some(c)) => {
+                let d = c - *last;
+                if d.length_sq() > 0.0 {
+                    let p = json!({"id": id.0, "cmd": *cmd, "t": *t, "x": last.x, "y": last.y, "dx": d.x, "dy": d.y, "merge": false});
+                    *last = c;
+                    if let Some(v) = app.run("path.bend_segment", p) {
+                        touched(app, &v["changed"]);
+                    }
+                }
+            }
+            (Drag::RawPoint { .. }, Some(c)) => move_raw_point(app, c, zoom),
             (Drag::Transform { kind, start, bounds, applied }, Some(c)) => {
                 let total = xf_total(*kind, *bounds, *start, c, shift, alt);
                 // Send only the change since the last frame; the gesture makes it one undo step.
@@ -475,8 +505,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } => {
+            Drag::Move { .. } | Drag::SnapMove { .. } => {
                 app.drop_raw();
+                app.s.end_gesture();
+            }
+            Drag::Bend { .. } | Drag::RawPoint { .. } => {
+                // What the drag changed merges again with what it touches, in the same step.
+                if !app.raw_touched.is_empty() {
+                    let ids = std::mem::take(&mut app.raw_touched);
+                    app.run("raw.merge", json!({"ids": ids}));
+                }
+                app.raw_points = serde_json::Value::Null;
                 app.s.end_gesture();
             }
             Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
@@ -487,26 +526,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Brush => crate::brushtool::commit(app, xf),
             Drag::Eraser => crate::erasertool::commit(app, xf),
             Drag::Marquee { start, cur } => {
-                let r = Rect::from_two_pos(start, cur);
-                let ids: Vec<u64> = app
-                    .s
-                    .visible_elements()
-                    .iter()
-                    .filter(|e| {
-                        let b = app.s.element_bounds(e.id);
-                        !b.is_empty() && r.intersects(Rect::from_min_max(pos2(b.min.x, b.min.y), pos2(b.max.x, b.max.y)))
-                    })
-                    .map(|e| e.id.0)
-                    .collect();
-                let locked = app.s.active_layer().is_some_and(|l| l.locked);
-                if !locked {
-                    app.run("element.select", json!({"ids": ids, "add": shift}));
-                }
+                // The parts of raw fills and strokes under it, cut at its edges, and the objects
+                // wholly inside it (ADR 0041).
+                app.run("raw.select_rect", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y, "add": shift}));
             }
             Drag::Shape { start, cur } => create_shape(app, start, cur),
             Drag::Pan | Drag::None | Drag::CameraWheel { .. } => {}
         }
         app.drag = Drag::None;
+        app.snap_ring = None;
     }
 
     if resp.clicked()
@@ -767,7 +795,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
         // While a background render catches up with a drag, outline where the selection is now,
         // so the artwork never seems to lag the pointer.
-        if ready < keys.len() && !preview && matches!(app.drag, Drag::Move { .. } | Drag::Transform { .. }) {
+        if ready < keys.len() && !preview && matches!(app.drag, Drag::Move { .. } | Drag::SnapMove { .. } | Drag::Transform { .. } | Drag::Bend { .. } | Drag::RawPoint { .. }) {
             let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
             let dl = app.s.display_list();
             let stroke = Stroke::new(1.5, T.selection);
@@ -906,6 +934,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         Drag::Shape { start, cur } => draw_preview(app, &painter, to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)), zoom),
         _ => {}
     }
+    // The snap ring where a dragged point or selection snapped (ADR 0041).
+    if let Some(at) = app.snap_ring.filter(|_| matches!(app.drag, Drag::SnapMove { .. } | Drag::RawPoint { .. })) {
+        let c = to_screen(at);
+        painter.circle_stroke(c, SNAP_RING + 1.0, Stroke::new(3.0, Color32::WHITE));
+        painter.circle_stroke(c, SNAP_RING, Stroke::new(2.0, T.selection));
+    }
+    // What a drag from here does to raw shapes: Animate's corner and curve marks by the pointer.
+    if app.tool == Tool::Select
+        && app.drag == Drag::None
+        && !panning
+        && !app.modal_open()
+        && let Some(p) = pointer.filter(|p| canvas.contains(*p))
+        && let Some((_, grab)) = app.s.raw_grab(to_v(to_stage(p)), GRAB_EDGE / zoom, GRAB_POINT / zoom)
+    {
+        grab_mark(&painter, p, grab);
+    }
 
     // Shape hints sit on top of the artwork and the selection (fresh: a drag just moved one).
     if hint_tools {
@@ -932,7 +976,84 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
 }
 
-// ----- raw shapes (ADR 0031) ---------------------------------------------------------------------
+// ----- raw shapes (ADR 0031, 0041) ----------------------------------------------------------------
+
+/// How near (screen pixels) the Selection tool takes a raw edge to bend, and a corner or end to
+/// move (Animate's curve and corner pointers).
+const GRAB_EDGE: f32 = 3.0;
+const GRAB_POINT: f32 = 6.0;
+/// Dragged points and selections snap within this many screen pixels (issue #42).
+const SNAP_PX: f32 = 10.0;
+/// The snap ring's radius (screen pixels).
+const SNAP_RING: f32 = 6.0;
+
+/// A Selection-tool move, this frame: one of the selection's corners (the one nearest the
+/// pointer) snaps within 10 screen pixels.
+fn snap_move(app: &mut App, c: Pos2, zoom: f32) {
+    let Drag::SnapMove { start, applied } = app.drag else { return };
+    let d = (c - start) - applied;
+    if d.length_sq() <= 0.0 {
+        return;
+    }
+    let p = json!({"dx": d.x, "dy": d.y, "snap": SNAP_PX / zoom, "from": [c.x, c.y]});
+    if let Some(v) = app.run("element.translate", p) {
+        let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
+        app.drag = Drag::SnapMove { start, applied: applied + vec2(f("dx"), f("dy")) };
+        app.snap_ring = snapped_at(&v);
+    }
+}
+
+/// A shared point's drag, this frame: the point (and everything on it) goes under the pointer,
+/// snapping within 10 screen pixels.
+fn move_raw_point(app: &mut App, c: Pos2, zoom: f32) {
+    let Drag::RawPoint { at, off } = app.drag else { return };
+    let to = c + off;
+    if to == at {
+        return;
+    }
+    let p = json!({"x": at.x, "y": at.y, "to_x": to.x, "to_y": to.y, "snap": SNAP_PX / zoom, "points": app.raw_points, "merge": false});
+    let Some(v) = app.run("raw.move_point", p) else { return };
+    let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
+    app.drag = Drag::RawPoint { at: pos2(f("x"), f("y")), off };
+    app.snap_ring = snapped_at(&v);
+    if let Some(points) = v.get("points").filter(|p| p.as_array().is_some_and(|a| !a.is_empty())) {
+        let ids: Vec<serde_json::Value> = points.as_array().into_iter().flatten().filter_map(|pt| pt.get(0).cloned()).collect();
+        app.raw_points = points.clone();
+        touched(app, &serde_json::Value::Array(ids));
+    }
+}
+
+/// Where a command's result says the drag snapped.
+fn snapped_at(v: &serde_json::Value) -> Option<Vec2> {
+    let s = v.get("snapped")?;
+    Some(Vec2::new(s.get("x")?.as_f64()? as f32, s.get("y")?.as_f64()? as f32))
+}
+
+/// Remembers the raw shapes a drag changed (`ids`: a list of element ids).
+fn touched(app: &mut App, ids: &serde_json::Value) {
+    for id in ids.as_array().into_iter().flatten().filter_map(serde_json::Value::as_u64) {
+        if !app.raw_touched.contains(&id) {
+            app.raw_touched.push(id);
+        }
+    }
+}
+
+/// The mark beside the pointer: a corner for a point that moves, an arc for an edge that bends.
+fn grab_mark(painter: &egui::Painter, p: Pos2, grab: Grab) {
+    let o = p + vec2(12.0, 14.0);
+    let pts: Vec<Pos2> = match grab {
+        Grab::Point { .. } => vec![o, o + vec2(0.0, 7.0), o + vec2(7.0, 7.0)],
+        Grab::Segment { .. } => (0..=8)
+            .map(|i| {
+                let t = i as f32 / 8.0;
+                o + vec2(8.0 * t, 7.0 - 7.0 * (4.0 * t * (1.0 - t)))
+            })
+            .collect(),
+        Grab::Fill { .. } | Grab::Object { .. } => return,
+    };
+    painter.add(egui::Shape::line(pts.clone(), Stroke::new(3.0, Color32::WHITE)));
+    painter.add(egui::Shape::line(pts, Stroke::new(1.5, T.selection)));
+}
 
 /// The raw shapes (parts of the layer's merged drawing) on the active layer.
 fn raw_ids(app: &App) -> std::collections::HashSet<anicraft_engine::doc::ElementId> {
