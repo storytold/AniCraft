@@ -150,18 +150,20 @@ pub enum PencilMode {
 }
 
 impl PencilMode {
+    /// The English name, translated where it is drawn (`crate::i18n::t`).
     pub fn label(self) -> &'static str {
         match self {
-            PencilMode::Smooth => "Smooth",
-            PencilMode::Straighten => "Straighten",
-            PencilMode::Ink => "Ink",
+            PencilMode::Smooth => tr_noop!("Smooth"),
+            PencilMode::Straighten => tr_noop!("Straighten"),
+            PencilMode::Ink => tr_noop!("Ink"),
         }
     }
+    /// The English hint, translated where it is drawn (`crate::i18n::t`).
     pub fn hint(self) -> &'static str {
         match self {
-            PencilMode::Smooth => "Fits smooth curves to the stroke, keeping sharp corners.",
-            PencilMode::Straighten => "Turns the stroke into straight segments.",
-            PencilMode::Ink => "Follows the hand closely with little smoothing.",
+            PencilMode::Smooth => tr_noop!("Fits smooth curves to the stroke, keeping sharp corners."),
+            PencilMode::Straighten => tr_noop!("Turns the stroke into straight segments."),
+            PencilMode::Ink => tr_noop!("Follows the hand closely with little smoothing."),
         }
     }
     fn id(self) -> &'static str {
@@ -262,7 +264,8 @@ pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> 
             }
             app.points.push(pt);
         }
-        app.s.begin_gesture("Move Points");
+        // Undo labels stay English in the history and are translated where they show.
+        app.s.begin_gesture(tr_noop!("Move Points"));
         return Drag::Points { last: pos2(sp.x, sp.y) };
     }
     if let Some((_, el)) = app.s.hit_test(sp, 3.0 * xf.unit()) {
@@ -270,7 +273,7 @@ pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> 
             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
             app.points.clear();
         }
-        app.s.begin_gesture("Move");
+        app.s.begin_gesture(tr_noop!("Move"));
         return Drag::Move { last: pos2(sp.x, sp.y) };
     }
     if !shift {
@@ -339,7 +342,7 @@ fn add_point_on_selected(app: &mut App, at: Pos2, xf: Xf) -> bool {
         if let Ok(v) = r {
             app.points = v["cmd"].as_u64().map(|c| vec![(id, c as usize, ANCHOR)]).unwrap_or_default();
             app.motion_anchors.clear();
-            app.status_ok(format!("Added a point. {} to undo.", crate::platform::shortcut_label("Ctrl+Z")));
+            app.status_ok(tr!("Added a point. {undo} to undo.", undo = crate::platform::shortcut_label("Ctrl+Z")));
             return true;
         }
     }
@@ -381,16 +384,16 @@ pub fn point_menu(app: &mut App, ui: &mut egui::Ui) -> bool {
     if app.tool != Tool::Subselect || selected_anchors(app).is_empty() {
         return false;
     }
-    if ui.button("Make Smooth").clicked() {
+    if ui.button(tr!("Make Smooth")).clicked() {
         convert_points(app, true);
         ui.close();
     }
-    if ui.button("Make Corner").clicked() {
+    if ui.button(tr!("Make Corner")).clicked() {
         convert_points(app, false);
         ui.close();
     }
     ui.separator();
-    if ui.button("Delete Point").clicked() {
+    if ui.button(tr!("Delete Point")).clicked() {
         delete_points(app);
         ui.close();
     }

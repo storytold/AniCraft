@@ -49,7 +49,7 @@ pub fn previewing(app: &App) -> bool {
 /// pick: undoing the add leaves the tool in hand without adding it again.
 pub fn on_tool_change(app: &mut App) {
     if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.doc.timeline(app.s.scene).camera_layer().is_none() && app.run("camera.add", json!({})).is_some() {
-        app.status_ok("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo.");
+        app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo."));
     }
     app.last_tool = app.tool;
 }
@@ -78,11 +78,12 @@ pub fn drag_start(app: &mut App, g: &Geo, press: Pos2) -> Drag {
     let Some(cam) = camera(app) else { return Drag::None };
     let (centre, _, _) = handles(&cam, app, g);
     if on_knob(app, g, press) {
-        app.s.begin_gesture("Rotate Camera");
+        // Undo labels stay English in the history and are translated where they show.
+        app.s.begin_gesture(tr_noop!("Rotate Camera"));
         let d = press - centre;
         Drag::CameraRotate { last: d.y.atan2(d.x) }
     } else {
-        app.s.begin_gesture("Move Camera");
+        app.s.begin_gesture(tr_noop!("Move Camera"));
         Drag::CameraPan { last: press }
     }
 }
@@ -128,7 +129,7 @@ pub fn wheel(app: &mut App, scroll_y: f32, now: f64) {
         return;
     }
     if !matches!(app.drag, Drag::CameraWheel { .. }) {
-        app.s.begin_gesture("Zoom Camera");
+        app.s.begin_gesture(tr_noop!("Zoom Camera"));
     }
     app.drag = Drag::CameraWheel { until: now + WHEEL_BURST };
     let by = (scroll_y * 0.0025).clamp(-0.5, 0.5).exp();

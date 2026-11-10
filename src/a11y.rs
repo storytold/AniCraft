@@ -148,13 +148,14 @@ pub enum Region {
 impl Region {
     pub const CYCLE: [Region; 5] = [Region::Stage, Region::Timeline, Region::Properties, Region::Library, Region::Tools];
 
+    /// English (a key): translate where it is shown with `crate::i18n::t`.
     pub fn label(self) -> &'static str {
         match self {
-            Region::Stage => "Stage",
-            Region::Timeline => "Timeline",
-            Region::Properties => "Properties",
-            Region::Library => "Library",
-            Region::Tools => "Tools",
+            Region::Stage => tr_noop!("Stage"),
+            Region::Timeline => tr_noop!("Timeline"),
+            Region::Properties => tr_noop!("Properties"),
+            Region::Library => tr_noop!("Library"),
+            Region::Tools => tr_noop!("Tools"),
         }
     }
 

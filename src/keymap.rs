@@ -12,19 +12,20 @@ use anicraft_engine::{SHORTCUT_ALIASES, commands};
 use egui::{Key, Modifiers};
 use std::collections::BTreeMap;
 
-/// Keys handled before the shortcut map, which the editor will not assign.
+/// Keys handled before the shortcut map, which the editor will not assign, and what for
+/// (English: translated where it is shown).
 pub const RESERVED: &[(&str, &str)] = &[
-    ("Ctrl+K", "the command palette"),
-    ("Ctrl+Shift+P", "the command palette"),
-    ("F1", "the shortcut editor"),
-    ("Ctrl+Alt+Shift+K", "the shortcut editor"),
-    ("Ctrl+U", "Preferences"),
-    ("Ctrl+,", "Preferences"),
-    ("Ctrl+Q", "quitting"),
-    ("Enter", "play / stop"),
-    ("Escape", "cancelling"),
-    ("Space", "panning with any tool"),
-    ("Tab", "moving between fields"),
+    ("Ctrl+K", tr_noop!("the command palette")),
+    ("Ctrl+Shift+P", tr_noop!("the command palette")),
+    ("F1", tr_noop!("the shortcut editor")),
+    ("Ctrl+Alt+Shift+K", tr_noop!("the shortcut editor")),
+    ("Ctrl+U", tr_noop!("Preferences")),
+    ("Ctrl+,", tr_noop!("Preferences")),
+    ("Ctrl+Q", tr_noop!("quitting")),
+    ("Enter", tr_noop!("play / stop")),
+    ("Escape", tr_noop!("cancelling")),
+    ("Space", tr_noop!("panning with any tool")),
+    ("Tab", tr_noop!("moving between fields")),
 ];
 
 /// Most keys one action may have.
@@ -34,8 +35,9 @@ pub const MAX_KEYS: usize = 4;
 #[derive(Clone, Debug)]
 pub struct Action {
     pub id: &'static str,
+    /// English, as the registry has it: translated where it is shown (`i18n::t_cmd`, `i18n::t`).
     pub label: &'static str,
-    /// Where it lives (a top menu, "Tools" or "View").
+    /// Where it lives (a top menu, "Tools" or "View"); English, translated where it is shown.
     pub group: &'static str,
     pub defaults: Vec<&'static str>,
 }
@@ -71,16 +73,16 @@ pub fn tool_for(id: &str) -> Option<Tool> {
 
 fn view_label(id: &str) -> &'static str {
     match id {
-        "view.fit" => "Fit Stage in Window",
-        "view.onion" => "Onion Skin On / Off",
-        "view.select_all_frames" => "Select All Frames",
-        "view.align_to_stage" => "Align to Stage On / Off",
-        "view.next_panel" => "Next Panel",
-        "view.prev_panel" => "Previous Panel",
-        "view.actions" => "Actions Panel",
-        "view.brush_smaller" => "Brush Size Down",
-        "view.brush_larger" => "Brush Size Up",
-        _ => "View action",
+        "view.fit" => tr_noop!("Fit Stage in Window"),
+        "view.onion" => tr_noop!("Onion Skin On / Off"),
+        "view.select_all_frames" => tr_noop!("Select All Frames"),
+        "view.align_to_stage" => tr_noop!("Align to Stage On / Off"),
+        "view.next_panel" => tr_noop!("Next Panel"),
+        "view.prev_panel" => tr_noop!("Previous Panel"),
+        "view.actions" => tr_noop!("Actions Panel"),
+        "view.brush_smaller" => tr_noop!("Brush Size Down"),
+        "view.brush_larger" => tr_noop!("Brush Size Up"),
+        _ => tr_noop!("View action"),
     }
 }
 
@@ -93,11 +95,11 @@ pub fn actions() -> Vec<Action> {
         .map(|c| Action {
             id: c.id,
             label: c.label,
-            group: if c.menu.is_empty() { "Other" } else { c.menu.split('/').next().unwrap_or("Other") },
+            group: if c.menu.is_empty() { tr_noop!("Other") } else { c.menu.split('/').next().unwrap_or(tr_noop!("Other")) },
             defaults: c.shortcut.into_iter().chain(SHORTCUT_ALIASES.iter().filter(|(_, id)| *id == c.id).map(|(k, _)| *k)).collect(),
         })
         .collect();
-    v.extend(Tool::ALL.into_iter().map(|t| Action { id: tool_id(t), label: t.label(), group: "Tools", defaults: t.shortcut().into_iter().collect() }));
+    v.extend(Tool::ALL.into_iter().map(|t| Action { id: tool_id(t), label: t.label(), group: tr_noop!("Tools"), defaults: t.shortcut().into_iter().collect() }));
     let mut views: Vec<&str> = Vec::new();
     for (_, id) in VIEW_SHORTCUTS {
         if !views.contains(id) {
@@ -107,7 +109,7 @@ pub fn actions() -> Vec<Action> {
     v.extend(views.into_iter().map(|id| Action {
         id,
         label: view_label(id),
-        group: "View",
+        group: tr_noop!("View"),
         defaults: VIEW_SHORTCUTS.iter().filter(|(_, i)| *i == id).map(|(k, _)| *k).collect(),
     }));
     v
@@ -239,7 +241,7 @@ pub enum Refusal {
 /// With `steal`, a chord bound elsewhere moves here; otherwise that is refused.
 pub fn assign(overrides: &BTreeMap<String, Vec<String>>, id: &str, replace: Option<usize>, chord: &str, steal: bool) -> Result<BTreeMap<String, Vec<String>>, Refusal> {
     let map = Keymap::new(overrides);
-    let c = normalize(chord).ok_or(Refusal::Reserved("nothing (not a key)"))?;
+    let c = normalize(chord).ok_or(Refusal::Reserved(tr_noop!("nothing (not a key)")))?;
     if let Some(why) = reserved(&c) {
         return Err(Refusal::Reserved(why));
     }

@@ -107,7 +107,8 @@ impl Cache {
             // Already on the window's device: shown as it is, nothing to upload.
             Some(native) => match self.gpu.register(native) {
                 Some(t) => TileImage::Drawn(t),
-                None => return Some("The GPU stage drew a picture the window can't show.".into()),
+                // English, as the render service's own errors are: translated where it shows.
+                None => return Some(tr_noop!("The GPU stage drew a picture the window can't show.").into()),
             },
             None => {
                 let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
@@ -261,7 +262,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
     let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom);
     if paused && (resp.drag_started() || resp.clicked()) {
-        app.status_ok("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit.");
+        app.status_ok(tr!("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit."));
     }
     // Selection box in screen space (free transform handles live on it).
     let sel_bounds = bounds_arr(app.s.selection_bounds());
@@ -346,7 +347,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else if paused {
             Drag::None
         } else if let Some(m) = hint_at(press) {
-            app.s.begin_gesture("Move Shape Hint");
+            // Undo labels stay English in the history and are translated where they show.
+            app.s.begin_gesture(tr_noop!("Move Shape Hint"));
             Drag::Hint { index: m.index, side: m.side }
         } else if mp_tools && command && crate::motion_path::move_hit(app, press, xf) {
             crate::motion_path::move_start(app, to_v(sp))
@@ -359,7 +361,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         if !app.s.selection.contains(&el) {
                             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                         }
-                        app.s.begin_gesture("Move");
+                        app.s.begin_gesture(tr_noop!("Move"));
                         Drag::Move { last: sp }
                     }
                     None => Drag::Marquee { start: sp, cur: sp },
@@ -368,7 +370,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     let zone = sel_rect.and_then(|r| xf_zone(r, press));
                     match (zone, sel_bounds) {
                         (Some(kind), Some(bounds)) => {
-                            app.s.begin_gesture("Free Transform");
+                            app.s.begin_gesture(tr_noop!("Free Transform"));
                             Drag::Transform { kind, start: sp, bounds, applied: Affine::IDENTITY }
                         }
                         // Not on the box: grab whatever is under the pointer and move it.
@@ -377,7 +379,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                                 match bounds_arr(app.s.selection_bounds()) {
                                     Some(bounds) => {
-                                        app.s.begin_gesture("Free Transform");
+                                        app.s.begin_gesture(tr_noop!("Free Transform"));
                                         Drag::Transform { kind: XfKind::Move, start: sp, bounds, applied: Affine::IDENTITY }
                                     }
                                     None => Drag::None,
@@ -524,7 +526,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     // The gap size is set in screen points, so it feels the same at any zoom.
                     let gap = app.bucket_gap.screen_px() / zoom.max(1e-3);
                     if let Some(v) = app.run("paint.bucket", json!({"x": sp.x, "y": sp.y, "gap": gap})) {
-                        app.status_ok(if v.get("recolored").is_some() { "Recoloured the fill. Ctrl+Z to undo." } else { "Filled the area. Ctrl+Z to undo." });
+                        app.status_ok(if v.get("recolored").is_some() { tr!("Recoloured the fill. Ctrl+Z to undo.") } else { tr!("Filled the area. Ctrl+Z to undo.") });
                     }
                 }
                 Tool::Brush if !panning => {
@@ -622,12 +624,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 crate::menus::cmd_item(app, ui, id);
             }
             ui.separator();
-            ui.menu_button("Transform", |ui| {
+            ui.menu_button(tr!("Transform"), |ui| {
                 for id in ["modify.rotate_cw", "modify.rotate_ccw", "modify.flip_h", "modify.flip_v"] {
                     crate::menus::cmd_item(app, ui, id);
                 }
             });
-            ui.menu_button("Align", |ui| {
+            ui.menu_button(tr!("Align"), |ui| {
                 for id in ["align.left", "align.hcenter", "align.right", "align.top", "align.vcenter", "align.bottom", "align.distribute_h", "align.distribute_v"] {
                     crate::menus::cmd_item(app, ui, id);
                 }
@@ -636,7 +638,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             for id in ["modify.convert_to_symbol", "modify.break_apart"] {
                 crate::menus::cmd_item(app, ui, id);
             }
-            ui.menu_button("Arrange", |ui| {
+            ui.menu_button(tr!("Arrange"), |ui| {
                 for id in ["arrange.bring_to_front", "arrange.send_to_back"] {
                     crate::menus::cmd_item(app, ui, id);
                 }
@@ -722,7 +724,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.stage_cache.ms = batch_ms * keys.len() as f32 / tiles;
             }
             if let Some(e) = error {
-                app.status_err(e);
+                app.status_err(crate::i18n::t_dyn(&e).into_owned());
             }
         }
         let ready = keys.iter().filter(|k| app.stage_cache.tiles.iter().any(|t| t.key == **k)).count();
@@ -787,10 +789,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::camera_tool::draw(app, &painter, &cam_geo, pointer);
     if preview {
         // The movie's picture: stage-space overlays don't belong on it.
-        painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, "Camera view", crate::theme::font(crate::theme::Type::Caption), T.text_dim);
+        painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, tr!("Camera view"), crate::theme::font(crate::theme::Type::Caption), T.text_dim);
         let badge = format!("{:.0}%", zoom * 100.0);
         painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
-        crate::a11y::surface(ui, &resp, &format!("Stage · previewing through the camera · {} tool · frame {}", app.tool.label(), app.s.frame + 1));
+        crate::a11y::surface(ui, &resp, &tr!("Stage · previewing through the camera · {tool} tool · frame {frame}", tool = crate::i18n::t(app.tool.label()), frame = app.s.frame + 1));
         return;
     }
     // Mask artwork is never painted; while its layer is unlocked (editable), its edge shows in
@@ -924,12 +926,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
     // Last, so the focus ring is drawn over the artwork.
     let selected = app.s.selection.len();
-    let what = match selected {
-        0 => String::new(),
-        1 => " · 1 element selected".to_string(),
-        n => format!(" · {n} elements selected"),
+    let (tool, frame) = (crate::i18n::t(app.tool.label()), app.s.frame + 1);
+    let name = match selected {
+        0 => tr!("Stage · {tool} tool · frame {frame}", tool = tool, frame = frame),
+        n => trn!("Stage · {tool} tool · frame {frame} · {n} element selected", "Stage · {tool} tool · frame {frame} · {n} elements selected", n, tool = tool, frame = frame),
     };
-    crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
+    crate::a11y::surface(ui, &resp, &name);
 }
 
 // ----- raw shapes (ADR 0031) ---------------------------------------------------------------------
@@ -1070,7 +1072,7 @@ fn text_editor(app: &mut App, ui: &mut egui::Ui, stage_origin: Pos2, zoom: f32) 
     let mut done = false;
     egui::Area::new(egui::Id::new("stage_text_edit")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         egui::Frame::new().fill(T.panel).stroke(Stroke::new(1.0, T.selection)).inner_margin(4.0).show(ui, |ui| {
-            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text("Type text")).named("Text on the stage");
+            let r = ui.add(egui::TextEdit::multiline(&mut te.text).font(crate::theme::stage_text_font(size)).desired_rows(1).desired_width(260.0f32.max(size * 8.0)).hint_text(tr!("Type text"))).named(tr!("Text on the stage"));
             if te.focus {
                 r.request_focus();
                 te.focus = false;
