@@ -106,7 +106,7 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
             a.open_panel(open.as_deref());
             // An imported document says what came across, as opening it from the menu does.
             if let Some(r) = report {
-                a.status_ok(format!("{r} Save to keep it as an AniCraft document."));
+                a.status_ok(i18n::fmt("{report} Save to keep it as an AniCraft document.", &[("report", &r)]));
             }
             Ok(Box::new(a))
         }),

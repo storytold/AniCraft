@@ -3,6 +3,7 @@
 //! stroke as one command when the pointer lifts, so a stroke is one undo step. A click paints a
 //! dab. `[` and `]` change the size.
 
+use crate::i18n::{self, tl};
 use crate::app::{App, Drag, Tool};
 use crate::pathtools::Xf;
 use crate::theme::{T, to_color32};
@@ -68,11 +69,11 @@ pub fn resize(app: &mut App, larger: bool) {
     match app.tool {
         Tool::Brush => {
             app.brush.size = step_size(app.brush.size, larger);
-            app.status_ok(format!("Brush size {} px", app.brush.size));
+            app.status_ok(i18n::fmt("Brush size {size} px", &[("size", &app.brush.size.to_string())]));
         }
         Tool::Eraser => {
             app.eraser.size = step_size(app.eraser.size, larger);
-            app.status_ok(format!("Eraser size {} px", app.eraser.size));
+            app.status_ok(i18n::fmt("Eraser size {size} px", &[("size", &app.eraser.size.to_string())]));
         }
         _ => {}
     }
@@ -133,7 +134,7 @@ pub fn commit(app: &mut App, xf: Xf) {
     if let Some(v) = app.run("draw.brush", params)
         && v["elements"].as_array().is_some_and(Vec::is_empty)
     {
-        app.status_ok("Nothing to paint behind there: Paint Behind only paints empty areas.");
+        app.status_ok(tl!("Nothing to paint behind there: Paint Behind only paints empty areas."));
     }
 }
 

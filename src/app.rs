@@ -527,7 +527,7 @@ impl App {
     pub fn toggle_camera_preview(&mut self) {
         self.camera_preview = !self.camera_preview;
         if self.camera_preview && self.s.doc.timeline(self.s.scene).camera_layer().is_none() {
-            self.status_ok("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it.");
+            self.status_ok(tl!("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it."));
         }
     }
 
@@ -572,7 +572,7 @@ impl App {
         let path = std::path::PathBuf::from(&name);
         match p.data.and_then(|data| anicraft_engine::vfs::put(&path, data).map_err(|e| e.to_string())) {
             Ok(()) => self.request(p.cmd, json!({"path": name})),
-            Err(e) => self.status_err(format!("Could not open {name}: {e}")),
+            Err(e) => self.status_err(i18n::fmt("Could not open {name}: {reason}", &[("name", &craft_i18n::ltr(&name)), ("reason", &e)])),
         }
     }
 
@@ -1056,8 +1056,8 @@ impl App {
             self.library_sel = LibraryItem::first(&self.s.doc);
             self.decode_sounds();
             self.recovery.restored(&session);
-            let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
-            self.status_ok(format!("Restored “{name}”. It isn't saved yet: Save to keep it."));
+            let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| tl!("Untitled").to_string(), |n| n.to_string_lossy().into_owned());
+            self.status_ok(i18n::fmt("Restored “{name}”. It isn't saved yet: Save to keep it.", &[("name", &name)]));
             return Some(v);
         }
         match id {
@@ -1107,7 +1107,7 @@ impl App {
                     format!("{name} ({secs:.2} s) is in the Library. Select a keyframe and pick it under Sound in Properties.")
                 });
             }
-            "file.import_to_library" => self.status_ok("Image added to the Library"),
+            "file.import_to_library" => self.status_ok(tl!("Image added to the Library")),
             "file.export_audio" => {
                 let n = v["sounds"].as_u64().unwrap_or(0);
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
@@ -1117,7 +1117,7 @@ impl App {
                     &[("path", &path), ("secs", &secs)],
                 ));
             }
-            "sound.delete" => self.status_ok("Deleted sound — Ctrl+Z to undo"),
+            "sound.delete" => self.status_ok(tl!("Deleted sound — Ctrl+Z to undo")),
             "file.import" => {
                 if let Some(b) = self.s.doc.bitmaps.last().filter(|b| v["bitmap"].as_u64() == Some(b.id.0)) {
                     self.library_sel = Some(LibraryItem::Bitmap(b.id));
@@ -1344,7 +1344,7 @@ impl App {
         }
         // Said once: the device could not be opened, so playback is silent.
         if let Some(e) = self.sound.error.take() {
-            self.status_err(format!("Playing without sound: {e}"));
+            self.status_err(i18n::fmt("Playing without sound: {reason}", &[("reason", &e.to_string())]));
         }
     }
 

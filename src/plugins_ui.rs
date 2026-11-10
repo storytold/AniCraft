@@ -5,6 +5,7 @@
 //! dialog opened and runs the plug-in again, so OK records exactly one undo step named after
 //! the plug-in, and Cancel leaves nothing behind.
 
+use crate::i18n::{self, tl};
 use crate::a11y::{self, Named};
 use crate::app::App;
 use crate::platform;
@@ -35,10 +36,10 @@ pub fn load_at_start(app: &mut App) {
         Ok(v) => {
             let failed: Vec<String> = v["failed"].as_array().into_iter().flatten().map(|f| format!("{} ({})", f["file"].as_str().unwrap_or(""), f["error"].as_str().unwrap_or(""))).collect();
             if !failed.is_empty() {
-                app.status_err(format!("Some plug-ins could not be loaded: {}", failed.join("; ")));
+                app.status_err(i18n::fmt("Some plug-ins could not be loaded: {list}", &[("list", &failed.join("; "))]));
             }
         }
-        Err(e) => app.status_err(format!("Plug-ins: {e}")),
+        Err(e) => app.status_err(i18n::fmt("Plug-ins: {reason}", &[("reason", &e.to_string())])),
     }
 }
 
@@ -69,7 +70,7 @@ pub fn label(p: &Plugin) -> String {
 /// otherwise through its dialog.
 pub fn run_or_ask(app: &mut App, id: &str) {
     let Some(p) = plugin(app, id) else {
-        app.status_err(format!("The plug-in “{id}” is no longer installed"));
+        app.status_err(i18n::fmt("The plug-in “{id}” is no longer installed", &[("id", id)]));
         return;
     };
     if let Some(why) = blocked(&app.s, &p) {
@@ -256,7 +257,7 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
         app.s.revert_gesture();
         app.s.end_gesture();
         app.plugin_dialog = None;
-        app.status_ok("Cancelled");
+        app.status_ok(tl!("Cancelled"));
     } else if ok {
         finish(app);
     }
@@ -276,7 +277,7 @@ fn finish(app: &mut App) {
     let name = app.s.plugins.get(&d.id).map_or_else(String::new, |p| p.manifest().name.clone());
     app.s.end_gesture();
     app.plugin_dialog = None;
-    app.status_ok(format!("{name} — Ctrl+Z to undo"));
+    app.status_ok(i18n::fmt("{name} — Ctrl+Z to undo", &[("name", &name)]));
 }
 
 /// Commands › Manage Plug-ins: what's installed, where it came from, and the folder.
@@ -347,7 +348,7 @@ fn manager(app: &mut App, ctx: &egui::Context) {
         Some(("plugin.install", _)) => app.invoke("plugin.install"),
         Some(("plugin.reload", _)) => app.invoke("plugin.reload"),
         Some(("show", f)) => match crate::app::open_in_system(std::path::Path::new(&f)) {
-            Ok(()) => app.status_ok("Opened the plug-ins folder"),
+            Ok(()) => app.status_ok(tl!("Opened the plug-ins folder")),
             Err(e) => app.status_err(e),
         },
         _ => {}
@@ -364,19 +365,19 @@ pub fn status(app: &mut App, id: &str, v: &Value) {
     match id {
         "plugin.run" => {
             let last = v["log"].as_array().and_then(|l| l.last()).and_then(Value::as_str).map(|m| format!(": {m}")).unwrap_or_default();
-            app.status_ok(format!("{}{last} — Ctrl+Z to undo", v["name"].as_str().unwrap_or("Plug-in")));
+            app.status_ok(i18n::fmt("{name} — Ctrl+Z to undo", &[("name", &format!("{}{last}", v["name"].as_str().unwrap_or(tl!("Plug-in"))))]));
         }
         "plugin.install" => {
             let i = &v["installed"];
-            let verb = if v["replaced"].is_null() { "Installed" } else { "Updated" };
-            app.status_ok(format!("{verb} {} {} — find it in Commands › Plug-ins", i["name"].as_str().unwrap_or(""), i["version"].as_str().unwrap_or("")));
+            let template = if v["replaced"].is_null() { "Installed {name} {version} — find it in Commands › Plug-ins" } else { "Updated {name} {version} — find it in Commands › Plug-ins" };
+            app.status_ok(i18n::fmt(template, &[("name", i["name"].as_str().unwrap_or("")), ("version", i["version"].as_str().unwrap_or(""))]));
         }
-        "plugin.remove" => app.status_ok(format!("Removed {}", v["name"].as_str().unwrap_or("the plug-in"))),
+        "plugin.remove" => app.status_ok(i18n::fmt("Removed {name}", &[("name", v["name"].as_str().unwrap_or(tl!("the plug-in")))])),
         "plugin.reload" => {
             let n = v["installed"].as_u64().unwrap_or(0);
             let failed = v["failed"].as_array().map_or(0, Vec::len);
-            let msg = format!("{n} plug-in{} installed", if n == 1 { "" } else { "s" });
-            if failed > 0 { app.status_err(format!("{msg}; {failed} could not be loaded")) } else { app.status_ok(msg) }
+            let msg = i18n::trn(n, "{n} plug-in installed", "{n} plug-ins installed");
+            if failed > 0 { app.status_err(i18n::fmt("{installed}; {failed} could not be loaded", &[("installed", &msg), ("failed", &failed.to_string())])) } else { app.status_ok(msg) }
         }
         _ => {}
     }

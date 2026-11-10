@@ -173,7 +173,7 @@ fn poll_scan(app: &mut App) {
     r.found = found;
     r.show = !r.found.is_empty();
     if asked && !r.show {
-        app.status_ok("No autosaved work to recover");
+        app.status_ok(tl!("No autosaved work to recover"));
     }
 }
 
@@ -197,7 +197,7 @@ fn restore(app: &mut App, id: String) {
     #[cfg(target_arch = "wasm32")]
     {
         let Some((json, meta)) = crate::web::load(&id) else {
-            app.status_err("That autosaved copy is gone");
+            app.status_err(tl!("That autosaved copy is gone"));
             app.recovery.discarded(&id);
             return;
         };
@@ -205,7 +205,7 @@ fn restore(app: &mut App, id: String) {
         let path = std::path::Path::new(RESTORED_DIR).join(&id).join(&name);
         match anicraft_engine::vfs::put(&path, json.into_bytes()) {
             Ok(()) => app.request("file.open", json!({"path": path.display().to_string(), "unsaved": true, "untitled": meta.original.is_none()})),
-            Err(e) => app.status_err(format!("Could not restore {name}: {e}")),
+            Err(e) => app.status_err(i18n::fmt("Could not restore {name}: {reason}", &[("name", &name), ("reason", &e.to_string())])),
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -221,7 +221,7 @@ fn discard(app: &mut App, id: String) {
     {
         crate::web::discard(&id);
         app.recovery.discarded(&id);
-        app.status_ok("Discarded the autosaved copy");
+        app.status_ok(tl!("Discarded the autosaved copy"));
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

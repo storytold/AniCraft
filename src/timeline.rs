@@ -163,7 +163,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
         } else if app.run("camera.add", json!({})).is_some() {
             app.tool = crate::app::Tool::Camera;
             app.last_tool = crate::app::Tool::Camera;
-            app.status_ok("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo.");
+            app.status_ok(tl!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo."));
         }
     }
 }

@@ -4,6 +4,7 @@
 //! timelines, scenes from its scene list, so nothing needs typing but a trace message.
 //! Every change is one `actions.set` (or `instance.set_name`) command, so it undoes in one step.
 
+use crate::i18n::{self, tl};
 use crate::a11y::Named;
 use crate::app::App;
 use crate::icons::Icon;
@@ -130,9 +131,9 @@ fn frame_tab(app: &mut App, ui: &mut egui::Ui) {
         Some(true) => {
             if let Some((id, entry)) = frame_scripts(app).first().map(|(id, _, e)| (id.clone(), e.first().cloned().unwrap_or_else(|| "main".into()))) {
                 set_frame(app, &t.base, json!({"plugin": id, "entry": entry}));
-                app.status_ok("Frame script set — Ctrl+Z to undo");
+                app.status_ok(tl!("Frame script set — Ctrl+Z to undo"));
             } else {
-                app.status_err("No frame-script plug-ins are installed (Commands › Install Plug-in…)");
+                app.status_err(tl!("No frame-script plug-ins are installed (Commands › Install Plug-in…)"));
             }
         }
         None => {}
@@ -294,7 +295,7 @@ fn instance_tab(app: &mut App, ui: &mut egui::Ui, e: &Element) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("Remove event").clicked() {
                     app.run("actions.clear", json!({"element": e.id.0, "event": h.event.key()}));
-                    app.status_ok(format!("Removed the {} event — Ctrl+Z to undo", h.event.label().to_lowercase()));
+                    app.status_ok(i18n::fmt("Removed the {event} event — Ctrl+Z to undo", &[("event", &tl!(h.event.label()).to_lowercase())]));
                 }
             });
         });

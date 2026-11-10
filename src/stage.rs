@@ -262,7 +262,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
     let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom);
     if paused && (resp.drag_started() || resp.clicked()) {
-        app.status_ok("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit.");
+        app.status_ok(tl!("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit."));
     }
     // Selection box in screen space (free transform handles live on it).
     let sel_bounds = bounds_arr(app.s.selection_bounds());

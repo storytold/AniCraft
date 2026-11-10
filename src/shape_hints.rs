@@ -5,6 +5,7 @@
 //! the last. Drag one with the Selection tools to place it (it snaps to the nearest edge,
 //! live); right-click it to remove it.
 
+use crate::i18n;
 use crate::app::App;
 use crate::theme::{T, Type, font};
 use anicraft_engine::doc::{HintSide, hint_letter, placed_on};
@@ -68,9 +69,9 @@ pub fn draw(painter: &Painter, markers: &[Marker], to_screen: impl Fn(Vec2) -> P
 /// The right-click menu over a marker; false when the click wasn't on one.
 pub fn menu(app: &mut App, ui: &mut egui::Ui) -> bool {
     let Some(i) = app.hint_menu else { return false };
-    if ui.button(format!("Remove Hint {}", hint_letter(i))).clicked() {
+    if ui.button(i18n::fmt("Remove Hint {letter}", &[("letter", &hint_letter(i).to_string())])).clicked() {
         if app.run("tween.remove_hint", json!({"hint": i})).is_some() {
-            app.status_ok(format!("Removed shape hint {}. {} to undo.", hint_letter(i), crate::platform::shortcut_label("Ctrl+Z")));
+            app.status_ok(i18n::fmt("Removed shape hint {letter}. {undo} to undo.", &[("letter", &hint_letter(i).to_string()), ("undo", &crate::platform::shortcut_label("Ctrl+Z"))]));
         }
         ui.close();
     }
@@ -84,6 +85,6 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui) -> bool {
 pub fn add(app: &mut App) {
     if let Some(v) = app.run("tween.add_hint", json!({})) {
         let letter = v["hint"].as_str().unwrap_or("a").to_string();
-        app.status_ok(format!("Added shape hint {letter}: drag it onto an edge here, then onto the matching edge on the tween's last keyframe."));
+        app.status_ok(i18n::fmt("Added shape hint {letter}: drag it onto an edge here, then onto the matching edge on the tween's last keyframe.", &[("letter", &letter)]));
     }
 }

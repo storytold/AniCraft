@@ -9,6 +9,7 @@
 //! Only view state lives here; every change is a `stroke.*` command, so agents and the CLI
 //! edit widths exactly the same way.
 
+use crate::i18n::tl;
 use crate::app::{App, Drag, Tool};
 use crate::pathtools::Xf;
 use crate::theme::T;
@@ -201,7 +202,7 @@ pub fn drag_to(app: &mut App, d: Drag, at: Vec2, alt: bool, zoom: f32) {
 
 pub fn drag_end(app: &mut App) {
     app.s.end_gesture();
-    app.status_ok("Changed the stroke's width. Ctrl+Z to undo.");
+    app.status_ok(tl!("Changed the stroke's width. Ctrl+Z to undo."));
 }
 
 /// Click: select the width point under the pointer, or the stroked shape.
@@ -228,7 +229,7 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
     if take(Key::Delete) || take(Key::Backspace) {
         app.width_sel = None;
         if app.run("stroke.delete_width_point", json!({"id": id.0, "index": index})).is_some() {
-            app.status_ok("Removed the width point. Ctrl+Z to undo.");
+            app.status_ok(tl!("Removed the width point. Ctrl+Z to undo."));
         }
     } else if take(Key::Escape) {
         app.width_sel = None;
