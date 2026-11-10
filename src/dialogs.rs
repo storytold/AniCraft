@@ -447,7 +447,8 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                         let status = match app.stage_cache.gpu.state() {
                             State::Off => None,
                             State::Starting => Some("Starting the graphics card…".to_string()),
-                            State::Running(adapter) => Some(format!("Drawing on {adapter}.")),
+                            State::Running { adapter, direct: true } => Some(format!("Drawing on {adapter}, straight into the window.")),
+                            State::Running { adapter, direct: false } => Some(format!("Drawing on {adapter}, then copied to the window (slower: the window's graphics device can't be shared).")),
                             State::Failed(why) => Some(format!("The graphics card can't draw the stage, so the CPU does: {why}")),
                         };
                         if crate::gpu_stage::wanted(p.stage_renderer) != p.stage_renderer {

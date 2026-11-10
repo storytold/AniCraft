@@ -361,7 +361,10 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
-        App::with_context(&cc.egui_ctx, session, shot)
+        let mut app = App::with_context(&cc.egui_ctx, session, shot);
+        // The GPU stage shares the window's device when it runs on wgpu (ADR 0029).
+        app.stage_cache.gpu.set_window_device(cc.wgpu_render_state.as_ref());
+        app
     }
 
     /// The app on an egui context (the window's, or a headless one in tests).

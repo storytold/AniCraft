@@ -49,7 +49,7 @@ pub enum StageRenderer {
 impl StageRenderer {
     pub const ALL: [(StageRenderer, &'static str, &'static str); 2] = [
         (StageRenderer::Cpu, "CPU (reference)", "The reference renderer. Exports always use it."),
-        (StageRenderer::Gpu, "GPU (preview)", "Draws the stage on the graphics card. Masks, symbol opacity, blend modes, filters and bitmaps still draw on the CPU; the picture is the same either way."),
+        (StageRenderer::Gpu, "GPU (preview)", "Draws the stage on the graphics card, masks, symbol opacity and blend modes included. Filters and bitmaps still draw on the CPU; the picture is the same either way."),
     ];
 }
 
