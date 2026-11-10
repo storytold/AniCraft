@@ -8,6 +8,7 @@ mod affine;
 pub mod clip;
 pub mod edit;
 pub mod morph;
+pub mod planar;
 mod fit;
 mod path;
 pub mod svg;

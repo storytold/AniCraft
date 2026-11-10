@@ -390,6 +390,9 @@ impl App {
         std::thread::spawn(|| {
             let _ = anicraft_engine::text::Fonts::get();
         });
+        let mut session = session;
+        // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
+        session.style.object_drawing = false;
         let mut app = App {
             s: session,
             tool: Tool::Select,
@@ -492,6 +495,15 @@ impl App {
     }
 
     /// Runs an engine command, reporting failures in the status bar.
+    /// After a move, selected raw shapes merge where they land (ADR 0031).
+    pub fn drop_raw(&mut self) {
+        let sel = &self.s.selection;
+        let raw = self.s.visible_elements().iter().any(|e| sel.contains(&e.id) && matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge));
+        if raw {
+            self.run("draw.drop", json!({}));
+        }
+    }
+
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         match self.s.execute(id, &params) {
             Ok(v) => Some(v),
@@ -696,6 +708,22 @@ impl App {
                     self.points = vec![(id, 1, anicraft_engine::geom::edit::ANCHOR)];
                 }
                 self.tool = Tool::Subselect;
+            }
+            Some("merge") => {
+                // Merge drawing (ADR 0031) on a new layer: a rectangle and an oval that cut each
+                // other, a line through both, and the oval's fill with its outline selected.
+                self.run("layer.new", json!({}));
+                for (id, p) in [
+                    ("draw.rect", json!({"x": 180, "y": 120, "w": 300, "h": 200, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.ellipse", json!({"x": 360, "y": 210, "w": 240, "h": 240, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.line", json!({"x0": 140, "y0": 420, "x1": 680, "y1": 140, "stroke": "#d6336c", "stroke_width": 3})),
+                ] {
+                    let mut p = p;
+                    p["object"] = json!(false);
+                    self.run(id, p);
+                }
+                self.run("element.select_connected", json!({"x": 520, "y": 400}));
+                self.tool = Tool::Select;
             }
             Some("frames") => {
                 // Frames 8–20 selected on the top three layers, with a keyframe drag in progress:
@@ -1312,7 +1340,8 @@ impl App {
             if surface_focused {
                 i.consume_key(Modifiers::NONE, Key::Space);
             }
-            let step = if i.modifiers.shift { 10.0 } else { 1.0 };
+            // Screen pixels, as in Animate: a press moves less the further you zoom in.
+            let step = if i.modifiers.shift { 10.0 } else { 1.0 } / self.view.zoom.max(1e-3);
             for (k, d) in [(Key::ArrowLeft, egui::vec2(-step, 0.0)), (Key::ArrowRight, egui::vec2(step, 0.0)), (Key::ArrowUp, egui::vec2(0.0, -step)), (Key::ArrowDown, egui::vec2(0.0, step))] {
                 if i.key_pressed(k) && !i.modifiers.command {
                     nudge += d;
@@ -1349,7 +1378,16 @@ impl App {
             self.toggle_play();
         }
         if nudge != egui::Vec2::ZERO && !self.s.selection.is_empty() {
+            // One undo step: the move, and raw shapes merging where they land (ADR 0031).
+            let own = !self.s.in_gesture();
+            if own {
+                self.s.begin_gesture("Move");
+            }
             self.run("element.translate", json!({"dx": nudge.x, "dy": nudge.y}));
+            self.drop_raw();
+            if own {
+                self.s.end_gesture();
+            }
         }
     }
 
