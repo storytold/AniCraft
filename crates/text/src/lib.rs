@@ -307,9 +307,10 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
         let para = para.strip_suffix('\r').unwrap_or(para);
         let bidi = unicode_bidi::ParagraphBidiInfo::new(para, None);
         let shape_run = |run: std::ops::Range<usize>, rtl: bool| para.get(run).map_or_else(Vec::new, |s| shape(&shaper, s, rtl, scale, style.letter_spacing));
-        // Each byte's share of the width (a cluster's advance on its first byte), run by run.
+        // Each byte's share of the width (a cluster's advance on its first byte), run by run. Only wrapping
+        // reads it, so a block without a width skips this pass (it would shape every paragraph twice).
         let mut advance = vec![0.0f32; para.len()];
-        let mut start = 0;
+        let mut start = if style.width.is_some() { 0 } else { para.len() };
         while start < para.len() {
             let level = bidi.levels.get(start).copied();
             let end = (start..para.len()).find(|i| bidi.levels.get(*i).copied() != level).unwrap_or(para.len());
