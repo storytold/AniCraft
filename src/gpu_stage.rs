@@ -83,8 +83,10 @@ impl GpuStage {
     /// changes). Starting the renderer happens on its own thread and repaints when done.
     #[allow(unused_variables)]
     pub fn sync(&mut self, pref: StageRenderer, svc: &RenderService, ctx: &egui::Context) {
+        // Unit tests never open a graphics device (as they never open an audio one): a start-up
+        // thread still inside the driver when the test process exits can crash it.
         #[cfg(feature = "gpu-stage")]
-        self.imp.sync(wanted(pref) == StageRenderer::Gpu, svc, ctx);
+        self.imp.sync(wanted(pref) == StageRenderer::Gpu && !cfg!(test), svc, ctx);
     }
 
     /// Shows a picture the GPU drew into a texture: registers it with the window's renderer.
