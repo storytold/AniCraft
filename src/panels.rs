@@ -1096,11 +1096,29 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                             Some(n) => format!("Curved · {n} segments"),
                             None => "Straight".to_string(),
                         };
-                        ui.label(text(Type::Body, what)).on_hover_text("Select the object to see its path on the stage. Drag the path to bend it, its ends to move them; the Subselection tool (A) edits its points and handles.");
+                        let how = format!(
+                            "Select the object to see its path on the stage. Drag the path to bend it and its ends to move them; {} the path or the object to move the whole path. With the Subselection tool (A), drag points and handles, double-click the path to add a point (or Alt-click it with the Pen), Delete removes points, and right-click makes them smooth or corners.",
+                            crate::platform::shortcut_label("Ctrl+Drag")
+                        );
+                        ui.label(text(Type::Body, what)).on_hover_text(how);
                         if segments.is_some() && ui.small_button("Straighten").on_hover_text("Back to the straight path the X and Y curves trace").named("Straighten motion path").clicked() {
                             app.run("motion.clear_path", json!({}));
                         }
                     });
+                    // Where the path starts; changing it moves the whole path (ADR 0038).
+                    let base = m.target_index(&k.elements).and_then(|i| k.elements.get(i)).map(|e| anicraft_engine::doc::Props::of(e));
+                    let start = m.path.clone().or_else(|| base.and_then(|b| m.path_from_tracks(&b))).and_then(|p| anicraft_engine::doc::motion::path_ends(&p)).map(|(a, _)| a);
+                    if let Some(a) = start {
+                        let (mut x, mut y) = (a.x, a.y);
+                        row(ui, "Path start", |ui| {
+                            let hint = "Where the motion starts. Changing it moves the whole path, and the object with it; the timing stays.";
+                            let rx = ui.add(egui::DragValue::new(&mut x).prefix("X ").speed(1.0).max_decimals(1)).named("Motion path start X").on_hover_text(hint);
+                            let ry = ui.add(egui::DragValue::new(&mut y).prefix("Y ").speed(1.0).max_decimals(1)).named("Motion path start Y").on_hover_text(hint);
+                            if rx.changed() || ry.changed() {
+                                live(app, "Move Motion Path", "motion.move_path", json!({"dx": x - a.x, "dy": y - a.y}));
+                            }
+                        });
+                    }
                     let mut orient = m.orient;
                     if crate::theme::checkbox(ui, &mut orient, "Orient to path").on_hover_text("Turn the object as its motion path turns").named("Orient to path").changed() {
                         app.run("motion.orient", json!({"orient": orient}));

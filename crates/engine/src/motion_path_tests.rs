@@ -322,6 +322,8 @@ fn converting_a_point_makes_it_a_corner_or_smooth() {
 fn editing_points_of_a_straight_motion_makes_its_path() {
     let mut s = moving();
     assert!(motion(&s).path.is_none());
+    let info = run(&mut s, "motion.info", json!({}));
+    assert_eq!(info["anchors"], json!([[5.0, 5.0], [105.0, 5.0]]), "the straight path's anchors");
     let before = track_of(&mut s);
     run(&mut s, "motion.add_point", json!({"x": 55, "y": 5}));
     assert!(motion(&s).path.is_some(), "the straight path became the tween's own");
