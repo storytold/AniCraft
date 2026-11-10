@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+* **Motion path points and moving the whole path** (ADR 0038, the second slice of motion
+  paths). With the Subselection tool, double-click a motion path to add a point (the curve and
+  the motion don't change), and Shift-click to select several anchors. Delete removes them: the
+  path refits through the rest, and the ends stay, because they are where the motion starts and
+  ends. Right-click makes points smooth or corners, or straightens the path. The Pen's
+  Alt-click adds a point to a motion path or to a selected shape. Ctrl-drag (⌘-drag) the path
+  or its object to move the whole path, and Properties › Path start moves it by number; the
+  timing stays exactly. Headless: `motion.add_point`, `motion.delete_points`,
+  `motion.convert_point`, `motion.move_path`, and `anchors` in `motion.info`. Not yet:
+  anchors tied to frames (spatial keys; ADR 0038 explains why), a marquee over path anchors,
+  nudging and transforming a whole path.
+
 * **AniCraft in a web browser** (ADR 0036, first slice; `docs/web.md`). The editor builds for
   WebAssembly and runs in a page: `scripts/build-web.sh` (or `.ps1`) makes `web/`, which any
   static server can serve. The module is about 9 MB, 3.3 MB gzipped.

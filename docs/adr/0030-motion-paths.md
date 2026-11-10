@@ -94,8 +94,9 @@ and loses nothing irreversible, so it doesn't ask (ADR 0004).
 * Performance: evaluating a tween on an 8-segment path with orient takes 10–15 µs per object
   per frame, and the stage's 240 frame dots 20–30 µs together (one `CurveWalk` per call;
   measured on the development machine, release and dev profiles).
-* Not yet (later PRs): position keys as anchors (spatial keys), adding or deleting path points
-  and converting them smooth/corner on the stage, moving the whole path, copying and pasting
+* Adding, deleting and converting path points and moving the whole path came next, in
+  ADR 0038, which also explains why anchors tied to frames wait for a model change.
+* Not yet (later PRs): position keys as anchors (spatial keys), copying and pasting
   a path from a stroke or onto a guide, ease along the path for loop paths, the path shown
   for tweens inside symbols edited in place, snapping the ends, and importing motion paths
   from XFL (motion tween import still waits on samples, ADR 0016).
