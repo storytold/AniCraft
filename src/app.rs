@@ -178,6 +178,9 @@ pub enum Drag {
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
     Hint { index: usize, side: anicraft_engine::doc::HintSide },
+    /// Editing the motion path (ADR 0030) from stage point `start`; the path as it was when the
+    /// drag began is `App::motion_drag`.
+    MotionPath { grab: crate::motion_path::Grab, start: egui::Pos2 },
     /// Camera tool (ADR 0027): panning from screen point `last`, turning from pointer angle
     /// `last` (radians about the camera centre), or zooming with the wheel until `until`
     /// (seconds; the turns of one burst are one undo step).
@@ -284,6 +287,10 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
+    /// Subselection: the motion path anchor whose handles show (ADR 0030).
+    pub motion_anchor: Option<usize>,
+    /// The motion path as it was when the drag on it began.
+    pub motion_drag: Option<anicraft_engine::geom::Path>,
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
@@ -417,6 +424,8 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
+            motion_anchor: None,
+            motion_drag: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
             bottom: BottomTab::Timeline,
@@ -820,6 +829,30 @@ impl App {
                 self.me_prop = anicraft_engine::doc::Property::Y;
                 self.me_key = Some(0);
                 self.run("timeline.goto", json!({"frame": 6}));
+            }
+            Some(which @ ("motionpath" | "motionpoints")) => {
+                // The Star layer's span as a motion tween along a curved, oriented motion path,
+                // the star selected half way along it (ADR 0030); with Subselection, the
+                // middle anchor's handles show.
+                self.run("layer.select", json!({"index": 1}));
+                if self.run("timeline.create_motion_tween", json!({"frame": 0})).is_some() {
+                    let info = self.run("motion.info", json!({"frame": 0}));
+                    let at = |k: &str| info.as_ref().and_then(|v| v["values"][k].as_f64()).unwrap_or(0.0);
+                    let (x, y) = (at("x"), at("y"));
+                    let d = format!("M{x} {y} C{} {} {} {} {} {} C{} {} {} {} {} {}", x + 70.0, y - 150.0, x + 170.0, y - 150.0, x + 230.0, y - 20.0, x + 290.0, y + 110.0, x + 380.0, y + 130.0, x + 430.0, y + 10.0);
+                    self.run("motion.set_path", json!({"d": d}));
+                    self.run("motion.orient", json!({"orient": true}));
+                    self.s.mark_saved();
+                }
+                self.run("timeline.goto", json!({"frame": 9}));
+                self.run("edit.select_all", json!({}));
+                if which == "motionpoints" {
+                    // The span selected instead of the star: Properties shows the tween's rows.
+                    self.run("element.select", json!({"ids": []}));
+                    self.frame_sel = Some(timeline::FrameSel::cell(self.s.layer, 9));
+                    self.tool = Tool::Subselect;
+                    self.motion_anchor = Some(1);
+                }
             }
             Some("pen") => {
                 // A pen path still being drawn: a corner, a smooth point with handles, a corner.
@@ -1526,6 +1559,7 @@ impl App {
             self.points.clear();
         }
         pathtools::upkeep(self);
+        crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
         self.tick_playback(&ctx);
         self.scrub_sound();
