@@ -65,7 +65,7 @@ Document
 ├── stage: width, height, fps, background
 ├── timeline: Timeline                 (main scene; scenes list arrives in M2)
 │   └── layers: [Layer]                (index 0 = top of the stack, as in the timeline panel)
-│       ├── name, visible, locked, outline, depth, kind (Normal | Guide | Mask | Folder | Camera)
+│       ├── name, visible, locked, outline, depth, volume, muted, kind (Normal | Guide | Mask | Folder | Camera)
 │       └── keyframes: [Keyframe]      (sorted by start, spans do not overlap)
 │           ├── start, duration        (frames covered by this keyframe)
 │           ├── elements: [Element]
@@ -74,7 +74,8 @@ Document
 │           │   │                     event handlers (buttons, movie clips; ADR 0024) }
 │           │   └── Camera { transform: the camera on the stage, tint }  (camera layer; ADR 0027)
 │           ├── tween: Tween? { kind: Classic | Shape, easing: Easing }
-│           ├── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+│           ├── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop,
+│           │                        effect: None | preset | Custom([{at s, left, right}]) }
 │           └── script: FrameScript? (actions, or a frame-script plug-in entry; ADR 0024)
 ├── library: [Symbol { id, name, kind: Graphic | MovieClip | Button, timeline }]
 ├── bitmaps: [Bitmap { id, name, PNG data }]
@@ -138,6 +139,14 @@ start, out)` turns any stretch of it into samples, exactly when the rates match.
 the video soundtrack and stage playback all use these two pure functions; the shell's audio
 callback only calls `Player::fill`, and the playhead follows the player's clock while sound
 plays.
+
+Sounds inside symbols (ADR 0039) are laid out by walking *stretches*: a symbol's timeline
+shown over a run of movie frames, advancing one frame per frame or holding one. A graphic's
+stretches follow its loop mode and first frame, a movie clip's loop from where the instance
+appeared; a stream reached mid-way starts with a `skip` into its sound. Effects become a
+per-channel `audio::Envelope` on the voice, and layer volumes its gain. The interactive player
+reports the sounds of the keyframes it enters (`Step::sounds`, graphics included when their
+frame changes), and `doc::sound::trigger` turns them into voices for Test Movie.
 
 ## 4. Rendering (`anicraft-render`)
 

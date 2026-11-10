@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+* **Sound effects, layer volume and sounds inside symbols** (ADR 0039, M5 second slice).
+  * Properties › Sound has an **Effect**, as in Animate: Left channel, Right channel, Fade left
+    to right, Fade right to left, Fade in and Fade out, shaped over the time the sound is
+    heard, or **Custom**. **Edit…** opens Edit Envelope: each channel's waveform with its volume
+    line; click to add a point (up to 16), drag to move it, right-click to delete it, or type
+    its time and levels. Play previews the sound with its envelope. Editing a preset makes it
+    Custom. The timeline's waveform follows the envelope.
+  * Layers with sounds have a **Volume** and **Mute** (Properties, and a speaker toggle in the
+    timeline row). Muted layers are silent in playback and in every export.
+  * **Sounds inside symbols play.** A graphic's play on its own frames as its parent shows
+    them (loop mode and first frame apply; a stream reached mid-way is heard from there); a
+    movie clip's on a loop from when it appears. Volumes multiply down through symbols.
+  * **Test Movie has sound**: the sounds of the frames it enters, movie clips' and graphics'
+    included, with the picture keeping time with the sound.
+  * The HTML canvas page carries envelopes, volumes and sounds in graphics. Sounds on button
+    frames are not played yet (reported). Sounds are not read from XFL files yet: Animate
+    keeps their data in an undocumented form.
+  * Commands: `sound.set {effect, envelope}`, `layer.set_volume`, `layer.toggle_mute`.
+
 * **Motion path points and moving the whole path** (ADR 0038, the second slice of motion
   paths). With the Subselection tool, double-click a motion path to add a point (the curve and
   the motion don't change), and Shift-click to select several anchors. Delete removes them: the
