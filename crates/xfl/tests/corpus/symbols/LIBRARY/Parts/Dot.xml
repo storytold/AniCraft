@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A dark dot, 16 px across, centred on its registration point. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Parts/Dot" itemID="00000000-0000-0000-0000-000000000102" symbolType="graphic">
+  <timeline>
+    <DOMTimeline name="Dot">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMOvalObject x="-8" y="-8" objectWidth="16" objectHeight="16">
+                  <fill><SolidColor color="#6D597A"/></fill>
+                </DOMOvalObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

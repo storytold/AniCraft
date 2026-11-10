@@ -9,7 +9,10 @@
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
 //! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014).
 //! Everything else (sound, motion tweens with property curves, unknown filters,
-//! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at.
+//! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
+//! and so is whatever is drawn the nearest way AniCraft can (square caps, reflecting
+//! gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
+//! every feature listed here, with golden renders (ADR 0035).
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
@@ -154,6 +157,24 @@ fn paint(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> O
             if stops.is_empty() {
                 return None;
             }
+            // What AniCraft's gradients can't draw yet is drawn the nearest way, and said.
+            if def.attr("spreadMethod").is_some_and(|s| s.trim() != "pad") {
+                report.skip("repeating and reflecting gradients (drawn padded)");
+            }
+            if def.attr("interpolationMethod").is_some_and(|s| s.trim() == "linearRGB") {
+                report.skip("linear-RGB gradients (blended in sRGB)");
+            }
+            if def.name == "RadialGradient" {
+                if def.f32("focalPointRatio").is_some_and(|f| f != 0.0) {
+                    report.skip("radial gradient focal points (drawn centred)");
+                }
+                let (x, y) = (m.apply_vector(Vec2::new(1.0, 0.0)), m.apply_vector(Vec2::new(0.0, 1.0)));
+                let (lx, ly) = (x.length(), y.length());
+                // Columns of different lengths, or not at right angles: an ellipse.
+                if (lx - ly).abs() > 0.01 * lx.max(ly) || x.dot(y).abs() > 0.01 * lx * ly {
+                    report.skip("elliptical radial gradients (drawn round)");
+                }
+            }
             Some(if def.name == "LinearGradient" {
                 Paint::Linear { start: m.apply(Vec2::new(-GRADIENT_HALF, 0.0)), end: m.apply(Vec2::new(GRADIENT_HALF, 0.0)), stops }
             } else {
@@ -185,9 +206,21 @@ fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> 
     if def.name != "SolidStroke" {
         report.skip("stroke styles drawn as solid");
     }
+    // AniCraft strokes have round caps and joins (the format's default).
+    let round = |k: &str| def.attr(k).is_none_or(|v| v.trim() == "round");
+    if !round("caps") || !round("joints") {
+        report.skip("stroke caps and joins other than round (drawn round)");
+    }
     let width = def.f32("weight").unwrap_or(1.0).clamp(0.05, 1000.0);
     let fill = def.child("fill").and_then(|f| f.children.first());
-    let c = fill.map_or(Rgba::BLACK, |f| if f.name == "SolidColor" { color(f, "color", "alpha") } else { paint(f, bitmaps, report).map_or(Rgba::BLACK, |p| p.primary_color()) });
+    let c = fill.map_or(Rgba::BLACK, |f| {
+        if f.name == "SolidColor" {
+            color(f, "color", "alpha")
+        } else {
+            report.skip("gradient and bitmap strokes (drawn in one colour)");
+            paint(f, bitmaps, report).map_or(Rgba::BLACK, |p| p.primary_color())
+        }
+    });
     Some(Stroke::new(c, width))
 }
 
@@ -329,30 +362,57 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// An instance's `Color`: alpha, tint, or brightness (a tint towards white or black by that
+    /// amount, which is the same colour change). Other channel multipliers and offsets
+    /// (Animate's Advanced style) keep only their alpha, and are reported.
+    fn color_effect(&mut self, c: &X) -> ColorEffect {
+        let mut fx = ColorEffect { alpha: c.f32("alphaMultiplier").unwrap_or(1.0).clamp(0.0, 1.0), ..ColorEffect::default() };
+        if let Some(t) = c.f32("tintMultiplier") {
+            fx.tint = color(c, "tintColor", "__none");
+            fx.tint_amount = t.clamp(0.0, 1.0);
+        } else if let Some(b) = c.f32("brightness").filter(|b| *b != 0.0) {
+            fx.tint = if b > 0.0 { Rgba::WHITE } else { Rgba::BLACK };
+            fx.tint_amount = b.abs().min(1.0);
+        } else {
+            let multiplied = ["redMultiplier", "greenMultiplier", "blueMultiplier"].iter().any(|k| c.f32(k).is_some_and(|v| v != 1.0));
+            let offset = ["redOffset", "greenOffset", "blueOffset", "alphaOffset"].iter().any(|k| c.f32(k).is_some_and(|v| v != 0.0));
+            if multiplied || offset {
+                self.report.skip("advanced colour effects (only alpha kept)");
+            }
+        }
+        fx
+    }
+
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
         let Some(&symbol) = el.attr("libraryItemName").and_then(|n| self.ids.get(n)) else {
             self.report.skip("instances of missing symbols");
             return;
         };
-        let loop_mode = match el.attr("loop") {
+        let loop_mode = match el.attr("loop").map(str::trim) {
             Some("play once") => LoopMode::PlayOnce,
             Some("single frame") => LoopMode::SingleFrame,
+            Some(r @ ("play once reverse" | "loop reverse")) => {
+                self.report.skip("reverse loop modes (played forward)");
+                if r == "loop reverse" { LoopMode::Loop } else { LoopMode::PlayOnce }
+            }
             _ => LoopMode::Loop,
         };
         let first_frame = el.u32("firstFrame").unwrap_or(0).min(MAX_FRAME);
-        let mut fx = ColorEffect::default();
-        if let Some(c) = el.child("color").and_then(|c| c.child("Color")) {
-            fx.alpha = c.f32("alphaMultiplier").unwrap_or(1.0).clamp(0.0, 1.0);
-            if let Some(t) = c.f32("tintMultiplier") {
-                fx.tint = color(c, "tintColor", "__none");
-                fx.tint_amount = t.clamp(0.0, 1.0);
-            }
-        }
+        let fx = el.child("color").and_then(|c| c.child("Color")).map_or_else(ColorEffect::default, |c| self.color_effect(c));
         let m = parent.mul(&matrix(el));
         // Blend modes by Animate's names; unknown ones stay Normal.
         let blend = el.attr("blendMode").and_then(BlendMode::from_key).unwrap_or_default();
         let filters = self.filters(el);
-        out.push(self.element(ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events: Vec::new() }, m, fx));
+        let mut e = Element { id: ElementId(self.doc.alloc_id()), name: String::new(), transform: m, color: fx, kind: ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events: Vec::new() } };
+        // The instance name actions address it by (ADR 0024); one they couldn't is reported.
+        if let Some(name) = el.attr("name").map(str::trim).filter(|n| !n.is_empty()) {
+            if anicraft_doc::actions::valid_instance_name(name) {
+                e.name = name.to_string();
+            } else {
+                self.report.skip("instance names actions can't use (left out)");
+            }
+        }
+        out.push(Arc::new(e));
     }
 
     fn elements(&mut self, list: &[X], parent: &Affine, out: &mut Vec<Arc<Element>>, depth: usize) {
@@ -413,13 +473,21 @@ impl<'a> Builder<'a> {
                 let start = f.u32("index").unwrap_or(0).min(MAX_FRAME);
                 let duration = f.u32("duration").unwrap_or(1).clamp(1, MAX_FRAME);
                 let mut k = Keyframe::new(start, duration);
-                k.label = f.attr("name").unwrap_or("").chars().take(256).collect();
+                // A frame's name is a label (or an anchor, a label too); a comment is a note
+                // to the animator that nothing can go to, which AniCraft has no place for yet.
+                if f.attr("labelType").map(str::trim) == Some("comment") {
+                    self.report.skip("frame comments");
+                } else {
+                    k.label = f.attr("name").unwrap_or("").chars().take(256).collect();
+                }
                 match f.attr("tweenType") {
                     Some(t @ ("motion" | "shape")) => {
-                        let acc = f.f32("acceleration").unwrap_or(0.0).clamp(-100.0, 100.0);
                         let kind = if t == "shape" { TweenKind::Shape } else { TweenKind::Classic };
                         let orient = f.bool("motionTweenOrientToPath").unwrap_or(false);
-                        k.tween = Some(Tween { easing: if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) }, kind, orient });
+                        if kind == TweenKind::Classic && f.attr("motionTweenRotate").is_some_and(|r| matches!(r.trim(), "clockwise" | "counter-clockwise")) {
+                            self.report.skip("tween spins (turned the shortest way)");
+                        }
+                        k.tween = Some(Tween { easing: self.easing(f), kind, orient });
                     }
                     Some("motion object") => self.report.skip("motion tweens (kept as keyframes)"),
                     _ => {}
@@ -453,6 +521,29 @@ impl<'a> Builder<'a> {
         // Links that do not form an unbroken run under their mask are dropped.
         tl.repair_masks();
         tl
+    }
+
+    /// A tween's ease: the classic single-slider `acceleration`, or a custom ease curve. A
+    /// curve of one segment (four points from (0, 0) to (1, 1)) is a cubic Bézier exactly; a
+    /// longer one, or one per property, is drawn with the slider's ease and reported.
+    fn easing(&mut self, f: &X) -> Easing {
+        let acc = f.f32("acceleration").unwrap_or(0.0).clamp(-100.0, 100.0);
+        let classic = if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) };
+        if f.bool("hasCustomEase") != Some(true) {
+            return classic;
+        }
+        let curves: Vec<&X> = f.list("tweens").iter().filter(|c| c.name == "CustomEase").collect();
+        let one_curve = f.bool("useSingleEaseCurve") != Some(false) || curves.len() == 1;
+        let bezier = curves.first().filter(|_| one_curve).and_then(|c| {
+            let p: Vec<Vec2> = c.children.iter().filter(|p| p.name == "Point").take(5).map(|p| Vec2::new(p.f32("x").unwrap_or(0.0), p.f32("y").unwrap_or(0.0))).collect();
+            let [a, b, c, d] = p.as_slice() else { return None };
+            let near = |p: &Vec2, x: f32, y: f32| (p.x - x).abs() < 1e-3 && (p.y - y).abs() < 1e-3;
+            (near(a, 0.0, 0.0) && near(d, 1.0, 1.0)).then(|| Easing::CubicBezier(b.x.clamp(0.0, 1.0), b.y.clamp(-10.0, 10.0), c.x.clamp(0.0, 1.0), c.y.clamp(-10.0, 10.0)))
+        });
+        bezier.unwrap_or_else(|| {
+            self.report.skip("custom ease curves (drawn with the simple ease)");
+            classic
+        })
     }
 
     /// The hints listed in a frame's `shapeHints`, in letter order (ADR 0023). Each child is a
@@ -573,10 +664,12 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let name = item.attr("name").map(str::to_string).unwrap_or_else(|| href.trim_end_matches(".xml").to_string());
-            let kind = match item.attr("symbolType") {
-                Some("movie clip") => SymbolKind::MovieClip,
+            // The format leaves out default values, and a symbol's default type is movie clip:
+            // only graphics and buttons say what they are.
+            let kind = match item.attr("symbolType").map(str::trim) {
+                Some("graphic") => SymbolKind::Graphic,
                 Some("button") => SymbolKind::Button,
-                _ => SymbolKind::Graphic,
+                _ => SymbolKind::MovieClip,
             };
             let id = SymbolId(self.doc.alloc_id());
             self.ids.insert(name.clone(), id);

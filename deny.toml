@@ -45,7 +45,7 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # The Crafting Apps' shared code and their egui and winit forks, each at an immutable revision
-# pinned in Cargo.toml (ADR 0035): the right-to-left egui, and the interface translations
+# pinned in Cargo.toml (ADR 0036): the right-to-left egui, and the interface translations
 # (craft-libs' `craft-i18n`). Same storytold repositories, MIT OR Apache-2.0.
 allow-git = [
     "https://github.com/storytold/craft-libs",
