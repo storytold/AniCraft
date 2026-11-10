@@ -223,10 +223,15 @@ pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) ->
         }
     }
     let to_stage = |p: Vec2| m.apply(Vec2::new((origin.0 + f64::from(p.x) * c) as f32, (origin.1 + f64::from(p.y) * c) as f32));
-    // Corners need a turn over about two cells on the stage (a round tip's tightest curve is
-    // 2.5 cells, too gentle to count).
+    // A corner is a turn of 60° over the window either side. Round tips: two cells (their
+    // tightest curve is 2.5 cells, too gentle to count). Square tips: four, so a corner the
+    // tracing cut off still turns enough to stay sharp.
     let cell_stage = (c as f32) * tip.size * 0.5;
-    let window = (2.0 * cell_stage).max(tol * 2.0);
+    let cells = match tip.shape {
+        TipShape::Round => 2.0,
+        TipShape::Square => 4.0,
+    };
+    let window = (cells * cell_stage).max(tol * 2.0);
     let mut out = Path::new();
     for lp in trace::contours(&field, w, h) {
         let stage: Vec<Vec2> = lp.into_iter().map(to_stage).collect();
