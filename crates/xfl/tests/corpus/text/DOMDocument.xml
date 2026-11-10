@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: text. A static field with runs in two styles over two lines, a
+     fixed-width static field that wraps, a dynamic field with an instance name and a centred
+     run, and an input field. Text is laid out with the computer's fonts, so the golden renders
+     import it with none (only the card behind it draws, and the text is reported); the
+     structural test checks the blocks with the fonts the computer has. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Text" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMStaticText fontRenderingMode="standard" autoExpand="true" isSelectable="false" width="180" height="60">
+                  <matrix><Matrix tx="20" ty="16"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>Corpus&#xD;</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="28" bitmapSize="560" face="ArialMT" bold="true" fillColor="#264653"/></textAttrs>
+                    </DOMTextRun>
+                    <DOMTextRun>
+                      <characters>self-authored, line two</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="12" bitmapSize="240" face="ArialMT" fillColor="#E76F51" letterSpacing="1"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMStaticText>
+                <DOMStaticText fontRenderingMode="standard" width="100" height="70" isSelectable="false">
+                  <matrix><Matrix tx="210" ty="16"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>A fixed-width field wraps its words onto lines.</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="11" bitmapSize="220" face="ArialMT" fillColor="#2A9D8F" lineSpacing="2"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMStaticText>
+                <DOMDynamicText name="score" fontRenderingMode="standard" width="120" height="30" lineType="single line">
+                  <matrix><Matrix tx="20" ty="110"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>Score 0042</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" alignment="center" size="18" bitmapSize="360" face="CourierNewPSMT" fillColor="#8338EC"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMDynamicText>
+                <DOMInputText name="answer" fontRenderingMode="standard" width="120" height="24" border="true">
+                  <matrix><Matrix tx="180" ty="120"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>type here</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="14" bitmapSize="280" face="ArialMT" fillColor="#000000"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMInputText>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Card" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="10" y="10" objectWidth="300" objectHeight="80" topLeftRadius="10">
+                  <fill><SolidColor color="#E9EDC9"/></fill>
+                </DOMRectangleObject>
+                <DOMRectangleObject x="10" y="100" objectWidth="300" objectHeight="60" topLeftRadius="10">
+                  <fill><SolidColor color="#CCD5AE"/></fill>
+                </DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

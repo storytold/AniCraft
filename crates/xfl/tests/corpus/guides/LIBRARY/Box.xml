@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Self-authored corpus symbol. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Box" itemID="00000000-0000-0000-0000-000000000302" symbolType="graphic">
+  <timeline>
+    <DOMTimeline name="Box">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="-12" y="-12" objectWidth="24" objectHeight="24"><fill><SolidColor color="#2A9D8F"/></fill></DOMRectangleObject><DOMRectangleObject x="4" y="-12" objectWidth="8" objectHeight="8"><fill><SolidColor color="#264653"/></fill></DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>
