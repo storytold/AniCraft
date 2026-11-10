@@ -406,9 +406,10 @@ fn lay_out(faces: &[(&[u8], u32)], text: &str, style: &Style) -> Option<Layout> 
             }
             parts.into_iter().flatten().collect::<Vec<_>>()
         };
-        // Each byte's share of the width (a cluster's advance on its first byte), run by run.
+        // Each byte's share of the width (a cluster's advance on its first byte), run by run. Only wrapping
+        // reads it, so a block without a width skips this pass (it would shape every paragraph twice).
         let mut advance = vec![0.0f32; para.len()];
-        let mut start = 0;
+        let mut start = if style.width.is_some() { 0 } else { para.len() };
         while start < para.len() {
             let level = bidi.levels.get(start).copied();
             let end = (start..para.len()).find(|i| bidi.levels.get(*i).copied() != level).unwrap_or(para.len());
