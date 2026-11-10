@@ -186,9 +186,10 @@ pub fn evaluate_layer_elements(layer: &Layer, frame: u32) -> Option<(u32, Cow<'_
 pub fn evaluate_guided<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf = layer.keyframes.get(idx)?;
-    // A motion tween: its target follows the property curves; anything else on the key holds.
+    // A motion tween: its target follows the property curves (and its motion path, ADR 0030);
+    // anything else on the key holds.
     if let Some(m) = &kf.motion {
-        let Some(i) = m.target_index(&kf.elements).filter(|_| !m.tracks.is_empty()) else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
+        let Some(i) = m.target_index(&kf.elements).filter(|_| !m.tracks.is_empty() || m.path.is_some()) else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
         let mut els = kf.elements.clone();
         if let Some(slot) = els.get_mut(i) {
             *slot = Arc::new(m.apply(slot, (frame - kf.start) as f32));
@@ -238,7 +239,7 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
                 (Some(x), Some(y)) => Some(x.lerp(y, t)),
                 (x, _) => x.clone(),
             };
-            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule })
+            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge })
         }
         (ElementKind::Symbol { symbol: s1, .. }, ElementKind::Symbol { symbol: s2, .. }) if s1 == s2 => a.kind.clone(),
         // Text tweens its placement and colour effect; the words stay the first keyframe's.

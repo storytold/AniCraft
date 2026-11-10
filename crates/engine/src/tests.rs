@@ -558,6 +558,18 @@ fn panic_hunt_every_command() {
         json!({"filters": [{"type": "bevel", "blur_x": 1e30, "distance": -1e30, "angle": f64::MAX, "side": "full", "shadow_color": "#zz"}]}),
         json!({"filters": [{"type": "gradient_glow", "stops": [1, "x", null]}, {"type": "gradient_bevel", "stops": "x"}]}),
         json!({"filters": [{"type": "gradient_bevel", "stops": [{"offset": 1e30, "color": {"r": 9, "g": -9, "b": 0, "a": 2}}], "strength": -1, "quality": 255}]}),
+        json!({"orient": true, "d": "M0 0 C 1e5 -1e5 -1e5 1e5 10 10 Q 5 5 0 0 Z M 9 9 L 1 1"}),
+        json!({"orient": "x", "d": 5, "property": "x", "value": 1e6}),
+        json!({"orient": false, "d": "M 1e6 1e6 L -1e6 -1e6", "dx": 1e6, "dy": -1e6}),
+        // Brush strokes: huge tips over long drags, specks, pressure at the limits.
+        json!({"points": [[0, 0, 0.0], [99_999, 99_999, 1.0], [-99_999, 5, 0.5]], "size": 2000, "shape": "square", "angle": 1e6, "roundness": 5, "smoothing": 0, "mode": "behind", "unit": 0.001}),
+        json!({"points": (0..3000).map(|i| json!([i % 7, (i * 13) % 11, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "size": 0.1, "mode": "fills", "smoothing": 100, "unit": 1000}),
+        json!({"points": [[5, 5, -1], [6, 6, "x"]], "shape": 3, "mode": null, "roundness": f64::NAN}),
+        // Eraser and Eyedropper (ADR 0034): strokes over the raw shapes, a tip larger than the
+        // stage, picks into the other swatch, styles applied to whatever is selected.
+        json!({"points": [[0, 0], [40, 40], [90, 5]], "size": 30, "mode": "selected_fills", "x": 30, "y": 30, "slop": 0}),
+        json!({"points": [[45, 45]], "size": 2000, "mode": "inside", "x": 45, "y": 45, "other": true, "fill": false, "stroke": true}),
+        json!({"points": [[5, 5], [55, 55]], "size": 4, "mode": "lines", "shape": "square", "x": 1, "y": 1, "fill": "yes"}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -569,7 +581,19 @@ fn panic_hunt_every_command() {
     if let Some(k) = Arc::make_mut(&mut with_sound.timeline_mut(0).layers[0]).keyframe_mut(0) {
         k.sound = Some(anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)));
     }
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound)] {
+    // A motion tween on an oriented motion path, playhead mid-span (ADR 0030).
+    let mut on_path = Session::default();
+    for (id, p) in [("draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10})), ("timeline.create_motion_tween", json!({})), ("motion.set_path", json!({"d": "M0 0 C 50 -80 100 80 150 0"})), ("motion.orient", json!({"orient": true}))] {
+        on_path.execute(id, &p).unwrap();
+    }
+    on_path.set_frame(9);
+    // Merge drawing (ADR 0031): every drawing command cuts into raw shapes already there.
+    let mut raw = Session::default();
+    raw.style.object_drawing = false;
+    for p in [json!({"x": 0, "y": 0, "w": 60, "h": 60}), json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"}), json!({"x": 1, "y": 1, "w": 10, "h": 10, "radius": 5})] {
+        raw.execute("draw.rect", &p).unwrap();
+    }
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {

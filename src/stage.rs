@@ -32,8 +32,23 @@ struct TileTex {
     key: u64,
     /// Stage-space rectangle `[x0, y0, x1, y1]` this tile covers.
     rect: [f32; 4],
-    tex: egui::TextureHandle,
+    tex: TileImage,
     used: u64,
+}
+
+/// A tile's texture: uploaded from the CPU's bytes, or drawn there by the GPU stage (ADR 0029).
+enum TileImage {
+    Uploaded(egui::TextureHandle),
+    Drawn(crate::gpu_stage::NativeTile),
+}
+
+impl TileImage {
+    fn id(&self) -> egui::TextureId {
+        match self {
+            TileImage::Uploaded(t) => t.id(),
+            TileImage::Drawn(t) => t.id(),
+        }
+    }
 }
 
 pub struct Cache {
@@ -88,9 +103,18 @@ impl Cache {
         if self.tiles.iter().any(|t| t.key == img.key) {
             return None;
         }
-        let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
+        let tex = match &img.native {
+            // Already on the window's device: shown as it is, nothing to upload.
+            Some(native) => match self.gpu.register(native) {
+                Some(t) => TileImage::Drawn(t),
+                None => return Some("The GPU stage drew a picture the window can't show.".into()),
+            },
+            None => {
+                let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
+                TileImage::Uploaded(ctx.load_texture(format!("tile-{:x}", img.key), image, egui::TextureOptions::LINEAR))
+            }
+        };
         self.tick += 1;
-        let tex = ctx.load_texture(format!("tile-{:x}", img.key), image, egui::TextureOptions::LINEAR);
         self.tiles.push(TileTex { key: img.key, rect, tex, used: self.tick });
         // Evict least recently used tiles that are not on screen.
         while self.tiles.len() > MAX_TILE_TEXTURES {
@@ -249,6 +273,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let hint_hot = pointer.and_then(hint_at);
 
     let xf = crate::pathtools::Xf { origin, zoom };
+    // Pen pressure, when a tablet reports it (the Brush tool's width follows it).
+    let pressure = crate::brushtool::frame_pressure(ui.ctx());
+    // The motion path takes the pointer with the selection tools (ADR 0030): its ends and
+    // handles before the object under them, the path itself only where no object is.
+    let mp_tools = matches!(app.tool, Tool::Select | Tool::Subselect) && !panning && !preview;
+    let mp_grab = |app: &App, p: Pos2| {
+        let shown = crate::motion_path::shown(app)?;
+        let open = app.s.hit_test(to_v(to_stage(p)), 3.0 / zoom).is_none();
+        crate::motion_path::hit(app, &shown, p, xf, open).map(|g| (shown, g))
+    };
+    let mp_hot = if mp_tools && app.drag == Drag::None { pointer.and_then(|p| mp_grab(app, p)).map(|(_, g)| g) } else { None };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
@@ -257,6 +292,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Tool::Camera if app.drag == Drag::None && pointer.is_some_and(|p| crate::camera_tool::on_knob(app, &cam_geo, p)) => CursorIcon::Alias,
             Tool::Camera => CursorIcon::Grab,
             _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
+            _ if matches!(app.drag, Drag::MotionPath { .. }) => CursorIcon::Grabbing,
+            _ if mp_hot.is_some() => CursorIcon::Grab,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
@@ -273,7 +310,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -305,6 +342,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else if let Some(m) = hint_at(press) {
             app.s.begin_gesture("Move Shape Hint");
             Drag::Hint { index: m.index, side: m.side }
+        } else if let Some((shown, grab)) = mp_tools.then(|| mp_grab(app, press)).flatten() {
+            crate::motion_path::drag_start(app, shown, grab, to_v(sp))
         } else {
             match app.tool {
                 Tool::Select => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
@@ -346,7 +385,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
                 }
-                Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle => Drag::None,
+                Tool::Brush => crate::brushtool::start(app, to_v(sp), pressure),
+                // With the Faucet on, the eraser deletes on a click instead.
+                Tool::Eraser if !app.eraser.faucet => crate::erasertool::start(app, to_v(sp)),
+                Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Eraser => Drag::None,
                 Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => Drag::Shape { start: sp, cur: sp },
                 Tool::Camera => crate::camera_tool::drag_start(app, &cam_geo, press),
                 Tool::Hand => Drag::Pan,
@@ -388,6 +430,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
+            (Drag::MotionPath { grab, start }, Some(c)) => {
+                let (grab, start) = (*grab, *start);
+                crate::motion_path::drag_to(app, grab, start, c, alt);
+            }
             (Drag::Hint { index, side }, Some(c)) => {
                 // Live: the hint snaps to the nearest edge as the pointer moves.
                 let (index, side) = (*index, *side);
@@ -406,6 +452,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
             }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
+            (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf),
+            (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
             _ => {}
@@ -414,10 +462,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
+            Drag::Move { .. } => {
+                app.drop_raw();
+                app.s.end_gesture();
+            }
+            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
+            Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
+            Drag::Brush => crate::brushtool::commit(app, xf),
+            Drag::Eraser => crate::erasertool::commit(app, xf),
             Drag::Marquee { start, cur } => {
                 let r = Rect::from_two_pos(start, cur);
                 let ids: Vec<u64> = app
@@ -446,7 +501,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
-                Tool::Subselect if !panning => crate::pathtools::subselect_click(app, p, shift, xf),
+                Tool::Subselect if !panning => {
+                    if !crate::motion_path::click(app, p, xf) {
+                        crate::pathtools::subselect_click(app, p, shift, xf);
+                    }
+                }
                 Tool::Width if !panning => crate::widthtool::click(app, p, xf),
                 Tool::PaintBucket if !panning => {
                     // The gap size is set in screen points, so it feels the same at any zoom.
@@ -455,6 +514,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         app.status_ok(if v.get("recolored").is_some() { "Recoloured the fill. Ctrl+Z to undo." } else { "Filled the area. Ctrl+Z to undo." });
                     }
                 }
+                Tool::Brush if !panning => {
+                    // A click paints a dab.
+                    crate::brushtool::start(app, to_v(sp), pressure);
+                    crate::brushtool::commit(app, xf);
+                }
+                Tool::Eraser if !panning => {
+                    if app.eraser.faucet {
+                        crate::erasertool::faucet(app, to_v(sp), zoom);
+                    } else {
+                        // A click erases a dab.
+                        crate::erasertool::start(app, to_v(sp));
+                        crate::erasertool::commit(app, xf);
+                    }
+                }
+                Tool::Eyedropper if !panning => crate::erasertool::eyedropper(app, to_v(sp), shift, zoom),
                 Tool::InkBottle if !panning => {
                     app.run("paint.ink", json!({"x": sp.x, "y": sp.y, "slop": 4.0 / zoom.max(1e-3)}));
                 }
@@ -499,7 +573,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos()
     {
         commit_text(app);
-        open_text_at(app, to_stage(p), 3.0 / zoom.max(1e-3));
+        let sp = to_stage(p);
+        // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and its outline.
+        if !open_text_at(app, sp, 3.0 / zoom.max(1e-3)) {
+            app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": 3.0 / zoom.max(1e-3)}));
+        }
     }
     if app.tool == Tool::Subselect
         && !preview
@@ -715,12 +793,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let sel_stroke = Stroke::new(1.0, T.selection);
+    let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None
         && app.palette.is_none()
         && !app.modal_open()
         && let Some(sp) = app.cursor_stage
             && let Some((_, el)) = app.s.hit_test(to_v(sp), 3.0 / zoom)
-                && !app.s.selection.contains(&el) {
+                && !app.s.selection.contains(&el) && !raw.contains(&el) {
                     let b = app.s.element_bounds(el);
                     if !b.is_empty() {
                         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max));
@@ -728,6 +807,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
     let transforming = app.tool == Tool::Transform;
+    // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
+    if app.tool == Tool::Select {
+        let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
+        let mut mesh = egui::Mesh::default();
+        let mut budget = MAX_DOTS;
+        for item in app.s.display_list().items.iter().filter(|i| app.s.selection.contains(&i.element) && raw.contains(&i.element)) {
+            selection_dots(&mut mesh, item, &to_px.mul(&item.transform), canvas, &mut budget);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
     for id in app.s.selection.clone() {
         let b = app.s.element_bounds(id);
         if b.is_empty() {
@@ -737,6 +826,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if matches!(app.tool, Tool::Subselect | Tool::Width) {
             // Subselection and Width show outlines and points instead (below).
             continue;
+        }
+        if app.tool == Tool::Select && raw.contains(&id) {
+            continue; // dots above
         }
         if transforming {
             // Free transform shows one box for the whole selection (below); members get a hint.
@@ -772,6 +864,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
+    crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
+    crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
+    // After this frame's edits, so a drag on the path shows where it is now.
+    if !preview
+        && let Some(shown) = crate::motion_path::shown(app)
+    {
+        let hot = match app.drag {
+            Drag::MotionPath { grab, .. } => Some(grab),
+            _ => mp_hot,
+        };
+        crate::motion_path::draw(app, &painter, &shown, xf, hot);
+    }
     match app.drag {
         Drag::Marquee { start, cur } => {
             let r = Rect::from_two_pos(to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)));
@@ -809,6 +913,99 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         n => format!(" · {n} elements selected"),
     };
     crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
+}
+
+// ----- raw shapes (ADR 0031) ---------------------------------------------------------------------
+
+/// The raw shapes (parts of the layer's merged drawing) on the active layer.
+fn raw_ids(app: &App) -> std::collections::HashSet<anicraft_engine::doc::ElementId> {
+    app.s.visible_elements().iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(|e| e.id).collect()
+}
+
+/// Most selection dots drawn in a frame.
+const MAX_DOTS: usize = 60_000;
+
+/// Animate's selection look for raw shapes: fine dots over the selected fill or stroke, light and
+/// dark in a checker so they show on any colour. They sit on a fixed screen grid, so they don't
+/// crawl when the view pans; `m` maps the item's path to the screen.
+fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
+    const GAP: f32 = 3.0;
+    let mut dot = |p: Pos2| {
+        if clip.contains(p) && *budget > 0 {
+            *budget -= 1;
+            let dark = ((p.x / GAP).round() as i64 + (p.y / GAP).round() as i64).rem_euclid(2) == 0;
+            mesh.add_colored_rect(Rect::from_center_size(p, vec2(1.5, 1.5)), if dark { T.selection } else { Color32::WHITE });
+        }
+        *budget > 0
+    };
+    let lines = item.path.flatten(m, 0.5);
+    if item.fill.is_some() {
+        let b = item.path.bounds().transformed(m);
+        let mut y = (b.min.y.max(clip.top()) / GAP).ceil() * GAP;
+        let bottom = b.max.y.min(clip.bottom());
+        let mut xs: Vec<f32> = Vec::new();
+        while y <= bottom {
+            // Where this row crosses the outline; pairs of crossings are inside (even-odd: raw
+            // fills never overlap themselves).
+            xs.clear();
+            for pl in &lines {
+                let n = pl.points.len();
+                for i in 0..n {
+                    let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
+                    if (a.y > y) != (c.y > y) {
+                        xs.push(a.x + (y - a.y) * (c.x - a.x) / (c.y - a.y));
+                    }
+                }
+            }
+            xs.sort_by(f32::total_cmp);
+            for [x0, x1] in xs.as_chunks::<2>().0 {
+                let mut x = (x0.max(clip.left()) / GAP).ceil() * GAP;
+                while x <= x1.min(clip.right()) {
+                    if !dot(pos2(x, y)) {
+                        return;
+                    }
+                    x += GAP;
+                }
+            }
+            y += GAP;
+        }
+    }
+    if let Some(st) = &item.stroke {
+        // Along the stroke, in rows across its width; segments off the screen are skipped.
+        let half = (st.reach() * m.mean_scale()).max(0.5);
+        let rows = (half / GAP).floor() as i32;
+        let near = clip.expand(half + GAP);
+        for pl in &lines {
+            let n = pl.points.len();
+            let segs = if pl.closed { n } else { n.saturating_sub(1) };
+            let mut carry = 0.0;
+            for i in 0..segs {
+                let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
+                let d = c - a;
+                let len = d.length();
+                if len <= 1e-6 {
+                    continue;
+                }
+                if !near.intersects(Rect::from_two_pos(pos2(a.x, a.y), pos2(c.x, c.y))) {
+                    carry = (carry - len).rem_euclid(GAP);
+                    continue;
+                }
+                let (dir, normal) = (d * (1.0 / len), d.perp() * (1.0 / len));
+                let mut t = carry;
+                while t < len {
+                    let p = a + dir * t;
+                    for k in -rows..=rows {
+                        let q = p + normal * (k as f32 * GAP);
+                        if !dot(pos2(q.x, q.y)) {
+                            return;
+                        }
+                    }
+                    t += GAP;
+                }
+                carry = t - len;
+            }
+        }
+    }
 }
 
 // ----- text ----------------------------------------------------------------------------------------
@@ -996,7 +1193,7 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
 }
 
 fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32) {
-    let st = app.s.style;
+    let st = &app.s.style;
     let fill = if st.use_fill { crate::theme::to_color32(st.fill).gamma_multiply(0.6) } else { Color32::TRANSPARENT };
     let stroke = Stroke::new((st.stroke_width * zoom).max(1.0), if st.use_stroke { crate::theme::to_color32(st.stroke) } else { T.selection });
     match app.tool {

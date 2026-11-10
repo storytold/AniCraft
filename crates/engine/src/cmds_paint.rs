@@ -1,4 +1,4 @@
-//! Paint Bucket and Ink Bottle.
+//! Paint Bucket, Ink Bottle and Eyedropper.
 //!
 //! AniCraft shapes are independent objects (like object drawing), so a fill for an area
 //! enclosed by several shapes has to be found, not looked up:
@@ -32,6 +32,8 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         c("paint.bucket", "Paint Bucket", "", None, "{x, y, color?, gap? (stage units: how wide an opening still counts as closed)}", true, bucket as crate::RunFn),
         c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?, profile?}", true, ink),
+        c("paint.pick", "Eyedropper", "", None, "{x, y, other?: bool (into the other swatch only: a fill's colour into the stroke, a line's into the fill), slop?} picks the style under the point on any visible layer into the tool settings: a fill's paint (solid, gradient or bitmap, kept where it is on the stage) into the fill swatch, a line's colour, width and profile into the stroke settings", false, pick_style),
+        c("paint.apply_style", "Apply Style", "", None, "{fill?: bool, stroke?: bool} (default both) gives the selected shapes the fill swatch's paint (shapes with a fill) and the stroke settings (shapes with a line, and drawing objects without one)", true, apply_style),
     ]
 }
 
@@ -68,7 +70,8 @@ fn element_shape_mut(s: &mut Session, id: ElementId) -> Result<&mut Shape> {
 
 fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
     let at = Vec2::new(f32_req(p, "x")?, f32_req(p, "y")?);
-    let color = opt_color(p, "color")?.unwrap_or(s.style.fill);
+    // The fill swatch (a picked gradient or bitmap stays where it is on the stage).
+    let paint = opt_color(p, "color")?.map_or_else(|| s.style.fill_paint(), Paint::Solid);
     let gap = opt_f32(p, "gap")?.unwrap_or(0.0);
     if !(0.0..=1000.0).contains(&gap) {
         return Err(EngineError::Param("param 'gap' must be between 0 and 1000".into()));
@@ -76,7 +79,8 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
     let items = layer_items(s);
     // 1. On a fill: recolour it.
     if let Some((id, true)) = pick(&items, at, 0.0) {
-        element_shape_mut(s, id)?.fill = Some(Paint::Solid(color));
+        let to_local = items.iter().find(|i| i.element == id).and_then(|i| i.transform.inverse()).unwrap_or(Affine::IDENTITY);
+        element_shape_mut(s, id)?.fill = Some(paint.transformed(&to_local));
         return Ok(json!({"recolored": id.0}));
     }
     // 2. Find the enclosed area.
@@ -91,7 +95,7 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(Paint::Solid(color)), stroke: None, fill_rule: FillRule::EvenOdd }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(paint.transformed(&Affine::translate(-c.x, -c.y))), stroke: None, fill_rule: FillRule::EvenOdd, merge: false }),
     };
     let kf = s.editable_keyframe()?;
     if kf.elements.len() >= 100_000 {
@@ -283,8 +287,128 @@ fn ink(s: &mut Session, p: &Value) -> Result<Value> {
     let (id, _) = pick(&items, at, slop).ok_or_else(|| EngineError::State("click a shape to give it this stroke".into()))?;
     let profile = match opt_profile(p, "profile")? {
         Some(pr) => pr,
-        None => s.style.stroke_profile.profile(),
+        None => s.style.profile(),
     };
     element_shape_mut(s, id)?.stroke = Some(Stroke::new(color, width).with_profile(profile));
     Ok(json!({"element": id.0}))
+}
+
+/// The kind of a paint, as commands report it.
+fn paint_kind(p: &Paint) -> &'static str {
+    match p {
+        Paint::Solid(_) => "solid",
+        Paint::Linear { .. } => "linear",
+        Paint::Radial { .. } => "radial",
+        Paint::Bitmap { .. } => "bitmap",
+    }
+}
+
+/// What the Eyedropper found: a fill's paint (stage space), or a line's stroke and the scale it
+/// is drawn at.
+enum Picked {
+    Fill(Paint),
+    Line(Stroke, f32),
+}
+
+/// `paint.pick`: the Eyedropper. The topmost thing drawn under the point on any visible layer
+/// (locked ones too: picking reads, it doesn't change them): on a line, its stroke; in a fill,
+/// its paint.
+fn pick_style(s: &mut Session, p: &Value) -> Result<Value> {
+    let at = Vec2::new(f32_req(p, "x")?, f32_req(p, "y")?);
+    let other = opt_bool(p, "other")?.unwrap_or(false);
+    let slop = opt_f32(p, "slop")?.unwrap_or(2.0).clamp(0.0, 100.0);
+    let dl = s.display_list();
+    let hit = dl.items.iter().rev().find_map(|it| {
+        // Mask artwork isn't drawn, and masked-away parts can't be picked.
+        if it.masks.is_some() || it.clip.is_some_and(|c| !dl.clip_contains(c, at)) {
+            return None;
+        }
+        let hw = it.stroke.as_ref().map_or(0.0, |st| st.reach() * it.transform.mean_scale());
+        if !it.path.bounds().transformed(&it.transform).inflate(hw + slop).contains(at) {
+            return None;
+        }
+        if let Some(st) = &it.stroke
+            && it.path.distance_to_edge(at, &it.transform) <= hw + slop
+        {
+            return Some(Picked::Line(st.clone(), it.transform.mean_scale()));
+        }
+        match &it.fill {
+            Some(f) if it.path.contains(at, &it.transform, it.fill_rule) => Some(Picked::Fill(f.transformed(&it.transform))),
+            _ => None,
+        }
+    });
+    let st = &mut s.style;
+    match hit {
+        Some(Picked::Fill(paint)) => {
+            let color = paint.primary_color();
+            if other {
+                st.stroke = color;
+                st.use_stroke = true;
+                return Ok(json!({"picked": "fill", "into": "stroke", "paint": paint_kind(&paint), "color": color.to_hex()}));
+            }
+            st.fill = color;
+            st.fill_paint = (!matches!(paint, Paint::Solid(_))).then(|| paint.clone());
+            st.use_fill = true;
+            Ok(json!({"picked": "fill", "into": "fill", "paint": paint_kind(&paint), "color": color.to_hex()}))
+        }
+        Some(Picked::Line(stroke, scale)) => {
+            if other {
+                st.set_fill_color(stroke.color);
+                st.use_fill = true;
+                return Ok(json!({"picked": "line", "into": "fill", "paint": "solid", "color": stroke.color.to_hex()}));
+            }
+            st.stroke = stroke.color;
+            st.stroke_width = (stroke.width * scale).clamp(0.1, 1000.0);
+            st.use_stroke = true;
+            let preset = anicraft_doc::ProfilePreset::ALL.into_iter().find(|pr| pr.profile() == stroke.profile);
+            let profile = match preset {
+                Some(pr) => {
+                    st.set_profile(pr);
+                    pr.key()
+                }
+                None => {
+                    st.custom_profile = stroke.profile.clone();
+                    "custom"
+                }
+            };
+            Ok(json!({"picked": "line", "into": "stroke", "color": stroke.color.to_hex(), "width": st.stroke_width, "profile": profile}))
+        }
+        None => Err(EngineError::State("click a fill or a line to pick its colour".into())),
+    }
+}
+
+/// `paint.apply_style`: what the Eyedropper does with a selection (Animate applies the picked
+/// style to it).
+fn apply_style(s: &mut Session, p: &Value) -> Result<Value> {
+    let fill = opt_bool(p, "fill")?.unwrap_or(true);
+    let stroke = opt_bool(p, "stroke")?.unwrap_or(true);
+    if !fill && !stroke {
+        return Err(EngineError::Param("apply the fill, the stroke or both".into()));
+    }
+    let style = s.style.clone();
+    let paint = style.fill_paint();
+    let line = Stroke::new(style.stroke, style.stroke_width).with_profile(style.profile());
+    let mut changed = 0;
+    for e in s.selected_elements_mut()? {
+        let to_local = e.transform.inverse();
+        let ElementKind::Shape(sh) = &mut e.kind else { continue };
+        let mut hit = false;
+        if fill
+            && sh.fill.is_some()
+            && let Some(m) = to_local
+        {
+            sh.fill = Some(paint.transformed(&m));
+            hit = true;
+        }
+        // Raw fills stay fill-only: the lines round them are shapes of their own (ADR 0031).
+        if stroke && (sh.stroke.is_some() || !sh.merge) {
+            sh.stroke = Some(line.clone());
+            hit = true;
+        }
+        changed += usize::from(hit);
+    }
+    if changed == 0 {
+        return Err(EngineError::State("none of the selected items is a shape that takes this style".into()));
+    }
+    Ok(json!({"changed": changed}))
 }
