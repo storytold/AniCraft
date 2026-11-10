@@ -109,6 +109,25 @@ the CPU until scenes of 50k+ shapes or 8K stages need more (ADR 0029). Small sce
 little per-tile set-up in the tiled stage (1.8 vs 1.1 ms at 1080p); reusing buffers across
 tiles is next.
 
+### GPU stage, third slice: bitmaps and filters, the default stage (M3, ADR 0032)
+
+Same bench and machine, on Vulkan and on Direct3D 12. The CPU column is also what these
+frames cost the stage before this slice, when bitmaps and filters always fell back to the CPU.
+
+| Scene | Size | CPU oracle | Direct (Vulkan) | Tiled (Vulkan) | Direct (DX12) | Tiled (DX12) | Parity |
+|---|---|---|---|---|---|---|---|
+| Filtered sample (drop shadow + bevel, glow, a bitmap sky) | 1920×1080 | 9.8 ms | 1.6 ms | 3.7 ms | 1.5 ms | 5.4 ms | < 0.0001 / 1 |
+| Filtered sample | 3840×2160 | 31.5 ms | **3.9 ms** | 9.5 ms ✅ 60 fps | 4.2 ms | 14.0 ms | < 0.0001 / 1 |
+| 200 bitmap fills (8 images) | 1920×1080 | 10.9 ms | 1.5 ms | 2.0 ms | 1.2 ms | 2.9 ms | 0.0002 / 172 (1 px) |
+| 200 bitmap fills | 3840×2160 | 37.2 ms | **4.4 ms** | 5.7 ms | 4.3 ms | 8.7 ms | 0.0002 / 1 |
+| 1,000 shapes | 3840×2160 | 17.1 ms | 2.0 ms | 4.7 ms | 2.9 ms | 8.7 ms | < 0.0001 / 1 |
+
+Each stage tile a filtered symbol touches draws and filters its own copy of the layer (with
+the filters' reach around the tile), so tiling costs more than on plain scenes; sharing the
+layer across a frame's tiles is next. The one large difference is a single pixel whose centre
+falls within float rounding of a non-repeating bitmap's edge (ADR 0032). Bitmaps are uploaded
+once per image and cached (256 MB budget), so after the first frame they cost no transfer.
+
 ### How budgets are enforced
 
 * **Budgets that don't depend on the machine** (undo memory, snapshot sharing, file size,
@@ -147,3 +166,5 @@ buffer is tiny; the stage never waits on sound.
 * [ADR 0019](adr/0019-gpu-stage.md): GPU stage renderer (first slice), parity with the oracle
 * [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md): GPU stage without readback, masks and
   groups on the GPU, binning kept on the CPU
+* [ADR 0032](adr/0032-gpu-stage-bitmaps-filters-default.md): bitmaps and filters on the GPU,
+  Direct3D 12, and the GPU as the default stage renderer
