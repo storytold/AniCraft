@@ -69,7 +69,8 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("guides", &[]),
     ("masks", &[]),
     ("primitives", &[]),
-    ("scenes", &[("frame comments", 1), ("frame scripts (ActionScript isn't supported yet)", 2)]),
+    ("scenes", &[("frame comments", 1)]),
+    ("scripts", &[]),
     ("shapes", &[("stroke caps and joins other than round (drawn round)", 2)]),
     (
         "symbols",
@@ -77,6 +78,13 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ),
     ("text", &[("dynamic and input text fields (imported as static text)", 2), ("text fields (no fonts on this computer)", 4)]),
     ("tweens", &[("motion tweens (kept as keyframes)", 1), ("tween spins (turned the shortest way)", 1)]),
+];
+
+/// What each package keeps without running (ADR 0013 tier 1); packages not listed keep
+/// nothing.
+const KEPT: &[(&str, &[(&str, usize)])] = &[
+    ("scenes", &[("frame scripts in ActionScript 3.0", 2)]),
+    ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 3), ("linkage classes", 1)]),
 ];
 
 #[test]
@@ -91,6 +99,8 @@ fn each_package_reports_exactly_what_it_uses_that_does_not_come_across() {
         let (_, report) = import(case);
         let want: BTreeMap<String, usize> = want.iter().map(|(k, n)| (k.to_string(), *n)).collect();
         assert_eq!(report.skipped, want, "{case}");
+        let kept: BTreeMap<String, usize> = KEPT.iter().find(|(c, _)| c == case).map(|(_, k)| k.iter().map(|(k, n)| (k.to_string(), *n)).collect()).unwrap_or_default();
+        assert_eq!(report.kept, kept, "{case}: kept, not run");
         assert!(report.notes.is_empty() && report.missing_fonts.is_empty(), "{case}: {report:?}");
     }
 }
@@ -208,6 +218,37 @@ fn scenes_labels_and_scripts() {
     assert_eq!(doc.timeline(1).layers[0].keyframes[0].label, "credits");
     assert_eq!(doc.frame_count(), 6 + 4 + 1);
     assert_eq!(doc.stage.fps, 12.0);
+    // The scripts are kept as written, comment included (compared without the line endings a
+    // Windows checkout gives the file).
+    let kept = |scene: usize, layer: usize, key: usize| doc.timeline(scene).layers[layer].keyframes[key].script.as_ref().and_then(|s| s.source()).map(|s| s.text.replace("\r\n", "\n"));
+    assert_eq!(kept(0, 0, 1).as_deref(), Some("stop();\n// The sun is up; wait for a click."));
+    assert_eq!(kept(1, 0, 1).as_deref(), Some(r#"gotoAndPlay("Opening", "intro");"#));
+}
+
+#[test]
+fn scripts_linkage_and_the_document_class_come_across_verbatim() {
+    let (doc, _) = import("scripts");
+    let source = |tl: &anicraft_doc::Timeline, key: usize| tl.layers[0].keyframes[key].script.as_ref().and_then(|s| s.source()).cloned();
+    let first = source(doc.timeline(0), 0).unwrap();
+    assert_eq!(first.language, anicraft_doc::Language::ActionScript3);
+    // Byte for byte what the CDATA holds: tabs, blank lines, < & ' " and all.
+    let file = String::from_utf8(files("scripts")["DOMDocument.xml"].clone()).unwrap();
+    let cdata = file.split("<![CDATA[").nth(1).and_then(|s| s.split("]]>").next()).unwrap();
+    assert_eq!(first.text, cdata);
+    assert!(first.text.contains("\tif (hero_mc.currentFrame < 2 && e.target != null) {") && first.lines() == 10, "{:?}", first.text);
+    assert_eq!(source(doc.timeline(0), 1).unwrap().text.replace("\r\n", "\n"), "hero_mc.gotoAndStop(2);\ntrace(\"Walked > 0 & done\");");
+    let hero = doc.library.iter().find(|s| s.name == "Hero").unwrap();
+    assert_eq!(hero.kind, SymbolKind::MovieClip);
+    assert_eq!(source(&hero.timeline, 1).unwrap().text, "stop();");
+    let linkage = hero.linkage.as_ref().unwrap();
+    assert_eq!((linkage.class.as_str(), linkage.base.as_str()), ("com.example.Hero", "flash.display.MovieClip"));
+    assert!(doc.library.iter().find(|s| s.name == "Play Button").unwrap().linkage.is_none());
+    assert_eq!(doc.document_class, "com.example.Main");
+    // Nothing runs them: the movie still evaluates to its authored frames, and the instance
+    // names the scripts use came across.
+    let names: Vec<&str> = doc.timeline(0).layers[2].keyframes[0].elements.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["hero_mc", "play_btn"]);
+    assert_eq!(evaluate(&doc, 4).items.len(), evaluate(&doc, 0).items.len() - 1);
 }
 
 #[test]

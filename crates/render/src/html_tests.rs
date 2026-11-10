@@ -36,7 +36,7 @@ fn layer(id: u64, keys: Vec<Arc<Keyframe>>) -> Arc<Layer> {
 }
 
 fn symbol(id: u64, kind: SymbolKind, layers: Vec<Arc<Layer>>) -> Arc<Symbol> {
-    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, timeline: Timeline { layers } })
+    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, timeline: Timeline { layers } })
 }
 
 fn this() -> Target {
@@ -446,7 +446,7 @@ fn frames_are_baked_and_stored_once() {
     assert!(m.stats.paths < 40, "{:?}", m.stats);
     // Unused library symbols stay out.
     let mut d = doc.clone();
-    d.library.push(Arc::new(Symbol { id: SymbolId(999_999), name: "unused".into(), kind: SymbolKind::Graphic, timeline: Timeline::default() }));
+    d.library.push(Arc::new(Symbol { id: SymbolId(999_999), name: "unused".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline::default() }));
     assert_eq!(movie(&d, &HtmlOptions::default()).json["symbols"], m.json["symbols"]);
 }
 

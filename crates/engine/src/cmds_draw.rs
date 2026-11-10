@@ -604,7 +604,7 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(k) = layer.keyframe_mut(0) {
         k.elements = children;
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
     s.selection = vec![inst_id];
     Ok(json!({"symbol": sym_id.0, "instance": inst_id.0, "name": name}))
 }
