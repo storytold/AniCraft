@@ -1,13 +1,17 @@
-//! Sounds (ADR 0020): audio files in the document library, kept as the bytes they were
-//! imported as and decoded once on first use, and sounds placed on keyframes, Animate-style:
-//! a sound belongs to a keyframe of a layer, with a sync mode and a repeat count.
+//! Sounds (ADR 0020, ADR 0039): audio files in the document library, kept as the bytes they
+//! were imported as and decoded once on first use, and sounds placed on keyframes,
+//! Animate-style: a sound belongs to a keyframe of a layer, with a sync mode, a repeat count and
+//! an effect (a volume envelope per channel).
 //!
-//! [`voices`] lays the whole movie's sounds out in time. It is pure (time is a function): the
-//! exported soundtrack, the video's audio and stage playback all come from it.
+//! [`voices`] lays the whole movie's sounds out in time, those inside symbols included. It is
+//! pure (time is a function): the exported soundtrack, the video's audio and stage playback all
+//! come from it. [`trigger`] does the same for the interactive player (Test Movie), one frame
+//! at a time.
 
-use crate::Document;
-use anicraft_audio::{AudioError, Format, Pcm, Peaks, Voice, VoiceKind};
+use crate::{Document, ElementKind, Keyframe, Layer, LayerKind, LoopMode, MAX_SYMBOL_DEPTH, SymbolId, SymbolKind, Timeline, instance_start};
+use anicraft_audio::{AudioError, EnvPoint, Envelope, Format, Pcm, Peaks, Voice, VoiceKind};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 /// Unique id of a sound in the document.
@@ -164,11 +168,164 @@ impl SoundSync {
     }
 }
 
+
 /// Most repeats a frame sound takes.
 pub const MAX_REPEAT: u32 = 9_999;
+/// Most points a custom envelope keeps.
+pub const MAX_ENVELOPE_POINTS: usize = 16;
+/// Latest time an envelope point may sit at, in seconds from the sound's start (a day).
+pub const MAX_ENVELOPE_SECONDS: f64 = 86_400.0;
+
+/// One volume point of a custom envelope (ADR 0039).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EnvelopePoint {
+    /// Seconds from the sound's start (repeats included).
+    pub at: f64,
+    /// Volume of the left and of the right channel there, `0..=1`.
+    pub left: f32,
+    pub right: f32,
+}
+
+impl EnvelopePoint {
+    pub fn new(at: f64, left: f32, right: f32) -> EnvelopePoint {
+        EnvelopePoint { at, left, right }
+    }
+}
+
+/// `points` made safe to play: at most [`MAX_ENVELOPE_POINTS`], times in
+/// `0..=`[`MAX_ENVELOPE_SECONDS`], volumes in `0..=1`, in time order.
+pub fn clean_points(points: &[EnvelopePoint]) -> Vec<EnvelopePoint> {
+    let level = |g: f32| if g.is_finite() { g.clamp(0.0, 1.0) } else { 0.0 };
+    let mut out: Vec<EnvelopePoint> = points
+        .iter()
+        .take(MAX_ENVELOPE_POINTS)
+        .map(|p| EnvelopePoint { at: if p.at.is_finite() { p.at.clamp(0.0, MAX_ENVELOPE_SECONDS) } else { 0.0 }, left: level(p.left), right: level(p.right) })
+        .collect();
+    out.sort_by(|a, b| a.at.total_cmp(&b.at));
+    out
+}
+
+/// What a frame sound's volume does over its time, as Animate's Effect menu (ADR 0039): the
+/// presets are shaped over the time the sound is heard (one play times its repeats, its span
+/// for a stream, the rest of the movie for an event loop); Custom holds points of its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoundEffect {
+    #[default]
+    None,
+    LeftChannel,
+    RightChannel,
+    FadeLeftToRight,
+    FadeRightToLeft,
+    FadeIn,
+    FadeOut,
+    /// Volume points of its own (Edit Envelope), times from the sound's start.
+    Custom(Vec<EnvelopePoint>),
+}
+
+impl SoundEffect {
+    /// The presets, in menu order (Custom comes after them).
+    pub const PRESETS: [SoundEffect; 7] = [
+        SoundEffect::None,
+        SoundEffect::LeftChannel,
+        SoundEffect::RightChannel,
+        SoundEffect::FadeLeftToRight,
+        SoundEffect::FadeRightToLeft,
+        SoundEffect::FadeIn,
+        SoundEffect::FadeOut,
+    ];
+
+    pub fn key(&self) -> &'static str {
+        match self {
+            SoundEffect::None => "none",
+            SoundEffect::LeftChannel => "left_channel",
+            SoundEffect::RightChannel => "right_channel",
+            SoundEffect::FadeLeftToRight => "fade_left_to_right",
+            SoundEffect::FadeRightToLeft => "fade_right_to_left",
+            SoundEffect::FadeIn => "fade_in",
+            SoundEffect::FadeOut => "fade_out",
+            SoundEffect::Custom(_) => "custom",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SoundEffect::None => "None",
+            SoundEffect::LeftChannel => "Left channel",
+            SoundEffect::RightChannel => "Right channel",
+            SoundEffect::FadeLeftToRight => "Fade left to right",
+            SoundEffect::FadeRightToLeft => "Fade right to left",
+            SoundEffect::FadeIn => "Fade in",
+            SoundEffect::FadeOut => "Fade out",
+            SoundEffect::Custom(_) => "Custom",
+        }
+    }
+
+    pub fn hint(&self) -> &'static str {
+        match self {
+            SoundEffect::None => "Full volume on both channels",
+            SoundEffect::LeftChannel => "Plays on the left channel only",
+            SoundEffect::RightChannel => "Plays on the right channel only",
+            SoundEffect::FadeLeftToRight => "Moves from the left channel to the right while it plays",
+            SoundEffect::FadeRightToLeft => "Moves from the right channel to the left while it plays",
+            SoundEffect::FadeIn => "Rises from silence to full volume while it plays",
+            SoundEffect::FadeOut => "Falls from full volume to silence while it plays",
+            SoundEffect::Custom(_) => "Volume points of your own, per channel (Edit Envelope)",
+        }
+    }
+
+    /// The effect a key names (`custom` with no points yet), forgiving case, spaces, dashes.
+    pub fn from_key(s: &str) -> Option<SoundEffect> {
+        let s = s.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        if s == "custom" {
+            return Some(SoundEffect::Custom(Vec::new()));
+        }
+        SoundEffect::PRESETS.into_iter().find(|e| e.key() == s || e.key().replace("_channel", "") == s)
+    }
+
+    pub fn is_none(&self) -> bool {
+        *self == SoundEffect::None
+    }
+
+    /// A preset's points: (at the end of the heard time?, left, right).
+    fn shape(&self) -> &'static [(bool, f32, f32)] {
+        match self {
+            SoundEffect::None | SoundEffect::Custom(_) => &[],
+            SoundEffect::LeftChannel => &[(false, 1.0, 0.0)],
+            SoundEffect::RightChannel => &[(false, 0.0, 1.0)],
+            SoundEffect::FadeLeftToRight => &[(false, 1.0, 0.0), (true, 0.0, 1.0)],
+            SoundEffect::FadeRightToLeft => &[(false, 0.0, 1.0), (true, 1.0, 0.0)],
+            SoundEffect::FadeIn => &[(false, 0.0, 0.0), (true, 1.0, 1.0)],
+            SoundEffect::FadeOut => &[(false, 1.0, 1.0), (true, 0.0, 0.0)],
+        }
+    }
+
+    /// Its points over a sound heard for `seconds` (cleaned); empty for None (full volume).
+    /// What the envelope editor starts from when a preset is edited.
+    pub fn points(&self, seconds: f64) -> Vec<EnvelopePoint> {
+        match self {
+            SoundEffect::Custom(p) => clean_points(p),
+            preset => {
+                let end = if seconds.is_finite() { seconds.clamp(0.0, MAX_ENVELOPE_SECONDS) } else { 0.0 };
+                preset.shape().iter().map(|&(at_end, left, right)| EnvelopePoint { at: if at_end { end } else { 0.0 }, left, right }).collect()
+            }
+        }
+    }
+
+    /// The envelope at output rate `rate` for a sound faded over `length` output frames (the
+    /// time it is heard); `None` at full volume.
+    pub fn envelope(&self, length: u64, rate: u32) -> Option<Arc<Envelope>> {
+        let points: Vec<EnvPoint> = match self {
+            SoundEffect::None => return None,
+            SoundEffect::Custom(p) => clean_points(p).into_iter().map(|p| EnvPoint { at: (p.at * f64::from(rate)).round() as u64, left: p.left, right: p.right }).collect(),
+            preset => preset.shape().iter().map(|&(at_end, left, right)| EnvPoint { at: if at_end { length } else { 0 }, left, right }).collect(),
+        };
+        Envelope::new(points).map(Arc::new)
+    }
+}
 
 /// A sound placed on a keyframe.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FrameSound {
     pub sound: SoundId,
     #[serde(default)]
@@ -179,6 +336,9 @@ pub struct FrameSound {
     /// Plays again and again: to the movie's end (event) or the span's end (stream).
     #[serde(default, rename = "loop", skip_serializing_if = "is_false")]
     pub looping: bool,
+    /// Its volume envelope per channel (ADR 0039).
+    #[serde(default, skip_serializing_if = "SoundEffect::is_none")]
+    pub effect: SoundEffect,
 }
 
 fn one() -> u32 {
@@ -193,7 +353,29 @@ fn is_false(b: &bool) -> bool {
 
 impl FrameSound {
     pub fn new(sound: SoundId) -> FrameSound {
-        FrameSound { sound, sync: SoundSync::Event, repeat: 1, looping: false }
+        FrameSound { sound, sync: SoundSync::Event, repeat: 1, looping: false, effect: SoundEffect::None }
+    }
+
+    /// How long it is heard from its start when nothing stops it, in output frames: `once` is
+    /// one play, `span` its keyframe's span and `rest` (for an event loop) the time left in the
+    /// movie.
+    pub fn heard(&self, once: u64, span: u64, rest: u64) -> u64 {
+        let repeats = once.saturating_mul(u64::from(self.repeat.clamp(1, MAX_REPEAT)));
+        match (self.sync, self.looping) {
+            (SoundSync::Stream, true) => span,
+            (SoundSync::Stream, false) => repeats.min(span),
+            (_, true) => rest,
+            (_, false) => repeats,
+        }
+    }
+
+    /// [`FrameSound::heard`] in seconds, for a keyframe `span` frames long with `rest` frames
+    /// from it to the end of its timeline, at `fps`: the time its effect is shaped over (what
+    /// the envelope editor shows).
+    pub fn heard_seconds(&self, sound: &Sound, span: u32, rest: u32, fps: f32) -> f64 {
+        let rate = sound.rate.max(1);
+        let frames = self.heard(sound.frames, frame_start(u64::from(span), fps, rate), frame_start(u64::from(rest), fps, rate));
+        frames as f64 / f64::from(rate)
     }
 }
 
@@ -203,30 +385,222 @@ pub fn frame_start(frame: u64, fps: f32, rate: u32) -> u64 {
     (frame as f64 * f64::from(rate) / fps).round() as u64
 }
 
-/// Every sound of the movie (all scenes in order, every layer but guides) laid out in output
-/// frames at `rate`, in the order they start. Sync modes are resolved by playing the timeline
-/// from the start: Start skips a sound already playing, Stop cuts it, Stream ends with its
-/// span. Missing or undecodable sounds are left out. Pure: same document, same voices.
-pub fn voices(doc: &Document, rate: u32) -> Vec<Voice> {
-    struct Placed {
-        at: u64,
-        span_end: u64,
-        fs: FrameSound,
-    }
-    let fps = doc.stage.fps;
-    let movie_end = frame_start(u64::from(doc.frame_count()), fps, rate);
-    let mut placed = Vec::new();
-    for (si, scene) in doc.scenes.iter().enumerate() {
-        let base = u64::from(doc.scene_start(si));
-        for layer in scene.timeline.layers.iter().filter(|l| l.kind != crate::LayerKind::Guide) {
-            for k in &layer.keyframes {
-                if let Some(fs) = k.sound {
-                    let at = frame_start(base + u64::from(k.start), fps, rate);
-                    placed.push(Placed { at, span_end: frame_start(base + u64::from(k.end()), fps, rate), fs });
+/// The voice of `fs` heard from output frame `at`, `skip` frames into its time, for `heard`
+/// frames from its start (no further than `limit`), its effect shaped over `fade` frames.
+#[allow(clippy::too_many_arguments)]
+fn voice(pcm: &Arc<Pcm>, fs: &FrameSound, at: u64, skip: u64, heard: u64, fade: u64, limit: u64, gain: f32, rate: u32) -> Option<Voice> {
+    let kind = if fs.sync == SoundSync::Stream { VoiceKind::Stream } else { VoiceKind::Event };
+    let end = at.saturating_add(heard.saturating_sub(skip)).min(limit);
+    (end > at).then(|| Voice { pcm: pcm.clone(), kind, at, end, gain, skip, envelope: fs.effect.envelope(fade, rate) })
+}
+
+/// Most timeline stretches the layout follows (a stretch is a symbol's timeline shown over a
+/// run of frames): a one-frame graphic looping for hours inside another goes quiet past this
+/// instead of taking the app's time.
+pub const MAX_STRETCHES: usize = 100_000;
+
+/// A stretch of a timeline in movie time: movie frames `g0 ..` show the timeline's frames
+/// `l0 ..` one per frame (`advancing`), or hold its frame `l0` for `n` frames. `enters`: frame
+/// `l0` is entered at `g0` (not carried on from just before), so its event sounds start.
+#[derive(Clone, Copy, Debug)]
+struct Stretch {
+    g0: u64,
+    l0: u64,
+    n: u64,
+    advancing: bool,
+    enters: bool,
+    gain: f32,
+}
+
+/// A frame sound reached by the layout.
+struct Placed {
+    /// Output frame where it is first heard, and how far into its time that is.
+    at: u64,
+    skip: u64,
+    /// Where its stretch ends it (streams; `u64::MAX` for the others).
+    limit: u64,
+    /// Its keyframe's span, in output frames.
+    span: u64,
+    fs: FrameSound,
+    gain: f32,
+}
+
+struct Layout<'a> {
+    doc: &'a Document,
+    fps: f32,
+    rate: u32,
+    /// Symbols with sounds on their timelines, or inside the symbols they show.
+    sounding: HashSet<SymbolId>,
+    placed: Vec<Placed>,
+    budget: usize,
+}
+
+/// The symbols whose timelines hold sounds, directly or through the symbols on them.
+fn sounding_symbols(doc: &Document) -> HashSet<SymbolId> {
+    let mut shown_in: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
+    let mut set = HashSet::new();
+    let mut queue = Vec::new();
+    for sym in &doc.library {
+        for k in sym.timeline.layers.iter().flat_map(|l| l.keyframes.iter()) {
+            if k.sound.is_some() && set.insert(sym.id) {
+                queue.push(sym.id);
+            }
+            for el in &k.elements {
+                if let ElementKind::Symbol { symbol, .. } = &el.kind {
+                    shown_in.entry(*symbol).or_default().push(sym.id);
                 }
             }
         }
     }
+    while let Some(id) = queue.pop() {
+        for outer in shown_in.get(&id).into_iter().flatten() {
+            if set.insert(*outer) {
+                queue.push(*outer);
+            }
+        }
+    }
+    set
+}
+
+fn frame32(f: u64) -> u32 {
+    u32::try_from(f).unwrap_or(u32::MAX)
+}
+
+impl<'a> Layout<'a> {
+    fn out(&self, movie_frame: u64) -> u64 {
+        frame_start(movie_frame, self.fps, self.rate)
+    }
+
+    /// The sounds of `tl` over a stretch, and those of the symbols shown on it.
+    fn timeline(&mut self, tl: &'a Timeline, st: Stretch, depth: usize) {
+        if depth > MAX_SYMBOL_DEPTH || self.budget == 0 {
+            return;
+        }
+        self.budget -= 1;
+        let hi = if st.advancing { st.l0.saturating_add(st.n) } else { st.l0.saturating_add(1) };
+        for layer in tl.layers.iter().filter(|l| !matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera)) {
+            let gain = st.gain * layer.sound_gain();
+            let first = layer.keyframes.partition_point(|k| u64::from(k.end()) <= st.l0);
+            for k in layer.keyframes.iter().skip(first).take_while(|k| u64::from(k.start) < hi) {
+                if let Some(fs) = &k.sound {
+                    self.sound(fs, k, st, gain);
+                }
+                for el in &k.elements {
+                    if matches!(&el.kind, ElementKind::Symbol { symbol, .. } if self.sounding.contains(symbol)) {
+                        self.instance(layer, k, el, st, gain, depth);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keyframe `k`'s sound, if the stretch reaches it: an event (or start, or stop) sound when
+    /// its keyframe is entered; a stream over the part of its span the stretch plays, joined
+    /// mid-way when the stretch starts inside it.
+    fn sound(&mut self, fs: &FrameSound, k: &Keyframe, st: Stretch, gain: f32) {
+        let (start, end) = (u64::from(k.start), u64::from(k.end()));
+        let span = frame_start(end - start, self.fps, self.rate);
+        if fs.sync == SoundSync::Stream {
+            let (a, b) = (start.max(st.l0), end.min(st.l0.saturating_add(st.n)));
+            if !st.advancing || a >= b {
+                return;
+            }
+            let (at, limit) = (self.out(st.g0 + (a - st.l0)), self.out(st.g0 + (b - st.l0)));
+            let skip = frame_start(a - start, self.fps, self.rate);
+            self.placed.push(Placed { at, skip, limit, span, fs: fs.clone(), gain });
+            return;
+        }
+        let entered = if st.advancing { start >= st.l0 && start < st.l0.saturating_add(st.n) && (start > st.l0 || st.enters) } else { start == st.l0 && st.enters };
+        if entered {
+            let at = self.out(st.g0 + (start - st.l0));
+            self.placed.push(Placed { at, skip: 0, limit: u64::MAX, span, fs: fs.clone(), gain });
+        }
+    }
+
+    /// A symbol instance on keyframe `k` of `layer`: its timeline over the frames it shows. A
+    /// graphic keeps step with this timeline (loop mode and first frame apply); a movie clip
+    /// plays its own on a loop from when the instance appeared, as the stage shows it.
+    #[allow(clippy::too_many_arguments)]
+    fn instance(&mut self, layer: &Layer, k: &Keyframe, el: &crate::Element, st: Stretch, gain: f32, depth: usize) {
+        let ElementKind::Symbol { symbol, loop_mode, first_frame, .. } = &el.kind else { return };
+        let Some(sym) = self.doc.symbol(*symbol) else { return };
+        let tl = &sym.timeline;
+        let len = u64::from(tl.frame_count().max(1));
+        let first = u64::from(*first_frame);
+        let start = u64::from(k.start);
+        let child = |l0: u64, n: u64, advancing: bool, enters: bool, g0: u64| Stretch { g0, l0, n, advancing, enters, gain };
+        if !st.advancing {
+            // The parent holds a frame: the instance holds the one it shows there.
+            let p = st.l0;
+            let lf = match sym.kind {
+                SymbolKind::Graphic => u64::from(loop_mode.local_frame(frame32(p.saturating_sub(start)), *first_frame, frame32(len))),
+                SymbolKind::MovieClip => p.saturating_sub(u64::from(instance_start(layer, frame32(p), el.id, *symbol))) % len,
+                SymbolKind::Button => return,
+            };
+            self.timeline(tl, child(lf, st.n, false, st.enters, st.g0), depth + 1);
+            return;
+        }
+        let (pa, pb) = (start.max(st.l0), u64::from(k.end()).min(st.l0.saturating_add(st.n)));
+        if pa >= pb {
+            return;
+        }
+        let (g, n) = (st.g0 + (pa - st.l0), pb - pa);
+        let enters = pa > st.l0 || st.enters;
+        match (sym.kind, loop_mode) {
+            (SymbolKind::Graphic, LoopMode::Loop) => self.looped(tl, g, (first + (pa - start)) % len, n, len, enters, gain, depth),
+            (SymbolKind::Graphic, LoopMode::PlayOnce) => {
+                // Plays to its last frame, then holds it.
+                let lf = (first + (pa - start)).min(len - 1);
+                let run = (len - lf).min(n);
+                self.timeline(tl, child(lf, run, true, enters, g), depth + 1);
+                if n > run {
+                    self.timeline(tl, child(len - 1, n - run, false, false, g + run), depth + 1);
+                }
+            }
+            (SymbolKind::Graphic, LoopMode::SingleFrame) => self.timeline(tl, child(first.min(len - 1), n, false, enters, g), depth + 1),
+            (SymbolKind::MovieClip, _) => {
+                // Carried on across keyframes that hold the same instance: entered only where it
+                // appeared (or where this stretch jumps in).
+                let s0 = u64::from(instance_start(layer, frame32(pa), el.id, *symbol)).min(pa);
+                let enters = pa == s0 || (pa == st.l0 && st.enters);
+                self.looped(tl, g, (pa - s0) % len, n, len, enters, gain, depth);
+            }
+            // Buttons wait for the pointer: their sounds are not in this slice (ADR 0039).
+            (SymbolKind::Button, _) => {}
+        }
+    }
+
+    /// A timeline `len` frames long played from its frame `lf` for `n` frames, round and round.
+    #[allow(clippy::too_many_arguments)]
+    fn looped(&mut self, tl: &'a Timeline, mut g: u64, mut lf: u64, mut n: u64, len: u64, mut enters: bool, gain: f32, depth: usize) {
+        if depth >= MAX_SYMBOL_DEPTH {
+            return;
+        }
+        while n > 0 && self.budget > 0 {
+            let run = len.saturating_sub(lf).clamp(1, n);
+            self.timeline(tl, Stretch { g0: g, l0: lf, n: run, advancing: true, enters, gain }, depth + 1);
+            self.budget = self.budget.saturating_sub(1);
+            (g, n, lf, enters) = (g + run, n - run, 0, true);
+        }
+    }
+}
+
+/// Every sound of the movie (all scenes in order, every layer but guides, and the sounds inside
+/// the symbols on them) laid out in output frames at `rate`, in the order they start. Sync
+/// modes are resolved by playing the timeline from the start: Start skips a sound already
+/// playing, Stop cuts it, Stream ends with its span. A graphic's sounds play on its own frames
+/// as this timeline shows them; a movie clip's as the stage plays it, on a loop from when the
+/// instance appeared. Layer volumes multiply down through the symbols, a muted layer is silent.
+/// Missing or undecodable sounds are left out. Pure: same document, same voices.
+pub fn voices(doc: &Document, rate: u32) -> Vec<Voice> {
+    let fps = doc.stage.fps;
+    let movie_end = frame_start(u64::from(doc.frame_count()), fps, rate);
+    let mut lay = Layout { doc, fps, rate, sounding: sounding_symbols(doc), placed: Vec::new(), budget: MAX_STRETCHES };
+    for (si, scene) in doc.scenes.iter().enumerate() {
+        let st = Stretch { g0: u64::from(doc.scene_start(si)), l0: 0, n: u64::from(scene.timeline.frame_count()), advancing: true, enters: true, gain: 1.0 };
+        lay.timeline(&scene.timeline, st, 0);
+    }
+    let mut placed = lay.placed;
     // Stable: sounds starting together keep scene, layer and keyframe order.
     placed.sort_by_key(|p| p.at);
     let mut out: Vec<(SoundId, Voice)> = Vec::new();
@@ -246,122 +620,64 @@ pub fn voices(doc: &Document, rate: u32) -> Vec<Voice> {
             _ => {}
         }
         let Some(dec) = doc.sound(sound).and_then(Sound::decoded) else { continue };
-        let once = Voice::play_frames(&dec.pcm, rate);
-        let repeats = once.saturating_mul(u64::from(p.fs.repeat.clamp(1, MAX_REPEAT)));
-        let (kind, end) = match p.fs.sync {
-            SoundSync::Stream => (VoiceKind::Stream, if p.fs.looping { p.span_end } else { p.at.saturating_add(repeats).min(p.span_end) }),
-            _ => (VoiceKind::Event, if p.fs.looping { movie_end.max(p.at) } else { p.at.saturating_add(repeats) }),
-        };
-        if end > p.at {
-            out.push((sound, Voice { pcm: dec.pcm.clone(), kind, at: p.at, end, gain: 1.0 }));
+        let heard = p.fs.heard(Voice::play_frames(&dec.pcm, rate), p.span, movie_end.saturating_sub(p.at));
+        if let Some(v) = voice(&dec.pcm, &p.fs, p.at, p.skip, heard, heard, p.limit, p.gain, rate) {
+            out.push((sound, v));
         }
     }
     out.into_iter().map(|(_, v)| v).collect()
 }
 
-/// Whether any keyframe in the movie has a sound.
+/// A sound the interactive player reached: the keyframe it entered held it (ADR 0039).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Started {
+    pub sound: FrameSound,
+    /// The volume of its layer times those of the layers holding the symbols it is in.
+    pub gain: f32,
+    /// Its keyframe's span, in frames.
+    pub span: u32,
+}
+
+/// Starts what one step of the interactive player reached, at output frame `at` (`rate`),
+/// among the voices `playing` (with their sounds' ids; those that have ended are dropped first).
+/// Event, Start and Stop work as in [`voices`]; a stream plays over its keyframe's span. The
+/// player's movie goes round for as long as it runs, so an event loop has no end: its effect
+/// is shaped over one play.
+pub fn trigger(doc: &Document, playing: &mut Vec<(SoundId, Voice)>, started: &[Started], at: u64, rate: u32) {
+    playing.retain(|(_, v)| v.end > at);
+    for s in started {
+        let id = s.sound.sound;
+        match s.sound.sync {
+            SoundSync::Stop => {
+                for (_, v) in playing.iter_mut().filter(|(i, v)| *i == id && v.at <= at) {
+                    v.end = at.max(v.at);
+                }
+                continue;
+            }
+            SoundSync::Start if playing.iter().any(|(i, v)| *i == id && v.at <= at && at < v.end) => continue,
+            _ => {}
+        }
+        let Some(dec) = doc.sound(id).and_then(Sound::decoded) else { continue };
+        let once = Voice::play_frames(&dec.pcm, rate);
+        let span = frame_start(u64::from(s.span), doc.stage.fps, rate);
+        let endless = s.sound.sync != SoundSync::Stream && s.sound.looping;
+        let heard = s.sound.heard(once, span, u64::MAX - at);
+        if let Some(v) = voice(&dec.pcm, &s.sound, at, 0, heard, if endless { once } else { heard }, u64::MAX, s.gain, rate) {
+            playing.push((id, v));
+        }
+    }
+}
+
+/// Whether any keyframe in the document (scenes and symbols) has a sound.
 pub fn has_sounds(doc: &Document) -> bool {
-    doc.scenes.iter().any(|s| s.timeline.layers.iter().any(|l| l.keyframes.iter().any(|k| k.sound.is_some())))
+    doc.timelines().any(|tl| tl.layers.iter().any(|l| l.has_sounds()))
+}
+
+/// Whether any keyframe in the document has a stream sound (what scrubbing plays).
+pub fn has_streams(doc: &Document) -> bool {
+    doc.timelines().any(|tl| tl.layers.iter().any(|l| l.keyframes.iter().any(|k| k.sound.as_ref().is_some_and(|f| f.sync == SoundSync::Stream))))
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
-mod tests {
-    use super::*;
-    use crate::{Keyframe, Layer, LayerId, LayerKind, Scene};
-
-    /// A sound of `n` frames at 8 kHz whose sample `i` is `i / 1000`.
-    fn ramp_sound(id: u64, n: usize) -> Sound {
-        let s: Vec<f32> = (0..n).map(|i| i as f32 / 1000.0).collect();
-        Sound::from_data(SoundId(id), "ramp.wav", anicraft_audio::wav::encode(8000, 1, &s, anicraft_audio::wav::Bits::Float32)).unwrap()
-    }
-
-    /// One layer whose keyframes are `(start, duration, sound)`; 8 fps so one frame is 1000
-    /// output frames at 8 kHz.
-    fn doc_with(keys: &[(u32, u32, Option<FrameSound>)], sounds: Vec<Sound>) -> Document {
-        let mut d = Document::default();
-        d.stage.fps = 8.0;
-        let mut l = Layer::new(LayerId(1), "audio");
-        l.keyframes = keys
-            .iter()
-            .map(|&(s, n, fs)| {
-                let mut k = Keyframe::new(s, n);
-                k.sound = fs;
-                Arc::new(k)
-            })
-            .collect();
-        d.timeline_mut(0).layers = vec![Arc::new(l)];
-        d.sounds = sounds.into_iter().map(Arc::new).collect();
-        d
-    }
-
-    fn with(sync: SoundSync, repeat: u32, looping: bool) -> Option<FrameSound> {
-        Some(FrameSound { sound: SoundId(7), sync, repeat, looping })
-    }
-
-    fn spans(v: &[Voice]) -> Vec<(VoiceKind, u64, u64)> {
-        v.iter().map(|v| (v.kind, v.at, v.end)).collect()
-    }
-
-    #[test]
-    fn sounds_decode_once_and_survive_a_save() {
-        let s = ramp_sound(7, 2500);
-        assert_eq!((s.format, s.rate, s.channels, s.frames), (SoundFormat::Wav, 8000, 1, 2500));
-        assert_eq!(s.movie_frames(8.0), 3);
-        assert!(s.decoded_if_ready().is_some());
-        let back: Sound = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!(back, s);
-        assert!(back.decoded_if_ready().is_none(), "decoded lazily after loading");
-        assert_eq!(back.decoded().unwrap().pcm.samples, s.decoded().unwrap().pcm.samples);
-        assert_eq!(Sound::from_data(SoundId(1), "x", b"nope".to_vec()).err(), Some(AudioError::UnknownFormat));
-        // A frame sound writes only what differs from the defaults.
-        let fs = FrameSound::new(SoundId(3));
-        assert_eq!(serde_json::to_string(&fs).unwrap(), r#"{"sound":3,"sync":"event"}"#);
-        let full: FrameSound = serde_json::from_str(r#"{"sound":3,"sync":"stream","repeat":4,"loop":true}"#).unwrap();
-        assert_eq!(full, FrameSound { sound: SoundId(3), sync: SoundSync::Stream, repeat: 4, looping: true });
-    }
-
-    #[test]
-    fn event_sounds_play_in_full_and_repeat() {
-        let d = doc_with(&[(0, 2, None), (2, 1, with(SoundSync::Event, 1, false)), (3, 1, with(SoundSync::Event, 3, false))], vec![ramp_sound(7, 2500)]);
-        assert_eq!(spans(&voices(&d, 8000)), vec![(VoiceKind::Event, 2000, 4500), (VoiceKind::Event, 3000, 10_500)]);
-        // At 16 kHz the same sound lasts twice as many output frames.
-        assert_eq!(spans(&voices(&d, 16_000))[0], (VoiceKind::Event, 4000, 9000));
-    }
-
-    #[test]
-    fn stream_sounds_end_with_their_span_and_loop_inside_it() {
-        let d = doc_with(&[(1, 2, with(SoundSync::Stream, 1, false)), (3, 9, with(SoundSync::Stream, 1, true))], vec![ramp_sound(7, 2500)]);
-        assert_eq!(spans(&voices(&d, 8000)), vec![(VoiceKind::Stream, 1000, 3000), (VoiceKind::Stream, 3000, 12_000)]);
-    }
-
-    #[test]
-    fn start_skips_a_playing_sound_and_stop_cuts_it() {
-        let d = doc_with(&[(0, 1, with(SoundSync::Event, 1, true)), (1, 1, with(SoundSync::Start, 1, false)), (4, 2, with(SoundSync::Stop, 1, false))], vec![ramp_sound(7, 2500)]);
-        assert_eq!(spans(&voices(&d, 8000)), vec![(VoiceKind::Event, 0, 4000)], "the loop is cut at frame 4; Start was skipped");
-        // Start plays when nothing is playing.
-        let d = doc_with(&[(0, 4, with(SoundSync::Start, 1, false))], vec![ramp_sound(7, 2500)]);
-        assert_eq!(spans(&voices(&d, 8000)), vec![(VoiceKind::Event, 0, 2500)]);
-    }
-
-    #[test]
-    fn scenes_play_in_order_guides_are_silent_and_missing_sounds_are_skipped() {
-        let mut d = doc_with(&[(0, 3, with(SoundSync::Event, 1, false))], vec![ramp_sound(7, 100)]);
-        let first = d.scenes[0].clone();
-        d.scenes.insert(0, Arc::new(Scene { name: "Intro".into(), timeline: first.timeline.clone() }));
-        assert_eq!(spans(&voices(&d, 8000)), vec![(VoiceKind::Event, 0, 100), (VoiceKind::Event, 3000, 3100)]);
-        Arc::make_mut(&mut d.timeline_mut(0).layers[0]).kind = LayerKind::Guide;
-        assert_eq!(voices(&d, 8000).len(), 1, "guide layers are not exported, so not heard");
-        d.sounds.clear();
-        assert!(voices(&d, 8000).is_empty());
-        assert!(has_sounds(&d));
-    }
-
-    #[test]
-    fn frame_times_follow_the_frame_rate_exactly() {
-        assert_eq!(frame_start(24, 24.0, 48_000), 48_000);
-        assert_eq!(frame_start(1, 29.97, 48_000), 1602);
-        assert_eq!(frame_start(30_000, 30.0, 48_000), 48_000_000, "computed from the frame number: no drift");
-        assert_eq!(frame_start(5, f32::NAN, 24), 5);
-    }
-}
+#[path = "sound_tests.rs"]
+mod tests;

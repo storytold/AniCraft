@@ -180,6 +180,12 @@ fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>) -> usize {
         })
         .unwrap_or_default();
     let mut b = size_of::<Keyframe>() + k.label.len() + k.elements.len() * size_of::<usize>();
+    // A kept script's text (up to 1 MiB), unless the other keyframe shares it.
+    if let Some(anicraft_doc::FrameScript::Source(src)) = &k.script
+        && !matches!(other.and_then(|o| o.script.as_ref()), Some(anicraft_doc::FrameScript::Source(o)) if Arc::ptr_eq(o, src))
+    {
+        b += src.text.len();
+    }
     for e in &k.elements {
         if !shared_els.contains(&ptr(e)) {
             b += element_bytes(e, &shared_paths);
@@ -237,6 +243,6 @@ pub fn unique_bytes(old: &Document, new: &Document) -> usize {
 
 /// Estimated total bytes of a document (as if nothing were shared). Used for reporting.
 pub fn document_bytes(doc: &Document) -> usize {
-    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), maop_maohou: None, next_id: doc.next_id };
+    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), document_class: String::new(), maop_maohou: None, next_id: doc.next_id };
     unique_bytes(doc, &empty)
 }

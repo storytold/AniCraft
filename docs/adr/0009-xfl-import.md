@@ -53,7 +53,7 @@ own timelines, nested to any depth.
 
 * Unit tests on inline snippets in `crates/xfl/src/tests.rs`, `text_tests.rs` and
   `edges.rs` pin single behaviours (edge decoding, fill rebuilding, each mapping).
-* **The corpus** (ADR 0035): eleven self-authored XFL packages in `crates/xfl/tests/corpus/`
+* **The corpus** (ADR 0035): twelve self-authored XFL packages in `crates/xfl/tests/corpus/`
   that together use every feature the importer claims. Each has an exact report expectation,
   structural checks and about 270 hostile variants (cut short, garbled, files missing) that
   must never panic (`crates/xfl/tests/corpus.rs`), and golden renders of chosen frames by the

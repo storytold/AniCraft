@@ -22,15 +22,99 @@ pub enum VoiceKind {
 pub struct Voice {
     pub pcm: Arc<Pcm>,
     pub kind: VoiceKind,
-    /// Output frame of the sound's first sample.
+    /// Output frame where it is first heard.
     pub at: u64,
     /// Output frame where it stops (exclusive).
     pub end: u64,
-    /// Linear gain.
+    /// Linear gain (both channels).
     pub gain: f32,
+    /// Output frames of the sound already gone by at `at`: it is heard from that far in (a
+    /// stream joined mid-way, inside a symbol that starts in the middle of it).
+    pub skip: u64,
+    /// Volume over the sound's time, per channel; `None` is full volume.
+    pub envelope: Option<Arc<Envelope>>,
+}
+
+/// One point of an [`Envelope`]: a position in output frames from the sound's start (repeats
+/// included) and the gain of each channel there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvPoint {
+    pub at: u64,
+    pub left: f32,
+    pub right: f32,
+}
+
+/// A volume envelope: straight lines between its points, level before the first and after the
+/// last. Never empty.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Envelope {
+    points: Vec<EnvPoint>,
+}
+
+impl Envelope {
+    /// Sorts the points by position and keeps gains in `0..=1` (non-finite gains are silence).
+    /// `None` without points.
+    pub fn new(mut points: Vec<EnvPoint>) -> Option<Envelope> {
+        if points.is_empty() {
+            return None;
+        }
+        let clean = |g: f32| if g.is_finite() { g.clamp(0.0, 1.0) } else { 0.0 };
+        for p in &mut points {
+            p.left = clean(p.left);
+            p.right = clean(p.right);
+        }
+        points.sort_by_key(|p| p.at);
+        Some(Envelope { points })
+    }
+
+    pub fn points(&self) -> &[EnvPoint] {
+        &self.points
+    }
+
+    /// The gains (left, right) at output frame `t` of the sound's time.
+    pub fn gain(&self, t: u64) -> (f32, f32) {
+        self.between(self.points.partition_point(|p| p.at <= t), t)
+    }
+
+    /// Gains at `t`, where `i` is the index of the first point after `t`.
+    #[inline]
+    fn between(&self, i: usize, t: u64) -> (f32, f32) {
+        match (i.checked_sub(1).and_then(|j| self.points.get(j)), self.points.get(i)) {
+            (Some(a), Some(b)) if b.at > a.at => {
+                let x = (t - a.at) as f64 / (b.at - a.at) as f64;
+                (lerp(a.left, b.left, x), lerp(a.right, b.right, x))
+            }
+            (Some(a), _) => (a.left, a.right),
+            (None, Some(b)) => (b.left, b.right),
+            (None, None) => (1.0, 1.0),
+        }
+    }
+
+    /// Gains for output frames `from, from + 1, …` of the sound's time, into `out`.
+    fn fill(&self, from: u64, out: &mut [(f32, f32)]) {
+        let mut i = self.points.partition_point(|p| p.at <= from);
+        for (k, g) in out.iter_mut().enumerate() {
+            let t = from.saturating_add(k as u64);
+            while self.points.get(i).is_some_and(|p| p.at <= t) {
+                i += 1;
+            }
+            *g = self.between(i, t);
+        }
+    }
+}
+
+/// `a + (b - a) · x` in double precision: the gain between two envelope points.
+#[inline]
+pub fn lerp(a: f32, b: f32, x: f64) -> f32 {
+    (f64::from(a) + (f64::from(b) - f64::from(a)) * x) as f32
 }
 
 impl Voice {
+    /// A voice at full volume, heard from the sound's first sample.
+    pub fn new(pcm: Arc<Pcm>, kind: VoiceKind, at: u64, end: u64) -> Voice {
+        Voice { pcm, kind, at, end, gain: 1.0, skip: 0, envelope: None }
+    }
+
     /// Output frames one play of `pcm` lasts at `rate` (rounded up).
     pub fn play_frames(pcm: &Pcm, rate: u32) -> u64 {
         let n = pcm.frames() as u128 * u128::from(rate);
@@ -56,6 +140,7 @@ pub struct MixOptions {
 pub fn mix(voices: &[Voice], rate: u32, opts: MixOptions, start: u64, out: &mut [f32]) {
     out.fill(0.0);
     let stop = start.saturating_add((out.len() / 2) as u64);
+    let mut gains: Vec<(f32, f32)> = Vec::new();
     for v in voices {
         if (v.kind == VoiceKind::Event && (v.at < opts.origin || opts.streams_only)) || v.gain == 0.0 {
             continue;
@@ -67,25 +152,39 @@ pub fn mix(voices: &[Voice], rate: u32, opts: MixOptions, start: u64, out: &mut 
         }
         let Some(dst) = out.get_mut(((a - start) * 2) as usize..((b - start) * 2) as usize) else { continue };
         let g = v.gain;
+        // Where in the sound's time (output frames from its first sample) the window starts.
+        let pos = (a - v.at).saturating_add(v.skip);
+        // The envelope's gains, one pair per output frame.
+        gains.clear();
+        if let Some(env) = &v.envelope {
+            gains.resize((b - a) as usize, (0.0, 0.0));
+            env.fill(pos, &mut gains);
+            if gains.iter().all(|&(l, r)| l == 0.0 && r == 0.0) {
+                continue;
+            }
+        }
+        let gain_at = |k: usize| gains.get(k).map_or((g, g), |&(l, r)| (l * g, r * g));
         if v.pcm.rate == rate {
-            let mut i = ((a - v.at) % len as u64) as usize;
-            for [x, y] in dst.as_chunks_mut::<2>().0.iter_mut() {
+            let mut i = (pos % len as u64) as usize;
+            for (k, [x, y]) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                 let (l, r) = v.pcm.frame(i);
-                *x += l * g;
-                *y += r * g;
+                let (gl, gr) = gain_at(k);
+                *x += l * gl;
+                *y += r * gr;
                 i += 1;
                 if i == len {
                     i = 0;
                 }
             }
         } else {
-            let looping = v.end - v.at > Voice::play_frames(&v.pcm, rate);
+            let looping = (v.end - v.at).saturating_add(v.skip) > Voice::play_frames(&v.pcm, rate);
             let step = f64::from(v.pcm.rate) / f64::from(rate.max(1));
             for (k, [x, y]) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                let t = (a - v.at + k as u64) as f64 * step;
+                let t = pos.saturating_add(k as u64) as f64 * step;
                 let (l, r) = interpolate(&v.pcm, t, looping);
-                *x += l * g;
-                *y += r * g;
+                let (gl, gr) = gain_at(k);
+                *x += l * gl;
+                *y += r * gr;
             }
         }
     }
@@ -123,7 +222,69 @@ mod tests {
     }
 
     fn voice(p: &Arc<Pcm>, kind: VoiceKind, at: u64, end: u64) -> Voice {
-        Voice { pcm: p.clone(), kind, at, end, gain: 1.0 }
+        Voice::new(p.clone(), kind, at, end)
+    }
+
+    fn env(points: &[(u64, f32, f32)]) -> Option<Arc<Envelope>> {
+        Envelope::new(points.iter().map(|&(at, left, right)| EnvPoint { at, left, right }).collect()).map(Arc::new)
+    }
+
+    #[test]
+    fn an_envelope_scales_each_channel_by_straight_lines_between_its_points() {
+        let a = pcm(8000, 1, &[0.5; 40]);
+        let mut v = voice(&a, VoiceKind::Event, 4, 44);
+        // Left fades out over 20 frames from frame 10 of the sound; right rises and holds.
+        v.envelope = env(&[(30, 0.0, 1.0), (10, 1.0, 0.0)]);
+        v.gain = 0.5;
+        let out = render(&[v.clone()], 8000, MixOptions::default(), 0, 48);
+        for t in 0..40u64 {
+            let (gl, gr) = match t {
+                0..=10 => (1.0, 0.0),
+                11..=29 => (lerp(1.0, 0.0, (t - 10) as f64 / 20.0), lerp(0.0, 1.0, (t - 10) as f64 / 20.0)),
+                _ => (0.0, 1.0),
+            };
+            let k = (t + 4) as usize;
+            assert_eq!((out[2 * k], out[2 * k + 1]), (0.5 * (0.5 * gl), 0.5 * (0.5 * gr)), "sound frame {t}");
+        }
+        // Blocks of any size give the same samples.
+        let mut joined = render(&[v.clone()], 8000, MixOptions::default(), 0, 17);
+        joined.extend(render(&[v.clone()], 8000, MixOptions::default(), 17, 31));
+        assert_eq!(joined, out);
+        // A voice whose envelope is silent over the window adds nothing; one point is a level.
+        v.envelope = env(&[(0, 0.0, 0.0)]);
+        assert!(render(&[v.clone()], 8000, MixOptions::default(), 0, 48).iter().all(|&s| s == 0.0));
+        v.envelope = env(&[(7, 0.25, 1.0)]);
+        assert_eq!(&render(&[v], 8000, MixOptions::default(), 4, 1)[..], &[0.5 * 0.5 * 0.25, 0.5 * 0.5]);
+        assert!(Envelope::new(Vec::new()).is_none());
+        let e = Envelope::new(vec![EnvPoint { at: 0, left: f32::NAN, right: 7.0 }]).unwrap();
+        assert_eq!(e.gain(99), (0.0, 1.0), "gains stay in 0..=1");
+    }
+
+    #[test]
+    fn the_envelope_runs_across_repeats_and_from_a_skip() {
+        let a = pcm(8000, 1, &[0.1, 0.2, 0.3, 0.4]);
+        // Played twice from frame 0, the envelope fades over all eight frames.
+        let mut v = voice(&a, VoiceKind::Event, 0, 8);
+        v.envelope = env(&[(0, 1.0, 1.0), (8, 0.0, 0.0)]);
+        let left: Vec<f32> = render(&[v.clone()], 8000, MixOptions::default(), 0, 8).into_iter().step_by(2).collect();
+        let want: Vec<f32> = (0..8).map(|t| [0.1f32, 0.2, 0.3, 0.4][t % 4] * lerp(1.0, 0.0, t as f64 / 8.0)).collect();
+        assert_eq!(left, want);
+        // Skipping three frames: heard from the fourth sample, the envelope three frames in.
+        v.skip = 3;
+        v.at = 10;
+        v.end = 13;
+        let left: Vec<f32> = render(&[v], 8000, MixOptions::default(), 10, 3).into_iter().step_by(2).collect();
+        assert_eq!(left, vec![0.4 * lerp(1.0, 0.0, 3.0 / 8.0), 0.1 * lerp(1.0, 0.0, 4.0 / 8.0), 0.2 * lerp(1.0, 0.0, 5.0 / 8.0)]);
+        // Resampled voices skip and fade the same way (a constant stays the envelope).
+        let dc = pcm(4000, 1, &[0.5; 64]);
+        let mut v = voice(&dc, VoiceKind::Stream, 0, 64);
+        v.skip = 20;
+        v.envelope = env(&[(20, 1.0, 0.0), (60, 0.0, 1.0)]);
+        let out = render(&[v], 8000, MixOptions::default(), 0, 40);
+        for k in 4..36 {
+            let x = k as f64 / 40.0;
+            assert!((out[2 * k] - 0.5 * lerp(1.0, 0.0, x)).abs() < 1e-6 && (out[2 * k + 1] - 0.5 * lerp(0.0, 1.0, x)).abs() < 1e-6, "{k}");
+        }
     }
 
     fn render(voices: &[Voice], rate: u32, opts: MixOptions, start: u64, n: usize) -> Vec<f32> {

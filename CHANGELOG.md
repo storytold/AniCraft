@@ -12,6 +12,43 @@
 
 ## Unreleased
 
+* **Sound effects, layer volume and sounds inside symbols** (ADR 0039, M5 second slice).
+  * Properties › Sound has an **Effect**, as in Animate: Left channel, Right channel, Fade left
+    to right, Fade right to left, Fade in and Fade out, shaped over the time the sound is
+    heard, or **Custom**. **Edit…** opens Edit Envelope: each channel's waveform with its volume
+    line; click to add a point (up to 16), drag to move it, right-click to delete it, or type
+    its time and levels. Play previews the sound with its envelope. Editing a preset makes it
+    Custom. The timeline's waveform follows the envelope.
+  * Layers with sounds have a **Volume** and **Mute** (Properties, and a speaker toggle in the
+    timeline row). Muted layers are silent in playback and in every export.
+  * **Sounds inside symbols play.** A graphic's play on its own frames as its parent shows
+    them (loop mode and first frame apply; a stream reached mid-way is heard from there); a
+    movie clip's on a loop from when it appears. Volumes multiply down through symbols.
+  * **Test Movie has sound**: the sounds of the frames it enters, movie clips' and graphics'
+    included, with the picture keeping time with the sound.
+  * The HTML canvas page carries envelopes, volumes and sounds in graphics. Sounds on button
+    frames are not played yet (reported). Sounds are not read from XFL files yet: Animate
+    keeps their data in an undocumented form.
+  * Commands: `sound.set {effect, envelope}`, `layer.set_volume`, `layer.toggle_mute`.
+* **Scripts in Animate documents are kept** (ADR 0013 tier 1). Opening an `.fla` or XFL
+  file used to drop its frame scripts. Now they come across as they were written, together
+  with symbol linkage classes and the document class. Nothing runs them yet.
+  * The scripts are frame scripts in scenes and in every symbol, in the language the
+    document's publish settings name (ActionScript 3.0 unless they say otherwise). The
+    import report lists them as "kept, not run". Scripts on instances, from older documents,
+    are reported as left out.
+  * Actions panel (F9): a keyframe's *Type* is Actions, Plug-in or **Script**. The Script view
+    shows the code in a monospace editor with line numbers, shows its language, and edits it
+    live. A burst of typing undoes in one step. Keyframes with a script get the same "a" on
+    the timeline as keyframes with actions.
+  * Properties shows a symbol's linkage *Class* and the document *Class* in documents that use
+    scripts. Test Movie says how many kept scripts don't run, and the HTML canvas export
+    lists them in its report.
+  * Headless: `script.set`, `script.clear`, `script.list` and `script.set_class`. Plug-ins may
+    call them too. Saved in `.anicraft` without a format change, so older files open as
+    before.
+  * A new XFL corpus package, `scripts`, has frame scripts in a scene and a movie clip, a
+    linkage class and a document class, checked byte for byte and against golden renders.
 * **Motion path points and moving the whole path** (ADR 0038, the second slice of motion
   paths). With the Subselection tool, double-click a motion path to add a point (the curve and
   the motion don't change), and Shift-click to select several anchors. Delete removes them: the

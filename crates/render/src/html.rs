@@ -89,6 +89,8 @@ const FILTERS: &str = "filters (not exported; drawn without them)";
 const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
 const BITMAP_TINT: &str = "tints on bitmap fills (drawn untinted)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
+const BUTTON_SOUNDS: &str = "sounds on button frames (not played yet)";
+const KEPT_SCRIPTS: &str = "kept frame scripts (not run; kept in the document only)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
 fn num(v: f32, scale: f64) -> Value {
@@ -466,6 +468,10 @@ impl<'a> Bake<'a> {
                 if let Some(v) = camera.and_then(|c| matrix(&c.view(&stage, layer.depth))) {
                     entry.insert("v".into(), v);
                 }
+                // The layer's volume, for the sounds inside the symbols on it.
+                if layer.sound_gain() != 1.0 {
+                    entry.insert("sg".into(), num(layer.sound_gain(), 10_000.0));
+                }
                 if layer.kind == LayerKind::Mask {
                     entry.insert("mk".into(), json!(slots.get(&layer.id.0).copied().unwrap_or(0)));
                 } else if let Some(&slot) = layer.parent.and_then(|p| slots.get(&p.0)) {
@@ -509,9 +515,13 @@ impl<'a> Bake<'a> {
                         self.notes.entry(PLUGIN_SCRIPTS).or_default().insert(u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0));
                         a.push(json!({"plugin": format!("{} · {}", p.id, p.entry)}));
                     }
+                    // Kept scripts don't run anywhere yet (ADR 0013 tier 1).
+                    Some(FrameScript::Source(_)) => {
+                        self.notes.entry(KEPT_SCRIPTS).or_default().insert(u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0));
+                    }
                     None => {}
                 }
-                if let Some(fs) = k.sound
+                if let Some(fs) = &k.sound
                     && let Some(i) = self.sound(fs.sound)
                 {
                     let sync = match fs.sync {
@@ -520,7 +530,24 @@ impl<'a> Bake<'a> {
                         SoundSync::Stop => "stop",
                         SoundSync::Stream => "stream",
                     };
-                    snd.push(json!([i, sync, fs.repeat.max(1), fs.looping, k.duration.max(1)]));
+                    // [sound, sync, repeat, loop, span, gain?, envelope?]: the layer's volume,
+                    // and the effect's points ([seconds, left, right]) over the time it is heard.
+                    let mut entry = vec![json!(i), json!(sync), json!(fs.repeat.max(1)), json!(fs.looping), json!(k.duration.max(1))];
+                    let env: Vec<Value> = match self.doc.sound(fs.sound) {
+                        Some(s) if !fs.effect.is_none() => {
+                            let heard = fs.heard_seconds(s, k.duration, n.saturating_sub(k.start), stage.fps);
+                            fs.effect.points(heard).iter().map(|p| json!([num(p.at as f32, 10_000.0), num(p.left, 10_000.0), num(p.right, 10_000.0)])).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    let gain = tl.layers.get(index).map_or(1.0, |l| l.sound_gain());
+                    if gain != 1.0 || !env.is_empty() {
+                        entry.push(num(gain, 10_000.0));
+                    }
+                    if !env.is_empty() {
+                        entry.push(Value::Array(env));
+                    }
+                    snd.push(Value::Array(entry));
                 }
             }
             if !a.is_empty() {
@@ -607,6 +634,9 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
         let Some(sym) = doc.symbol(*id) else { continue };
         frames += sym.timeline.frame_count() as usize;
         timelines.push(b.timeline(&sym.timeline, false));
+        if b.sound && sym.kind == SymbolKind::Button && sym.timeline.layers.iter().any(|l| l.has_sounds()) {
+            b.notes.entry(BUTTON_SOUNDS).or_default().insert(sym.id.0);
+        }
         let kind = match sym.kind {
             SymbolKind::Graphic => "graphic",
             SymbolKind::MovieClip => "movieclip",

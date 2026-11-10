@@ -63,12 +63,14 @@ pub enum Icon {
     Type,
     Width,
     Sound,
+    SoundOff,
     Camera,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 50] = [
+    pub const ALL: [Icon; 51] = [
+        Icon::SoundOff,
         Icon::Camera,
         Icon::Width,
         Icon::Sound,
@@ -172,6 +174,8 @@ impl Icon {
             Icon::Image => ("image", false),
             Icon::Type => ("type", false),
             Icon::Sound => ("volume-2", false),
+            // The speaker crossed out (a muted layer).
+            Icon::SoundOff => ("anicraft-sound-off", false),
             // Lucide's object-align icons aren't in the local set; these are AniCraft originals
             // drawn on the same 24 grid with the same 2-unit round strokes.
             Icon::AlignLeft => ("anicraft-align-left", false),
@@ -217,6 +221,7 @@ static FILES: &[(&str, &str)] = &[
     ("image", include_str!("../assets/icons/image.svg")),
     ("type", include_str!("../assets/icons/type.svg")),
     ("volume-2", include_str!("../assets/icons/volume-2.svg")),
+    ("anicraft-sound-off", include_str!("../assets/icons/anicraft-sound-off.svg")),
     ("play", include_str!("../assets/icons/play.svg")),
     ("pause", include_str!("../assets/icons/pause.svg")),
     ("rotate-cw", include_str!("../assets/icons/rotate-cw.svg")),
