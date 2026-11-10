@@ -32,7 +32,7 @@ Two families, chosen by **what the text is**, not by where it sits:
 | `DataSmall` | **monospace** 10 | Dense numeric scales | timeline ruler, playhead number |
 | `DataLarge` | **monospace** 14.5 | The hero number | current frame in the timeline header |
 | `Key` | **monospace** 11.5 | Shortcuts and keycaps | Ctrl+Shift+S, F6 |
-| `Path` | **monospace** 11 | Paths, ids, preformatted text | file locations, licence texts |
+| `Path` | **monospace** 11 | Paths, ids, preformatted text | file locations, licence texts, frame scripts, class names |
 
 **Why monospace for data:** fixed-width digits don't jitter while a value is scrubbed or
 played back, numbers line up in columns, and technical readouts read as instruments rather than

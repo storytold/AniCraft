@@ -117,8 +117,8 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => "Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection.",
-            Tool::Subselect => "Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner.",
-            Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
+            Tool::Subselect => "Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner. A motion path's points edit the same way (its ends stay).",
+            Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape or a motion path to add a point to it.",
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
             Tool::Brush => "Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode.",
@@ -197,6 +197,8 @@ pub enum Drag {
     /// Editing the motion path (ADR 0030) from stage point `start`; the path as it was when the
     /// drag began is `App::motion_drag`.
     MotionPath { grab: crate::motion_path::Grab, start: egui::Pos2 },
+    /// Moving the whole motion path (ADR 0038), from stage point `last` last frame.
+    MotionMove { last: egui::Pos2 },
     /// Camera tool (ADR 0027): panning from screen point `last`, turning from pointer angle
     /// `last` (radians about the camera centre), or zooming with the wheel until `until`
     /// (seconds; the turns of one burst are one undo step).
@@ -310,8 +312,8 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
-    /// Subselection: the motion path anchor whose handles show (ADR 0030).
-    pub motion_anchor: Option<usize>,
+    /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
+    pub motion_anchors: Vec<usize>,
     /// The motion path as it was when the drag on it began.
     pub motion_drag: Option<anicraft_engine::geom::Path>,
     /// Selected frames on the timeline, and the drag on the frame grid.
@@ -394,8 +396,10 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
+        #[cfg_attr(not(gpu_stage), allow(unused_mut))]
         let mut app = App::with_context(&cc.egui_ctx, session, shot);
         // The GPU stage shares the window's device when it runs on wgpu (ADR 0029).
+        #[cfg(gpu_stage)]
         app.stage_cache.gpu.set_window_device(cc.wgpu_render_state.as_ref());
         app
     }
@@ -413,7 +417,9 @@ impl App {
         // Text lays out with the fonts on this computer plus the embedded interface font (so new
         // text has the same default everywhere). Scan them now, off the UI thread.
         anicraft_engine::text::Fonts::register(crate::theme::embedded_fonts());
-        std::thread::spawn(|| {
+        // (No thread in a browser, ADR 0036: there the library is only the embedded faces and
+        // is built on first use.)
+        let _ = std::thread::Builder::new().name("anicraft-font-scan".into()).spawn(|| {
             let _ = anicraft_engine::text::Fonts::get();
         });
         let mut session = session;
@@ -460,7 +466,7 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
-            motion_anchor: None,
+            motion_anchors: Vec::new(),
             motion_drag: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
@@ -535,12 +541,30 @@ impl App {
     }
 
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
-        match self.s.execute(id, &params) {
+        let result = self.s.execute(id, &params);
+        if platform::WEB && id.starts_with("file.") {
+            // In a browser, what a save or an export wrote is in memory: hand it to the
+            // browser as downloads (ADR 0036).
+            platform::deliver(anicraft_engine::vfs::take_written());
+        }
+        match result {
             Ok(v) => Some(v),
             Err(e) => {
                 self.status_err(e.to_string());
                 None
             }
+        }
+    }
+
+    /// A file the browser handed over: it goes where the command reads it, and the command runs
+    /// (through `request`, so opening over unsaved work asks first).
+    fn open_picked(&mut self, p: platform::Picked) {
+        // Only the name: the browser never says which folder it came from.
+        let name: String = std::path::Path::new(&p.name).file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().chars().take(128).collect());
+        let path = std::path::PathBuf::from(&name);
+        match p.data.and_then(|data| anicraft_engine::vfs::put(&path, data).map_err(|e| e.to_string())) {
+            Ok(()) => self.request(p.cmd, json!({"path": name})),
+            Err(e) => self.status_err(format!("Could not open {name}: {e}")),
         }
     }
 
@@ -711,6 +735,21 @@ impl App {
                     crate::test_movie::open(self);
                     crate::test_movie::demo_pointer(self);
                 }
+            }
+            Some("script") => {
+                // The interactive sample as an imported Animate document might bring it: a
+                // frame script kept on the Actions layer's first keyframe (in place of its
+                // Stop action), a linkage class and a document class; the Actions panel shows
+                // the Script view (ADR 0013 tier 1).
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 0}));
+                let code = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tgotoAndPlay(\"show\");\n}\n";
+                self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
+                self.run("script.set_class", json!({"class": "com.example.Menu"}));
+                if let Some(button) = self.s.doc.library.iter().find(|s| s.kind == anicraft_engine::doc::SymbolKind::Button).map(|s| s.id.0) {
+                    self.run("script.set_class", json!({"symbol": button, "class": "com.example.PlayButton", "base": "flash.display.SimpleButton"}));
+                }
+                crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
             }
             Some("exporthtml") => {
                 // File › Export › Export HTML Canvas… on the interactive sample (the in-app
@@ -955,7 +994,7 @@ impl App {
                 self.me_key = Some(0);
                 self.run("timeline.goto", json!({"frame": 6}));
             }
-            Some(which @ ("motionpath" | "motionpoints")) => {
+            Some(which @ ("motionpath" | "motionpoints" | "motionedit")) => {
                 // The Star layer's span as a motion tween along a curved, oriented motion path,
                 // the star selected half way along it (ADR 0030); with Subselection, the
                 // middle anchor's handles show.
@@ -971,12 +1010,20 @@ impl App {
                 }
                 self.run("timeline.goto", json!({"frame": 9}));
                 self.run("edit.select_all", json!({}));
-                if which == "motionpoints" {
+                if which != "motionpath" {
                     // The span selected instead of the star: Properties shows the tween's rows.
                     self.run("element.select", json!({"ids": []}));
                     self.frame_sel = Some(timeline::FrameSel::cell(self.s.layer, 9));
                     self.tool = Tool::Subselect;
-                    self.motion_anchor = Some(1);
+                    self.motion_anchors = vec![1];
+                }
+                if which == "motionedit" {
+                    // Points edited (ADR 0038): one added on the second segment, the middle
+                    // anchor made a corner, both selected with their handles showing.
+                    self.run("motion.add_point", json!({"segment": 2, "t": 0.45}));
+                    self.run("motion.convert_point", json!({"anchor": 1, "smooth": false}));
+                    self.motion_anchors = vec![1, 2];
+                    self.status_ok(format!("Added a point to the motion path. {} to undo.", platform::shortcut_label("Ctrl+Z")));
                 }
             }
             Some("pen") => {
@@ -1013,7 +1060,19 @@ impl App {
     /// Runs a command and reports the outcome; routine destructive edits say how to undo.
     pub fn perform(&mut self, id: &str, params: Value) -> Option<Value> {
         let selected = self.s.selection.len();
+        // A browser's autosaved copy opens as a file (ADR 0036): it is a restore all the same.
+        let restored = autosave::restored_session(id, &params);
         let v = self.run(id, params)?;
+        if let Some(session) = restored {
+            self.view.fit = true;
+            self.frame_sel = None;
+            self.library_sel = LibraryItem::first(&self.s.doc);
+            self.decode_sounds();
+            self.recovery.restored(&session);
+            let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
+            self.status_ok(format!("Restored “{name}”. It isn't saved yet: Save to keep it."));
+            return Some(v);
+        }
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
@@ -1043,7 +1102,8 @@ impl App {
                 self.status_ok("Discarded the autosaved copy");
             }
             "file.save" | "file.save_as" => {
-                self.status_ok(format!("Saved {}", v["saved"].as_str().unwrap_or("")));
+                // In a browser the file goes to the downloads (ADR 0036).
+                self.status_ok(format!("Saved {}{}", v["saved"].as_str().unwrap_or(""), if platform::WEB { " to your downloads" } else { "" }));
                 if self.close_after_save {
                     self.allow_close = true;
                 }
@@ -1147,6 +1207,10 @@ impl App {
             "edit.paste" if self.timeline_focus && !self.s.frame_clipboard.is_empty() => "timeline.paste_frames",
             other => other,
         };
+        if let Some(why) = platform::unavailable(id) {
+            self.status_err(why);
+            return;
+        }
         if id == "timeline.paste_frames"
             && let Some(p) = timeline::paste_params(self)
         {
@@ -1154,7 +1218,9 @@ impl App {
             return;
         }
         if id == "file.recovery_list" {
-            self.recovery.rescan();
+            if !self.recovery.rescan() {
+                return; // a browser answers on a later frame (autosave::tick)
+            }
             self.recovery.show = !self.recovery.found.is_empty();
             if !self.recovery.show {
                 self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
@@ -1205,9 +1271,17 @@ impl App {
         };
         if let Some((title, key, text)) = prompt {
             let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || id == "plugin.install");
-            if is_file && self.prefs.native_dialogs && self.shot.is_none() {
+            if is_file && platform::WEB && platform::reads_file(id) {
+                // The browser's file picker (ADR 0036). The file arrives on a later frame
+                // (`open_picked`); a save or export asks for the download's name below.
+                self.playing = false;
+                platform::pick_file(id);
+                return;
+            }
+            if is_file && self.prefs.native_dialogs && self.shot.is_none() && !platform::WEB {
                 // The platform's own dialog (it blocks, as native dialogs do). Cancel = no-op.
                 self.playing = false;
+                #[cfg(not(target_arch = "wasm32"))]
                 match platform::file_dialog(id, title, &text) {
                     Some(path) => self.request(id, json!({ key: path.display().to_string() })),
                     None => self.close_after_save = false,
@@ -1414,6 +1488,7 @@ impl App {
         }
         let control = keys == crate::a11y::Keyboard::Control;
         if !control {
+            crate::motion_path::consume_keys(self, ctx);
             pathtools::consume_keys(self, ctx);
             crate::widthtool::consume_keys(self, ctx);
         }
@@ -1640,8 +1715,8 @@ fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return tex;
     }
-    let icon = eframe::icon_data::from_png_bytes(PNG).unwrap_or_default();
-    let image = egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba);
+    let (w, h, rgba) = anicraft_engine::doc::decode_png(PNG).map_or_else(|| (1, 1, vec![0; 4]), |p| (p.width as usize, p.height as usize, p.rgba));
+    let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
     let options = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
     let tex = ctx.load_texture("anicraft-app-mark", image, options);
     ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
@@ -1685,6 +1760,9 @@ impl App {
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
+        if let Some(p) = platform::picked_file() {
+            self.open_picked(p);
+        }
         if self.glyph_check {
             // Fonts installed last frame are live now: can they draw the macOS key symbols?
             let ok = ctx.fonts_mut(|f| f.has_glyphs(&theme::font(theme::Type::Key), "⌘⇧⌥"));
@@ -1757,6 +1835,8 @@ impl App {
 
         // After this frame's edits: start a recovery copy when one is due (off this thread).
         autosave::tick(self, &ctx);
+        // A browser asks before leaving a page with unsaved work (its close guard).
+        platform::set_unsaved(self.s.is_dirty());
 
         // An edit late in this frame (after the stage drew) must be shown without waiting for
         // the next input event: egui only repaints on demand. This was the "drag commits after a

@@ -519,7 +519,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
 
             });
             ui.separator();
-            ui.label(text(Type::Caption, format!("{} · settings stored in {}", crate::platform::OS.name(), crate::platform::config_dir().map_or_else(|| "memory only".to_string(), |d| d.display().to_string()))));
+            ui.label(text(Type::Caption, format!("{} · settings stored in {}", crate::platform::OS.name(), crate::platform::settings_place())));
         });
     a11y::name_title_bar(&shown, title);
     if reset_confirms {

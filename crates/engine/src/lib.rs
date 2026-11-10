@@ -18,6 +18,7 @@ mod cmds_hints;
 mod cmds_paint;
 mod cmds_path;
 mod cmds_recovery;
+mod cmds_script;
 pub mod cmds_plugin;
 mod cmds_scene;
 pub mod cmds_sound;
@@ -32,6 +33,7 @@ pub mod recovery;
 pub mod render_service;
 pub mod params;
 pub mod player;
+pub mod vfs;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
 use anicraft_geom::{Rect, Vec2};
@@ -115,6 +117,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_plugin::specs());
     v.extend(cmds_sound::specs());
     v.extend(cmds_actions::specs());
+    v.extend(cmds_script::specs());
     v
 }
 
@@ -729,11 +732,15 @@ mod hint_tests;
 #[cfg(test)]
 mod tests_actions;
 #[cfg(test)]
+mod tests_script;
+#[cfg(test)]
 mod tests_camera;
 #[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
 mod brush_tests;
+#[cfg(test)]
+mod web_tests;
 #[cfg(test)]
 mod erase_tests;
 #[cfg(test)]

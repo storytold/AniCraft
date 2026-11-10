@@ -561,6 +561,10 @@ fn panic_hunt_every_command() {
         json!({"orient": true, "d": "M0 0 C 1e5 -1e5 -1e5 1e5 10 10 Q 5 5 0 0 Z M 9 9 L 1 1"}),
         json!({"orient": "x", "d": 5, "property": "x", "value": 1e6}),
         json!({"orient": false, "d": "M 1e6 1e6 L -1e6 -1e6", "dx": 1e6, "dy": -1e6}),
+        // Motion path points (ADR 0038): ends, repeats and out-of-range anchors, segments.
+        json!({"anchors": [0, 1, 2, 3, u64::MAX], "anchor": 1, "smooth": true, "segment": 1, "t": 0.5}),
+        json!({"anchors": [1, 1, 1], "anchor": u64::MAX, "smooth": false, "segment": u64::MAX, "t": f64::NAN}),
+        json!({"x": 75, "y": 0, "slop": 1000, "anchors": [1], "anchor": 0, "smooth": true, "dx": -0.5, "dy": 3}),
         // Brush strokes: huge tips over long drags, specks, pressure at the limits.
         json!({"points": [[0, 0, 0.0], [99_999, 99_999, 1.0], [-99_999, 5, 0.5]], "size": 2000, "shape": "square", "angle": 1e6, "roundness": 5, "smoothing": 0, "mode": "behind", "unit": 0.001}),
         json!({"points": (0..3000).map(|i| json!([i % 7, (i * 13) % 11, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "size": 0.1, "mode": "fills", "smoothing": 100, "unit": 1000}),
@@ -570,6 +574,10 @@ fn panic_hunt_every_command() {
         json!({"points": [[0, 0], [40, 40], [90, 5]], "size": 30, "mode": "selected_fills", "x": 30, "y": 30, "slop": 0}),
         json!({"points": [[45, 45]], "size": 2000, "mode": "inside", "x": 45, "y": 45, "other": true, "fill": false, "stroke": true}),
         json!({"points": [[5, 5], [55, 55]], "size": 4, "mode": "lines", "shape": "square", "x": 1, "y": 1, "fill": "yes"}),
+        // Kept scripts (ADR 0013 tier 1): odd text, unknown languages, class names that aren't.
+        json!({"text": "\u{0}\r\n]]>\u{202e}stop();", "language": "other", "class": "a.b", "base": "c", "symbol": 1}),
+        json!({"text": "x".repeat(1 << 20), "language": 3, "class": "not a class", "base": ""}),
+        json!({"text": "", "language": "ActionScript3", "class": "", "base": "Orphan"}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");

@@ -1,0 +1,54 @@
+# The web build (ADR 0036, docs/web.md), so it never regresses: every crate of the workspace
+# builds for wasm32-unknown-unknown, the engine's tests/wasm.rs runs inside WebAssembly in Node
+# (what a build can't catch: clock, thread and file calls that compile but trap), and
+# scripts/build-web.sh produces the web/ bundle. Nothing is deployed.
+name: Web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a PR branch cancels its older run; every push to main runs to the end.
+concurrency:
+  group: web-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  wasm:
+    name: Web build (wasm32)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust with the wasm32 target
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+
+      - name: Every crate builds for wasm32
+        run: cargo build --workspace --target wasm32-unknown-unknown --locked
+
+      - name: wasm-bindgen CLI at the version Cargo.lock pins
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: The engine inside WebAssembly (Node)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: cargo test -p anicraft-engine --target wasm32-unknown-unknown --test wasm --locked
+
+      - name: The web editor bundle
+        run: |
+          scripts/build-web.sh
+          ls -l web
