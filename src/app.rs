@@ -1110,8 +1110,12 @@ impl App {
             "file.import_to_library" => self.status_ok("Image added to the Library"),
             "file.export_audio" => {
                 let n = v["sounds"].as_u64().unwrap_or(0);
-                let note = if n == 0 { " No sounds play in that range, so the file is silent." } else { "" };
-                self.status_ok(format!("Exported {} ({:.2} s).{note}", v["written"].as_str().unwrap_or(""), v["seconds"].as_f64().unwrap_or(0.0)));
+                let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
+                let secs = format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0));
+                self.status_ok(i18n::fmt(
+                    if n == 0 { "Exported {path} ({secs} s). No sounds play in that range, so the file is silent." } else { "Exported {path} ({secs} s)." },
+                    &[("path", &path), ("secs", &secs)],
+                ));
             }
             "sound.delete" => self.status_ok("Deleted sound — Ctrl+Z to undo"),
             "file.import" => {
