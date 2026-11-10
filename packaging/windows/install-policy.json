@@ -21,7 +21,7 @@
     [
       "-1",
       "Software\\Classes\\Anicraft.Import\\shell\\open\\command",
-      "tryValue Root=",
+      "",
       "\"[#AnicraftExe]\" \"%1\""
     ],
     [
@@ -57,7 +57,7 @@
     [
       "-1",
       "Software\\Classes\\Applications\\anicraft.exe\\shell\\open\\command",
-      "tryValue Root=",
+      "",
       "\"[#AnicraftExe]\" \"%1\""
     ],
     [
@@ -93,7 +93,7 @@
     [
       "-1",
       "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\anicraft.exe",
-      "tryValue Root=",
+      "",
       "[#AnicraftExe]"
     ],
     [
