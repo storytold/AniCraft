@@ -234,6 +234,28 @@ impl Path {
         }
     }
 
+    /// Removes the anchor between segments `cmd` and `cmd + 1`, replacing both with the one
+    /// cubic that comes closest to them: it keeps the outer anchors and the directions their
+    /// handles leave in, and takes the handle lengths that fit the old curve best (least
+    /// squares over samples of both segments, with Newton steps refining where each sample
+    /// falls on the new curve; Schneider, "An Algorithm for Automatically Fitting Digitized
+    /// Curves", Graphics Gems, 1990). Deleting a point that splitting added gives the old curve
+    /// back. False (nothing changed) unless both commands are segments.
+    pub fn merge_at(&mut self, cmd: usize) -> bool {
+        if !(self.is_segment(cmd) && self.is_segment(cmd + 1)) {
+            return false;
+        }
+        self.to_cubic(cmd);
+        self.to_cubic(cmd + 1);
+        let (Some(p0), Some(&PathCmd::CubicTo(a1, a2, m)), Some(&PathCmd::CubicTo(b1, b2, p3))) = (self.segment_start(cmd), self.cmds.get(cmd), self.cmds.get(cmd + 1)) else { return false };
+        let Some(c) = merge_cubics([p0, a1, a2, m], [m, b1, b2, p3]) else { return false };
+        if let Some(slot) = self.cmds.get_mut(cmd + 1) {
+            *slot = PathCmd::CubicTo(c[1], c[2], c[3]);
+        }
+        self.cmds.remove(cmd);
+        true
+    }
+
     /// Makes anchor `cmd` a corner: its handles collapse onto it (segments stay curves).
     pub fn make_corner(&mut self, cmd: usize) -> bool {
         let Some(a) = self.point(cmd, ANCHOR) else { return false };
@@ -353,6 +375,81 @@ impl Path {
         }
         Some((cmd, t, d))
     }
+}
+
+/// The first direction of `cands` (vectors from an end anchor) of some length, unit length.
+fn leaving(cands: [Vec2; 3]) -> Option<Vec2> {
+    cands.into_iter().find(|v| v.length() > 1e-4).map(Vec2::normalized)
+}
+
+/// One cubic in place of `a` then `b` (see [`Path::merge_at`]). `None` for non-finite input.
+fn merge_cubics(a: [Vec2; 4], b: [Vec2; 4]) -> Option<[Vec2; 4]> {
+    use crate::walk::cubic_point;
+    const N: usize = 24;
+    let (p0, p3) = (a[0], b[3]);
+    if !a.iter().chain(&b).all(|p| p.is_finite()) {
+        return None;
+    }
+    // Direction of travel out of each end (a handle on its anchor: the next point along).
+    let span = p0.distance(p3);
+    let t1 = leaving([a[1] - p0, a[2] - p0, a[3] - p0]).unwrap_or_else(|| (p3 - p0).normalized());
+    let t2 = leaving([b[2] - p3, b[1] - p3, b[0] - p3]).unwrap_or_else(|| (p0 - p3).normalized());
+    let poly = |c: &[Vec2; 4]| c[0].distance(c[1]) + c[1].distance(c[2]) + c[2].distance(c[3]);
+    if !(poly(&a) + poly(&b) > 1e-6) {
+        // Nothing of any length: the straight cubic between the ends.
+        return Some([p0, p0.lerp(p3, 1.0 / 3.0), p0.lerp(p3, 2.0 / 3.0), p3]);
+    }
+    // Where the middle anchor falls on the new curve, `tau`: had the two been cut from one
+    // cubic at `tau`, the middle anchor's handles would be in the ratio tau : 1 − tau (de
+    // Casteljau), so that ratio places it exactly; a corner falls back on the lengths.
+    let (inn, out) = (a[3].distance(a[2]), b[1].distance(b[0]));
+    let tau = if inn + out > 1e-6 { inn / (inn + out) } else { poly(&a) / (poly(&a) + poly(&b)) };
+    let tau = if tau.is_finite() { tau.clamp(0.02, 0.98) } else { 0.5 };
+    // Samples of the old curve, and where each starts on the new one.
+    let pts: Vec<Vec2> = (0..=N).map(|i| cubic_point(&a, i as f32 / N as f32)).chain((1..=N).map(|i| cubic_point(&b, i as f32 / N as f32))).collect();
+    let mut u: Vec<f32> = (0..=N).map(|i| tau * i as f32 / N as f32).chain((1..=N).map(|i| tau + (1.0 - tau) * i as f32 / N as f32)).collect();
+    let mut best = [p0, p0 + t1 * (span / 3.0), p3 + t2 * (span / 3.0), p3];
+    for _ in 0..16 {
+        // Least squares for the handle lengths with the parameters fixed (Schneider's
+        // generateBezier).
+        let (mut c00, mut c01, mut c11, mut x0, mut x1) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (q, &t) in pts.iter().zip(&u) {
+            let s = 1.0 - t;
+            let (b0, b1, b2, b3) = (s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t);
+            let (v1, v2) = (t1 * b1, t2 * b2);
+            let rest = *q - (p0 * (b0 + b1) + p3 * (b2 + b3));
+            c00 += f64::from(v1.dot(v1));
+            c01 += f64::from(v1.dot(v2));
+            c11 += f64::from(v2.dot(v2));
+            x0 += f64::from(v1.dot(rest));
+            x1 += f64::from(v2.dot(rest));
+        }
+        let det = c00 * c11 - c01 * c01;
+        let (mut l1, mut l2) = if det.abs() > 1e-12 { (((x0 * c11 - x1 * c01) / det) as f32, ((c00 * x1 - c01 * x0) / det) as f32) } else { (span / 3.0, span / 3.0) };
+        // A handle pointing backwards (or too short to mean anything) is no fit: a third of
+        // the way, as a straight segment would have.
+        if !(l1.is_finite() && l2.is_finite()) || l1 < span * 1e-3 || l2 < span * 1e-3 {
+            (l1, l2) = (span / 3.0, span / 3.0);
+        }
+        best = [p0, p0 + t1 * l1, p3 + t2 * l2, p3];
+        // Newton steps: where on the new curve each sample is nearest.
+        for (q, t) in pts.iter().zip(u.iter_mut()) {
+            let s = 1.0 - *t;
+            let c = &best;
+            let p = cubic_point(c, *t);
+            let d1 = (c[1] - c[0]) * (3.0 * s * s) + (c[2] - c[1]) * (6.0 * s * *t) + (c[3] - c[2]) * (3.0 * *t * *t);
+            let d2 = (c[2] - c[1] * 2.0 + c[0]) * (6.0 * s) + (c[3] - c[2] * 2.0 + c[1]) * (6.0 * *t);
+            let num = (p - *q).dot(d1);
+            let den = d1.dot(d1) + (p - *q).dot(d2);
+            if den.abs() > 1e-9 {
+                let next = *t - num / den;
+                if next.is_finite() {
+                    *t = next.clamp(0.0, 1.0);
+                }
+            }
+        }
+    }
+    best.iter().all(|p| p.is_finite()).then_some(best)
 }
 
 /// Ramer–Douglas–Peucker simplification (iterative; bounded memory).
@@ -485,6 +582,60 @@ mod tests {
         let mut r = Path::rect(0.0, 0.0, 10.0, 10.0);
         assert!(r.remove_anchor(0), "MoveTo takes over the next anchor");
         assert_eq!(r.point(0, ANCHOR), Some(Vec2::new(10.0, 0.0)));
+    }
+
+    /// Largest distance from points of `p`'s segment `cmd` to the curve `q` (sampled densely).
+    fn deviation(p: &Path, q: &Path) -> f32 {
+        let dense = q.flatten(&Affine::IDENTITY, 0.001);
+        let qs = &dense[0].points;
+        let near = |pt: Vec2| qs.windows(2).map(|w| crate::path::segment_distance(pt, w[0], w[1])).fold(f32::INFINITY, f32::min);
+        p.flatten(&Affine::IDENTITY, 0.01)[0].points.iter().map(|pt| near(*pt)).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn merging_undoes_a_split() {
+        for t in [0.2f32, 0.5, 0.83] {
+            let p = cubic_path();
+            let mut q = p.clone();
+            assert!(q.split_segment(1, t));
+            assert!(q.merge_at(1));
+            assert_eq!(q.cmds.len(), p.cmds.len());
+            assert_eq!(q.point(1, ANCHOR), p.point(1, ANCHOR), "the outer anchors stay");
+            assert_eq!(q.point(0, ANCHOR), p.point(0, ANCHOR));
+            let (Some(a), Some(b)) = (q.point(1, C1), p.point(1, C1)) else { panic!("cubic") };
+            assert!(a.distance(b) < 0.01 && q.point(1, C2).unwrap().distance(p.point(1, C2).unwrap()) < 0.01, "t {t}: {:?} vs {:?}", q.cmds[1], p.cmds[1]);
+            assert!(deviation(&q, &p) < 0.01 && deviation(&p, &q) < 0.01, "t {t}");
+        }
+    }
+
+    #[test]
+    fn merging_two_unrelated_curves_keeps_the_ends_and_their_directions() {
+        // An S: up and over, then down and under; the merged curve keeps the S's ends and the
+        // directions it leaves and arrives in, and stays near it.
+        let mut p = Path::new();
+        p.move_to(Vec2::new(0.0, 0.0)).cubic_to(Vec2::new(0.0, -40.0), Vec2::new(50.0, -40.0), Vec2::new(50.0, 0.0)).cubic_to(Vec2::new(50.0, 40.0), Vec2::new(100.0, 40.0), Vec2::new(100.0, 0.0));
+        let before = p.clone();
+        assert!(p.merge_at(1));
+        assert_eq!(p.anchors().iter().map(|a| a.1).collect::<Vec<_>>(), vec![Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0)]);
+        let (c1, c2) = (p.point(1, C1).unwrap(), p.point(1, C2).unwrap());
+        assert!(c1.x.abs() < 1e-4 && c1.y < 0.0, "leaves straight up: {c1:?}");
+        assert!((c2.x - 100.0).abs() < 1e-4 && c2.y > 0.0, "arrives straight up: {c2:?}");
+        assert!(deviation(&p, &before) < 12.0, "{}", deviation(&p, &before));
+        // Lines merge into a line; corners (handles on their anchors) still find a direction.
+        let mut l = Path::new();
+        l.move_to(Vec2::new(0.0, 0.0)).line_to(Vec2::new(10.0, 0.0)).line_to(Vec2::new(20.0, 0.0));
+        assert!(l.merge_at(1));
+        assert_eq!(l.cmds.len(), 2);
+        assert!((0..=10).all(|i| l.segment_point(1, i as f32 / 10.0).is_some_and(|q| q.y.abs() < 1e-5 && (0.0..=20.0).contains(&q.x))), "{:?}", l.cmds);
+        let mut c = Path::new();
+        c.move_to(Vec2::new(0.0, 0.0)).cubic_to(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(10.0, 10.0)).cubic_to(Vec2::new(10.0, 10.0), Vec2::new(20.0, 0.0), Vec2::new(20.0, 0.0));
+        assert!(c.merge_at(1) && c.cmds.iter().all(|x| match x {
+            PathCmd::MoveTo(p) | PathCmd::LineTo(p) => p.is_finite(),
+            PathCmd::CubicTo(a, b, p) => a.is_finite() && b.is_finite() && p.is_finite(),
+            _ => true,
+        }));
+        // Only between two segments.
+        assert!(!cubic_path().merge_at(0) && !cubic_path().merge_at(2) && !cubic_path().merge_at(9));
     }
 
     #[test]
