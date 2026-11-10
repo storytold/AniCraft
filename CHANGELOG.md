@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+* **Opening Animate files is checked against a corpus of test files** (XFL import, ADR 0035).
+  Eleven hand-written Animate documents cover everything the importer brings across: shapes
+  and strokes, primitives and groups, gradients, bitmaps, symbols in every loop mode, movie
+  clips and buttons, colour effects, classic and shape tweens with eases and shape hints,
+  masks (also in folders and symbols), guides and motion guides, text, filters, blend modes,
+  scenes, labels and frame scripts. Each is imported, and chosen frames are rendered and
+  compared with reference images, so a change that alters how an imported file looks is
+  caught. Each file is also cut short and garbled thousands of ways to make sure opening a
+  damaged file never crashes.
+
+  Fixed while building it:
+  * Symbols saved without a type now open as movie clips (Animate leaves the default out),
+    not graphics.
+  * Brightness on an instance now comes across (it was dropped).
+  * Instance names of movie clips and buttons now come across, so actions can address them.
+  * A frame comment no longer becomes a frame label.
+  * A custom ease with one curve now comes across exactly.
+  * The import report now also lists what is drawn differently from Animate: square and flat
+    line ends and corners (drawn round), gradient strokes (one colour), repeating and
+    reflecting, off-centre, stretched and linear-RGB gradients, advanced colour effects,
+    reverse loop modes and extra spins on tweens.
 * **Brush tool** (B, ADR 0033, first slice). The brush paints filled shapes in the fill colour,
   as Animate's Brush tool does: the shape is exactly the area the tip sweeps along the drag.
   * Tip options: round or square, size, angle and roundness (for oval and flat calligraphic
