@@ -134,8 +134,8 @@ pub fn scripted(doc: &Document) -> bool {
 /// A class-name field (a symbol's linkage class, the document class). It edits a draft and
 /// commits when focus leaves (Enter, Tab or a click elsewhere), since a half-typed name
 /// ("com.") isn't a class name yet; a draft that isn't one shows in the error colour.
-pub fn class_field(ui: &mut egui::Ui, salt: &str, current: &str, name: &str, hint: &str) -> Option<String> {
-    let id = ui.make_persistent_id(salt);
+pub fn class_field(ui: &mut egui::Ui, field: &str, current: &str, name: &str, hint: &str) -> Option<String> {
+    let id = ui.make_persistent_id(field);
     let mut draft: String = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.to_string());
     let ok = draft.trim().is_empty() || anicraft_engine::doc::actions::valid_class_name(draft.trim());
     let mut edit = egui::TextEdit::singleline(&mut draft).desired_width(170.0).font(font(Type::Path)).hint_text("none");
