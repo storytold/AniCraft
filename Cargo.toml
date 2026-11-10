@@ -98,6 +98,8 @@ fontdb.workspace = true
 anicraft-audio.workspace = true
 serde_json.workspace = true
 web-time.workspace = true
+# The system's interface language, for the default language (ADR 0040; MIT OR Apache-2.0).
+sys-locale = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 eframe.workspace = true
@@ -114,6 +116,8 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit", 
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+# In the browser the page's language (navigator.languages) is the system's.
+sys-locale = { version = "0.3", features = ["js"] }
 web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
 
 [build-dependencies]

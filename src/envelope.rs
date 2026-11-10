@@ -45,7 +45,7 @@ pub struct EnvelopeEditor {
 pub fn open(app: &mut App) {
     let Some(layer) = app.s.active_layer() else { return };
     let Some(k) = layer.keyframe_at(app.s.frame).filter(|k| k.sound.is_some()) else {
-        app.status_err("Select a keyframe with a sound to edit its envelope");
+        app.status_err(tr!("Select a keyframe with a sound to edit its envelope"));
         return;
     };
     let (layer, frame) = (layer.id, k.start);
@@ -87,7 +87,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // Closed when its keyframe or sound goes away (undo, delete).
     let Some(t) = target(app, &ed) else { return };
     let mut open = true;
-    let title = format!("Edit Envelope — {}", t.sound.name);
+    let title = tr!("Edit Envelope — {name}", name = t.sound.name);
     let shown = egui::Window::new(title.clone())
         .id(egui::Id::new("envelope_editor"))
         .open(&mut open)
@@ -138,46 +138,46 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
     let mut pts = points_of(t);
     // ---- effect, preview, zoom, units ----
     ui.horizontal(|ui| {
-        ui.label(text(Type::Label, "Effect"));
-        egui::ComboBox::from_id_salt("envelope_effect").width(160.0).selected_text(t.fs.effect.label()).show_ui(ui, |ui| {
+        ui.label(text(Type::Label, tr!("Effect")));
+        egui::ComboBox::from_id_salt("envelope_effect").width(160.0).selected_text(crate::i18n::t(t.fs.effect.label())).show_ui(ui, |ui| {
             for e in SoundEffect::PRESETS {
-                if ui.selectable_label(t.fs.effect == e, e.label()).on_hover_text(e.hint()).clicked() && t.fs.effect != e {
+                if ui.selectable_label(t.fs.effect == e, crate::i18n::t(e.label())).on_hover_text(crate::i18n::t(e.hint())).clicked() && t.fs.effect != e {
                     app.run("sound.set", json!({"layer": ed.layer.0, "frame": ed.frame, "effect": e.key()}));
                     ed.selected = None;
                 }
             }
             let custom = matches!(t.fs.effect, SoundEffect::Custom(_));
-            if ui.selectable_label(custom, "Custom").on_hover_text(SoundEffect::Custom(Vec::new()).hint()).clicked() && !custom {
+            if ui.selectable_label(custom, tr!("Custom")).on_hover_text(crate::i18n::t(SoundEffect::Custom(Vec::new()).hint())).clicked() && !custom {
                 app.run("sound.set", json!({"layer": ed.layer.0, "frame": ed.frame, "effect": "custom"}));
             }
         })
         .response
-        .set_name("Sound effect");
+        .set_name(tr!("Sound effect"));
         ui.add_space(8.0);
-        if crate::timeline::icon_button(ui, "Play the sound with this envelope", None, Icon::Play).clicked() {
+        if crate::timeline::icon_button(ui, tr!("Play the sound with this envelope"), None, Icon::Play).clicked() {
             preview(app, t);
         }
-        if ui.small_button("Stop").on_hover_text("Stop the preview").clicked() {
+        if ui.small_button(tr!("Stop")).on_hover_text(tr!("Stop the preview")).clicked() {
             app.sound.stop();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.selectable_label(ed.frames, "Frames").on_hover_text("Read times in frames").clicked() {
+            if ui.selectable_label(ed.frames, tr!("Frames")).on_hover_text(tr!("Read times in frames")).clicked() {
                 ed.frames = true;
             }
-            if ui.selectable_label(!ed.frames, "Seconds").on_hover_text("Read times in seconds").clicked() {
+            if ui.selectable_label(!ed.frames, tr!("Seconds")).on_hover_text(tr!("Read times in seconds")).clicked() {
                 ed.frames = false;
             }
             ui.add_space(8.0);
             let total = total_seconds(t, &pts);
             let shown = ed.window.unwrap_or(total);
-            if ui.small_button("Fit").on_hover_text("Show the whole sound").named("Zoom to fit").clicked() {
+            if ui.small_button(tr!("Fit")).on_hover_text(tr!("Show the whole sound")).named(tr!("Zoom to fit")).clicked() {
                 ed.window = None;
                 ed.from = 0.0;
             }
-            if ui.small_button("+").on_hover_text("Zoom in").named("Zoom in").clicked() {
+            if ui.small_button("+").on_hover_text(tr!("Zoom in")).named(tr!("Zoom in")).clicked() {
                 ed.window = Some((shown * 0.5).max(1.0 / f64::from(fps) / 4.0));
             }
-            if ui.small_button("−").on_hover_text("Zoom out").named("Zoom out").clicked() {
+            if ui.small_button("−").on_hover_text(tr!("Zoom out")).named(tr!("Zoom out")).clicked() {
                 let w = shown * 2.0;
                 ed.window = if w >= total { None } else { Some(w) };
             }
@@ -201,9 +201,9 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
     let p = ui.painter_at(area);
     let mut changed: Option<(&str, bool)> = None;
     for (c, lane) in lanes.iter().enumerate() {
-        let name = if c == 0 { "Left channel" } else { "Right channel" };
+        let name = if c == 0 { tr!("Left channel") } else { tr!("Right channel") };
         let bg = ui.interact(*lane, ui.id().with(("env_lane", c)), Sense::click());
-        crate::a11y::surface(ui, &bg, &format!("{name}: click to add a volume point"));
+        crate::a11y::surface(ui, &bg, &tr!("{channel}: click to add a volume point", channel = name));
         p.rect_filled(*lane, crate::theme::SQUARE, T.field);
         p.line_segment([pos2(lane.left(), lane.center().y), pos2(lane.right(), lane.center().y)], Stroke::new(1.0, T.separator));
         if let Some(pk) = &peaks
@@ -211,7 +211,7 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
         {
             draw_wave(&p, *lane, pk, &t.sound, t, from, window);
         }
-        p.text(lane.left_top() + vec2(6.0, 4.0), Align2::LEFT_TOP, if c == 0 { "L" } else { "R" }, font(Type::Label), T.text_dim);
+        p.text(lane.left_top() + vec2(6.0, 4.0), Align2::LEFT_TOP, if c == 0 { trc!("left channel", "L") } else { trc!("right channel", "R") }, font(Type::Label), T.text_dim);
         // The envelope: its level before the first point and after the last, lines between.
         let level = |q: &EnvelopePoint| if c == 0 { q.left } else { q.right };
         let mut line: Vec<egui::Pos2> = Vec::new();
@@ -235,7 +235,7 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
             pts.push(EnvelopePoint::new(when, l, r));
             pts = clean_points(&pts);
             ed.selected = pts.iter().position(|q| q.at == when);
-            changed = Some(("Add Envelope Point", false));
+            changed = Some((tr_noop!("Add Envelope Point"), false));
         }
         // The points' handles: drag to move, right-click to delete.
         let mut remove = None;
@@ -248,12 +248,12 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
             let hit = Rect::from_center_size(centre, vec2(2.0 * REACH, 2.0 * REACH));
             let r = ui.interact(hit, ui.id().with(("env_point", c, i)), Sense::click_and_drag());
             let secs = time_label(q.at, ed.frames, fps);
-            crate::a11y::control(ui, &r, WidgetType::Slider, &format!("Point {} of {}, {name}: {:.0} % at {secs}", i + 1, pts.len(), level(&q) * 100.0), None);
+            crate::a11y::control(ui, &r, WidgetType::Slider, &tr!("Point {index} of {count}, {channel}: {level} % at {time}", index = i + 1, count = pts.len(), channel = name, level = format!("{:.0}", level(&q) * 100.0), time = secs), None);
             let hot = r.hovered() || r.dragged() || ed.selected == Some(i);
             let h = Rect::from_center_size(centre, vec2(2.0 * HANDLE, 2.0 * HANDLE));
             p.rect_filled(h, crate::theme::SQUARE, if hot { T.accent } else { T.panel });
             p.rect_stroke(h, crate::theme::SQUARE, Stroke::new(1.5, T.accent), egui::StrokeKind::Inside);
-            let r = r.on_hover_text(format!("{:.0} % at {secs} · drag to move, right-click to delete", level(&q) * 100.0));
+            let r = r.on_hover_text(tr!("{level} % at {time} · drag to move, right-click to delete", level = format!("{:.0}", level(&q) * 100.0), time = secs));
             if r.clicked() {
                 ed.selected = Some(i);
             }
@@ -269,7 +269,7 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
                     if c == 0 { q.left = v } else { q.right = v }
                 }
                 ed.selected = Some(i);
-                changed = Some(("Move Envelope Point", true));
+                changed = Some((tr_noop!("Move Envelope Point"), true));
             }
             if r.secondary_clicked() && pts.len() > 1 {
                 remove = Some(i);
@@ -278,7 +278,7 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
         if let Some(i) = remove {
             pts.remove(i);
             ed.selected = None;
-            changed = Some(("Delete Envelope Point", false));
+            changed = Some((tr_noop!("Delete Envelope Point"), false));
         }
     }
     // The ruler: times under the lanes' x positions.
@@ -295,22 +295,22 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
         let sel = ed.selected.filter(|&i| i < pts.len());
         match sel.and_then(|i| pts.get(i).copied().map(|q| (i, q))) {
             Some((i, mut q)) => {
-                ui.label(text(Type::Label, format!("Point {} of {}", i + 1, pts.len())));
+                ui.label(text(Type::Label, tr!("Point {index} of {count}", index = i + 1, count = pts.len())));
                 let lo = i.checked_sub(1).and_then(|j| pts.get(j)).map_or(0.0, |n| n.at);
                 let hi = pts.get(i + 1).map_or(MAX_ENVELOPE_SECONDS, |n| n.at);
                 let mut edit = false;
                 with_type(ui, Type::Data, |ui| {
                     if ed.frames {
                         let mut f = q.at * f64::from(fps);
-                        edit |= ui.add(egui::DragValue::new(&mut f).range(lo * f64::from(fps)..=hi * f64::from(fps)).speed(0.1).max_decimals(1).suffix(" f")).named("Point time").changed();
+                        edit |= ui.add(egui::DragValue::new(&mut f).range(lo * f64::from(fps)..=hi * f64::from(fps)).speed(0.1).max_decimals(1).suffix(" f")).named(tr!("Point time")).changed();
                         q.at = f / f64::from(fps);
                     } else {
-                        edit |= ui.add(egui::DragValue::new(&mut q.at).range(lo..=hi).speed(0.005).max_decimals(3).suffix(" s")).named("Point time").changed();
+                        edit |= ui.add(egui::DragValue::new(&mut q.at).range(lo..=hi).speed(0.005).max_decimals(3).suffix(" s")).named(tr!("Point time")).changed();
                     }
-                    for (name, v) in [("Left", &mut q.left), ("Right", &mut q.right)] {
-                        ui.label(text(Type::Label, name));
+                    for (left, v) in [(true, &mut q.left), (false, &mut q.right)] {
+                        ui.label(text(Type::Label, if left { tr!("Left") } else { tr!("Right") }));
                         let mut pct = f64::from(*v) * 100.0;
-                        if ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(0.5).max_decimals(0).suffix(" %")).named(&format!("{name} channel volume")).changed() {
+                        if ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(0.5).max_decimals(0).suffix(" %")).named(if left { tr!("Left channel volume") } else { tr!("Right channel volume") }).changed() {
                             *v = (pct / 100.0) as f32;
                             edit = true;
                         }
@@ -318,21 +318,21 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
                 });
                 if edit && let Some(slot) = pts.get_mut(i) {
                     *slot = q;
-                    changed = Some(("Envelope Point", true));
+                    changed = Some((tr_noop!("Envelope Point"), true));
                 }
-                if ui.add_enabled(pts.len() > 1, egui::Button::new("Delete Point")).on_hover_text("A sound keeps at least one point").clicked() {
+                if ui.add_enabled(pts.len() > 1, egui::Button::new(tr!("Delete Point"))).on_hover_text(tr!("A sound keeps at least one point")).clicked() {
                     pts.remove(i);
                     ed.selected = None;
-                    changed = Some(("Delete Envelope Point", false));
+                    changed = Some((tr_noop!("Delete Envelope Point"), false));
                 }
             }
             None => {
-                ui.label(text(Type::Caption, format!("Click a channel to add a point (up to {MAX_ENVELOPE_POINTS}), drag a point to shape the volume, right-click it to delete it. {} points.", pts.len())));
+                ui.label(text(Type::Caption, trn!("Click a channel to add a point (up to {max}), drag a point to shape the volume, right-click it to delete it. {n} point.", "Click a channel to add a point (up to {max}), drag a point to shape the volume, right-click it to delete it. {n} points.", pts.len(), max = MAX_ENVELOPE_POINTS)));
             }
         }
     });
-    let span = if ed.frames { format!("{} frames", (t.heard * f64::from(fps)).round()) } else { format!("{:.2} s", t.heard) };
-    ui.label(text(Type::Caption, format!("Heard for {span} ({}). Presets are shaped over this time; editing one makes it Custom.", heard_reason(&t.fs, t.span, t.rest))));
+    let span = if ed.frames { let n = (t.heard * f64::from(fps)).round().max(0.0) as u64; trn!("{n} frame", "{n} frames", n) } else { format!("{:.2} s", t.heard) };
+    ui.label(text(Type::Caption, tr!("Heard for {time} ({why}). Presets are shaped over this time; editing one makes it Custom.", time = span, why = heard_reason(&t.fs, t.span, t.rest))));
     if let Some((label, live)) = changed {
         set_points(app, ed, label, &pts, live);
     }
@@ -342,11 +342,11 @@ fn body(app: &mut App, ed: &mut EnvelopeEditor, ui: &mut egui::Ui, t: &Target) {
 fn heard_reason(fs: &FrameSound, span: u32, rest: u32) -> String {
     use anicraft_engine::doc::SoundSync;
     match (fs.sync, fs.looping) {
-        (SoundSync::Stream, true) => format!("a stream looping over its {span}-frame span"),
-        (SoundSync::Stream, false) => format!("a stream, within its {span}-frame span"),
-        (_, true) => format!("looping to the end of the movie, {rest} frames on"),
-        (_, false) if fs.repeat > 1 => format!("played {} times", fs.repeat),
-        _ => "played once".to_string(),
+        (SoundSync::Stream, true) => trn!("a stream looping over its {n}-frame span", "a stream looping over its {n}-frame span", span),
+        (SoundSync::Stream, false) => trn!("a stream, within its {n}-frame span", "a stream, within its {n}-frame span", span),
+        (_, true) => trn!("looping to the end of the movie, {n} frame on", "looping to the end of the movie, {n} frames on", rest),
+        (_, false) if fs.repeat > 1 => trn!("played {n} time", "played {n} times", fs.repeat),
+        _ => tr!("played once").to_string(),
     }
 }
 
@@ -357,7 +357,7 @@ fn total_seconds(t: &Target, pts: &[EnvelopePoint]) -> f64 {
 }
 
 fn time_label(at: f64, frames: bool, fps: f32) -> String {
-    if frames { format!("frame {:.1}", at * f64::from(fps) + 1.0) } else { format!("{at:.3} s") }
+    if frames { tr!("frame {number}", number = format!("{:.1}", at * f64::from(fps) + 1.0)) } else { format!("{at:.3} s") }
 }
 
 /// The sound's channels summarised apart (once per sound; a mono sound is one channel twice).
@@ -441,7 +441,7 @@ fn preview(app: &mut App, t: &Target) {
     v.envelope = t.fs.effect.envelope(heard, rate);
     app.sound.preview_voice(v);
     if let Some(e) = app.sound.error.take() {
-        app.status_err(format!("No sound: {e}"));
+        app.status_err(tr!("No sound: {error}", error = crate::i18n::t_dyn(&e)));
     }
 }
 

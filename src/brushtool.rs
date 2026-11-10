@@ -68,11 +68,11 @@ pub fn resize(app: &mut App, larger: bool) {
     match app.tool {
         Tool::Brush => {
             app.brush.size = step_size(app.brush.size, larger);
-            app.status_ok(format!("Brush size {} px", app.brush.size));
+            app.status_ok(tr!("Brush size {size} px", size = app.brush.size));
         }
         Tool::Eraser => {
             app.eraser.size = step_size(app.eraser.size, larger);
-            app.status_ok(format!("Eraser size {} px", app.eraser.size));
+            app.status_ok(tr!("Eraser size {size} px", size = app.eraser.size));
         }
         _ => {}
     }
@@ -133,7 +133,7 @@ pub fn commit(app: &mut App, xf: Xf) {
     if let Some(v) = app.run("draw.brush", params)
         && v["elements"].as_array().is_some_and(Vec::is_empty)
     {
-        app.status_ok("Nothing to paint behind there: Paint Behind only paints empty areas.");
+        app.status_ok(tr!("Nothing to paint behind there: Paint Behind only paints empty areas."));
     }
 }
 

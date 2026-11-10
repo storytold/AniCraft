@@ -215,8 +215,8 @@ pub enum Palette {
 
 impl Palette {
     pub const ALL: [(Palette, &'static str, &'static str); 2] = [
-        (Palette::Graphite, "Graphite", "The standard dark look: graphite panels, colour where it means something."),
-        (Palette::HighContrast, "High contrast", "White text on black, a yellow focus and selection colour, outlined controls."),
+        (Palette::Graphite, tr_noop!("Graphite"), tr_noop!("The standard dark look: graphite panels, colour where it means something.")),
+        (Palette::HighContrast, tr_noop!("High contrast"), tr_noop!("White text on black, a yellow focus and selection colour, outlined controls.")),
     ];
 
     pub fn tokens(self) -> &'static Tokens {
@@ -360,13 +360,13 @@ pub fn embedded_fonts() -> Vec<std::sync::Arc<[u8]>> {
     [craft_fonts::UI_FONT, craft_fonts::MONO_FONT].into_iter().flatten().map(std::sync::Arc::from).collect()
 }
 
-/// Which typefaces are active (for About and diagnostics).
+/// Which typefaces are active (for About and diagnostics), in the interface language.
 pub fn font_summary() -> String {
     match (craft_fonts::UI_FONT, craft_fonts::MONO_FONT) {
-        (Some(_), Some(_)) => format!("Inter + JetBrains Mono (craft-fonts, {} KB)", craft_fonts::CRAFT_FONT_BYTES / 1024),
-        (Some(_), None) => "Inter + Hack (fallback)".into(),
-        (None, Some(_)) => "Ubuntu (fallback) + JetBrains Mono".into(),
-        (None, None) => "Ubuntu + Hack (built-in defaults; build with CRAFT_FONTS_DIR for Inter + JetBrains Mono)".into(),
+        (Some(_), Some(_)) => tr!("Inter + JetBrains Mono (craft-fonts, {size} KB)", size = craft_fonts::CRAFT_FONT_BYTES / 1024),
+        (Some(_), None) => tr!("Inter + Hack (fallback)").into(),
+        (None, Some(_)) => tr!("Ubuntu (fallback) + JetBrains Mono").into(),
+        (None, None) => tr!("Ubuntu + Hack (built-in defaults; build with CRAFT_FONTS_DIR for Inter + JetBrains Mono)").into(),
     }
 }
 
@@ -400,6 +400,7 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&UserFont>, data_font:
 
 /// Names of the bundled typefaces actually embedded in this build.
 pub fn bundled_names() -> (&'static str, &'static str) {
+    // i18n-exempt: font family names
     (if craft_fonts::UI_FONT.is_some() { "Inter" } else { "Ubuntu" }, if craft_fonts::MONO_FONT.is_some() { "JetBrains Mono" } else { "Hack" })
 }
 

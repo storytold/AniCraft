@@ -29,9 +29,9 @@ pub enum RenderMode {
 
 impl RenderMode {
     pub const ALL: [(RenderMode, &'static str, &'static str); 3] = [
-        (RenderMode::Auto, "Auto", "Edits show immediately; heavy scenes render in the background with an outline preview."),
-        (RenderMode::Immediate, "Immediate", "Every edit renders before the next frame. Lowest latency; can stutter on very heavy scenes."),
-        (RenderMode::Background, "Background", "Always render off the UI thread. The window never waits; the picture can trail by a frame."),
+        (RenderMode::Auto, tr_noop!("Auto"), tr_noop!("Edits show immediately; heavy scenes render in the background with an outline preview.")),
+        (RenderMode::Immediate, tr_noop!("Immediate"), tr_noop!("Every edit renders before the next frame. Lowest latency; can stutter on very heavy scenes.")),
+        (RenderMode::Background, tr_noop!("Background"), tr_noop!("Always render off the UI thread. The window never waits; the picture can trail by a frame.")),
     ];
 }
 
@@ -49,14 +49,18 @@ pub enum StageRenderer {
 
 impl StageRenderer {
     pub const ALL: [(StageRenderer, &'static str, &'static str); 2] = [
-        (StageRenderer::Gpu, "Graphics card (GPU)", "Draws the stage on the graphics card, and on the CPU when there is no card that can. The picture is the same either way."),
-        (StageRenderer::Cpu, "CPU (reference)", "The reference renderer: slower on large stages. Exports always use it."),
+        (StageRenderer::Gpu, tr_noop!("Graphics card (GPU)"), tr_noop!("Draws the stage on the graphics card, and on the CPU when there is no card that can. The picture is the same either way.")),
+        (StageRenderer::Cpu, tr_noop!("CPU (reference)"), tr_noop!("The reference renderer: slower on large stages. Exports always use it.")),
     ];
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    /// The interface language (ADR 0040): a craft-i18n locale code (`de`, `pt-br`), or
+    /// `auto` to follow the system's. A code this build has no catalog for follows the system
+    /// too, and is kept, so a newer build that has it shows it again.
+    pub language: String,
     pub ui_font: FontChoice,
     pub data_font: FontChoice,
     /// Graphite or high contrast (ADR 0022).
@@ -89,6 +93,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
+            language: crate::i18n::AUTO.to_string(),
             ui_font: FontChoice::Bundled,
             data_font: FontChoice::Bundled,
             theme: crate::theme::Palette::Graphite,
@@ -106,7 +111,7 @@ impl Default for Prefs {
 }
 
 /// Autosave intervals offered in Preferences: `(seconds, label)`.
-pub const AUTOSAVE_INTERVALS: [(u32, &str); 5] = [(30, "30 seconds"), (60, "1 minute"), (120, "2 minutes"), (300, "5 minutes"), (600, "10 minutes")];
+pub const AUTOSAVE_INTERVALS: [(u32, &str); 5] = [(30, tr_noop!("30 seconds")), (60, tr_noop!("1 minute")), (120, tr_noop!("2 minutes")), (300, tr_noop!("5 minutes")), (600, tr_noop!("10 minutes"))];
 pub const AUTOSAVE_SECS_RANGE: std::ops::RangeInclusive<u32> = 15..=600;
 pub const AUTOSAVE_EDITS_RANGE: std::ops::RangeInclusive<u32> = 0..=1000;
 
@@ -124,6 +129,9 @@ impl Prefs {
                 *f = FontChoice::Bundled;
             }
         }
+        // A locale code is short ASCII (`sr-latn`, `zh-hant`); anything else follows the system.
+        let lang = self.language.trim().to_ascii_lowercase();
+        self.language = if lang.is_empty() || lang.len() > 35 || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { crate::i18n::AUTO.to_string() } else { lang };
         self.shortcuts = crate::keymap::sanitize(std::mem::take(&mut self.shortcuts));
         self.autosave_secs = self.autosave_secs.clamp(*AUTOSAVE_SECS_RANGE.start(), *AUTOSAVE_SECS_RANGE.end());
         self.autosave_edits = self.autosave_edits.min(*AUTOSAVE_EDITS_RANGE.end());
@@ -209,6 +217,11 @@ mod tests {
         assert_eq!(p.render_mode, RenderMode::Background);
         assert_eq!(p.data_font, FontChoice::System("Consolas".into()));
         assert!(p.native_dialogs, "missing fields keep their defaults");
+        assert_eq!(p.language, "auto", "older files follow the system's language");
+        assert_eq!(Prefs::from_json(r#"{"language": " DE "}"#).language, "de");
+        assert_eq!(Prefs::from_json(r#"{"language": "xx-new"}"#).language, "xx-new", "a code this build lacks is kept");
+        assert_eq!(Prefs::from_json(r#"{"language": "<script>"}"#).language, "auto");
+        assert_eq!(Prefs::from_json(&format!(r#"{{"language": "{}"}}"#, "a".repeat(100))).language, "auto");
         assert_eq!(p.stage_renderer, StageRenderer::Gpu, "the GPU draws the stage unless the CPU is chosen");
         assert_eq!(Prefs::from_json(r#"{"stage_renderer": "Cpu"}"#).stage_renderer, StageRenderer::Gpu, "the old default, written by every earlier build, is not a choice");
         assert_eq!(Prefs::from_json(r#"{"stage": "Cpu"}"#).stage_renderer, StageRenderer::Cpu);

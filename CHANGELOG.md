@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+* **Interface languages** (ADR 0040, first slice; `docs/localisation.md`). Every string the
+  window shows, and every name a screen reader announces, can now be translated.
+  * Preferences › Appearance › **Language**: *System language* by default, or any language
+    this build has, named in itself. A change shows at once. `--lang <code>` sets it for one
+    run.
+  * Translations come from the Craft family's shared **craft-i18n** catalogs, built in with
+    `CRAFT_I18N_DIR`; a missing one shows the English. craft-i18n has no AniCraft catalog yet,
+    so builds are English for now: `scripts/i18n-extract.sh` lists every string for
+    translators (and, with a craft-i18n checkout, how much each language already covers).
+  * A **pseudo-locale** (`--lang pseudo`) draws everything accented, longer and bracketed, to
+    find text that skipped translation or gets cut off.
+  * Messages that say how to undo show your Undo key as this computer writes it (⌘Z on a
+    Mac, and a rebound key wherever it is), instead of a fixed "Ctrl+Z".
+  * Menus, the command palette and the shortcut sheet translate the command registry's labels
+    as they are drawn; command ids, `.anicraft` files, `anicraft-cli` and MCP stay English.
+  * For developers: `tr!`, `trn!` (plurals by CLDR rules), `trc!` and `tr_noop!`; a test fails
+    on new interface text that skips them. Not yet: engine messages, right-to-left languages
+    (egui can't lay them out yet), Chinese, Japanese and Korean (need a font).
+
 * **Bone tool and inverse kinematics, first slice** (ADR 0043, M7). Join symbol instances into
   an armature and pose it:
   * With the **Bone tool** (M), drag from one symbol instance to another: a bone joins them and

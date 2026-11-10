@@ -72,7 +72,7 @@ impl Recovery {
                     r.scanning = Some(false);
                     (r, None)
                 }
-                Err(e) => (r, Some(format!("Autosave is off: {e}"))),
+                Err(e) => (r, Some(tr!("Autosave is off: {error}", error = e))),
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -80,7 +80,7 @@ impl Recovery {
             if shot_mode && !crate::platform::recovery_dir_overridden() {
                 return (r, None);
             }
-            let Some(dir) = crate::platform::recovery_dir() else { return (r, Some("Autosave is off: this system has no settings folder".into())) };
+            let Some(dir) = crate::platform::recovery_dir() else { return (r, Some(tr!("Autosave is off: this system has no settings folder").into())) };
             recovery::prune(&dir);
             r.found = recovery::scan(&dir, None);
             r.show = !r.found.is_empty();
@@ -89,7 +89,7 @@ impl Recovery {
                     r.saver = Some(s);
                     None
                 }
-                Err(e) => Some(format!("Autosave is off: {e}")),
+                Err(e) => Some(tr!("Autosave is off: {error}", error = e)),
             };
             r.dir = Some(dir);
             (r, err)
@@ -170,7 +170,7 @@ fn poll_scan(app: &mut App) {
     r.found = found;
     r.show = !r.found.is_empty();
     if asked && !r.show {
-        app.status_ok("No autosaved work to recover");
+        app.status_ok(tr!("No autosaved work to recover"));
     }
 }
 
@@ -194,15 +194,15 @@ fn restore(app: &mut App, id: String) {
     #[cfg(target_arch = "wasm32")]
     {
         let Some((json, meta)) = crate::web::load(&id) else {
-            app.status_err("That autosaved copy is gone");
+            app.status_err(tr!("That autosaved copy is gone"));
             app.recovery.discarded(&id);
             return;
         };
-        let name = meta.original.as_deref().and_then(std::path::Path::file_name).map_or_else(|| "Untitled.anicraft".to_string(), |n| n.to_string_lossy().into_owned());
+        let name = meta.original.as_deref().and_then(std::path::Path::file_name).map_or_else(|| "Untitled.anicraft".to_string(), |n| n.to_string_lossy().into_owned()); // i18n-exempt: a file name
         let path = std::path::Path::new(RESTORED_DIR).join(&id).join(&name);
         match anicraft_engine::vfs::put(&path, json.into_bytes()) {
             Ok(()) => app.request("file.open", json!({"path": path.display().to_string(), "unsaved": true, "untitled": meta.original.is_none()})),
-            Err(e) => app.status_err(format!("Could not restore {name}: {e}")),
+            Err(e) => app.status_err(tr!("Could not restore {name}: {error}", name = name, error = e)),
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -218,7 +218,7 @@ fn discard(app: &mut App, id: String) {
     {
         crate::web::discard(&id);
         app.recovery.discarded(&id);
-        app.status_ok("Discarded the autosaved copy");
+        app.status_ok(tr!("Discarded the autosaved copy"));
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -244,7 +244,7 @@ pub fn tick(app: &mut App, ctx: &egui::Context) {
             }
             Outcome::Failed { error, .. } => {
                 if !app.recovery.failed {
-                    app.status_err(format!("Autosave failed: {error}. Save your work to be safe; AniCraft will keep trying."));
+                    app.status_err(tr!("Autosave failed: {error}. Save your work to be safe; AniCraft will keep trying.", error = error));
                 }
                 app.recovery.failed = true;
                 app.recovery.written = None;
@@ -289,12 +289,12 @@ pub fn tick(app: &mut App, ctx: &egui::Context) {
 /// "just now", "4 min ago", "2 h ago", "3 days ago".
 pub fn ago(secs: u64) -> String {
     match secs {
-        0..60 => "just now".into(),
-        60..3600 => format!("{} min ago", secs / 60),
-        3600..86400 => format!("{} h ago", secs / 3600),
+        0..60 => tr!("just now").into(),
+        60..3600 => trn!("{n} min ago", "{n} min ago", secs / 60),
+        3600..86400 => trn!("{n} h ago", "{n} h ago", secs / 3600),
         _ => {
             let d = secs / 86400;
-            if d == 1 { "yesterday".into() } else { format!("{d} days ago") }
+            if d == 1 { tr!("yesterday").into() } else { trn!("{n} day ago", "{n} days ago", d) }
         }
     }
 }
@@ -305,7 +305,7 @@ pub fn status(app: &App, now: f64) -> Option<String> {
         return None;
     }
     let at = app.recovery.last_copy_at?;
-    Some(format!("autosaved {}", ago((now - at).max(0.0) as u64)))
+    Some(tr!("autosaved {when}", when = ago((now - at).max(0.0) as u64)))
 }
 
 /// Two made-up left-behind documents, for `--open recovery` screenshots.
@@ -318,6 +318,7 @@ pub fn sample_entries() -> Vec<Entry> {
         bytes: 0,
     };
     let walk = if crate::platform::OS == crate::platform::Os::Windows { "C:\\Users\\you\\Documents\\walk-cycle.anicraft" } else { "/home/you/Documents/walk-cycle.anicraft" };
+    // i18n-exempt: document names, as the engine records them
     vec![entry("sample-1", "walk-cycle.anicraft", Some(walk), 240, 48, 2), entry("sample-2", "Untitled", None, 3 * 3600, 120, 1)]
 }
 
@@ -342,7 +343,9 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     let n = app.recovery.found.len();
     let confirm = app.recovery.confirm_discard.clone();
     let btn = egui::vec2(96.0, crate::theme::TARGET + 4.0);
-    let shown = egui::Window::new("Recover unsaved work")
+    let title = tr!("Recover unsaved work");
+    let shown = egui::Window::new(title)
+        .id(egui::Id::new("recover_window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -351,11 +354,11 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         .default_width(520.0)
         .show(ctx, |ui| {
             ui.set_width(520.0);
-            let lead = if n == 1 {
-                "AniCraft didn't close properly last time. This document had changes that weren't saved:"
-            } else {
-                "AniCraft didn't close properly last time. These documents had changes that weren't saved:"
-            };
+            let lead = trn!(
+                "AniCraft didn't close properly last time. This document had changes that weren't saved:",
+                "AniCraft didn't close properly last time. These documents had changes that weren't saved:",
+                n
+            );
             ui.label(text(Type::Body, lead).color(T.text_dim));
             ui.add_space(8.0);
             for e in &app.recovery.found {
@@ -364,55 +367,60 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(text(Type::Body, e.meta.name.clone()).strong());
-                            let scenes = if e.meta.scenes > 1 { format!(" · {} scenes", e.meta.scenes) } else { String::new() };
-                            ui.label(text(Type::Caption, format!("Autosaved {} · {} frames{scenes}", ago(now.saturating_sub(e.meta.saved_at)), e.meta.frames)));
+                            let when = ago(now.saturating_sub(e.meta.saved_at));
+                            let detail = if e.meta.scenes > 1 {
+                                trn!("Autosaved {when} · {n} frame · {scenes} scenes", "Autosaved {when} · {n} frames · {scenes} scenes", e.meta.frames, when = when, scenes = e.meta.scenes)
+                            } else {
+                                trn!("Autosaved {when} · {n} frame", "Autosaved {when} · {n} frames", e.meta.frames, when = when)
+                            };
+                            ui.label(text(Type::Caption, detail));
                             match &e.meta.original {
                                 Some(o) => {
                                     ui.label(text(Type::Path, o.display().to_string()).color(T.text_faint));
                                 }
                                 None => {
-                                    ui.label(text(Type::Caption, "Never saved"));
+                                    ui.label(text(Type::Caption, tr!("Never saved")));
                                 }
                             }
                             if e.original_is_newer() {
-                                ui.label(text(Type::Caption, "The file was saved after this copy, so it opens as a new document and Save asks for a name.").color(T.error));
+                                ui.label(text(Type::Caption, tr!("The file was saved after this copy, so it opens as a new document and Save asks for a name.")).color(T.error));
                             }
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if confirm.as_deref() == Some(e.session.as_str()) {
-                                let discard = egui::Button::new(text(Type::Body, "Discard").color(T.on_fill).strong()).fill(T.danger).min_size(btn);
+                                let discard = egui::Button::new(text(Type::Body, tr!("Discard")).color(T.on_fill).strong()).fill(T.danger).min_size(btn);
                                 if ui.add(discard).clicked() {
                                     act = Some(Act::Discard(e.session.clone()));
                                 }
-                                if ui.add(egui::Button::new("Keep").min_size(btn)).clicked() {
+                                if ui.add(egui::Button::new(tr!("Keep")).min_size(btn)).clicked() {
                                     act = Some(Act::KeepIt);
                                 }
                             } else {
-                                let restore = egui::Button::new(text(Type::Body, "Restore").color(T.on_fill).strong()).fill(T.accent).min_size(btn);
-                                if ui.add(restore).named(&format!("Restore {}", e.meta.name)).on_hover_text("Open it as unsaved work").clicked() {
+                                let restore = egui::Button::new(text(Type::Body, tr!("Restore")).color(T.on_fill).strong()).fill(T.accent).min_size(btn);
+                                if ui.add(restore).named(&tr!("Restore {name}", name = e.meta.name)).on_hover_text(tr!("Open it as unsaved work")).clicked() {
                                     act = Some(Act::Restore(e.session.clone()));
                                 }
-                                if ui.add(egui::Button::new("Discard…").min_size(btn)).named(&format!("Discard {}…", e.meta.name)).on_hover_text("Delete this autosaved copy").clicked() {
+                                if ui.add(egui::Button::new(tr!("Discard…")).min_size(btn)).named(&tr!("Discard {name}…", name = e.meta.name)).on_hover_text(tr!("Delete this autosaved copy")).clicked() {
                                     act = Some(Act::AskDiscard(e.session.clone()));
                                 }
                             }
                         });
                     });
                     if confirm.as_deref() == Some(e.session.as_str()) {
-                        ui.label(text(Type::Caption, "Discarding deletes this work for good. This cannot be undone.").color(T.error));
+                        ui.label(text(Type::Caption, tr!("Discarding deletes this work for good. This cannot be undone.")).color(T.error));
                     }
                 });
                 ui.add_space(6.0);
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new("Later").min_size(btn)).clicked() {
+                if ui.add(egui::Button::new(tr!("Later")).min_size(btn)).clicked() {
                     act = Some(Act::Later);
                 }
-                ui.label(text(Type::Caption, "Later keeps them: File › Recover Autosaved Documents… brings this back."));
+                ui.label(text(Type::Caption, tr!("Later keeps them: File › Recover Autosaved Documents… brings this back.")));
             });
         });
-    crate::a11y::name_title_bar(&shown, "Recover unsaved work");
+    crate::a11y::name_title_bar(&shown, title);
     if !open {
         act = Some(Act::Later);
     }
@@ -428,7 +436,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         Some(Act::Later) => {
             app.recovery.show = false;
             app.recovery.confirm_discard = None;
-            app.status_ok("Kept the autosaved work. File › Recover Autosaved Documents… brings it back.");
+            app.status_ok(tr!("Kept the autosaved work. File › Recover Autosaved Documents… brings it back."));
         }
         None => {}
     }

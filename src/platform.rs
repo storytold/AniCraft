@@ -31,19 +31,27 @@ pub const OS: Os = if cfg!(target_os = "macos") {
 };
 
 impl Os {
+    /// The platform's name in the interface language (Preferences shows it).
     pub fn name(self) -> &'static str {
         match self {
-            Os::Mac => "macOS",
-            Os::Windows => "Windows",
-            Os::Linux => "Linux / BSD",
-            Os::Web => "web browser",
-            Os::Other => "other",
+            Os::Mac => tr!("macOS"),
+            Os::Windows => tr!("Windows"),
+            Os::Linux => tr!("Linux / BSD"),
+            Os::Web => tr!("web browser"),
+            Os::Other => tr!("other"),
         }
     }
 }
 
 /// The web build runs in a browser (ADR 0036).
 pub const WEB: bool = cfg!(target_arch = "wasm32");
+
+/// The language the system's interface is in, as a BCP 47 tag (`de-DE`, `pt-BR`): Windows'
+/// user locale, macOS' preferred languages, `LC_ALL` / `LC_MESSAGES` / `LANG` on Linux and the
+/// BSDs, the browser's languages on the web (ADR 0040). `None` when it can't be told.
+pub fn system_locale() -> Option<String> {
+    sys_locale::get_locale().filter(|l| !l.is_empty() && l.len() <= 64)
+}
 
 /// Whether the active fonts can draw ⌘ ⇧ ⌥ ⌃ (set once fonts are installed).
 static MAC_GLYPHS: AtomicBool = AtomicBool::new(false);
@@ -108,7 +116,7 @@ pub fn config_dir() -> Option<PathBuf> {
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     match OS {
         Os::Windows => env("APPDATA").map(|p| p.join("AniCraft")),
-        Os::Mac => env("HOME").map(|p| p.join("Library").join("Application Support").join("AniCraft")),
+        Os::Mac => env("HOME").map(|p| p.join("Library").join("Application Support").join("AniCraft")), // i18n-exempt: folder names
         // A web page has no folders: settings go to browser storage (`load_settings`).
         Os::Web => None,
         Os::Linux | Os::Other => env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config"))).map(|p| p.join("anicraft")),
@@ -120,7 +128,7 @@ pub fn config_dir() -> Option<PathBuf> {
 pub fn recovery_dir() -> Option<PathBuf> {
     match std::env::var_os("ANICRAFT_RECOVERY_DIR").filter(|v| !v.is_empty()) {
         Some(d) => Some(PathBuf::from(d)),
-        None => config_dir().map(|d| d.join("Recovery")),
+        None => config_dir().map(|d| d.join("Recovery")), // i18n-exempt: a folder name
     }
 }
 
@@ -129,12 +137,12 @@ pub fn recovery_dir_overridden() -> bool {
     std::env::var_os("ANICRAFT_RECOVERY_DIR").is_some_and(|v| !v.is_empty())
 }
 
-/// Where settings are kept, for Preferences.
+/// Where settings are kept, for Preferences (in the interface language).
 pub fn settings_place() -> String {
     if WEB {
-        return "this browser's storage for this site".into();
+        return tr!("this browser's storage for this site").into();
     }
-    config_dir().map_or_else(|| "memory only".to_string(), |d| d.display().to_string())
+    config_dir().map_or_else(|| tr!("memory only").to_string(), |d| d.display().to_string())
 }
 
 /// The saved preferences (JSON): `prefs.json` in the settings folder, or browser storage.
@@ -151,7 +159,7 @@ pub fn save_settings(json: &str) -> Result<(), String> {
     return crate::web::storage_set(crate::web::PREFS_KEY, json);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let dir = config_dir().ok_or("no settings folder on this system")?;
+        let dir = config_dir().ok_or(tr!("no settings folder on this system"))?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let (path, tmp) = (dir.join("prefs.json"), dir.join("prefs.json.tmp"));
         std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
@@ -166,8 +174,8 @@ pub fn unavailable(cmd: &str) -> Option<&'static str> {
         return None;
     }
     match cmd {
-        "file.export_video" => Some("Video export runs ffmpeg, which a web browser can't start: use the desktop app, or export an animated GIF or a PNG sequence"),
-        "plugin.install" | "plugin.remove" | "plugin.reload" => Some("Plug-ins are installed into a folder on your computer: use the desktop app"),
+        "file.export_video" => Some(tr_noop!("Video export runs ffmpeg, which a web browser can't start: use the desktop app, or export an animated GIF or a PNG sequence")),
+        "plugin.install" | "plugin.remove" | "plugin.reload" => Some(tr_noop!("Plug-ins are installed into a folder on your computer: use the desktop app")),
         _ => None,
     }
 }
@@ -223,23 +231,24 @@ pub fn forced_renderer(arg: Option<&str>) -> Option<eframe::Renderer> {
 
 // ----- native file dialogs ----------------------------------------------------------------------
 
-/// File type filters per command.
+/// File type filters per command: the filter's name (English, translated where it is shown)
+/// and its extensions.
 pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
     match cmd {
-        "file.export_png" => ("PNG image", &["png"]),
-        "file.export_gif" => ("Animated GIF", &["gif"]),
-        "file.export_svg" => ("SVG image", &["svg"]),
-        "file.export_lottie" => ("Lottie animation", &["json"]),
-        "file.export_html" => ("Web page", &["html", "htm"]),
-        "file.import" => ("Drawing, image or sound", &["svg", "png", "jpg", "jpeg", "wav", "ogg", "mp3"]),
-        "file.import_to_library" => ("Sound or image", &["wav", "ogg", "mp3", "png", "jpg", "jpeg"]),
-        "file.export_audio" => ("WAV sound", &["wav"]),
-        "file.export_sprite_sheet" => ("PNG sprite sheet", &["png"]),
-        "file.export_video" => ("Video (WebM or MP4)", &["webm", "mp4"]),
+        "file.export_png" => (tr_noop!("PNG image"), &["png"]),
+        "file.export_gif" => (tr_noop!("Animated GIF"), &["gif"]),
+        "file.export_svg" => (tr_noop!("SVG image"), &["svg"]),
+        "file.export_lottie" => (tr_noop!("Lottie animation"), &["json"]),
+        "file.export_html" => (tr_noop!("Web page"), &["html", "htm"]),
+        "file.import" => (tr_noop!("Drawing, image or sound"), &["svg", "png", "jpg", "jpeg", "wav", "ogg", "mp3"]),
+        "file.import_to_library" => (tr_noop!("Sound or image"), &["wav", "ogg", "mp3", "png", "jpg", "jpeg"]),
+        "file.export_audio" => (tr_noop!("WAV sound"), &["wav"]),
+        "file.export_sprite_sheet" => (tr_noop!("PNG sprite sheet"), &["png"]),
+        "file.export_video" => (tr_noop!("Video (WebM or MP4)"), &["webm", "mp4"]),
         // Opening also imports .fla archives and .xfl packages.
-        "file.open" => ("Documents", &["anicraft", "fla", "xfl"]),
-        "plugin.install" => ("WebAssembly plug-in", &["wasm"]),
-        _ => ("AniCraft document", &["anicraft"]),
+        "file.open" => (tr_noop!("Documents"), &["anicraft", "fla", "xfl"]),
+        "plugin.install" => (tr_noop!("WebAssembly plug-in"), &["wasm"]),
+        _ => (tr_noop!("AniCraft document"), &["anicraft"]),
     }
 }
 
@@ -248,12 +257,12 @@ pub fn reads_file(cmd: &str) -> bool {
     matches!(cmd, "file.open" | "plugin.install" | "file.import" | "file.import_to_library")
 }
 
-/// Shows the platform's own dialog (Windows common dialog, macOS panel, Linux XDG portal).
-/// `None` when cancelled.
+/// Shows the platform's own dialog (Windows common dialog, macOS panel, Linux XDG portal), with
+/// `title` already in the interface language. `None` when cancelled.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf> {
     let (label, exts) = filters(cmd);
-    let d = rfd::FileDialog::new().set_title(title);
+    let (label, d) = (crate::i18n::t(label), rfd::FileDialog::new().set_title(title));
     match cmd {
         c if reads_file(c) => d.add_filter(label, exts).pick_file(),
         "file.export_png_sequence" => d.pick_folder(),
