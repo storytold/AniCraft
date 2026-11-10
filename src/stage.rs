@@ -905,12 +905,12 @@ const MAX_DOTS: usize = 60_000;
 fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
     const GAP: f32 = 3.0;
     let mut dot = |p: Pos2| {
-        if *budget == 0 || !clip.contains(p) {
-            return;
+        if clip.contains(p) && *budget > 0 {
+            *budget -= 1;
+            let dark = ((p.x / GAP).round() as i64 + (p.y / GAP).round() as i64).rem_euclid(2) == 0;
+            mesh.add_colored_rect(Rect::from_center_size(p, vec2(1.5, 1.5)), if dark { T.selection } else { Color32::WHITE });
         }
-        *budget -= 1;
-        let dark = ((p.x / GAP).round() as i64 + (p.y / GAP).round() as i64).rem_euclid(2) == 0;
-        mesh.add_colored_rect(Rect::from_center_size(p, vec2(1.5, 1.5)), if dark { T.selection } else { Color32::WHITE });
+        *budget > 0
     };
     let lines = item.path.flatten(m, 0.5);
     if item.fill.is_some() {
@@ -932,10 +932,12 @@ fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayIte
                 }
             }
             xs.sort_by(f32::total_cmp);
-            for w in xs.chunks_exact(2) {
-                let mut x = (w[0].max(clip.left()) / GAP).ceil() * GAP;
-                while x <= w[1].min(clip.right()) {
-                    dot(pos2(x, y));
+            for [x0, x1] in xs.as_chunks::<2>().0 {
+                let mut x = (x0.max(clip.left()) / GAP).ceil() * GAP;
+                while x <= x1.min(clip.right()) {
+                    if !dot(pos2(x, y)) {
+                        return;
+                    }
                     x += GAP;
                 }
             }
@@ -943,9 +945,10 @@ fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayIte
         }
     }
     if let Some(st) = &item.stroke {
-        // Along the stroke, in rows across its width.
+        // Along the stroke, in rows across its width; segments off the screen are skipped.
         let half = (st.reach() * m.mean_scale()).max(0.5);
         let rows = (half / GAP).floor() as i32;
+        let near = clip.expand(half + GAP);
         for pl in &lines {
             let n = pl.points.len();
             let segs = if pl.closed { n } else { n.saturating_sub(1) };
@@ -957,13 +960,19 @@ fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayIte
                 if len <= 1e-6 {
                     continue;
                 }
+                if !near.intersects(Rect::from_two_pos(pos2(a.x, a.y), pos2(c.x, c.y))) {
+                    carry = (carry - len).rem_euclid(GAP);
+                    continue;
+                }
                 let (dir, normal) = (d * (1.0 / len), d.perp() * (1.0 / len));
                 let mut t = carry;
                 while t < len {
                     let p = a + dir * t;
                     for k in -rows..=rows {
                         let q = p + normal * (k as f32 * GAP);
-                        dot(pos2(q.x, q.y));
+                        if !dot(pos2(q.x, q.y)) {
+                            return;
+                        }
                     }
                     t += GAP;
                 }

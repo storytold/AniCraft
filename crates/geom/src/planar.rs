@@ -918,10 +918,10 @@ fn interior_point(polys: &[&[P]]) -> Option<P> {
             }
         }
         xs.sort_by(f64::total_cmp);
-        for w in xs.chunks_exact(2) {
-            let width = w[1] - w[0];
+        for [x0, x1] in xs.as_chunks::<2>().0 {
+            let width = x1 - x0;
             if width > 1e-6 && best.is_none_or(|b| width > b.0) {
-                best = Some((width, P::new(0.5 * (w[0] + w[1]), y)));
+                best = Some((width, P::new(0.5 * (x0 + x1), y)));
             }
         }
     }

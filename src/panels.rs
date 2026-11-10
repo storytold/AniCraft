@@ -1273,7 +1273,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         let key = anicraft_engine::find_command("draw.object_drawing").and_then(|c| c.shortcut).map(crate::platform::shortcut_label).unwrap_or_default();
         row_prose(ui, "Drawing", |ui| {
             crate::theme::checkbox(ui, &mut st.object_drawing, "Object drawing")
-                .on_hover_text(format!("On: each shape is an object of its own. Off: shapes cut and merge with the shapes they touch, as in Animate ({key})"));
+                .on_hover_text(format!("On: each shape is an object of its own. Off: shapes cut and merge with the shapes they touch ({key})"));
         });
     }
     app.s.style = st;
