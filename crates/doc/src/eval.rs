@@ -183,7 +183,19 @@ pub fn evaluate_layer_elements(layer: &Layer, frame: u32) -> Option<(u32, Cow<'_
 /// [`evaluate_layer_elements`] with a motion guide: tweened elements travel along `guide` (in
 /// the layer's own space) from the point nearest their start to the point nearest their end,
 /// turning with it when the tween orients to the path.
+///
+/// On an armature layer (ADR 0043) the instances are then placed by the pose at the frame
+/// (tweened between pose keyframes): forward kinematics from the root's own transform.
 pub fn evaluate_guided<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
+    let (start, els) = evaluate_tweened(layer, frame, guide)?;
+    let Some(arm) = layer.armature.as_deref().filter(|a| layer.kind == crate::LayerKind::Armature && !a.is_empty()) else { return Some((start, els)) };
+    let pose = crate::armature::pose_at(layer, frame).unwrap_or_default();
+    let mut els = els.into_owned();
+    crate::armature::apply(arm, &mut els, &pose);
+    Some((start, Cow::Owned(els)))
+}
+
+fn evaluate_tweened<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf = layer.keyframes.get(idx)?;
     // A motion tween: its target follows the property curves (and its motion path, ADR 0030);
