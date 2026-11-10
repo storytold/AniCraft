@@ -70,11 +70,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
 /// The selected movie clip or button instance on the active layer, if exactly one is selected.
 fn selected_instance(app: &App) -> Option<(Element, SymbolKind)> {
-    let [id] = app.s.selection.as_slice() else { return None };
-    let e = app.s.visible_elements().into_iter().find(|e| e.id == *id)?;
+    let sel = app.s.selected_elements();
+    let [(_, e)] = sel.as_slice() else { return None };
     let ElementKind::Symbol { symbol, .. } = &e.kind else { return None };
     let kind = app.s.doc.symbol(*symbol)?.kind;
-    (kind != SymbolKind::Graphic).then(|| ((*e).clone(), kind))
+    (kind != SymbolKind::Graphic).then(|| ((**e).clone(), kind))
 }
 
 fn panel(app: &mut App, ui: &mut egui::Ui) {

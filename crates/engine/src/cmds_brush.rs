@@ -170,10 +170,11 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
             PaintMode::Behind => kf.elements.insert(0, Arc::new(el)),
             PaintMode::Normal | PaintMode::Fills => kf.elements.push(Arc::new(el)),
         }
-        s.selection = vec![id];
+        s.select_only([id]);
         return Ok(json!({"element": id.0, "elements": [id.0], "mode": mode.key(), "merged": false}));
     }
-    s.selection = merge::merge_in_order(s, vec![el], mode.order())?;
-    let ids: Vec<u64> = s.selection.iter().map(|e| e.0).collect();
+    let merged = merge::merge_in_order(s, vec![el], mode.order())?;
+    s.select_only(merged);
+    let ids: Vec<u64> = s.selection.id_list();
     Ok(json!({"element": ids.first(), "elements": ids, "mode": mode.key(), "merged": true}))
 }

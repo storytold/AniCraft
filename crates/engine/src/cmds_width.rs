@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{profile: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..], id? (default: the selected shapes)}",
             true,
-            set_profile as crate::RunFn,
+            (|s, p| s.each_layer(false, |s| set_profile(s, p))) as crate::RunFn,
         ),
         c(
             "stroke.set_width_point",
@@ -90,7 +90,7 @@ fn set_profile(s: &mut Session, p: &Value) -> Result<Value> {
     let profile = opt_profile(p, "profile")?.ok_or_else(|| EngineError::Param("param 'profile' is required".into()))?;
     let ids: Vec<ElementId> = match id_param(p)? {
         Some(id) => vec![id],
-        None => s.selection.clone(),
+        None => s.selection.on(s.layer),
     };
     if ids.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));

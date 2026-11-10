@@ -215,16 +215,16 @@ fn undoable_bulk_deletions_ask_but_are_not_blocked() {
 fn copy_paste_cut_and_paste_in_place() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 20, "h": 20}));
-    let orig = s.selection[0];
+    let orig = s.selection.ids().next().unwrap();
     run(&mut s, "edit.copy", json!({}));
     run(&mut s, "edit.paste", json!({}));
     let els = s.visible_elements();
     assert_eq!(els.len(), 2);
-    assert_ne!(s.selection[0], orig, "pasted elements get fresh ids");
-    let pasted = els.iter().find(|e| e.id == s.selection[0]).unwrap();
+    assert_ne!(s.selection.ids().next().unwrap(), orig, "pasted elements get fresh ids");
+    let pasted = els.iter().find(|e| e.id == s.selection.ids().next().unwrap()).unwrap();
     assert_eq!(pasted.transform.translation(), Vec2::new(30.0, 30.0));
     run(&mut s, "edit.paste_in_place", json!({}));
-    let last = s.visible_elements().into_iter().find(|e| e.id == s.selection[0]).unwrap();
+    let last = s.visible_elements().into_iter().find(|e| e.id == s.selection.ids().next().unwrap()).unwrap();
     assert_eq!(last.transform.translation(), Vec2::new(20.0, 20.0));
     // paste centred on a point
     run(&mut s, "edit.paste", json!({"x": 500, "y": 400}));
@@ -241,12 +241,17 @@ fn copy_paste_cut_and_paste_in_place() {
 fn clipboard_carries_symbols_into_another_document() {
     let mut s = Session::new(sample::demo());
     run(&mut s, "layer.select", json!({"index": 0}));
+    // Select All takes every unlocked layer's artwork (ADR 0044).
     run(&mut s, "edit.select_all", json!({}));
-    run(&mut s, "edit.copy", json!({}));
+    let copied = run(&mut s, "edit.copy", json!({}));
+    let used = s.doc.library.len();
     run(&mut s, "file.new", json!({"confirm": true}));
     assert!(s.doc.library.is_empty());
     run(&mut s, "edit.paste_in_place", json!({}));
-    assert_eq!(s.doc.library.len(), 1, "the Ball symbol came along");
+    assert!(s.doc.library.iter().any(|x| x.name == "Ball"), "the Ball symbol came along");
+    assert_eq!(s.doc.library.len(), used);
+    // Each copied layer lands on a layer of its own, made for it here.
+    assert_eq!(s.doc.timeline(0).layers.len() as u64, copied["layers"].as_u64().unwrap());
     assert!(!anicraft_doc::evaluate(&s.doc, 0).items.is_empty(), "and it renders");
     let ids: Vec<u64> = s.doc.library.iter().map(|x| x.id.0).collect();
     assert!(s.doc.next_id > *ids.iter().max().unwrap());
@@ -280,10 +285,10 @@ fn align_and_distribute() {
     }
     run(&mut s, "edit.select_all", json!({}));
     run(&mut s, "align.left", json!({}));
-    let lefts: Vec<f32> = s.selection.iter().map(|id| s.element_bounds(*id).min.x).collect();
+    let lefts: Vec<f32> = s.selection.ids().map(|id| s.element_bounds(id).min.x).collect();
     assert!(lefts.iter().all(|x| (x - 10.0).abs() < 1e-3), "{lefts:?}");
     run(&mut s, "align.distribute_v", json!({}));
-    let mut ys: Vec<f32> = s.selection.iter().map(|id| s.element_bounds(*id).center().y).collect();
+    let mut ys: Vec<f32> = s.selection.ids().map(|id| s.element_bounds(id).center().y).collect();
     ys.sort_by(f32::total_cmp);
     assert!(((ys[1] - ys[0]) - (ys[2] - ys[1])).abs() < 1e-3, "{ys:?}");
     // a single element aligns to the stage
@@ -481,13 +486,13 @@ fn commands_png(s: &Session) -> Vec<u8> {
 fn pick_selects_topmost() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
-    let a = s.selection[0];
+    let a = s.selection.ids().next().unwrap();
     run(&mut s, "draw.rect", json!({"x": 50, "y": 50, "w": 100, "h": 100}));
-    let b = s.selection[0];
+    let b = s.selection.ids().next().unwrap();
     run(&mut s, "element.pick", json!({"x": 75, "y": 75}));
-    assert_eq!(s.selection, vec![b]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![b]);
     run(&mut s, "element.pick", json!({"x": 10, "y": 10}));
-    assert_eq!(s.selection, vec![a]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![a]);
     run(&mut s, "element.pick", json!({"x": 500, "y": 500}));
     assert!(s.selection.is_empty());
 }
@@ -872,7 +877,7 @@ fn moving_an_anchor_brings_its_handles_and_is_one_undo_step_in_a_gesture() {
 fn moves_follow_the_element_transform() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
-    let id = s.selection[0].0;
+    let id = s.selection.ids().next().unwrap().0;
     run(&mut s, "element.set_transform", json!({"sx": 2, "rotation": 90}));
     let a0 = stage_anchor(&s, id, 0);
     run(&mut s, "path.move_points", json!({"id": id, "points": [[0, 0]], "dx": 10, "dy": 0}));
@@ -883,7 +888,7 @@ fn moves_follow_the_element_transform() {
 fn add_delete_and_convert_points() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
-    let id = s.selection[0].0;
+    let id = s.selection.ids().next().unwrap().0;
     let area = |s: &Session| shape_path(s, id).flatten(&anicraft_geom::Affine::IDENTITY, 0.1)[0].points.len();
     let n0 = shape_path(&s, id).editable_anchors().len();
     // The closing edge (left side, x = 0) can take a point too.
@@ -905,7 +910,7 @@ fn add_delete_and_convert_points() {
     assert!(s.execute("path.delete_points", &json!({"id": id, "cmds": [0]})).is_err());
     // Symbols are not point-editable.
     run(&mut s, "modify.convert_to_symbol", json!({}));
-    let inst = s.selection[0].0;
+    let inst = s.selection.ids().next().unwrap().0;
     assert!(s.execute("path.add_point", &json!({"id": inst, "x": 0, "y": 0})).is_err());
 }
 
@@ -1208,7 +1213,7 @@ fn opening_an_xfl_folder_imports_it_untitled() {
         let text = s.doc.timeline(s.scene).layers[0].keyframes[0].elements.iter().find(|e| matches!(e.kind, ElementKind::Text(_))).cloned().expect("a text element");
         assert_eq!(text.name, "title");
         assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0x0000ff))), "the text renders");
-        s.selection = vec![text.id];
+        s.select_only([text.id]);
         run(&mut s, "text.edit", json!({"text": "Hello again"}));
         // Saved and opened again, it is the same text.
         let file = dir.join("imported.anicraft");
@@ -1767,9 +1772,10 @@ fn images_import_as_bitmaps_render_save_and_export() {
     run(&mut s, "edit.select_all", json!({}));
     run(&mut s, "edit.duplicate", json!({}));
     let svg = crate::cmds_file::frame_svg(&s.doc, 0);
-    // Two images, three instances (the JPEG one was duplicated): each image is embedded once.
+    // Two images, four instances (Select All took both layers, ADR 0044): each image is
+    // embedded once.
     assert_eq!(svg.matches("data:image/png;base64,").count(), 2);
-    assert_eq!(svg.matches("<pattern ").count(), 3);
+    assert_eq!(svg.matches("<pattern ").count(), 4);
     // Undo takes an import back, bitmap and all.
     let n = s.doc.bitmaps.len();
     s.undo().unwrap();
@@ -1794,7 +1800,7 @@ fn library_bitmaps_place_centred_on_the_stage() {
     // Placing it again from the Library adds a second picture, centred, on the current layer.
     let v = run(&mut s, "library.place", json!({"bitmap": bitmap, "x": 100, "y": 50}));
     let id = anicraft_doc::ElementId(v["element"].as_u64().unwrap());
-    assert_eq!(s.selection, vec![id]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![id]);
     let el = s.active_layer().unwrap().keyframe_at(s.frame).unwrap().elements.iter().find(|e| e.id == id).unwrap().clone();
     assert_eq!(el.name, "dot.png");
     assert_eq!(el.transform.apply(anicraft_geom::Vec2::new(3.0, 2.0)), anicraft_geom::Vec2::new(100.0, 50.0), "centred on x/y");
@@ -1882,7 +1888,7 @@ fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     let mut s = Session::default();
     let v = run(&mut s, "text.create", json!({"text": "Hello", "x": 100, "y": 50, "size": 64, "color": "#cc2200"}));
     let id = ElementId(v["element"].as_u64().unwrap());
-    assert_eq!(s.selection, vec![id]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![id]);
     assert!(v["width"].as_f64().unwrap() > 64.0);
     let text = |s: &Session| match &s.visible_elements().iter().find(|e| e.id == id).unwrap().kind {
         ElementKind::Text(t) => t.clone(),
@@ -1936,7 +1942,7 @@ fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     run(&mut s, "element.select", json!({"ids": [id.0]}));
     let before = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
     run(&mut s, "modify.break_apart", json!({}));
-    assert!(matches!(s.visible_elements().iter().find(|e| s.selection.contains(&e.id)).unwrap().kind, ElementKind::Shape(_)));
+    assert!(matches!(s.visible_elements().iter().find(|e| s.selection.has_id(e.id)).unwrap().kind, ElementKind::Shape(_)));
     assert_eq!(anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().data, before.data, "a shape exactly like the text");
     let fonts = run(&mut s, "text.fonts", json!({}));
     assert!(fonts["families"].as_array().is_some_and(|f| !f.is_empty()));

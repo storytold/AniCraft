@@ -10,8 +10,8 @@
 use crate::cmds_draw::MAX_EXTENT;
 use crate::merge::{self, Part, mergeable, reach};
 use crate::params::*;
-use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{Element, ElementId, ElementKind, LayerId, evaluate_layer_elements};
+use crate::{CommandSpec, CutOrigin, EngineError, Result, Session};
+use anicraft_doc::{Element, ElementId, ElementKind, LayerId};
 use anicraft_geom::planar::SNAP;
 use anicraft_geom::raw::{self as rawgeom, Cubic};
 use anicraft_geom::walk::cubic_point;
@@ -46,7 +46,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select Parts",
             "",
             None,
-            "{x0, y0, x1, y1, add?: bool} the marquee: the parts of raw fills and strokes under the rectangle (cut at its edges) and the objects wholly inside it",
+            "{x0, y0, x1, y1, add?: bool} the marquee, on every visible, unlocked layer: the parts of raw fills and strokes under the rectangle (cut at its edges, per layer) and the objects wholly inside it",
             true,
             select_rect,
         ),
@@ -86,11 +86,6 @@ impl Grab {
     }
 }
 
-/// The elements on `layer` at the playhead.
-fn layer_elements(s: &Session, layer: LayerId) -> Vec<Arc<Element>> {
-    s.doc.timeline(s.scene).layer(layer).and_then(|l| evaluate_layer_elements(l, s.frame)).map(|(_, e)| e.into_owned()).unwrap_or_default()
-}
-
 /// A raw shape's anchors in stage space.
 fn stage_anchors(e: &Element) -> Vec<(usize, Vec2)> {
     match mergeable(e) {
@@ -106,10 +101,10 @@ impl Session {
     pub fn raw_grab(&self, p: Vec2, slop: f32, point_slop: f32) -> Option<(LayerId, Grab)> {
         let (layer, id) = self.hit_test(p, slop)?;
         let object = Some((layer, Grab::Object { id }));
-        if layer == self.layer && self.selection.contains(&id) {
+        if self.selection.contains(layer, id) {
             return object;
         }
-        let els = layer_elements(self, layer);
+        let els = self.elements_on(layer);
         let el = els.iter().find(|e| e.id == id)?;
         let Some(sh) = mergeable(el) else { return object };
         // A corner or end there, of any raw shape on the layer.
@@ -506,10 +501,8 @@ fn snap_point(els: &[Arc<Element>], to: Vec2, radius: f32, moving: &[(ElementId,
 /// `from` when given, else whichever comes closest) onto an anchor or line of the shapes that
 /// did not move, within `radius`.
 pub(crate) fn snap_selection(s: &Session, radius: f32, from: Option<Vec2>) -> Option<(Vec2, Vec2, SnapTo)> {
-    let els = s.visible_elements();
-    let sel = &s.selection;
     let mut own: Vec<Vec2> = Vec::new();
-    for e in els.iter().filter(|e| sel.contains(&e.id)) {
+    for (_, e) in s.selected_elements() {
         if let ElementKind::Shape(sh) = &e.kind {
             own.extend(sh.path.editable_anchors().into_iter().map(|(_, q)| e.transform.apply(q)));
         }
@@ -524,7 +517,9 @@ pub(crate) fn snap_selection(s: &Session, radius: f32, from: Option<Vec2>) -> Op
     if candidates.is_empty() {
         return None;
     }
-    let t = targets(&els, |id| sel.contains(&id), |_, _| false, |_, _| false);
+    // What stays put on the layers the selection is on (ADR 0044).
+    let rest: Vec<Arc<Element>> = s.selected_layers().into_iter().flat_map(|l| s.elements_on(l).into_iter().filter(move |e| !s.selection.contains(l, e.id))).collect();
+    let t = targets(&rest, |_| false, |_, _| false, |_, _| false);
     candidates
         .into_iter()
         .filter_map(|c| snap_to(&t, c, radius).map(|(q, k, d)| (c, q, k, d)))
@@ -533,26 +528,6 @@ pub(crate) fn snap_selection(s: &Session, radius: f32, from: Option<Vec2>) -> Op
 }
 
 // ----- the marquee ------------------------------------------------------------------------------
-
-/// The layer a marquee over `r` selects on: the active layer when it has something there, else
-/// the topmost visible, unlocked layer that does (a selection lives on one layer).
-fn marquee_layer(s: &Session, r: &Rect) -> LayerId {
-    let dl = s.display_list();
-    let tl = s.doc.timeline(s.scene);
-    let usable = |l: LayerId| tl.layer(l).is_some_and(|x| !x.locked && !tl.locked_by_folder(x.id));
-    let touched: Vec<LayerId> = dl
-        .items
-        .iter()
-        .rev()
-        .filter(|i| {
-            let hw = i.stroke.as_ref().map_or(0.0, |st| st.reach() * i.transform.mean_scale());
-            !i.path.bounds().transformed(&i.transform).inflate(hw).intersect(r).is_empty()
-        })
-        .map(|i| i.layer)
-        .filter(|l| usable(*l))
-        .collect();
-    if touched.contains(&s.layer) { s.layer } else { touched.first().copied().unwrap_or(s.layer) }
-}
 
 fn contains(outer: &Rect, inner: &Rect) -> bool {
     inner.min.x >= outer.min.x && inner.min.y >= outer.min.y && inner.max.x <= outer.max.x && inner.max.y <= outer.max.y
@@ -564,57 +539,88 @@ fn on_editable_key(s: &Session) -> bool {
     s.active_layer().and_then(|l| l.keyframe_at(s.frame)).is_some_and(|k| k.motion.is_none() && (k.tween.is_none() || k.start == s.frame))
 }
 
+/// The marquee (ADR 0041, 0044): on every visible, unlocked layer, the parts of raw shapes under
+/// the rectangle (cut at its edges) and the objects wholly inside it.
 fn select_rect(s: &mut Session, p: &Value) -> Result<Value> {
     let a = Vec2::new(f32_req(p, "x0")?, f32_req(p, "y0")?);
     let b = Vec2::new(f32_req(p, "x1")?, f32_req(p, "y1")?);
     let add = opt_bool(p, "add")?.unwrap_or(false);
     let r = Rect::from_points(a, b);
-    let layer = marquee_layer(s, &r);
-    if layer != s.layer {
-        s.layer = layer;
-        s.selection.clear();
-    }
     if !add {
         s.selection.clear();
     }
-    let usable = s.active_layer().is_some_and(|l| l.visible && !l.locked) && !s.doc.timeline(s.scene).locked_by_folder(s.layer);
-    if !usable || r.width() <= 0.0 || r.height() <= 0.0 {
-        return Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>(), "cut": 0}));
+    if r.width() <= 0.0 || r.height() <= 0.0 {
+        return Ok(json!({"selected": s.selection.id_list(), "cut": 0}));
     }
-    let mut picked: Vec<ElementId> = Vec::new();
-    let mut partial: Vec<ElementId> = Vec::new();
-    for e in s.visible_elements() {
-        let bounds = s.element_bounds(e.id);
-        if bounds.is_empty() || bounds.intersect(&r).is_empty() {
-            continue;
+    // What each layer has under the marquee, from one display list: wholly inside, or (raw
+    // shapes) partly.
+    let mut found: Vec<(LayerId, Vec<ElementId>, Vec<ElementId>)> = Vec::new();
+    let layers: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).filter(|l| s.gathers(*l)).collect();
+    for l in layers {
+        let (mut picked, mut partial) = (Vec::new(), Vec::new());
+        for e in s.elements_on(l) {
+            let bounds = s.element_bounds_on(l, e.id);
+            if bounds.is_empty() || bounds.intersect(&r).is_empty() {
+                continue;
+            }
+            if contains(&r, &bounds) {
+                picked.push(e.id);
+            } else if mergeable(&e).is_some() {
+                partial.push(e.id);
+            }
         }
-        if contains(&r, &bounds) {
-            picked.push(e.id);
-        } else if mergeable(&e).is_some() {
-            partial.push(e.id);
+        if !picked.is_empty() || !partial.is_empty() {
+            found.push((l, picked, partial));
         }
     }
-    // Raw shapes partly under the marquee are cut at its edges: the parts inside are selected,
-    // the rest stay as they are.
     let mut cut = 0;
+    let (mut origin, mut inside): (CutOrigin, Vec<ElementId>) = (Vec::new(), Vec::new());
+    let mut hit: Vec<LayerId> = Vec::new();
+    for (l, picked, partial) in found {
+        let (n, o, i) = s.with_layer(l, |s| marquee_layer(s, &r, picked, &partial))?;
+        cut += n;
+        origin.extend(o);
+        inside.extend(i);
+        hit.push(l);
+    }
+    if !inside.is_empty() {
+        s.pending_cut = Some((origin, inside));
+    }
+    // The active layer stays when the marquee took something there, else the topmost that it
+    // did becomes active, as a click would make it.
+    if !hit.contains(&s.layer)
+        && let Some(&top) = hit.first()
+    {
+        s.layer = top;
+    }
+    Ok(json!({"selected": s.selection.id_list(), "cut": cut}))
+}
+
+/// The marquee on the active layer: raw shapes partly under `r` are cut at its edges and the
+/// parts inside are selected, the rest stay as they are; `picked` (wholly inside) are selected.
+/// How many pieces it cut, each piece with the shape it came from, and the pieces inside.
+fn marquee_layer(s: &mut Session, r: &Rect, mut picked: Vec<ElementId>, partial: &[ElementId]) -> Result<(usize, CutOrigin, Vec<ElementId>)> {
+    let here = s.layer;
+    let mut cut = 0;
+    let (mut origin, mut inside_all) = (Vec::new(), Vec::new());
     if !partial.is_empty() && on_editable_key(s) {
         let kf = s.editable_keyframe()?;
         let existing = kf.elements.clone();
         let idx: Vec<usize> = existing.iter().enumerate().filter(|(_, e)| partial.contains(&e.id)).map(|(i, _)| i).collect();
         // Parts already selected (an earlier marquee, with Shift) stay selected, cut or not.
-        let parts: Vec<Part> = idx.iter().filter_map(|&i| existing.get(i)).map(|e| Part::Shape(e.as_ref(), s.selection.contains(&e.id))).collect();
+        let parts: Vec<Part> = idx.iter().filter_map(|&i| existing.get(i)).map(|e| Part::Shape(e.as_ref(), s.selection.contains(here, e.id))).collect();
         let cutter = Path::rect(r.min.x, r.min.y, r.width(), r.height());
         match merge::remerge_with(s, &parts, Some(&cutter)) {
             Some(rm) if !rm.inside.is_empty() => {
-                let origin: Vec<(ElementId, ElementId)> = rm.from.iter().filter_map(|&(piece, part)| idx.get(part).and_then(|&i| existing.get(i)).map(|e| (piece, e.id))).collect();
+                origin = rm.from.iter().filter_map(|&(piece, part)| idx.get(part).and_then(|&i| existing.get(i)).map(|e| (piece, e.id))).collect();
                 cut = rm.inside.len();
                 let gone: Vec<ElementId> = idx.iter().filter_map(|&i| existing.get(i)).map(|e| e.id).collect();
-                s.selection.retain(|id| !gone.contains(id));
+                s.selection.retain(|l, id| l != here || !gone.contains(&id));
                 let mut inside = rm.inside;
                 inside.extend(rm.picked.iter().filter(|id| !inside.contains(id)).copied().collect::<Vec<_>>());
                 picked.extend(inside.iter().copied());
                 merge::replace(s, &idx, rm.out, false)?;
-                s.pending_cut = Some((origin, inside));
+                inside_all = inside;
             }
             // Only their bounds reached in: nothing of them is under the marquee.
             Some(_) => {}
@@ -624,23 +630,25 @@ fn select_rect(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         picked.extend(partial.iter().copied());
     }
-    for id in picked {
-        if !s.selection.contains(&id) {
-            s.selection.push(id);
-        }
-    }
-    Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>(), "cut": cut}))
+    s.selection.extend_on(here, picked);
+    Ok((cut, origin, inside_all))
 }
 
 // ----- merging again ----------------------------------------------------------------------------
 
 fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids: Vec<ElementId> = match opt_u64_list(p, "ids")? {
-        Some(v) => v.into_iter().map(ElementId).collect(),
-        None => s.selection.clone(),
-    };
-    remerge_in_place(s, &ids)?;
-    Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>()}))
+    match opt_u64_list(p, "ids")? {
+        Some(v) => remerge_in_place(s, &v.into_iter().map(ElementId).collect::<Vec<_>>())?,
+        // The selection's shapes, on each layer they are on.
+        None => {
+            s.each_layer(true, |s| {
+                let ids = s.selection.on(s.layer);
+                remerge_in_place(s, &ids)?;
+                Ok(json!({}))
+            })?;
+        }
+    }
+    Ok(json!({"selected": s.selection.id_list()}))
 }
 
 /// Merges the raw shapes `ids` again with the raw shapes they touch, keeping their stacking (an
@@ -656,13 +664,13 @@ pub(crate) fn remerge_in_place(s: &mut Session, ids: &[ElementId]) -> Result<()>
         return Ok(());
     }
     let touching: Vec<usize> = existing.iter().enumerate().filter(|(_, e)| mergeable(e).is_some_and(|sh| !reach(sh, &e.transform).intersect(&area).is_empty())).map(|(i, _)| i).collect();
-    let sel = s.selection.clone();
-    let parts: Vec<Part> = touching.iter().filter_map(|&i| existing.get(i)).map(|e| Part::Shape(e.as_ref(), sel.contains(&e.id))).collect();
+    let here = s.layer;
+    let parts: Vec<Part> = touching.iter().filter_map(|&i| existing.get(i)).map(|e| Part::Shape(e.as_ref(), s.selection.contains(here, e.id))).collect();
     // Too much to merge at once: the shapes stay as edited.
     let Some((out, picked)) = merge::remerge(s, &parts) else { return Ok(()) };
     let gone: Vec<ElementId> = touching.iter().filter_map(|&i| existing.get(i)).map(|e| e.id).collect();
     merge::replace(s, &touching, out, false)?;
-    s.selection.retain(|id| !gone.contains(id));
-    s.selection.extend(picked);
+    s.selection.retain(|l, id| l != here || !gone.contains(&id));
+    s.selection.extend_on(here, picked);
     Ok(())
 }

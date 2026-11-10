@@ -654,6 +654,12 @@ fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
     add_layer(s, p, LayerKind::Folder)
 }
 
+/// The colour the `n`th layer gets (its outline and timeline bar).
+pub(crate) fn layer_color(n: usize) -> anicraft_doc::Rgba {
+    const PALETTE: [u32; 7] = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
+    anicraft_doc::Rgba::hex(PALETTE.get(n % PALETTE.len()).copied().unwrap_or(0x4fa3ff))
+}
+
 fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
     let tl = s.doc.timeline(s.scene);
     if tl.layers.len() >= 1000 {
@@ -681,8 +687,7 @@ fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
         // Match the timeline length so the new layer spans the existing frames.
         k.duration = s.frame_count().max(1);
     }
-    let palette = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
-    layer.color = anicraft_doc::Rgba::hex(palette[n % palette.len()]);
+    layer.color = layer_color(n);
     let tl = s.doc.timeline_mut(s.scene);
     tl.layers.insert(at, Arc::new(layer));
     tl.repair_masks();

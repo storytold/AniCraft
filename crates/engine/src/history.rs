@@ -5,7 +5,7 @@
 //! actually copied. History is bounded by an estimate of that unique memory, not by step count,
 //! so a thousand small nudges are cheap while one huge import is still evictable.
 
-use anicraft_doc::{Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, Symbol};
+use anicraft_doc::{Document, Element, ElementKind, Keyframe, Layer, LayerId, Symbol};
 use std::collections::{HashSet, VecDeque};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub struct Snapshot {
     pub scene: usize,
     pub frame: u32,
     pub layer: LayerId,
-    pub selection: Vec<ElementId>,
+    pub selection: crate::Selection,
     /// Estimated bytes this snapshot keeps alive that the neighbouring state does not share.
     pub bytes: usize,
 }

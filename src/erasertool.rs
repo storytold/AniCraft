@@ -116,8 +116,7 @@ pub fn eyedropper(app: &mut App, p: Vec2, shift: bool, zoom: f32) {
         _ if into_fill => format!("fill {color}"),
         _ => format!("line {color}, {} px", v["width"].as_f64().map_or(String::new(), |w| format!("{w:.1}"))),
     };
-    let sel = &app.s.selection;
-    let shapes = app.s.visible_elements().iter().filter(|e| sel.contains(&e.id) && matches!(e.kind, ElementKind::Shape(_))).count();
+    let shapes = app.s.selected_elements().iter().filter(|(_, e)| matches!(e.kind, ElementKind::Shape(_))).count();
     if shapes > 0 {
         if let Some(r) = app.run("paint.apply_style", json!({"fill": into_fill, "stroke": !into_fill})) {
             let n = r["changed"].as_u64().unwrap_or(0);
