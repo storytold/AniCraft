@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+* **Selection across layers** (ADR 0044, issue #42, M1). A selection can hold artwork on several
+  layers, as in Animate:
+  * The Selection tool's **marquee** selects on every visible, unlocked layer, cutting raw fills
+    and lines at its edges on each layer (and taking the cut back when you let go of it).
+    **Shift-click** adds or removes artwork on any layer; **Select All** (Ctrl+A) takes every
+    unlocked layer. Locked and hidden layers are never selected; locking or hiding a layer lets
+    go of what was selected on it.
+  * Move, nudge, delete, duplicate, arrange (within each layer), transforms, alpha, fill and
+    stroke, filters, blending, break apart and width profiles act on every selected layer, one
+    undo step per gesture. Inside a tween each layer gets its own keyframe.
+  * Align and distribute work across the layers; Free Transform's box covers the whole
+    selection; copy keeps each layer's artwork apart, and paste puts it back on those layers
+    (or on the active layer and the ones below, creating missing layers in another document).
+  * **Convert to Symbol** (F8) of a selection on several layers keeps those layers inside the
+    symbol and places the instance on the topmost of them.
+  * The **timeline** shows a square in the layer's colour after the name of every layer with
+    selected artwork. **Properties** says "6 elements on 4 layers", shows the combined box's
+    position, and marks values that differ as "mixed".
+  * Headless: `element.select` takes ids on any layer (and `layer?`); `doc.info` reports
+    `selection_layers`; per-layer commands report the `layers` they ran on.
+  * Not yet: clicking a layer name to select its artwork, "mixed" on every Properties row.
+
 * **Bone tool and inverse kinematics, first slice** (ADR 0043, M7). Join symbol instances into
   an armature and pose it:
   * With the **Bone tool** (M), drag from one symbol instance to another: a bone joins them and
