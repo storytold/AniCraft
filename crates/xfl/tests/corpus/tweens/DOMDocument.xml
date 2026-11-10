@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: tweens. Classic tweens (eased in, a custom ease curve, a turn with
+     extra clockwise spins asked for), a shape tween eased out with a shape hint, and a motion
+     tween (kept as keyframes, reported). Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <symbols>
+    <Include href="Ball.xml" loadImmediate="false"/>
+    <Include href="Box.xml" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Ease in" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" keyMode="22017" acceleration="-100">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="20" ty="25"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="300" ty="25"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Custom ease" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" keyMode="22017" hasCustomEase="true" useSingleEaseCurve="true">
+              <tweens>
+                <CustomEase target="all">
+                  <Point/>
+                  <Point x="0.7" y="0"/>
+                  <Point x="0.3" y="1"/>
+                  <Point x="1" y="1"/>
+                </CustomEase>
+              </tweens>
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="20" ty="60"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="300" ty="60"/></matrix>
+                  <color><Color tintMultiplier="1" tintColor="#E76F51"/></color>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Turn" color="#4FFF4F">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" motionTweenRotate="clockwise" motionTweenRotateTimes="1" keyMode="22017">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Box" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="40" ty="95"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Box" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="0" b="1.5" c="-1.5" d="0" tx="280" ty="95"/></matrix>
+                  <color><Color alphaMultiplier="0.3"/></color>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Morph" color="#FF800A">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="shape" keyMode="17922" acceleration="50">
+              <shapeHints>
+                <ShapeHint index="0" x="20" y="120"/>
+              </shapeHints>
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#8338EC"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!400 2400|1200 2400|1200 3200|400 3200|400 2400"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <shapeHints>
+                <ShapeHint index="0" x="270" y="115"/>
+              </shapeHints>
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#FF006E"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!5400 2300[6000 2300 6000 2900[6000 3500 5400 3500[4800 3500 4800 2900[4800 2300 5400 2300"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Motion tween" color="#808080" animationType="motion object">
+          <frames>
+            <DOMFrame index="0" duration="13" tweenType="motion object" motionTweenRotate="none" keyMode="8195">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Box" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="0.5" d="0.5" tx="300" ty="160"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A movie clip: a rounded orange chip with a dark centre. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Chip" itemID="00000000-0000-0000-0000-000000000601" symbolType="movie clip">
+  <timeline>
+    <DOMTimeline name="Chip">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMOvalObject x="-6" y="-6" objectWidth="12" objectHeight="12"><fill><SolidColor color="#264653"/></fill></DOMOvalObject>
+                <DOMRectangleObject x="-18" y="-18" objectWidth="36" objectHeight="36" topLeftRadius="8"><fill><SolidColor color="#F4A261"/></fill></DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

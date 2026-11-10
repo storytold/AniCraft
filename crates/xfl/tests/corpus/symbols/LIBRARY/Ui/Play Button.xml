@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A button: Up, Over, Down and Hit frames, and a label layer drawn on every state. While
+     editing (and in a render) it shows Up. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Ui/Play Button" itemID="00000000-0000-0000-0000-000000000105" symbolType="button">
+  <timeline>
+    <DOMTimeline name="Play Button">
+      <layers>
+        <DOMLayer name="Arrow" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="4" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#FFFFFF"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!-120 -160|200 0|-120 160|-120 -160"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="States" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" name="Up" keyMode="9728"><elements><DOMRectangleObject x="-30" y="-14" objectWidth="60" objectHeight="28" topLeftRadius="8"><fill><SolidColor color="#2A9D8F"/></fill></DOMRectangleObject></elements></DOMFrame>
+            <DOMFrame index="1" keyMode="9728"><elements><DOMRectangleObject x="-30" y="-14" objectWidth="60" objectHeight="28" topLeftRadius="8"><fill><SolidColor color="#E9C46A"/></fill></DOMRectangleObject></elements></DOMFrame>
+            <DOMFrame index="2" keyMode="9728"><elements><DOMRectangleObject x="-30" y="-14" objectWidth="60" objectHeight="28" topLeftRadius="8"><fill><SolidColor color="#E76F51"/></fill></DOMRectangleObject></elements></DOMFrame>
+            <DOMFrame index="3" keyMode="9728"><elements><DOMRectangleObject x="-30" y="-14" objectWidth="60" objectHeight="28" topLeftRadius="8"><fill><SolidColor color="#000000"/></fill></DOMRectangleObject></elements></DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

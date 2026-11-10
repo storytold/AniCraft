@@ -124,6 +124,18 @@ impl Paint {
         }
     }
 
+    /// The paint carried by `m` (its geometry moved from one space to another), so a shape in
+    /// the new space shows it where it was: gradient ends and centre are mapped, a radial
+    /// gradient's radius scales by the mean scale, a bitmap's matrix is composed.
+    pub fn transformed(&self, m: &Affine) -> Paint {
+        match self {
+            Paint::Solid(_) => self.clone(),
+            Paint::Linear { start, end, stops } => Paint::Linear { start: m.apply(*start), end: m.apply(*end), stops: stops.clone() },
+            Paint::Radial { center, radius, stops } => Paint::Radial { center: m.apply(*center), radius: radius * m.mean_scale(), stops: stops.clone() },
+            Paint::Bitmap { bitmap, repeat, matrix } => Paint::Bitmap { bitmap: *bitmap, repeat: *repeat, matrix: m.mul(matrix) },
+        }
+    }
+
     pub fn lerp(&self, o: &Paint, t: f32) -> Paint {
         let lerp_stops = |a: &[GradientStop], b: &[GradientStop]| -> Option<Vec<GradientStop>> {
             (a.len() == b.len()).then(|| {
