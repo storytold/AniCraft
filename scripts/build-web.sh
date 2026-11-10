@@ -24,10 +24,10 @@ esac
 
 # The CLI and the crate must be the same version, or the generated glue doesn't match.
 WANT="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
-[ -n "$WANT" ] || { echo "error: Cargo.lock names no wasm-bindgen version" >&2; exit 1; }
+[[ -n "$WANT" ]] || { echo "error: Cargo.lock names no wasm-bindgen version" >&2; exit 1; }
 command -v wasm-bindgen >/dev/null || { echo "error: wasm-bindgen not found: cargo install wasm-bindgen-cli --version $WANT --locked" >&2; exit 1; }
 HAVE="$(wasm-bindgen --version | awk '{ print $2 }')"
-[ "$HAVE" = "$WANT" ] || { echo "error: wasm-bindgen $HAVE found, Cargo.lock needs $WANT: cargo install wasm-bindgen-cli --version $WANT --locked" >&2; exit 1; }
+[[ "$HAVE" = "$WANT" ]] || { echo "error: wasm-bindgen $HAVE found, Cargo.lock needs $WANT: cargo install wasm-bindgen-cli --version $WANT --locked" >&2; exit 1; }
 if command -v rustup >/dev/null && ! rustup target list --installed | grep -qx wasm32-unknown-unknown; then
   echo "error: the wasm32-unknown-unknown target is missing: rustup target add wasm32-unknown-unknown" >&2
   exit 1
@@ -37,7 +37,7 @@ cargo build -p anicraft --bin anicraft --target wasm32-unknown-unknown --profile
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 DIR="$PROFILE"
-[ "$PROFILE" = dev ] && DIR=debug
+[[ "$PROFILE" = dev ]] && DIR=debug
 WASM="$TARGET_DIR/wasm32-unknown-unknown/$DIR/anicraft.wasm"
 OUT="$ROOT/web"
 rm -rf "$OUT"
