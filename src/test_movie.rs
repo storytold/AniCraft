@@ -236,6 +236,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.label(text(Type::Heading, "Output"));
                 let n = tm.movie.output.len();
                 ui.label(text(Type::Data, format!("{n}")).color(T.text_faint)).on_hover_text("Lines written");
+                // Kept scripts (ADR 0013 tier 1) are said once here, not every time they pass.
+                let kept = crate::actions_panel::kept_scripts(&tm.doc);
+                if kept > 0 {
+                    let what = if kept == 1 { "1 kept frame script doesn't run yet".to_string() } else { format!("{kept} kept frame scripts don't run yet") };
+                    ui.label(text(Type::Caption, what)).on_hover_text("Scripts from other tools are kept with the document as written; use actions for what should happen while the movie plays");
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add_enabled(n > 0, egui::Button::new("Clear")).clicked() {
                         tm.movie.output.clear();

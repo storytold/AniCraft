@@ -308,7 +308,7 @@ fn sounds_inside_symbols_are_in_the_exported_soundtrack_at_their_offset_and_loop
     let mut k = Keyframe::new(1, 3);
     k.sound = Some(FrameSound::new(SoundId(id)));
     inner.keyframes = vec![Arc::new(Keyframe::new(0, 1)), Arc::new(k)];
-    s.doc.library.push(Arc::new(Symbol { id: SymbolId(501), name: "Talk".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![Arc::new(inner)] } }));
+    s.doc.library.push(Arc::new(Symbol { linkage: None, id: SymbolId(501), name: "Talk".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![Arc::new(inner)] } }));
     let mut k = Keyframe::new(1, 8);
     k.elements.push(Arc::new(Element { id: ElementId(502), name: String::new(), transform: Default::default(), color: Default::default(), kind: ElementKind::Symbol { symbol: SymbolId(501), loop_mode: LoopMode::Loop, first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() } }));
     let mut outer = Layer::new(LayerId(503), "puppet");

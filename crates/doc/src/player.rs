@@ -571,6 +571,9 @@ impl<'a, 'h> Run<'a, 'h> {
                     let list: Vec<Action> = run.actions.into_iter().take(crate::actions::MAX_ACTIONS).collect();
                     self.run_list(path, &list);
                 }
+                // Kept with the document, not run (ADR 0013 tier 1). The Test Movie window says
+                // so once, rather than a line every time the playhead passes.
+                FrameScript::Source(_) => {}
             }
         }
     }

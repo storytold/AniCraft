@@ -758,6 +758,21 @@ impl App {
                     crate::test_movie::demo_pointer(self);
                 }
             }
+            Some("script") => {
+                // The interactive sample as an imported Animate document might bring it: a
+                // frame script kept on the Actions layer's first keyframe (in place of its
+                // Stop action), a linkage class and a document class; the Actions panel shows
+                // the Script view (ADR 0013 tier 1).
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 0}));
+                let code = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tgotoAndPlay(\"show\");\n}\n";
+                self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
+                self.run("script.set_class", json!({"class": "com.example.Menu"}));
+                if let Some(button) = self.s.doc.library.iter().find(|s| s.kind == anicraft_engine::doc::SymbolKind::Button).map(|s| s.id.0) {
+                    self.run("script.set_class", json!({"symbol": button, "class": "com.example.PlayButton", "base": "flash.display.SimpleButton"}));
+                }
+                crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
+            }
             Some("exporthtml") => {
                 // File › Export › Export HTML Canvas… on the interactive sample (the in-app
                 // prompt: screenshots never open native dialogs).

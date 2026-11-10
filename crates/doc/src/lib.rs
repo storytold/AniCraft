@@ -29,7 +29,7 @@ pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, Soun
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use camera::Camera;
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, guide_walk, instance_start};
-pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, PluginScript};
+pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, Language, PluginScript, SourceScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use serde::{Deserialize, Serialize};
@@ -975,7 +975,33 @@ pub struct Symbol {
     pub name: String,
     #[serde(default)]
     pub kind: SymbolKind,
+    /// The class scripts know the symbol by (Animate's "linkage"), kept as text (ADR 0013).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linkage: Option<Linkage>,
     pub timeline: Timeline,
+}
+
+/// A symbol's script class: what scripts create it by, and the class it extends. Kept with
+/// the document and shown, never run (ADR 0013 tier 1).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Linkage {
+    /// A dotted class name (`com.example.Hero`), or an older document's linkage identifier.
+    pub class: String,
+    /// The class it extends, when the file names one (`flash.display.MovieClip`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base: String,
+}
+
+impl Linkage {
+    pub fn check(&self) -> Result<(), String> {
+        if !actions::valid_class_name(&self.class) {
+            return Err(format!("“{}” isn't a class name: letters, digits, _ and $ joined by dots, at most {} characters", self.class, actions::MAX_CLASS_CHARS));
+        }
+        if !self.base.is_empty() && !actions::valid_class_name(&self.base) {
+            return Err(format!("“{}” isn't a class name", self.base));
+        }
+        Ok(())
+    }
 }
 
 /// Stage settings.
@@ -1030,6 +1056,10 @@ pub struct Document {
     /// Sounds in the library, placed on keyframes through [`FrameSound`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sounds: Vec<Arc<Sound>>,
+    /// The class scripts run the main timeline as (Animate's "document class"), kept as text
+    /// (ADR 0013 tier 1); empty when there is none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub document_class: String,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
 }
@@ -1049,6 +1079,8 @@ struct DocumentFile {
     bitmaps: Vec<Arc<Bitmap>>,
     #[serde(default)]
     sounds: Vec<Arc<Sound>>,
+    #[serde(default)]
+    document_class: String,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -1059,7 +1091,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, document_class: f.document_class, next_id: f.next_id }
     }
 }
 
@@ -1072,13 +1104,13 @@ static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds)
+        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), document_class: String::new(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -1176,8 +1208,15 @@ impl Document {
             }
             tl.repair_masks();
         }
+        // Script class names are text nothing runs yet; ones that aren't names are dropped.
+        if !self.document_class.is_empty() && !actions::valid_class_name(&self.document_class) {
+            self.document_class.clear();
+        }
         for sym in &mut self.library {
             max_id = max_id.max(sym.id.0);
+            if sym.linkage.as_ref().is_some_and(|l| l.check().is_err()) {
+                Arc::make_mut(sym).linkage = None;
+            }
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
@@ -1212,11 +1251,7 @@ fn sanitize_depth(layer: &mut Arc<Layer>) {
 /// Repairs a loaded layer's frame scripts and instance event handlers (ADR 0024). Touches (and
 /// so un-shares) only keyframes that need it.
 fn sanitize_scripts(layer: &mut Arc<Layer>) {
-    let bad_script = |k: &Keyframe| match &k.script {
-        Some(FrameScript::Actions(a)) => a.is_empty() || actions::check_actions(a).is_err(),
-        Some(FrameScript::Plugin(p)) => p.check().is_err(),
-        None => false,
-    };
+    let bad_script = |k: &Keyframe| k.script.as_ref().is_some_and(FrameScript::needs_repair);
     let bad_events = |e: &Element| match &e.kind {
         ElementKind::Symbol { events, .. } => {
             events.len() > actions::MAX_HANDLERS || events.iter().enumerate().any(|(i, h)| events.iter().take(i).any(|o| o.event == h.event) || actions::check_actions(&h.actions).is_err())

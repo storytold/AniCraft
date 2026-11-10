@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: scripts (ADR 0013 tier 1: kept, not run). Frame scripts in
+     ActionScript 3.0 on the main timeline's actions layer (an event listener and a function on
+     the first frame, a call on a named instance on the fifth) and inside the Hero movie clip,
+     which has a linkage class; the publish settings name the document class. The code uses
+     the characters XML escapes (< > & " ') inside CDATA, and must come across byte for byte.
+     Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F4F1EA">
+  <symbols>
+    <Include href="Hero.xml" itemIcon="1" loadImmediate="false"/>
+    <Include href="Play Button.xml" itemIcon="0" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Main">
+      <layers>
+        <DOMLayer name="Actions" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="4" keyMode="9728">
+              <Actionscript>
+                <script><![CDATA[import flash.events.MouseEvent;
+
+stop();
+play_btn.addEventListener(MouseEvent.CLICK, onPlay);
+
+function onPlay(e:MouseEvent):void {
+	if (hero_mc.currentFrame < 2 && e.target != null) {
+		gotoAndPlay("walk"); // 'walk' is the label on frame 5
+	}
+}]]></script>
+              </Actionscript>
+              <elements/>
+            </DOMFrame>
+            <DOMFrame index="4" duration="4" keyMode="9728">
+              <Actionscript><script><![CDATA[hero_mc.gotoAndStop(2);
+trace("Walked > 0 & done");]]></script></Actionscript>
+              <elements/>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Labels" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="4" name="start" labelType="name" keyMode="9728"><elements/></DOMFrame>
+            <DOMFrame index="4" duration="4" name="walk" labelType="name" keyMode="9728"><elements/></DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Stage" color="#4FFF4F">
+          <frames>
+            <DOMFrame index="0" duration="4" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Hero" name="hero_mc"><matrix><Matrix tx="90" ty="90"/></matrix></DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Play Button" symbolType="button" name="play_btn"><matrix><Matrix tx="240" ty="90"/></matrix></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="4" duration="4" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Hero" name="hero_mc"><matrix><Matrix tx="160" ty="90"/></matrix></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Ground" color="#808080">
+          <frames>
+            <DOMFrame index="0" duration="8" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#264653"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!0 2800|6400 2800|6400 3600|0 3600|0 2800"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>
