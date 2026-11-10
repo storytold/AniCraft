@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: guides. A plain guide layer (never drawn), and a motion guide (an arc,
+     never drawn) that two classic tweens follow, one turning with the path. The guided layers
+     name the guide as their parent. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <symbols>
+    <Include href="Ball.xml" loadImmediate="false"/>
+    <Include href="Box.xml" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Notes" color="#FF00FF" layerType="guide">
+          <frames>
+            <DOMFrame index="0" duration="13" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="0" y="0" objectWidth="320" objectHeight="180">
+                  <fill><SolidColor color="#FF00FF"/></fill>
+                </DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Arc" color="#4F80FF" layerType="guide" locked="true">
+          <frames>
+            <DOMFrame index="0" duration="13" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <strokes><StrokeStyle index="1"><SolidStroke weight="1"><fill><SolidColor color="#FF00FF"/></fill></SolidStroke></StrokeStyle></strokes>
+                  <edges><Edge strokeStyle="1" edges="!600 2800[3200 -400 5800 2800"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Rider" color="#FF4F4F" parentLayerIndex="1">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" motionTweenOrientToPath="true" keyMode="22017">
+              <elements><DOMSymbolInstance libraryItemName="Box" symbolType="graphic" loop="loop"><matrix><Matrix tx="30" ty="140"/></matrix></DOMSymbolInstance></elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements><DOMSymbolInstance libraryItemName="Box" symbolType="graphic" loop="loop"><matrix><Matrix tx="290" ty="140"/></matrix></DOMSymbolInstance></elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Second rider" color="#4FFF4F" parentLayerIndex="1">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" keyMode="22017" acceleration="100">
+              <elements><DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop"><matrix><Matrix tx="30" ty="140"/></matrix></DOMSymbolInstance></elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements><DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop"><matrix><Matrix tx="290" ty="140"/></matrix></DOMSymbolInstance></elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Ground" color="#808080">
+          <frames>
+            <DOMFrame index="0" duration="13" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#E9EDC9"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!0 3000|6400 3000|6400 3600|0 3600|0 3000"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

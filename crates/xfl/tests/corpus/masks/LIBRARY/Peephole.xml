@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A graphic with its own mask: a diamond showing part of a row of bars. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Peephole" itemID="00000000-0000-0000-0000-000000000401" symbolType="graphic">
+  <timeline>
+    <DOMTimeline name="Peephole">
+      <layers>
+        <DOMLayer name="Diamond" color="#4F80FF" layerType="mask" locked="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#000000"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!0 -500|500 0|0 500|-500 0|0 -500"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Bars" color="#FF4F4F" parentLayerIndex="0" locked="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape><fills><FillStyle index="1"><SolidColor color="#E76F51"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="!-800 -600|800 -600|800 -500|-800 -500|-800 -600"/><Edge fillStyle1="1" edges="!-800 -400|800 -400|800 -300|-800 -300|-800 -400"/><Edge fillStyle1="1" edges="!-800 -200|800 -200|800 -100|-800 -100|-800 -200"/><Edge fillStyle1="1" edges="!-800 0|800 0|800 100|-800 100|-800 0"/><Edge fillStyle1="1" edges="!-800 200|800 200|800 300|-800 300|-800 200"/><Edge fillStyle1="1" edges="!-800 400|800 400|800 500|-800 500|-800 400"/></edges></DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>
