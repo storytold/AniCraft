@@ -51,7 +51,7 @@ rfd = "0.17"
 # (/usr/share/fonts, /usr/local/share/fonts, ~/.local/share/fonts, ~/.fonts).
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 egui = "0.37"
-# Interface translations (ADR 0032): lookup, fallback, CLDR plurals, language names and the system
+# Interface translations (ADR 0034): lookup, fallback, CLDR plurals, language names and the system
 # locale over the craft-i18n catalogs that build.rs embeds from CRAFT_I18N_DIR. The Crafting Apps'
 # shared crate (craft-libs, MIT OR Apache-2.0), at an immutable revision allowed in deny.toml.
 craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "fd5e2feff6ea25bed371a99cc732b3968d621505" }
@@ -75,10 +75,12 @@ default-run = "anicraft"
 
 [features]
 # Plays sound during stage playback. Off: playback is silent (for builders without ALSA headers).
-default = ["sound-output"]
+default = ["sound-output", "gpu-stage"]
 sound-output = ["dep:cpal"]
-# GPU stage renderer (ADR 0019), off by default: Preferences › Stage › Renderer can then hand
-# the stage to the wgpu renderer. The CPU stays the default and the oracle.
+# GPU stage renderer (ADR 0019, 0029, 0031), on by default: the stage draws on the graphics card
+# when there is a usable one, and on the CPU (the oracle, and what exports use) otherwise and
+# for anything the GPU can't draw. Preferences › Stage › Renderer can choose the CPU. Build with
+# `--no-default-features --features sound-output` for a CPU-only shell.
 gpu-stage = ["dep:anicraft-gpu"]
 
 [[bin]]
@@ -134,7 +136,7 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
-# The egui family on storytold's fork, as the other Crafting Apps use it (ADR 0032): it lays out
+# The egui family on storytold's fork, as the other Crafting Apps use it (ADR 0034): it lays out
 # right-to-left text in its right order (Unicode bidi; crates.io egui shapes each Arabic word but
 # places the words left to right) and mirrors egui's own parts with `Style::right_to_left`.
 # Immutable revisions, allowed in deny.toml.

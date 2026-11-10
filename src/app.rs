@@ -20,6 +20,7 @@ pub enum Tool {
     Pen,
     Text,
     Pencil,
+    Brush,
     Rect,
     Oval,
     Star,
@@ -63,7 +64,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 16] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 17] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -74,6 +75,7 @@ impl Tool {
             Tool::Pen => "Pen",
             Tool::Text => "Text",
             Tool::Pencil => "Pencil",
+            Tool::Brush => "Brush",
             Tool::Rect => "Rectangle",
             Tool::Oval => "Oval",
             Tool::Star => "PolyStar",
@@ -95,6 +97,7 @@ impl Tool {
             Tool::Pen => Some("P"),
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
+            Tool::Brush => Some("B"),
             Tool::Rect => Some("R"),
             Tool::Oval => Some("O"),
             Tool::Star => None,
@@ -113,6 +116,7 @@ impl Tool {
             Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
+            Tool::Brush => "Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode.",
             Tool::Width => "Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it.",
             Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
             Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
@@ -172,6 +176,8 @@ pub enum Drag {
     PointMarquee { start: egui::Pos2, cur: egui::Pos2 },
     /// Pencil stroke; the samples are in `App::pencil`.
     Pencil,
+    /// Brush stroke; the samples are in `App::brush_samples`.
+    Brush,
     /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
     /// `sub`; `start` is its left and right width when the drag began.
     Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
@@ -285,6 +291,11 @@ pub struct App {
     /// Pencil samples of the stroke in progress (stage space).
     pub pencil: Vec<anicraft_engine::geom::Vec2>,
     pub pencil_mode: pathtools::PencilMode,
+    /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
+    /// when there is one) and the pen's last pressure (ADR 0033).
+    pub brush: crate::brushtool::BrushOptions,
+    pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
+    pub pen_pressure: Option<f32>,
     pub bucket_gap: GapSize,
     /// Align panel: align to the stage rather than the selection's bounds.
     pub align_to_stage: bool,
@@ -369,6 +380,9 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+F6", "view.next_panel"),
     ("Ctrl+Shift+F6", "view.prev_panel"),
     ("F9", "view.actions"),
+    // Brush size, as in paint programs.
+    ("[", "view.brush_smaller"),
+    ("]", "view.brush_larger"),
 ];
 
 impl App {
@@ -434,6 +448,9 @@ impl App {
             pen: None,
             pencil: Vec::new(),
             pencil_mode: pathtools::PencilMode::default(),
+            brush: crate::brushtool::BrushOptions::default(),
+            brush_samples: Vec::new(),
+            pen_pressure: None,
             bucket_gap: GapSize::default(),
             align_to_stage: false,
             points: Vec::new(),
@@ -737,6 +754,41 @@ impl App {
                 self.run("element.select_connected", json!({"x": 520, "y": 400}));
                 self.tool = Tool::Select;
             }
+            Some(which @ ("brush" | "brushing")) => {
+                // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
+                // calligraphic tip at 45°, square dabs, and a pink stroke painted behind a raw
+                // oval; "brushing" also has a stroke in progress (the live preview).
+                self.run("layer.new", json!({"name": "Paint"}));
+                self.run("draw.object_drawing", json!({"on": false}));
+                let wave: Vec<[f32; 3]> = (0..=120)
+                    .map(|i| {
+                        let t = i as f32 / 120.0;
+                        [120.0 + t * 520.0, 470.0 + (t * 9.0).sin() * 46.0, (t * std::f32::consts::PI).sin()]
+                    })
+                    .collect();
+                self.run("draw.brush", json!({"points": wave, "size": 34, "color": "#1b2a4a"}));
+                let loops: Vec<[f32; 2]> = (0..=160)
+                    .map(|i| {
+                        let t = i as f32 / 160.0 * std::f32::consts::TAU * 2.0;
+                        [190.0 + i as f32 * 2.6 + 34.0 * t.cos(), 170.0 + 40.0 * t.sin()]
+                    })
+                    .collect();
+                self.run("draw.brush", json!({"points": loops, "size": 22, "roundness": 25, "angle": 45, "color": "#e8553b"}));
+                for (k, x) in [700.0f32, 740.0, 780.0].into_iter().enumerate() {
+                    self.run("draw.brush", json!({"points": [[x, 120.0 + k as f32 * 18.0]], "size": 24, "shape": "square", "angle": 15.0 * k as f32, "color": "#3d8bfd"}));
+                }
+                self.run("draw.ellipse", json!({"x": 820, "y": 380, "w": 220, "h": 160, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let behind: Vec<[f32; 2]> = (0..=60).map(|i| [760.0 + i as f32 * 6.0, 560.0 - i as f32 * 3.4]).collect();
+                self.run("draw.brush", json!({"points": behind, "size": 40, "mode": "behind", "color": "#d6336c"}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Brush;
+                self.brush.size = 24.0;
+                self.brush.mode = crate::brushtool::BrushOptions::default().mode;
+                if which == "brushing" {
+                    self.brush_samples = (0..=40).map(|i| (anicraft_engine::geom::Vec2::new(150.0 + i as f32 * 9.0, 610.0 - (i as f32 * 0.16).sin() * 30.0), Some(0.3 + i as f32 / 60.0))).collect();
+                    self.drag = Drag::Brush;
+                }
+            }
             Some("frames") => {
                 // Frames 8–20 selected on the top three layers, with a keyframe drag in progress:
                 // 6 frames later and one layer down.
@@ -1011,7 +1063,7 @@ impl App {
                 self.status_ok(msg + &report);
             }
             "file.export_lottie" => {
-                // The engine's report on what Lottie can't carry stays English (ADR 0032).
+                // The engine's report on what Lottie can't carry stays English (ADR 0034).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
                 let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
@@ -1388,6 +1440,8 @@ impl App {
                     }
                 }
                 "view.actions" => self.show_actions = !self.show_actions,
+                "view.brush_smaller" => crate::brushtool::resize(self, false),
+                "view.brush_larger" => crate::brushtool::resize(self, true),
                 id if id.starts_with("tool.") => tool = keymap::tool_for(id).or(tool),
                 _ => self.invoke(id),
             }
@@ -1627,7 +1681,7 @@ impl App {
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // The interface language, and its direction for egui's own parts (menus, scroll bars,
-        // combo boxes) (ADR 0032).
+        // combo boxes) (ADR 0034).
         crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         let rtl = crate::i18n::rtl();
         if ctx.global_style().right_to_left != rtl {

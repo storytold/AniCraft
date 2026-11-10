@@ -16,12 +16,17 @@
 //! a group opens before its first fill in the tile and closes (blending into what is below at
 //! its alpha and in its blend mode) when its run ends, as the oracle's band compositor does per
 //! band.
+//!
+//! Bitmap fills (ADR 0032) take one of [`MAX_IMAGES`] texture slots per dispatch, one per
+//! distinct image; a filtered group's layer is drawn and filtered by the GPU before the pass and
+//! copied into the paint buffer after the gradient tables, where its fill reads it.
 
-use anicraft_doc::BlendMode;
+use anicraft_doc::{BlendMode, Pixels};
 use anicraft_geom::{FillRule, Vec2};
 use anicraft_render::paint::Shader;
 use anicraft_render::{Fill, NeedsFull, Scene};
 use rayon::prelude::*;
+use std::sync::Arc;
 
 /// A `vec4<f32>` as the shader sees it.
 type Vec4 = [f32; 4];
@@ -41,10 +46,16 @@ pub const MAX_GROUP_DEPTH: usize = 8;
 /// artwork per clip switch).
 pub const MAX_CLIP_DEPTH: usize = 16;
 
+/// Distinct bitmaps one dispatch samples (texture slots in `fine.wgsl`; every device has at
+/// least 16 sampled textures per shader stage).
+pub const MAX_IMAGES: usize = 16;
+
 /// Paint kinds in an op header.
 const SOLID: u32 = 0;
 const LINEAR: u32 = 1;
 const RADIAL: u32 = 2;
+const BITMAP: u32 = 3;
+const IMAGE: u32 = 4;
 
 /// Op header flag: the fill is drawn inside the current clip.
 pub const CLIPPED: u32 = 1;
@@ -91,8 +102,9 @@ pub fn blend_code(m: BlendMode) -> u32 {
 ///   paints, flags]`.
 /// * `geo` (`vec4<f32>`): pieces `(x0, y0, x1, y1)` relative to their tile's top-left, in the
 ///   edge's direction; then backdrops, four `vec4`s (16 rows) each.
-/// * `paints` (`vec4<f32>`): per op its colour, then the inverse paint transform and gradient
-///   parameters; then the gradient tables (256 premultiplied colours each).
+/// * `paints` (`vec4<f32>`): per op its colour, then the inverse paint transform and gradient,
+///   bitmap or layer parameters; then the gradient tables (256 premultiplied colours each);
+///   then (filled in on the GPU, [`Binned::layer_at`]) the filtered layers' pixels.
 ///
 /// Ops are the scene's fills in drawing order, then every clip's artwork, clip by clip.
 pub struct Binned {
@@ -103,6 +115,13 @@ pub struct Binned {
     pub ops_at: u32,
     pub geo: Vec<[f32; 4]>,
     pub paints: Vec<[f32; 4]>,
+    /// The paint buffer's whole length in `vec4`s: `paints`, then room for the layers.
+    pub paints_len: usize,
+    /// Per scene layer, where its pixels go in the paint buffer (`vec4`s); `None` when no fill
+    /// shows it (then it isn't drawn).
+    pub layer_at: Vec<Option<u32>>,
+    /// The bitmaps, in texture-slot order.
+    pub images: Vec<Arc<Pixels>>,
     /// Entries (fills, artwork and control) and edge pieces in all tiles.
     pub entries: usize,
     pub pieces: usize,
@@ -155,7 +174,8 @@ struct RowOut {
 }
 
 /// Bins `scene` for a `width × height` surface. `Err` when its nesting is deeper than the
-/// shader holds ([`MAX_GROUP_DEPTH`], [`MAX_CLIP_DEPTH`]); the caller draws it on the CPU.
+/// shader holds ([`MAX_GROUP_DEPTH`], [`MAX_CLIP_DEPTH`]) or it has more bitmaps than
+/// [`MAX_IMAGES`]; the caller draws it on the CPU.
 pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> {
     if scene.groups.iter().any(|g| g.chain.len() > MAX_GROUP_DEPTH) {
         return Err(NeedsFull::Groups);
@@ -272,30 +292,70 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
     // Tens of thousands of small buffers: free them on the pool, off the frame's path.
     rayon::spawn(move || drop((locals, rows)));
 
-    // Paints: a fixed record per op, then the gradient tables.
+    // Paints: a fixed record per op, then the gradient tables, then the layers' pixels.
     let mut paints: Vec<[f32; 4]> = Vec::with_capacity(PAINT_VEC4S * ops.len());
     let mut ramps: Vec<[f32; 4]> = Vec::new();
+    let mut images: Vec<Arc<Pixels>> = Vec::new();
     let ramps_at = (PAINT_VEC4S * ops.len()) as u32;
+    // Where each layer shown by a fill goes, after the tables (the tables' size is known first).
+    let table_len: usize = ops.iter().filter(|f| matches!(f.shader, Shader::Linear { .. } | Shader::Radial { .. }) && f.layer.is_none()).count() * RAMP;
+    let mut layer_at: Vec<Option<u32>> = vec![None; scene.layers.len()];
+    let mut cursor = PAINT_VEC4S * ops.len() + table_len;
+    for f in &ops {
+        let Some(l) = f.layer else { continue };
+        let (Some(slot), Some(layer)) = (layer_at.get_mut(l as usize), scene.layers.get(l as usize)) else { continue };
+        if slot.is_none() {
+            *slot = Some(cursor as u32);
+            cursor += layer.bounds.width() * layer.bounds.height();
+        }
+    }
+    if cursor >= u32::MAX as usize {
+        return Err(NeedsFull::Filters);
+    }
+    let paints_len = cursor;
+    let u = f32::from_bits;
     for (op, f) in ops.iter().enumerate() {
         let rule = match f.rule {
             FillRule::NonZero => 0,
             FillRule::EvenOdd => 1,
         };
         let ramp = ramps_at + ramps.len() as u32;
-        let (kind, rec) = match &f.shader {
-            Shader::Solid(c) => (SOLID, [*c, [0.0; 4], [0.0; 4], [0.0; 4]]),
-            Shader::Linear { inv, start, dir, lut } => {
+        let layer = f.layer.and_then(|l| Some((layer_at.get(l as usize).copied().flatten()?, scene.layers.get(l as usize)?.bounds)));
+        let (kind, rec) = match (&f.shader, layer) {
+            // A layer's pixels at `at`, `w × h`, its top-left at (x0, y0) in surface pixels.
+            (_, Some((at, b))) => (IMAGE, [[u(at), u(b.width() as u32), u(b.height() as u32), 0.0], [u(b.x0 as u32), u(b.y0 as u32), 0.0, 0.0], [0.0; 4], [0.0; 4]]),
+            (_, None) if f.layer.is_some() => (SOLID, [[0.0; 4]; 4]),
+            (Shader::Solid(c), _) => (SOLID, [*c, [0.0; 4], [0.0; 4], [0.0; 4]]),
+            (Shader::Linear { inv, start, dir, lut }, _) => {
                 ramps.extend_from_slice(&lut[..]);
                 let m = inv.m;
                 (LINEAR, [[0.0; 4], [m[0], m[1], m[2], m[3]], [m[4], m[5], start.x, start.y], [dir.x, dir.y, 0.0, 0.0]])
             }
-            Shader::Radial { inv, center, inv_radius, lut } => {
+            (Shader::Radial { inv, center, inv_radius, lut }, _) => {
                 ramps.extend_from_slice(&lut[..]);
                 let m = inv.m;
                 (RADIAL, [[0.0; 4], [m[0], m[1], m[2], m[3]], [m[4], m[5], center.x, center.y], [0.0, 0.0, *inv_radius, 0.0]])
             }
+            // The oracle's bilinear sample of a bitmap (crates/render/src/paint.rs › sample).
+            (Shader::Bitmap { inv, pixels, repeat, fx }, _) => {
+                if pixels.width == 0 || pixels.height == 0 {
+                    (SOLID, [[0.0; 4]; 4])
+                } else {
+                    let slot = match images.iter().position(|p| Arc::ptr_eq(p, pixels)) {
+                        Some(i) => i,
+                        None if images.len() < MAX_IMAGES => {
+                            images.push(pixels.clone());
+                            images.len() - 1
+                        }
+                        None => return Err(NeedsFull::Bitmaps),
+                    };
+                    let m = inv.m;
+                    let (k, alpha, tint, keep) = colour_effect(fx);
+                    (BITMAP, [[u(slot as u32), u(u32::from(*repeat)), u(pixels.width), u(pixels.height)], [m[0], m[1], m[2], m[3]], [m[4], m[5], k, alpha], [tint[0], tint[1], tint[2], u(keep)]])
+                }
+            }
             // `prepare_scene` never hands these over; draw nothing rather than guess.
-            Shader::Bitmap { .. } | Shader::Image { .. } => (SOLID, [[0.0; 4]; 4]),
+            (Shader::Image { .. }, _) => (SOLID, [[0.0; 4]; 4]),
         };
         paints.extend_from_slice(&rec);
         let flags = if op >= nf {
@@ -311,8 +371,34 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         }
     }
     paints.extend_from_slice(&ramps);
+    if paints.len() != PAINT_VEC4S * ops.len() + table_len {
+        // The tables came out another size than counted; never let a layer overlap them.
+        return Err(NeedsFull::Filters);
+    }
 
-    Ok(Binned { tiles_x, tiles_y, index, entries_at: entries_at as u32, ops_at: ops_at as u32, geo, paints, entries: total, pieces, work })
+    Ok(Binned { tiles_x, tiles_y, index, entries_at: entries_at as u32, ops_at: ops_at as u32, geo, paints, paints_len, layer_at, images, entries: total, pieces, work })
+}
+
+/// A colour effect as the shader applies it to each bitmap tap, the same arithmetic as
+/// [`anicraft_doc::ColorEffect::apply`] then `premultiply`'s sanitizing: `(tint amount, alpha,
+/// tint, kept channels)`. Each straight channel `c` becomes `c + (tint − c)·k`, alpha `a·alpha`,
+/// clamped to `0..=1`. A NaN the oracle would carry into a channel (and its sanitizing turn
+/// into 0) is a channel left out of `kept` (bit per channel, red first) instead.
+fn colour_effect(fx: &anicraft_doc::ColorEffect) -> (f32, f32, [f32; 3], u32) {
+    let k = fx.tint_amount.clamp(0.0, 1.0);
+    let alpha = fx.alpha.clamp(0.0, 1.0);
+    let t = [fx.tint.r, fx.tint.g, fx.tint.b];
+    let mut keep = 0u32;
+    let mut tint = [0.0f32; 3];
+    for (i, (&v, out)) in t.iter().zip(tint.iter_mut()).enumerate() {
+        if v.is_finite() && k.is_finite() {
+            keep |= 1 << i;
+            *out = v;
+        }
+    }
+    // A NaN opacity makes every channel 0 (premultiplied by a sanitized alpha of 0).
+    let alpha = if alpha.is_finite() { alpha } else { 0.0 };
+    (if k.is_finite() { k } else { 0.0 }, alpha, tint, keep)
 }
 
 /// Tile row `r`'s streams: per tile, its fills in drawing order with the clip and group

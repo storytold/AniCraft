@@ -35,7 +35,7 @@ impl Xf {
         Vec2::new((p.x - self.origin.x) / self.zoom, (p.y - self.origin.y) / self.zoom)
     }
     /// Stage units per screen point.
-    fn unit(self) -> f32 {
+    pub fn unit(self) -> f32 {
         1.0 / self.zoom.max(1e-3)
     }
 }

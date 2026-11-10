@@ -16,6 +16,7 @@ mod a11y;
 mod actions_panel;
 mod app;
 mod autosave;
+mod brushtool;
 mod camera_tool;
 mod dialogs;
 mod gpu_stage;
@@ -147,11 +148,11 @@ fn main() -> eframe::Result {
             }
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--lang en|ar|auto] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|merge|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie|exporthtml]\n\
+                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--lang en|ar|auto] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|merge|brush|brushing|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie|exporthtml]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --lang       the interface language for this run, over Preferences (needs CRAFT_I18N_DIR at build time)\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
-                     ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer, in builds with the gpu-stage feature (ADR 0019)\n\
+                     ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\
                      --theme      the interface palette for this run (not saved)\n\
                      --scale      the interface scale for this run, 75 to 200 (not saved)\n\
                      Headless use: anicraft-cli --help"

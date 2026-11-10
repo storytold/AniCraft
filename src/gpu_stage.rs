@@ -1,8 +1,10 @@
-//! The GPU stage switch (ADR 0019, ADR 0029). With the `gpu-stage` feature, Preferences ›
-//! Stage › Renderer can hand the stage to the wgpu renderer (`anicraft-gpu`): it starts off the
-//! UI thread, draws what it can, and the CPU oracle draws the rest (filters, bitmaps) and
-//! everything when the GPU is missing or fails. Without the feature this is a stub and the CPU
-//! always draws. Exports never use it.
+//! The GPU stage switch (ADR 0019, ADR 0029, ADR 0032). With the `gpu-stage` feature (on by
+//! default), the stage is drawn by the wgpu renderer (`anicraft-gpu`) unless Preferences ›
+//! Stage › Renderer chooses the CPU: it starts off the UI thread (the CPU draws until it is
+//! ready), draws masks, groups, blend modes, bitmaps and filters, and the CPU oracle draws a
+//! tile it can't (nesting or bitmap counts past its limits) and everything when the GPU is
+//! missing or fails. Without the feature this is a stub and the CPU always draws. Exports never
+//! use it.
 //!
 //! When the window runs on wgpu, the renderer shares the window's device and draws each stage
 //! tile into a texture the window shows as it is (no copy back to the CPU, ADR 0029). When it
@@ -81,8 +83,10 @@ impl GpuStage {
     /// changes). Starting the renderer happens on its own thread and repaints when done.
     #[allow(unused_variables)]
     pub fn sync(&mut self, pref: StageRenderer, svc: &RenderService, ctx: &egui::Context) {
+        // Unit tests never open a graphics device (as they never open an audio one): a start-up
+        // thread still inside the driver when the test process exits can crash it.
         #[cfg(feature = "gpu-stage")]
-        self.imp.sync(wanted(pref) == StageRenderer::Gpu, svc, ctx);
+        self.imp.sync(wanted(pref) == StageRenderer::Gpu && !cfg!(test), svc, ctx);
     }
 
     /// Shows a picture the GPU drew into a texture: registers it with the window's renderer.
