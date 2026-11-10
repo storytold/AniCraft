@@ -17,7 +17,7 @@
 //! its alpha and in its blend mode) when its run ends, as the oracle's band compositor does per
 //! band.
 //!
-//! Bitmap fills (ADR 0031) take one of [`MAX_IMAGES`] texture slots per dispatch, one per
+//! Bitmap fills (ADR 0032) take one of [`MAX_IMAGES`] texture slots per dispatch, one per
 //! distinct image; a filtered group's layer is drawn and filtered by the GPU before the pass and
 //! copied into the paint buffer after the gradient tables, where its fill reads it.
 

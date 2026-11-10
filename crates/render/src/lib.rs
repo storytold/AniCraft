@@ -242,7 +242,7 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
 
 /// Why a display list (or one stage tile of it) needs the full renderer: what another renderer
 /// drawing a prepared [`Scene`] can't (see [`prepare_scene`] and, for the GPU stage's limits,
-/// ADR 0031).
+/// ADR 0032).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NeedsFull {
     /// Mask layers nested deeper than the other renderer handles.

@@ -109,7 +109,7 @@ the CPU until scenes of 50k+ shapes or 8K stages need more (ADR 0029). Small sce
 little per-tile set-up in the tiled stage (1.8 vs 1.1 ms at 1080p); reusing buffers across
 tiles is next.
 
-### GPU stage, third slice: bitmaps and filters, the default stage (M3, ADR 0031)
+### GPU stage, third slice: bitmaps and filters, the default stage (M3, ADR 0032)
 
 Same bench and machine, on Vulkan and on Direct3D 12. The CPU column is also what these
 frames cost the stage before this slice, when bitmaps and filters always fell back to the CPU.
@@ -125,7 +125,7 @@ frames cost the stage before this slice, when bitmaps and filters always fell ba
 Each stage tile a filtered symbol touches draws and filters its own copy of the layer (with
 the filters' reach around the tile), so tiling costs more than on plain scenes; sharing the
 layer across a frame's tiles is next. The one large difference is a single pixel whose centre
-falls within float rounding of a non-repeating bitmap's edge (ADR 0031). Bitmaps are uploaded
+falls within float rounding of a non-repeating bitmap's edge (ADR 0032). Bitmaps are uploaded
 once per image and cached (256 MB budget), so after the first frame they cost no transfer.
 
 ### How budgets are enforced
@@ -166,5 +166,5 @@ buffer is tiny; the stage never waits on sound.
 * [ADR 0019](adr/0019-gpu-stage.md): GPU stage renderer (first slice), parity with the oracle
 * [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md): GPU stage without readback, masks and
   groups on the GPU, binning kept on the CPU
-* [ADR 0031](adr/0031-gpu-stage-bitmaps-filters-default.md): bitmaps and filters on the GPU,
+* [ADR 0032](adr/0032-gpu-stage-bitmaps-filters-default.md): bitmaps and filters on the GPU,
   Direct3D 12, and the GPU as the default stage renderer

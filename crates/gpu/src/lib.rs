@@ -1,4 +1,4 @@
-//! AniCraft GPU stage renderer (layer L3, beside the engine; ADR 0019, ADR 0029, ADR 0031).
+//! AniCraft GPU stage renderer (layer L3, beside the engine; ADR 0019, ADR 0029, ADR 0032).
 //!
 //! Draws the same scene as the CPU oracle (`anicraft-render`) with wgpu compute: the oracle
 //! prepares it ([`anicraft_render::prepare_scene`]: flattening, strokes, paints and their
@@ -7,7 +7,7 @@
 //! fills in order, inside their masks and groups (alpha and blend modes) as the oracle's band
 //! compositor does. Bitmap fills are sampled from textures uploaded once per image
 //! ([`images`]); a filtered symbol is drawn into a layer of its own, filtered by compute passes
-//! that run the oracle's filter steps ([`layers`]), and composited like any fill (ADR 0031).
+//! that run the oracle's filter steps ([`layers`]), and composited like any fill (ADR 0032).
 //! The output is the oracle's within float rounding (the parity tests check mean and maximum
 //! error against it).
 //!

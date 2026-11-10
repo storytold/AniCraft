@@ -138,7 +138,7 @@ fn main() -> eframe::Result {
                     "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|merge|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie|exporthtml]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
-                     ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0031)\n\
+                     ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\
                      --theme      the interface palette for this run (not saved)\n\
                      --scale      the interface scale for this run, 75 to 200 (not saved)\n\
                      Headless use: anicraft-cli --help"

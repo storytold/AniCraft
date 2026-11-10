@@ -1,4 +1,4 @@
-//! Bitmaps on the GPU (ADR 0031): each image is uploaded once, as a straight RGBA8 texture, and
+//! Bitmaps on the GPU (ADR 0032): each image is uploaded once, as a straight RGBA8 texture, and
 //! kept for later frames under a memory budget (least recently used first out).
 //!
 //! The key is the image itself (the `Arc<Pixels>` the display list holds, compared by pointer,

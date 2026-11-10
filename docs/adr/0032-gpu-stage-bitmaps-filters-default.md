@@ -1,4 +1,4 @@
-# ADR 0031: GPU stage, third slice: bitmaps and filters on the GPU, and the GPU as the default stage
+# ADR 0032: GPU stage, third slice: bitmaps and filters on the GPU, and the GPU as the default stage
 
 * Status: accepted (2026-11-09)
 * Relates to: roadmap M3, ADR 0019 (GPU stage, first slice), ADR 0029 (no readback, masks and

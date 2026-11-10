@@ -168,7 +168,7 @@ DisplayList ──► for each item:
   Output is bit-identical to serial. Numbers are in [performance.md](performance.md).
 
 **GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md),
-[ADR 0031](adr/0031-gpu-stage-bitmaps-filters-default.md); the shell's `gpu-stage` feature, on
+[ADR 0032](adr/0032-gpu-stage-bitmaps-filters-default.md); the shell's `gpu-stage` feature, on
 by default, and the default stage renderer): `render::prepare_scene` hands the oracle's own
 prepared fills, with their clips, groups, bitmap shaders and filtered layers, to `anicraft-gpu`, which bins edge pieces into
 16 × 16 tiles with per-row backdrops (CPU, parallel) and writes each tile's stream of entries

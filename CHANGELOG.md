@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **The stage draws on the graphics card by default** (GPU stage, third slice, ADR 0031).
+* **The stage draws on the graphics card by default** (GPU stage, third slice, ADR 0032).
   Bitmap fills and all seven filters (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient
   Bevel, Adjust Color) are now drawn on the GPU too, so documents imported from Animate no
   longer fall back to the CPU. A 4K stage with filtered symbols and a bitmap backdrop draws in

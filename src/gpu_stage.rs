@@ -1,4 +1,4 @@
-//! The GPU stage switch (ADR 0019, ADR 0029, ADR 0031). With the `gpu-stage` feature (on by
+//! The GPU stage switch (ADR 0019, ADR 0029, ADR 0032). With the `gpu-stage` feature (on by
 //! default), the stage is drawn by the wgpu renderer (`anicraft-gpu`) unless Preferences ›
 //! Stage › Renderer chooses the CPU: it starts off the UI thread (the CPU draws until it is
 //! ready), draws masks, groups, blend modes, bitmaps and filters, and the CPU oracle draws a

@@ -45,7 +45,7 @@ pub enum BevelPaint {
 
 /// A filter resolved for one view scale, exactly as [`apply`] runs it: sizes as whole box
 /// widths and pixel offsets, colours sanitized or premultiplied, ramps and colour adjustments as
-/// tables. Other renderers (the GPU stage, ADR 0031) run these steps, so every number they use
+/// tables. Other renderers (the GPU stage, ADR 0032) run these steps, so every number they use
 /// is the oracle's own.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FilterOp {

@@ -25,11 +25,11 @@ silent; import, waveforms and audio export still work). Tests never open an audi
 
 ### GPU stage
 
-The stage draws on the graphics card by default (ADR 0031; the shell's `gpu-stage` feature is
+The stage draws on the graphics card by default (ADR 0032; the shell's `gpu-stage` feature is
 on by default, and the CPU draws when there is no usable card). For a CPU-only shell:
 `cargo run --no-default-features --features sound-output`; to compare at run time,
 `ANICRAFT_STAGE_RENDERER=cpu|gpu`. The `anicraft-gpu` crate builds and tests in every build:
-its parity tests run on the graphics card, else on a software adapter (lavapipe; WARP fails the self-test, ADR 0031), and
+its parity tests run on the graphics card, else on a software adapter (lavapipe; WARP fails the self-test, ADR 0032), and
 skip without either; `ANICRAFT_TEST_GPU=software` forces the software adapter and
 `WGPU_BACKEND=dx12|vulkan|metal` picks the backend. `cargo run --release -p anicraft-gpu
 --example gpu_bench` prints timings and parity.

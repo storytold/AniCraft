@@ -1,4 +1,4 @@
-//! Filters on the GPU (ADR 0031): the host side of `filters.wgsl`.
+//! Filters on the GPU (ADR 0032): the host side of `filters.wgsl`.
 //!
 //! A filtered group's layer is drawn (premultiplied f32) into half 0 of its `img` buffer by the
 //! fine pass, then each of its filters runs as compute passes over it, step for step as the CPU

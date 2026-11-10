@@ -35,12 +35,12 @@ impl RenderMode {
     ];
 }
 
-/// Which renderer draws the stage (ADR 0019, ADR 0031). The GPU takes part in builds with the
+/// Which renderer draws the stage (ADR 0019, ADR 0032). The GPU takes part in builds with the
 /// `gpu-stage` feature (on by default) on a computer with a usable graphics card; elsewhere
 /// the setting is kept but the CPU draws.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StageRenderer {
-    /// The graphics card, the CPU drawing whatever it can't (the default, ADR 0031).
+    /// The graphics card, the CPU drawing whatever it can't (the default, ADR 0032).
     #[default]
     Gpu,
     /// The reference renderer: exact, and what every export uses.
@@ -64,7 +64,7 @@ pub struct Prefs {
     /// Interface scale (1.0 = 100%).
     pub ui_scale: f32,
     pub render_mode: RenderMode,
-    /// Stored as `stage` since the GPU became the default (ADR 0031): every build before wrote
+    /// Stored as `stage` since the GPU became the default (ADR 0032): every build before wrote
     /// the old `stage_renderer` key as `Cpu` without anyone choosing it (no released build had
     /// the choice), so that key is not read.
     #[serde(rename = "stage")]

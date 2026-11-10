@@ -1,4 +1,4 @@
-//! GPU stage timings and parity against the CPU oracle (ADR 0019, ADR 0029, ADR 0031; numbers
+//! GPU stage timings and parity against the CPU oracle (ADR 0019, ADR 0029, ADR 0032; numbers
 //! in docs/performance.md).
 //!
 //! ```sh
@@ -85,7 +85,7 @@ fn bitmap_layer(id: u64, n: u32, bitmaps: &[Arc<Bitmap>], frames: u32) -> Arc<La
         let b = &bitmaps[i as usize % bitmaps.len()];
         let (x, y) = ((i % 20) as f32 * 64.0, (i / 20) as f32 * 72.0);
         let fill = Paint::Bitmap { bitmap: b.id, repeat: i % 3 == 0, matrix: Affine::translate(x, y).mul(&Affine::rotate(i as f32 * 0.1)).mul(&Affine::scale(0.4, 0.4)) };
-        let shape = Shape { path: Arc::new(Path::ellipse(x + 40.0, y + 40.0, 60.0, 45.0)), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero };
+        let shape = Shape { merge: false, path: Arc::new(Path::ellipse(x + 40.0, y + 40.0, 60.0, 45.0)), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero };
         k.elements.push(Arc::new(Element { id: ElementId(id * 10_000 + u64::from(i)), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) }));
     }
     let mut l = Layer::new(LayerId(id), "Bitmaps");
@@ -129,7 +129,7 @@ fn filtered() -> Document {
         let mut layer = bitmap_layer(91_000, 0, std::slice::from_ref(&sky), frames);
         let l = Arc::make_mut(&mut layer);
         let fill = Paint::Bitmap { bitmap: sky.id, repeat: true, matrix: Affine::scale(5.0, 5.0) };
-        let shape = Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero };
+        let shape = Shape { merge: false, path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero };
         if let Some(k) = l.keyframes.first_mut() {
             Arc::make_mut(k).elements.push(Arc::new(Element { id: ElementId(91_001), name: "sky".into(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) }));
         }

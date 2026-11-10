@@ -669,7 +669,7 @@ fn gpu_renders_from_many_threads_at_once() {
     assert!(all.iter().all(|a| *a == first), "deterministic under concurrency");
 }
 
-// ----- bitmaps and filters (ADR 0031) ---------------------------------------------------------
+// ----- bitmaps and filters (ADR 0032) ---------------------------------------------------------
 
 /// A `w × h` test image: a hue ramp with an alpha ramp, so every tap and every seam differs.
 fn pixels(w: u32, h: u32, seed: u32) -> Arc<anicraft_doc::Pixels> {
@@ -850,7 +850,7 @@ fn gpu_matches_the_oracle_on_filtered_symbols_in_context() {
     }
 }
 
-/// The composited sample with what ADR 0031 adds, as artists use it: the ball casts a drop
+/// The composited sample with what ADR 0032 adds, as artists use it: the ball casts a drop
 /// shadow and is bevelled, the star glows, and a bitmap fills the sky.
 fn filtered_sample() -> anicraft_doc::Document {
     use anicraft_doc::Filter as F;
@@ -872,7 +872,7 @@ fn filtered_sample() -> anicraft_doc::Document {
             }
         }
     }
-    let shape = anicraft_doc::Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), fill: Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(77), repeat: true, matrix: Affine::scale(5.0, 5.0) }), stroke: None, fill_rule: FillRule::NonZero };
+    let shape = anicraft_doc::Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), merge: false, fill: Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(77), repeat: true, matrix: Affine::scale(5.0, 5.0) }), stroke: None, fill_rule: FillRule::NonZero };
     let sky = anicraft_doc::Element { id: ElementId(9_100), name: "sky".into(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) };
     let frames = doc.frame_count();
     let mut k = anicraft_doc::Keyframe::new(0, frames);
