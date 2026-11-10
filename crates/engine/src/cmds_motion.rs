@@ -559,5 +559,7 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
     // Where the object is (on a motion path the X/Y values are its timing, not its place).
     let position = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i)).map(|e| m.apply(e, (frame - kf.start) as f32).transform.translation()).map(|q| json!([q.x, q.y]));
     let path = path_summary(m);
-    Ok(json!({"layer": lid.0, "start": kf.start, "frames": kf.duration, "target": m.target.0, "tracks": tracks, "values": values, "position": position, "path": path["path"], "orient": m.orient}))
+    // The anchors point edits address: the path's own, or the straight path's (ADR 0038).
+    let anchors: Vec<[f32; 2]> = m.path.clone().or_else(|| base.and_then(|b| m.path_from_tracks(&b))).map(|p| p.anchors().into_iter().map(|(_, q)| [q.x, q.y]).collect()).unwrap_or_default();
+    Ok(json!({"layer": lid.0, "start": kf.start, "frames": kf.duration, "target": m.target.0, "tracks": tracks, "values": values, "position": position, "path": path["path"], "anchors": anchors, "orient": m.orient}))
 }
