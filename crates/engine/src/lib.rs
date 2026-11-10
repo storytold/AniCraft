@@ -17,6 +17,7 @@ mod cmds_motion;
 mod cmds_hints;
 mod cmds_paint;
 mod cmds_path;
+pub mod cmds_raw;
 mod cmds_recovery;
 mod cmds_script;
 pub mod cmds_plugin;
@@ -109,6 +110,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
+    v.extend(cmds_raw::specs());
     v.extend(cmds_brush::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
@@ -227,6 +229,33 @@ pub struct Session {
     /// A name for the undo step the running command records, set by the command
     /// (`plugin.run` names its step after the plug-in).
     pub(crate) step_label: Option<String>,
+    /// A marquee's cut that nothing has used yet (ADR 0041).
+    provisional: Option<Provisional>,
+    /// Set by `raw.select_rect` when it cut: each piece and the shape it was cut from, and the
+    /// pieces inside the marquee.
+    pub(crate) pending_cut: Option<(CutOrigin, Vec<ElementId>)>,
+    /// The open gesture began on a provisional cut: the document with the cut.
+    gesture_cut: Option<Document>,
+}
+
+/// Each piece of a marquee's cut, with the shape it was cut from.
+pub(crate) type CutOrigin = Vec<(ElementId, ElementId)>;
+
+/// A marquee's cut that nothing has used yet (ADR 0041). In Animate a marquee only selects: the
+/// drawing is cut where it crosses once the selection is moved or changed. Here the cut happens
+/// at once (the parts must be elements to be selected) and records no undo step. It is taken
+/// back as soon as the selection lets go of its pieces with nothing else changed; the first edit
+/// that uses it records one step from before the cut.
+struct Provisional {
+    /// Before the cut.
+    before: history::Snapshot,
+    /// The document with the cut, and its state.
+    cut: Document,
+    state: history::StateId,
+    /// Each piece and the shape it was cut from.
+    origin: Vec<(ElementId, ElementId)>,
+    /// The pieces inside the marquee(s): while one of them is selected, the cut is in use.
+    inside: Vec<ElementId>,
 }
 
 impl Default for Session {
@@ -267,6 +296,9 @@ impl Session {
             motion_edit: None,
             plugins: anicraft_plugins::Registry::default(),
             step_label: None,
+            provisional: None,
+            pending_cut: None,
+            gesture_cut: None,
         }
     }
 
@@ -304,16 +336,35 @@ impl Session {
     /// Starts coalescing: every mutating command until [`Session::end_gesture`] becomes a single
     /// undo step labelled `label` (used for drags, so a move is one step, not sixty).
     pub fn begin_gesture(&mut self, label: &str) {
-        if self.gesture.is_none() {
-            self.gesture = Some(self.snapshot(label));
+        if self.gesture.is_some() {
+            return;
+        }
+        // On a marquee's cut, the step (if the gesture makes one) starts from before the cut.
+        let cut = self.live_cut().map(|p| (history::Snapshot { label: label.to_string(), ..p.before.clone() }, p.cut.clone()));
+        match cut {
+            Some((before, doc)) => {
+                self.gesture_cut = Some(doc);
+                self.gesture = Some(before);
+            }
+            None => self.gesture = Some(self.snapshot(label)),
         }
     }
 
     /// Ends the open gesture, recording one undo step if the document changed.
     pub fn end_gesture(&mut self) {
-        if let Some(before) = self.gesture.take()
-            && self.doc != before.doc
-        {
+        let cut = self.gesture_cut.take();
+        let Some(before) = self.gesture.take() else { return };
+        if let Some(cut) = &cut {
+            if self.doc == *cut {
+                // Nothing used the marquee's cut: it stays provisional.
+                if let Some(p) = &self.provisional {
+                    self.state = p.state;
+                }
+                return;
+            }
+            self.provisional = None;
+        }
+        if self.doc != before.doc {
             self.history.record(before, &self.doc);
         }
     }
@@ -349,12 +400,22 @@ impl Session {
         {
             return Err(EngineError::NeedsConfirmation(format!("{} {} (pass \"confirm\": true to proceed)", c.title, c.message)));
         }
+        self.settle_cut(id, params);
         if !spec.mutates {
-            return (spec.run)(self, params);
+            let r = (spec.run)(self, params);
+            self.settle_cut(id, params);
+            return r;
         }
-        let mut before = self.snapshot(spec.label);
+        // An edit on a marquee's cut records its step from before the cut (ADR 0041).
+        let cut = self.live_cut().map(|p| (history::Snapshot { label: spec.label.to_string(), ..p.before.clone() }, p.cut.clone()));
+        let rollback = cut.as_ref().map(|_| self.snapshot(spec.label));
+        let mut before = match &cut {
+            Some((b, _)) => b.clone(),
+            None => self.snapshot(spec.label),
+        };
         // A command must never observe a display list of the state it is changing.
         self.dl_cache.replace(None);
+        self.pending_cut = None;
         self.motion_edit = None;
         self.step_label = None;
         let result = (spec.run)(self, params);
@@ -368,24 +429,105 @@ impl Session {
         if let Some(label) = self.step_label.take() {
             before.label = label;
         }
+        let pending = self.pending_cut.take();
         match result {
             Ok(v) => {
-                // O(changed): unchanged subtrees compare by pointer.
-                if self.doc != before.doc {
+                let changed = match &cut {
+                    Some((_, doc)) => self.doc != *doc,
+                    // O(changed): unchanged subtrees compare by pointer.
+                    None => self.doc != before.doc,
+                };
+                if changed {
                     self.state = history::fresh_state();
                     self.revision += 1;
-                    if self.gesture.is_none() {
-                        self.history.record(before, &self.doc);
+                    match pending.filter(|_| self.gesture.is_none()) {
+                        // A marquee's cut: provisional, no step (yet).
+                        Some((origin, inside)) => self.begin_cut(before, cut.is_some(), origin, inside),
+                        None => {
+                            if cut.is_some() {
+                                self.provisional = None;
+                            }
+                            if self.gesture.is_none() && self.doc != before.doc {
+                                self.history.record(before, &self.doc);
+                            }
+                        }
                     }
                 }
                 self.fix_selection();
                 Ok(v)
             }
             Err(e) => {
-                self.restore(before);
+                // Back to the cut, which stays provisional, or to before the command.
+                self.restore(rollback.unwrap_or(before));
                 Err(e)
             }
         }
+    }
+
+    /// The marquee's cut, while nothing has changed since it.
+    fn live_cut(&self) -> Option<&Provisional> {
+        self.provisional.as_ref().filter(|p| p.state == self.state && self.gesture.is_none())
+    }
+
+    /// Keeps a marquee's cut provisional. `before` is the document before it; `chained` when
+    /// it cut a provisional cut again (Shift), whose pieces then lead back to the shapes the
+    /// first cut took.
+    fn begin_cut(&mut self, before: history::Snapshot, chained: bool, origin: Vec<(ElementId, ElementId)>, inside: Vec<ElementId>) {
+        let (mut origin, mut inside) = (origin, inside);
+        if chained && let Some(p) = self.provisional.take() {
+            inside.extend(p.inside.iter().copied());
+            for o in &mut origin {
+                if let Some(&(_, first)) = p.origin.iter().find(|(piece, _)| *piece == o.1) {
+                    o.1 = first;
+                }
+            }
+            let new: Vec<ElementId> = origin.iter().map(|o| o.0).collect();
+            origin.extend(p.origin.into_iter().filter(|(piece, _)| !new.contains(piece)));
+        }
+        // A marquee alone leaves the document as it was saved.
+        if self.saved_state == Some(before.state) {
+            self.saved_state = Some(self.state);
+        }
+        self.provisional = Some(Provisional { before, cut: self.doc.clone(), state: self.state, origin, inside });
+    }
+
+    /// Takes back a provisional cut that the selection has let go of (none of the pieces inside
+    /// the marquee is selected), and before saving, undo, redo or a new marquee.
+    fn settle_cut(&mut self, id: &str, params: &Value) {
+        if self.gesture.is_none() && self.provisional.as_ref().is_some_and(|p| p.state != self.state) {
+            self.provisional = None;
+        }
+        let Some(p) = self.live_cut() else { return };
+        let held = self.selection.iter().any(|s| p.inside.contains(s));
+        let fresh_marquee = id == "raw.select_rect" && params.get("add").and_then(Value::as_bool) != Some(true);
+        if !held || fresh_marquee || id.starts_with("file.") || id == "edit.undo" || id == "edit.redo" {
+            self.heal_cut();
+        }
+    }
+
+    /// Puts the document back as it was before a provisional cut. Selected pieces become the
+    /// shapes they were cut from.
+    fn heal_cut(&mut self) {
+        let Some(p) = self.provisional.take() else { return };
+        if p.state != self.state || self.gesture.is_some() {
+            return;
+        }
+        let mut sel: Vec<ElementId> = Vec::with_capacity(self.selection.len());
+        for id in &self.selection {
+            let id = p.origin.iter().find(|(piece, _)| piece == id).map_or(*id, |o| o.1);
+            if !sel.contains(&id) {
+                sel.push(id);
+            }
+        }
+        if self.saved_state == Some(p.state) {
+            self.saved_state = Some(p.before.state);
+        }
+        self.doc = p.before.doc;
+        self.state = p.before.state;
+        self.selection = sel;
+        self.dl_cache.replace(None);
+        self.revision += 1;
+        self.fix_selection();
     }
 
     /// Runs a command inside another one (a plug-in's requests during `plugin.run`): checked
@@ -405,6 +547,7 @@ impl Session {
         self.dl_cache.replace(None);
         let result = (spec.run)(self, params);
         self.dl_cache.replace(None);
+        self.pending_cut = None;
         match result {
             Ok(v) => {
                 // Later requests must see this change (display list, hit tests): new state.
@@ -424,6 +567,10 @@ impl Session {
     /// Puts the document back where the open gesture started, keeping the gesture open. A
     /// live preview re-runs from the same start on every change, and Cancel leaves no step.
     pub fn revert_gesture(&mut self) {
+        if self.gesture_cut.is_some() {
+            // Back to before the marquee's cut: it is gone.
+            self.provisional = None;
+        }
         let Some(g) = &self.gesture else { return };
         if g.doc == self.doc && g.selection == self.selection {
             return;
@@ -463,6 +610,7 @@ impl Session {
 
     pub fn undo(&mut self) -> Result<Value> {
         self.end_gesture();
+        self.heal_cut();
         let cur = self.snapshot("");
         let s = self.history.undo(cur).ok_or_else(|| EngineError::State("nothing to undo".into()))?;
         let label = s.label.clone();
@@ -474,6 +622,7 @@ impl Session {
 
     pub fn redo(&mut self) -> Result<Value> {
         self.end_gesture();
+        self.heal_cut();
         let cur = self.snapshot("");
         let s = self.history.redo(cur).ok_or_else(|| EngineError::State("nothing to redo".into()))?;
         let label = s.label.clone();
@@ -737,6 +886,8 @@ mod tests_script;
 mod tests_camera;
 #[cfg(test)]
 mod merge_tests;
+#[cfg(test)]
+mod raw_tests;
 #[cfg(test)]
 mod brush_tests;
 #[cfg(test)]

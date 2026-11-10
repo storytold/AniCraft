@@ -10,6 +10,7 @@ pub mod clip;
 pub mod edit;
 pub mod morph;
 pub mod planar;
+pub mod raw;
 mod fit;
 mod path;
 pub mod svg;
