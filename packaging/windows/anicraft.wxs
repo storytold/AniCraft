@@ -83,6 +83,8 @@
         <RegistryValue Root="HKMU" Key="Software\Classes\Anicraft.Import\shell\open\command" Value="&quot;[#AnicraftExe]&quot; &quot;%1&quot;" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\Classes\.fla\OpenWithProgids" Name="Anicraft.Import" Value="" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\Classes\.xfl\OpenWithProgids" Name="Anicraft.Import" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\.moho\OpenWithProgids" Name="Anicraft.Import" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\.mohoproj\OpenWithProgids" Name="Anicraft.Import" Value="" Type="string" />
 
         <!-- The "Open with" app list and the Run dialog (Win+R "anicraft"). -->
         <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe" Name="FriendlyAppName" Value="AniCraft" Type="string" />
@@ -90,6 +92,8 @@
         <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".anicraft" Value="" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".fla" Value="" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".xfl" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".moho" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\anicraft.exe\SupportedTypes" Name=".mohoproj" Value="" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\anicraft.exe" Value="[#AnicraftExe]" Type="string" />
         <RegistryValue Root="HKMU" Key="Software\AniCraft" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
       </Component>
