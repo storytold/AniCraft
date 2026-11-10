@@ -147,7 +147,7 @@ pub fn demo() -> Document {
 /// whose last frame traces a line and goes back to the menu.
 pub fn interactive() -> Document {
     use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, Target};
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), maop_maohou: None, next_id: 1 };
     const LEN: u32 = 36;
     let solid = |c: u32| Paint::Solid(Rgba::hex(c));
 
