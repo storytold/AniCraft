@@ -113,6 +113,22 @@ const ERASED: u32 = u32::MAX;
 /// and returns them with the ids of the pieces whose topmost source part was marked. `None` when
 /// there is too much to merge at once.
 pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Element>>, Vec<ElementId>)> {
+    remerge_with(s, parts, None).map(|r| (r.out, r.picked))
+}
+
+/// What [`remerge_with`] makes.
+pub(crate) struct Remerged {
+    pub out: Vec<Arc<Element>>,
+    /// Pieces whose topmost source part was marked.
+    pub picked: Vec<ElementId>,
+    /// Pieces inside the cutter (ADR 0041).
+    pub inside: Vec<ElementId>,
+    /// Each piece and the index in `parts` of its topmost source.
+    pub from: Vec<(ElementId, usize)>,
+}
+
+/// [`remerge`], cutting along `cutter` too when there is one ([`planar::merge_cut`]).
+pub(crate) fn remerge_with(s: &mut Session, parts: &[Part], cutter: Option<&Path>) -> Option<Remerged> {
     // Style tables: equal entries are one style to the merge.
     let mut fills: Vec<(Paint, ColorEffect)> = Vec::new();
     let mut strokes: Vec<(Stroke, ColorEffect)> = Vec::new();
@@ -137,9 +153,14 @@ pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Elemen
         }
     }
     let items: Vec<Item> = paths.iter().zip(&styles).map(|(path, &(fill, stroke, fill_rule))| Item { path, fill, fill_rule, stroke }).collect();
-    let merged = planar::merge(&items)?;
+    let merged = match cutter {
+        Some(c) => planar::merge_cut(&items, c)?,
+        None => planar::merge(&items)?,
+    };
+    // Item numbers back to part numbers (parts that are not raw shapes made no item).
+    let part_of: Vec<usize> = parts.iter().enumerate().filter(|(_, p)| !matches!(p, Part::Shape(e, _) if mergeable(e).is_none())).map(|(i, _)| i).collect();
     let mut out: Vec<Arc<Element>> = Vec::with_capacity(merged.fills.len() + merged.strokes.len());
-    let mut picked = Vec::new();
+    let (mut picked, mut inside, mut from) = (Vec::new(), Vec::new(), Vec::new());
     for (piece, is_fill) in merged.fills.iter().map(|p| (p, true)).chain(merged.strokes.iter().map(|p| (p, false))) {
         let (fill, stroke, color) = if is_fill {
             // Erased regions (and anything without a style) are left out.
@@ -155,6 +176,12 @@ pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Elemen
         if marked.get(piece.item).copied().unwrap_or(false) {
             picked.push(id);
         }
+        if piece.inside {
+            inside.push(id);
+        }
+        if let Some(&part) = part_of.get(piece.item) {
+            from.push((id, part));
+        }
         out.push(Arc::new(Element {
             id,
             name: String::new(),
@@ -163,7 +190,7 @@ pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Elemen
             kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill, stroke, fill_rule: Default::default(), merge: true }),
         }));
     }
-    Some((out, picked))
+    Some(Remerged { out, picked, inside, from })
 }
 
 /// Replaces the keyframe's elements at `taken` (ascending indices) with `out`, placed where the

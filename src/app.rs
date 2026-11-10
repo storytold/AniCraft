@@ -176,6 +176,15 @@ pub struct StageView {
 pub enum Drag {
     None,
     Move { last: egui::Pos2 },
+    /// Selection tool: moving the selection, snapping as it goes (ADR 0041): from stage point
+    /// `start`, `applied` moved so far.
+    SnapMove { start: egui::Pos2, applied: egui::Vec2 },
+    /// Selection tool: bending segment `cmd` of raw shape `id` at `t` (ADR 0041); the pointer
+    /// was at `last` last frame.
+    Bend { id: anicraft_engine::doc::ElementId, cmd: usize, t: f32, last: egui::Pos2 },
+    /// Selection tool: moving a shared corner or end (ADR 0041), now at `at`; `off` is from the
+    /// pointer to the point. The points that move are `App::raw_points`.
+    RawPoint { at: egui::Pos2, off: egui::Vec2 },
     Marquee { start: egui::Pos2, cur: egui::Pos2 },
     Shape { start: egui::Pos2, cur: egui::Pos2 },
     /// Subselection: dragging the selected points (stage position of the last frame).
@@ -299,6 +308,12 @@ pub struct App {
     pub pen: Option<pathtools::PenPath>,
     /// Pencil samples of the stroke in progress (stage space).
     pub pencil: Vec<anicraft_engine::geom::Vec2>,
+    /// A Selection-tool point drag's points (`raw.move_point`'s `points`), and the raw shapes a
+    /// bend or point drag changed (merged again when it ends; ADR 0041).
+    pub raw_points: serde_json::Value,
+    pub raw_touched: Vec<u64>,
+    /// Where what is being dragged snapped this frame (stage space): the snap ring.
+    pub snap_ring: Option<anicraft_engine::geom::Vec2>,
     pub pencil_mode: pathtools::PencilMode,
     /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
     /// when there is one) and the pen's last pressure (ADR 0033).
@@ -462,6 +477,9 @@ impl App {
             rect_radius: 0.0,
             pen: None,
             pencil: Vec::new(),
+            raw_points: serde_json::Value::Null,
+            raw_touched: Vec::new(),
+            snap_ring: None,
             pencil_mode: pathtools::PencilMode::default(),
             brush: crate::brushtool::BrushOptions::default(),
             brush_samples: Vec::new(),
@@ -829,6 +847,37 @@ impl App {
                     self.run(id, p);
                 }
                 self.run("element.select_connected", json!({"x": 520, "y": 400}));
+                self.tool = Tool::Select;
+            }
+            Some(which @ ("rawparts" | "rawedit")) => {
+                // The Selection tool on raw shapes (ADR 0041) on a new layer: a rectangle with its
+                // outline, an oval and a line that cut each other.
+                self.run("layer.new", json!({}));
+                for (id, p) in [
+                    ("draw.rect", json!({"x": 180, "y": 120, "w": 300, "h": 200, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.ellipse", json!({"x": 360, "y": 210, "w": 240, "h": 240, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.line", json!({"x0": 140, "y0": 420, "x1": 680, "y1": 140, "stroke": "#d6336c", "stroke_width": 3})),
+                ] {
+                    let mut p = p;
+                    p["object"] = json!(false);
+                    self.run(id, p);
+                }
+                self.run("edit.deselect", json!({}));
+                if which == "rawparts" {
+                    // A marquee over the middle: the parts under it are selected, cut at its edges.
+                    self.run("raw.select_rect", json!({"x0": 300, "y0": 170, "x1": 470, "y1": 330}));
+                } else {
+                    // The top edge bent upwards, the bottom-left corner pulled out, and the
+                    // rectangle's top-right corner being dragged onto the line (the snap ring).
+                    self.run("path.bend_segment", json!({"x": 260, "y": 120, "dx": 0, "dy": -60}));
+                    self.run("raw.move_point", json!({"x": 180, "y": 320, "to_x": 130, "to_y": 350}));
+                    self.s.begin_gesture(tr_noop!("Move Point"));
+                    let r = self.run("raw.move_point", json!({"x": 480, "y": 120, "to_x": 520, "to_y": 214, "snap": 10, "merge": false}));
+                    let f = |k: &str| r.as_ref().and_then(|v| v.get(k)).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    self.raw_points = r.as_ref().and_then(|v| v.get("points")).cloned().unwrap_or(Value::Null);
+                    self.snap_ring = r.as_ref().and_then(|v| v.get("snapped")).filter(|v| v.is_object()).map(|_| anicraft_engine::geom::Vec2::new(f("x"), f("y")));
+                    self.drag = Drag::RawPoint { at: egui::pos2(f("x"), f("y")), off: egui::Vec2::ZERO };
+                }
                 self.tool = Tool::Select;
             }
             Some(which @ ("brush" | "brushing")) => {

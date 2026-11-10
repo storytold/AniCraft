@@ -21,6 +21,29 @@
     on new interface text that skips them. Not yet: engine messages, right-to-left languages
     (egui can't lay them out yet), Chinese, Japanese and Korean (need a font).
 
+* **The Selection tool on raw drawings** (ADR 0041, issue #42). With Object Drawing off, the
+  Selection tool now edits raw strokes and fills the way Animate does:
+  * Drag an unselected line or the edge of a fill to **bend** it. The segment becomes a curve
+    through the point you drag, its ends stay put, and a fill under an outline (or next to it)
+    bends with it. Straight lines stay straight until you drag them.
+  * Drag an unselected **corner or end** to move it. Every raw shape that shares the point
+    moves with it, so the drawing stays joined; where a line ends on an edge, the edge moves
+    too.
+  * Drag a fill to move only that fill, not its outline. Drag anything selected to move the
+    selection.
+  * A small corner or curve mark next to the pointer shows what a drag will do.
+  * Dragged points and selections **snap** to corners, ends, lines and fill edges within 10
+    screen pixels, at any zoom, with a ring where they snap. Arrow-key nudges join ends within
+    0.2 px at their midpoint, and an end that comes within 0.2 px of a line goes onto it
+    without changing the line.
+  * The **marquee** selects the parts of raw fills and lines under it, cut at its edges, and
+    objects wholly inside it; Shift adds more. If you click away without changing them, the
+    drawing is whole again: selecting is never an undo step and leaves a saved file saved.
+  * Each drag is one undo step, and what it changed merges again when you let go.
+
+  Headless: `path.bend_segment`, `raw.move_point`, `raw.select_rect`, `raw.merge`, `raw.hit`,
+  and `snap`/`from` on `element.translate`; plug-ins may call them.
+
 * **Sound effects, layer volume and sounds inside symbols** (ADR 0039, M5 second slice).
   * Properties › Sound has an **Effect**, as in Animate: Left channel, Right channel, Fade left
     to right, Fade right to left, Fade in and Fade out, shaped over the time the sound is

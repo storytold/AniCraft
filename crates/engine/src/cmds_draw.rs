@@ -24,7 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("edit.duplicate", "Duplicate", "Edit", Some("Ctrl+D"), "{dx?, dy?}", true, duplicate),
         c("element.select", "Select Elements", "", None, "{ids: [..], add?: bool}", false, select),
         c("element.pick", "Select at Point", "", None, "{x, y, add?: bool}", false, pick),
-        c("element.translate", "Move", "", None, "{dx, dy}", true, translate),
+        c("element.translate", "Move", "", None, "{dx, dy, snap?, from?: [x, y]} moves the selection; with `snap` (a distance) one of its corners or ends (the nearest to `from`) then snaps onto a point, line or fill edge of the rest within that distance", true, translate),
         c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, set_transform),
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, set_fill),
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..]}", true, set_stroke),
@@ -227,13 +227,32 @@ fn pick(s: &mut Session, p: &Value) -> Result<Value> {
 // ----- element edits ----------------------------------------------------------------------
 
 fn translate(s: &mut Session, p: &Value) -> Result<Value> {
-    let (dx, dy) = (f32_req(p, "dx")?, f32_req(p, "dy")?);
+    let (mut dx, mut dy) = (f32_req(p, "dx")?, f32_req(p, "dy")?);
+    let snap = opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0);
+    let from = match p.get("from").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => {
+            let xy = v.as_array().filter(|a| a.len() == 2).and_then(|a| Some(Vec2::new(a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32)));
+            Some(xy.filter(|q| q.is_finite()).ok_or_else(|| EngineError::Param("param 'from' must be [x, y]".into()))?)
+        }
+    };
     let els = s.selected_elements_mut()?;
     let n = els.len();
     for e in els {
         e.transform = Affine::translate(dx, dy).mul(&e.transform);
     }
-    Ok(json!({"moved": n}))
+    // Snapping while dragging (ADR 0041): a little more, onto what is near.
+    let mut snapped = Value::Null;
+    if snap > 0.0
+        && let Some((extra, at, kind)) = crate::cmds_raw::snap_selection(s, snap, from)
+    {
+        for e in s.selected_elements_mut()? {
+            e.transform = Affine::translate(extra.x, extra.y).mul(&e.transform);
+        }
+        (dx, dy) = (dx + extra.x, dy + extra.y);
+        snapped = json!({"x": at.x, "y": at.y, "to": kind.key()});
+    }
+    Ok(json!({"moved": n, "dx": dx, "dy": dy, "snapped": snapped}))
 }
 
 fn set_transform(s: &mut Session, p: &Value) -> Result<Value> {
