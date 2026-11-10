@@ -112,9 +112,9 @@ the program; nothing was copied.
     to points and strokes within 10 screen pixels~~ (and keyboard moves within 0.2), ~~moving
     a point to move every shape that shares it~~ (with the Selection tool) and ~~a marquee
     that selects parts of fills and strokes~~: done in ADR 0041;
-  * moving shared points with the Subselection tool and its arrows;
+  * ~~moving shared points with the Subselection tool and its arrows~~ and ~~Subselection
+    anchors and handles of connected raw shapes~~: done in ADR 0042;
   * a marquee that selects across layers (ADR 0041 keeps a selection on one layer);
-  * Subselection anchors and handles of connected raw shapes;
-  * merging the Paint Bucket's fills and pasted raw shapes;
-  * importing Animate's raw shapes (XFL) as raw shapes;
-  * gradients and width profiles in the merge.
+  * ~~merging the Paint Bucket's fills and pasted raw shapes~~ and ~~importing Animate's raw
+    shapes (XFL) as raw shapes~~: done in ADR 0042;
+  * ~~gradients~~ (ADR 0042) and width profiles in the merge (ADR 0042 says why profiles wait).

@@ -378,3 +378,15 @@ fn subselection_timings() {
         open.as_secs_f64() * 1e3
     );
 }
+
+#[test]
+fn the_eraser_takes_gradient_fills_too() {
+    let mut s = raw_session();
+    s.style.fill_paint = Some(linear());
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 100, "stroke": null}));
+    let before: f32 = fills(&s).iter().map(|e| area(e)).sum();
+    run(&mut s, "draw.erase", json!({"points": [[100, -20], [100, 120]], "size": 20}));
+    let after: f32 = fills(&s).iter().map(|e| area(e)).sum();
+    assert_eq!(fills(&s).len(), 2, "cut in two");
+    assert!(before - after > 1500.0, "{before} → {after}");
+}
