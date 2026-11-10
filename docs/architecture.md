@@ -120,7 +120,7 @@ iterations and a bisection fallback, the same model CSS uses.
 
 Interactivity is time as a function too (ADR 0013, ADR 0024). Keyframes and button or movie
 clip instances carry lists of typed actions (`anicraft-actions`) or a frame-script plug-in
-entry; nothing in the document changes while a movie plays. `player::step(doc, &state,
+entry, or keep a script in another language verbatim (ADR 0013 tier 1: `FrameScript::Source`, which the player skips); nothing in the document changes while a movie plays. `player::step(doc, &state,
 &events, scripts) -> Step` advances a `PlayerState` (the main timeline's scene and playhead,
 each movie clip instance's playhead by its element-id path, script-set properties, the
 pointer) by one frame, runs the actions of the frames entered and routes pointer events to
