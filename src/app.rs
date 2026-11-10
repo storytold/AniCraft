@@ -394,8 +394,10 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
+        #[cfg_attr(not(gpu_stage), allow(unused_mut))]
         let mut app = App::with_context(&cc.egui_ctx, session, shot);
         // The GPU stage shares the window's device when it runs on wgpu (ADR 0029).
+        #[cfg(gpu_stage)]
         app.stage_cache.gpu.set_window_device(cc.wgpu_render_state.as_ref());
         app
     }
@@ -413,7 +415,9 @@ impl App {
         // Text lays out with the fonts on this computer plus the embedded interface font (so new
         // text has the same default everywhere). Scan them now, off the UI thread.
         anicraft_engine::text::Fonts::register(crate::theme::embedded_fonts());
-        std::thread::spawn(|| {
+        // (No thread in a browser, ADR 0036: there the library is only the embedded faces and
+        // is built on first use.)
+        let _ = std::thread::Builder::new().name("anicraft-font-scan".into()).spawn(|| {
             let _ = anicraft_engine::text::Fonts::get();
         });
         let mut session = session;
@@ -535,12 +539,30 @@ impl App {
     }
 
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
-        match self.s.execute(id, &params) {
+        let result = self.s.execute(id, &params);
+        if platform::WEB && id.starts_with("file.") {
+            // In a browser, what a save or an export wrote is in memory: hand it to the
+            // browser as downloads (ADR 0036).
+            platform::deliver(anicraft_engine::vfs::take_written());
+        }
+        match result {
             Ok(v) => Some(v),
             Err(e) => {
                 self.status_err(e.to_string());
                 None
             }
+        }
+    }
+
+    /// A file the browser handed over: it goes where the command reads it, and the command runs
+    /// (through `request`, so opening over unsaved work asks first).
+    fn open_picked(&mut self, p: platform::Picked) {
+        // Only the name: the browser never says which folder it came from.
+        let name: String = std::path::Path::new(&p.name).file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().chars().take(128).collect());
+        let path = std::path::PathBuf::from(&name);
+        match p.data.and_then(|data| anicraft_engine::vfs::put(&path, data).map_err(|e| e.to_string())) {
+            Ok(()) => self.request(p.cmd, json!({"path": name})),
+            Err(e) => self.status_err(format!("Could not open {name}: {e}")),
         }
     }
 
@@ -1013,7 +1035,19 @@ impl App {
     /// Runs a command and reports the outcome; routine destructive edits say how to undo.
     pub fn perform(&mut self, id: &str, params: Value) -> Option<Value> {
         let selected = self.s.selection.len();
+        // A browser's autosaved copy opens as a file (ADR 0036): it is a restore all the same.
+        let restored = autosave::restored_session(id, &params);
         let v = self.run(id, params)?;
+        if let Some(session) = restored {
+            self.view.fit = true;
+            self.frame_sel = None;
+            self.library_sel = LibraryItem::first(&self.s.doc);
+            self.decode_sounds();
+            self.recovery.restored(&session);
+            let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
+            self.status_ok(format!("Restored “{name}”. It isn't saved yet: Save to keep it."));
+            return Some(v);
+        }
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
@@ -1043,7 +1077,8 @@ impl App {
                 self.status_ok("Discarded the autosaved copy");
             }
             "file.save" | "file.save_as" => {
-                self.status_ok(format!("Saved {}", v["saved"].as_str().unwrap_or("")));
+                // In a browser the file goes to the downloads (ADR 0036).
+                self.status_ok(format!("Saved {}{}", v["saved"].as_str().unwrap_or(""), if platform::WEB { " to your downloads" } else { "" }));
                 if self.close_after_save {
                     self.allow_close = true;
                 }
@@ -1147,6 +1182,10 @@ impl App {
             "edit.paste" if self.timeline_focus && !self.s.frame_clipboard.is_empty() => "timeline.paste_frames",
             other => other,
         };
+        if let Some(why) = platform::unavailable(id) {
+            self.status_err(why);
+            return;
+        }
         if id == "timeline.paste_frames"
             && let Some(p) = timeline::paste_params(self)
         {
@@ -1154,7 +1193,9 @@ impl App {
             return;
         }
         if id == "file.recovery_list" {
-            self.recovery.rescan();
+            if !self.recovery.rescan() {
+                return; // a browser answers on a later frame (autosave::tick)
+            }
             self.recovery.show = !self.recovery.found.is_empty();
             if !self.recovery.show {
                 self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
@@ -1205,9 +1246,17 @@ impl App {
         };
         if let Some((title, key, text)) = prompt {
             let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || id == "plugin.install");
-            if is_file && self.prefs.native_dialogs && self.shot.is_none() {
+            if is_file && platform::WEB && platform::reads_file(id) {
+                // The browser's file picker (ADR 0036). The file arrives on a later frame
+                // (`open_picked`); a save or export asks for the download's name below.
+                self.playing = false;
+                platform::pick_file(id);
+                return;
+            }
+            if is_file && self.prefs.native_dialogs && self.shot.is_none() && !platform::WEB {
                 // The platform's own dialog (it blocks, as native dialogs do). Cancel = no-op.
                 self.playing = false;
+                #[cfg(not(target_arch = "wasm32"))]
                 match platform::file_dialog(id, title, &text) {
                     Some(path) => self.request(id, json!({ key: path.display().to_string() })),
                     None => self.close_after_save = false,
@@ -1640,8 +1689,8 @@ fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return tex;
     }
-    let icon = eframe::icon_data::from_png_bytes(PNG).unwrap_or_default();
-    let image = egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba);
+    let (w, h, rgba) = anicraft_engine::doc::decode_png(PNG).map_or_else(|| (1, 1, vec![0; 4]), |p| (p.width as usize, p.height as usize, p.rgba));
+    let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
     let options = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
     let tex = ctx.load_texture("anicraft-app-mark", image, options);
     ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
@@ -1685,6 +1734,9 @@ impl App {
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
+        if let Some(p) = platform::picked_file() {
+            self.open_picked(p);
+        }
         if self.glyph_check {
             // Fonts installed last frame are live now: can they draw the macOS key symbols?
             let ok = ctx.fonts_mut(|f| f.has_glyphs(&theme::font(theme::Type::Key), "⌘⇧⌥"));
@@ -1757,6 +1809,8 @@ impl App {
 
         // After this frame's edits: start a recovery copy when one is due (off this thread).
         autosave::tick(self, &ctx);
+        // A browser asks before leaving a page with unsaved work (its close guard).
+        platform::set_unsaved(self.s.is_dirty());
 
         // An edit late in this frame (after the stage drew) must be shown without waiting for
         // the next input event: egui only repaints on demand. This was the "drag commits after a

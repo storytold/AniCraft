@@ -18,6 +18,7 @@ pollster.workspace = true
 # Plain-old-data views of the upload buffers (already in the tree through wgpu and egui).
 bytemuck.workspace = true
 rayon.workspace = true
+web-time.workspace = true
 thiserror.workspace = true
 
 [lints]

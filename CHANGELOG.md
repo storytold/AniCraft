@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **AniCraft in a web browser** (ADR 0036, first slice; `docs/web.md`). The editor builds for
+  WebAssembly and runs in a page: `scripts/build-web.sh` (or `.ps1`) makes `web/`, which any
+  static server can serve. The module is about 9 MB, 3.3 MB gzipped.
+  * Open and import with the browser's file picker. Save and exports download the file; Save
+    asks for the name once.
+  * Autosave keeps recovery copies in the browser's storage. Work from a tab that closed or
+    crashed is offered at the next start; a tab that is still open is left alone.
+  * Preferences are kept in the browser too, and leaving the page with unsaved work asks first.
+  * Not yet in the browser: sound playback, the GPU stage, video export and plug-in installs.
+    The menu items that can't work there are dimmed and say why.
+  * For developers: engine commands read and write files through `engine::vfs` (the disk on the
+    desktop, memory in a browser). `file.open` takes `unsaved` and `untitled`. Every crate
+    builds for `wasm32-unknown-unknown` in CI, and the engine's tests also run inside
+    WebAssembly in Node.
+
 * **Opening Animate files is checked against a corpus of test files** (XFL import, ADR 0035).
   Eleven hand-written Animate documents cover everything the importer brings across: shapes
   and strokes, primitives and groups, gradients, bitmaps, symbols in every loop mode, movie

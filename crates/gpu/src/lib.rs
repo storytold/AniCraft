@@ -27,9 +27,10 @@ mod layers;
 
 use anicraft_doc::DisplayList;
 use anicraft_render::{MAX_PIXELS, NeedsFull, Pixmap, RenderStats, View, paint::premultiply, prepare_scene};
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use web_time::Instant;
 use wgpu::util::DeviceExt;
 pub use images::IMAGE_BUDGET;
 
@@ -539,14 +540,18 @@ impl GpuRenderer {
         *bin_ms += ms(t);
         let shown: Vec<(u32, anicraft_render::FilterLayer)> = std::mem::take(&mut scene.layers).into_iter().zip(&binned.layer_at).filter_map(|(l, at)| Some(((*at)?, l))).collect();
         // Free the prepared polygons on the pool, off this frame's path (as the oracle does).
-        rayon::spawn(move || drop(scene));
+        anicraft_render::drop_in_background(scene);
         if !shown.is_empty() && depth >= MAX_FILTER_DEPTH {
             return Err(GpuError::NeedsFull(NeedsFull::Filters));
         }
         // Layers plan in parallel; their binning counts as preparation (the timings are wall
-        // clock, and `bin` is the scene's own).
+        // clock, and `bin` is the scene's own). In the browser wgpu's handles are not `Sync`
+        // (WebGPU objects belong to one thread), so they plan in turn there (ADR 0036).
+        #[cfg(not(target_arch = "wasm32"))]
+        let shown = shown.into_par_iter();
+        #[cfg(target_arch = "wasm32")]
+        let shown = shown.into_iter();
         let planned: Vec<Result<LayerJob, GpuError>> = shown
-            .into_par_iter()
             .map(|(at, l)| {
                 let (job, _) = self.plan(&l.list, &l.view, depth + 1, &mut 0.0)?;
                 Ok(LayerJob { at, job: Box::new(job), view: l.view, ops: l.filters })

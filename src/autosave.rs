@@ -5,12 +5,20 @@
 //! its own thread, and the `file.recover` / `file.discard_recovery` commands act on what was
 //! left behind. This module only decides *when* (Preferences: every N seconds, or after N
 //! changes, whichever comes first) and shows the choices.
+//!
+//! In a browser (ADR 0036) the copies go to the site's storage instead of the recovery folder
+//! (`web::BrowserSaver`, the same calls), and which tabs are still open is known a moment after
+//! start, so the Recover window comes up then.
 
 use crate::a11y::Named;
 use crate::app::App;
 use crate::prefs::Prefs;
 use crate::theme::{T, Type, text};
-use anicraft_engine::recovery::{self, Autosaver, Entry, Outcome, SessionLock};
+#[cfg(target_arch = "wasm32")]
+use crate::web::BrowserSaver as Autosaver;
+use anicraft_engine::recovery::{self, Entry, Outcome};
+#[cfg(not(target_arch = "wasm32"))]
+use anicraft_engine::recovery::{Autosaver, SessionLock};
 use anicraft_engine::StateId;
 use serde_json::json;
 use std::path::PathBuf;
@@ -38,6 +46,10 @@ pub struct Recovery {
     pub show: bool,
     /// The session whose Discard is waiting for its second click.
     confirm_discard: Option<String>,
+    /// In a browser: the list of copies is on its way; `true` when the user asked for it (so
+    /// an empty one is said).
+    #[cfg(target_arch = "wasm32")]
+    scanning: Option<bool>,
 }
 
 /// Whether a new copy is due: unsaved for the whole interval, or enough changes made (not in
@@ -51,33 +63,59 @@ impl Recovery {
     /// runs leave the real folder alone unless `ANICRAFT_RECOVERY_DIR` names one.
     pub fn start(shot_mode: bool) -> (Recovery, Option<String>) {
         let mut r = Recovery::default();
-        if shot_mode && !crate::platform::recovery_dir_overridden() {
-            return (r, None);
-        }
-        let Some(dir) = crate::platform::recovery_dir() else { return (r, Some("Autosave is off: this system has no settings folder".into())) };
-        recovery::prune(&dir);
-        r.found = recovery::scan(&dir, None);
-        r.show = !r.found.is_empty();
-        let err = match SessionLock::acquire(&dir).and_then(Autosaver::start) {
-            Ok(s) => {
-                r.saver = Some(s);
-                None
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = shot_mode;
+            match Autosaver::start() {
+                Ok(s) => {
+                    r.saver = Some(s);
+                    r.scanning = Some(false);
+                    (r, None)
+                }
+                Err(e) => (r, Some(format!("Autosave is off: {e}"))),
             }
-            Err(e) => Some(format!("Autosave is off: {e}")),
-        };
-        r.dir = Some(dir);
-        (r, err)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if shot_mode && !crate::platform::recovery_dir_overridden() {
+                return (r, None);
+            }
+            let Some(dir) = crate::platform::recovery_dir() else { return (r, Some("Autosave is off: this system has no settings folder".into())) };
+            recovery::prune(&dir);
+            r.found = recovery::scan(&dir, None);
+            r.show = !r.found.is_empty();
+            let err = match SessionLock::acquire(&dir).and_then(Autosaver::start) {
+                Ok(s) => {
+                    r.saver = Some(s);
+                    None
+                }
+                Err(e) => Some(format!("Autosave is off: {e}")),
+            };
+            r.dir = Some(dir);
+            (r, err)
+        }
     }
 
     pub fn active(&self) -> bool {
         self.saver.is_some()
     }
 
-    /// Rescans for left-behind copies (File › Recover Autosaved Documents…).
-    pub fn rescan(&mut self) {
-        if let Some(dir) = &self.dir {
-            let own = self.saver.as_ref().map(|s| s.id().to_string());
-            self.found = recovery::scan(dir, own.as_deref());
+    /// Rescans for left-behind copies (File › Recover Autosaved Documents…). `false` when the
+    /// list comes later (a browser asks which tabs are open), and [`tick`] shows it then.
+    pub fn rescan(&mut self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::web::refresh_live();
+            self.scanning = Some(true);
+            false
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(dir) = &self.dir {
+                let own = self.saver.as_ref().map(|s| s.id().to_string());
+                self.found = recovery::scan(dir, own.as_deref());
+            }
+            true
         }
     }
 
@@ -107,8 +145,92 @@ impl Recovery {
     }
 }
 
+/// Removes another session's copy once this one holds its work (the user chose Restore).
+fn drop_adopted(app: &mut App, old: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = &app;
+        crate::web::discard(old);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(dir) = app.recovery.dir.clone() {
+        // Through the command, as any front end would.
+        let _ = app.s.execute("file.discard_recovery", &json!({"dir": dir.display().to_string(), "session": old, "confirm": true}));
+    }
+}
+
+/// In a browser: shows the copies once the browser has said which tabs are still open.
+#[cfg(target_arch = "wasm32")]
+fn poll_scan(app: &mut App) {
+    let Some(asked) = app.recovery.scanning else { return };
+    let own = app.recovery.saver.as_ref().map(|s| s.id().to_string());
+    let Some(found) = crate::web::scan(own.as_deref()) else { return };
+    let r = &mut app.recovery;
+    r.scanning = None;
+    r.found = found;
+    r.show = !r.found.is_empty();
+    if asked && !r.show {
+        app.status_ok("No autosaved work to recover");
+    }
+}
+
+/// Where a restored browser copy is opened from: `recovered/<session>/<name>`, so its download
+/// keeps the document's name.
+pub const RESTORED_DIR: &str = "recovered";
+
+/// The session a `file.open` restores, when it opens a browser copy (see [`RESTORED_DIR`]).
+pub fn restored_session(cmd: &str, params: &serde_json::Value) -> Option<String> {
+    if cmd != "file.open" || params.get("unsaved") != Some(&json!(true)) {
+        return None;
+    }
+    let path = std::path::Path::new(params.get("path")?.as_str()?);
+    let mut parts = path.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
+    (parts.next()? == RESTORED_DIR).then(|| parts.next()).flatten().filter(|id| recovery::valid_id(id))
+}
+
+/// Restore: opens the copy as unsaved work. Through `request`, so restoring over unsaved
+/// changes asks first (ADR 0004).
+fn restore(app: &mut App, id: String) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some((json, meta)) = crate::web::load(&id) else {
+            app.status_err("That autosaved copy is gone");
+            app.recovery.discarded(&id);
+            return;
+        };
+        let name = meta.original.as_deref().and_then(std::path::Path::file_name).map_or_else(|| "Untitled.anicraft".to_string(), |n| n.to_string_lossy().into_owned());
+        let path = std::path::Path::new(RESTORED_DIR).join(&id).join(&name);
+        match anicraft_engine::vfs::put(&path, json.into_bytes()) {
+            Ok(()) => app.request("file.open", json!({"path": path.display().to_string(), "unsaved": true, "untitled": meta.original.is_none()})),
+            Err(e) => app.status_err(format!("Could not restore {name}: {e}")),
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = app.recovery.dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+        app.request("file.recover", json!({"dir": dir, "session": id}));
+    }
+}
+
+/// Discard (after its second click): the copy is deleted for good.
+fn discard(app: &mut App, id: String) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::web::discard(&id);
+        app.recovery.discarded(&id);
+        app.status_ok("Discarded the autosaved copy");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = app.recovery.dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+        app.perform("file.discard_recovery", json!({"dir": dir, "session": id, "confirm": true}));
+    }
+}
+
 /// Per frame: collects finished copies and starts a new one when it is due.
 pub fn tick(app: &mut App, ctx: &egui::Context) {
+    #[cfg(target_arch = "wasm32")]
+    poll_scan(app);
     let now = ctx.input(|i| i.time);
     let outcomes = app.recovery.saver.as_ref().map(Autosaver::poll).unwrap_or_default();
     for o in outcomes {
@@ -116,9 +238,8 @@ pub fn tick(app: &mut App, ctx: &egui::Context) {
             Outcome::Written { .. } => {
                 app.recovery.last_copy_at = Some(now);
                 app.recovery.failed = false;
-                if let (Some(old), Some(dir)) = (app.recovery.adopt.take(), app.recovery.dir.clone()) {
-                    // Through the command, as any front end would. The user chose Restore.
-                    let _ = app.s.execute("file.discard_recovery", &json!({"dir": dir.display().to_string(), "session": old, "confirm": true}));
+                if let Some(old) = app.recovery.adopt.take() {
+                    drop_adopted(app, &old);
                 }
             }
             Outcome::Failed { error, .. } => {
@@ -295,18 +416,14 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     if !open {
         act = Some(Act::Later);
     }
-    let dir = app.recovery.dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
     match act {
-        // Through `request`: restoring over unsaved changes asks first (ADR 0004).
         Some(Act::Restore(id)) => {
             app.recovery.confirm_discard = None;
-            app.request("file.recover", json!({"dir": dir, "session": id}));
+            restore(app, id);
         }
         Some(Act::AskDiscard(id)) => app.recovery.confirm_discard = Some(id),
         // The second click on the red button is the confirmation.
-        Some(Act::Discard(id)) => {
-            app.perform("file.discard_recovery", json!({"dir": dir, "session": id, "confirm": true}));
-        }
+        Some(Act::Discard(id)) => discard(app, id),
         Some(Act::KeepIt) => app.recovery.confirm_discard = None,
         Some(Act::Later) => {
             app.recovery.show = false;
@@ -331,6 +448,16 @@ mod tests {
         assert!(!due(5.0, 400, true, &p), "not per frame of a drag");
         let time_only = Prefs { autosave_edits: 0, ..Prefs::default() };
         assert!(!due(5.0, 10_000, false, &time_only));
+    }
+
+    #[test]
+    fn restored_browser_copies_are_recognized() {
+        let open = |path: &str| json!({"path": path, "unsaved": true});
+        assert_eq!(restored_session("file.open", &open("recovered/web-1a-2b/walk.anicraft")).as_deref(), Some("web-1a-2b"));
+        assert_eq!(restored_session("file.open", &json!({"path": "recovered/web-1/walk.anicraft"})), None, "an ordinary open");
+        assert_eq!(restored_session("file.open", &open("walk.anicraft")), None);
+        assert_eq!(restored_session("file.open", &open("recovered/../x/y")), None);
+        assert_eq!(restored_session("file.save", &open("recovered/web-1/walk.anicraft")), None);
     }
 
     #[test]
