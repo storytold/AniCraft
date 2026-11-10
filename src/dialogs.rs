@@ -398,6 +398,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
     let mut reset_confirms = false;
     let title = tl!(if crate::platform::OS == crate::platform::Os::Mac { "Settings" } else { "Preferences" });
     let shown = egui::Window::new(title)
+        .id(egui::Id::unique("preferences_window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
