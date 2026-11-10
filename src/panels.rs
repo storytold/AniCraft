@@ -198,8 +198,8 @@ fn renderer_tag(app: &App) -> String {
     match (app.stage_cache.gpu.state(), &app.stage_cache.drawn_by) {
         (State::Starting, _) => " · GPU starting".into(),
         (State::Failed(_), _) => " · CPU (GPU unavailable)".into(),
-        (State::Running(_), Some((true, _))) => " · GPU".into(),
-        (State::Running(_), Some((false, Some(why)))) => format!(" · CPU for {why}"),
+        (State::Running { .. }, Some((true, _))) => " · GPU".into(),
+        (State::Running { .. }, Some((false, Some(why)))) => format!(" · CPU for {why}"),
         _ => " · CPU".into(),
     }
 }

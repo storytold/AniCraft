@@ -1,4 +1,4 @@
-//! Tile binning: the CPU half of the GPU stage (ADR 0019).
+//! Tile binning: the CPU half of the GPU stage (ADR 0019, ADR 0029).
 //!
 //! The surface is cut into 16 × 16 pixel tiles. Every fill's edges are split at tile rows and
 //! columns; each piece lands in the one tile it crosses. What a piece contributes to the tiles
@@ -10,11 +10,17 @@
 //! with neither (outside the fill) get no entry; interior tiles get a backdrop and no pieces.
 //!
 //! Each tile then lists its entries in drawing order, so the shader composites every pixel in
-//! one pass, front to back in the display list's order.
+//! one pass, front to back in the display list's order. Masks and groups (ADR 0029) are more
+//! entries in the same list: before a clipped fill, the clip's coverage is computed from its
+//! artwork's entries in this tile (one level per clip in its chain, the levels multiplied); and
+//! a group opens before its first fill in the tile and closes (blending into what is below at
+//! its alpha and in its blend mode) when its run ends, as the oracle's band compositor does per
+//! band.
 
+use anicraft_doc::BlendMode;
 use anicraft_geom::{FillRule, Vec2};
-use anicraft_render::Fill;
 use anicraft_render::paint::Shader;
+use anicraft_render::{Fill, NeedsFull, Scene};
 use rayon::prelude::*;
 
 /// A `vec4<f32>` as the shader sees it.
@@ -23,27 +29,72 @@ type Vec4 = [f32; 4];
 /// Tile side in pixels (the shader's workgroup is one tile, one invocation per pixel).
 pub const TILE: u32 = 16;
 const T: f32 = TILE as f32;
-/// "No backdrop" in an entry.
+/// "No backdrop" in an entry; "no clip" or "no group" in the tables.
 pub const NONE: u32 = u32::MAX;
 /// `vec4`s of paint data per fill.
 pub const PAINT_VEC4S: usize = 4;
 /// Gradient table entries (the oracle's LUT size).
 pub const RAMP: usize = 256;
+/// Deepest nesting of groups the shader's per-pixel stack holds (`fine.wgsl`).
+pub const MAX_GROUP_DEPTH: usize = 8;
+/// Longest chain of nested clips the binning expands (each level is one more pass over its
+/// artwork per clip switch).
+pub const MAX_CLIP_DEPTH: usize = 16;
 
 /// Paint kinds in an op header.
 const SOLID: u32 = 0;
 const LINEAR: u32 = 1;
 const RADIAL: u32 = 2;
 
+/// Op header flag: the fill is drawn inside the current clip.
+pub const CLIPPED: u32 = 1;
+/// Op header flag: the op is clip artwork (its coverage joins the current level's union).
+pub const ART: u32 = 2;
+
+/// An entry whose first word has this bit is a control entry, not a fill.
+pub const CTRL: u32 = 0x8000_0000;
+/// `[OPEN, group, 0, 0]`: push the colour so far and continue on transparent.
+pub const OPEN: u32 = CTRL | 1;
+/// `[CLOSE, alpha bits, blend mode, 0]`: blend the group into the colour below it.
+pub const CLOSE: u32 = CTRL | 2;
+/// The clip coverage starts at 1 (a new clip's chain follows).
+pub const MASK_RESET: u32 = CTRL | 3;
+/// One level of the clip chain starts: its union of artwork coverage starts at 0.
+pub const LEVEL_BEGIN: u32 = CTRL | 4;
+/// The level ends: the clip coverage is multiplied by its union.
+pub const LEVEL_END: u32 = CTRL | 5;
+
+/// Blend modes as the shader numbers them (`fine.wgsl` › `blend`).
+pub fn blend_code(m: BlendMode) -> u32 {
+    match m {
+        BlendMode::Normal | BlendMode::Layer => 0,
+        BlendMode::Multiply => 1,
+        BlendMode::Screen => 2,
+        BlendMode::Darken => 3,
+        BlendMode::Lighten => 4,
+        BlendMode::Difference => 5,
+        BlendMode::Add => 6,
+        BlendMode::Subtract => 7,
+        BlendMode::Invert => 8,
+        BlendMode::HardLight => 9,
+        BlendMode::Overlay => 10,
+        BlendMode::Alpha => 11,
+        BlendMode::Erase => 12,
+    }
+}
+
 /// A scene ready for the fine shader.
 ///
 /// * `index` (u32): `[start, count]` per tile into the entry list; then each entry as
-///   `[op, first piece, pieces, backdrop]` (the backdrop's first `vec4` in `geo`, or [`NONE`]);
-///   then each op's header `[kind, fill rule, ramp start in paints, 0]`.
+///   `[op, first piece, pieces, backdrop]` (the backdrop's first `vec4` in `geo`, or [`NONE`]),
+///   or a control entry ([`CTRL`] set); then each op's header `[kind, fill rule, ramp start in
+///   paints, flags]`.
 /// * `geo` (`vec4<f32>`): pieces `(x0, y0, x1, y1)` relative to their tile's top-left, in the
 ///   edge's direction; then backdrops, four `vec4`s (16 rows) each.
 /// * `paints` (`vec4<f32>`): per op its colour, then the inverse paint transform and gradient
 ///   parameters; then the gradient tables (256 premultiplied colours each).
+///
+/// Ops are the scene's fills in drawing order, then every clip's artwork, clip by clip.
 pub struct Binned {
     pub tiles_x: u32,
     pub tiles_y: u32,
@@ -52,8 +103,12 @@ pub struct Binned {
     pub ops_at: u32,
     pub geo: Vec<[f32; 4]>,
     pub paints: Vec<[f32; 4]>,
+    /// Entries (fills, artwork and control) and edge pieces in all tiles.
     pub entries: usize,
     pub pieces: usize,
+    /// Pieces plus entries the fine pass walks, summed over tiles (each for 256 pixels): what
+    /// bounds how long the dispatch runs.
+    pub work: u64,
 }
 
 /// A chunk of fills' share of the scene (binned in parallel; chunking keeps allocations few).
@@ -78,14 +133,63 @@ struct Piece {
 /// Fills binned per parallel task.
 const CHUNK: usize = 16;
 
-/// Bins `fills` for a `width × height` surface.
-pub fn bin(fills: &[Fill], width: u32, height: u32) -> Binned {
+/// What the per-tile streams need to know about the ops, clips and groups.
+struct Tables<'a> {
+    /// Fills come first in the op list; artwork after.
+    fills: u32,
+    /// Per fill: its clip and its group (or [`NONE`]).
+    op_clip: Vec<u32>,
+    op_group: Vec<u32>,
+    /// Per clip: its chain, outermost first, and its artwork's op range.
+    clip_chain: Vec<Vec<u32>>,
+    art_ops: Vec<(u32, u32)>,
+    scene: &'a Scene,
+}
+
+/// One tile row's entries, built in parallel and then copied into place.
+struct RowOut {
+    stream: Vec<[u32; 4]>,
+    /// `[start, count]` per tile, `start` local to the row.
+    heads: Vec<[u32; 2]>,
+    work: u64,
+}
+
+/// Bins `scene` for a `width × height` surface. `Err` when its nesting is deeper than the
+/// shader holds ([`MAX_GROUP_DEPTH`], [`MAX_CLIP_DEPTH`]); the caller draws it on the CPU.
+pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> {
+    if scene.groups.iter().any(|g| g.chain.len() > MAX_GROUP_DEPTH) {
+        return Err(NeedsFull::Groups);
+    }
+    let mut clip_chain: Vec<Vec<u32>> = Vec::with_capacity(scene.clips.len());
+    for (i, c) in scene.clips.iter().enumerate() {
+        let mut chain = c.parent.filter(|&p| (p as usize) < i).and_then(|p| clip_chain.get(p as usize)).cloned().unwrap_or_default();
+        chain.push(i as u32);
+        if chain.len() > MAX_CLIP_DEPTH {
+            return Err(NeedsFull::Clips);
+        }
+        clip_chain.push(chain);
+    }
+    let mut ops: Vec<&Fill> = scene.fills.iter().collect();
+    let mut art_ops = Vec::with_capacity(scene.clips.len());
+    for c in &scene.clips {
+        let a0 = ops.len() as u32;
+        ops.extend(c.art.iter());
+        art_ops.push((a0, ops.len() as u32));
+    }
+    if ops.len() >= CTRL as usize {
+        return Err(NeedsFull::Groups);
+    }
+    let nf = scene.fills.len();
+    let op_clip: Vec<u32> = scene.fills.iter().map(|f| f.clip.filter(|&c| (c as usize) < scene.clips.len()).unwrap_or(NONE)).collect();
+    let op_group: Vec<u32> = scene.fills.iter().map(|f| f.group.filter(|&g| (g as usize) < scene.groups.len()).unwrap_or(NONE)).collect();
+    let tables = Tables { fills: nf as u32, op_clip, op_group, clip_chain, art_ops, scene };
+
     let tiles_x = width.div_ceil(TILE);
     let tiles_y = height.div_ceil(TILE);
     let (tx, ty) = (tiles_x as usize, tiles_y as usize);
-    // Phase 1, parallel over chunks of fills: pieces, backdrops and entries; each chunk's
+    // Phase 1, parallel over chunks of ops: pieces, backdrops and entries; each chunk's
     // entries then sorted (stably, so drawing order holds) by tile row, with row offsets.
-    let locals: Vec<(Local, Vec<u32>)> = fills
+    let locals: Vec<(Local, Vec<u32>)> = ops
         .par_chunks(CHUNK)
         .enumerate()
         .map(|(c, chunk)| {
@@ -108,7 +212,7 @@ pub fn bin(fills: &[Fill], width: u32, height: u32) -> Binned {
         })
         .collect();
 
-    // Where each chunk's pieces and backdrops go in `geo`, and each tile row's entries.
+    // Where each chunk's pieces and backdrops go in `geo`.
     let pieces: usize = locals.iter().map(|(l, _)| l.pieces.len()).sum();
     let mut piece_at = Vec::with_capacity(locals.len());
     let mut bd_at = Vec::with_capacity(locals.len());
@@ -119,17 +223,19 @@ pub fn bin(fills: &[Fill], width: u32, height: u32) -> Binned {
         p += l.pieces.len();
         b += l.backdrops.len();
     }
+
+    // Phase 2, parallel over tile rows: each tile's stream of entries.
+    let rows: Vec<RowOut> = (0..ty).into_par_iter().map(|r| row_streams(r, tx, &locals, &piece_at, &bd_at, &tables)).collect();
     let mut row_at = vec![0usize; ty + 1];
-    for r in 0..ty {
-        let n: usize = locals.iter().map(|(_, rows)| (rows[r + 1] - rows[r]) as usize).sum();
-        row_at[r + 1] = row_at[r] + n;
+    for (r, out) in rows.iter().enumerate() {
+        row_at[r + 1] = row_at[r] + out.stream.len();
     }
     let total = row_at[ty];
+    let work = rows.iter().map(|r| r.work).sum();
     let entries_at = 2 * tx * ty;
     let ops_at = entries_at + 4 * total;
-    let mut index = vec![0u32; ops_at + 4 * fills.len()];
-
-    // Phase 2, parallel over tile rows: each row owns its tiles' headers and its entries.
+    let mut index = vec![0u32; ops_at + 4 * ops.len()];
+    // Phase 3, parallel over tile rows: headers and streams copied into place.
     {
         let (headers, rest) = index.split_at_mut(entries_at);
         let (mut entries, _) = rest.split_at_mut(4 * total);
@@ -139,40 +245,15 @@ pub fn bin(fills: &[Fill], width: u32, height: u32) -> Binned {
             row_entries.push(mine);
             entries = after;
         }
-        headers.par_chunks_mut(2 * tx.max(1)).zip(row_entries).enumerate().for_each(|(r, (head, out))| {
-            let first_tile = (r * tx) as u32;
-            let mut count = vec![0u32; tx];
-            let slices = || locals.iter().enumerate().map(|(c, (l, rows))| (c, l.entries.get(rows[r] as usize..rows[r + 1] as usize).unwrap_or(&[])));
-            for (_, es) in slices() {
-                for e in es {
-                    if let Some(n) = count.get_mut((e[1] - first_tile) as usize) {
-                        *n += 1;
-                    }
-                }
+        headers.par_chunks_mut(2 * tx.max(1)).zip(row_entries).zip(&rows).enumerate().for_each(|(r, ((head, out), row))| {
+            for (h, &[s, n]) in head.as_chunks_mut::<2>().0.iter_mut().zip(&row.heads) {
+                *h = [row_at[r] as u32 + s, n];
             }
-            let mut cursor = vec![0u32; tx];
-            let mut run = 0u32;
-            for (t, &n) in count.iter().enumerate() {
-                if let Some(h) = head.get_mut(2 * t..2 * t + 2) {
-                    h.copy_from_slice(&[row_at[r] as u32 + run, n]);
-                }
-                cursor[t] = run;
-                run += n;
-            }
-            for (c, es) in slices() {
-                for &[op, tile, s0, n, bd] in es {
-                    let Some(cur) = cursor.get_mut((tile - first_tile) as usize) else { continue };
-                    let at = 4 * *cur as usize;
-                    *cur += 1;
-                    let bd = if bd == NONE { NONE } else { bd_at[c] + bd };
-                    if let Some(slot) = out.get_mut(at..at + 4) {
-                        slot.copy_from_slice(&[op, piece_at[c] + s0, n, bd]);
-                    }
-                }
+            for (d, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(&row.stream) {
+                *d = *s;
             }
         });
     }
-
     // Pieces, then backdrops, copied in parallel into their places.
     let mut geo: Vec<[f32; 4]> = vec![[0.0; 4]; b];
     {
@@ -189,13 +270,13 @@ pub fn bin(fills: &[Fill], width: u32, height: u32) -> Binned {
         jobs.into_par_iter().for_each(|(d, s)| d.copy_from_slice(s));
     }
     // Tens of thousands of small buffers: free them on the pool, off the frame's path.
-    rayon::spawn(move || drop(locals));
+    rayon::spawn(move || drop((locals, rows)));
 
     // Paints: a fixed record per op, then the gradient tables.
-    let mut paints: Vec<[f32; 4]> = Vec::with_capacity(PAINT_VEC4S * fills.len());
+    let mut paints: Vec<[f32; 4]> = Vec::with_capacity(PAINT_VEC4S * ops.len());
     let mut ramps: Vec<[f32; 4]> = Vec::new();
-    let ramps_at = (PAINT_VEC4S * fills.len()) as u32;
-    for (op, f) in fills.iter().enumerate() {
+    let ramps_at = (PAINT_VEC4S * ops.len()) as u32;
+    for (op, f) in ops.iter().enumerate() {
         let rule = match f.rule {
             FillRule::NonZero => 0,
             FillRule::EvenOdd => 1,
@@ -213,18 +294,138 @@ pub fn bin(fills: &[Fill], width: u32, height: u32) -> Binned {
                 let m = inv.m;
                 (RADIAL, [[0.0; 4], [m[0], m[1], m[2], m[3]], [m[4], m[5], center.x, center.y], [0.0, 0.0, *inv_radius, 0.0]])
             }
-            // `plain_fills` never hands these over; draw nothing rather than guess.
+            // `prepare_scene` never hands these over; draw nothing rather than guess.
             Shader::Bitmap { .. } | Shader::Image { .. } => (SOLID, [[0.0; 4]; 4]),
         };
         paints.extend_from_slice(&rec);
+        let flags = if op >= nf {
+            ART
+        } else if tables.op_clip.get(op).is_some_and(|&c| c != NONE) {
+            CLIPPED
+        } else {
+            0
+        };
         let at = ops_at + 4 * op;
         if let Some(slot) = index.get_mut(at..at + 4) {
-            slot.copy_from_slice(&[kind, rule, ramp, 0]);
+            slot.copy_from_slice(&[kind, rule, ramp, flags]);
         }
     }
     paints.extend_from_slice(&ramps);
 
-    Binned { tiles_x, tiles_y, index, entries_at: entries_at as u32, ops_at: ops_at as u32, geo, paints, entries: total, pieces }
+    Ok(Binned { tiles_x, tiles_y, index, entries_at: entries_at as u32, ops_at: ops_at as u32, geo, paints, entries: total, pieces, work })
+}
+
+/// Tile row `r`'s streams: per tile, its fills in drawing order with the clip and group
+/// entries they need.
+fn row_streams(r: usize, tx: usize, locals: &[(Local, Vec<u32>)], piece_at: &[u32], bd_at: &[u32], t: &Tables) -> RowOut {
+    let first_tile = (r * tx) as u32;
+    let slices = || {
+        locals.iter().enumerate().map(move |(c, (l, rows))| {
+            let (a, b) = (rows.get(r).copied().unwrap_or(0) as usize, rows.get(r + 1).copied().unwrap_or(0) as usize);
+            (c, l.entries.get(a..b).unwrap_or(&[]))
+        })
+    };
+    // Counting sort by tile, fills and artwork apart, keeping drawing order within a tile.
+    let mut count = vec![[0u32; 2]; tx + 1];
+    for (_, es) in slices() {
+        for e in es {
+            if let Some(n) = count.get_mut(e[1].wrapping_sub(first_tile) as usize + 1) {
+                n[usize::from(e[0] >= t.fills)] += 1;
+            }
+        }
+    }
+    for i in 1..count.len() {
+        let prev = count[i - 1];
+        count[i][0] += prev[0];
+        count[i][1] += prev[1];
+    }
+    let (nfill, nart) = (count[tx][0] as usize, count[tx][1] as usize);
+    let mut fe = vec![[0u32; 4]; nfill];
+    let mut ae = vec![[0u32; 4]; nart];
+    let mut cursor: Vec<[u32; 2]> = count[..tx].to_vec();
+    for (c, es) in slices() {
+        let (p0, b0) = (piece_at.get(c).copied().unwrap_or(0), bd_at.get(c).copied().unwrap_or(0));
+        for &[op, tile, s0, n, bd] in es {
+            let Some(cur) = cursor.get_mut(tile.wrapping_sub(first_tile) as usize) else { continue };
+            let art = usize::from(op >= t.fills);
+            let at = cur[art] as usize;
+            cur[art] += 1;
+            let bd = if bd == NONE { NONE } else { b0 + bd };
+            let slot = if art == 1 { ae.get_mut(at) } else { fe.get_mut(at) };
+            if let Some(slot) = slot {
+                *slot = [op, p0 + s0, n, bd];
+            }
+        }
+    }
+
+    let mut out = RowOut { stream: Vec::with_capacity(nfill), heads: Vec::with_capacity(tx), work: 0 };
+    let plain = t.scene.clips.is_empty() && t.scene.groups.is_empty();
+    for tile in 0..tx {
+        let start = out.stream.len();
+        let fills = fe.get(count[tile][0] as usize..count[tile + 1][0] as usize).unwrap_or(&[]);
+        if plain {
+            out.stream.extend_from_slice(fills);
+        } else {
+            let arts = ae.get(count[tile][1] as usize..count[tile + 1][1] as usize).unwrap_or(&[]);
+            tile_stream(fills, arts, t, &mut out.stream);
+        }
+        let mine = out.stream.get(start..).unwrap_or(&[]);
+        out.work += mine.iter().map(|e| if e[0] & CTRL == 0 { u64::from(e[2]) + 1 } else { 1 }).sum::<u64>();
+        out.heads.push([start as u32, mine.len() as u32]);
+    }
+    out
+}
+
+/// One tile's stream: its fills, each preceded by the clip coverage it needs (when that clip
+/// isn't the one computed last) and the group opens and closes its group chain needs.
+fn tile_stream(fills: &[[u32; 4]], arts: &[[u32; 4]], t: &Tables, out: &mut Vec<[u32; 4]>) {
+    // The artwork of clip `l` in this tile (artwork entries are in op order, clip by clip).
+    let level = |l: u32| -> &[[u32; 4]] {
+        let Some(&(a0, a1)) = t.art_ops.get(l as usize) else { return &[] };
+        let lo = arts.partition_point(|e| e[0] < a0);
+        let hi = arts.partition_point(|e| e[0] < a1);
+        arts.get(lo..hi).unwrap_or(&[])
+    };
+    let close = |g: u32, out: &mut Vec<[u32; 4]>| {
+        let (alpha, mode) = t.scene.groups.get(g as usize).map_or((1.0f32, 0), |x| (x.alpha, blend_code(x.blend)));
+        out.push([CLOSE, alpha.to_bits(), mode, 0]);
+    };
+    let mut open: Vec<u32> = Vec::new();
+    let mut clip = NONE;
+    for e in fills {
+        let op = e[0] as usize;
+        let c = t.op_clip.get(op).copied().unwrap_or(NONE);
+        if c != NONE && c != clip {
+            let chain = t.clip_chain.get(c as usize).map_or(&[][..], Vec::as_slice);
+            // A level with no artwork here hides the fill in the whole tile.
+            if chain.is_empty() || chain.iter().any(|&l| level(l).is_empty()) {
+                continue;
+            }
+            out.push([MASK_RESET, 0, 0, 0]);
+            for &l in chain {
+                out.push([LEVEL_BEGIN, 0, 0, 0]);
+                out.extend_from_slice(level(l));
+                out.push([LEVEL_END, 0, 0, 0]);
+            }
+            clip = c;
+        }
+        let g = t.op_group.get(op).copied().unwrap_or(NONE);
+        let want = if g == NONE { &[][..] } else { t.scene.groups.get(g as usize).map_or(&[][..], |x| x.chain.as_slice()) };
+        let keep = open.iter().zip(want).take_while(|(a, b)| a == b).count();
+        while open.len() > keep {
+            if let Some(g) = open.pop() {
+                close(g, out);
+            }
+        }
+        for &g in want.iter().skip(keep) {
+            out.push([OPEN, g, 0, 0]);
+            open.push(g);
+        }
+        out.push(*e);
+    }
+    while let Some(g) = open.pop() {
+        close(g, out);
+    }
 }
 
 /// Splits one fill's edges into tile pieces and walks each tile row for backdrops.

@@ -32,8 +32,23 @@ struct TileTex {
     key: u64,
     /// Stage-space rectangle `[x0, y0, x1, y1]` this tile covers.
     rect: [f32; 4],
-    tex: egui::TextureHandle,
+    tex: TileImage,
     used: u64,
+}
+
+/// A tile's texture: uploaded from the CPU's bytes, or drawn there by the GPU stage (ADR 0029).
+enum TileImage {
+    Uploaded(egui::TextureHandle),
+    Drawn(crate::gpu_stage::NativeTile),
+}
+
+impl TileImage {
+    fn id(&self) -> egui::TextureId {
+        match self {
+            TileImage::Uploaded(t) => t.id(),
+            TileImage::Drawn(t) => t.id(),
+        }
+    }
 }
 
 pub struct Cache {
@@ -88,9 +103,18 @@ impl Cache {
         if self.tiles.iter().any(|t| t.key == img.key) {
             return None;
         }
-        let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
+        let tex = match &img.native {
+            // Already on the window's device: shown as it is, nothing to upload.
+            Some(native) => match self.gpu.register(native) {
+                Some(t) => TileImage::Drawn(t),
+                None => return Some("The GPU stage drew a picture the window can't show.".into()),
+            },
+            None => {
+                let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
+                TileImage::Uploaded(ctx.load_texture(format!("tile-{:x}", img.key), image, egui::TextureOptions::LINEAR))
+            }
+        };
         self.tick += 1;
-        let tex = ctx.load_texture(format!("tile-{:x}", img.key), image, egui::TextureOptions::LINEAR);
         self.tiles.push(TileTex { key: img.key, rect, tex, used: self.tick });
         // Evict least recently used tiles that are not on screen.
         while self.tiles.len() > MAX_TILE_TEXTURES {
