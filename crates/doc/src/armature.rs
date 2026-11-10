@@ -36,7 +36,10 @@ pub const MAX_ANGLE: f32 = 64.0 * std::f32::consts::TAU;
 /// IK stops once the effector is this close to its target (layer units, pixels).
 pub const IK_TOLERANCE: f32 = 0.01;
 /// Most CCD sweeps one solve takes.
-pub const IK_SWEEPS: usize = 256;
+pub const IK_SWEEPS: usize = 2048;
+/// How often a stalled solve bends its joints to get going again, and by how much (radians).
+const IK_KICKS: usize = 4;
+const IK_KICK: f32 = 0.3;
 
 /// Unique id of a bone within a document (from the document's id counter).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -420,7 +423,12 @@ pub fn solve(arm: &Armature, elements: &[Arc<Element>], pose: &Pose, id: BoneId,
     };
     let (_, start) = effector(&pose)?;
     let mut error = start.distance(target);
+    let mut best = (pose.clone(), error);
+    let mut kicks = 0;
     for _ in 0..IK_SWEEPS {
+        if error < best.1 {
+            best = (pose.clone(), error);
+        }
         if error <= IK_TOLERANCE || chain.is_empty() {
             break;
         }
@@ -449,12 +457,32 @@ pub fn solve(arm: &Armature, elements: &[Arc<Element>], pose: &Pose, id: BoneId,
         let Some((_, e)) = effector(&pose) else { break };
         let was = error;
         error = e.distance(target);
-        // Stuck (limits, or stretched straight at an unreachable target).
+        // Stuck: limits, a chain stretched straight at an unreachable target, or CCD's blind
+        // spot, a straight chain whose target lies on its own line (every joint sees angle 0).
+        // A few kicks bend the joints a little and descent goes on; the best pose seen wins.
         if turned < 1e-7 || ((was - error).abs() < 1e-6 * was.max(1.0) && turned < 1e-4) {
-            break;
+            if error < best.1 {
+                best = (pose.clone(), error);
+            }
+            if kicks >= IK_KICKS {
+                break;
+            }
+            kicks += 1;
+            for (i, &(b, _, _)) in chain.iter().enumerate() {
+                let Some(joint) = arm.bone(b) else { continue };
+                let cur = pose.angle(b);
+                let kick = IK_KICK * if (i + kicks) % 2 == 0 { 1.0 } else { -1.0 };
+                let next = joint.allow(cur + kick);
+                pose.set(b, if next != cur { next } else { joint.allow(cur - kick) });
+            }
+            error = effector(&pose).map_or(error, |(_, e)| e.distance(target));
+            continue;
         }
     }
-    Some(Solved { pose, error, chain: chain.len() })
+    if error < best.1 {
+        best = (pose, error);
+    }
+    Some(Solved { pose: best.0, error: best.1, chain: chain.len() })
 }
 
 #[cfg(test)]

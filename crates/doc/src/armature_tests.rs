@@ -230,3 +230,27 @@ fn tree_queries() {
     assert_eq!(arm.bone_into(HAND).map(|b| b.id), Some(B2));
     assert!(arm.contains(ROOT) && !arm.contains(ElementId(99)));
 }
+
+/// Long chains and targets on a straight chain's own line (CCD's blind spot) still converge.
+#[test]
+fn long_chains_and_collinear_targets_converge() {
+    for n in [2usize, 10, 64] {
+        let mut bones = Vec::new();
+        let mut els = vec![instance(ElementId(1000), 0.0, 0.0)];
+        for i in 0..n {
+            let (p, c) = (ElementId(1000 + i as u64), ElementId(1001 + i as u64));
+            bones.push(Bone { id: BoneId(5000 + i as u64), ..bone(BoneId(0), p, c) });
+            els.push(instance(c, 100.0 * (i + 1) as f32, 0.0));
+        }
+        let arm = Armature { bones };
+        let last = BoneId(5000 + n as u64 - 1);
+        let reach = 100.0 * n as f32;
+        for k in 0..12 {
+            // k = 0: straight ahead along the chain.
+            let a = k as f32 * 0.55;
+            let target = Vec2::new(100.0 + reach * 0.6 * a.cos(), reach * 0.6 * a.sin());
+            let s = solve(&arm, &els, &Pose::default(), last, Vec2::new(100.0, 0.0), target).unwrap();
+            assert!(s.error <= 0.5, "{n} bones to {target:?}: {} px off", s.error);
+        }
+    }
+}
