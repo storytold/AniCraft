@@ -558,6 +558,9 @@ fn panic_hunt_every_command() {
         json!({"filters": [{"type": "bevel", "blur_x": 1e30, "distance": -1e30, "angle": f64::MAX, "side": "full", "shadow_color": "#zz"}]}),
         json!({"filters": [{"type": "gradient_glow", "stops": [1, "x", null]}, {"type": "gradient_bevel", "stops": "x"}]}),
         json!({"filters": [{"type": "gradient_bevel", "stops": [{"offset": 1e30, "color": {"r": 9, "g": -9, "b": 0, "a": 2}}], "strength": -1, "quality": 255}]}),
+        json!({"orient": true, "d": "M0 0 C 1e5 -1e5 -1e5 1e5 10 10 Q 5 5 0 0 Z M 9 9 L 1 1"}),
+        json!({"orient": "x", "d": 5, "property": "x", "value": 1e6}),
+        json!({"orient": false, "d": "M 1e6 1e6 L -1e6 -1e6", "dx": 1e6, "dy": -1e6}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -569,7 +572,13 @@ fn panic_hunt_every_command() {
     if let Some(k) = Arc::make_mut(&mut with_sound.timeline_mut(0).layers[0]).keyframe_mut(0) {
         k.sound = Some(anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)));
     }
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound)] {
+    // A motion tween on an oriented motion path, playhead mid-span (ADR 0030).
+    let mut on_path = Session::default();
+    for (id, p) in [("draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10})), ("timeline.create_motion_tween", json!({})), ("motion.set_path", json!({"d": "M0 0 C 50 -80 100 80 150 0"})), ("motion.orient", json!({"orient": true}))] {
+        on_path.execute(id, &p).unwrap();
+    }
+    on_path.set_frame(9);
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
