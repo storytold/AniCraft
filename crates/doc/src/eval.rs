@@ -133,8 +133,19 @@ pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
 pub fn evaluate_scene_camera(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let tl = doc.timeline(scene);
     let mut out = DisplayList::default();
-    eval_timeline(doc, tl, frame, &Ctx::through(tl.camera_at(frame, &doc.stage)), &mut out, None);
+    let mut cx = Ctx::through(tl.camera_at(frame, &doc.stage));
+    cx.scene_view = scene_camera_view(doc, scene, frame);
+    eval_timeline(doc, tl, frame, &cx, &mut out, None);
     out
+}
+
+/// The Moho-imported scene camera's view at `frame` (ADR 0102): identity without one.
+fn scene_camera_view(doc: &Document, scene: usize, frame: u32) -> Affine {
+    doc.scenes
+        .get(scene)
+        .and_then(|s| s.camera.camera_at(frame as f32, &doc.stage))
+        .map(|c| c.view(&doc.stage, 0.0))
+        .unwrap_or(Affine::IDENTITY)
 }
 
 /// What the player shows (ADR 0024): the scene and frame its main timeline is on, each movie
@@ -144,7 +155,9 @@ pub fn evaluate_player(doc: &Document, state: &PlayerState) -> DisplayList {
     let mut out = DisplayList::default();
     let play = Play { state, path: Vec::new() };
     let tl = doc.timeline(state.scene);
-    eval_timeline(doc, tl, state.root.frame, &Ctx::through(tl.camera_at(state.root.frame, &doc.stage)), &mut out, Some(&play));
+    let mut cx = Ctx::through(tl.camera_at(state.root.frame, &doc.stage));
+    cx.scene_view = scene_camera_view(doc, state.scene, state.root.frame);
+    eval_timeline(doc, tl, state.root.frame, &cx, &mut out, Some(&play));
     out
 }
 
@@ -275,11 +288,14 @@ struct Ctx {
     /// The camera the scene's layers are seen through (main timeline only; each layer's
     /// transform comes from it and the layer's depth, and `xf` is ignored).
     camera: Option<Camera>,
+    /// The Moho-imported scene camera's view (ADR 0102; main timeline only): the
+    /// `Scene.camera` channels as a plain transform, composed in front of the camera layer's.
+    scene_view: Affine,
 }
 
 impl Ctx {
     fn top(xf: Affine) -> Ctx {
-        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None }
+        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None, scene_view: Affine::IDENTITY }
     }
 
     /// A main timeline seen through `camera`: its tint colours everything.
@@ -380,8 +396,21 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
-        // Through a camera, each layer is placed by the camera and its own depth.
-        let layer_xf = cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth));
+        // Through a camera, each layer is placed by the camera layer and its own depth;
+        // the Moho-imported scene camera's view composes in front of that (ADR 0102). A
+        // `camera_immune` layer sees neither camera, and every top-level layer also carries
+        // its own transform channels.
+        let layer_xf = if cx.depth == 0 {
+            let mut xf = if layer.camera_immune {
+                cx.xf
+            } else {
+                cx.scene_view.mul(&cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth)))
+            };
+            xf = xf.mul(&layer.transform_at(frame));
+            xf
+        } else {
+            cx.xf
+        };
         for el in elements.iter() {
             // In the player, a symbol instance has its own path, and maybe properties a script set.
             let child = match (&el.kind, play) {
@@ -464,7 +493,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     } else {
                         (color, cx.group)
                     };
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group, camera: None };
+                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group, camera: None, scene_view: Affine::IDENTITY };
                     eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
                 }
             }

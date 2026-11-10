@@ -47,7 +47,81 @@ pub fn specs() -> Vec<CommandSpec> {
         c("layer.toggle_mask", "Mask", "Modify/Timeline", None, "{layer?}", true, toggle_mask),
         c("layer.set_type", "Layer Type", "", None, "{type: normal|mask|masked|guide|guided, layer?}", true, set_layer_type),
         c("layer.add_motion_guide", "Add Classic Motion Guide", "Insert/Timeline", None, "{layer?}", true, add_motion_guide),
+        c("layer.set_transform", "Layer Transform Key", "", None, "{translation? [x,y], scale? [x,y], rotation? (degrees), shear? [x,y], flip_h?, flip_v?, origin? [x,y], at_frame?, layer?}", true, set_transform),
+        c("layer.clear_transform", "Clear Layer Transform", "", None, "{layer?}", true, clear_transform),
     ]
+}
+
+/// Writes the given transform channels as keys at `at_frame` (the playhead unless given):
+/// the Moho-style layer animation (ADR 0102). Values are stage pixels and screen degrees.
+fn set_transform(s: &mut Session, p: &Value) -> Result<Value> {
+    let frame = opt_u32(p, "at_frame")?.unwrap_or(s.frame).min(100_000);
+    let translation = opt_vec2(p, "translation")?;
+    let scale = opt_vec2(p, "scale")?;
+    let rotation = opt_f32(p, "rotation")?;
+    let shear = opt_vec2(p, "shear")?;
+    let flip_h = opt_bool(p, "flip_h")?;
+    let flip_v = opt_bool(p, "flip_v")?;
+    let origin = opt_vec2(p, "origin")?;
+    if translation.is_none() && scale.is_none() && rotation.is_none() && shear.is_none() && flip_h.is_none() && flip_v.is_none() && origin.is_none() {
+        return Err(EngineError::Param("give something to set: translation, scale, rotation, shear, flip_h, flip_v or origin".into()));
+    }
+    let mut touched = 0usize;
+    let ids = target_layers(s, p)?;
+    for id in &ids {
+        let layer = s.doc.timeline_mut(s.scene).layer_mut(*id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+        if layer.kind == LayerKind::Folder {
+            return Err(EngineError::State("a folder cannot carry a layer transform (its children would need group rendering, which comes later)".into()));
+        }
+        if let Some((x, y)) = translation {
+            layer.translation.set_key(frame, anicraft_geom::Vec2::new(x, y));
+            touched += 1;
+        }
+        if let Some((x, y)) = scale {
+            layer.scale.set_key(frame, anicraft_geom::Vec2::new(x.clamp(-1e4, 1e4), y.clamp(-1e4, 1e4)));
+            touched += 1;
+        }
+        if let Some(degrees) = rotation {
+            layer.rotation.set_key(frame, degrees.to_radians());
+            touched += 1;
+        }
+        if let Some((x, y)) = shear {
+            layer.shear.set_key(frame, anicraft_geom::Vec2::new(x, y));
+            touched += 1;
+        }
+        if let Some(v) = flip_h {
+            layer.flip_h.set_key(frame, v);
+            touched += 1;
+        }
+        if let Some(v) = flip_v {
+            layer.flip_v.set_key(frame, v);
+            touched += 1;
+        }
+        if let Some((x, y)) = origin {
+            layer.origin = anicraft_geom::Vec2::new(x.clamp(-1e5, 1e5), y.clamp(-1e5, 1e5));
+            touched += 1;
+        }
+    }
+    Ok(json!({"frame": frame, "layers": ids.len(), "channels": touched}))
+}
+
+/// Removes the layer's whole transform (all six channels and the pivot).
+fn clear_transform(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut cleared = 0usize;
+    for id in target_layers(s, p)? {
+        let layer = s.doc.timeline_mut(s.scene).layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+        if layer.has_transform() {
+            cleared += 1;
+        }
+        layer.translation = anicraft_doc::Channel::default();
+        layer.scale = anicraft_doc::Channel::default();
+        layer.rotation = anicraft_doc::Channel::default();
+        layer.shear = anicraft_doc::Channel::default();
+        layer.flip_h = anicraft_doc::Channel::default();
+        layer.flip_v = anicraft_doc::Channel::default();
+        layer.origin = anicraft_geom::Vec2::ZERO;
+    }
+    Ok(json!({"layers": cleared}))
 }
 
 /// The mask command: turns a layer into a mask over the normal layer directly under it, or a

@@ -2,13 +2,15 @@
 //! extracted folder), the stage from `project_data`, the animated values (camera, markers),
 //! and the `maop_maohou` sidecar that keeps the untouched original JSON on the document.
 
+use crate::anim;
 use crate::channel::{self, Channel};
 use crate::json::{self, array, get};
 use crate::layer::{self, FlatLayer};
 use crate::zip::Archive;
 use crate::MohoError;
-use anicraft_doc::{Bitmap, BitmapId, Document, MaohouSidecar, Rgba, Scene, Stage, Timeline};
-use anicraft_geom::Affine;
+use anicraft_doc::{Bitmap, BitmapId, Document, MaohouSidecar, Rgba, Scene, SceneCamera, Stage, Timeline};
+use anicraft_doc::Channel as DocChannel;
+use anicraft_geom::{Affine, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -78,6 +80,8 @@ pub(crate) struct Builder<'a> {
     pub frame: f64,
     /// The one keyframe's span, from `project_data`'s frame range.
     pub duration: u32,
+    /// The project's playback range `(start, end)`, 0-based with `end` exclusive.
+    pub frames: (u32, u32),
 }
 
 impl<'a> Builder<'a> {
@@ -163,11 +167,12 @@ pub(crate) fn import_json(root: Value, read: &Reader<'_>, fonts: Option<&Fonts>)
     let to_px = Affine::translate(half_w, half_h).mul(&Affine::scale(dpi, -dpi));
     let from_px = to_px.inverse().unwrap_or(Affine::IDENTITY);
 
-    let mut b = Builder { doc, report: Report::default(), fonts, faces: HashMap::new(), read, to_px, from_px, dpi, frame: start, duration };
+    let frames = ((start as u64 - 1).clamp(0, MAX_FRAME as u64) as u32, (end as u64).clamp(1, MAX_FRAME as u64) as u32);
+    let mut b = Builder { doc, report: Report::default(), fonts, faces: HashMap::new(), read, to_px, from_px, dpi, frame: start, duration, frames };
 
     // Render/document settings without a slot, counted when non-default.
     document_settings(&mut b.report, pd);
-    camera_and_markers(&mut b.report, get(&root, "animated_values").unwrap_or(&empty));
+    let scene_anim = scene_animation(&mut b, get(&root, "animated_values").unwrap_or(&empty));
     if array(get(&root, "layercomps")).is_some_and(|s| !s.is_empty()) {
         b.report.skip("layer comps");
     }
@@ -186,7 +191,16 @@ pub(crate) fn import_json(root: Value, read: &Reader<'_>, fonts: Option<&Fonts>)
     }
     let mut timeline = Timeline { layers: layers_out };
     timeline.repair_masks();
-    b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline }));
+    let mut scene = Scene { name: "Scene 1".into(), timeline, ..Scene::new("") };
+    scene.camera = scene_anim.camera;
+    scene.markers = scene_anim.markers;
+    // Moho's project range only needs storing when it isn't just "everything that's there".
+    let content = scene.timeline.frame_count();
+    let (range_start, range_end) = scene_anim.frames;
+    if (range_start, range_end) != (0, content) && range_start < range_end {
+        scene.frames = Some((range_start, range_end));
+    }
+    b.doc.scenes.push(Arc::new(scene));
 
     // The sidecar: the untouched original, the `.maop` dialect's `maop_maohou` node, so a
     // later milestone re-projects bones, channels and effects without the source file.
@@ -217,26 +231,66 @@ fn document_settings(report: &mut Report, pd: &Value) {
     }
 }
 
-/// The camera and timeline markers: the camera is a later milestone's scene property, so any
-/// real animation or offset counts; markers likewise.
-fn camera_and_markers(report: &mut Report, animated: &Value) {
-    let ch = |k: &str| get(animated, k).and_then(Channel::parse);
-    let frame = 1.0;
-    let track = ch("camera_track").and_then(|c| channel::sample_vec3(&c, frame));
-    let zoom = ch("camera_zoom").and_then(|c| channel::sample_f64(&c, frame)).unwrap_or(2.0);
-    let roll = ch("camera_roll").and_then(|c| channel::sample_f64(&c, frame)).unwrap_or(0.0);
-    let pan = ch("camera_pan_tilt").and_then(|c| channel::sample_vec2(&c, frame));
-    let moved = track.is_some_and(|(x, y, _)| x.abs() > 1e-6 || y.abs() > 1e-6)
-        || (zoom - 2.0).abs() > 1e-6
-        || roll.abs() > 1e-6
-        || pan.is_some_and(|p| p.length() > 1e-6);
-    let animated_keys = ["camera_track", "camera_zoom", "camera_roll", "camera_pan_tilt"].iter().any(|k| ch(k).is_some_and(|c| c.is_animated()));
-    if moved || animated_keys {
-        report.skip("camera animation");
+/// The scene-level animation of stage 2: the camera channels, the timeline markers and the
+/// project frame range (Moho's `animated_values` and `project_data`). The camera's z and
+/// pan/tilt have no 2D slot — counted when they carry values.
+fn scene_animation(b: &mut Builder, animated: &Value) -> SceneAnim {
+    let mut camera = SceneCamera::default();
+    let mut zed = 0.0f64;
+    // The camera position is a *point* in Moho's inch space: it maps through the full
+    // inch→pixel transform (canvas centre included), not the translation delta.
+    let to_px = b.to_px;
+    anim::read_channel(&mut camera.track, animated, "camera_track", &mut b.report, 2, |ch, i| {
+        let (x, y, z) = channel::sample_vec3_at(ch, i).unwrap_or((0.0, 0.0, 0.0));
+        zed = zed.max(((z as f64) - anim::CAMERA_Z_DEFAULT).abs());
+        to_px.apply(Vec2::new(x, y))
+    });
+    if zed > 1e-4 {
+        b.report.skip("camera depth (z) parallax (2D view ignores it)");
     }
-    if ch("timeline_markers").is_some_and(|c| channel::sample_string(&c, frame).is_some_and(|s| !s.is_empty())) {
-        report.skip("timeline markers");
+    anim::read_channel(&mut camera.zoom, animated, "camera_zoom", &mut b.report, 1, |ch, i| channel::sample_f64_at(ch, i).unwrap_or(2.0) as f32);
+    anim::read_channel(&mut camera.roll, animated, "camera_roll", &mut b.report, 1, |ch, i| -(channel::sample_f64_at(ch, i).unwrap_or(0.0)) as f32);
+    if let Some(c) = get(animated, "camera_pan_tilt").and_then(Channel::parse)
+        && (c.is_animated() || c.val().iter().any(|v| json::vec2(Some(v)).is_some_and(|p| p.length() > 1e-6)))
+    {
+        b.report.skip("camera pan/tilt (3D)");
     }
+    // A camera whose channels hold only the defaults is no camera at all.
+    let centre = Vec2::new(b.doc.stage.width as f32 * 0.5, b.doc.stage.height as f32 * 0.5);
+    if camera.track.is_static() && camera.track.sample_or(0.0, centre) == centre {
+        camera.track = DocChannel::default();
+    }
+    if camera.zoom.is_static() && (camera.zoom.sample_or(0.0, 2.0) - 2.0).abs() < 1e-6 {
+        camera.zoom = DocChannel::default();
+    }
+    if camera.roll.is_static() && camera.roll.sample_or(0.0, 0.0).abs() < 1e-9 {
+        camera.roll = DocChannel::default();
+    }
+
+    // Timeline markers: the string channel's keys, one per frame, empty labels dropped.
+    let mut markers: Vec<(u32, String)> = Vec::new();
+    if let Some(c) = get(animated, "timeline_markers").and_then(Channel::parse) {
+        for i in 0..c.len() {
+            let Some(frame) = c.frame(i) else { continue };
+            let label = channel::sample_string_at(&c, i).unwrap_or_default();
+            let label = label.trim();
+            if label.is_empty() {
+                continue;
+            }
+            markers.retain(|(f, _)| *f != frame);
+            markers.push((frame, label.chars().take(256).collect()));
+        }
+        markers.sort_by_key(|(f, _)| *f);
+    }
+
+    SceneAnim { camera, markers, frames: b.frames }
+}
+
+/// The scene-level animation read out of one import.
+struct SceneAnim {
+    camera: SceneCamera,
+    markers: Vec<(u32, String)>,
+    frames: (u32, u32),
 }
 
 /// Imports from disk: a `.moho` package, a bare `.mohoproj` file, or an extracted folder

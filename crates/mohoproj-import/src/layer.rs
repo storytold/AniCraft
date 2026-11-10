@@ -10,6 +10,7 @@
 //! folders (stage 1 freezes a switch at its current selection and keeps the variants as
 //! hidden children); bones, effect stacks, physics and the camera are counted in the report.
 
+use crate::anim;
 use crate::channel::{self, Channel};
 use crate::import::Builder;
 use crate::json::{self, array, get};
@@ -72,9 +73,35 @@ fn build_layer(b: &mut Builder, layer: &Value, into: &Inherit, depth: usize, out
     let mut l = Layer::new(id, name);
     l.parent = into.parent;
     l.visible = layer_visibility(b, layer) && into.hide.is_none_or(|h| !h.contains(&l.name));
-    let (local, alpha) = layer_transform(b, layer);
+    // The layer's own transform: animated channels (stage 2) on a leaf layer, or the static
+    // bake of stage 1. A container's transform propagates to its children in Moho; AniCraft
+    // folders carry nothing, so an animated container keeps the static bake and says so.
+    let channels = anim::layer_transform_channels(get(layer, "transforms").unwrap_or(&Value::Null), &mut b.report);
+    let animated_leaf = channels.is_animated() && !matches!(ty.as_str(), "GroupLayer" | "BoneLayer" | "SwitchLayer");
+    if channels.is_animated() && !animated_leaf {
+        b.report.skip("group transform animation (children drawn without it)");
+    }
+    let (local, alpha) = if animated_leaf {
+        if into.world != Affine::IDENTITY {
+            b.report.skip("animated layer inside a transformed group (its motion composes outside the group transform)");
+        }
+        (Affine::IDENTITY, layer_alpha(b, layer))
+    } else {
+        layer_transform(b, layer)
+    };
     let alpha = alpha * into.alpha;
     let world = into.world.mul(&local);
+    if animated_leaf {
+        l.translation = channels.translation;
+        l.scale = channels.scale;
+        l.rotation = channels.rotation;
+        l.shear = channels.shear;
+        l.flip_h = channels.flip_h;
+        l.flip_v = channels.flip_v;
+        if let Some(origin) = get(layer, "origin").and_then(|v| json::vec2(Some(v))) {
+            l.origin = b.to_px.apply(origin);
+        }
+    }
     match ty.as_str() {
         "MeshLayer" => {
             count_layer_extras(b, layer);
@@ -230,8 +257,20 @@ fn count_layer_extras(b: &mut Builder, layer: &Value) {
     }
 }
 
-/// Reads a layer's static transform channels (inch space, y up) around its origin pivot,
-/// plus its static alpha. 3D-only channels are counted when they carry values.
+/// The layer's static alpha: the effect stack's alpha channel at the import frame (its
+/// animation is a stage-3 effect-stack matter; visibility stays on the layer).
+fn layer_alpha(b: &Builder, layer: &Value) -> f32 {
+    let a = get(layer, "layer_effects")
+        .and_then(|fx| get(fx, "alpha"))
+        .and_then(Channel::parse)
+        .and_then(|c| channel::sample_f64(&c, b.frame))
+        .unwrap_or(1.0);
+    (a as f32).clamp(0.0, 1.0)
+}
+
+/// Reads a layer's static transform channels (inch space, y up) around its origin pivot.
+/// 3D-only channels are counted when they carry values. Called for layers whose transform
+/// channels don't animate — animated leaves go through `anim::layer_transform_channels`.
 fn layer_transform(b: &mut Builder, layer: &Value) -> (Affine, f32) {
     let frame = b.frame;
     let empty = Value::Null;
@@ -262,14 +301,8 @@ fn layer_transform(b: &mut Builder, layer: &Value) -> (Affine, f32) {
     if ch("following").is_some_and(|c| c.is_animated()) {
         b.report.skip("follow progress animation");
     }
-    // Any other transform channel with more than one key is layer animation the document
-    // model can't hold yet (it becomes layer channels in a later milestone); the static
-    // frame draws, the channel rides in the sidecar.
-    for k in ["translation", "scale", "rotation_z", "rotation_x", "rotation_y", "flip_h", "flip_v", "shear", "physics_nudge"] {
-        if ch(k).is_some_and(|c| c.is_animated()) {
-            b.report.skip("layer transform animation (drawn at frame 1)");
-            break;
-        }
+    if ch("physics_nudge").is_some_and(|c| c.is_animated()) {
+        b.report.skip("physics nudge animation (drawn without it)");
     }
     let origin = get(layer, "origin").and_then(|v| json::vec2(Some(v))).unwrap_or(anicraft_geom::Vec2::ZERO);
     let shear = Affine { m: [1.0, shy, shx, 1.0, 0.0, 0.0] };
@@ -282,9 +315,7 @@ fn layer_transform(b: &mut Builder, layer: &Value) -> (Affine, f32) {
         b.report.skip("unreadable layer transforms");
         Affine::IDENTITY
     };
-    // Layer alpha rides the effect stack's alpha channel (visibility stays on the layer).
-    let a = get(layer, "layer_effects").and_then(|fx| get(fx, "alpha")).and_then(Channel::parse).and_then(|c| channel::sample_f64(&c, frame)).unwrap_or(1.0);
-    (m, (a as f32).clamp(0.0, 1.0))
+    (m, layer_alpha(b, layer))
 }
 
 /// A leaf layer's content: one keyframe spanning the imported frame range.

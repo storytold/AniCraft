@@ -2105,3 +2105,93 @@ fn bevel_and_gradient_filters_render_save_and_export() {
     // Lottie reports them, as it does every filter.
     assert!(anicraft_render::lottie::to_lottie(&s.doc, "f", 0, 0, false).report.keys().any(|k| k.starts_with("filters")));
 }
+
+
+// ----- stage 2: property channels, camera, markers, frame range (ADR 0025) --------------
+
+#[test]
+fn layer_and_camera_channels_round_trip_in_v5_files() {
+    let mut s = Session::new(sample::demo());
+    s.execute("layer.set_transform", &json!({"translation": [40.0, 20.0], "scale": [2.0, 1.0], "rotation": 90.0, "shear": [0.1, 0.0], "flip_h": true, "origin": [100.0, 0.0], "at_frame": 0})).unwrap();
+    s.execute("layer.set_transform", &json!({"translation": [140.0, 20.0], "at_frame": 10})).unwrap();
+    s.execute("camera.set_track", &json!({"x": 100.0, "y": 0.0})).unwrap();
+    s.execute("camera.set_zoom", &json!({"zoom": 4.0, "at_frame": 10})).unwrap();
+    s.execute("camera.set_roll", &json!({"degrees": 15.0})).unwrap();
+    s.execute("scene.add_marker", &json!({"frame": 6, "label": "Contact"})).unwrap();
+    s.execute("scene.set_frames", &json!({"start": 0, "end": 48})).unwrap();
+    let text = crate::format::to_json(&s.doc).unwrap();
+    assert!(text.contains("\"camera\""), "the camera is in the file");
+    let back = crate::format::from_json(&text).unwrap();
+    assert_eq!(back, s.doc, "round trip keeps channels, camera, markers and range");
+    // And a v4-style file (none of the new keys) still loads as before.
+    let mut v4 = crate::format::to_json(&sample::demo()).unwrap();
+    v4 = v4.replace("\"version\":5", "\"version\":4");
+    assert_eq!(crate::format::from_json(&v4).unwrap(), sample::demo());
+}
+
+#[test]
+fn layer_transform_commands_move_the_layer() {
+    let mut s = Session::new(sample::demo());
+    let layer = s.layer;
+    fn item_of(s: &Session, f: u32, layer: anicraft_doc::LayerId) -> anicraft_geom::Affine {
+        anicraft_doc::evaluate_scene(&s.doc, 0, f).items.iter().find(|i| i.layer == layer).expect("the active layer has artwork").transform
+    }
+    let before = item_of(&s, 5, layer).translation();
+    s.execute("layer.set_transform", &json!({"translation": [40.0, 20.0]})).unwrap();
+    assert!((item_of(&s, 5, layer).translation().x - before.x - 40.0).abs() < 1e-4, "the whole layer moved by the channel: {:?} → {:?}", before, item_of(&s, 5, layer).translation());
+    // A key 10 frames in, linear in between.
+    s.execute("layer.set_transform", &json!({"translation": [140.0, 20.0], "at_frame": 10})).unwrap();
+    let mid = item_of(&s, 5, layer).translation().x - before.x;
+    assert!((mid - 90.0).abs() < 1e-3, "{mid}");
+    // Undo removes the second key again.
+    s.undo().unwrap();
+    let x = item_of(&s, 5, layer).translation().x - before.x;
+    assert!((x - 40.0).abs() < 1e-4, "{x}");
+    s.execute("layer.clear_transform", &json!({})).unwrap();
+    assert_eq!(item_of(&s, 5, layer).translation(), before);
+}
+
+#[test]
+fn camera_commands_move_the_view() {
+    let mut s = Session::new(sample::demo());
+    s.execute("camera.set_zoom", &json!({"zoom": 4.0})).unwrap();
+    s.execute("camera.set_track", &json!({"x": 640.0, "y": 360.0})).unwrap();
+    let dl = anicraft_doc::evaluate_scene(&s.doc, 0, 0);
+    assert!(!dl.items.is_empty());
+    let cam = &s.doc.scenes[0].camera;
+    assert!(!cam.is_neutral());
+    assert_eq!(cam.zoom.sample(0.0), Some(4.0));
+    let _ = dl;
+    // Clear restores the plain view.
+    s.execute("camera.clear", &json!({})).unwrap();
+    assert!(s.doc.scenes[0].camera.is_neutral());
+    assert_eq!(anicraft_doc::evaluate_scene(&s.doc, 0, 0).items[0].transform, anicraft_geom::Affine::IDENTITY, "the view is back to 1:1");
+    // Bad params are errors, not panics.
+    assert!(s.execute("camera.set_zoom", &json!({"zoom": 0.0})).is_err() || s.execute("camera.set_zoom", &json!({"zoom": "big"})).is_err());
+}
+
+#[test]
+fn scene_markers_and_frame_range_commands() {
+    let mut s = Session::new(sample::demo());
+    s.execute("scene.add_marker", &json!({"frame": 12, "label": "Kick"})).unwrap();
+    s.execute("scene.add_marker", &json!({"frame": 3, "label": "Contact"})).unwrap();
+    assert_eq!(s.doc.scenes[0].markers, vec![(3, "Contact".into()), (12, "Kick".into())]);
+    // One marker per frame: rewriting a frame replaces it.
+    s.execute("scene.add_marker", &json!({"frame": 3, "label": "Pass"})).unwrap();
+    assert_eq!(s.doc.scenes[0].markers.len(), 2);
+    assert_eq!(s.doc.scenes[0].markers[0].1, "Pass");
+    s.execute("scene.remove_marker", &json!({"frame": 3})).unwrap();
+    assert_eq!(s.doc.scenes[0].markers.len(), 1);
+    assert!(s.execute("scene.remove_marker", &json!({"frame": 3})).is_err());
+    s.execute("scene.set_frames", &json!({"start": 0, "end": 30})).unwrap();
+    assert_eq!(s.frame_count(), 30, "playback runs over the stored range");
+    assert!(s.execute("scene.set_frames", &json!({"start": 10, "end": 10})).is_err());
+    s.execute("scene.clear_frames", &json!({})).unwrap();
+    assert_eq!(s.doc.scenes[0].frames, None);
+}
+
+#[test]
+fn plugins_may_call_camera_commands() {
+    assert!(crate::cmds_plugin::plugin_may_call("camera.set_zoom").is_ok());
+    assert!(crate::cmds_plugin::plugin_may_call("camera.clear").is_ok());
+}

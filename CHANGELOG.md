@@ -1,6 +1,25 @@
 # Changelog
 
 * **Moho import** (ADR 0101). `File › Open` now reads Moho documents: `.moho` packages and
+
+## Unreleased
+
+* **Layer animation and the camera** (ADR 0102). Moho documents with animated layers now
+  play: each layer's translation, scale, rotation, shear and flips import as property
+  channels (the Moho model, one curve per property — the same shape bones and switches will
+  use), around the layer's own origin pivot, with Moho's interpolation modes mapped (linear
+  and Bézier exactly; auto-smooth as a Catmull-Rom approximation; step as holds; Moho's ease
+  family and exotic modes approximated, all counted in the import report). The scene camera
+  imports too — position, zoom (Moho's 2 = neutral 100 %) and roll — moving every layer it
+  looks at, except layers marked camera-immune. Timeline markers and the project's frame
+  range come across, so a 44-frame Moho document plays 44 frames. Headless: `camera.set_track`,
+  `camera.set_zoom`, `camera.set_roll`, `camera.clear`, `layer.set_transform`,
+  `layer.clear_transform`, `scene.set_frames`, `scene.clear_frames`, `scene.add_marker`,
+  `scene.remove_marker`. `.anicraft` files are format v5 (older files open unchanged). What
+  is still approximated: Moho's exact auto-smooth formula and its ease/noisy/cycle modes —
+  the import report counts them and the document keeps the original channels in its sidecar.
+
+* **Moho import** (ADR 0024). `File › Open` now reads Moho documents: `.moho` packages and
   bare `.mohoproj` files, alongside `.fla`/`.xfl` and AniCraft's own format. The stage, the
   inline layer tree (flattened, folders kept), vector meshes as paths with solid and linear/
   radial gradient fills, solid strokes, text layers (laid out with this computer's fonts) and

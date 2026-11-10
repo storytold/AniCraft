@@ -814,11 +814,11 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     for (i, tl) in scenes.iter().enumerate() {
         let name: String = tl.attr("name").filter(|n| !n.trim().is_empty()).map_or_else(|| format!("Scene {}", i + 1), |n| n.chars().take(256).collect());
         let timeline = b.timeline(tl);
-        b.doc.scenes.push(Arc::new(Scene { name, timeline }));
+        b.doc.scenes.push(Arc::new(Scene { name, timeline, ..Scene::new("") }));
     }
     if b.doc.scenes.is_empty() {
         let timeline = Timeline { layers: vec![Arc::new(Layer::new(LayerId(b.doc.alloc_id()), "Layer 1"))] };
-        b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline }));
+        b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline, ..Scene::new("") }));
     }
     Ok((b.doc, b.report))
 }

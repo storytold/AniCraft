@@ -116,7 +116,7 @@ fn kept_scripts_survive_the_file_and_hostile_ones_are_dropped_whole() {
     old["document"].as_object_mut().unwrap().remove("document_class");
     let d = format::from_json(&file(&old)).unwrap();
     assert!(d.document_class.is_empty());
-    assert_eq!(v["version"], 4, "the fork's v4 carries the maop_maohou sidecar");
+    assert_eq!(v["version"], crate::format::FORMAT_VERSION, "the fork carries the maop_maohou sidecar");
     // Hostile: an empty script, one too long, a class that isn't a name, an unknown language.
     let script = &mut v["document"]["scenes"][0]["timeline"]["layers"][0]["keyframes"];
     script[0]["script"] = json!({"source": {"language": "other", "text": ""}});

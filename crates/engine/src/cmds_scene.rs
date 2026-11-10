@@ -19,6 +19,10 @@ pub fn specs() -> Vec<CommandSpec> {
         c("scene.select", "Go to Scene", "", None, "{scene: index}", false, select_scene),
         c("scene.prev", "Previous Scene", "Control", Some("Shift+PageUp"), "{}", false, |s, _| step_scene(s, -1)),
         c("scene.next", "Next Scene", "Control", Some("Shift+PageDown"), "{}", false, |s, _| step_scene(s, 1)),
+        c("scene.set_frames", "Playback Frame Range", "", None, "{start, end (0-based, end exclusive)}", true, set_frames),
+        c("scene.clear_frames", "Clear Playback Frame Range", "", None, "{}", true, clear_frames),
+        c("scene.add_marker", "Add Timeline Marker", "", None, "{frame, label}", true, add_marker),
+        c("scene.remove_marker", "Remove Timeline Marker", "", None, "{frame}", true, remove_marker),
     ]
 }
 
@@ -40,7 +44,65 @@ fn open_scene(s: &mut Session, i: usize) {
 
 fn scene_json(s: &Session) -> Value {
     let name = s.doc.scenes.get(s.scene).map_or("", |sc| sc.name.as_str());
-    json!({"scene": s.scene, "name": name, "scenes": s.doc.scenes.len(), "frames": s.frame_count()})
+    let mut v = json!({"scene": s.scene, "name": name, "scenes": s.doc.scenes.len(), "frames": s.frame_count()});
+    if let Some(scene) = s.doc.scenes.get(s.scene) {
+        if !scene.camera.is_neutral() {
+            v["camera"] = crate::cmds_maohou_camera::camera_json(scene);
+        }
+        if !scene.markers.is_empty() {
+            v["markers"] = json!(scene.markers.iter().map(|(f, label)| json!({"frame": f, "label": label})).collect::<Vec<_>>());
+        }
+        if let Some((start, end)) = scene.frames {
+            v["frame_range"] = json!([start, end]);
+        }
+    }
+    v
+}
+
+/// The frames the scene plays: a stored playback range (Moho's project range) or `clear`
+/// to run to the timeline's content again.
+fn set_frames(s: &mut Session, p: &Value) -> Result<Value> {
+    let start = opt_u32(p, "start")?.ok_or_else(|| EngineError::Param("param 'start' must be a frame number".into()))?;
+    let end = opt_u32(p, "end")?.ok_or_else(|| EngineError::Param("param 'end' must be a frame number".into()))?;
+    if start >= end {
+        return Err(EngineError::Param("the range's end must be after its start".into()));
+    }
+    if end > 100_000 {
+        return Err(EngineError::Param("the range cannot go past frame 100,000".into()));
+    }
+    Arc::make_mut(&mut s.doc.scenes[s.scene]).frames = Some((start, end));
+    Ok(scene_json(s))
+}
+
+fn clear_frames(s: &mut Session, _p: &Value) -> Result<Value> {
+    Arc::make_mut(&mut s.doc.scenes[s.scene]).frames = None;
+    Ok(scene_json(s))
+}
+
+/// A named point on the timeline (Moho's timeline markers): one marker per frame, the label
+/// non-empty.
+fn add_marker(s: &mut Session, p: &Value) -> Result<Value> {
+    let frame = opt_u32(p, "frame")?.ok_or_else(|| EngineError::Param("param 'frame' must be a frame number".into()))?;
+    let label = opt_str(p, "label")?.unwrap_or_default().trim().chars().take(256).collect::<String>();
+    if label.is_empty() {
+        return Err(EngineError::Param("param 'label' must be the marker's name".into()));
+    }
+    let scene = Arc::make_mut(&mut s.doc.scenes[s.scene]);
+    scene.markers.retain(|(f, _)| *f != frame);
+    scene.markers.push((frame.min(100_000), label));
+    scene.markers.sort_by_key(|(f, _)| *f);
+    Ok(scene_json(s))
+}
+
+fn remove_marker(s: &mut Session, p: &Value) -> Result<Value> {
+    let frame = opt_u32(p, "frame")?.ok_or_else(|| EngineError::Param("param 'frame' must be a frame number".into()))?;
+    let scene = Arc::make_mut(&mut s.doc.scenes[s.scene]);
+    let before = scene.markers.len();
+    scene.markers.retain(|(f, _)| *f != frame);
+    if scene.markers.len() == before {
+        return Err(EngineError::State(format!("there is no marker at frame {frame}")));
+    }
+    Ok(scene_json(s))
 }
 
 fn unused_name(s: &Session, base: &str) -> String {
@@ -125,7 +187,7 @@ fn duplicate_scene(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(src) = s.doc.scenes.get(i).cloned() else { return Err(EngineError::State("no such scene".into())) };
     let timeline = reid(s, &src.timeline);
     let name = unused_name(s, &format!("{} copy", src.name));
-    s.doc.scenes.insert(i + 1, Arc::new(Scene { name, timeline }));
+    s.doc.scenes.insert(i + 1, Arc::new(Scene { name, timeline, ..Scene::new("") }));
     open_scene(s, i + 1);
     Ok(scene_json(s))
 }

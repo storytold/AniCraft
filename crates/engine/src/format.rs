@@ -13,7 +13,11 @@ pub const FORMAT_NAME: &str = "anicraft";
 /// v4: a document may carry the `maop_maohou` sidecar (the Moho import's untouched source
 /// JSON, dual-write rule: standard document keys stay standard, Moho-only data rides beside
 /// them); older files simply have no sidecar.
-pub const FORMAT_VERSION: u32 = 4;
+/// v5: property channels (ADR 0102) — each layer's own transform (translation, scale,
+/// rotation, shear, flips, origin pivot, camera_immune) and each scene's camera, timeline
+/// markers and playback frame range. All optional keys: older files read as before, with no
+/// layer transform and the plain unmoving camera.
+pub const FORMAT_VERSION: u32 = 5;
 /// Largest file we will parse.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Files smaller than this (compact) are pretty-printed for humans and diffs.
@@ -144,7 +148,7 @@ mod tests {
         let d = anicraft_doc::sample::stress(2, 40, 48); // 4 keyframes per element share a path
         let json = to_json(&d).unwrap();
         let env: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(env["version"], 4);
+        assert_eq!(env["version"], FORMAT_VERSION);
         assert_eq!(env["paths"].as_array().unwrap().len(), 80, "one entry per distinct path");
         let back = from_json(&json).unwrap();
         assert_eq!(d, back);

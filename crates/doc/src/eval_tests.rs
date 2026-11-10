@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
+use crate::{Channel, Easing, Keyframe, Scene, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
+use anicraft_geom::Vec2;
 
 fn shape_el(id: u64, x: f32) -> Element {
     Element {
@@ -462,4 +463,109 @@ fn shape_hints_survive_a_round_trip_and_old_files_have_none() {
     assert!(!plain.contains("hints"));
     let old: Keyframe = serde_json::from_str(r#"{"start":0,"duration":3}"#).unwrap();
     assert!(old.hints.is_empty());
+}
+
+// ----- layer transform channels + camera (ADR 0102) ------------------------------------
+
+fn rect_doc() -> Document {
+    let mut d = Document::default();
+    let mut k = Keyframe::new(0, 100);
+    // A 10×10 rectangle at the origin.
+    k.elements.push(Arc::new(shape_el(10, 0.0)));
+    layer0(&mut d).keyframes = vec![Arc::new(k)];
+    d
+}
+
+#[test]
+fn layer_translation_channel_moves_the_whole_layer() {
+    let mut d = rect_doc();
+    let l = layer0(&mut d);
+    l.translation = Channel::constant(0, Vec2::new(40.0, 20.0));
+    let x = |f| evaluate(&d, f).items[0].transform.translation();
+    // The element keeps its own transform; the layer's channels compose in front of it.
+    assert_eq!(x(0), Vec2::new(40.0, 20.0));
+    assert_eq!(x(50), Vec2::new(40.0, 20.0), "a constant channel holds");
+    let l = layer0(&mut d);
+    l.translation.set_key(10, Vec2::new(140.0, 20.0));
+    assert!((evaluate(&d, 5).items[0].transform.translation().x - 90.0).abs() < 1e-4);
+    assert!((evaluate(&d, 10).items[0].transform.translation().x - 140.0).abs() < 1e-4);
+}
+
+#[test]
+fn layer_rotation_turns_around_the_layer_origin() {
+    let mut d = rect_doc();
+    let l = layer0(&mut d);
+    l.origin = Vec2::new(100.0, 0.0);
+    l.rotation = Channel::constant(0, std::f32::consts::FRAC_PI_2);
+    // The element sits at x=0..10; 90° screen-clockwise around (100, 0) sends (0, 0) to
+    // (100, −100).
+    let t = evaluate(&d, 0).items[0].transform;
+    let p = t.apply(Vec2::new(0.0, 0.0));
+    assert!((p.x - 100.0).abs() < 1e-3 && (p.y + 100.0).abs() < 1e-3, "{p:?}");
+}
+
+#[test]
+fn layer_flip_and_scale_channels_apply_around_the_origin() {
+    let mut d = rect_doc();
+    let l = layer0(&mut d);
+    l.flip_h = Channel::constant(0, true);
+    l.scale = Channel::constant(0, Vec2::new(2.0, 1.0));
+    let t = evaluate(&d, 0).items[0].transform;
+    let p = t.apply(Vec2::new(10.0, 0.0));
+    assert!((p.x + 20.0).abs() < 1e-3, "flip mirrors x through the origin: {p:?}");
+}
+
+#[test]
+fn camera_zoom_pulls_the_stage_in_and_immune_layers_stay_put() {
+    let mut d = rect_doc();
+    // A second, camera-immune layer with its own rectangle.
+    let mut k = Keyframe::new(0, 100);
+    k.elements.push(Arc::new(shape_el(11, 0.0)));
+    let mut l2 = Layer::new(crate::LayerId(2), "immune");
+    l2.camera_immune = true;
+    l2.keyframes = vec![Arc::new(k)];
+    d.timeline_mut(0).layers.insert(0, Arc::new(l2));
+    Arc::make_mut(&mut d.scenes[0]).camera.zoom = Channel::constant(0, 4.0);
+    // zoom 4 = 2× magnification about the stage centre (640, 360): the normal layer's
+    // rectangle at (0..10, 0..10) moves and grows; the immune one stays.
+    let items = evaluate(&d, 0).items;
+    // Draw order is bottom-first: the plain layer (index 1 in the list) is items[0].
+    let moved = items[0].transform.apply(Vec2::new(5.0, 5.0));
+    let centre = Vec2::new(640.0, 360.0);
+    let expect = centre + (Vec2::new(5.0, 5.0) - centre) * 2.0;
+    assert!((moved - expect).length() < 1e-3, "{moved:?} vs {expect:?}");
+    let still = items[1].transform.apply(Vec2::new(5.0, 5.0));
+    assert_eq!(still, Vec2::new(5.0, 5.0));
+}
+
+#[test]
+fn camera_track_and_roll_move_the_view() {
+    let mut d = rect_doc();
+    let scene = Arc::make_mut(&mut d.scenes[0]);
+    scene.camera.track = Channel::constant(0, Vec2::new(100.0, 0.0));
+    let moved = evaluate(&d, 0).items[0].transform.apply(Vec2::new(100.0, 0.0));
+    assert!((moved - Vec2::new(640.0, 360.0)).length() < 1e-3, "the camera centres on its track: {moved:?}");
+    // Roll turns the world around the stage centre; centre the track so the numbers stay
+    // plain: 90° (this Affine's screen-clockwise) sends (0, −10) to (+10, 0).
+    Arc::make_mut(&mut d.scenes[0]).camera.track = Channel::constant(0, Vec2::new(640.0, 360.0));
+    Arc::make_mut(&mut d.scenes[0]).camera.roll = Channel::constant(0, std::f32::consts::FRAC_PI_2);
+    let turned = evaluate(&d, 0).items[0].transform.apply(Vec2::new(640.0, 360.0 - 10.0));
+    assert!((turned - Vec2::new(650.0, 360.0)).length() < 1e-3, "{turned:?}");
+}
+
+#[test]
+fn scene_frame_range_bounds_playback() {
+    let mut d = rect_doc();
+    Arc::make_mut(&mut d.scenes[0]).frames = Some((0, 12));
+    assert_eq!(d.frame_count(), 12);
+    assert_eq!(d.scenes[0].frame_range(), (0, 12));
+    Arc::make_mut(&mut d.scenes[0]).frames = None;
+    assert_eq!(d.frame_count(), 100);
+    // locate() runs scenes one after another; a range shortens its scene's share.
+    let mut d = rect_doc();
+    Arc::make_mut(&mut d.scenes[0]).frames = Some((0, 10));
+    d.scenes.push(Arc::new(Scene::new("Scene 2")));
+    assert_eq!(d.scene_start(1), 10);
+    let (scene, local) = d.locate(12);
+    assert_eq!((scene, local), (1, 0));
 }
