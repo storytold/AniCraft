@@ -65,7 +65,8 @@ Document
 ├── stage: width, height, fps, background
 ├── timeline: Timeline                 (main scene; scenes list arrives in M2)
 │   └── layers: [Layer]                (index 0 = top of the stack, as in the timeline panel)
-│       ├── name, visible, locked, outline, depth, volume, muted, kind (Normal | Guide | Mask | Folder | Camera)
+│       ├── name, visible, locked, outline, depth, volume, muted, kind (Normal | Guide | Mask | Folder | Camera | Armature),
+│       │   armature?: bones joining symbol instances (armature layer; ADR 0043)
 │       └── keyframes: [Keyframe]      (sorted by start, spans do not overlap)
 │           ├── start, duration        (frames covered by this keyframe)
 │           ├── elements: [Element]
@@ -98,6 +99,13 @@ when they are compatible:
   segments equalized, windings and start points aligned. **Shape hints** (ADR 0023) on the
   tween's first keyframe steer it: placed hints join subpaths, cut both outlines at the hinted
   points and match the pieces in order by length.
+
+**Armatures** (ADR 0043): on an armature layer, bones join symbol instances (a joint on the
+parent, the child turning about it) and each keyframe's `pose` holds joint angles, tweened at
+the span's eased time. `evaluate_layer_elements` places the instances by forward kinematics
+(`W_child = R_joint(angle) · W_parent · rest`), so every export and the player see poses;
+`armature::solve` finds a pose from a dragged bone end by cyclic coordinate descent with joint
+limits and pins.
 
 **The camera** (ADR 0027): a scene's top layer may be its camera layer. `evaluate` (every
 export), `evaluate_player` and `evaluate_scene_camera` draw each top-level layer through

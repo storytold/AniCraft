@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+* **Bone tool and inverse kinematics, first slice** (ADR 0043, M7). Join symbol instances into
+  an armature and pose it:
+  * With the **Bone tool** (M), drag from one symbol instance to another: a bone joins them and
+    both move to a new **armature layer** (bone icon in the timeline). Drag from a bone's end to
+    the next instance to continue the chain; drag from any instance of the armature to branch.
+  * Bones show on the stage as wedges from their round joint to their end, in the armature
+    layer's colour; click one to select it (selection colour).
+  * With the **Selection tool**, drag a bone or an instance to pose the armature by inverse
+    kinematics: the bones above it turn so it follows the pointer; an unreachable point leaves
+    the chain stretched straight toward it. Drag the root instance to move the whole armature.
+    Each drag is one undo step.
+  * A pose at another frame keys it; poses tween with the span's easing and are exact at their
+    keyframes. Every export, the GPU stage and Test Movie show them.
+  * **Properties › Bone**: the joint angle at the playhead, Constrain rotation with min and
+    max (kept in every pose), Pin (the bone and those it hangs from stay put while you drag
+    below it), and Remove Bone (also Delete). Removing frees the instances where they are, on
+    a layer of their own; it asks first when the armature has more than one pose.
+  * Headless: `bone.add`, `bone.remove`, `bone.set_limits`, `bone.pin`, `bone.pose`,
+    `bone.solve` (IK) and `bone.info`; plug-ins may call them. A 64-bone chain solves in about
+    5 ms from rest.
+  * Not yet: shape armatures, spring, joint translation, runtime armatures, XFL import of
+    armature layers, editing armature members' colour effects in place.
+
 * **Subselection on raw drawings, Snap to Objects, and merging everywhere** (ADR 0042, issue
   #42). With Object Drawing off:
   * Click a raw line or fill with the **Subselection tool** (A) to see the points of everything

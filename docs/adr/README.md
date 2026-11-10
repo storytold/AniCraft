@@ -24,4 +24,3 @@ has to renumber because another PR merged first.
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
 | 0040 | branch `m8/localisation` (PR to come) | Localisation of the interface |
-| 0043 | branch `m7/bones` (PR to come) | Bone tool and inverse kinematics |
