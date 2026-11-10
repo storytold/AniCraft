@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-11-09)
 
 * **Motion paths for motion tweens** (ADR 0030). Select a motion tween's object (or a frame of
   its span) and the stage shows its path in the motion colour, with a dot for every frame.
