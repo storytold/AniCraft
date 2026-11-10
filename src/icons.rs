@@ -19,6 +19,7 @@ pub enum Icon {
     Transform,
     Pen,
     Pencil,
+    Brush,
     Rect,
     Oval,
     PolyStar,
@@ -65,7 +66,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 47] = [
+    pub const ALL: [Icon; 48] = [
         Icon::Camera,
         Icon::Width,
         Icon::Sound,
@@ -91,6 +92,7 @@ impl Icon {
         Icon::Transform,
         Icon::Pen,
         Icon::Pencil,
+        Icon::Brush,
         Icon::Rect,
         Icon::Oval,
         Icon::PolyStar,
@@ -132,6 +134,8 @@ impl Icon {
             Icon::Width => ("anicraft-width", false),
             Icon::Pen => ("pen-tool", false),
             Icon::Pencil => ("pencil", false),
+            // A round brush: handle, ferrule and a painted tip (AniCraft original, on Lucide's grid).
+            Icon::Brush => ("anicraft-brush", false),
             Icon::Rect => ("rectangle-horizontal", false),
             Icon::Oval => ("circle", false),
             Icon::PolyStar => ("pentagon", false),
@@ -223,6 +227,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-distribute-v", include_str!("../assets/icons/anicraft-distribute-v.svg")),
     ("anicraft-mask", include_str!("../assets/icons/anicraft-mask.svg")),
     ("anicraft-width", include_str!("../assets/icons/anicraft-width.svg")),
+    ("anicraft-brush", include_str!("../assets/icons/anicraft-brush.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),

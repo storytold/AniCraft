@@ -6,6 +6,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod cmds_actions;
+pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
 mod cmds_file;
@@ -105,6 +106,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
+    v.extend(cmds_brush::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
     v.extend(cmds_width::specs());
@@ -702,3 +704,5 @@ mod tests_actions;
 mod tests_camera;
 #[cfg(test)]
 mod merge_tests;
+#[cfg(test)]
+mod brush_tests;

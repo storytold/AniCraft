@@ -37,13 +37,30 @@ fn reach(s: &Shape, m: &Affine) -> Rect {
     s.path.bounds().transformed(m).inflate(pad + 2.0 * SNAP)
 }
 
+/// Where new raw shapes go in the drawing's stacking (the Brush tool's paint modes, ADR 0033).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Order {
+    /// On top: a fill covers the fills and lines under it (every other drawing tool).
+    #[default]
+    Top,
+    /// Over the fills but under the lines, so lines stay (Paint Fills).
+    UnderLines,
+    /// Under everything, so only empty areas take it (Paint Behind).
+    Behind,
+}
+
 /// Adds `new` (raw shapes, in keyframe space) to the active keyframe, merged with the raw shapes
 /// they touch. Returns the ids of the pieces that came from `new` (what to select).
 pub(crate) fn merge_in(s: &mut Session, new: Vec<Element>) -> Result<Vec<ElementId>> {
+    merge_in_order(s, new, Order::Top)
+}
+
+/// `merge_in`, with the new shapes placed by `order` among the ones they touch.
+pub(crate) fn merge_in_order(s: &mut Session, new: Vec<Element>, order: Order) -> Result<Vec<ElementId>> {
     // Anything that can't merge goes on whole.
     let (new, whole): (Vec<Element>, Vec<Element>) = new.into_iter().partition(|e| mergeable(e).is_some());
     let mut kept: Vec<ElementId> = whole.iter().map(|e| e.id).collect();
-    s.editable_keyframe()?.elements.extend(whole.into_iter().map(Arc::new));
+    add_whole(s.editable_keyframe()?, whole, order);
     let existing = s.editable_keyframe()?.elements.clone();
     let area = new.iter().filter_map(|e| mergeable(e).map(|sh| reach(sh, &e.transform))).fold(Rect::EMPTY, |r, b| r.union(&b));
     let touching: Vec<usize> = existing
@@ -52,33 +69,44 @@ pub(crate) fn merge_in(s: &mut Session, new: Vec<Element>) -> Result<Vec<Element
         .filter(|(_, e)| mergeable(e).is_some_and(|sh| !reach(sh, &e.transform).intersect(&area).is_empty()))
         .map(|(i, _)| i)
         .collect();
-    let all: Vec<&Element> = touching.iter().filter_map(|&i| existing.get(i).map(|e| e.as_ref())).chain(&new).collect();
+    let old: Vec<&Element> = touching.iter().filter_map(|&i| existing.get(i).map(|e| e.as_ref())).collect();
+    let is_line = |e: &&Element| mergeable(e).is_some_and(|sh| sh.fill.is_none());
+    // Bottom to top, each with whether it is new.
+    let all: Vec<(&Element, bool)> = match order {
+        Order::Top => old.iter().map(|e| (*e, false)).chain(new.iter().map(|e| (e, true))).collect(),
+        Order::Behind => new.iter().map(|e| (e, true)).chain(old.iter().map(|e| (*e, false))).collect(),
+        Order::UnderLines => old.iter().filter(|e| !is_line(e)).map(|e| (*e, false)).chain(new.iter().map(|e| (e, true))).chain(old.iter().filter(|e| is_line(e)).map(|e| (*e, false))).collect(),
+    };
     // Style tables: equal entries are one style to the merge.
     let mut fills: Vec<(Paint, ColorEffect)> = Vec::new();
     let mut strokes: Vec<(Stroke, ColorEffect)> = Vec::new();
     let mut paths: Vec<Path> = Vec::with_capacity(all.len());
     let mut styles: Vec<(Option<u32>, Option<u32>, anicraft_geom::FillRule)> = Vec::with_capacity(all.len());
-    for e in &all {
+    let mut fresh: Vec<bool> = Vec::with_capacity(all.len());
+    for (e, is_new) in &all {
         let Some(sh) = mergeable(e) else { continue };
         paths.push(sh.path.transformed(&e.transform));
         let fill = sh.fill.clone().map(|f| index_of(&mut fills, (f, e.color)));
         let stroke = sh.stroke.clone().map(|st| index_of(&mut strokes, (Stroke { width: st.width * e.transform.mean_scale(), ..st }, e.color)));
         styles.push((fill, stroke, sh.fill_rule));
+        fresh.push(*is_new);
     }
     let items: Vec<Item> = paths.iter().zip(&styles).map(|(path, &(fill, stroke, fill_rule))| Item { path, fill, fill_rule, stroke }).collect();
     let Some(merged) = planar::merge(&items) else {
         // Too much to merge at once: keep the new shapes whole, as objects.
         kept.extend(new.iter().map(|e| e.id));
-        let kf = s.editable_keyframe()?;
-        kf.elements.extend(new.into_iter().map(|mut e| {
-            if let ElementKind::Shape(sh) = &mut e.kind {
-                sh.merge = false;
-            }
-            Arc::new(e)
-        }));
+        let objects = new
+            .into_iter()
+            .map(|mut e| {
+                if let ElementKind::Shape(sh) = &mut e.kind {
+                    sh.merge = false;
+                }
+                e
+            })
+            .collect();
+        add_whole(s.editable_keyframe()?, objects, order);
         return Ok(kept);
     };
-    let first_new = touching.len();
     let mut out: Vec<Arc<Element>> = Vec::with_capacity(merged.fills.len() + merged.strokes.len());
     let mut picked = Vec::new();
     for (piece, is_fill) in merged.fills.iter().map(|p| (p, true)).chain(merged.strokes.iter().map(|p| (p, false))) {
@@ -92,7 +120,7 @@ pub(crate) fn merge_in(s: &mut Session, new: Vec<Element>) -> Result<Vec<Element
         // Local origin at the centre of the piece, as the drawing tools place shapes.
         let c = piece.path.bounds().center();
         let id = ElementId(s.doc.alloc_id());
-        if piece.item >= first_new {
+        if fresh.get(piece.item).copied().unwrap_or(false) {
             picked.push(id);
         }
         out.push(Arc::new(Element {
@@ -107,8 +135,9 @@ pub(crate) fn merge_in(s: &mut Session, new: Vec<Element>) -> Result<Vec<Element
     if kf.elements.len() - touching.len() + out.len() > 100_000 {
         return Err(crate::EngineError::State("too many elements on this keyframe".into()));
     }
-    // The drawing goes where the lowest shape it took in was (raw shapes sit under objects).
-    let at = touching.first().copied().unwrap_or(kf.elements.len());
+    // The drawing goes where the lowest shape it took in was (raw shapes sit under objects);
+    // touching nothing, on top, or at the bottom when painting behind.
+    let at = touching.first().copied().unwrap_or(if order == Order::Behind { 0 } else { kf.elements.len() });
     for &i in touching.iter().rev() {
         if i < kf.elements.len() {
             kf.elements.remove(i);
@@ -118,6 +147,16 @@ pub(crate) fn merge_in(s: &mut Session, new: Vec<Element>) -> Result<Vec<Element
     kf.elements.splice(at..at, out);
     kept.extend(picked);
     Ok(kept)
+}
+
+/// Shapes added whole (objects): on top, or at the bottom when painting behind.
+fn add_whole(kf: &mut anicraft_doc::Keyframe, els: Vec<Element>, order: Order) {
+    let els = els.into_iter().map(Arc::new);
+    if order == Order::Behind {
+        kf.elements.splice(0..0, els);
+    } else {
+        kf.elements.extend(els);
+    }
 }
 
 fn index_of<T: PartialEq>(table: &mut Vec<T>, v: T) -> u32 {

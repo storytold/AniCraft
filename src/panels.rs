@@ -21,6 +21,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Pen => Icon::Pen,
         Tool::Text => Icon::Type,
         Tool::Pencil => Icon::Pencil,
+        Tool::Brush => Icon::Brush,
         Tool::Rect => Icon::Rect,
         Tool::Oval => Icon::Oval,
         Tool::Star => Icon::PolyStar,
@@ -68,7 +69,7 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             if resp.on_hover_text(format!("{name}\n{}", tool.hint())).clicked() {
                 app.tool = tool;
             }
-            if matches!(tool, Tool::Width | Tool::Pencil | Tool::Line | Tool::InkBottle) {
+            if matches!(tool, Tool::Width | Tool::Brush | Tool::Line | Tool::InkBottle) {
                 // Tool groups: select, draw by hand, shapes, view.
                 ui.add_space(3.0);
                 let y = ui.cursor().top();
@@ -333,7 +334,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     let sel: Vec<_> = elements.iter().filter(|e| app.s.selection.contains(&e.id)).cloned().collect();
 
     // ---- tool options first while a drawing tool is in hand: they're what you reach for ----
-    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle) {
+    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::Brush | Tool::PaintBucket | Tool::InkBottle) {
         let title = format!("{} tool", app.tool.label());
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
     }
@@ -1238,20 +1239,21 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     let mut st = app.s.style;
-    // Each tool shows only what it uses: the bucket always fills, the ink bottle always strokes.
-    let (bucket, ink) = (app.tool == Tool::PaintBucket, app.tool == Tool::InkBottle);
+    // Each tool shows only what it uses: the bucket and the brush always fill, the ink bottle
+    // always strokes.
+    let (fills, ink) = (matches!(app.tool, Tool::PaintBucket | Tool::Brush), app.tool == Tool::InkBottle);
     if !ink {
         row(ui, "Fill", |ui| {
             let mut c = rgb(st.fill);
             if ui.color_edit_button_srgb(&mut c).named("Fill colour").changed() {
                 st.fill = Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0);
             }
-            if !bucket {
+            if !fills {
                 crate::theme::checkbox(ui, &mut st.use_fill, "").named("Fill").on_hover_text("Fill on/off");
             }
         });
     }
-    if !bucket {
+    if !fills {
         row(ui, "Stroke", |ui| {
             let mut c = rgb(st.stroke);
             if ui.color_edit_button_srgb(&mut c).named("Stroke colour").changed() {
@@ -1269,7 +1271,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
-    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil) {
+    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush) {
         let key = anicraft_engine::find_command("draw.object_drawing").and_then(|c| c.shortcut).map(crate::platform::shortcut_label).unwrap_or_default();
         row_prose(ui, "Drawing", |ui| {
             crate::theme::checkbox(ui, &mut st.object_drawing, "Object drawing")
@@ -1299,8 +1301,47 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut app.pencil_mode, m, m.label()).on_hover_text(m.hint());
             }
         }),
+        Tool::Brush => brush_props(app, ui),
         _ => {}
     }
+}
+
+/// The Brush tool's options (ADR 0033): what Animate's brush offers in its options.
+fn brush_props(app: &mut App, ui: &mut egui::Ui) {
+    use crate::brushtool::{SIZE_MAX, SIZE_MIN};
+    use anicraft_engine::cmds_brush::PaintMode;
+    use anicraft_engine::geom::brush::TipShape;
+    let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
+    let b = &mut app.brush;
+    row(ui, "Size", |ui| {
+        let r = ui.add(egui::DragValue::new(&mut b.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named("Brush size");
+        if !keys.is_empty() {
+            r.on_hover_text(format!("Brush size ({keys})"));
+        }
+    });
+    row(ui, "Shape", |ui| {
+        for (shape, label, hint) in [(TipShape::Round, "Round", "A round or oval tip"), (TipShape::Square, "Square", "A square or flat tip")] {
+            ui.selectable_value(&mut b.shape, shape, label).on_hover_text(hint);
+        }
+    });
+    row(ui, "Angle", |ui| {
+        ui.add(egui::DragValue::new(&mut b.angle).suffix("°").speed(1.0).range(0.0..=180.0).max_decimals(0)).named("Brush angle").on_hover_text("Turns a flattened tip (clockwise)");
+    });
+    row(ui, "Roundness", |ui| {
+        ui.add(egui::DragValue::new(&mut b.roundness).suffix(" %").speed(0.5).range(5.0..=100.0).max_decimals(0)).named("Brush roundness").on_hover_text("100 %: as wide as it is tall. Less flattens the tip, for calligraphic strokes");
+    });
+    row(ui, "Smoothing", |ui| {
+        ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named("Brush smoothing").on_hover_text("How much the stroke is smoothed: 0 follows the hand closely");
+    });
+    row_prose(ui, "Mode", |ui| {
+        egui::ComboBox::from_id_salt("brush_mode").width(170.0).selected_text(b.mode.label()).show_ui(ui, |ui| {
+            for m in PaintMode::ALL {
+                ui.selectable_value(&mut b.mode, m, m.label()).on_hover_text(m.hint());
+            }
+        })
+        .response
+        .set_name("Paint mode");
+    });
 }
 
 /// A small picture of a width profile: the stroke's outline, left side up.
