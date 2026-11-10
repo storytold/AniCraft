@@ -16,6 +16,7 @@ pub enum Tool {
     Subselect,
     Transform,
     Width,
+    Bone,
     Pen,
     Text,
     Pencil,
@@ -65,7 +66,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 19] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 20] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -73,6 +74,7 @@ impl Tool {
             Tool::Subselect => "Subselection",
             Tool::Transform => "Free Transform",
             Tool::Width => "Width",
+            Tool::Bone => "Bone",
             Tool::Pen => "Pen",
             Tool::Text => "Text",
             Tool::Pencil => "Pencil",
@@ -97,6 +99,7 @@ impl Tool {
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
             Tool::Width => Some("U"),
+            Tool::Bone => Some("M"),
             Tool::Pen => Some("P"),
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
@@ -124,6 +127,7 @@ impl Tool {
             Tool::Brush => "Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode.",
             Tool::Eraser => "Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage.",
             Tool::Width => "Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it.",
+            Tool::Bone => "Drag from one symbol instance to another to join them with a bone (they move to an armature layer); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool.",
             Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
             Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
             Tool::Oval => "Drag to draw an oval. Shift draws a circle.",
@@ -217,6 +221,12 @@ pub enum Drag {
     CameraPan { last: egui::Pos2 },
     CameraRotate { last: f32 },
     CameraWheel { until: f64 },
+    /// Bone tool (ADR 0043): drawing a bone from instance `from`, joint `head` to `cur` (stage).
+    Bone { from: anicraft_engine::doc::ElementId, head: egui::Pos2, cur: egui::Pos2 },
+    /// Posing by inverse kinematics: point `local` of the bone's instance follows the pointer.
+    BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
+    /// Moving a whole armature by its root, from stage point `last` last frame.
+    ArmatureMove { layer: anicraft_engine::doc::LayerId, last: egui::Pos2 },
     Pan,
 }
 
@@ -337,6 +347,8 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
+    /// The bone picked on the stage (ADR 0043; view state).
+    pub bone_sel: Option<anicraft_engine::doc::BoneId>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
     pub motion_anchors: Vec<usize>,
     /// The motion path as it was when the drag on it began.
@@ -499,6 +511,7 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
+            bone_sel: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
             frame_sel: None,
@@ -1055,6 +1068,25 @@ impl App {
                 self.last_tool = Tool::Camera;
                 self.camera_preview = which == "cameraview";
             }
+            Some("bones") => {
+                // A three-limb arm on an armature (ADR 0043): bent by IK at frame 1, the elbow
+                // limited, a second pose at frame 24, the elbow's bone selected.
+                self.run("layer.new", json!({"name": "Puppet"}));
+                self.run("draw.rect", json!({"x": 315, "y": 400, "w": 170, "h": 40, "radius": 20, "fill": "#ff9f43", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                let made = self.run("modify.convert_to_symbol", json!({"name": "Limb"}));
+                let (symbol, root) = (id(made.clone(), "symbol"), id(made, "instance"));
+                let arm = id(self.run("library.place", json!({"symbol": symbol, "x": 560, "y": 420})), "element");
+                let hand = id(self.run("library.place", json!({"symbol": symbol, "x": 720, "y": 420})), "element");
+                let b1 = id(self.run("bone.add", json!({"from": root, "to": arm, "head": [480, 420], "tail": [640, 420]})), "bone");
+                let b2 = id(self.run("bone.add", json!({"from": arm, "to": hand, "tail": [790, 420]})), "bone");
+                self.run("bone.set_limits", json!({"bone": b2, "min": -30, "max": 120}));
+                self.run("bone.solve", json!({"bone": b2, "x": 700, "y": 560, "frame": 0}));
+                self.run("bone.pose", json!({"bone": b1, "angle": -35, "frame": 23}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.bone_sel = Some(anicraft_engine::doc::BoneId(b2));
+                self.tool = Tool::Select;
+            }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.
                 self.tl_cell_w = 48.0;
@@ -1606,6 +1638,7 @@ impl App {
             crate::motion_path::consume_keys(self, ctx);
             pathtools::consume_keys(self, ctx);
             crate::widthtool::consume_keys(self, ctx);
+            crate::bone_tool::consume_keys(self, ctx);
         }
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
@@ -1897,6 +1930,7 @@ impl App {
         pathtools::upkeep(self);
         crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
+        crate::bone_tool::upkeep(self);
         self.tick_playback(&ctx);
         self.scrub_sound();
         self.update_title(&ctx);
