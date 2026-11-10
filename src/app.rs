@@ -762,6 +762,12 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some("selection") => {
+                // A selection across layers (ADR 0044): Select All takes every unlocked layer's
+                // artwork; the timeline marks the layers, Properties says how many.
+                self.tool = Tool::Select;
+                self.run("edit.select_all", json!({}));
+            }
             Some("plugins") => {
                 // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
                 let first = self.s.plugins.list().find(|p| crate::plugins_ui::is_command(p) && !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
