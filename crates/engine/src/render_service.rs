@@ -10,7 +10,9 @@
 //!
 //! The CPU oracle draws by default. A [`Rasterizer`] (the GPU stage, ADR 0019) can take over;
 //! whatever it hands back (content it doesn't draw yet, or a failed device) the oracle draws, so
-//! the picture is always complete. Keys include which rasterizer drew them.
+//! the picture is always complete. Keys include which rasterizer drew them. A rasterizer may
+//! keep its pictures on the GPU ([`Raster::Native`], ADR 0029): the cache then holds them, under
+//! a budget of their own, and only the shell knows what they are.
 
 use crate::history::StateId;
 use anicraft_doc::{ColorEffect, DisplayList, Document, Rgba, evaluate_scene, evaluate_scene_camera};
@@ -56,13 +58,17 @@ impl FrameJob {
     }
 }
 
-/// A finished image: premultiplied RGBA8, ready for a texture upload.
+/// A finished image: premultiplied RGBA8, ready for a texture upload, or (`native`) an image
+/// already on the GPU.
 pub struct FrameImage {
     pub key: u64,
     pub frame: u32,
     pub width: u32,
     pub height: u32,
+    /// Empty when the picture is [`FrameImage::native`].
     pub rgba_premul: Vec<u8>,
+    /// The rasterizer's own GPU image (ADR 0029), shown as it is; `None` for bytes.
+    pub native: Option<NativeImage>,
     pub ms: f32,
     pub stats: RenderStats,
     pub error: Option<String>,
@@ -72,9 +78,21 @@ pub struct FrameImage {
     pub fallback: Option<String>,
 }
 
-/// Draws a display list as premultiplied RGBA8 in place of the CPU oracle, or says why it
-/// can't (then the oracle draws it).
-pub type Rasterizer = Arc<dyn Fn(&DisplayList, &View) -> Result<(Vec<u8>, RenderStats), String> + Send + Sync>;
+/// A picture a rasterizer keeps on the GPU. The engine stays GPU-free: only the shell, which
+/// set the rasterizer, knows the concrete type (and how to show it).
+pub type NativeImage = Arc<dyn std::any::Any + Send + Sync>;
+
+/// What a [`Rasterizer`] drew.
+pub enum Raster {
+    /// Premultiplied RGBA8 bytes, `width × height × 4` of them.
+    Premul8(Vec<u8>),
+    /// A `width × height` picture on the GPU (no bytes on the CPU).
+    Native { image: NativeImage, width: u32, height: u32 },
+}
+
+/// Draws a display list in place of the CPU oracle, or says why it can't (then the oracle
+/// draws it).
+pub type Rasterizer = Arc<dyn Fn(&DisplayList, &View) -> Result<(Raster, RenderStats), String> + Send + Sync>;
 
 /// Identity of an evaluated scene: the display list depends on these and nothing else.
 pub fn scene_key(state: StateId, frame: u32, onion: bool) -> u64 {
@@ -158,11 +176,14 @@ fn render_job_by(job: &FrameJob, dl: &DisplayList, raster: Option<&Rasterizer>) 
     let mut fallback = None;
     if let Some(r) = raster {
         // Last-resort guard: a renderer bug must not take the editor down with it.
+        let (w, h) = (job.view.width, job.view.height);
+        let done = |rgba_premul: Vec<u8>, native: Option<NativeImage>, stats: RenderStats| {
+            let ms = t0.elapsed().as_secs_f32() * 1000.0;
+            FrameImage { key: job.key, frame: job.frame, width: w, height: h, rgba_premul, native, ms, stats, error: None, gpu: true, fallback: None }
+        };
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r(dl, &job.view))) {
-            Ok(Ok((rgba, stats))) if rgba.len() == job.view.width as usize * job.view.height as usize * 4 => {
-                let ms = t0.elapsed().as_secs_f32() * 1000.0;
-                return FrameImage { key: job.key, frame: job.frame, width: job.view.width, height: job.view.height, rgba_premul: rgba, ms, stats, error: None, gpu: true, fallback: None };
-            }
+            Ok(Ok((Raster::Premul8(rgba), stats))) if rgba.len() == w as usize * h as usize * 4 => return done(rgba, None, stats),
+            Ok(Ok((Raster::Native { image, width, height }, stats))) if (width, height) == (w, h) => return done(Vec::new(), Some(image), stats),
             Ok(Ok(_)) => fallback = Some("the GPU returned a wrong-sized image".to_string()),
             Ok(Err(why)) => fallback = Some(why),
             Err(_) => fallback = Some("the GPU renderer failed".to_string()),
@@ -175,7 +196,7 @@ fn render_job_by(job: &FrameJob, dl: &DisplayList, raster: Option<&Rasterizer>) 
         Err(_) => (Vec::new(), RenderStats::default(), Some("the renderer failed on this frame".into())),
     };
     let (width, height) = if error.is_none() { (job.view.width, job.view.height) } else { (0, 0) };
-    FrameImage { key: job.key, frame: job.frame, width, height, rgba_premul: rgba, ms: t0.elapsed().as_secs_f32() * 1000.0, stats, error, gpu: false, fallback }
+    FrameImage { key: job.key, frame: job.frame, width, height, rgba_premul: rgba, native: None, ms: t0.elapsed().as_secs_f32() * 1000.0, stats, error, gpu: false, fallback }
 }
 
 /// Renders a job synchronously, evaluating its scene.
@@ -213,19 +234,28 @@ struct RasterSlot {
     raster: Option<Rasterizer>,
 }
 
-/// LRU cache of finished images, bounded by bytes.
+/// LRU cache of finished images, bounded by bytes: those in memory, and (apart) those a
+/// rasterizer keeps on the GPU, counted at 4 bytes a pixel.
 pub struct FrameCache {
     map: HashMap<u64, (Arc<FrameImage>, u64)>,
     tick: u64,
     bytes: usize,
+    native_bytes: usize,
     pub budget_bytes: usize,
+    pub native_budget_bytes: usize,
     pub hits: u64,
     pub misses: u64,
 }
 
+/// `(bytes in memory, bytes on the GPU)` an image holds.
+fn cost(img: &FrameImage) -> (usize, usize) {
+    let gpu = if img.native.is_some() { img.width as usize * img.height as usize * 4 } else { 0 };
+    (img.rgba_premul.len() + std::mem::size_of::<FrameImage>(), gpu)
+}
+
 impl FrameCache {
     pub fn new(budget_bytes: usize) -> Self {
-        FrameCache { map: HashMap::new(), tick: 0, bytes: 0, budget_bytes, hits: 0, misses: 0 }
+        FrameCache { map: HashMap::new(), tick: 0, bytes: 0, native_bytes: 0, budget_bytes, native_budget_bytes: DEFAULT_NATIVE_CACHE_BYTES, hits: 0, misses: 0 }
     }
     pub fn get(&mut self, key: u64) -> Option<Arc<FrameImage>> {
         self.tick += 1;
@@ -247,17 +277,30 @@ impl FrameCache {
     }
     pub fn insert(&mut self, img: Arc<FrameImage>) {
         self.tick += 1;
-        let size = img.rgba_premul.len() + std::mem::size_of::<FrameImage>();
+        let (cpu, gpu) = cost(&img);
         if let Some((old, _)) = self.map.insert(img.key, (img, self.tick)) {
-            self.bytes = self.bytes.saturating_sub(old.rgba_premul.len() + std::mem::size_of::<FrameImage>());
+            self.forget(&old);
         }
-        self.bytes += size;
-        while self.bytes > self.budget_bytes && self.map.len() > 1 {
-            let Some((&victim, _)) = self.map.iter().min_by_key(|(_, (_, t))| *t) else { break };
+        self.bytes += cpu;
+        self.native_bytes += gpu;
+        loop {
+            // Evict the least recently used image of the kind that is over its budget.
+            let over_gpu = self.native_bytes > self.native_budget_bytes;
+            if !(over_gpu || self.bytes > self.budget_bytes) || self.map.len() <= 1 {
+                break;
+            }
+            let victim = self.map.iter().filter(|(_, (i, _))| !over_gpu || i.native.is_some()).min_by_key(|(_, (_, t))| *t).map(|(&k, _)| k);
+            let Some(victim) = victim else { break };
             if let Some((old, _)) = self.map.remove(&victim) {
-                self.bytes = self.bytes.saturating_sub(old.rgba_premul.len() + std::mem::size_of::<FrameImage>());
+                self.forget(&old);
             }
         }
+    }
+
+    fn forget(&mut self, img: &FrameImage) {
+        let (cpu, gpu) = cost(img);
+        self.bytes = self.bytes.saturating_sub(cpu);
+        self.native_bytes = self.native_bytes.saturating_sub(gpu);
     }
     pub fn len(&self) -> usize {
         self.map.len()
@@ -267,6 +310,10 @@ impl FrameCache {
     }
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+    /// Bytes of the images kept on the GPU.
+    pub fn native_bytes(&self) -> usize {
+        self.native_bytes
     }
 }
 
@@ -290,6 +337,8 @@ struct Shared {
 
 /// Default image-cache budget.
 pub const DEFAULT_CACHE_BYTES: usize = 768 * 1024 * 1024;
+/// Default budget for pictures a rasterizer keeps on the GPU (graphics memory is scarcer).
+pub const DEFAULT_NATIVE_CACHE_BYTES: usize = 384 * 1024 * 1024;
 /// Most jobs the worker renders in one parallel pass.
 const BATCH: usize = 32;
 
@@ -430,7 +479,7 @@ impl RenderService {
         let key = job.key;
         let frame = job.frame;
         self.render_now_batch(vec![job]).into_iter().next().unwrap_or_else(|| {
-            Arc::new(FrameImage { key, frame, width: 0, height: 0, rgba_premul: Vec::new(), ms: 0.0, stats: RenderStats::default(), error: Some("render failed".into()), gpu: false, fallback: None })
+            Arc::new(FrameImage { key, frame, width: 0, height: 0, rgba_premul: Vec::new(), native: None, ms: 0.0, stats: RenderStats::default(), error: Some("render failed".into()), gpu: false, fallback: None })
         })
     }
 
@@ -657,7 +706,7 @@ mod tests {
             if dl.items.len() > plain {
                 return Err("too much".into());
             }
-            Ok(([10u8, 20, 30, 255].repeat(v.width as usize * v.height as usize), RenderStats::default()))
+            Ok((Raster::Premul8([10u8, 20, 30, 255].repeat(v.width as usize * v.height as usize)), RenderStats::default()))
         });
         svc.set_rasterizer(Some(flat));
         assert!(svc.has_rasterizer());
@@ -684,10 +733,53 @@ mod tests {
     fn cache_respects_budget_lru() {
         let mut c = FrameCache::new(3 * 1000);
         for k in 0..10u64 {
-            c.insert(Arc::new(FrameImage { key: k, frame: 0, width: 0, height: 0, rgba_premul: vec![0; 800], ms: 0.0, stats: RenderStats::default(), error: None, gpu: false, fallback: None }));
+            c.insert(Arc::new(FrameImage { key: k, frame: 0, width: 0, height: 0, rgba_premul: vec![0; 800], native: None, ms: 0.0, stats: RenderStats::default(), error: None, gpu: false, fallback: None }));
         }
         assert!(c.bytes() <= 3000);
         assert!(c.contains(9) && !c.contains(0));
+    }
+
+    #[test]
+    fn gpu_pictures_have_a_budget_of_their_own() {
+        // 10 × 10 pictures on the GPU (400 bytes each) under a 1,000-byte GPU budget: the
+        // oldest GPU pictures go, the ones in memory stay.
+        let mut c = FrameCache::new(1 << 20);
+        c.native_budget_bytes = 1000;
+        let img = |k: u64, native: bool| {
+            let n: Option<NativeImage> = native.then(|| Arc::new(k) as NativeImage);
+            Arc::new(FrameImage { key: k, frame: 0, width: 10, height: 10, rgba_premul: if native { Vec::new() } else { vec![0; 400] }, native: n, ms: 0.0, stats: RenderStats::default(), error: None, gpu: native, fallback: None })
+        };
+        c.insert(img(100, false));
+        for k in 0..5 {
+            c.insert(img(k, true));
+        }
+        assert!(c.native_bytes() <= 1000 && c.contains(4) && c.contains(3) && !c.contains(0));
+        assert!(c.contains(100), "pictures in memory are not evicted for GPU memory");
+        // Replacing a picture does not count it twice.
+        c.insert(img(4, true));
+        assert_eq!(c.native_bytes(), 800);
+    }
+
+    #[test]
+    fn a_rasterizer_may_keep_its_pictures_on_the_gpu() {
+        let doc = sample::demo();
+        let svc = RenderService::new(64 << 20, None);
+        let view = View { transform: Affine::scale(0.25, 0.25), width: 320, height: 180, background: Some(doc.stage.background) };
+        // A stand-in that keeps its picture as a number, and gets the size wrong once.
+        let wrong = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let w2 = wrong.clone();
+        let native: Rasterizer = Arc::new(move |_: &DisplayList, v: &View| {
+            let bad = w2.load(std::sync::atomic::Ordering::Relaxed);
+            Ok((Raster::Native { image: Arc::new(7u32), width: v.width + u32::from(bad), height: v.height }, RenderStats::default()))
+        });
+        svc.set_rasterizer(Some(native));
+        let img = svc.render_now(svc.job(1, &doc, 3, view, false));
+        assert!(img.gpu && img.rgba_premul.is_empty());
+        assert_eq!(img.native.as_ref().and_then(|n| n.downcast_ref::<u32>()), Some(&7));
+        wrong.store(true, std::sync::atomic::Ordering::Relaxed);
+        let img = svc.render_now(svc.job(1, &doc, 4, view, false));
+        assert!(!img.gpu && img.native.is_none() && img.fallback.as_deref() == Some("the GPU returned a wrong-sized image"));
+        assert_eq!(img.rgba_premul.len(), 320 * 180 * 4, "the oracle drew it instead");
     }
 
     #[test]

@@ -86,6 +86,29 @@ scattering the tile lists in parallel per tile row. What is left: CPU binning on
 scenes (next: GPU binning) and the 33 MB readback at 4K (next: render into the texture egui
 shows).
 
+### GPU stage, second slice: no readback, masks and groups (M3, ADR 0029)
+
+Same bench and machine. *Read-back* is the call above; *direct* is the calling thread's time
+with `render_texture` (prepare + bin + upload and submit, the window's path); *tiled* is the
+stage's way, 512 px tiles drawn in parallel, until the GPU has finished.
+
+| Scene | Size | CPU oracle | Read-back | Direct | Tiled (stage) | Parity |
+|---|---|---|---|---|---|---|
+| Stress, 50 × 200 (≈10k shapes) | 1920×1080 | 10.6 ms | 13.4 ms | 9.4–10.4 ms (3.0 + 4.7 + 1.7) | 8.7 ms | < 0.0001 / 1 |
+| Stress, 50 × 200 | 3840×2160 | 25.8–28.1 ms | 23.2 ms | 16.8–18.7 ms (2.7 + 7.5 + 4.8) | **10.2 ms** ✅ 60 fps | < 0.0001 / 1 |
+| 1,000 shapes | 1920×1080 | 4.4–5.0 ms | 2.9–3.0 ms | 1.1–1.2 ms | 1.8 ms | < 0.0001 / 1 |
+| 1,000 shapes (M3 target: 4K at 60 fps) | 3840×2160 | 16.2–19.6 ms | 8.4–8.5 ms | **2.1–2.4 ms** ✅ | 4.8 ms | < 0.0001 / 1 |
+| Masked stress (every other layer a mask) | 1920×1080 | 25.4–26.2 ms | 10.7 ms | 8.7–9.4 ms | 6.6 ms | < 0.0001 / 1 |
+| Masked stress | 3840×2160 | 74.8–80.0 ms | 20.5–21.8 ms | 14.6–15.3 ms | 10.9 ms | < 0.0001 / 1 |
+| Sample with a mask and faded symbols | 3840×2160 | 19.1–19.9 ms | 8.3–8.9 ms | 2.1–2.6 ms | 4.6 ms | < 0.0001 / 1 |
+
+Masked scenes are where the GPU gains most (7× at 4K): the oracle computes each clip's
+coverage per band into a buffer, the GPU per pixel from the artwork's tile entries. Binning is
+the largest term of a whole 10k-shape frame, but tiles spread it over every core; it stays on
+the CPU until scenes of 50k+ shapes or 8K stages need more (ADR 0029). Small scenes pay a
+little per-tile set-up in the tiled stage (1.8 vs 1.1 ms at 1080p); reusing buffers across
+tiles is next.
+
 ### How budgets are enforced
 
 * **Budgets that don't depend on the machine** (undo memory, snapshot sharing, file size,
@@ -122,3 +145,5 @@ buffer is tiny; the stage never waits on sound.
 * [ADR 0003](adr/0003-file-format-v2.md): compact file format with shared paths
 * [ADR 0015](adr/0015-crash-recovery-autosave.md): crash-recovery autosave on a worker thread
 * [ADR 0019](adr/0019-gpu-stage.md): GPU stage renderer (first slice), parity with the oracle
+* [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md): GPU stage without readback, masks and
+  groups on the GPU, binning kept on the CPU

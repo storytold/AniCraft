@@ -245,13 +245,16 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
     Ok((pm, stats))
 }
 
-/// Why a display list needs the full renderer rather than plain fills (see [`plain_fills`]).
+/// Why a display list needs the full renderer rather than a prepared [`Scene`] (see
+/// [`prepare_scene`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NeedsFull {
-    /// Mask layers: items drawn inside a clip, or mask artwork.
+    /// Mask layers nested deeper than the other renderer handles.
     Clips,
-    /// Group opacity, blend modes or filters (symbol instances composited on their own).
+    /// Symbol instances nested deeper than the other renderer handles.
     Groups,
+    /// Filters (blurs, shadows, glows, bevels, colour adjustments) on a symbol instance.
+    Filters,
     /// Bitmap fills.
     Bitmaps,
 }
@@ -259,8 +262,9 @@ pub enum NeedsFull {
 impl std::fmt::Display for NeedsFull {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            NeedsFull::Clips => "masks",
-            NeedsFull::Groups => "group opacity, blend modes or filters",
+            NeedsFull::Clips => "deeply nested masks",
+            NeedsFull::Groups => "deeply nested symbols",
+            NeedsFull::Filters => "filters",
             NeedsFull::Bitmaps => "bitmap fills",
         })
     }
@@ -268,35 +272,69 @@ impl std::fmt::Display for NeedsFull {
 
 /// One fill operation in surface pixels, exactly as this renderer prepares it: flattened at
 /// [`TOLERANCE`], strokes already outlined by the stroker, the paint's shader (with its gradient
-/// table) built, and pixel bounds clamped to the surface. Drawing every fill in order, with
-/// analytic coverage, the fill rule and src-over, reproduces [`render`] for a display list that
-/// [`plain_fills`] accepts. Other renderers (the GPU stage, ADR 0019) start from these, so the
-/// geometry and the colours are the oracle's own.
+/// table) built, and pixel bounds clamped to the surface (and to its clip's bounds). Other
+/// renderers (the GPU stage, ADR 0019 and 0029) start from these, so the geometry and the
+/// colours are the oracle's own.
 pub struct Fill {
     pub polys: Vec<Vec<Vec2>>,
     pub rule: FillRule,
     pub shader: Shader,
     pub bounds: IRect,
+    /// Drawn only inside this clip ([`Scene::clips`]): coverage times the clip's coverage.
+    pub clip: Option<u32>,
+    /// Composited inside this group ([`Scene::groups`]) and the groups around it.
+    pub group: Option<u32>,
 }
 
-/// The display list as plain fills, in drawing order, with the same culling and statistics as
-/// [`render`]; or why it needs the full renderer (masks, groups, bitmaps).
-pub fn plain_fills(dl: &DisplayList, view: &View) -> Result<(Vec<Fill>, RenderStats), NeedsFull> {
+/// A clip (a mask layer's area) as [`render`] composites it.
+pub struct ClipLayer {
+    /// The clip this one is inside (always an earlier one; a malformed link is already `None`
+    /// and its bounds empty, as [`render`] treats it).
+    pub parent: Option<u32>,
+    /// The mask artwork: solid fill areas whose coverages unite (`a + b − ab`).
+    pub art: Vec<Fill>,
+    /// Where the clip, and so anything drawn inside it, can be non-zero.
+    pub bounds: IRect,
+}
+
+/// A group (a symbol instance composited on its own) as [`render`] composites it.
+pub struct GroupLayer {
+    /// The groups it is in, outermost first, ending with itself.
+    pub chain: Vec<u32>,
+    /// Opacity, already sanitized as [`render`] uses it (finite, `0..=1`).
+    pub alpha: f32,
+    pub blend: BlendMode,
+}
+
+/// A display list prepared exactly as [`render`] prepares it, for another renderer: the fills
+/// in drawing order, with the clips and groups they are drawn in. Compositing it per pixel as
+/// [`render`]'s band compositor does reproduces [`render`]: each fill's analytic coverage under
+/// its fill rule, times its clip's coverage (the union of the clip's artwork, times its parent
+/// clip's), src-over into the innermost open group; a group opens (transparent) when the first
+/// of its fills draws and blends into what is below at its alpha and in its blend mode
+/// ([`blend`]) when its run of fills ends.
+pub struct Scene {
+    pub fills: Vec<Fill>,
+    pub clips: Vec<ClipLayer>,
+    pub groups: Vec<GroupLayer>,
+}
+
+/// The display list as a [`Scene`], with the same culling and statistics as [`render`]; or why
+/// it needs the full renderer (filters, bitmaps).
+pub fn prepare_scene(dl: &DisplayList, view: &View) -> Result<(Scene, RenderStats), NeedsFull> {
+    if dl.groups.iter().any(|g| !g.filters.is_empty()) {
+        return Err(NeedsFull::Filters);
+    }
     for it in &dl.items {
-        if it.clip.is_some() || it.masks.is_some() {
-            return Err(NeedsFull::Clips);
-        }
-        if it.group.is_some() {
-            return Err(NeedsFull::Groups);
-        }
-        if !it.guide && it.outline.is_none() && matches!(it.fill, Some(Paint::Bitmap { .. })) {
+        if !it.guide && it.outline.is_none() && it.masks.is_none() && matches!(it.fill, Some(Paint::Bitmap { .. })) {
             return Err(NeedsFull::Bitmaps);
         }
     }
     let surface = IRect { x0: 0, y0: 0, x1: view.width as i32, y1: view.height as i32 };
     let prepared: Vec<Vec<Prepared>> = dl.items.par_iter().map(|item| prepare(item, &view.transform, surface)).collect();
     let mut stats = RenderStats { items: dl.items.len(), ..Default::default() };
-    let mut out = Vec::with_capacity(prepared.len());
+    let mut ops: Vec<Prepared> = Vec::with_capacity(prepared.len());
+    let mut mask_ops: Vec<Prepared> = Vec::new();
     for p in prepared {
         if p.is_empty() {
             stats.culled += 1;
@@ -305,13 +343,32 @@ pub fn plain_fills(dl: &DisplayList, view: &View) -> Result<(Vec<Fill>, RenderSt
             if matches!(op.shader, Shader::Bitmap { .. } | Shader::Image { .. }) {
                 return Err(NeedsFull::Bitmaps);
             }
-            stats.edges += op.polys.iter().map(Vec::len).sum::<usize>();
-            stats.pixels_touched += (op.bounds.width() * op.bounds.height()) as u64;
-            out.push(Fill { polys: op.polys, rule: op.rule, shader: op.shader, bounds: op.bounds });
+            if op.masks.is_some() { mask_ops.push(op) } else { ops.push(op) }
         }
     }
-    stats.drawn = out.len();
-    Ok((out, stats))
+    // The same clips, bounds and culling of clipped fills as `render`.
+    let clips = Clips::new(&dl.clip_parents, mask_ops);
+    ops.retain_mut(|op| {
+        let Some(c) = op.clip else { return true };
+        op.bounds = op.bounds.intersect(&clips.bounds(c));
+        !op.bounds.is_empty()
+    });
+    let fill = |op: Prepared| Fill { polys: op.polys, rule: op.rule, shader: op.shader, bounds: op.bounds, clip: op.clip, group: op.group };
+    let mut fills = Vec::with_capacity(ops.len());
+    for op in ops {
+        stats.edges += op.polys.iter().map(Vec::len).sum::<usize>();
+        stats.pixels_touched += (op.bounds.width() * op.bounds.height()) as u64;
+        fills.push(fill(op));
+    }
+    stats.drawn = fills.len();
+    let Clips { parents, art, bounds } = clips;
+    let clips = parents.into_iter().zip(art).zip(bounds).map(|((parent, art), bounds)| ClipLayer { parent, art: art.into_iter().map(fill).collect(), bounds }).collect();
+    let groups = group_chains(&dl.groups)
+        .into_iter()
+        .zip(&dl.groups)
+        .map(|(chain, g)| GroupLayer { chain, alpha: if g.alpha.is_finite() { g.alpha.clamp(0.0, 1.0) } else { 1.0 }, blend: g.blend })
+        .collect();
+    Ok((Scene { fills, clips, groups }, stats))
 }
 
 /// A run of items inside a filtered group that has no filtered group around it.
@@ -865,27 +922,54 @@ mod tests {
     }
 
     #[test]
-    fn plain_fills_match_the_renderers_preparation_and_name_what_needs_more() {
+    fn prepared_scenes_match_the_renderers_preparation_and_name_what_needs_more() {
         // A filled, stroked square and an off-screen circle: fill then stroke, one culled.
         let mut sq = item(Path::rect(2.0, 2.0, 8.0, 8.0), Paint::Solid(Rgba::BLACK));
         sq.stroke = Some(anicraft_doc::Stroke { color: Rgba::WHITE, width: 2.0, profile: None });
         let off = item(Path::ellipse(500.0, 500.0, 10.0, 10.0), Paint::Solid(Rgba::BLACK));
         let dl = list(vec![sq.clone(), off]);
-        let (fills, st) = plain_fills(&dl, &view(16, 16)).unwrap();
+        let (scene, st) = prepare_scene(&dl, &view(16, 16)).unwrap();
         let (_, rst) = render(&dl, &view(16, 16)).unwrap();
+        let fills = &scene.fills;
         assert_eq!(fills.len(), 2);
         assert_eq!((st.drawn, st.culled, st.edges), (rst.drawn, rst.culled, rst.edges));
         assert!(fills[0].shader.is_solid() == Some([0.0, 0.0, 0.0, 1.0]) && fills[1].shader.is_solid() == Some([1.0; 4]));
-        assert!(fills.iter().all(|f| f.bounds.x0 >= 0 && f.bounds.x1 <= 16));
-        // Masks, groups and bitmaps need the full renderer.
+        assert!(fills.iter().all(|f| f.bounds.x0 >= 0 && f.bounds.x1 <= 16 && f.clip.is_none() && f.group.is_none()));
+        // Clips: the mask artwork is the clip's, not a fill; a clipped fill is cut to the
+        // clip's bounds; a nested clip's bounds are inside its parent's; a clip whose parent
+        // link is bad is empty, and what it clips is culled, as `render` does.
         let mut clipped = sq.clone();
-        clipped.clip = Some(0);
-        assert_eq!(plain_fills(&list(vec![clipped]), &view(16, 16)).err(), Some(NeedsFull::Clips));
+        clipped.stroke = None;
+        clipped.clip = Some(1);
+        let mut outer = item(Path::rect(0.0, 0.0, 6.0, 16.0), Paint::Solid(Rgba::WHITE));
+        outer.masks = Some(0);
+        let mut inner = item(Path::rect(4.0, 0.0, 12.0, 16.0), Paint::Solid(Rgba::WHITE));
+        inner.masks = Some(1);
+        let mut lost = clipped.clone();
+        lost.clip = Some(2);
+        let dl = DisplayList { items: vec![clipped, outer, inner, lost], clip_parents: vec![None, Some(0), Some(9)], groups: Vec::new() };
+        let (scene, st) = prepare_scene(&dl, &view(16, 16)).unwrap();
+        let (_, rst) = render(&dl, &view(16, 16)).unwrap();
+        assert_eq!((st.drawn, st.edges, st.pixels_touched), (rst.drawn, rst.edges, rst.pixels_touched));
+        assert_eq!(scene.fills.len(), 1);
+        assert_eq!((scene.fills[0].clip, scene.fills[0].bounds), (Some(1), raster::IRect { x0: 4, y0: 2, x1: 6, y1: 10 }));
+        assert_eq!(scene.clips.len(), 3);
+        assert_eq!((scene.clips[1].parent, scene.clips[1].art.len(), scene.clips[1].bounds), (Some(0), 1, raster::IRect { x0: 4, y0: 0, x1: 6, y1: 16 }));
+        assert!(scene.clips[2].parent.is_none() && scene.clips[2].bounds.is_empty());
+        // Groups: chains outermost first, alpha sanitized.
         let mut grouped = sq.clone();
-        grouped.group = Some(0);
-        assert_eq!(plain_fills(&list(vec![grouped]), &view(16, 16)).err(), Some(NeedsFull::Groups));
+        grouped.group = Some(1);
+        let g = |parent, alpha| anicraft_doc::Group { parent, alpha, blend: BlendMode::Multiply, filters: Default::default(), clip: None };
+        let dl = DisplayList { items: vec![grouped], clip_parents: vec![], groups: vec![g(None, 2.0), g(Some(0), f32::NAN)] };
+        let (scene, _) = prepare_scene(&dl, &view(16, 16)).unwrap();
+        assert!(scene.fills.iter().all(|f| f.group == Some(1)));
+        assert_eq!((scene.groups[1].chain.clone(), scene.groups[0].alpha, scene.groups[1].alpha, scene.groups[1].blend), (vec![0, 1], 1.0, 1.0, BlendMode::Multiply));
+        // Filters and bitmaps need the full renderer.
+        let mut filtered = dl.clone();
+        filtered.groups[0].filters = std::sync::Arc::from(vec![anicraft_doc::Filter::Blur { blur_x: 4.0, blur_y: 4.0, quality: 1 }]);
+        assert_eq!(prepare_scene(&filtered, &view(16, 16)).err(), Some(NeedsFull::Filters));
         let bm = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false, matrix: Affine::IDENTITY });
-        assert_eq!(plain_fills(&list(vec![bm]), &view(16, 16)).err(), Some(NeedsFull::Bitmaps));
+        assert_eq!(prepare_scene(&list(vec![bm]), &view(16, 16)).err(), Some(NeedsFull::Bitmaps));
     }
 
     #[test]

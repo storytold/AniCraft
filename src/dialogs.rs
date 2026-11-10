@@ -505,7 +505,8 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                             State::Off => None,
                             State::Starting => Some(tl!("Starting the graphics card…").to_string()),
                             // The adapter's name and the driver's reason stay as they are.
-                            State::Running(adapter) => Some(i18n::fmt("Drawing on {adapter}.", &[("adapter", &adapter.to_string())])),
+                            State::Running { adapter, direct: true } => Some(i18n::fmt("Drawing on {adapter}, straight into the window.", &[("adapter", &adapter.to_string())])),
+                            State::Running { adapter, direct: false } => Some(i18n::fmt("Drawing on {adapter}, then copied to the window (slower: the window's graphics device can't be shared).", &[("adapter", &adapter.to_string())])),
                             State::Failed(why) => Some(i18n::fmt("The graphics card can't draw the stage, so the CPU does: {reason}", &[("reason", &why.to_string())])),
                         };
                         if crate::gpu_stage::wanted(p.stage_renderer) != p.stage_renderer {

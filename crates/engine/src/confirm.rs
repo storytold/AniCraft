@@ -18,7 +18,7 @@ pub struct Confirmation {
     /// True when undo cannot bring the loss back (unsaved work, files on disk).
     pub irreversible: bool,
     /// `message` before its values go in, with `{name}` placeholders, and those values: what a
-    /// front end translates to show the message in another language (ADR 0029).
+    /// front end translates to show the message in another language (ADR 0030).
     pub template: &'static str,
     pub args: Vec<(&'static str, Arg)>,
 }

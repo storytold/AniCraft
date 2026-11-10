@@ -366,7 +366,10 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>, lang_arg: Option<String>) -> App {
-        App::with_context(&cc.egui_ctx, session, shot, lang_arg)
+        let mut app = App::with_context(&cc.egui_ctx, session, shot, lang_arg);
+        // The GPU stage shares the window's device when it runs on wgpu (ADR 0029).
+        app.stage_cache.gpu.set_window_device(cc.wgpu_render_state.as_ref());
+        app
     }
 
     /// The app on an egui context (the window's, or a headless one in tests).
@@ -947,7 +950,7 @@ impl App {
                 self.status_ok(msg + &report);
             }
             "file.export_lottie" => {
-                // The engine's report on what Lottie can't carry stays English (ADR 0029).
+                // The engine's report on what Lottie can't carry stays English (ADR 0030).
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let path = craft_i18n::ltr(v["written"].as_str().unwrap_or(""));
                 let frames = i18n::trn(v["frames"].as_u64().unwrap_or(0), "{n} frame", "{n} frames");
@@ -1553,7 +1556,7 @@ impl App {
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // The interface language, and its direction for egui's own parts (menus, scroll bars,
-        // combo boxes) (ADR 0029).
+        // combo boxes) (ADR 0030).
         crate::i18n::set_current(crate::i18n::from_pref(self.lang_arg.as_deref().unwrap_or(&self.prefs.language)));
         let rtl = crate::i18n::rtl();
         if ctx.global_style().right_to_left != rtl {

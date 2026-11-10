@@ -62,7 +62,7 @@ Priority: **P0** = M0–M2 skeleton must have, **P1** = parity core, **P2** = lo
 | Concern | Choice | Why |
 |---|---|---|
 | Language | Rust 2024 edition, stable toolchain (MSRV 1.95, for the Crafting Apps' shared translation crate) | Memory safety, fearless parallelism, one language for engine, UI, CLI and web. |
-| UI | **egui / eframe 0.37** (wgpu backend; storytold's fork, ADR 0029) | Immediate mode keeps the UI a thin function of state, matches PhotoCraft, runs native and on the web. |
+| UI | **egui / eframe 0.37** (wgpu backend; storytold's fork, ADR 0030) | Immediate mode keeps the UI a thin function of state, matches PhotoCraft, runs native and on the web. |
 | Rendering (oracle) | In-house CPU rasterizer: Bézier flattening + signed-area coverage accumulation, rayon row parallelism | Deterministic, testable, headless; the reference every other renderer is compared against. |
 | Rendering (interactive, M3) | wgpu compute/fragment renderer (sparse strips or tile binning in the style of public Vello/Pathfinder papers), compared per-pixel against the CPU oracle | Fast stage at high zoom and 4K; GPU and CPU must agree within a tolerance in tests. |
 | Geometry | In-house `geom` crate (affine, Bézier, flattening, hit test); `kurbo`-compatible API shape | Small, no_std-friendly, full control over tolerance and determinism. |
