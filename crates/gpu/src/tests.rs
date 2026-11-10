@@ -544,18 +544,22 @@ fn degenerate_geometry_bins_without_trouble() {
 
 // ----- the real GPU ----------------------------------------------------------------------------
 
-/// One device for all tests; `None` (with the reason printed) when this machine has no usable
-/// adapter.
+/// One device for all tests: the graphics card, or else the software adapter (CI runners have
+/// lavapipe or WARP); `None` (with the reasons printed) when there is neither.
+/// `ANICRAFT_TEST_GPU=software` tests on the software adapter even where there is a card.
 fn gpu() -> Option<&'static GpuRenderer> {
     static GPU: OnceLock<Option<GpuRenderer>> = OnceLock::new();
-    GPU.get_or_init(|| match GpuRenderer::new() {
-        Ok(g) => {
-            eprintln!("GPU parity tests on {}", g.adapter);
-            Some(g)
-        }
-        Err(e) => {
-            eprintln!("skipping GPU parity tests: {e}");
-            None
+    GPU.get_or_init(|| {
+        let card = if std::env::var("ANICRAFT_TEST_GPU").is_ok_and(|v| v == "software") { Err(GpuError::Unavailable("software asked for".into())) } else { GpuRenderer::new() };
+        match card.or_else(|e| GpuRenderer::software().map_err(|s| format!("{e}; software: {s}"))) {
+            Ok(g) => {
+                eprintln!("GPU parity tests on {}", g.adapter);
+                Some(g)
+            }
+            Err(e) => {
+                eprintln!("skipping GPU parity tests: {e}");
+                None
+            }
         }
     })
     .as_ref()

@@ -217,11 +217,19 @@ impl Job {
 }
 
 impl GpuRenderer {
-    /// Opens a headless device on the best adapter (high-performance first), builds the
-    /// pipelines and checks them with a small known render. `Err` means "use the CPU".
+    /// Opens a headless device on the best graphics card (high-performance first), builds the
+    /// pipelines and checks them with a small render against the oracle. A software adapter
+    /// (WARP, llvmpipe, SwiftShader) doesn't count: the CPU oracle draws the stage faster than
+    /// a GPU emulated on the same CPU. `Err` means "use the CPU".
     pub fn new() -> Result<GpuRenderer, GpuError> {
         // A renderer bug must never take the caller down: wgpu reports misuse by panicking.
-        std::panic::catch_unwind(Self::open).unwrap_or_else(|_| Err(GpuError::Unavailable("the GPU driver failed while starting".into())))
+        std::panic::catch_unwind(|| Self::open(false)).unwrap_or_else(|_| Err(GpuError::Unavailable("the GPU driver failed while starting".into())))
+    }
+
+    /// The same on the system's software adapter (WARP on Windows, lavapipe or llvmpipe on
+    /// Linux): for parity tests on machines without a graphics card, such as CI runners.
+    pub fn software() -> Result<GpuRenderer, GpuError> {
+        std::panic::catch_unwind(|| Self::open(true)).unwrap_or_else(|_| Err(GpuError::Unavailable("the software GPU failed while starting".into())))
     }
 
     /// Runs on the window's device and queue (eframe's `egui_wgpu::RenderState`), so frames
@@ -233,6 +241,9 @@ impl GpuRenderer {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let info = adapter.get_info();
             let name = format!("{} ({:?})", info.name, info.backend);
+            if info.device_type == wgpu::DeviceType::Cpu {
+                return Err(GpuError::Unavailable(format!("the window draws with {name}, a software renderer: the CPU draws the stage faster")));
+            }
             let limits = device.limits();
             check(adapter, &limits, &name)?;
             Self::build(device, queue, limits, name, true, Arc::new(Mutex::new(None)))
@@ -240,12 +251,15 @@ impl GpuRenderer {
         .unwrap_or_else(|_| Err(GpuError::Unavailable("the GPU driver failed while starting".into())))
     }
 
-    fn open() -> Result<GpuRenderer, GpuError> {
+    fn open(software: bool) -> Result<GpuRenderer, GpuError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }))
-            .map_err(|e| GpuError::Unavailable(e.to_string()))?;
+        let options = wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, force_fallback_adapter: software, ..Default::default() };
+        let adapter = pollster::block_on(instance.request_adapter(&options)).map_err(|e| GpuError::Unavailable(e.to_string()))?;
         let info = adapter.get_info();
         let name = format!("{} ({:?})", info.name, info.backend);
+        if !software && info.device_type == wgpu::DeviceType::Cpu {
+            return Err(GpuError::Unavailable(format!("only {name}, a software renderer: the CPU draws the stage faster")));
+        }
         let have = adapter.limits();
         let want = wgpu::Limits {
             max_storage_buffer_binding_size: have.max_storage_buffer_binding_size,
@@ -373,16 +387,21 @@ impl GpuRenderer {
         let view = View { transform: Affine::IDENTITY, width: 24, height: 20, background: Some(Rgba::WHITE) };
         let (oracle, _) = anicraft_render::render(&dl, &view).map_err(|e| GpuError::Unavailable(e.to_string()))?;
         let oracle = oracle.to_premul_rgba8();
-        let ok = |bytes: &[u8]| {
+        // `Err` says where it went wrong (for Preferences and bug reports).
+        let check = |how: &str, bytes: &[u8]| -> Result<(), GpuError> {
             let px = |x: usize, y: usize| bytes.get((y * 24 + x) * 4..(y * 24 + x) * 4 + 4).map(<[u8]>::to_vec);
-            px(5, 10) == Some(vec![255, 0, 0, 255]) && px(18, 10) == Some(vec![128, 128, 255, 255]) && compare_premul8(bytes, &oracle).is_some_and(|d| d.max <= 2 && d.mean <= 0.1)
+            let d = compare_premul8(bytes, &oracle);
+            if px(5, 10) == Some(vec![255, 0, 0, 255]) && px(18, 10) == Some(vec![128, 128, 255, 255]) && d.is_some_and(|d| d.max <= 2 && d.mean <= 0.1) {
+                return Ok(());
+            }
+            let first = bytes.as_chunks::<4>().0.iter().zip(oracle.as_chunks::<4>().0).position(|(a, b)| a.iter().zip(b).any(|(x, y)| x.abs_diff(*y) > 2));
+            let at = first.map_or(String::new(), |i| format!(", first at ({}, {}): {:?} for {:?}", i % 24, i / 24, bytes.get(i * 4..i * 4 + 4), oracle.get(i * 4..i * 4 + 4)));
+            let off = d.map_or("a wrong size".to_string(), |d| format!("{} of {} pixels off, by up to {}/255{at}", d.differing, d.pixels, d.max));
+            Err(GpuError::Unavailable(format!("{}: the self-test render came back wrong {how} ({off})", self.adapter)))
         };
-        let f = self.render(&dl, &view, Output::Premul8)?;
+        check("read back", &self.render(&dl, &view, Output::Premul8)?.premul8)?;
         let t = self.render_texture(&dl, &view)?;
-        if !ok(&f.premul8) || !ok(&self.read_texture(&t)?) {
-            return Err(GpuError::Unavailable(format!("{}: the self-test render came back wrong", self.adapter)));
-        }
-        Ok(())
+        check("through a texture", &self.read_texture(&t)?)
     }
 
     /// Whether the device has failed (lost, or an error in or outside a render); then use the

@@ -1,5 +1,5 @@
-//! GPU stage timings and parity against the CPU oracle (ADR 0019, ADR 0029; numbers in
-//! docs/performance.md).
+//! GPU stage timings and parity against the CPU oracle (ADR 0019, ADR 0029, ADR 0031; numbers
+//! in docs/performance.md).
 //!
 //! ```sh
 //! cargo run --release -p anicraft-gpu --example gpu_bench
@@ -11,7 +11,8 @@
 //! stage's way (512 px tiles drawn in parallel, as the render service does, until finished);
 //! the work the fine pass did; and how far the GPU's picture is from the oracle's.
 
-use anicraft_doc::{Document, LayerKind, evaluate, sample};
+use anicraft_doc::{Bitmap, BitmapId, ColorEffect, Document, Element, ElementId, ElementKind, Filter, FilterSide, Keyframe, Layer, LayerId, LayerKind, Paint, Pixels, Rgba, Shape, evaluate, sample};
+use anicraft_geom::{FillRule, Path};
 use anicraft_gpu::{GpuRenderer, Output, compare_premul8};
 use anicraft_geom::Affine;
 use anicraft_render::{View, render};
@@ -63,6 +64,81 @@ fn composited() -> Document {
     doc
 }
 
+/// A generated `w × h` image as a document bitmap.
+fn bitmap(id: u64, w: u32, h: u32) -> Option<Arc<Bitmap>> {
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let v = (x * 7 + y * 13 + id as u32 * 29) % 256;
+            rgba.extend_from_slice(&[v as u8, (255 - v) as u8, ((x * 255) / w) as u8, 255 - ((y * 120) / h) as u8]);
+        }
+    }
+    let px = Pixels { width: w, height: h, rgba };
+    let png = anicraft_render::encode_png(px.width, px.height, &px.rgba).ok()?;
+    Bitmap::from_png(BitmapId(id), format!("b{id}"), png).map(Arc::new)
+}
+
+/// A layer of `n` shapes filled with `bitmaps` (in turn), each its own element.
+fn bitmap_layer(id: u64, n: u32, bitmaps: &[Arc<Bitmap>], frames: u32) -> Arc<Layer> {
+    let mut k = Keyframe::new(0, frames);
+    for i in 0..n {
+        let b = &bitmaps[i as usize % bitmaps.len()];
+        let (x, y) = ((i % 20) as f32 * 64.0, (i / 20) as f32 * 72.0);
+        let fill = Paint::Bitmap { bitmap: b.id, repeat: i % 3 == 0, matrix: Affine::translate(x, y).mul(&Affine::rotate(i as f32 * 0.1)).mul(&Affine::scale(0.4, 0.4)) };
+        let shape = Shape { path: Arc::new(Path::ellipse(x + 40.0, y + 40.0, 60.0, 45.0)), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero };
+        k.elements.push(Arc::new(Element { id: ElementId(id * 10_000 + u64::from(i)), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) }));
+    }
+    let mut l = Layer::new(LayerId(id), "Bitmaps");
+    l.keyframes = vec![Arc::new(k)];
+    Arc::new(l)
+}
+
+/// 200 bitmap-filled shapes from eight 256 × 256 images, over the demo.
+fn bitmaps() -> Document {
+    let mut doc = sample::demo();
+    let bms: Vec<Arc<Bitmap>> = (1..=8).filter_map(|i| bitmap(i, 256, 256)).collect();
+    doc.bitmaps.extend(bms.iter().cloned());
+    let frames = doc.frame_count();
+    doc.timeline_mut(0).layers.insert(0, bitmap_layer(90_000, 200, &bms, frames));
+    doc
+}
+
+/// The composited demo as artists dress it: the ball casts a drop shadow and is bevelled, the
+/// star glows, and a bitmap fills the sky.
+fn filtered() -> Document {
+    let mut doc = composited();
+    let tl = doc.timeline_mut(0);
+    for (i, layer) in tl.layers.iter_mut().enumerate() {
+        let l = Arc::make_mut(layer);
+        for k in &mut l.keyframes {
+            for e in &mut Arc::make_mut(k).elements {
+                if let ElementKind::Symbol { filters, .. } = &mut Arc::make_mut(e).kind {
+                    *filters = match i {
+                        0 => vec![
+                            Filter::DropShadow { blur_x: 8.0, blur_y: 8.0, strength: 0.8, quality: 2, angle: 45.0, distance: 10.0, color: Rgba::BLACK, inner: false, knockout: false, hide_object: false },
+                            Filter::Bevel { blur_x: 5.0, blur_y: 5.0, strength: 1.0, quality: 1, angle: 45.0, distance: 4.0, shadow_color: Rgba::BLACK, highlight_color: Rgba::WHITE, side: FilterSide::Inner, knockout: false },
+                        ],
+                        _ => vec![Filter::Glow { blur_x: 12.0, blur_y: 12.0, strength: 1.4, quality: 2, color: Rgba::new(1.0, 0.85, 0.2, 1.0), inner: false, knockout: false }],
+                    };
+                }
+            }
+        }
+    }
+    if let Some(sky) = bitmap(77, 48, 32) {
+        let frames = doc.frame_count();
+        let mut layer = bitmap_layer(91_000, 0, std::slice::from_ref(&sky), frames);
+        let l = Arc::make_mut(&mut layer);
+        let fill = Paint::Bitmap { bitmap: sky.id, repeat: true, matrix: Affine::scale(5.0, 5.0) };
+        let shape = Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero };
+        if let Some(k) = l.keyframes.first_mut() {
+            Arc::make_mut(k).elements.push(Arc::new(Element { id: ElementId(91_001), name: "sky".into(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) }));
+        }
+        doc.bitmaps.push(sky);
+        doc.timeline_mut(0).layers.push(layer);
+    }
+    doc
+}
+
 fn main() {
     let gpu = match GpuRenderer::new() {
         Ok(g) => g,
@@ -80,6 +156,8 @@ fn main() {
         (format!("masked {layers}×{shapes}"), masked(sample::stress(layers, shapes, 240))),
         ("sample".into(), sample::demo()),
         ("composited sample".into(), composited()),
+        ("filtered sample".into(), filtered()),
+        ("200 bitmaps".into(), bitmaps()),
     ];
     println!(
         "{:<20} {:>10} {:>8} {:>9} {:>9} {:>9} {:>7} {:>22} {:>8} {:>8}  parity (mean / max / differing px)",

@@ -284,13 +284,14 @@ fn blend(m: u32, s: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
         let k = 1.0 - sa;
         return vec4<f32>(b.rgb * k, ba * k);
     }
-    var o = vec4<f32>(0.0, 0.0, 0.0, sa + ba - sa * ba);
-    for (var i = 0u; i < 3u; i++) {
-        let cs = unpremul(s[i], sa);
-        let cb = unpremul(b[i], ba);
-        o[i] = (1.0 - ba) * s[i] + (1.0 - sa) * b[i] + sa * ba * blend_channel(m, cb, cs);
-    }
-    return o;
+    // Per channel, without a loop over components: FXC (Direct3D's shader compiler) must unroll
+    // loops that index vectors, and can't unroll these.
+    let f = vec3<f32>(
+        blend_channel(m, unpremul(b.r, ba), unpremul(s.r, sa)),
+        blend_channel(m, unpremul(b.g, ba), unpremul(s.g, sa)),
+        blend_channel(m, unpremul(b.b, ba), unpremul(s.b, sa)),
+    );
+    return vec4<f32>((1.0 - ba) * s.rgb + (1.0 - sa) * b.rgb + sa * ba * f, sa + ba - sa * ba);
 }
 
 // A group's colour `s` composited into `below` at `alpha`, in mode `m` (the oracle's

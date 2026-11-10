@@ -300,10 +300,7 @@ fn adjust(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r = p.r / a;
     let g = p.g / a;
     let b = p.b / a;
-    var o: array<f32, 4>;
-    for (var row = 0u; row < 4u; row++) {
-        o[row] = clamp(params.m[0][row] * r + params.m[1][row] * g + params.m[2][row] * b + params.m[3][row] * a + params.m[4][row], 0.0, 1.0);
-    }
-    let out_a = o[3];
-    img[i] = vec4<f32>(o[0] * out_a, o[1] * out_a, o[2] * out_a, out_a);
+    // All four rows at once (the matrix is stored by columns), summed in the oracle's order.
+    let o = clamp(params.m[0] * r + params.m[1] * g + params.m[2] * b + params.m[3] * a + params.m[4], vec4<f32>(0.0), vec4<f32>(1.0));
+    img[i] = vec4<f32>(o.rgb * o.a, o.a);
 }
