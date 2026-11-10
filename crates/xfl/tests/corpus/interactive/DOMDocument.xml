@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: interactive (ADR 0013 tier 2: ActionScript 3.0 in the subset runs).
+     The main timeline stops on its first frame and wires a button and a movie clip with mouse
+     listeners: named and inline listener functions, `currentTarget`, a call to the script's
+     own function and a call that reaches outside the movie (ignored). The last frame traces
+     a sum. The Door movie clip stops itself on its first frame and traces when it is opened.
+     Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F4F1EA">
+  <symbols>
+    <Include href="Door.xml" itemIcon="1" loadImmediate="false"/>
+    <Include href="Next Button.xml" itemIcon="0" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Main">
+      <layers>
+        <DOMLayer name="Actions" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="9" keyMode="9728">
+              <Actionscript>
+                <script><![CDATA[import flash.events.MouseEvent;
+import flash.display.MovieClip;
+import flash.net.navigateToURL;
+import flash.net.URLRequest;
+
+stop();
+next_btn.addEventListener(MouseEvent.CLICK, onNext);
+next_btn.addEventListener(MouseEvent.ROLL_OVER, function (e:MouseEvent):void {
+	door_mc.alpha = 0.5;
+});
+next_btn.addEventListener(MouseEvent.ROLL_OUT, function (e:MouseEvent):void {
+	door_mc.alpha = 1;
+});
+door_mc.addEventListener(MouseEvent.CLICK, onDoor);
+
+function onNext(e:MouseEvent):void {
+	gotoAndStop("end");
+}
+
+function onDoor(event:MouseEvent):void {
+	MovieClip(event.currentTarget).gotoAndStop("open");
+	knock();
+	navigateToURL(new URLRequest("https://example.com/door"), "_blank");
+}
+
+function knock():void {
+	trace("knock " + "knock");
+}]]></script>
+              </Actionscript>
+              <elements/>
+            </DOMFrame>
+            <DOMFrame index="9" keyMode="9728">
+              <Actionscript><script><![CDATA[trace("The end: " + (4 + 6)); // a sum of literals]]></script></Actionscript>
+              <elements/>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Labels" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="9" name="start" labelType="name" keyMode="9728"><elements/></DOMFrame>
+            <DOMFrame index="9" name="end" labelType="name" keyMode="9728"><elements/></DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Stage" color="#4FFF4F">
+          <frames>
+            <DOMFrame index="0" duration="10" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Door" name="door_mc"><matrix><Matrix tx="90" ty="90"/></matrix></DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Next Button" symbolType="button" name="next_btn"><matrix><Matrix tx="240" ty="90"/></matrix></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Ground" color="#808080">
+          <frames>
+            <DOMFrame index="0" duration="10" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#264653"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!0 2800|6400 2800|6400 3600|0 3600|0 2800"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

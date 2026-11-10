@@ -98,14 +98,15 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
     assert_eq!(report.skipped.get("unknown filters"), Some(&1));
-    // Frame scripts, on the scene's frames and inside symbols, are kept verbatim, not run
-    // (ADR 0013 tier 1).
-    assert_eq!(report.kept.get("frame scripts in ActionScript 3.0"), Some(&2));
+    // Frame scripts, on the scene's frames and inside symbols, are kept verbatim (ADR 0013
+    // tier 1); these are in the subset that runs (tier 2).
+    assert_eq!(report.runs.get("frame scripts in ActionScript 3.0"), Some(&2));
+    assert!(report.kept.is_empty(), "{report:?}");
     assert!(report.skipped.keys().all(|k| !k.contains("script")), "{report:?}");
     assert_eq!(ball.keyframes[1].script.as_ref().and_then(|s| s.source()).map(|s| s.text.as_str()), Some("stop();"));
     let inner = &doc.library[0].timeline.layers[0].keyframes[0];
     assert!(matches!(inner.script.as_ref().and_then(|s| s.source()), Some(s) if s.text == "gotoAndPlay(2);" && s.language == anicraft_doc::Language::ActionScript3));
-    assert!(report.summary().contains("Kept, not run: 2 frame scripts in ActionScript 3.0."), "{}", report.summary());
+    assert!(report.summary().contains("Runs in Test Movie: 2 frame scripts in ActionScript 3.0."), "{}", report.summary());
     // Every scene comes across, in order.
     assert_eq!(doc.scenes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Scene 1", "Scene 2"]);
     assert_eq!(doc.timeline(1).layers.len(), 1, "an empty scene gets a layer to draw on");

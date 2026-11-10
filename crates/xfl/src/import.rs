@@ -8,8 +8,9 @@
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
 //! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014);
-//! frame scripts, symbol linkage classes and the document class, kept verbatim and not run
-//! (ADR 0013 tier 1; the report lists them as kept).
+//! frame scripts, symbol linkage classes and the document class, kept verbatim (ADR 0013 tier
+//! 1); frame scripts in the ActionScript 3.0 subset run in Test Movie (tier 2), and the report
+//! lists which run and which are only kept.
 //! Everything else (sound, motion tweens with property curves, unknown filters,
 //! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
 //! and so is whatever is drawn the nearest way AniCraft can (square caps, reflecting
@@ -47,13 +48,16 @@ pub enum XflError {
     NotXfl(String),
 }
 
-/// What the import couldn't bring across, by kind ("3 bitmaps"), what it kept without
-/// running (scripts), and the fonts it couldn't find.
+/// What the import couldn't bring across, by kind ("3 bitmaps"), the scripts it brought that
+/// run and those it kept without running, and the fonts it couldn't find.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Report {
     pub skipped: BTreeMap<String, usize>,
-    /// Kept in the document but not run, by kind ("2 frame scripts in ActionScript 3.0"; ADR
-    /// 0013 tier 1).
+    /// Frame scripts in the ActionScript 3.0 subset, which run in Test Movie and the HTML
+    /// canvas export ("2 frame scripts in ActionScript 3.0"; ADR 0013 tier 2).
+    pub runs: BTreeMap<String, usize>,
+    /// Kept in the document but not run, by kind ("2 frame scripts in ActionScript 3.0", for
+    /// those outside the subset; ADR 0013 tier 1).
     pub kept: BTreeMap<String, usize>,
     pub notes: Vec<String>,
     /// Font families the document's text asks for that aren't on this computer.
@@ -69,16 +73,21 @@ impl Report {
     pub(crate) fn keep(&mut self, what: &str) {
         *self.kept.entry(what.to_string()).or_default() += 1;
     }
-    /// One line for a status bar: "Imported. Kept, not run: 3 frame scripts in ActionScript
-    /// 3.0. Not yet supported: 2 sounds. Fonts not on this computer, drawn in Inter: Futura,
-    /// Gotham."
+    pub(crate) fn run(&mut self, what: &str) {
+        *self.runs.entry(what.to_string()).or_default() += 1;
+    }
+    /// One line for a status bar: "Imported. Runs in Test Movie: 2 frame scripts in
+    /// ActionScript 3.0. Kept, not run: 1 frame scripts in ActionScript 3.0. Not yet supported:
+    /// 2 sounds. Fonts not on this computer, drawn in Inter: Futura, Gotham."
     pub fn summary(&self) -> String {
-        let kept = if self.kept.is_empty() {
-            String::new()
-        } else {
-            let parts: Vec<String> = self.kept.iter().map(|(k, n)| format!("{n} {k}")).collect();
-            format!(" Kept, not run: {}.", parts.join(", "))
-        };
+        let list = |m: &BTreeMap<String, usize>| m.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<String>>().join(", ");
+        let mut kept = String::new();
+        if !self.runs.is_empty() {
+            kept.push_str(&format!(" Runs in Test Movie: {}.", list(&self.runs)));
+        }
+        if !self.kept.is_empty() {
+            kept.push_str(&format!(" Kept, not run: {}.", list(&self.kept)));
+        }
         if self.skipped.is_empty() && self.notes.is_empty() && self.missing_fonts.is_empty() {
             return format!("Imported everything in the file.{kept}");
         }
@@ -521,7 +530,7 @@ impl<'a> Builder<'a> {
                 if let Some(h) = f.child("shapeHints").filter(|h| !h.children.is_empty()) {
                     raw_hints.insert(start, self.raw_hints(h));
                 }
-                // Frame scripts are kept verbatim and not run (ADR 0013 tier 1).
+                // Frame scripts are kept verbatim (ADR 0013 tier 1); those in the subset run.
                 if let Some(a) = f.child("Actionscript") {
                     k.script = self.frame_script(a);
                 }
@@ -561,7 +570,9 @@ impl<'a> Builder<'a> {
             self.report.skip("frame scripts over 1 MiB (left out)");
             return None;
         }
-        self.report.keep(&format!("frame scripts in {}", self.language.label()));
+        // Compiling here also fills the script's cache for Test Movie (ADR 0013 tier 2).
+        let what = format!("frame scripts in {}", self.language.label());
+        if script.runs() { self.report.run(&what) } else { self.report.keep(&what) }
         Some(FrameScript::Source(Arc::new(script)))
     }
 

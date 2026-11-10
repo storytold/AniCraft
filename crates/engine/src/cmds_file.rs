@@ -178,6 +178,7 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         info["report"] = json!(report.summary());
         info["skipped"] = json!(report.skipped);
         info["kept"] = json!(report.kept);
+        info["runs"] = json!(report.runs);
         info["missing_fonts"] = json!(report.missing_fonts);
         info["merged_keyframes"] = json!(merged);
         return Ok(info);

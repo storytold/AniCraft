@@ -67,6 +67,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
         ],
     ),
     ("guides", &[]),
+    ("interactive", &[]),
     ("masks", &[]),
     ("primitives", &[]),
     ("scenes", &[("frame comments", 1)]),
@@ -80,11 +81,15 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("tweens", &[("motion tweens (kept as keyframes)", 1), ("tween spins (turned the shortest way)", 1)]),
 ];
 
-/// What each package keeps without running (ADR 0013 tier 1); packages not listed keep
-/// nothing.
-const KEPT: &[(&str, &[(&str, usize)])] = &[
+/// What each package keeps without running (ADR 0013 tier 1: scripts outside the subset, and
+/// class names); packages not listed keep nothing.
+const KEPT: &[(&str, &[(&str, usize)])] = &[("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)])];
+
+/// The frame scripts each package brings that run (ADR 0013 tier 2: in the subset).
+const RUNS: &[(&str, &[(&str, usize)])] = &[
+    ("interactive", &[("frame scripts in ActionScript 3.0", 4)]),
     ("scenes", &[("frame scripts in ActionScript 3.0", 2)]),
-    ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 3), ("linkage classes", 1)]),
+    ("scripts", &[("frame scripts in ActionScript 3.0", 2)]),
 ];
 
 #[test]
@@ -101,6 +106,8 @@ fn each_package_reports_exactly_what_it_uses_that_does_not_come_across() {
         assert_eq!(report.skipped, want, "{case}");
         let kept: BTreeMap<String, usize> = KEPT.iter().find(|(c, _)| c == case).map(|(_, k)| k.iter().map(|(k, n)| (k.to_string(), *n)).collect()).unwrap_or_default();
         assert_eq!(report.kept, kept, "{case}: kept, not run");
+        let runs: BTreeMap<String, usize> = RUNS.iter().find(|(c, _)| c == case).map(|(_, k)| k.iter().map(|(k, n)| (k.to_string(), *n)).collect()).unwrap_or_default();
+        assert_eq!(report.runs, runs, "{case}: frame scripts that run");
         assert!(report.notes.is_empty() && report.missing_fonts.is_empty(), "{case}: {report:?}");
     }
 }
@@ -388,4 +395,40 @@ fn hostile_variants_of_every_package_never_panic() {
     }
     assert!(variants > 1000, "{variants}");
     eprintln!("{variants} hostile variants in {:?}", start.elapsed());
+}
+
+#[test]
+fn interactive_scripts_run_in_the_player() {
+    use anicraft_doc::player::{Event, NoScripts, start, step};
+    use anicraft_geom::Vec2;
+    let (doc, report) = import("interactive");
+    assert!(report.summary().contains("Runs in Test Movie: 4 frame scripts in ActionScript 3.0."), "{}", report.summary());
+    let door = doc.timeline(0).layers[2].keyframes[0].elements[0].id;
+    // The first frame stops the movie and the door, and adds the listeners.
+    let s = start(&doc, &mut NoScripts);
+    assert!(s.output.is_empty(), "{:?}", s.output);
+    assert_eq!((s.state.root.frame, s.state.root.playing), (0, false));
+    assert_eq!(s.state.listeners.values().map(Vec::len).sum::<usize>(), 4);
+    let mut st = step(&doc, &s.state, &[], &mut NoScripts).state;
+    assert_eq!(st.root.frame, 0, "stopped");
+    // Click the door: it opens (its own script traces), and the call outside the movie is
+    // ignored.
+    let at = Vec2::new(90.0, 90.0);
+    let r = step(&doc, &st, &[Event::Move(at), Event::Down(at), Event::Up(at)], &mut NoScripts);
+    assert_eq!(r.output, ["knock knock", "door open"]);
+    assert_eq!(r.state.clips.get(&vec![door]).map(|c| (c.frame, c.playing)), Some((2, false)));
+    st = r.state;
+    // Over the button the door fades; off it, it comes back; a click goes to "end".
+    let b = Vec2::new(240.0, 90.0);
+    let r = step(&doc, &st, &[Event::Move(b)], &mut NoScripts);
+    assert_eq!(r.state.props.get(&vec![door]).and_then(|o| o.alpha), Some(0.5));
+    let r = step(&doc, &r.state, &[Event::Down(b), Event::Up(b)], &mut NoScripts);
+    assert_eq!(r.output, ["The end: 10"]);
+    assert_eq!((r.state.root.frame, r.state.root.playing), (9, false));
+    let r = step(&doc, &r.state, &[Event::Move(Vec2::new(10.0, 10.0))], &mut NoScripts);
+    assert_eq!(r.state.props.get(&vec![door]).and_then(|o| o.alpha), Some(1.0));
+    // The scripts package: the frame with `if` is kept and doesn't run; the others run.
+    let (doc, _) = import("scripts");
+    let runs: Vec<bool> = doc.timeline(0).layers[0].keyframes.iter().filter_map(|k| k.script.as_ref().and_then(|s| s.source())).map(|s| s.runs()).collect();
+    assert_eq!(runs, [false, true]);
 }
