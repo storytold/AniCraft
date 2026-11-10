@@ -683,6 +683,8 @@ mod tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod motion_path_tests;
+#[cfg(test)]
 mod plugin_tests;
 #[cfg(test)]
 mod tests_sound;
