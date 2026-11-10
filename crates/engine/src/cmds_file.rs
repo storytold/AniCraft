@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
         CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{which?: demo (default) | interactive (a menu with a Play button, for Test Movie)}", mutates: false, run: new_sample },
-        CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path, unsaved? (opens it as unsaved work with no file name: a restored copy)}", mutates: false, run: open },
+        CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path, unsaved? (opens it as unsaved work: a restored copy), untitled? (with no file name, so Save asks for one)}", mutates: false, run: open },
         CommandSpec { id: "file.save", label: "Save", menu: "File", shortcut: Some("Ctrl+S"), params: "{path?, confirm?}", mutates: false, run: save },
         CommandSpec {
             id: "file.save_as",
@@ -152,6 +152,7 @@ pub fn is_animate(path: &std::path::Path) -> bool {
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     let unsaved = opt_bool(p, "unsaved")?.unwrap_or(false);
+    let untitled = opt_bool(p, "untitled")?.unwrap_or(false);
     if is_animate(&path) {
         // Imported, not adopted: the document is untitled, so Save asks for a new .anicraft
         // name and never writes over the Animate file.
@@ -177,11 +178,9 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(info);
     }
     let doc = format::load(&path)?;
+    s.replace_document(doc, (!untitled).then_some(path));
     if unsaved {
-        s.replace_document(doc, None);
         s.mark_unsaved();
-    } else {
-        s.replace_document(doc, Some(path));
     }
     Ok(s.info())
 }

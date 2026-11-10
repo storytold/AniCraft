@@ -149,7 +149,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let px = [((sw * scale).round() as u32).max(1), ((sh * scale).round() as u32).max(1)];
             let stale = tm.shown.as_ref().is_none_or(|(st, at)| *st != tm.movie.state || *at != px);
             if stale {
-                let t0 = std::time::Instant::now();
+                let t0 = web_time::Instant::now();
                 let dl = evaluate_player(&tm.doc, &tm.movie.state);
                 let view = View { transform: Affine::scale(scale, scale), width: px[0], height: px[1], background: Some(tm.doc.stage.background) };
                 if let Ok((pm, _)) = render(&dl, &view) {

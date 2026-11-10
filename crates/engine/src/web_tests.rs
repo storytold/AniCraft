@@ -38,9 +38,12 @@ fn save_downloads_and_a_picked_file_opens() {
         assert_eq!((t.frame_count(), t.path.as_deref(), t.is_dirty()), (frames, Some(Path::new("walk.anicraft")), false));
         assert!(vfs::take_written().is_empty(), "opening writes nothing, and the picked file is let go");
 
-        // A restored autosave copy opens as unsaved work with no file name.
-        vfs::put(Path::new("recovered/walk.anicraft"), bytes).unwrap();
-        t.execute("file.open", &json!({"path": "recovered/walk.anicraft", "unsaved": true})).unwrap();
+        // A restored autosave copy opens as unsaved work, with its name or without one.
+        vfs::put(Path::new("recovered/s1/walk.anicraft"), bytes.clone()).unwrap();
+        t.execute("file.open", &json!({"path": "recovered/s1/walk.anicraft", "unsaved": true, "confirm": true})).unwrap();
+        assert_eq!((t.path.as_deref(), t.is_dirty()), (Some(Path::new("recovered/s1/walk.anicraft")), true));
+        vfs::put(Path::new("recovered/s2/Untitled"), bytes).unwrap();
+        t.execute("file.open", &json!({"path": "recovered/s2/Untitled", "unsaved": true, "untitled": true, "confirm": true})).unwrap();
         assert_eq!((t.path.as_deref(), t.is_dirty()), (None, true));
         assert!(t.execute("file.open", &json!({"path": "gone.anicraft"})).is_err(), "a missing file is an error, not a crash");
     });
