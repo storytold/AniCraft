@@ -5,6 +5,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod affine;
+pub mod brush;
 pub mod clip;
 pub mod edit;
 pub mod morph;
