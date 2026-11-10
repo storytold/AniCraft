@@ -312,6 +312,28 @@ fn lookups_fall_back_from_app_to_shared_to_base_language_to_english() {
 }
 
 #[test]
+fn every_lookup_kind_reads_the_catalog() {
+    // The same paths `tr!`, `t_dyn`, `t_cmd` and `trn!` take with a catalog built in.
+    let l = fixture();
+    let (de, pseudo) = (1, l.list.len() - 1);
+    assert_eq!(l.text(de, "", "Save"), "Speichern");
+    assert_eq!(l.text(de, "menu", "Nothing"), "Nothing");
+    assert_eq!(l.text(0, "", "Save"), "Save");
+    assert_eq!(l.text(pseudo, "", "Save"), "[Šàvé ~~]");
+    assert_eq!(l.text_dyn(de, "Open"), "Datei öffnen");
+    assert_eq!(l.text_dyn(de, "Delete Layer"), "Delete Layer");
+    assert_eq!(l.text_dyn(0, "Open"), "Open");
+    assert_eq!(l.text_dyn(pseudo, "Open"), "[Öpéñ ~~]");
+    assert_eq!(l.command(de, "edit.undo", "Undo"), "Rückgängig", "an @id row first");
+    assert_eq!(l.command(de, "file.save", "Save"), "Speichern", "then the label");
+    assert_eq!(l.command(de, "file.other", "Other"), "Other");
+    assert_eq!(l.command(0, "edit.undo", "Undo"), "Undo");
+    assert_eq!(l.count(de, "{n} frame", "{n} frames", 2), "{n} Bilder");
+    assert_eq!(l.count(0, "{n} frame", "{n} frames", 1), "{n} frame");
+    assert_eq!(l.count(pseudo, "{n} frame", "{n} frames", 1), "[{n} fŕàmé ~~]");
+}
+
+#[test]
 fn system_locales_and_preferences_resolve() {
     let l = fixture();
     let code = |pref: &str, sys: Option<&str>| l.get(l.resolve(pref, sys)).code.clone();
@@ -322,6 +344,8 @@ fn system_locales_and_preferences_resolve() {
     assert_eq!(code(AUTO, Some("ru")), "ru");
     assert_eq!(code(AUTO, Some("ar-EG")), "en", "not offered yet");
     assert_eq!(code(AUTO, Some("C")), "en");
+    assert_eq!(code(AUTO, Some("zh-TW")), "en", "Chinese isn't offered yet (it needs a font)");
+    assert_eq!(code(AUTO, Some("zh_CN")), "en");
     assert_eq!(code(AUTO, Some("")), "en");
     assert_eq!(code(AUTO, None), "en");
     assert_eq!(code("DE", Some("ru-RU")), "de", "a chosen language wins over the system's");
@@ -497,16 +521,15 @@ fn click_everything(what: &str, setup: impl FnOnce(&mut crate::app::App, &egui::
         // The next control not clicked yet (by role and name: ids change as panels redraw).
         let next = nodes.iter().find_map(|(id, n)| {
             let key = format!("{:?} {}", n.role(), n.label().unwrap_or_default());
-            let clickable = n.supports_action(Action::Click) && !matches!(n.role(), Role::Window | Role::TitleBar | Role::ScrollBar);
-            (clickable && !done.contains(&key)).then(|| (*id, key, matches!(n.role(), Role::SpinButton | Role::Slider)))
+            let steps = n.supports_action(Action::Increment);
+            let clickable = (steps || n.supports_action(Action::Click)) && !matches!(n.role(), Role::Window | Role::TitleBar | Role::ScrollBar);
+            (clickable && !done.contains(&key)).then_some((*id, key, steps))
         });
         let Some((id, key, steps)) = next else { break };
         done.insert(key);
         let request = |action| egui::Event::AccessKitActionRequest(ActionRequest { action, target_tree: TreeId::ROOT, target_node: id, data: None });
-        let mut events = vec![request(Action::Click)];
-        if steps {
-            events.push(request(Action::Increment));
-        }
+        // A number field steps up (as an arrow key does); anything else is clicked.
+        let events = vec![request(if steps { Action::Increment } else { Action::Click })];
         app.status = None;
         frame(&mut app, events);
         app.prompt = None;
@@ -559,6 +582,37 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
         found.extend(click_everything(&format!("{tool:?}"), |a, _| a.tool = tool));
     }
     assert!(found.is_empty(), "{} things in plain English after using the controls:\n{}", found.len(), found.join("\n"));
+}
+
+#[test]
+fn tool_status_lines_are_translated() {
+    // The Eraser's and Eyedropper's results on the sample (on the sun and the hills, and on
+    // empty stage), as the status bar shows them.
+    let (mut app, _ctx) = pseudo_app(|_, _| {});
+    let mut plain = Vec::new();
+    let mut check = |app: &mut crate::app::App, what: &str| {
+        if let Some(s) = app.status.take()
+            && !s.text.chars().any(pseudo::is_accented)
+        {
+            plain.push(format!("{what}: {:?}", s.text));
+        }
+    };
+    let sun = anicraft_engine::geom::Vec2::new(1000.0, 160.0);
+    let hill = anicraft_engine::geom::Vec2::new(300.0, 600.0);
+    let empty = anicraft_engine::geom::Vec2::new(-500.0, -500.0);
+    for (p, shift) in [(sun, false), (sun, true), (hill, false), (empty, false)] {
+        crate::erasertool::eyedropper(&mut app, p, shift, 1.0);
+        check(&mut app, "eyedropper");
+    }
+    for p in [hill, empty] {
+        crate::erasertool::faucet(&mut app, p, 1.0);
+        check(&mut app, "faucet");
+    }
+    crate::erasertool::erase_everything(&mut app);
+    check(&mut app, "erase everything");
+    crate::erasertool::erase_everything(&mut app);
+    check(&mut app, "erase everything again");
+    assert!(plain.is_empty(), "tool status lines in plain English:\n{}", plain.join("\n"));
 }
 
 #[test]

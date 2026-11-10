@@ -153,6 +153,7 @@ impl Languages {
         candidates.iter().filter_map(|c| self.find(c)).find(|i| self.get(*i).code != PSEUDO)
     }
 
+    #[cfg(test)]
     fn lookup<'a>(&'a self, i: usize, context: &str, source: &'a str) -> Option<&'a str> {
         match &self.get(i).kind {
             Kind::Catalog(c) => c.get(context, source),
@@ -267,16 +268,48 @@ fn pseudo_static(source: &'static str) -> &'static str {
     cache.entry(source).or_insert_with(|| Box::leak(pseudo::transform(source).into_boxed_str()))
 }
 
+impl Languages {
+    /// `source` in language `i` (English is the key itself: no lookup).
+    fn text<'a>(&'a self, i: usize, context: &str, source: &'static str) -> &'a str {
+        match &self.get(i).kind {
+            Kind::English => source,
+            Kind::Pseudo => pseudo_static(source),
+            Kind::Catalog(c) => c.get(context, source).unwrap_or(source),
+        }
+    }
+
+    /// Run-time English in language `i`, translated on an exact match.
+    fn text_dyn<'a>(&'a self, i: usize, source: &'a str) -> Cow<'a, str> {
+        match &self.get(i).kind {
+            Kind::English => Cow::Borrowed(source),
+            Kind::Pseudo => Cow::Owned(pseudo::transform(source)),
+            Kind::Catalog(c) => Cow::Borrowed(c.get("", source).unwrap_or(source)),
+        }
+    }
+
+    /// A command's label in language `i`: its `@id` row, else its label's row.
+    fn command<'a>(&'a self, i: usize, id: &str, label: &'static str) -> &'a str {
+        match &self.get(i).kind {
+            Kind::Catalog(c) => c.id(id).unwrap_or_else(|| c.get("", label).unwrap_or(label)),
+            _ => self.text(i, "", label),
+        }
+    }
+
+    /// The plural form for `n` in language `i`.
+    fn count<'a>(&'a self, i: usize, one: &'static str, other: &'static str, n: u64) -> &'a str {
+        match self.get(i).kind {
+            Kind::English => {
+                if n == 1 { one } else { other }
+            }
+            Kind::Pseudo => pseudo_static(if n == 1 { one } else { other }),
+            Kind::Catalog(_) => self.plural(i, one, other, n),
+        }
+    }
+}
+
 fn translate(context: &'static str, source: &'static str) -> &'static str {
-    let i = current();
-    if i == 0 {
-        return source;
-    }
     let languages: &'static Languages = &LANGUAGES;
-    if matches!(languages.get(i).kind, Kind::Pseudo) {
-        return pseudo_static(source);
-    }
-    languages.lookup(i, context, source).unwrap_or(source)
+    languages.text(current(), context, source)
 }
 
 /// `source` in the interface language. Use [`tr!`] for literals; this is for `'static` strings
@@ -293,41 +326,20 @@ pub fn tc(context: &'static str, source: &'static str) -> &'static str {
 /// English that arrives at run time from below the shell (an undo step's label, a
 /// confirmation's title): translated when a catalog has that exact text.
 pub fn t_dyn(source: &str) -> Cow<'_, str> {
-    let i = current();
-    if i == 0 {
-        return Cow::Borrowed(source);
-    }
     let languages: &'static Languages = &LANGUAGES;
-    match &languages.get(i).kind {
-        Kind::Pseudo => Cow::Owned(pseudo::transform(source)),
-        Kind::Catalog(c) => c.get("", source).map_or(Cow::Borrowed(source), |t| Cow::Owned(t.to_string())),
-        Kind::English => Cow::Borrowed(source),
-    }
+    languages.text_dyn(current(), source)
 }
 
 /// A registry command's label: an `@id` row for its id first, else the label's own translation.
 pub fn t_cmd(id: &str, label: &'static str) -> &'static str {
-    let i = current();
     let languages: &'static Languages = &LANGUAGES;
-    if let Kind::Catalog(c) = &languages.get(i).kind
-        && let Some(t) = c.id(id)
-    {
-        return t;
-    }
-    t(label)
+    languages.command(current(), id, label)
 }
 
 /// The plural form for `n`, placeholders not yet filled (see [`trn!`]).
 pub fn tn(one: &'static str, other: &'static str, n: u64) -> &'static str {
-    let i = current();
     let languages: &'static Languages = &LANGUAGES;
-    match languages.get(i).kind {
-        Kind::English => {
-            if n == 1 { one } else { other }
-        }
-        Kind::Pseudo => pseudo_static(if n == 1 { one } else { other }),
-        Kind::Catalog(_) => languages.plural(i, one, other, n),
-    }
+    languages.count(current(), one, other, n)
 }
 
 /// `template` with its `{name}` placeholders filled from `args`, in one pass: a value that
