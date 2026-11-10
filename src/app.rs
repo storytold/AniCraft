@@ -118,7 +118,7 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => tr_noop!("Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection."),
-            Tool::Subselect => tr_noop!("Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner. A motion path's points edit the same way (its ends stay)."),
+            Tool::Subselect => tr_noop!("Click a shape to show its points; on a merged drawing, the points of everything connected to it. Drag points or handles to reshape (a shared point moves every shape that has it); drag a line or fill to move everything connected. Shift adds to the point selection, drag on empty space to marquee points, arrow keys nudge them. On drawing objects, double-click an edge to add a point, Delete removes points, and right-click makes a point smooth or a corner. A motion path's points edit the same way (its ends stay)."),
             Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape or a motion path to add a point to it."),
             Tool::Text => tr_noop!("Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too."),
             Tool::Pencil => tr_noop!("Drag to draw freehand. The options bar sets Smooth, Straighten or Ink."),
@@ -189,6 +189,9 @@ pub enum Drag {
     Shape { start: egui::Pos2, cur: egui::Pos2 },
     /// Subselection: dragging the selected points (stage position of the last frame).
     Points { last: egui::Pos2 },
+    /// Subselection: dragging handle `slot` of segment `cmd` of raw shape `id` (ADR 0042); the
+    /// pointer was at `last` last frame.
+    RawHandle { id: anicraft_engine::doc::ElementId, cmd: usize, slot: u8, last: egui::Pos2 },
     /// Subselection: marquee over the selected shapes' anchors.
     PointMarquee { start: egui::Pos2, cur: egui::Pos2 },
     /// Pencil stroke; the samples are in `App::pencil`.
@@ -312,6 +315,13 @@ pub struct App {
     /// bend or point drag changed (merged again when it ends; ADR 0041).
     pub raw_points: serde_json::Value,
     pub raw_touched: Vec<u64>,
+    /// A Subselection point drag: the other selected anchors that move with the one dragged
+    /// (`raw.move_point`'s `with`, ADR 0042).
+    pub raw_with: Vec<anicraft_engine::geom::Vec2>,
+    /// Subselection on raw shapes (ADR 0042): the selected anchors (stage positions, shared by
+    /// every shape that has them), and the ends of the edge last clicked, whose handles show.
+    pub raw_anchors: Vec<anicraft_engine::geom::Vec2>,
+    pub raw_ends: Vec<anicraft_engine::geom::Vec2>,
     /// Where what is being dragged snapped this frame (stage space): the snap ring.
     pub snap_ring: Option<anicraft_engine::geom::Vec2>,
     pub pencil_mode: pathtools::PencilMode,
@@ -479,6 +489,9 @@ impl App {
             pencil: Vec::new(),
             raw_points: serde_json::Value::Null,
             raw_touched: Vec::new(),
+            raw_with: Vec::new(),
+            raw_anchors: Vec::new(),
+            raw_ends: Vec::new(),
             snap_ring: None,
             pencil_mode: pathtools::PencilMode::default(),
             brush: crate::brushtool::BrushOptions::default(),
@@ -879,6 +892,35 @@ impl App {
                     self.drag = Drag::RawPoint { at: egui::pos2(f("x"), f("y")), off: egui::Vec2::ZERO };
                 }
                 self.tool = Tool::Select;
+            }
+            Some("rawsub") => {
+                // Subselection on raw shapes (ADR 0042) on a new layer: an outlined square, an
+                // oval and a line that cut each other, merged. A click on the oval shows the
+                // points of everything connected; its right-hand point is selected, so its curve
+                // handles show, and one handle is being dragged (both shapes on that edge bend).
+                self.run("layer.new", json!({}));
+                for (id, p) in [
+                    ("draw.rect", json!({"x": 180, "y": 120, "w": 300, "h": 200, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.ellipse", json!({"x": 360, "y": 210, "w": 240, "h": 240, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.line", json!({"x0": 140, "y0": 420, "x1": 680, "y1": 140, "stroke": "#d6336c", "stroke_width": 3})),
+                ] {
+                    let mut p = p;
+                    p["object"] = json!(false);
+                    self.run(id, p);
+                }
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Subselect;
+                let v = self.run("raw.subselect", json!({"x": 480, "y": 450, "slop": 4}));
+                self.raw_ends = Vec::new();
+                let anchor = anicraft_engine::geom::Vec2::new(600.0, 330.0);
+                self.raw_anchors = vec![anchor];
+                let pts = self.s.raw_points(&self.s.selection.clone());
+                if let (Some(_), Some(h)) = (v, pts.handles.iter().find(|h| h.anchor.distance(anchor) < 0.5 && h.at.y > anchor.y)) {
+                    self.s.begin_gesture(tr_noop!("Move Handle"));
+                    let r = self.run("raw.move_handle", json!({"id": h.id.0, "cmd": h.cmd, "slot": h.slot, "dx": 40, "dy": 10, "merge": false}));
+                    self.raw_touched = r.as_ref().map(|v| v["changed"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect()).unwrap_or_default();
+                    self.drag = Drag::RawHandle { id: h.id, cmd: h.cmd, slot: h.slot, last: egui::pos2(h.at.x + 40.0, h.at.y + 10.0) };
+                }
             }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
@@ -1664,7 +1706,7 @@ impl App {
             // One undo step: the move, and raw shapes merging where they land (ADR 0031).
             let own = !self.s.in_gesture();
             if own {
-                self.s.begin_gesture("Move"); // i18n-exempt: an undo label (the engine's English, translated where shown)
+                self.s.begin_gesture(tr_noop!("Move")); // i18n-exempt: an undo label (the engine's English, translated where shown)
             }
             self.run("element.translate", json!({"dx": nudge.x, "dy": nudge.y}));
             self.drop_raw();
@@ -1889,6 +1931,8 @@ impl App {
         }
         if self.tool != Tool::Subselect {
             self.points.clear();
+            self.raw_anchors.clear();
+            self.raw_ends.clear();
         }
         pathtools::upkeep(self);
         crate::motion_path::upkeep(self);

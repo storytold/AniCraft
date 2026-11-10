@@ -83,6 +83,26 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                 ui.add_space(4.0);
             }
         }
+        // Snap to Objects (Animate's magnet, ADR 0042): on, dragged points and selections snap
+        // to points, lines and fill edges.
+        let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::click());
+        let on = app.s.style.snap_objects;
+        let bg = if on {
+            T.active
+        } else if resp.hovered() {
+            T.header
+        } else {
+            Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, T.rc(), bg);
+        let tint = if on { T.on_active } else if resp.hovered() { T.icon_hot } else { T.icon };
+        icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), Icon::Magnet, tint);
+        let name = a11y::with_key(tr!("Snap to Objects"), app.keymap.primary("draw.snap_to_objects"));
+        a11y::control(ui, &resp, WidgetType::Checkbox, &name, Some(on));
+        let resp = resp.on_hover_text(if on { tr!("{name}: on\nDragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) } else { tr!("{name}: off\nDragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) });
+        if resp.clicked() {
+            app.run("draw.snap_to_objects", json!({}));
+        }
         ui.add_space(10.0);
         // fill / stroke swatches
         let st = &app.s.style;
@@ -348,6 +368,19 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper) {
         let title = tr!("{tool} tool", tool = crate::i18n::t(app.tool.label()));
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
+    }
+    // ---- Snap to Objects for the tools that drag points and selections (ADR 0042) ----
+    if matches!(app.tool, Tool::Select | Tool::Subselect | Tool::Transform) {
+        let title = tr!("{tool} tool", tool = crate::i18n::t(app.tool.label()));
+        section(ui, "prop_tool", Section::Rule, &title, None, |ui| {
+            let mut on = app.s.style.snap_objects;
+            row_prose(ui, tr!("Snapping"), |ui| {
+                crate::theme::checkbox(ui, &mut on, tr!("Snap to objects")).on_hover_text(tr!("Dragged points and selections snap to points, lines and fill edges within 10 pixels (the magnet under the tools)"));
+            });
+            if on != app.s.style.snap_objects {
+                app.run("draw.snap_to_objects", json!({"on": on}));
+            }
+        });
     }
     // ---- the camera, with the Camera tool or its layer active (ADR 0027) ----
     let camera_layer = app.s.doc.timeline(app.s.scene).camera_layer().map(|l| l.id);

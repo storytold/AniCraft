@@ -18,6 +18,7 @@ mod cmds_hints;
 mod cmds_paint;
 mod cmds_path;
 pub mod cmds_raw;
+pub mod cmds_rawsub;
 mod cmds_recovery;
 mod cmds_script;
 pub mod cmds_plugin;
@@ -111,6 +112,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
     v.extend(cmds_raw::specs());
+    v.extend(cmds_rawsub::specs());
     v.extend(cmds_brush::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
@@ -159,11 +161,14 @@ pub struct ToolStyle {
     /// touch (ADR 0031). On by default, so a script's draw command makes one element; the editor
     /// starts with it off, as Animate does.
     pub object_drawing: bool,
+    /// Snap to Objects (Animate's magnet, ADR 0042): dragged points and selections snap to
+    /// points, lines and fill edges nearby. On by default; off, the `snap` params do nothing.
+    pub snap_objects: bool,
 }
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, object_drawing: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, object_drawing: true, snap_objects: true }
     }
 }
 
@@ -180,6 +185,10 @@ impl ToolStyle {
     /// The width profile new strokes get.
     pub fn profile(&self) -> Option<anicraft_doc::WidthProfile> {
         self.custom_profile.clone().or_else(|| self.stroke_profile.profile())
+    }
+    /// The snapping radius a command asked for (`snap`), or none when Snap to Objects is off.
+    pub fn snap_radius(&self, asked: f32) -> f32 {
+        if self.snap_objects { asked } else { 0.0 }
     }
     /// Sets the profile to a preset (dropping a picked custom one).
     pub fn set_profile(&mut self, p: anicraft_doc::ProfilePreset) {
@@ -888,6 +897,8 @@ mod tests_camera;
 mod merge_tests;
 #[cfg(test)]
 mod raw_tests;
+#[cfg(test)]
+mod rawsub_tests;
 #[cfg(test)]
 mod brush_tests;
 #[cfg(test)]

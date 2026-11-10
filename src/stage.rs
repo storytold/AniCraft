@@ -363,6 +363,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     Some((_, Grab::Point { at })) => {
                         app.s.begin_gesture(tr_noop!("Move Point"));
                         app.raw_points = serde_json::Value::Null;
+                        app.raw_with.clear();
                         app.raw_touched.clear();
                         Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
                     }
@@ -456,6 +457,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             (Drag::RawPoint { .. }, Some(c)) => move_raw_point(app, c, zoom),
+            (Drag::RawHandle { id, cmd, slot, last }, Some(c)) => {
+                // Subselection (ADR 0042): the curve changes in every raw shape that has it.
+                let d = c - *last;
+                if d.length_sq() > 0.0 {
+                    let p = json!({"id": id.0, "cmd": *cmd, "slot": *slot, "dx": d.x, "dy": d.y, "merge": false});
+                    *last = c;
+                    if let Some(v) = app.run("raw.move_handle", p) {
+                        touched(app, &v["changed"]);
+                    }
+                }
+            }
             (Drag::Transform { kind, start, bounds, applied }, Some(c)) => {
                 let total = xf_total(*kind, *bounds, *start, c, shift, alt);
                 // Send only the change since the last frame; the gesture makes it one undo step.
@@ -511,7 +523,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.drop_raw();
                 app.s.end_gesture();
             }
-            Drag::Bend { .. } | Drag::RawPoint { .. } => {
+            Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => {
                 // What the drag changed merges again with what it touches, in the same step.
                 if !app.raw_touched.is_empty() {
                     let ids = std::mem::take(&mut app.raw_touched);
@@ -797,7 +809,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
         // While a background render catches up with a drag, outline where the selection is now,
         // so the artwork never seems to lag the pointer.
-        if ready < keys.len() && !preview && matches!(app.drag, Drag::Move { .. } | Drag::SnapMove { .. } | Drag::Transform { .. } | Drag::Bend { .. } | Drag::RawPoint { .. }) {
+        if ready < keys.len() && !preview && matches!(app.drag, Drag::Move { .. } | Drag::SnapMove { .. } | Drag::Transform { .. } | Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. }) {
             let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
             let dl = app.s.display_list();
             let stroke = Stroke::new(1.5, T.selection);
@@ -931,6 +943,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         Drag::PointMarquee { start, cur } => {
             let r = Rect::from_two_pos(to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)));
+            painter.rect_filled(r, 0.0, T.selection.gamma_multiply(0.12));
             painter.rect_stroke(r, 0.0, sel_stroke, StrokeKind::Middle);
         }
         Drag::Shape { start, cur } => draw_preview(app, &painter, to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)), zoom),
@@ -1002,6 +1015,8 @@ fn snap_move(app: &mut App, c: Pos2, zoom: f32) {
         let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
         app.drag = Drag::SnapMove { start, applied: applied + vec2(f("dx"), f("dy")) };
         app.snap_ring = snapped_at(&v);
+        // Subselection's shown points go with the drawing.
+        crate::pathtools::raw_follow(app, Vec2::new(f("dx"), f("dy")), true);
     }
 }
 
@@ -1013,9 +1028,13 @@ fn move_raw_point(app: &mut App, c: Pos2, zoom: f32) {
     if to == at {
         return;
     }
-    let p = json!({"x": at.x, "y": at.y, "to_x": to.x, "to_y": to.y, "snap": SNAP_PX / zoom, "points": app.raw_points, "merge": false});
+    // The other selected anchors (Subselection, ADR 0042) move along; once the first frame has
+    // found every shape's copy of the points, `points` carries them.
+    let with: Vec<[f32; 2]> = app.raw_with.iter().map(|q| [q.x, q.y]).collect();
+    let p = json!({"x": at.x, "y": at.y, "to_x": to.x, "to_y": to.y, "snap": SNAP_PX / zoom, "points": app.raw_points, "with": with, "merge": false});
     let Some(v) = app.run("raw.move_point", p) else { return };
     let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
+    crate::pathtools::raw_follow(app, Vec2::new(f("x") - at.x, f("y") - at.y), false);
     app.drag = Drag::RawPoint { at: pos2(f("x"), f("y")), off };
     app.snap_ring = snapped_at(&v);
     if let Some(points) = v.get("points").filter(|p| p.as_array().is_some_and(|a| !a.is_empty())) {

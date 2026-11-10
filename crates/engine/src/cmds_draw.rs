@@ -15,6 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, object?}", true, draw_star),
         c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
         c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
+        c("draw.snap_to_objects", "Snap to Objects", "View/Snapping", None, "{on?: bool} (default: toggle) dragged points and selections snap to points, lines and fill edges (the `snap` params of element.translate, raw.move_point and raw.move_handle do nothing while it is off)", false, snap_to_objects),
         c("edit.select_all", "Select All", "Edit", Some("Ctrl+A"), "{}", false, select_all),
         c("edit.deselect", "Deselect All", "Edit", Some("Ctrl+Shift+A"), "{}", false, |s, _| {
             s.selection.clear();
@@ -99,7 +100,7 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
     // A gradient or bitmap from the fill swatch is in stage space: it stays where it is on the
     // stage (Animate's Lock Fill after the Eyedropper).
     let fill = fill.map(|f| f.transformed(&Affine::translate(-origin.x, -origin.y)));
-    let merge = !object && crate::merge::can_merge(fill.as_ref(), stroke.as_ref());
+    let merge = !object && crate::merge::can_merge(stroke.as_ref());
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
@@ -165,6 +166,11 @@ fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     add_shape(s, "line", Path::line(a - c, b - c), c, None, stroke, object_param(s, p)?)
 }
 
+fn snap_to_objects(s: &mut Session, p: &Value) -> Result<Value> {
+    s.style.snap_objects = opt_bool(p, "on")?.unwrap_or(!s.style.snap_objects);
+    Ok(json!({"snap_to_objects": s.style.snap_objects}))
+}
+
 fn object_drawing(s: &mut Session, p: &Value) -> Result<Value> {
     s.style.object_drawing = opt_bool(p, "on")?.unwrap_or(!s.style.object_drawing);
     Ok(json!({"object_drawing": s.style.object_drawing}))
@@ -228,7 +234,7 @@ fn pick(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn translate(s: &mut Session, p: &Value) -> Result<Value> {
     let (mut dx, mut dy) = (f32_req(p, "dx")?, f32_req(p, "dy")?);
-    let snap = opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0);
+    let snap = s.style.snap_radius(opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0));
     let from = match p.get("from").filter(|v| !v.is_null()) {
         None => None,
         Some(v) => {

@@ -23,5 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
-| 0042 | branch `m1/raw-subselection` (PR to come) | Subselection on raw drawings, merging everywhere (issue #42) |
 | 0043 | branch `m7/bones` (PR to come) | Bone tool and inverse kinematics |

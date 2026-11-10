@@ -127,7 +127,7 @@ was copied.
 * Not in this slice:
   * selecting across layers;
   * snapping while drawing with the shape tools;
-  * a Snap to Objects switch;
-  * Subselection anchors and handles of connected raw shapes (ADR 0042);
+  * ~~a Snap to Objects switch~~ (ADR 0042);
+  * ~~Subselection anchors and handles of connected raw shapes~~ (ADR 0042);
   * bending or moving points of raw shapes inside symbols;
   * the Free Transform tool's handles on raw parts.

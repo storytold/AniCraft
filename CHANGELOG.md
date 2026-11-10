@@ -21,6 +21,33 @@
     on new interface text that skips them. Not yet: engine messages, right-to-left languages
     (egui can't lay them out yet), Chinese, Japanese and Korean (need a font).
 
+* **Subselection on raw drawings, Snap to Objects, and merging everywhere** (ADR 0042, issue
+  #42). With Object Drawing off:
+  * Click a raw line or fill with the **Subselection tool** (A) to see the points of everything
+    connected to it: hollow squares, one per shared corner. Click a point to select it (Shift
+    adds or removes). The curve handles of the selected points, and of the edge you clicked,
+    show as lines ending in dots.
+  * Drag a point to move it together with the other selected points; every shape that shares
+    a point moves with it, and it snaps as with the Selection tool. Drag a handle to change the
+    curve; a fill and its outline change together.
+  * Drag a line or fill to move everything connected to it. A marquee shows the shapes it
+    touches on the active layer and selects the points inside it. Arrow keys move the selected
+    points 1 screen pixel (Shift: 10). Each drag or press is one undo step.
+  * **Snap to Objects**, in View › Snapping, as the magnet under the tools and in the
+    selection tools' options, turns snapping on and off. It is on by default.
+  * **The Paint Bucket** fills a raw drawing exactly up to its lines and fill edges, and the
+    fill joins any fill of its colour it touches. Recolouring a fill joins it to its new
+    colour's neighbours.
+  * **Pasted** raw shapes (Paste and Paste in Place) cut and join the drawing they land on.
+  * **Animate files**: raw shapes open as raw shapes, merged into one drawing per keyframe.
+    Drawing objects and groups stay objects.
+  * **Gradient and bitmap fills** now merge like solid ones, each piece keeping its part of the
+    gradient. Strokes with a width profile are still drawn as objects.
+
+  Headless: `raw.subselect`, `raw.subselect_rect`, `raw.points`, `raw.move_handle`, `with` on
+  `raw.move_point`, `draw.snap_to_objects`, and `object` on `paint.bucket`; plug-ins may call
+  them.
+
 * **The Selection tool on raw drawings** (ADR 0041, issue #42). With Object Drawing off, the
   Selection tool now edits raw strokes and fills the way Animate does:
   * Drag an unselected line or the edge of a fill to **bend** it. The segment becomes a curve
