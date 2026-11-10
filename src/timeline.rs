@@ -162,7 +162,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
         } else if app.run("camera.add", json!({})).is_some() {
             app.tool = crate::app::Tool::Camera;
             app.last_tool = crate::app::Tool::Camera;
-            app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo."));
+            app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
         }
     }
 }
@@ -427,8 +427,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         if let Some(sp) = speaker {
             let rr = ui.interact(sp, ui.id().with(("mute", layer.id.0)), Sense::click());
-            a11y::control(ui, &rr, WidgetType::Checkbox, &format!("Mute {}", layer.name), Some(layer.muted));
-            let tip = if layer.muted { "Unmute this layer's sounds" } else { "Mute this layer's sounds (in playback and every export)" };
+            a11y::control(ui, &rr, WidgetType::Checkbox, &tr!("Mute {name}", name = layer.name), Some(layer.muted));
+            let tip = if layer.muted { tr!("Unmute this layer's sounds") } else { tr!("Mute this layer's sounds (in playback and every export)") };
             if rr.on_hover_text(tip).clicked() {
                 app.run("layer.toggle_mute", json!({"layer": layer.id.0}));
             }
@@ -475,7 +475,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             for id in ["layer.toggle_visible", "layer.toggle_lock", "layer.toggle_outline"] {
                 menus::cmd_item(app, ui, id);
             }
-            if layer.has_sounds() && menus::check_item(ui, "Mute", layer.muted, true) {
+            if layer.has_sounds() && menus::check_item(ui, tr!("Mute"), layer.muted, true) {
                 app.run("layer.toggle_mute", json!({"layer": layer.id.0}));
             }
             ui.separator();
@@ -754,9 +754,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     // One sentence per direction; the frame count is a phrase of its own.
                     let frames = trn!("{n} frame", "{n} frames", n);
                     app.status_ok(match rows_by {
-                        0 => trn!("Moved {n} frame by {by} — Ctrl+Z to undo", "Moved {n} frames by {by} — Ctrl+Z to undo", n, by = format!("{by:+}")),
-                        r if r < 0 => trn!("Moved {frames} {n} layer up — Ctrl+Z to undo", "Moved {frames} {n} layers up — Ctrl+Z to undo", r.unsigned_abs(), frames = frames),
-                        r => trn!("Moved {frames} {n} layer down — Ctrl+Z to undo", "Moved {frames} {n} layers down — Ctrl+Z to undo", r.unsigned_abs(), frames = frames),
+                        0 => trn!("Moved {n} frame by {by} — {undo} to undo", "Moved {n} frames by {by} — {undo} to undo", n, by = format!("{by:+}"), undo = app.undo_key()),
+                        r if r < 0 => trn!("Moved {frames} {n} layer up — {undo} to undo", "Moved {frames} {n} layers up — {undo} to undo", r.unsigned_abs(), frames = frames, undo = app.undo_key()),
+                        r => trn!("Moved {frames} {n} layer down — {undo} to undo", "Moved {frames} {n} layers down — {undo} to undo", r.unsigned_abs(), frames = frames, undo = app.undo_key()),
                     });
                     app.run("timeline.goto", json!({"frame": shift_by(app.s.frame)}));
                     if rows_by != 0

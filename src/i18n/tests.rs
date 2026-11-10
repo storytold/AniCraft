@@ -114,6 +114,10 @@ fn all_keys() -> BTreeSet<Key> {
     doc::Filter::KINDS.iter().for_each(|(_, l)| add(l));
     doc::FilterSide::ALL.iter().for_each(|s| add(s.label()));
     doc::Easing::PRESETS.iter().for_each(|(n, _)| add(n));
+    for e in doc::SoundEffect::PRESETS.iter().chain([&doc::SoundEffect::Custom(Vec::new())]) {
+        add(e.label());
+        add(e.hint());
+    }
     add(&doc::Easing::Linear.label());
     doc::Property::ALL.iter().for_each(|p| add(p.label()));
     doc::ProfilePreset::ALL.iter().for_each(|p| add(p.label()));
@@ -465,7 +469,7 @@ fn screen_reader_names_are_translated_too() {
     for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::Eyedropper, Tool::Pen, Tool::Camera] {
         found.extend(untranslated_names(&format!("{tool:?} tool"), |a, _| a.tool = tool));
     }
-    for panel in ["select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "testmovie", "exporthtml"] {
+    for panel in ["select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "testmovie", "exporthtml", "envelope"] {
         found.extend(untranslated_names(panel, |a, _| a.open_panel(Some(panel))));
     }
     assert!(found.is_empty(), "{} screen-reader names not translated in the pseudo-locale:\n{}", found.len(), found.join("\n"));

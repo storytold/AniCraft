@@ -70,7 +70,7 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui) -> bool {
     let Some(i) = app.hint_menu else { return false };
     if ui.button(tr!("Remove Hint {letter}", letter = hint_letter(i))).clicked() {
         if app.run("tween.remove_hint", json!({"hint": i})).is_some() {
-            app.status_ok(tr!("Removed shape hint {letter}. {undo} to undo.", letter = hint_letter(i), undo = crate::platform::shortcut_label("Ctrl+Z")));
+            app.status_ok(tr!("Removed shape hint {letter}. {undo} to undo.", letter = hint_letter(i), undo = app.undo_key()));
         }
         ui.close();
     }

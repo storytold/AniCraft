@@ -526,7 +526,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     // The gap size is set in screen points, so it feels the same at any zoom.
                     let gap = app.bucket_gap.screen_px() / zoom.max(1e-3);
                     if let Some(v) = app.run("paint.bucket", json!({"x": sp.x, "y": sp.y, "gap": gap})) {
-                        app.status_ok(if v.get("recolored").is_some() { tr!("Recoloured the fill. Ctrl+Z to undo.") } else { tr!("Filled the area. Ctrl+Z to undo.") });
+                        app.status_ok(if v.get("recolored").is_some() { tr!("Recoloured the fill. {undo} to undo.", undo = app.undo_key()) } else { tr!("Filled the area. {undo} to undo.", undo = app.undo_key()) });
                     }
                 }
                 Tool::Brush if !panning => {

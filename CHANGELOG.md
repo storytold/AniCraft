@@ -13,6 +13,8 @@
     translators (and, with a craft-i18n checkout, how much each language already covers).
   * A **pseudo-locale** (`--lang pseudo`) draws everything accented, longer and bracketed, to
     find text that skipped translation or gets cut off.
+  * Messages that say how to undo show your Undo key as this computer writes it (⌘Z on a
+    Mac, and a rebound key wherever it is), instead of a fixed "Ctrl+Z".
   * Menus, the command palette and the shortcut sheet translate the command registry's labels
     as they are drawn; command ids, `.anicraft` files, `anicraft-cli` and MCP stay English.
   * For developers: `tr!`, `trn!` (plurals by CLDR rules), `trc!` and `tr_noop!`; a test fails

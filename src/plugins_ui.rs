@@ -275,7 +275,7 @@ fn finish(app: &mut App) {
     let name = app.s.plugins.get(&d.id).map_or_else(String::new, |p| p.manifest().name.clone());
     app.s.end_gesture();
     app.plugin_dialog = None;
-    app.status_ok(tr!("{name} — {undo} to undo", name = name, undo = "Ctrl+Z"));
+    app.status_ok(tr!("{name} — {undo} to undo", name = name, undo = app.undo_key()));
 }
 
 /// Commands › Manage Plug-ins: what's installed, where it came from, and the folder.
@@ -368,8 +368,8 @@ pub fn status(app: &mut App, id: &str, v: &Value) {
             // The plug-in's name and its last log line are its own text, shown as written.
             let name = v["name"].as_str().unwrap_or(tr!("Plug-in"));
             let msg = match v["log"].as_array().and_then(|l| l.last()).and_then(Value::as_str) {
-                Some(m) => tr!("{name}: {message} — {undo} to undo", name = name, message = m, undo = "Ctrl+Z"),
-                None => tr!("{name} — {undo} to undo", name = name, undo = "Ctrl+Z"),
+                Some(m) => tr!("{name}: {message} — {undo} to undo", name = name, message = m, undo = app.undo_key()),
+                None => tr!("{name} — {undo} to undo", name = name, undo = app.undo_key()),
             };
             app.status_ok(msg);
         }

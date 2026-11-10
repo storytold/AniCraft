@@ -1257,12 +1257,12 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
 fn volume_row(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::Layer) {
     let (mut pct, mut muted) = (f64::from(layer.volume) * 100.0, layer.muted);
     let id = layer.id.0;
-    row_prose(ui, "Volume", |ui| {
+    row_prose(ui, tr!("Volume"), |ui| {
         let r = with_type(ui, Type::Data, |ui| ui.add_enabled(!muted, egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(0.5).max_decimals(0).suffix(" %")));
-        if r.named("Layer volume").on_hover_text("The volume of this layer's sounds, and of the sounds in the symbols on it").changed() {
-            live(app, "Layer Volume", "layer.set_volume", json!({"layer": id, "volume": (pct / 100.0).clamp(0.0, 1.0)}));
+        if r.named(tr!("Layer volume")).on_hover_text(tr!("The volume of this layer's sounds, and of the sounds in the symbols on it")).changed() {
+            live(app, tr_noop!("Layer Volume"), "layer.set_volume", json!({"layer": id, "volume": (pct / 100.0).clamp(0.0, 1.0)}));
         }
-        if crate::theme::checkbox(ui, &mut muted, "Mute").on_hover_text("Silence this layer's sounds while you work and in every export").named("Mute layer").changed() {
+        if crate::theme::checkbox(ui, &mut muted, tr!("Mute")).on_hover_text(tr!("Silence this layer's sounds while you work and in every export")).named(tr!("Mute layer")).changed() {
             app.run("layer.set_volume", json!({"layer": id, "muted": muted}));
         }
     });
@@ -1326,15 +1326,15 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
         }
     });
     // The effect, as Animate's Effect menu, with the envelope editor beside it (ADR 0039).
-    row_prose(ui, "Effect", |ui| {
-        egui::ComboBox::from_id_salt("prop_effect").width(150.0).selected_text(f.effect.label()).show_ui(ui, |ui| {
+    row_prose(ui, tr!("Effect"), |ui| {
+        egui::ComboBox::from_id_salt("prop_effect").width(150.0).selected_text(crate::i18n::t(f.effect.label())).show_ui(ui, |ui| {
             for e in SoundEffect::PRESETS {
-                if ui.selectable_label(f.effect == e, e.label()).on_hover_text(e.hint()).clicked() && f.effect != e {
+                if ui.selectable_label(f.effect == e, crate::i18n::t(e.label())).on_hover_text(crate::i18n::t(e.hint())).clicked() && f.effect != e {
                     app.run("sound.set", json!({"effect": e.key()}));
                 }
             }
             let custom = matches!(f.effect, SoundEffect::Custom(_));
-            if ui.selectable_label(custom, "Custom").on_hover_text(SoundEffect::Custom(Vec::new()).hint()).clicked() {
+            if ui.selectable_label(custom, tr!("Custom")).on_hover_text(crate::i18n::t(SoundEffect::Custom(Vec::new()).hint())).clicked() {
                 if !custom {
                     app.run("sound.set", json!({"effect": "custom"}));
                 }
@@ -1342,8 +1342,8 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
             }
         })
         .response
-        .set_name("Sound effect");
-        if ui.small_button("Edit…").on_hover_text("Edit Envelope: the volume of each channel over the sound's time").named("Edit sound envelope").clicked() {
+        .set_name(tr!("Sound effect"));
+        if ui.small_button(tr!("Edit…")).on_hover_text(tr!("Edit Envelope: the volume of each channel over the sound's time")).named(tr!("Edit sound envelope")).clicked() {
             crate::envelope::open(app);
         }
     });

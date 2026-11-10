@@ -49,7 +49,7 @@ pub fn previewing(app: &App) -> bool {
 /// pick: undoing the add leaves the tool in hand without adding it again.
 pub fn on_tool_change(app: &mut App) {
     if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.doc.timeline(app.s.scene).camera_layer().is_none() && app.run("camera.add", json!({})).is_some() {
-        app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo."));
+        app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
     }
     app.last_tool = app.tool;
 }

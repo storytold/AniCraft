@@ -427,7 +427,7 @@ fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, s
         }
     }
     ui.separator();
-    if ui.button(tr!("Remove Tween")).on_hover_text(tr!("The object stays as it is on the span's first frame (Ctrl+Z to undo)")).clicked() {
+    if ui.button(tr!("Remove Tween")).on_hover_text(tr!("The object stays as it is on the span's first frame ({undo} to undo)", undo = app.undo_key())).clicked() {
         app.run("timeline.remove_tween", json!({}));
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

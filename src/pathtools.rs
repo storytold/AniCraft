@@ -342,7 +342,7 @@ fn add_point_on_selected(app: &mut App, at: Pos2, xf: Xf) -> bool {
         if let Ok(v) = r {
             app.points = v["cmd"].as_u64().map(|c| vec![(id, c as usize, ANCHOR)]).unwrap_or_default();
             app.motion_anchors.clear();
-            app.status_ok(tr!("Added a point. {undo} to undo.", undo = crate::platform::shortcut_label("Ctrl+Z")));
+            app.status_ok(tr!("Added a point. {undo} to undo.", undo = app.undo_key()));
             return true;
         }
     }

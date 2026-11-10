@@ -266,7 +266,7 @@ fn switch_kind(app: &mut App, t: &FrameTarget, from: Holds, to: Holds) {
         Holds::Plugin => {
             if let Some((id, entry)) = frame_scripts(app).first().map(|(id, _, e)| (id.clone(), e.first().cloned().unwrap_or_else(|| "main".into()))) {
                 set_frame(app, &t.base, json!({"plugin": id, "entry": entry}));
-                app.status_ok(tr!("Frame script set — Ctrl+Z to undo"));
+                app.status_ok(tr!("Frame script set — {undo} to undo", undo = app.undo_key()));
             } else {
                 app.status_err(tr!("No frame-script plug-ins are installed (Commands › Install Plug-in…)"));
             }
@@ -282,9 +282,9 @@ fn switch_kind(app: &mut App, t: &FrameTarget, from: Holds, to: Holds) {
     }
     if had {
         let removed = match from {
-            Holds::Actions => tr!("Removed the actions — Ctrl+Z to undo"),
-            Holds::Plugin => tr!("Removed the plug-in frame script — Ctrl+Z to undo"),
-            Holds::Script => tr!("Removed the script — Ctrl+Z to undo"),
+            Holds::Actions => tr!("Removed the actions — {undo} to undo", undo = app.undo_key()),
+            Holds::Plugin => tr!("Removed the plug-in frame script — {undo} to undo", undo = app.undo_key()),
+            Holds::Script => tr!("Removed the script — {undo} to undo", undo = app.undo_key()),
         };
         app.status_ok(removed);
     }
@@ -361,7 +361,7 @@ fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&S
     ui.label(text(Type::Caption, tr!("Kept with the document as written. AniCraft doesn't run scripts yet: Test Movie and exports skip it. Use actions for what should happen while the movie plays.")));
     if src.is_some() && ui.small_button(tr!("Remove script")).on_hover_text(tr!("Delete this keyframe's script")).clicked() {
         app.run("script.clear", t.base.clone());
-        app.status_ok(tr!("Removed the script — Ctrl+Z to undo"));
+        app.status_ok(tr!("Removed the script — {undo} to undo", undo = app.undo_key()));
     }
 }
 
@@ -518,7 +518,7 @@ fn instance_tab(app: &mut App, ui: &mut egui::Ui, e: &Element) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(tr!("Remove event")).clicked() {
                     app.run("actions.clear", json!({"element": e.id.0, "event": h.event.key()}));
-                    app.status_ok(event_removed(h.event));
+                    app.status_ok(event_removed(h.event, &app.undo_key()));
                 }
             });
         });
@@ -554,13 +554,13 @@ fn event_heading(ev: ButtonEvent) -> &'static str {
 }
 
 /// The status message after an event is removed: one sentence per event.
-fn event_removed(ev: ButtonEvent) -> &'static str {
+fn event_removed(ev: ButtonEvent, undo: &str) -> String {
     match ev {
-        ButtonEvent::Click => tr!("Removed the click event — Ctrl+Z to undo"),
-        ButtonEvent::Press => tr!("Removed the press event — Ctrl+Z to undo"),
-        ButtonEvent::Release => tr!("Removed the release event — Ctrl+Z to undo"),
-        ButtonEvent::Over => tr!("Removed the pointer over event — Ctrl+Z to undo"),
-        ButtonEvent::Out => tr!("Removed the pointer out event — Ctrl+Z to undo"),
+        ButtonEvent::Click => tr!("Removed the click event — {undo} to undo", undo = undo),
+        ButtonEvent::Press => tr!("Removed the press event — {undo} to undo", undo = undo),
+        ButtonEvent::Release => tr!("Removed the release event — {undo} to undo", undo = undo),
+        ButtonEvent::Over => tr!("Removed the pointer over event — {undo} to undo", undo = undo),
+        ButtonEvent::Out => tr!("Removed the pointer out event — {undo} to undo", undo = undo),
     }
 }
 

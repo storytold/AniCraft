@@ -529,6 +529,12 @@ impl App {
         }
     }
 
+    /// The Undo key as this computer shows it (rebindable; ⌘Z on macOS), for messages that
+    /// say how to undo.
+    pub fn undo_key(&self) -> String {
+        platform::shortcut_label(self.keymap.primary("edit.undo").unwrap_or("Ctrl+Z"))
+    }
+
     pub fn status_ok(&mut self, text: impl Into<String>) {
         self.status = Some(Status { text: text.into(), error: false, at: 0.0 });
     }
@@ -1056,7 +1062,7 @@ impl App {
                     self.run("motion.add_point", json!({"segment": 2, "t": 0.45}));
                     self.run("motion.convert_point", json!({"anchor": 1, "smooth": false}));
                     self.motion_anchors = vec![1, 2];
-                    self.status_ok(tr!("Added a point to the motion path. {undo} to undo.", undo = platform::shortcut_label("Ctrl+Z")));
+                    self.status_ok(tr!("Added a point to the motion path. {undo} to undo.", undo = self.undo_key()));
                 }
             }
             Some("pen") => {
@@ -1148,7 +1154,7 @@ impl App {
                 let name = v["name"].as_str().unwrap_or("");
                 let secs = format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0));
                 self.status_ok(if v.get("layer").is_some() {
-                    tr!("{name} ({secs} s) is on a new layer from frame {frame}. Set its sync in Properties. Ctrl+Z to undo.", name = name, secs = secs, frame = self.s.frame + 1)
+                    tr!("{name} ({secs} s) is on a new layer from frame {frame}. Set its sync in Properties. {undo} to undo.", name = name, secs = secs, frame = self.s.frame + 1, undo = self.undo_key())
                 } else {
                     tr!("{name} ({secs} s) is in the Library. Select a keyframe and pick it under Sound in Properties.", name = name, secs = secs)
                 });
@@ -1159,14 +1165,14 @@ impl App {
                 let (path, secs) = (v["written"].as_str().unwrap_or(""), format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0)));
                 self.status_ok(if n == 0 { tr!("Exported {path} ({secs} s). No sounds play in that range, so the file is silent.", path = path, secs = secs) } else { tr!("Exported {path} ({secs} s).", path = path, secs = secs) });
             }
-            "sound.delete" => self.status_ok(tr!("Deleted sound — Ctrl+Z to undo")),
+            "sound.delete" => self.status_ok(tr!("Deleted sound — {undo} to undo", undo = self.undo_key())),
             "file.import" => {
                 if let Some(b) = self.s.doc.bitmaps.last().filter(|b| v["bitmap"].as_u64() == Some(b.id.0)) {
                     self.library_sel = Some(LibraryItem::Bitmap(b.id));
                 }
                 let n = v["elements"].as_u64().unwrap_or(0);
                 let report = v["report"].as_str().unwrap_or("");
-                let undo = tr!("{undo} to undo.", undo = platform::shortcut_label("Ctrl+Z"));
+                let undo = tr!("{undo} to undo.", undo = self.undo_key());
                 // A drawing with clip paths or masks comes in as a folder of layers (ADR 0021).
                 let placed = match (v["layers"].as_u64().unwrap_or(1), v["masks"].as_u64().unwrap_or(0)) {
                     (0 | 1, _) => trn!("{n} element on a new layer.", "{n} elements on a new layer.", n),
@@ -1201,15 +1207,15 @@ impl App {
             // Undo labels are the engine's English, translated when a catalog has them.
             "edit.undo" => self.status_ok(tr!("Undid {action}", action = crate::i18n::t_dyn(v["undone"].as_str().unwrap_or("")))),
             "edit.redo" => self.status_ok(tr!("Redid {action}", action = crate::i18n::t_dyn(v["redone"].as_str().unwrap_or("")))),
-            "edit.delete" => self.status_ok(trn!("Deleted {n} element — Ctrl+Z to undo", "Deleted {n} elements — Ctrl+Z to undo", selected)),
-            "layer.delete" => self.status_ok(tr!("Deleted layer — Ctrl+Z to undo")),
+            "edit.delete" => self.status_ok(trn!("Deleted {n} element — {undo} to undo", "Deleted {n} elements — {undo} to undo", selected, undo = self.undo_key())),
+            "layer.delete" => self.status_ok(tr!("Deleted layer — {undo} to undo", undo = self.undo_key())),
             "draw.erase_all" => {
                 let n = v["erased"].as_u64().unwrap_or(0);
-                self.status_ok(trn!("Erased everything at frame {frame} ({n} element). {undo} to undo.", "Erased everything at frame {frame} ({n} elements). {undo} to undo.", n, frame = self.s.frame + 1, undo = platform::shortcut_label("Ctrl+Z")));
+                self.status_ok(trn!("Erased everything at frame {frame} ({n} element). {undo} to undo.", "Erased everything at frame {frame} ({n} elements). {undo} to undo.", n, frame = self.s.frame + 1, undo = self.undo_key()));
             }
             "scene.delete" => {
                 self.frame_sel = None;
-                self.status_ok(tr!("Deleted scene — Ctrl+Z to undo"));
+                self.status_ok(tr!("Deleted scene — {undo} to undo", undo = self.undo_key()));
             }
             "scene.new" | "scene.duplicate" | "scene.select" | "scene.next" | "scene.prev" => {
                 // Another scene's timeline: frame selections and scroll belong to the old one.
@@ -1222,20 +1228,20 @@ impl App {
             }
             "timeline.clear_keyframe" => {
                 let n = v["cleared"].as_u64().unwrap_or(1);
-                self.status_ok(if n == 1 { tr!("Cleared keyframe — Ctrl+Z to undo").to_string() } else { trn!("Cleared {n} keyframe — Ctrl+Z to undo", "Cleared {n} keyframes — Ctrl+Z to undo", n) });
+                self.status_ok(if n == 1 { tr!("Cleared keyframe — {undo} to undo", undo = self.undo_key()).to_string() } else { trn!("Cleared {n} keyframe — {undo} to undo", "Cleared {n} keyframes — {undo} to undo", n, undo = self.undo_key()) });
             }
             "timeline.copy_frames" | "timeline.cut_frames" | "timeline.paste_frames" => {
                 let n = v["copied"].as_u64().or_else(|| v["cut"].as_u64()).or_else(|| v["pasted"].as_u64()).unwrap_or(0);
                 self.status_ok(match id {
                     "timeline.copy_frames" => trn!("Copied {n} frame", "Copied {n} frames", n),
-                    "timeline.cut_frames" => trn!("Cut {n} frame — Ctrl+Z to undo", "Cut {n} frames — Ctrl+Z to undo", n),
-                    _ => trn!("Pasted {n} frame — Ctrl+Z to undo", "Pasted {n} frames — Ctrl+Z to undo", n),
+                    "timeline.cut_frames" => trn!("Cut {n} frame — {undo} to undo", "Cut {n} frames — {undo} to undo", n, undo = self.undo_key()),
+                    _ => trn!("Pasted {n} frame — {undo} to undo", "Pasted {n} frames — {undo} to undo", n, undo = self.undo_key()),
                 });
             }
             "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, &v),
             "timeline.remove_frame" => {
                 let n = v["removed"].as_u64().unwrap_or(1);
-                self.status_ok(if n == 1 { tr!("Removed frame — Ctrl+Z to undo").to_string() } else { trn!("Removed {n} frame — Ctrl+Z to undo", "Removed {n} frames — Ctrl+Z to undo", n) });
+                self.status_ok(if n == 1 { tr!("Removed frame — {undo} to undo", undo = self.undo_key()).to_string() } else { trn!("Removed {n} frame — {undo} to undo", "Removed {n} frames — {undo} to undo", n, undo = self.undo_key()) });
             }
             _ => {}
         }

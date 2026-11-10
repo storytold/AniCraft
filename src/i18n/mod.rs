@@ -286,8 +286,6 @@ pub fn t(source: &'static str) -> &'static str {
 }
 
 /// `source` with a context word, falling back to its plain translation.
-// craft-i18n's context column: no interface string needs one yet (tests use it).
-#[allow(dead_code)]
 pub fn tc(context: &'static str, source: &'static str) -> &'static str {
     translate(context, source)
 }
@@ -373,7 +371,6 @@ macro_rules! tr {
 }
 
 /// `trc!("menu", "Open")`: a literal with a context word (craft-i18n's first column).
-#[allow(unused_macros)]
 macro_rules! trc {
     ($c:literal, $s:literal) => {
         $crate::i18n::tc($c, $s)

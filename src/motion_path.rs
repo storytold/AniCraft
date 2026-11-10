@@ -230,7 +230,7 @@ fn add_at(app: &mut App, p: Pos2, xf: Xf) -> bool {
     if let Some(v) = app.run("motion.add_point", json!({"x": sp.x, "y": sp.y, "slop": PICK * xf.unit()})) {
         app.motion_anchors = v["anchor"].as_u64().map(|a| vec![a as usize]).unwrap_or_default();
         app.points.clear();
-        app.status_ok(tr!("Added a point to the motion path. {undo} to undo.", undo = crate::platform::shortcut_label("Ctrl+Z")));
+        app.status_ok(tr!("Added a point to the motion path. {undo} to undo.", undo = app.undo_key()));
     }
     true
 }
@@ -279,7 +279,7 @@ pub fn delete_selected(app: &mut App) {
     }
     if let Some(v) = app.run("motion.delete_points", json!({"anchors": anchors})) {
         let n = v["deleted"].as_u64().unwrap_or(0);
-        let undo = crate::platform::shortcut_label("Ctrl+Z");
+        let undo = app.undo_key();
         app.status_ok(if v["kept_ends"].as_bool() == Some(true) {
             trn!("Deleted {n} point from the motion path; its ends stay, as they are where the motion starts and ends. {undo} to undo.", "Deleted {n} points from the motion path; its ends stay, as they are where the motion starts and ends. {undo} to undo.", n, undo = undo)
         } else {

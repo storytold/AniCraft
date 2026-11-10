@@ -52,7 +52,7 @@ pub fn commit(app: &mut App, xf: Xf) {
     }
     let o = app.eraser;
     let params = json!({"points": points(&samples), "size": o.size, "shape": shape_key(o.shape), "mode": o.mode.key(), "unit": xf.unit()});
-    let undo = crate::platform::shortcut_label("Ctrl+Z");
+    let undo = app.undo_key();
     match app.run("draw.erase", params) {
         Some(v) if v["erased"] == true => app.status_ok(tr!("Erased. {undo} to undo.", undo = undo)),
         Some(v) => {
@@ -67,7 +67,7 @@ pub fn commit(app: &mut App, xf: Xf) {
 /// The Faucet: deletes the whole fill or line under the click.
 pub fn faucet(app: &mut App, p: Vec2, zoom: f32) {
     if let Some(v) = app.run("draw.faucet", json!({"x": p.x, "y": p.y, "slop": 4.0 / zoom.max(1e-3)})) {
-        let undo = crate::platform::shortcut_label("Ctrl+Z");
+        let undo = app.undo_key();
         app.status_ok(if v["kind"] == "line" { tr!("Deleted the line. {undo} to undo.", undo = undo) } else { tr!("Deleted the fill. {undo} to undo.", undo = undo) });
     }
 }
@@ -118,7 +118,7 @@ pub fn eyedropper(app: &mut App, p: Vec2, shift: bool, zoom: f32) {
     if shapes > 0 {
         if let Some(r) = app.run("paint.apply_style", json!({"fill": into_fill, "stroke": !into_fill})) {
             let n = r["changed"].as_u64().unwrap_or(0);
-            let undo = crate::platform::shortcut_label("Ctrl+Z");
+            let undo = app.undo_key();
             app.status_ok(match paint {
                 Some("linear") => trn!("Applied the picked linear gradient to {n} shape. {undo} to undo.", "Applied the picked linear gradient to {n} shapes. {undo} to undo.", n, undo = undo),
                 Some("radial") => trn!("Applied the picked radial gradient to {n} shape. {undo} to undo.", "Applied the picked radial gradient to {n} shapes. {undo} to undo.", n, undo = undo),
