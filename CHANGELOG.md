@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* **Motion paths for motion tweens** (ADR 0030). Select a motion tween's object (or a frame of
+  its span) and the stage shows its path in the motion colour, with a dot for every frame.
+  Drag the path with the Selection tool to bend it and its ends to move where the motion
+  starts and ends; with the Subselection tool drag its points and handles (smooth points stay
+  smooth; Alt breaks them). Each drag is one undo step. The object travels the path at the
+  pace its X and Y curves set, so eases (overshoot included) carry over, and a straight path
+  moves exactly as before. Moving the object at a later frame reshapes the path instead of
+  adding keys. **Orient to path** (Properties) turns the object as the path turns; Straighten
+  goes back to the straight path. Every export and Test Movie play it. Headless:
+  `motion.set_path {d}`, `motion.clear_path`, `motion.orient {orient}`; `motion.info` reports
+  the path and where the object is. Not yet: adding or deleting path points on the stage,
+  anchors tied to frames, motion paths from Animate files.
+
 * **HTML canvas export** (ADR 0028). File › Export › Export HTML Canvas… writes the movie as
   one web page that plays in any modern browser: open it from your disk, put it on a server or
   send it as one file. Everything moves exactly as on the stage, because every frame of every
