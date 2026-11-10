@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: gradient fills and strokes. Gradients are defined on the square
+     -819.2..819.2 px and placed by their matrix. Linear (scaled, rotated, repeating), radial
+     (round, and an elliptical one with a focal point that reflects), stops with alpha, linear-RGB
+     interpolation, and a gradient stroke. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Gradients" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills>
+                    <FillStyle index="1">
+                      <LinearGradient>
+                        <matrix><Matrix a="0.06103516" d="0.06103516" tx="70" ty="50"/></matrix>
+                        <GradientEntry color="#1D3557" ratio="0"/>
+                        <GradientEntry color="#E63946" ratio="0.5"/>
+                        <GradientEntry color="#F1FAEE" alpha="0.2" ratio="1"/>
+                      </LinearGradient>
+                    </FillStyle>
+                    <FillStyle index="2">
+                      <LinearGradient>
+                        <matrix><Matrix a="0.03668" b="0.03668" c="-0.03668" d="0.03668" tx="170" ty="50"/></matrix>
+                        <GradientEntry color="#FFB703" ratio="0"/>
+                        <GradientEntry color="#023047" ratio="1"/>
+                      </LinearGradient>
+                    </FillStyle>
+                    <FillStyle index="3">
+                      <RadialGradient>
+                        <matrix><Matrix a="0.036621" d="0.036621" tx="280" ty="50"/></matrix>
+                        <GradientEntry color="#FFFFFF" ratio="0"/>
+                        <GradientEntry color="#8ECAE6" ratio="0.4"/>
+                        <GradientEntry color="#219EBC" ratio="1"/>
+                      </RadialGradient>
+                    </FillStyle>
+                    <FillStyle index="4">
+                      <RadialGradient spreadMethod="reflect" focalPointRatio="0.6">
+                        <matrix><Matrix a="0.03" d="0.015" tx="70" ty="130"/></matrix>
+                        <GradientEntry color="#6A994E" ratio="0"/>
+                        <GradientEntry color="#F2E8CF" ratio="1"/>
+                      </RadialGradient>
+                    </FillStyle>
+                    <FillStyle index="5">
+                      <LinearGradient spreadMethod="repeat" interpolationMethod="linearRGB">
+                        <matrix><Matrix a="0.0122" d="0.0122" tx="170" ty="130"/></matrix>
+                        <GradientEntry color="#BC4749" ratio="0"/>
+                        <GradientEntry color="#386641" ratio="1"/>
+                      </LinearGradient>
+                    </FillStyle>
+                  </fills>
+                  <strokes>
+                    <StrokeStyle index="1">
+                      <SolidStroke scaleMode="normal" weight="6">
+                        <fill>
+                          <LinearGradient>
+                            <matrix><Matrix a="0.0366" d="0.0366" tx="280" ty="130"/></matrix>
+                            <GradientEntry color="#7209B7" ratio="0"/>
+                            <GradientEntry color="#F72585" ratio="1"/>
+                          </LinearGradient>
+                        </fill>
+                      </SolidStroke>
+                    </StrokeStyle>
+                  </strokes>
+                  <edges>
+                    <Edge fillStyle1="1" edges="!400 400|2400 400|2400 1600|400 1600|400 400"/>
+                    <Edge fillStyle1="2" edges="!2800 400|4000 400|4000 1600|2800 1600|2800 400"/>
+                    <Edge fillStyle1="3" edges="!6200 1000[6200 1600 5600 1600[5000 1600 5000 1000[5000 400 5600 400[6200 400 6200 1000"/>
+                    <Edge fillStyle1="4" edges="!400 2000|2400 2000|2400 3200|400 3200|400 2000"/>
+                    <Edge fillStyle1="5" edges="!2800 2000|4000 2000|4000 3200|2800 3200|2800 2000"/>
+                    <Edge strokeStyle="1" edges="!4800 2200|6000 3000!4800 3000|6000 2200"/>
+                  </edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

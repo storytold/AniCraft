@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: bitmaps. The images (LIBRARY/art/checker.png, a 16x16 checker with a
+     transparent corner, and LIBRARY/art/sunset.jpg, a 32x16 ramp) are original. Instances
+     (scaled, rotated), a repeating bitmap fill and a clipped one; a bitmap whose file is
+     missing, used by an instance. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <folders>
+    <DOMFolderItem name="art" itemID="00000000-0000-0000-0000-000000000001"/>
+  </folders>
+  <media>
+    <DOMBitmapItem name="art/checker.png" itemID="00000000-0000-0000-0000-000000000002" sourceExternalFilepath="./LIBRARY/art/checker.png" allowSmoothing="false" useImportedJPEGData="false" compressionType="lossless" originalCompressionType="lossless" quality="50" href="art/checker.png" bitmapDataHRef="M 1 1.dat" frameRight="320" frameBottom="320"/>
+    <DOMBitmapItem name="art/sunset.jpg" itemID="00000000-0000-0000-0000-000000000003" sourceExternalFilepath="./LIBRARY/art/sunset.jpg" quality="80" href="art/sunset.jpg" bitmapDataHRef="M 2 2.dat" isJPEG="true" frameRight="640" frameBottom="320"/>
+    <DOMBitmapItem name="art/gone.png" itemID="00000000-0000-0000-0000-000000000004" href="art/gone.png" bitmapDataHRef="M 3 3.dat"/>
+  </media>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Instances" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMBitmapInstance libraryItemName="art/checker.png">
+                  <matrix><Matrix a="4" d="4" tx="10" ty="10"/></matrix>
+                </DOMBitmapInstance>
+                <DOMBitmapInstance libraryItemName="art/sunset.jpg">
+                  <matrix><Matrix a="3" d="3" tx="90" ty="10"/></matrix>
+                </DOMBitmapInstance>
+                <DOMBitmapInstance libraryItemName="art/checker.png">
+                  <matrix><Matrix a="2.598" b="1.5" c="-1.5" d="2.598" tx="250" ty="104"/></matrix>
+                </DOMBitmapInstance>
+                <DOMBitmapInstance libraryItemName="art/gone.png">
+                  <matrix><Matrix tx="300" ty="160"/></matrix>
+                </DOMBitmapInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Fills" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills>
+                    <FillStyle index="1">
+                      <BitmapFill bitmapPath="art/checker.png">
+                        <matrix><Matrix a="30" d="30" tx="200" ty="10"/></matrix>
+                      </BitmapFill>
+                    </FillStyle>
+                    <FillStyle index="2">
+                      <BitmapFill bitmapPath="art/sunset.jpg" bitmapIsClipped="true">
+                        <matrix><Matrix a="40" d="40" tx="20" ty="110"/></matrix>
+                      </BitmapFill>
+                    </FillStyle>
+                  </fills>
+                  <edges>
+                    <Edge fillStyle1="1" edges="!4000 200|6200 200|6200 1600|4000 1600|4000 200"/>
+                    <Edge fillStyle1="2" edges="!200 2000|3000 2000|3000 3400|200 3400|200 2000"/>
+                  </edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

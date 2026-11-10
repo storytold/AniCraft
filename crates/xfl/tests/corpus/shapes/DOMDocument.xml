@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: shapes. Self-authored from the public description of the format.
+     Edges in twips: `!` move, `|` and `/` lines, `[` and `]` quadratic curves, `S` selection
+     marks, `#` hex fixed point. A fill style on both sides of an edge, a hole, alpha, strokes
+     with every cap and join, a stroke continuing across edges and one with a gap. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F4F1EA" currentTimeline="1" xflVersion="2.97">
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Strokes" color="#4F80FF" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <strokes>
+                    <StrokeStyle index="1">
+                      <SolidStroke scaleMode="normal" weight="8" caps="none" joints="miter" miterLimit="4">
+                        <fill><SolidColor color="#333355"/></fill>
+                      </SolidStroke>
+                    </StrokeStyle>
+                    <StrokeStyle index="2">
+                      <SolidStroke scaleMode="normal" weight="8" caps="square" joints="bevel">
+                        <fill><SolidColor color="#7A3355"/></fill>
+                      </SolidStroke>
+                    </StrokeStyle>
+                    <StrokeStyle index="3">
+                      <SolidStroke scaleMode="normal" weight="8">
+                        <fill><SolidColor color="#33557A"/></fill>
+                      </SolidStroke>
+                    </StrokeStyle>
+                    <StrokeStyle index="4">
+                      <SolidStroke scaleMode="normal" weight="1">
+                        <fill><SolidColor color="#000000" alpha="0.6"/></fill>
+                      </SolidStroke>
+                    </StrokeStyle>
+                  </strokes>
+                  <edges>
+                    <!-- A zigzag split over two edges; the second starts where the first ends. -->
+                    <Edge strokeStyle="1" edges="!400 3200|1100 2200"/>
+                    <Edge strokeStyle="1" edges="!1100 2200|1800 3200"/>
+                    <Edge strokeStyle="2" edges="!2400 3200/3100 2200/3800 3200"/>
+                    <Edge strokeStyle="3" edges="!4400 3200]5100 1600 5800 3200"/>
+                    <!-- One edge, two runs: the second move leaves a gap. -->
+                    <Edge strokeStyle="4" edges="!400 3460|1800 3460!2400 3460|3800 3460"/>
+                  </edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Fills" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills>
+                    <FillStyle index="1"><SolidColor color="#D9452B"/></FillStyle>
+                    <FillStyle index="2"><SolidColor color="#2B6CD9"/></FillStyle>
+                    <FillStyle index="3"><SolidColor color="#3FA34D" alpha="0.75"/></FillStyle>
+                    <FillStyle index="4"><SolidColor color="#F29E1F"/></FillStyle>
+                  </fills>
+                  <strokes>
+                    <StrokeStyle index="1">
+                      <SolidStroke scaleMode="normal" weight="2">
+                        <fill><SolidColor color="#1A1A1A"/></fill>
+                      </SolidStroke>
+                    </StrokeStyle>
+                  </strokes>
+                  <edges>
+                    <!-- Two rectangles side by side, (20, 20)-(70, 80) red and (70, 20)-(120, 80)
+                         blue, each outer edge with its fill on the side it encloses. -->
+                    <Edge fillStyle1="1" strokeStyle="1" edges="!400 400|1400 400"/>
+                    <Edge fillStyle1="2" strokeStyle="1" edges="!1400 400/2400 400"/>
+                    <Edge fillStyle1="2" strokeStyle="1" edges="!2400 400|2400 1600"/>
+                    <Edge fillStyle0="2" strokeStyle="1" edges="!1400 1600|2400 1600"/>
+                    <Edge fillStyle0="1" strokeStyle="1" edges="!400 1600|1400 1600"/>
+                    <Edge fillStyle0="1" strokeStyle="1" edges="!400 400|400 1600"/>
+                    <!-- The shared edge: blue on its left, red on its right. -->
+                    <Edge fillStyle0="2" fillStyle1="1" edges="!1400 400|1400 1600"/>
+                    <!-- A square hole in the blue one: blue outside (on the left), nothing inside. -->
+                    <Edge fillStyle0="2" strokeStyle="1" edges="!1700 800|2100 800|2100 1200|1700 1200|1700 800"/>
+                    <!-- A round blob of quadratic curves, both selectors, with selection marks. -->
+                    <Edge fillStyle1="3" edges="!4000 1000S2[4000 1600 3400 1600]2800 1600 2800 1000S6[2800 400 3400 400]4000 400 4000 1000"/>
+                    <!-- A triangle in hex fixed point: #1518.80 is 5400.5 twips. -->
+                    <Edge fillStyle1="4" strokeStyle="1" edges="!#1518.80 #190|#1770 #640|#12C0 #640|#1518.80 #190"/>
+                  </edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>
