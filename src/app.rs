@@ -1779,6 +1779,10 @@ fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
 
 /// Opens a file or folder with the operating system's default handler.
 pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
+    // Tests click every control (`i18n::tests`): they never start another program.
+    if cfg!(test) {
+        return Ok(());
+    }
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new("explorer");
         c.arg(path);

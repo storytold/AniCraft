@@ -473,6 +473,94 @@ fn untranslated_names(what: &str, setup: impl FnOnce(&mut crate::app::App, &egui
     plain_names(what, &app, update.map(|u| u.nodes).unwrap_or_default())
 }
 
+/// Clicks every control the window shows in `setup`'s state, one after another (through
+/// AccessKit, as a screen reader would; number fields are stepped too), and returns the names
+/// and status lines that came out in plain English. Prompts are dismissed after each click,
+/// so nothing is written to disk.
+fn click_everything(what: &str, setup: impl FnOnce(&mut crate::app::App, &egui::Context)) -> Vec<String> {
+    use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+    let (mut app, ctx) = pseudo_app(setup);
+    let frame = |app: &mut crate::app::App, events: Vec<egui::Event>| {
+        let mut input = screen();
+        input.events = events;
+        let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+        out.textures_delta.clear();
+        out.platform_output.accesskit_update.map(|u| u.nodes).unwrap_or_default()
+    };
+    let mut nodes = Vec::new();
+    for _ in 0..3 {
+        nodes = frame(&mut app, Vec::new());
+    }
+    let mut done: BTreeSet<String> = BTreeSet::new();
+    let mut found = Vec::new();
+    for _ in 0..90 {
+        // The next control not clicked yet (by role and name: ids change as panels redraw).
+        let next = nodes.iter().find_map(|(id, n)| {
+            let key = format!("{:?} {}", n.role(), n.label().unwrap_or_default());
+            let clickable = n.supports_action(Action::Click) && !matches!(n.role(), Role::Window | Role::TitleBar | Role::ScrollBar);
+            (clickable && !done.contains(&key)).then(|| (*id, key, matches!(n.role(), Role::SpinButton | Role::Slider)))
+        });
+        let Some((id, key, steps)) = next else { break };
+        done.insert(key);
+        let request = |action| egui::Event::AccessKitActionRequest(ActionRequest { action, target_tree: TreeId::ROOT, target_node: id, data: None });
+        let mut events = vec![request(Action::Click)];
+        if steps {
+            events.push(request(Action::Increment));
+        }
+        app.status = None;
+        frame(&mut app, events);
+        app.prompt = None;
+        // Picking a language in Preferences is one of the controls: back to the pseudo-locale.
+        if app.prefs.language != PSEUDO {
+            app.prefs.language = PSEUDO.into();
+            app.apply_prefs(&ctx);
+        }
+        nodes = frame(&mut app, Vec::new());
+        if let Some(s) = &app.status
+            && !s.text.chars().any(pseudo::is_accented)
+        {
+            found.push(format!("[{what}] status {:?}", s.text));
+        }
+        // Installed font families, and languages, are listed by their own names.
+        let mut fonts: BTreeSet<String> = app.system_fonts.as_ref().map(|f| f.families.iter().cloned().collect()).unwrap_or_default();
+        fonts.extend(offered().into_iter().map(|(_, name)| name.to_string()));
+        found.extend(plain_names(what, &app, nodes.clone()).into_iter().filter(|f| !fonts.iter().any(|name| f.ends_with(&format!("{name:?}")))));
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+#[test]
+fn every_control_can_be_used_in_the_pseudo_locale() {
+    // Pressing every button, opening every list and stepping every number in the main states
+    // of the window: nothing may panic, and what each one shows next (a popup, a status line,
+    // a dialog) is translated too.
+    let mut found = click_everything("default", |_, _| {});
+    found.extend(click_everything("shape selected", |a, _| {
+        a.run("layer.select", serde_json::json!({"index": 0}));
+        a.run("edit.select_all", serde_json::json!({}));
+    }));
+    found.extend(click_everything("text selected", |a, _| {
+        a.run("text.create", serde_json::json!({"x": 40.0, "y": 40.0, "text": "Title"}));
+        a.run("edit.select_all", serde_json::json!({}));
+    }));
+    found.extend(click_everything("symbol with filters", |a, _| {
+        a.run("layer.select", serde_json::json!({"index": 0}));
+        a.run("edit.select_all", serde_json::json!({}));
+        let symbol = a.run("modify.convert_to_symbol", serde_json::json!({"name": "Clip"})).and_then(|v| v["symbol"].as_u64());
+        a.run("symbol.set_kind", serde_json::json!({"symbol": symbol, "kind": "movie_clip"}));
+        a.run("element.set_filters", serde_json::json!({"filters": [{"type": "drop_shadow"}, {"type": "gradient_glow"}]}));
+    }));
+    for panel in ["sound", "camera", "motion", "actions", "script", "prefs", "envelope"] {
+        found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
+    }
+    for tool in [crate::app::Tool::Brush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {
+        found.extend(click_everything(&format!("{tool:?}"), |a, _| a.tool = tool));
+    }
+    assert!(found.is_empty(), "{} things in plain English after using the controls:\n{}", found.len(), found.join("\n"));
+}
+
 #[test]
 fn every_menu_item_is_translated() {
     // The menus are built from the command registry when they open; each is drawn here as it
