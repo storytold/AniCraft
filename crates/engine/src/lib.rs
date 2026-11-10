@@ -909,3 +909,5 @@ mod web_tests;
 mod erase_tests;
 #[cfg(test)]
 mod eyedropper_tests;
+#[cfg(test)]
+mod selection_tests;

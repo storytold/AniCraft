@@ -651,7 +651,21 @@ fn panic_hunt_every_command() {
     }
     assert_eq!((b1, b2), (100, 102), "the hostile params name these bones");
     rig.set_frame(4);
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig] {
+    // Raw drawings and an object on two layers, selected on both through a marquee's cut that
+    // is still provisional (ADR 0041, 0044).
+    let mut layered = Session::default();
+    layered.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("layer.new", json!({})),
+        ("draw.rect", json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("draw.rect", json!({"x": 200, "y": 0, "w": 20, "h": 20, "object": true})),
+        ("raw.select_rect", json!({"x0": 20, "y0": 20, "x1": 250, "y1": 50})),
+    ] {
+        layered.execute(id, &p).unwrap();
+    }
+    assert_eq!(layered.selected_layers().len(), 2, "the fuzz starts with a selection on two layers");
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
