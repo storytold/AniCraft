@@ -484,3 +484,53 @@ fn every_command_survives_a_selection_on_two_layers() {
         }
     }
 }
+
+/// Timings across layers (ADR 0044's table; run with
+/// `cargo test -p anicraft-engine selection_timings -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn selection_timings() {
+    let mut s = Session::default();
+    s.style.object_drawing = false;
+    // 8 layers, each with 6 × 6 outlined raw squares: 288 fills and their outlines.
+    for l in 0..8 {
+        if l > 0 {
+            run(&mut s, "layer.new", json!({}));
+        }
+        for i in 0..6 {
+            for j in 0..6 {
+                run(&mut s, "draw.rect", json!({"x": i * 50 + l * 3, "y": j * 50 + l * 3, "w": 40, "h": 40, "fill": "#ff0000", "stroke": "#000000"}));
+            }
+        }
+    }
+    run(&mut s, "edit.deselect", json!({}));
+    let layers = s.doc.timeline(0).layers.len();
+    let shapes: usize = s.doc.timeline(0).layers.iter().map(|l| s.elements_on(l.id).len()).sum();
+    eprintln!("{shapes} raw shapes on {layers} layers");
+    let time = |s: &mut Session, label: &str, reps: u32, f: &dyn Fn(&mut Session)| {
+        let t = std::time::Instant::now();
+        for _ in 0..reps {
+            f(s);
+        }
+        eprintln!("{label}: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / f64::from(reps));
+    };
+    time(&mut s, "select all", 20, &|s| {
+        let _ = s.execute("edit.select_all", &json!({}));
+    });
+    time(&mut s, "fix_selection (after every command)", 20, &|s| s.fix_selection());
+    s.begin_gesture("Move");
+    time(&mut s, "move frame, every layer", 20, &|s| {
+        let _ = s.execute("element.translate", &json!({"dx": 0.5, "dy": 0}));
+    });
+    time(&mut s, "snapping move frame, every layer", 20, &|s| {
+        let _ = s.execute("element.translate", &json!({"dx": 0.5, "dy": 0, "snap": 10, "from": [0, 0]}));
+    });
+    s.end_gesture();
+    s.undo().unwrap();
+    time(&mut s, "marquee cut and heal, every layer", 10, &|s| {
+        let _ = s.execute("raw.select_rect", &json!({"x0": 65, "y0": 65, "x1": 215, "y1": 215}));
+        let _ = s.execute("edit.deselect", &json!({}));
+    });
+    let v = run(&mut s, "raw.select_rect", json!({"x0": 65, "y0": 65, "x1": 215, "y1": 215}));
+    eprintln!("a marquee selects {} parts on {} layers ({} cut)", s.selection.len(), s.selected_layers().len(), v["cut"]);
+}
