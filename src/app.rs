@@ -1294,7 +1294,7 @@ impl App {
                     _ => trn!("Pasted {n} frame — {undo} to undo", "Pasted {n} frames — {undo} to undo", n, undo = self.undo_key()),
                 });
             }
-            "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, &v),
+            "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, v),
             "timeline.remove_frame" => {
                 let n = v["removed"].as_u64().unwrap_or(1);
                 self.status_ok(if n == 1 { tr!("Removed frame — {undo} to undo", undo = self.undo_key()).to_string() } else { trn!("Removed {n} frame — {undo} to undo", "Removed {n} frames — {undo} to undo", n, undo = self.undo_key()) });
