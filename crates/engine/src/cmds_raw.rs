@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move Point",
             "",
             None,
-            "{x, y, to_x, to_y, points?: [[id, cmd], ..], snap?, slop?, merge?: bool} moves the corner or end at (x, y), with every raw shape that shares it, to (to_x, to_y), snapped within `snap` to points, lines and fill edges; returns the points to pass on while a drag goes on",
+            "{x, y, to_x, to_y, with?: [[x, y], ..], points?: [[id, cmd], ..], snap?, slop?, merge?: bool} moves the corner or end at (x, y), with every raw shape that shares it, to (to_x, to_y), snapped within `snap` to points, lines and fill edges (while Snap to Objects is on); the anchors at `with` move by as much; returns the points to pass on while a drag goes on",
             true,
             move_point,
         ),
@@ -172,7 +172,7 @@ fn activate_layer_at(s: &mut Session, at: Vec2, slop: f32) {
     }
 }
 
-fn check_extent(path: &Path) -> Result<()> {
+pub(crate) fn check_extent(path: &Path) -> Result<()> {
     let b = path.bounds();
     if b.is_empty() {
         return Ok(());
@@ -217,9 +217,19 @@ fn bend_segment(s: &mut Session, p: &Value) -> Result<Value> {
     let old = rawgeom::segment_cubic(&path, cmd).map(|c| rawgeom::transform(&c, &m)).ok_or_else(|| EngineError::Param(format!("no segment {cmd} on this shape")))?;
     let new = rawgeom::bend(&old, t, d).ok_or_else(|| EngineError::Param("cannot bend that segment".into()))?;
     let raw = mergeable(el).is_some();
-    // Every raw shape's copy of the edge bends alike (a fill and its outline, two fills that
-    // meet there); an object only bends itself.
-    let area = new.iter().chain(&old).fold(Rect::EMPTY, |mut r, q| {
+    let changed = edit_edge(s, id, cmd, &old, &new, raw)?;
+    let point = cubic_point(&new, t.clamp(0.02, 0.98));
+    if raw && merge_after {
+        remerge_in_place(s, &changed)?;
+    }
+    Ok(json!({"id": id.0, "cmd": cmd, "t": t, "x": point.x, "y": point.y, "changed": changed.iter().map(|e| e.0).collect::<Vec<_>>(), "merged": raw && merge_after}))
+}
+
+/// Replaces segment `cmd` of shape `id` (stage space: `old`) with `new` (same ends). When `raw`,
+/// every raw shape's copy of the edge changes alike (a fill and its outline, two fills that
+/// meet there); an object only changes itself. Returns the shapes that changed.
+pub(crate) fn edit_edge(s: &mut Session, id: ElementId, cmd: usize, old: &Cubic, new: &Cubic, raw: bool) -> Result<Vec<ElementId>> {
+    let area = new.iter().chain(old).fold(Rect::EMPTY, |mut r, q| {
         r.include(*q);
         r
     });
@@ -231,7 +241,7 @@ fn bend_segment(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let (Some(inv), ElementKind::Shape(x)) = (e.transform.inverse(), &e.kind) else { continue };
-        let (ol, nl) = (rawgeom::transform(&old, &inv), rawgeom::transform(&new, &inv));
+        let (ol, nl) = (rawgeom::transform(old, &inv), rawgeom::transform(new, &inv));
         let mut edited = (*x.path).clone();
         let n = if target {
             edited.close_explicitly();
@@ -255,11 +265,7 @@ fn bend_segment(s: &mut Session, p: &Value) -> Result<Value> {
         }
         changed.push(e.id);
     }
-    let point = cubic_point(&new, t.clamp(0.02, 0.98));
-    if raw && merge_after {
-        remerge_in_place(s, &changed)?;
-    }
-    Ok(json!({"id": id.0, "cmd": cmd, "t": t, "x": point.x, "y": point.y, "changed": changed.iter().map(|e| e.0).collect::<Vec<_>>(), "merged": raw && merge_after}))
+    Ok(changed)
 }
 
 // ----- moving shared points ---------------------------------------------------------------------
@@ -282,6 +288,23 @@ fn points_param(p: &Value) -> Result<Option<Vec<(ElementId, usize)>>> {
         return Err(EngineError::Param("param 'points' is empty".into()));
     }
     Ok(Some(out))
+}
+
+/// A list of `[x, y]` stage positions (empty when absent).
+pub(crate) fn positions_param(p: &Value, key: &str) -> Result<Vec<Vec2>> {
+    let Some(v) = p.get(key).filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
+    let bad = || EngineError::Param(format!("param '{key}' must be a list of [x, y] pairs"));
+    let list = v.as_array().ok_or_else(bad)?;
+    if list.len() > MAX_POINTS {
+        return Err(EngineError::Param(format!("param '{key}' has more than {MAX_POINTS} points")));
+    }
+    list.iter()
+        .map(|xy| {
+            let xy = xy.as_array().filter(|a| a.len() == 2).ok_or_else(bad)?;
+            let n = |i: usize| xy.get(i).and_then(Value::as_f64).map(|f| f as f32).filter(|f| f.is_finite()).ok_or_else(bad);
+            Ok(Vec2::new(n(0)?, n(1)?))
+        })
+        .collect()
 }
 
 /// Every raw shape's anchor at `at` (within [`SNAP`]) on the editable keyframe; shapes whose edge
@@ -314,7 +337,7 @@ fn shared_points(s: &mut Session, at: Vec2) -> Result<Vec<(ElementId, usize)>> {
 fn move_point(s: &mut Session, p: &Value) -> Result<Value> {
     let from = Vec2::new(f32_req(p, "x")?, f32_req(p, "y")?);
     let to = Vec2::new(f32_req(p, "to_x")?, f32_req(p, "to_y")?);
-    let radius = opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0);
+    let radius = s.style.snap_radius(opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0));
     let slop = opt_f32(p, "slop")?.unwrap_or(2.0).clamp(0.0, 100.0);
     let merge_after = opt_bool(p, "merge")?.unwrap_or(true);
     let points = match points_param(p)? {
@@ -325,7 +348,19 @@ fn move_point(s: &mut Session, p: &Value) -> Result<Value> {
             let els = s.visible_elements();
             let at = els.iter().flat_map(|e| stage_anchors(e)).map(|(_, q)| q).filter(|q| q.distance(from) <= slop).min_by(|a, b| a.distance(from).total_cmp(&b.distance(from)));
             let at = at.ok_or_else(|| EngineError::State("no corner or end of a raw shape there".into()))?;
-            shared_points(s, at)?
+            let mut points = shared_points(s, at)?;
+            // Other selected anchors (the Subselection tool) move by as much.
+            for w in positions_param(p, "with")? {
+                for pt in shared_points(s, w)? {
+                    if !points.contains(&pt) {
+                        points.push(pt);
+                    }
+                }
+                if points.len() > MAX_POINTS {
+                    return Err(EngineError::State("too many points to move at once".into()));
+                }
+            }
+            points
         }
     };
     let els = s.visible_elements();

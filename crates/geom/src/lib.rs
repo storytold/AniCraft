@@ -19,7 +19,7 @@ pub mod walk;
 
 pub use affine::{Affine, Decomposed};
 pub use fit::fit_curve;
-pub use path::{FillRule, Path, PathCmd, Polyline};
+pub use path::{FillRule, Path, PathCmd, Polyline, segment_distance};
 
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, Mul, Neg, Sub};
