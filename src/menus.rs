@@ -167,6 +167,9 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
                 app.onion = !app.onion;
             }
+            if ui_item(ui, "Preview Through Camera", "", Some(app.camera_preview)) {
+                app.toggle_camera_preview();
+            }
             ui.menu_button("Stage Rendering", |ui| {
                 for (mode, name, tip) in crate::prefs::RenderMode::ALL {
                     if ui_item(ui, name, "", Some(app.prefs.render_mode == mode)) {
@@ -207,6 +210,9 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
             }
             if ui_item(ui, "Motion Editor", "", Some(app.bottom == BottomTab::MotionEditor)) {
                 app.bottom = BottomTab::MotionEditor;
+            }
+            if ui_item(ui, "Actions", app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
+                app.show_actions = !app.show_actions;
             }
             ui.separator();
             if ui_item(ui, "Onion Skin", "", Some(app.onion)) {

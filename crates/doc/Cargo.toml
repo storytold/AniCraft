@@ -17,6 +17,8 @@ png.workspace = true
 # Imported JPEGs are decoded and kept as PNG.
 zune-jpeg.workspace = true
 anicraft-audio.workspace = true
+# The timeline action IR keyframes and button instances carry (ADR 0024).
+anicraft-actions.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

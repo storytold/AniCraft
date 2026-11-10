@@ -5,8 +5,10 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub use anicraft_audio as audio;
+pub use anicraft_actions as actions;
 
 mod bitmap;
+pub mod camera;
 mod filter;
 mod easing;
 mod eval;
@@ -14,17 +16,20 @@ mod hints;
 pub mod motion;
 pub mod path_table;
 pub mod width;
+pub mod player;
 pub mod sample;
 pub mod sound;
 
-pub use filter::{Filter, MAX_BLUR, MAX_QUALITY};
+pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
 pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
-pub use motion::{MotionTween, Property, PropertyKey, Props, Track};
+pub use motion::{MotionTween, OnPath, Property, PropertyKey, Props, Track, motion_path};
 pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
-pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_scene};
+pub use camera::Camera;
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, guide_walk, instance_start};
+pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, PluginScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use serde::{Deserialize, Serialize};
@@ -119,6 +124,18 @@ impl Paint {
         }
     }
 
+    /// The paint carried by `m` (its geometry moved from one space to another), so a shape in
+    /// the new space shows it where it was: gradient ends and centre are mapped, a radial
+    /// gradient's radius scales by the mean scale, a bitmap's matrix is composed.
+    pub fn transformed(&self, m: &Affine) -> Paint {
+        match self {
+            Paint::Solid(_) => self.clone(),
+            Paint::Linear { start, end, stops } => Paint::Linear { start: m.apply(*start), end: m.apply(*end), stops: stops.clone() },
+            Paint::Radial { center, radius, stops } => Paint::Radial { center: m.apply(*center), radius: radius * m.mean_scale(), stops: stops.clone() },
+            Paint::Bitmap { bitmap, repeat, matrix } => Paint::Bitmap { bitmap: *bitmap, repeat: *repeat, matrix: m.mul(matrix) },
+        }
+    }
+
     pub fn lerp(&self, o: &Paint, t: f32) -> Paint {
         let lerp_stops = |a: &[GradientStop], b: &[GradientStop]| -> Option<Vec<GradientStop>> {
             (a.len() == b.len()).then(|| {
@@ -209,17 +226,21 @@ pub struct Shape {
     pub stroke: Option<Stroke>,
     #[serde(default)]
     pub fill_rule: FillRule,
+    /// Part of its layer's merged drawing (ADR 0031): cut and joined by what is drawn over it.
+    /// Otherwise a drawing object, which keeps to itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merge: bool,
 }
 
 impl PartialEq for Shape {
     fn eq(&self, o: &Shape) -> bool {
-        arc_eq(&self.path, &o.path) && self.fill == o.fill && self.stroke == o.stroke && self.fill_rule == o.fill_rule
+        arc_eq(&self.path, &o.path) && self.fill == o.fill && self.stroke == o.stroke && self.fill_rule == o.fill_rule && self.merge == o.merge
     }
 }
 
 impl Shape {
     pub fn filled(path: Path, fill: Paint) -> Shape {
-        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero }
+        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
         self.stroke = Some(Stroke::new(color, width));
@@ -276,9 +297,16 @@ pub enum ElementKind {
         /// Filters, applied in order (movie clips and buttons).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         filters: Vec<Filter>,
+        /// What the instance does on pointer events in the player (buttons and movie clips;
+        /// ADR 0024), one handler per event.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        events: Vec<EventHandler>,
     },
     /// A block of text (ADR 0012).
     Text(Arc<TextBlock>),
+    /// The camera, on a camera layer (ADR 0027): the element's transform is the camera on the
+    /// stage and its tint colours the view. It draws nothing itself.
+    Camera,
 }
 
 /// How an instance's pixels combine with what is below it, as Animate's Blending menu. Every
@@ -480,6 +508,7 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
             s.path.bounds().inflate(pad).transformed(xf)
         }
         ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),
+        ElementKind::Camera => Rect::EMPTY,
         ElementKind::Symbol { symbol, .. } => {
             let Some(sym) = doc.symbol(*symbol) else { return Rect::EMPTY };
             let mut r = Rect::EMPTY;
@@ -553,17 +582,21 @@ pub struct Keyframe {
     /// The sound that starts (or, for Stop, ends) on this keyframe (ADR 0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<FrameSound>,
+    /// What runs when the player enters this keyframe: frame actions or a plug-in frame
+    /// script (ADR 0024). Rendering and exports ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<FrameScript>,
 }
 
 impl PartialEq for Keyframe {
     fn eq(&self, o: &Keyframe) -> bool {
-        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && arcs_eq(&self.elements, &o.elements)
+        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && self.script == o.script && arcs_eq(&self.elements, &o.elements)
     }
 }
 
 impl Keyframe {
     pub fn new(start: u32, duration: u32) -> Self {
-        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None }
+        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None, script: None }
     }
     /// Mutable access to the elements whose ids satisfy `pick`, cloning only those.
     pub fn elements_mut_where(&mut self, mut pick: impl FnMut(ElementId) -> bool) -> Vec<&mut Element> {
@@ -589,6 +622,9 @@ pub enum LayerKind {
     /// Holds layers (its children name it as their [`Layer::parent`]); draws nothing itself.
     /// Hiding or locking a folder hides or locks everything in it.
     Folder,
+    /// The camera (ADR 0027): at most one per scene timeline, always the top layer; its
+    /// keyframes hold the camera, which views every other layer. Draws nothing itself.
+    Camera,
 }
 
 /// Deepest nesting of folders (and a mask inside them) that is kept.
@@ -616,6 +652,14 @@ pub struct Layer {
     pub color: Rgba,
     #[serde(default)]
     pub keyframes: Vec<Arc<Keyframe>>,
+    /// Layer depth (ADR 0027), pixels behind the stage (negative: in front): the camera's pans
+    /// move a deeper layer less (parallax). Not the nesting depth ([`Timeline::depth`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub depth: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl PartialEq for Layer {
@@ -628,6 +672,7 @@ impl PartialEq for Layer {
             && self.locked == o.locked
             && self.outline == o.outline
             && self.color == o.color
+            && self.depth.to_bits() == o.depth.to_bits()
             && arcs_eq(&self.keyframes, &o.keyframes)
     }
 }
@@ -651,6 +696,7 @@ impl Layer {
             outline: false,
             color: default_layer_color(),
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
+            depth: 0.0,
         }
     }
     /// Mutable keyframe `i` (copy-on-write: clones it only if it is shared).
@@ -837,6 +883,8 @@ impl Timeline {
     /// its unbroken run; a masked layer is a normal layer directly under its mask or another
     /// layer masked by it; nesting stops at [`MAX_LAYER_DEPTH`]. Touches only layers that change.
     pub fn repair_masks(&mut self) {
+        // The camera layer sits on top, outside any folder (ADR 0027).
+        self.repair_camera();
         for i in 0..self.layers.len() {
             let Some(l) = self.layers.get(i) else { continue };
             let Some(p) = l.parent else { continue };
@@ -1117,6 +1165,8 @@ impl Document {
             let tl = &mut Arc::make_mut(scene).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
+                sanitize_scripts(l);
+                sanitize_depth(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1126,6 +1176,12 @@ impl Document {
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
+                sanitize_scripts(l);
+                // Only a scene has a camera; a symbol's camera layer is kept as a normal layer.
+                if l.kind == LayerKind::Camera {
+                    Arc::make_mut(l).kind = LayerKind::Normal;
+                }
+                sanitize_depth(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1139,6 +1195,52 @@ impl Document {
         self.next_id = self.next_id.max(max_id.saturating_add(1));
     }
 }
+
+/// Keeps a loaded layer's depth finite and in range (touching it only if it isn't).
+fn sanitize_depth(layer: &mut Arc<Layer>) {
+    let d = camera::clamp_depth(layer.depth);
+    if d.to_bits() != layer.depth.to_bits() {
+        Arc::make_mut(layer).depth = d;
+    }
+}
+
+/// Repairs a loaded layer's frame scripts and instance event handlers (ADR 0024). Touches (and
+/// so un-shares) only keyframes that need it.
+fn sanitize_scripts(layer: &mut Arc<Layer>) {
+    let bad_script = |k: &Keyframe| match &k.script {
+        Some(FrameScript::Actions(a)) => a.is_empty() || actions::check_actions(a).is_err(),
+        Some(FrameScript::Plugin(p)) => p.check().is_err(),
+        None => false,
+    };
+    let bad_events = |e: &Element| match &e.kind {
+        ElementKind::Symbol { events, .. } => {
+            events.len() > actions::MAX_HANDLERS || events.iter().enumerate().any(|(i, h)| events.iter().take(i).any(|o| o.event == h.event) || actions::check_actions(&h.actions).is_err())
+        }
+        _ => false,
+    };
+    if !layer.keyframes.iter().any(|k| bad_script(k) || k.elements.iter().any(|e| bad_events(e))) {
+        return;
+    }
+    let l = Arc::make_mut(layer);
+    for k in &mut l.keyframes {
+        if !(bad_script(k) || k.elements.iter().any(|e| bad_events(e))) {
+            continue;
+        }
+        let k = Arc::make_mut(k);
+        if k.script.as_mut().is_some_and(|s| !s.sanitize()) {
+            k.script = None;
+        }
+        for e in k.elements.iter_mut().filter(|e| bad_events(e)) {
+            if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(e).kind {
+                actions::sanitize_handlers(events);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "camera_tests.rs"]
+mod camera_tests;
 
 #[cfg(test)]
 mod tests {

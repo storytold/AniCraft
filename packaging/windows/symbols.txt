@@ -1,0 +1,22 @@
+AniCraft debug symbols
+
+anicraft.pdb and anicraft_cli.pdb are the debug symbols of anicraft.exe and
+anicraft-cli.exe from the release with the same version and architecture as this zip. They
+were written by the same build as those exes, so they match only them: a PDB from a local build
+of the same commit doesn't.
+
+They hold AniCraft's function names (release builds carry no source line tables), which is
+what a profiler needs to show where the time goes. AniCraft doesn't need them to run.
+
+To use them, either copy both files next to anicraft.exe (the installer's folder, by default
+%LOCALAPPDATA%\Programs\ArtCraft\AniCraft, or C:\Program Files\ArtCraft\AniCraft when
+installed for everyone), or add this folder to the profiler's symbol path:
+
+  Windows Performance Analyzer: Trace > Configure Symbol Paths, add this folder, then
+                                Trace > Load Symbols.
+  Superluminal:                 Settings > Symbols, add this folder as a symbol location.
+  Visual Studio:                Tools > Options > Debugging > Symbols, add this folder.
+  Any tool reading _NT_SYMBOL_PATH: set _NT_SYMBOL_PATH to this folder.
+
+When you share a profile in an AniCraft issue, say which version and architecture you ran
+(Help > About).

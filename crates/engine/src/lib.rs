@@ -5,7 +5,11 @@
 //! JSON params, so headless and interactive behaviour cannot drift apart.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod cmds_actions;
+pub mod cmds_brush;
+mod cmds_camera;
 mod cmds_draw;
+pub mod cmds_erase;
 mod cmds_file;
 mod cmds_frames;
 mod cmds_modify;
@@ -23,9 +27,11 @@ mod cmds_width;
 pub mod confirm;
 pub mod format;
 pub mod history;
+mod merge;
 pub mod recovery;
 pub mod render_service;
 pub mod params;
+pub mod player;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
 use anicraft_geom::{Rect, Vec2};
@@ -92,18 +98,23 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_file::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
+    v.extend(cmds_camera::specs());
     v.extend(cmds_motion::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
+    v.extend(merge::specs());
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
+    v.extend(cmds_brush::specs());
+    v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
     v.extend(cmds_width::specs());
     v.extend(cmds_plugin::specs());
     v.extend(cmds_sound::specs());
+    v.extend(cmds_actions::specs());
     v
 }
 
@@ -125,20 +136,50 @@ pub use history::{Snapshot, StateId};
 pub const MAX_FRAME: u32 = 100_000;
 
 /// Drawing defaults used by the drawing commands when params omit colours.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ToolStyle {
     pub fill: anicraft_doc::Rgba,
+    /// The fill swatch holds a gradient or a bitmap (picked with the Eyedropper, ADR 0034), in
+    /// stage space; `fill` is then its representative colour. `None`: the solid `fill`.
+    pub fill_paint: Option<anicraft_doc::Paint>,
     pub stroke: anicraft_doc::Rgba,
     pub stroke_width: f32,
     pub use_fill: bool,
     pub use_stroke: bool,
     /// The width profile new strokes get (ADR 0018).
     pub stroke_profile: anicraft_doc::ProfilePreset,
+    /// A picked width profile that is none of the presets (it wins over `stroke_profile`).
+    pub custom_profile: Option<anicraft_doc::WidthProfile>,
+    /// Object Drawing: new shapes are drawing objects. Off, they merge with the raw shapes they
+    /// touch (ADR 0031). On by default, so a script's draw command makes one element; the editor
+    /// starts with it off, as Animate does.
+    pub object_drawing: bool,
 }
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, object_drawing: true }
+    }
+}
+
+impl ToolStyle {
+    /// The fill swatch's paint, in stage space.
+    pub fn fill_paint(&self) -> anicraft_doc::Paint {
+        self.fill_paint.clone().unwrap_or(anicraft_doc::Paint::Solid(self.fill))
+    }
+    /// Sets the fill swatch to a solid colour (dropping a picked gradient or bitmap).
+    pub fn set_fill_color(&mut self, c: anicraft_doc::Rgba) {
+        self.fill = c;
+        self.fill_paint = None;
+    }
+    /// The width profile new strokes get.
+    pub fn profile(&self) -> Option<anicraft_doc::WidthProfile> {
+        self.custom_profile.clone().or_else(|| self.stroke_profile.profile())
+    }
+    /// Sets the profile to a preset (dropping a picked custom one).
+    pub fn set_profile(&mut self, p: anicraft_doc::ProfilePreset) {
+        self.stroke_profile = p;
+        self.custom_profile = None;
     }
 }
 
@@ -280,7 +321,7 @@ impl Session {
 
     /// Replaces the document (new/open), clearing history.
     pub fn replace_document(&mut self, doc: Document, path: Option<PathBuf>) {
-        let style = self.style;
+        let style = std::mem::take(&mut self.style);
         let rev = self.revision;
         let budget = self.history.budget_bytes;
         let clipboard = std::mem::take(&mut self.clipboard);
@@ -557,11 +598,20 @@ impl Session {
     /// The keyframe on the active layer that edits at the playhead should change. Creates a
     /// keyframe when the playhead is inside a tween (auto-key) or past the layer's end.
     pub(crate) fn editable_keyframe(&mut self) -> Result<&mut Keyframe> {
+        self.editable_keyframe_in(false)
+    }
+
+    /// [`Session::editable_keyframe`]; with `camera`, on the camera layer (which holds only the
+    /// camera: every other edit is refused there, ADR 0027).
+    pub(crate) fn editable_keyframe_in(&mut self, camera: bool) -> Result<&mut Keyframe> {
         let frame = self.frame;
         let tl = self.doc.timeline(self.scene);
         if let Some(l) = tl.layer(self.layer) {
             if l.kind == LayerKind::Folder {
                 return Err(EngineError::State(format!("'{}' is a folder; pick a layer inside it to draw on", l.name)));
+            }
+            if (l.kind == LayerKind::Camera) != camera {
+                return Err(EngineError::State(if camera { "that is not the camera layer".into() } else { format!("'{}' is the camera layer: it holds the camera, not artwork. Pick another layer to draw on, or move the camera with the Camera tool", l.name) }));
             }
             if tl.locked_by_folder(l.id) {
                 return Err(EngineError::State(format!("layer '{}' is in a locked folder", l.name)));
@@ -616,7 +666,7 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping}))})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -646,7 +696,15 @@ impl Session {
 pub fn element_label(doc: &Document, e: &Element) -> String {
     let kind = match &e.kind {
         ElementKind::Shape(_) => "Shape".to_string(),
-        ElementKind::Symbol { symbol, .. } => format!("Graphic: {}", doc.symbol(*symbol).map_or("missing", |s| s.name.as_str())),
+        ElementKind::Symbol { symbol, .. } => match doc.symbol(*symbol) {
+            Some(s) => format!("{}: {}", match s.kind {
+                anicraft_doc::SymbolKind::Graphic => "Graphic",
+                anicraft_doc::SymbolKind::MovieClip => "Movie clip",
+                anicraft_doc::SymbolKind::Button => "Button",
+            }, s.name),
+            None => "Graphic: missing".to_string(),
+        },
+        ElementKind::Camera => "Camera".to_string(),
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             format!("Text: {first}{}", if t.text.chars().count() > first.chars().count() { "…" } else { "" })
@@ -661,8 +719,22 @@ mod tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod motion_path_tests;
+#[cfg(test)]
 mod plugin_tests;
 #[cfg(test)]
 mod tests_sound;
 #[cfg(test)]
 mod hint_tests;
+#[cfg(test)]
+mod tests_actions;
+#[cfg(test)]
+mod tests_camera;
+#[cfg(test)]
+mod merge_tests;
+#[cfg(test)]
+mod brush_tests;
+#[cfg(test)]
+mod erase_tests;
+#[cfg(test)]
+mod eyedropper_tests;

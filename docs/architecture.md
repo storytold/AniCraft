@@ -28,13 +28,15 @@
 ```text
 app/                         workspace root; the root package is the desktop app (`anicraft`)
   crates/
-    geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test
+    geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test,
+                  planar merge (merge drawing, ADR 0031), brush sweeps (ADR 0033)
     plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0017)
     audio     L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing/resampling, WAV, waveform peaks
-    doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols)
+    actions   L0  Timeline action IR: stop/play/goto, instance targets, button events, frame scripts
+    doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols) + player
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
-    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019; shell feature `gpu-stage`)
+    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019, 0029, 0031; shell feature `gpu-stage`, on by default)
     cli       L4  `anicraft-cli`: info / render / render-seq / commands / run / serve (JSON-lines)
   src/        L5  egui shell: menus (from registry), tools, stage, timeline, properties, library
   docs/           requirements, architecture, roadmap
@@ -45,7 +47,8 @@ app/                         workspace root; the root package is the desktop app
 | L0 | `anicraft-geom` | std, serde |
 | L0 | `anicraft-plugins` | wasmi, serde_json (knows nothing of documents; the engine is its host) |
 | L0 | `anicraft-audio` | std, lewton, nanomp3 |
-| L1 | `anicraft-doc` | geom, audio |
+| L0 | `anicraft-actions` | serde (knows nothing of documents: targets are name paths) |
+| L1 | `anicraft-doc` | geom, audio, actions |
 | L2 | `anicraft-render` | geom, doc, rayon, png |
 | L3 | `anicraft-engine` | geom, doc, render, serde_json |
 | L3 | `anicraft-gpu` | geom, doc, render, wgpu (the version egui brings), pollster, bytemuck |
@@ -62,14 +65,17 @@ Document
 ├── stage: width, height, fps, background
 ├── timeline: Timeline                 (main scene; scenes list arrives in M2)
 │   └── layers: [Layer]                (index 0 = top of the stack, as in the timeline panel)
-│       ├── name, visible, locked, outline, kind (Normal | Guide | Mask | Folder)
+│       ├── name, visible, locked, outline, depth, kind (Normal | Guide | Mask | Folder | Camera)
 │       └── keyframes: [Keyframe]      (sorted by start, spans do not overlap)
 │           ├── start, duration        (frames covered by this keyframe)
 │           ├── elements: [Element]
 │           │   ├── Shape { path, fill: Paint?, stroke: Stroke?, transform }
-│           │   └── Symbol instance { symbol id, transform, color effect, loop mode, first frame }
+│           │   ├── Symbol instance { symbol id, transform, color effect, loop mode, first frame,
+│           │   │                     event handlers (buttons, movie clips; ADR 0024) }
+│           │   └── Camera { transform: the camera on the stage, tint }  (camera layer; ADR 0027)
 │           ├── tween: Tween? { kind: Classic | Shape, easing: Easing }
-│           └── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+│           ├── sound: FrameSound? { sound id, sync: Event | Start | Stop | Stream, repeat, loop }
+│           └── script: FrameScript? (actions, or a frame-script plug-in entry; ADR 0024)
 ├── library: [Symbol { id, name, kind: Graphic | MovieClip | Button, timeline }]
 ├── bitmaps: [Bitmap { id, name, PNG data }]
 └── sounds: [Sound { id, name, format, rate, channels, frames, data as imported }]
@@ -92,6 +98,14 @@ when they are compatible:
   tween's first keyframe steer it: placed hints join subpaths, cut both outlines at the hinted
   points and match the pieces in order by length.
 
+**The camera** (ADR 0027): a scene's top layer may be its camera layer. `evaluate` (every
+export), `evaluate_player` and `evaluate_scene_camera` draw each top-level layer through
+`Camera::view(stage, layer.depth)`: the camera's centre at the middle of the output, zoomed
+and turned against the camera, its pan scaled by the layer's depth (parallax), and its tint
+around everything. `evaluate_scene` is the editing view in stage space, which picking, bounds
+and every tool use; the stage previews the camera's picture by rendering its tiles through
+`evaluate_scene_camera`.
+
 Symbol instances recurse into the symbol's timeline at the local frame given by the loop mode
 (`Loop`, `PlayOnce`, `SingleFrame`) and the first frame. Recursion is limited to depth 32, so a
 cyclic library in a malformed file renders what it can instead of overflowing the stack.
@@ -101,6 +115,19 @@ cyclic library in a malformed file renders what it can instead of overflowing th
 `Easing` is `Linear`, `QuadIn/Out/InOut`, `CubicIn/Out/InOut`, `Classic(strength −100…100)`
 (the traditional single-slider ease) or `CubicBezier(x1, y1, x2, y2)` solved with Newton
 iterations and a bisection fallback, the same model CSS uses.
+
+### Interactive playback
+
+Interactivity is time as a function too (ADR 0013, ADR 0024). Keyframes and button or movie
+clip instances carry lists of typed actions (`anicraft-actions`) or a frame-script plug-in
+entry; nothing in the document changes while a movie plays. `player::step(doc, &state,
+&events, scripts) -> Step` advances a `PlayerState` (the main timeline's scene and playhead,
+each movie clip instance's playhead by its element-id path, script-set properties, the
+pointer) by one frame, runs the actions of the frames entered and routes pointer events to
+buttons by their Hit frame; `evaluate_player(doc, &state)` draws it with the same code as
+`evaluate`, which stays pure and script-free for the stage and every export. Budgets bound a
+step, and nothing reads a clock, so steps are deterministic. Frame scripts run through the
+`ScriptHost` trait, which the engine implements over the plug-in sandbox.
 
 ### Sound
 
@@ -140,12 +167,22 @@ DisplayList ──► for each item:
   rasterizes 32-row bands in parallel, each compositing all ops that touch it, in order.
   Output is bit-identical to serial. Numbers are in [performance.md](performance.md).
 
-**GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), behind the shell's `gpu-stage` feature):
-`render::plain_fills` hands the oracle's own prepared fills to `anicraft-gpu`, which bins edge
-pieces into 16 × 16 tiles with per-row backdrops (CPU, parallel) and computes each pixel's
-exact area coverage and src-over in one compute pass. Display lists with masks, groups or
-bitmaps are drawn by the oracle instead. The engine's `RenderService` takes any `Rasterizer`
-and falls back to the oracle per job, so the engine itself never depends on the GPU.
+**GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md),
+[ADR 0032](adr/0032-gpu-stage-bitmaps-filters-default.md); the shell's `gpu-stage` feature, on
+by default, and the default stage renderer): `render::prepare_scene` hands the oracle's own
+prepared fills, with their clips, groups, bitmap shaders and filtered layers, to `anicraft-gpu`, which bins edge pieces into
+16 × 16 tiles with per-row backdrops (CPU, parallel) and writes each tile's stream of entries
+in drawing order, with clip-coverage and group open/close entries. One compute pass computes
+each pixel's exact area coverage and composites it as the oracle's band compositor does (clip
+coverage, a per-pixel group stack, the W3C blend modes). On the window's wgpu device it draws
+each stage tile into a texture egui shows as it is (no readback); otherwise on a headless
+device of its own, read back. Bitmaps are textures uploaded once per image and sampled with
+the oracle's bilinear filter; a filtered symbol is drawn into a layer of its own, filtered by
+compute passes that run the steps `render::filters::resolve` gives (the same the oracle runs),
+and composited like any fill. A tile past the GPU's limits is drawn by the oracle. The
+engine's `RenderService` takes any `Rasterizer`, whose pictures may be bytes or an opaque GPU
+image (`Raster::Native`) only the shell can show, and falls back to the oracle per job, so the
+engine itself never depends on the GPU.
 
 ## 5. Engine (`anicraft-engine`)
 

@@ -32,6 +32,7 @@ anicraft-gpu = { path = "crates/gpu" }
 wgpu = "30"
 pollster = "1"
 bytemuck = "1"
+anicraft-actions = { path = "crates/actions" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -71,10 +72,12 @@ default-run = "anicraft"
 
 [features]
 # Plays sound during stage playback. Off: playback is silent (for builders without ALSA headers).
-default = ["sound-output"]
+default = ["sound-output", "gpu-stage"]
 sound-output = ["dep:cpal"]
-# GPU stage renderer (ADR 0019), off by default: Preferences › Stage › Renderer can then hand
-# the stage to the wgpu renderer. The CPU stays the default and the oracle.
+# GPU stage renderer (ADR 0019, 0029, 0031), on by default: the stage draws on the graphics card
+# when there is a usable one, and on the CPU (the oracle, and what exports use) otherwise and
+# for anything the GPU can't draw. Preferences › Stage › Renderer can choose the CPU. Build with
+# `--no-default-features --features sound-output` for a CPU-only shell.
 gpu-stage = ["dep:anicraft-gpu"]
 
 [[bin]]

@@ -577,6 +577,21 @@ fn panic_hunt_every_command() {
         json!({"hint": "a", "x": 1e7, "y": -1e7, "side": "end"}),
         json!({"hint": u64::MAX, "side": "middle", "x": 0, "y": 0}),
         json!({"hint": "zz", "frame": 0}),
+        json!({"filters": [{"type": "bevel", "blur_x": 1e30, "distance": -1e30, "angle": f64::MAX, "side": "full", "shadow_color": "#zz"}]}),
+        json!({"filters": [{"type": "gradient_glow", "stops": [1, "x", null]}, {"type": "gradient_bevel", "stops": "x"}]}),
+        json!({"filters": [{"type": "gradient_bevel", "stops": [{"offset": 1e30, "color": {"r": 9, "g": -9, "b": 0, "a": 2}}], "strength": -1, "quality": 255}]}),
+        json!({"orient": true, "d": "M0 0 C 1e5 -1e5 -1e5 1e5 10 10 Q 5 5 0 0 Z M 9 9 L 1 1"}),
+        json!({"orient": "x", "d": 5, "property": "x", "value": 1e6}),
+        json!({"orient": false, "d": "M 1e6 1e6 L -1e6 -1e6", "dx": 1e6, "dy": -1e6}),
+        // Brush strokes: huge tips over long drags, specks, pressure at the limits.
+        json!({"points": [[0, 0, 0.0], [99_999, 99_999, 1.0], [-99_999, 5, 0.5]], "size": 2000, "shape": "square", "angle": 1e6, "roundness": 5, "smoothing": 0, "mode": "behind", "unit": 0.001}),
+        json!({"points": (0..3000).map(|i| json!([i % 7, (i * 13) % 11, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "size": 0.1, "mode": "fills", "smoothing": 100, "unit": 1000}),
+        json!({"points": [[5, 5, -1], [6, 6, "x"]], "shape": 3, "mode": null, "roundness": f64::NAN}),
+        // Eraser and Eyedropper (ADR 0034): strokes over the raw shapes, a tip larger than the
+        // stage, picks into the other swatch, styles applied to whatever is selected.
+        json!({"points": [[0, 0], [40, 40], [90, 5]], "size": 30, "mode": "selected_fills", "x": 30, "y": 30, "slop": 0}),
+        json!({"points": [[45, 45]], "size": 2000, "mode": "inside", "x": 45, "y": 45, "other": true, "fill": false, "stroke": true}),
+        json!({"points": [[5, 5], [55, 55]], "size": 4, "mode": "lines", "shape": "square", "x": 1, "y": 1, "fill": "yes"}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -588,7 +603,19 @@ fn panic_hunt_every_command() {
     if let Some(k) = Arc::make_mut(&mut with_sound.timeline_mut(0).layers[0]).keyframe_mut(0) {
         k.sound = Some(anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)));
     }
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound)] {
+    // A motion tween on an oriented motion path, playhead mid-span (ADR 0030).
+    let mut on_path = Session::default();
+    for (id, p) in [("draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10})), ("timeline.create_motion_tween", json!({})), ("motion.set_path", json!({"d": "M0 0 C 50 -80 100 80 150 0"})), ("motion.orient", json!({"orient": true}))] {
+        on_path.execute(id, &p).unwrap();
+    }
+    on_path.set_frame(9);
+    // Merge drawing (ADR 0031): every drawing command cuts into raw shapes already there.
+    let mut raw = Session::default();
+    raw.style.object_drawing = false;
+    for p in [json!({"x": 0, "y": 0, "w": 60, "h": 60}), json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"}), json!({"x": 1, "y": 1, "w": 10, "h": 10, "radius": 5})] {
+        raw.execute("draw.rect", &p).unwrap();
+    }
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -1187,6 +1214,7 @@ fn animate_default_keys_map_to_the_same_commands() {
         ("Shift+,", "timeline.first_frame"),
         ("Shift+.", "timeline.last_frame"),
         ("F8", "modify.convert_to_symbol"),
+        ("Ctrl+Enter", "control.test_movie"),
         ("Ctrl+B", "modify.break_apart"),
         ("Ctrl+Shift+Z", "modify.remove_transform"),
         ("Ctrl+Shift+9", "modify.rotate_cw"),
@@ -1784,6 +1812,33 @@ fn lottie_export_writes_the_movie_and_asks_before_replacing() {
 }
 
 #[test]
+fn html_export_writes_one_page_that_holds_the_interactive_movie() {
+    let dir = std::env::temp_dir().join(format!("anicraft-html-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("menu.html");
+    let mut s = Session::new(sample::interactive());
+    let v = run(&mut s, "file.export_html", json!({"path": path.display().to_string()}));
+    let html = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(v["bytes"].as_u64(), Some(html.len() as u64));
+    assert!(html.starts_with("<!DOCTYPE html>") && html.contains("<title>menu</title>"), "the title defaults to the file name");
+    assert!(html.contains("\"op\":\"goto_and_play\"") && html.contains("new AniCraft.Player"), "actions and the player are in the page");
+    assert_eq!((v["scenes"].as_u64(), v["frames"].as_u64()), (Some(1), Some(u64::from(s.doc.frame_count()))));
+    assert!(v["timelines"].as_u64().unwrap() >= 3, "the scene, the button and the spinner: {v}");
+    assert_eq!(v["report"], "");
+    // Replacing needs consent; params are checked.
+    let p = json!({"path": path.display().to_string(), "title": "Menu", "fit": false, "sound": false});
+    assert!(s.execute("file.export_html", &p).is_err());
+    let mut p = p;
+    p["confirm"] = json!(true);
+    run(&mut s, "file.export_html", p);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("<title>Menu</title>"));
+    assert!(s.execute("file.export_html", &json!({"path": dir.join("x.html").display().to_string(), "title": "t".repeat(300)})).is_err());
+    assert!(s.execute("file.export_html", &json!({"path": dir.join("x.html").display().to_string(), "fit": "yes"})).is_err());
+    assert!(s.execute("file.export_html", &json!({})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     if anicraft_text::Fonts::get().families().is_empty() {
         eprintln!("no fonts on this computer: text test skipped");
@@ -1924,4 +1979,101 @@ fn filters_render_on_movie_clips_clip_after_masks_and_save() {
     run(&mut s, "edit.undo", json!({}));
     run(&mut s, "edit.undo", json!({}));
     assert!(px(&s, 160, 150)[1] < 0.5, "unmasked again: the box shows");
+}
+
+/// Extreme values in every new filter, on a movie clip: sanitized, rendered at several scales
+/// and exported, never a panic or a non-number.
+#[test]
+fn hostile_bevel_and_gradient_filters_render_and_export() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 30, "h": 20, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    let stops = json!([{"offset": -5, "color": "#ff000000"}, {"offset": 0.5, "color": "#00ff00"}, {"offset": 0.5, "color": "#0000ff"}, {"offset": 99, "color": "#ffffff"}]);
+    for side in ["inner", "outer", "full"] {
+        for knockout in [false, true] {
+            // Huge values once (they clamp to the largest reach, which is slow to draw).
+            let huge = side == "full" && knockout;
+            let cases: &[(f64, f64, f64)] = if huge { &[(1e30, 1e30, 1e30), (255.0, -1000.0, 10.0)] } else { &[(0.0, 0.0, 0.0), (0.5, 0.3, 0.001), (12.0, -40.0, 3.0)] };
+            for &(blur, distance, strength) in cases {
+                let common = json!({"blur_x": blur, "blur_y": blur / 3.0, "distance": distance, "strength": strength, "quality": 3, "angle": -720, "side": side, "knockout": knockout});
+                let with = |t: &str| {
+                    let mut f = common.clone();
+                    f["type"] = json!(t);
+                    f["stops"] = stops.clone();
+                    f
+                };
+                run(&mut s, "element.set_filters", json!({"filters": [with("bevel"), with("gradient_glow"), with("gradient_bevel")]}));
+                for scale in [0.05, if huge { 0.25 } else { 1.0 }] {
+                    let img = anicraft_render::render_frame(&s.doc, 0, scale).unwrap();
+                    assert!(img.pixel(0, 0).unwrap().iter().all(|v| v.is_finite()));
+                }
+                let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+                assert!(!svg.contains("NaN") && !svg.contains("inf"));
+            }
+        }
+    }
+}
+
+/// A filtered instance on a surface as wide as the renderer allows keeps its shadow: the reach
+/// is cut only where the buffer would outgrow the renderer, not around the artwork.
+#[test]
+fn filters_keep_their_reach_on_large_surfaces() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "drop_shadow", "blur_x": 0, "blur_y": 0, "distance": 20, "angle": 0, "color": "#000000"}]}));
+    // The stage at 3.2× is 4096 px wide.
+    let img = anicraft_render::render_frame(&s.doc, 0, 3.2).unwrap();
+    assert_eq!(img.pixel(670, 480).unwrap(), [0.0, 0.0, 0.0, 1.0], "the shadow 20 px (64 px here) right of the box");
+}
+
+#[test]
+fn bevel_and_gradient_filters_render_save_and_export() {
+    use anicraft_doc::{ElementKind, Filter, FilterSide};
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    let px = |s: &Session, x, y| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(x, y).unwrap();
+    // A bevel lit from the top left, hex colours as in every command.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "blur_x": 0, "blur_y": 0, "distance": 6, "highlight_color": "#00ff00", "shadow_color": "#0000ff"}]}));
+    assert_eq!(px(&s, 102, 102), [0.0, 1.0, 0.0, 1.0], "highlight inside the top-left corner");
+    assert_eq!(px(&s, 197, 197), [0.0, 0.0, 1.0, 1.0], "shadow inside the bottom-right corner");
+    assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(px(&s, 95, 95), [1.0, 1.0, 1.0, 1.0], "inner: nothing outside");
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "blur_x": 0, "blur_y": 0, "distance": 6, "side": "outer", "knockout": true, "highlight_color": "#00ff00"}]}));
+    assert_eq!(px(&s, 97, 97), [0.0, 1.0, 0.0, 1.0], "outer: highlight outside the lit corner");
+    assert_eq!(px(&s, 150, 150), [1.0, 1.0, 1.0, 1.0], "knocked out");
+    // A gradient glow whose ramp ends in blue; its start stays transparent whatever is sent.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "gradient_glow", "blur_x": 0, "blur_y": 0, "distance": 0, "stops": [{"offset": 0, "color": "#ff00ffff"}, {"offset": 1, "color": "#0000ff"}]}]}));
+    let ElementKind::Symbol { filters, .. } = &s.doc.timeline(s.scene).layers[0].keyframes[0].elements[0].kind else { panic!() };
+    let Some(Filter::GradientGlow { stops, side: FilterSide::Outer, .. }) = filters.first() else { panic!("{filters:?}") };
+    assert_eq!(stops[0].color.a, 0.0, "pinned transparent");
+    assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0]);
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "gradient_bevel", "stops": vec![json!({"offset": 0.5, "color": "#ffffff"}); 16]}]})).is_err(), "too many stops");
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "bevel", "side": "sideways"}]})).is_err());
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "gradient_glow", "stops": [{"offset": 0, "color": "red"}]}]})).is_err());
+    // All three save, load and export to SVG with standard primitives.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "side": "full"}, {"type": "gradient_glow", "side": "full", "knockout": true}, {"type": "gradient_bevel"}]}));
+    let text = crate::format::to_json(&s.doc).unwrap();
+    assert_eq!(crate::format::from_json(&text).unwrap(), s.doc);
+    let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+    for want in ["operator=\"arithmetic\" k2=\"1\" k3=\"-1\"", "<feFuncA type=\"table\"", "operator=\"atop\"", "k4=\"0.5\"", "result=\"ei1\"", "result=\"eo1\""] {
+        assert!(svg.contains(want), "{want} in {svg}");
+    }
+    assert!(!svg.contains("NaN") && !svg.contains("inf"));
+    // The filter region is the stage grown by the filters' reach (in stage units), so a far
+    // bevel isn't cut; each margin is blur 5 × 0.5 + distance 5 + 1 = 8.5.
+    assert!(svg.contains("filterUnits=\"userSpaceOnUse\" x=\"-25.5\" y=\"-25.5\" width=\"1331\" height=\"771\""), "{svg}");
+    // A narrow ramp peak survives in the tables (one sample per CPU table step).
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "gradient_glow", "stops": [{"offset": 0, "color": "#00000000"}, {"offset": 0.015625, "color": "#ff0000"}, {"offset": 0.03125, "color": "#00000000"}, {"offset": 1, "color": "#00000000"}]}]}));
+    let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+    let alpha = svg.split("<feFuncA type=\"table\" tableValues=\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or("");
+    let values: Vec<&str> = alpha.split(' ').collect();
+    assert_eq!(values.len(), 257);
+    assert_eq!(values[4], "1", "the peak at 4/256");
+    // Lottie reports them, as it does every filter.
+    assert!(anicraft_render::lottie::to_lottie(&s.doc, "f", 0, 0, false).report.keys().any(|k| k.starts_with("filters")));
 }

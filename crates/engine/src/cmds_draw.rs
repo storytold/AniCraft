@@ -10,10 +10,11 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?}", true, draw_rect as crate::RunFn),
-        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?}", true, draw_ellipse),
-        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?}", true, draw_star),
-        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..])}", true, draw_line),
+        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_rect as crate::RunFn),
+        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_ellipse),
+        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, object?}", true, draw_star),
+        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
+        c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
         c("edit.select_all", "Select All", "Edit", Some("Ctrl+A"), "{}", false, select_all),
         c("edit.deselect", "Deselect All", "Edit", Some("Ctrl+Shift+A"), "{}", false, |s, _| {
             s.selection.clear();
@@ -29,7 +30,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..]}", true, set_stroke),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, set_alpha),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, set_blend),
-        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them)", true, set_filters),
+        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, set_filters),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, set_loop),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
         c("element.rename", "Instance Name", "", None, "{name}", true, rename),
@@ -54,7 +55,8 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
     } else {
         match opt_color(p, "fill")? {
             Some(c) => Some(Paint::Solid(c)),
-            None => s.style.use_fill.then_some(Paint::Solid(s.style.fill)),
+            // The fill swatch, in stage space (`add_shape` maps it into the shape).
+            None => s.style.use_fill.then(|| s.style.fill_paint()),
         }
     };
     let width = match opt_f32(p, "stroke_width")? {
@@ -62,7 +64,7 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
         Some(_) => return Err(EngineError::Param("param 'stroke_width' must be in 0..=1000".into())),
         None => s.style.stroke_width,
     };
-    let profile = opt_profile(p, "profile")?.unwrap_or_else(|| s.style.stroke_profile.profile());
+    let profile = opt_profile(p, "profile")?.unwrap_or_else(|| s.style.profile());
     let stroke = if p.get("stroke").is_some_and(Value::is_null) || width <= 0.0 {
         None
     } else {
@@ -90,16 +92,27 @@ fn rect_params(p: &Value) -> Result<(f32, f32, f32, f32)> {
     Ok((x.min(x + w), y.min(y + h), w.abs(), h.abs()))
 }
 
-/// Adds a shape whose local origin is its centre, placed with a translation.
-pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, fill: Option<Paint>, stroke: Option<Stroke>) -> Result<Value> {
+/// Adds a shape whose local origin is its centre, placed with a translation. Unless `object`
+/// (Object Drawing), it merges with the raw shapes it touches (ADR 0031), and the pieces of it
+/// that come out are selected.
+pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, fill: Option<Paint>, stroke: Option<Stroke>, object: bool) -> Result<Value> {
+    // A gradient or bitmap from the fill swatch is in stage space: it stays where it is on the
+    // stage (Animate's Lock Fill after the Eyedropper).
+    let fill = fill.map(|f| f.transformed(&Affine::translate(-origin.x, -origin.y)));
+    let merge = !object && crate::merge::can_merge(fill.as_ref(), stroke.as_ref());
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
         name: String::new(),
         transform: Affine::translate(origin.x, origin.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill, stroke, fill_rule: Default::default() }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill, stroke, fill_rule: Default::default(), merge }),
     };
+    if merge {
+        s.selection = crate::merge::merge_in(s, vec![el])?;
+        let ids: Vec<u64> = s.selection.iter().map(|e| e.0).collect();
+        return Ok(json!({"element": ids.first(), "elements": ids, "kind": name, "merged": true}));
+    }
     let kf = s.editable_keyframe()?;
     if kf.elements.len() >= 100_000 {
         return Err(EngineError::State("too many elements on this keyframe".into()));
@@ -109,17 +122,22 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
     Ok(json!({"element": id.0, "kind": name}))
 }
 
+/// The `object` param: draw an object instead of merging (default: the Object Drawing setting).
+pub(crate) fn object_param(s: &Session, p: &Value) -> Result<bool> {
+    Ok(opt_bool(p, "object")?.unwrap_or(s.style.object_drawing))
+}
+
 fn draw_rect(s: &mut Session, p: &Value) -> Result<Value> {
     let (x, y, w, h) = rect_params(p)?;
     let r = opt_f32(p, "radius")?.unwrap_or(0.0).max(0.0);
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "rect", Path::rounded_rect(-w / 2.0, -h / 2.0, w, h, r), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke)
+    add_shape(s, "rect", Path::rounded_rect(-w / 2.0, -h / 2.0, w, h, r), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke, object_param(s, p)?)
 }
 
 fn draw_ellipse(s: &mut Session, p: &Value) -> Result<Value> {
     let (x, y, w, h) = rect_params(p)?;
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "ellipse", Path::ellipse(0.0, 0.0, w / 2.0, h / 2.0), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke)
+    add_shape(s, "ellipse", Path::ellipse(0.0, 0.0, w / 2.0, h / 2.0), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke, object_param(s, p)?)
 }
 
 fn draw_star(s: &mut Session, p: &Value) -> Result<Value> {
@@ -133,7 +151,7 @@ fn draw_star(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("param 'points' must be between 3 and 64".into()));
     }
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "star", Path::star(0.0, 0.0, outer, inner, points), Vec2::new(cx, cy), fill, stroke)
+    add_shape(s, "star", Path::star(0.0, 0.0, outer, inner, points), Vec2::new(cx, cy), fill, stroke, object_param(s, p)?)
 }
 
 fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
@@ -144,7 +162,12 @@ fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let (_, stroke) = style(s, p, false)?;
     let c = (a + b) * 0.5;
-    add_shape(s, "line", Path::line(a - c, b - c), c, None, stroke)
+    add_shape(s, "line", Path::line(a - c, b - c), c, None, stroke, object_param(s, p)?)
+}
+
+fn object_drawing(s: &mut Session, p: &Value) -> Result<Value> {
+    s.style.object_drawing = opt_bool(p, "on")?.unwrap_or(!s.style.object_drawing);
+    Ok(json!({"object_drawing": s.style.object_drawing}))
 }
 
 // ----- selection --------------------------------------------------------------------------
@@ -253,7 +276,7 @@ fn shapes_mut(s: &mut Session) -> Result<Vec<&mut Shape>> {
         .into_iter()
         .filter_map(|e| match &mut e.kind {
             ElementKind::Shape(sh) => Some(sh),
-            ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
         })
         .collect();
     if shapes.is_empty() {
@@ -282,13 +305,13 @@ fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("param 'width' must be in 0..=1000".into()));
     }
     let profile = opt_profile(p, "profile")?;
-    let default = s.style;
+    let default = s.style.clone();
     for sh in shapes_mut(s)? {
         if remove {
             sh.stroke = None;
             continue;
         }
-        let mut st = sh.stroke.take().unwrap_or_else(|| Stroke::new(default.stroke, default.stroke_width).with_profile(default.stroke_profile.profile()));
+        let mut st = sh.stroke.take().unwrap_or_else(|| Stroke::new(default.stroke, default.stroke_width).with_profile(default.profile()));
         if let Some(c) = color {
             st.color = c;
         }
@@ -320,14 +343,29 @@ const MAX_FILTERS: usize = 16;
 /// Filters for the selected movie clip and button instances (Animate offers them on those only).
 fn set_filters(s: &mut Session, p: &Value) -> Result<Value> {
     let mut list = p.get("filters").cloned().ok_or_else(|| EngineError::Param("param 'filters' is required (a list; [] removes them)".into()))?;
-    // Colours may be written "#rrggbb" (or "#rrggbbaa"), as everywhere in commands.
+    // Colours may be written "#rrggbb" (or "#rrggbbaa"), as everywhere in commands: the filter's
+    // own and its ramp stops'.
+    fn hex_colors(v: &mut Value, keys: &[&str]) -> Result<()> {
+        for k in keys {
+            if v.get(*k).is_some_and(Value::is_string) {
+                let c = opt_color(v, k)?.unwrap_or(anicraft_doc::Rgba::BLACK);
+                v[*k] = json!({"r": c.r, "g": c.g, "b": c.b, "a": c.a});
+            }
+        }
+        Ok(())
+    }
     for f in list.as_array_mut().into_iter().flatten() {
-        if f.get("color").is_some_and(Value::is_string) {
-            let c = opt_color(f, "color")?.unwrap_or(anicraft_doc::Rgba::BLACK);
-            f["color"] = json!({"r": c.r, "g": c.g, "b": c.b, "a": c.a});
+        hex_colors(f, &["color", "shadow_color", "highlight_color"])?;
+        if let Some(stops) = f.get_mut("stops").and_then(Value::as_array_mut) {
+            if stops.len() > anicraft_doc::MAX_RAMP_STOPS {
+                return Err(EngineError::Param(format!("a ramp has at most {} stops", anicraft_doc::MAX_RAMP_STOPS)));
+            }
+            for st in stops.iter_mut() {
+                hex_colors(st, &["color"])?;
+            }
         }
     }
-    let filters: Vec<anicraft_doc::Filter> = serde_json::from_value(list).map_err(|e| EngineError::Param(format!("'filters' must be a list of {{type: blur|drop_shadow|glow|adjust_color, …}}: {e}")))?;
+    let filters: Vec<anicraft_doc::Filter> = serde_json::from_value(list).map_err(|e| EngineError::Param(format!("'filters' must be a list of {{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …}}: {e}")))?;
     if filters.len() > MAX_FILTERS {
         return Err(EngineError::Param(format!("at most {MAX_FILTERS} filters per instance")));
     }
@@ -435,7 +473,7 @@ fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
                 .find(|e| e.id == sel)
                 .and_then(|e| match e.kind {
                     ElementKind::Symbol { symbol, .. } => Some(symbol),
-                    ElementKind::Shape(_) | ElementKind::Text(_) => None,
+                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
                 })
                 .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
         }
@@ -557,7 +595,7 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(center.x, center.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sym_id, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new() },
+        kind: ElementKind::Symbol { symbol: sym_id, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new(), events: Vec::new() },
     };
     let mut elements = rest;
     elements.insert(first_pos.min(elements.len()), Arc::new(instance));
@@ -641,7 +679,7 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(x, y),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new() },
+        kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new(), events: Vec::new() },
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
     s.selection = vec![id];
@@ -666,6 +704,7 @@ fn place_bitmap(s: &mut Session, p: &Value, bitmap: anicraft_doc::BitmapId) -> R
             fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }),
             stroke: None,
             fill_rule: anicraft_geom::FillRule::NonZero,
+            merge: false,
         }),
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));

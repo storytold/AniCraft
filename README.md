@@ -30,6 +30,9 @@
   <img alt="Runs on macOS, Windows, Linux, FreeBSD and the web" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20FreeBSD%20%C2%B7%20Web-555555?style=flat-square">
   <img alt="MCP server for agents" src="https://img.shields.io/badge/agents-MCP%20server-555555?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-555555?style=flat-square">
+  <br>
+  <a href="https://sonarcloud.io/project/overview?id=storytold_anicraft"><img alt="Scanned by SonarCloud" src="https://img.shields.io/badge/Scanned_by-SonarCloud-4b9fd5?style=flat-square&logo=sonarqubecloud&logoColor=white"></a>
+  <a href="https://coderabbit.ai"><img alt="Reviewed by CodeRabbit" src="https://img.shields.io/coderabbit/prs/github/storytold/anicraft?style=flat-square&label=Reviewed%20by%20CodeRabbit&logo=coderabbit"></a>
 </p>
 
 <p align="center">
@@ -131,6 +134,7 @@ The sample animation, exported as an animated GIF by AniCraft's own renderer fro
 ### Stage and drawing tools
 * **Selection & Subselection**: select, move, nudge with arrow keys, anchor and Bézier handle editing on paths (`Subselection (A)`), add and delete points.
 * **Vector drawing**: Pen (`P`) with smooth handles and corner conversion, Pencil (`Shift+Y`) with Schneider curve fitting and smoothing, Rectangle (with corner radii), Oval, PolyStar, Line and Text (`T`).
+* **Merge drawing**: shapes on a layer cut and join each other as in Animate (fills replace or join, lines split where they cross), with click-a-segment selection, double-click for connected parts, and Object Drawing (`J`) to keep shapes separate.
 * **Free Transform (`Q`)**: interactive scaling, corner/edge handles with proportional Shift and centre Alt modifiers, and rotation with 15° snapping.
 * **Fills and strokes**: Paint Bucket (`K`) with gap closing, Ink Bottle (`S`), solid colours, linear/radial gradients, bitmap fills and stroke styling.
 * **Arrangement & alignment**: align left/center/right/top/middle/bottom (with stage alignment), distribute, rotate 90° CW/CCW, and horizontal/vertical flipping.

@@ -1,5 +1,7 @@
 //! Timeline evaluation: `(document, frame) -> DisplayList`. Pure, deterministic, no caching.
 
+use crate::camera::Camera;
+use crate::player::PlayerState;
 use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
 use anicraft_geom::walk::PathWalk;
 use anicraft_geom::{Affine, FillRule, Path};
@@ -110,18 +112,66 @@ impl DisplayList {
     }
 }
 
-/// Evaluates movie frame `frame` (0-based): the scenes play one after the other.
+/// Evaluates movie frame `frame` (0-based): the scenes play one after the other, each seen
+/// through its camera (ADR 0027). This is what every export draws.
 pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
     let (scene, local) = doc.locate(frame);
-    evaluate_scene(doc, scene, local)
+    evaluate_scene_camera(doc, scene, local)
 }
 
-/// Evaluates scene `scene`'s timeline at its own `frame` (what the stage shows while editing).
+/// Evaluates scene `scene`'s timeline at its own `frame` in stage space, the camera not
+/// applied: what the stage shows while editing (and what picking and bounds use).
 pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     let mut out = DisplayList::default();
-    let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None };
-    eval_timeline(doc, doc.timeline(scene), frame, &cx, &mut out);
+    eval_timeline(doc, doc.timeline(scene), frame, &Ctx::top(Affine::IDENTITY), &mut out, None);
     out
+}
+
+/// Scene `scene` at its own `frame` as the movie shows it: through the scene's camera, each
+/// layer shifted by its depth, the camera's tint over everything (ADR 0027). Without a camera
+/// this is [`evaluate_scene`].
+pub fn evaluate_scene_camera(doc: &Document, scene: usize, frame: u32) -> DisplayList {
+    let tl = doc.timeline(scene);
+    let mut out = DisplayList::default();
+    eval_timeline(doc, tl, frame, &Ctx::through(tl.camera_at(frame, &doc.stage)), &mut out, None);
+    out
+}
+
+/// What the player shows (ADR 0024): the scene and frame its main timeline is on, each movie
+/// clip at its own playhead, buttons in their pointer state, and properties scripts set, seen
+/// through the scene's camera.
+pub fn evaluate_player(doc: &Document, state: &PlayerState) -> DisplayList {
+    let mut out = DisplayList::default();
+    let play = Play { state, path: Vec::new() };
+    let tl = doc.timeline(state.scene);
+    eval_timeline(doc, tl, state.root.frame, &Ctx::through(tl.camera_at(state.root.frame, &doc.stage)), &mut out, Some(&play));
+    out
+}
+
+/// A symbol's timeline at `frame`, drawn at `xf` (stage space): a button's hit area, or a movie
+/// clip's artwork, as the player sees it when `play` is given.
+pub(crate) fn evaluate_symbol(doc: &Document, tl: &Timeline, frame: u32, xf: Affine, play: Option<&Play<'_>>) -> DisplayList {
+    let mut out = DisplayList::default();
+    let mut cx = Ctx::top(xf);
+    cx.depth = 1;
+    eval_timeline(doc, tl, frame, &cx, &mut out, play);
+    out
+}
+
+/// The player state an evaluation follows, and the instance path of the timeline being
+/// evaluated (empty for the main timeline).
+pub(crate) struct Play<'a> {
+    pub state: &'a PlayerState,
+    pub path: Vec<ElementId>,
+}
+
+impl<'a> Play<'a> {
+    pub fn child(&self, id: ElementId) -> Play<'a> {
+        let mut path = Vec::with_capacity(self.path.len() + 1);
+        path.extend_from_slice(&self.path);
+        path.push(id);
+        Play { state: self.state, path }
+    }
 }
 
 /// Elements of `layer` as they appear at `frame`, with tweens applied, plus the start frame of
@@ -136,9 +186,10 @@ pub fn evaluate_layer_elements(layer: &Layer, frame: u32) -> Option<(u32, Cow<'_
 pub fn evaluate_guided<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf = layer.keyframes.get(idx)?;
-    // A motion tween: its target follows the property curves; anything else on the key holds.
+    // A motion tween: its target follows the property curves (and its motion path, ADR 0030);
+    // anything else on the key holds.
     if let Some(m) = &kf.motion {
-        let Some(i) = m.target_index(&kf.elements).filter(|_| !m.tracks.is_empty()) else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
+        let Some(i) = m.target_index(&kf.elements).filter(|_| !m.tracks.is_empty() || m.path.is_some()) else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
         let mut els = kf.elements.clone();
         if let Some(slot) = els.get_mut(i) {
             *slot = Arc::new(m.apply(slot, (frame - kf.start) as f32));
@@ -188,11 +239,12 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
                 (Some(x), Some(y)) => Some(x.lerp(y, t)),
                 (x, _) => x.clone(),
             };
-            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule })
+            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge })
         }
         (ElementKind::Symbol { symbol: s1, .. }, ElementKind::Symbol { symbol: s2, .. }) if s1 == s2 => a.kind.clone(),
         // Text tweens its placement and colour effect; the words stay the first keyframe's.
         (ElementKind::Text(_), ElementKind::Text(_)) => a.kind.clone(),
+        (ElementKind::Camera, ElementKind::Camera) => ElementKind::Camera,
         _ => return None,
     };
     let mut transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
@@ -220,11 +272,30 @@ struct Ctx {
     guide: bool,
     /// The group everything inside fades with.
     group: Option<u32>,
+    /// The camera the scene's layers are seen through (main timeline only; each layer's
+    /// transform comes from it and the layer's depth, and `xf` is ignored).
+    camera: Option<Camera>,
+}
+
+impl Ctx {
+    fn top(xf: Affine) -> Ctx {
+        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None }
+    }
+
+    /// A main timeline seen through `camera`: its tint colours everything.
+    fn through(camera: Option<Camera>) -> Ctx {
+        let mut cx = Ctx::top(Affine::IDENTITY);
+        if let Some(c) = camera {
+            cx.color = c.color();
+            cx.camera = Some(c);
+        }
+        cx
+    }
 }
 
 /// The first frame of the unbroken run of keyframes on `layer`, up to `frame`, that hold
 /// element `id` as an instance of `symbol`: where a movie clip instance started playing.
-fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) -> u32 {
+pub fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) -> u32 {
     let Some(mut i) = layer.keyframe_index_at(frame) else { return frame };
     let holds = |k: &crate::Keyframe| k.elements.iter().any(|e| e.id == id && matches!(e.kind, ElementKind::Symbol { symbol: s, .. } if s == symbol));
     let mut start = layer.keyframes.get(i).map_or(frame, |k| k.start);
@@ -239,7 +310,7 @@ fn instance_start(layer: &Layer, frame: u32, id: ElementId, symbol: SymbolId) ->
 }
 
 /// The path a guide layer's first shape traces at `frame`, in the layer's own space.
-fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
+pub fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
     let (_, els) = evaluate_layer_elements(guide, frame)?;
     els.iter().find_map(|e| match &e.kind {
         ElementKind::Shape(s) => {
@@ -252,7 +323,7 @@ fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
             }
             PathWalk::new(&pts)
         }
-        ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
+        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
     })
 }
 
@@ -274,7 +345,7 @@ fn follow(g: &PathWalk, orient: bool, from: &Affine, to: &Affine, t: f32, tw: Af
     if out.is_finite() { out } else { tw }
 }
 
-fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut DisplayList) {
+fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut DisplayList, play: Option<&Play<'_>>) {
     if cx.depth > MAX_SYMBOL_DEPTH {
         return;
     }
@@ -294,7 +365,8 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         // Guide artwork is listed (marked, for editing) but never drawn; inside mask artwork
         // it plays no part at all.
         let is_guide = layer.kind == LayerKind::Guide;
-        if !layer.visible || layer.kind == LayerKind::Folder || (is_guide && cx.masks.is_some()) || (has_folders && tl.hidden_by_folder(index)) {
+        // The camera layer holds the camera, not artwork (ADR 0027).
+        if !layer.visible || matches!(layer.kind, LayerKind::Folder | LayerKind::Camera) || (is_guide && cx.masks.is_some()) || (has_folders && tl.hidden_by_folder(index)) {
             continue;
         }
         let (clip, masks) = match (cx.masks, layer.kind) {
@@ -308,9 +380,25 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
+        // Through a camera, each layer is placed by the camera and its own depth.
+        let layer_xf = cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth));
         for el in elements.iter() {
+            // In the player, a symbol instance has its own path, and maybe properties a script set.
+            let child = match (&el.kind, play) {
+                (ElementKind::Symbol { .. }, Some(p)) => Some(p.child(el.id)),
+                _ => None,
+            };
+            let set;
+            let el: &Element = match child.as_ref().and_then(|c| c.state.props.get(&c.path)) {
+                Some(ov) if !ov.shown() => continue,
+                Some(ov) => {
+                    set = ov.apply(el);
+                    &set
+                }
+                None => el,
+            };
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
-            let xf = cx.xf.mul(&el.transform);
+            let xf = layer_xf.mul(&el.transform);
             let color = cx.color.concat(&el.color);
             match &el.kind {
                 ElementKind::Shape(s) => out.items.push(DisplayItem {
@@ -348,17 +436,21 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     group: cx.group,
                     image: None,
                 }),
-                ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters } => {
+                ElementKind::Camera => {}
+                ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
                     let len = sym.timeline.frame_count();
-                    let local = match sym.kind {
+                    let local = match (sym.kind, &child) {
                         // A graphic keeps step with this timeline: loop mode and first frame apply.
-                        SymbolKind::Graphic => loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, len),
+                        (SymbolKind::Graphic, _) => loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, len),
+                        // In the player, movie clips and buttons are where it has them.
+                        (SymbolKind::MovieClip, Some(c)) => c.state.clip_frame(&c.path, len),
+                        (SymbolKind::Button, Some(c)) => c.state.button_frame(&c.path, len),
                         // A movie clip plays its own timeline on a loop from when the instance
                         // appeared, carrying on across keyframes that hold the same instance.
-                        SymbolKind::MovieClip => frame.saturating_sub(instance_start(layer, frame, el.id, *symbol)) % len.max(1),
-                        // A button shows its Up frame (states come with interactivity).
-                        SymbolKind::Button => 0,
+                        (SymbolKind::MovieClip, None) => frame.saturating_sub(instance_start(layer, frame, el.id, *symbol)) % len.max(1),
+                        // While editing, a button shows its Up frame.
+                        (SymbolKind::Button, None) => 0,
                     };
                     // An instance below full opacity fades as one: its contents composite in a
                     // group at full opacity, and the group blends at the instance's alpha. (Mask
@@ -372,8 +464,8 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     } else {
                         (color, cx.group)
                     };
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group };
-                    eval_timeline(doc, &sym.timeline, local, &inner, out);
+                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group, camera: None };
+                    eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
                 }
             }
         }

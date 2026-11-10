@@ -50,12 +50,16 @@ pub fn tool_id(t: Tool) -> &'static str {
         Tool::Pen => "tool.pen",
         Tool::Text => "tool.text",
         Tool::Pencil => "tool.pencil",
+        Tool::Brush => "tool.brush",
+        Tool::Eraser => "tool.eraser",
         Tool::Rect => "tool.rectangle",
         Tool::Oval => "tool.oval",
         Tool::Star => "tool.polystar",
         Tool::Line => "tool.line",
         Tool::PaintBucket => "tool.paint_bucket",
         Tool::InkBottle => "tool.ink_bottle",
+        Tool::Eyedropper => "tool.eyedropper",
+        Tool::Camera => "tool.camera",
         Tool::Hand => "tool.hand",
         Tool::Zoom => "tool.zoom",
     }
@@ -71,9 +75,11 @@ fn view_label(id: &str) -> &'static str {
         "view.onion" => "Onion Skin On / Off",
         "view.select_all_frames" => "Select All Frames",
         "view.align_to_stage" => "Align to Stage On / Off",
-        "view.test" => "Test (Play from Frame 1)",
         "view.next_panel" => "Next Panel",
         "view.prev_panel" => "Previous Panel",
+        "view.actions" => "Actions Panel",
+        "view.brush_smaller" => "Brush Size Down",
+        "view.brush_larger" => "Brush Size Up",
         _ => "View action",
     }
 }
@@ -114,6 +120,8 @@ fn key_name(k: Key) -> &'static str {
         Key::Period => ".",
         Key::Minus => "-",
         Key::Equals => "=",
+        Key::OpenBracket => "[",
+        Key::CloseBracket => "]",
         other => other.name(),
     }
 }
@@ -353,6 +361,11 @@ mod tests {
         assert_eq!(m.keys("edit.undo"), ["Ctrl+Z"]);
         assert_eq!(m.keys("edit.delete"), ["Delete", "Backspace"], "aliases are second keys");
         assert_eq!(m.primary("tool.pen"), Some("P"));
+        assert_eq!(m.primary("tool.brush"), Some("B"));
+        assert_eq!(m.primary("tool.eraser"), Some("E"));
+        assert_eq!(m.primary("tool.eyedropper"), Some("I"));
+        assert_eq!(m.keys("view.brush_smaller"), ["["]);
+        assert_eq!(m.keys("view.brush_larger"), ["]"]);
         assert_eq!(m.primary("view.onion"), Some("Alt+Shift+O"));
         assert_eq!(m.owner("ctrl+z").map(|a| a.id), None, "chords are case-sensitive registry names");
         assert_eq!(m.owner("Ctrl+Shift+Z").map(|a| a.id), Some("modify.remove_transform"));
@@ -367,7 +380,7 @@ mod tests {
 
     #[test]
     fn chords_round_trip_in_one_spelling() {
-        for s in ["Ctrl+Shift+Z", "Shift+,", "Ctrl+Up", "F5", "Ctrl+Alt+Shift+K", "Ctrl+-", "Alt+Shift+O", "Backspace"] {
+        for s in ["Ctrl+Shift+Z", "Shift+,", "Ctrl+Up", "F5", "Ctrl+Alt+Shift+K", "Ctrl+-", "Alt+Shift+O", "Backspace", "[", "]"] {
             assert_eq!(normalize(s).as_deref(), Some(s), "{s}");
         }
         assert_eq!(normalize("Shift+Ctrl+Z").as_deref(), Some("Ctrl+Shift+Z"));

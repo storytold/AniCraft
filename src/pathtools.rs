@@ -34,7 +34,7 @@ impl Xf {
         Vec2::new((p.x - self.origin.x) / self.zoom, (p.y - self.origin.y) / self.zoom)
     }
     /// Stage units per screen point.
-    fn unit(self) -> f32 {
+    pub fn unit(self) -> f32 {
         1.0 / self.zoom.max(1e-3)
     }
 }
@@ -196,7 +196,7 @@ fn selected_shapes(app: &App) -> Vec<(ElementId, Arc<Path>, Affine)> {
         .filter(|e| app.s.selection.contains(&e.id))
         .filter_map(|e| match &e.kind {
             ElementKind::Shape(sh) => Some((e.id, sh.path.clone(), e.transform)),
-            ElementKind::Symbol { .. } | ElementKind::Text(_) => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
         })
         .take(64)
         .collect()

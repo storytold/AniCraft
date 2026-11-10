@@ -69,7 +69,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
                 Some(anicraft_doc::BlendMode::Add) => " style=\"mix-blend-mode:plus-lighter\"".to_string(),
                 _ => String::new(),
             };
-            let filter = dl.groups.get(g as usize).and_then(|x| svg_filter(&x.filters, &mut defs, &mut grad)).map_or_else(String::new, |id| format!(" filter=\"url(#{id})\""));
+            let filter = dl.groups.get(g as usize).and_then(|x| svg_filter(&x.filters, (w, h), &mut defs, &mut grad)).map_or_else(String::new, |id| format!(" filter=\"url(#{id})\""));
             let _ = write!(body, "<g opacity=\"{}\"{style}{filter}>", num(a));
             open.push(g);
         }
@@ -154,14 +154,13 @@ fn color_attrs(attr: &str, c: Rgba) -> String {
 
 /// An SVG `<filter>` for `filters` in `defs`, and its id; `None` when nothing carries across.
 /// Blur becomes a Gaussian of the same spread as the box-blur passes; outer drop shadows and
-/// glows become `feDropShadow`; Adjust Color becomes its colour matrix. Inner and knockout
-/// shadows and glows have no simple SVG equivalent and are left out.
-fn svg_filter(filters: &[anicraft_doc::Filter], defs: &mut String, n: &mut usize) -> Option<String> {
+/// glows become `feDropShadow`; Adjust Color becomes its colour matrix; bevels and gradient
+/// filters are built from standard primitives ([`effect_svg`]). Inner and knockout shadows and
+/// glows have no simple SVG equivalent and are left out.
+fn svg_filter(filters: &[anicraft_doc::Filter], stage: (u32, u32), defs: &mut String, n: &mut usize) -> Option<String> {
     use anicraft_doc::Filter;
-    // A box of width b has variance (b² − 1) / 12; passes add.
-    let sigma = |b: f32, q: u8| ((f32::from(q) * (b * b - 1.0).max(0.0)) / 12.0).sqrt();
     let mut prims = String::new();
-    for f in filters.iter().map(Filter::sanitized) {
+    for (i, f) in filters.iter().map(Filter::sanitized).enumerate() {
         match f {
             Filter::Blur { blur_x, blur_y, quality } => {
                 let _ = write!(prims, "<feGaussianBlur stdDeviation=\"{} {}\"/>", num(sigma(blur_x, quality)), num(sigma(blur_y, quality)));
@@ -187,6 +186,7 @@ fn svg_filter(filters: &[anicraft_doc::Filter], defs: &mut String, n: &mut usize
                 let values: Vec<String> = m.iter().flatten().map(|v| num(*v)).collect();
                 let _ = write!(prims, "<feColorMatrix type=\"matrix\" values=\"{}\"/>", values.join(" "));
             }
+            Filter::Bevel { .. } | Filter::GradientGlow { .. } | Filter::GradientBevel { .. } => effect_svg(&f, i, &mut prims),
             Filter::DropShadow { .. } | Filter::Glow { .. } => {}
         }
     }
@@ -195,8 +195,125 @@ fn svg_filter(filters: &[anicraft_doc::Filter], defs: &mut String, n: &mut usize
     }
     let id = format!("f{n}");
     *n += 1;
-    let _ = write!(defs, "<filter id=\"{id}\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\" color-interpolation-filters=\"sRGB\">{prims}</filter>");
+    // The region: the stage, grown by how far the filters reach (what can show, and what an
+    // effect reaching in from outside needs), in stage units.
+    let m = filters.iter().map(Filter::margin).sum::<f32>().min(1e6);
+    let (sw, sh) = (stage.0 as f32, stage.1 as f32);
+    let _ = write!(
+        defs,
+        "<filter id=\"{id}\" filterUnits=\"userSpaceOnUse\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" color-interpolation-filters=\"sRGB\">{prims}</filter>",
+        num(-m),
+        num(-m),
+        num(sw + 2.0 * m),
+        num(sh + 2.0 * m)
+    );
     Some(id)
+}
+
+/// Steps in a ramp table: the CPU renderer's (`filters::RAMP_STEPS`).
+const RAMP_SAMPLES: usize = crate::filters::RAMP_STEPS;
+
+/// The Gaussian of the same spread as `q` box-blur passes of width `b` (a box of width `b` has
+/// variance (b² − 1) / 12; passes add).
+fn sigma(b: f32, q: u8) -> f32 {
+    ((f32::from(q) * (b * b - 1.0).max(0.0)) / 12.0).sqrt()
+}
+
+/// Primitives for a bevel, gradient glow or gradient bevel (the `i`th filter): they take the
+/// previous result (or the source) and leave the filtered image as the last result. The same
+/// steps as the CPU renderer (`filters.rs`): the blurred opacity offset towards and away from
+/// the light, and their difference (`feComposite` arithmetic) for a bevel's highlight and
+/// shadow, or the offset blurred opacity for a glow's intensity, mapped through the ramp
+/// (`feComponentTransfer` tables); then put atop the artwork (inner), under it (outer), both
+/// (full), or alone (knockout).
+fn effect_svg(f: &anicraft_doc::Filter, i: usize, prims: &mut String) {
+    use anicraft_doc::{Filter, FilterSide};
+    let (blur_x, blur_y, strength, quality, angle, distance, side, knockout) = match f {
+        Filter::Bevel { blur_x, blur_y, strength, quality, angle, distance, side, knockout, .. }
+        | Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, side, knockout, .. }
+        | Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, side, knockout, .. } => (*blur_x, *blur_y, *strength, *quality, *angle, *distance, *side, *knockout),
+        _ => return,
+    };
+    let a = angle.to_radians();
+    let (dx, dy) = (num(distance * a.cos()), num(distance * a.sin()));
+    let (ndx, ndy) = (num(-distance * a.cos()), num(-distance * a.sin()));
+    let blur = format!("stdDeviation=\"{} {}\"", num(sigma(blur_x, quality)), num(sigma(blur_y, quality)));
+    let s = num(strength);
+    // The input, and its opacity alone.
+    let _ = write!(prims, "<feOffset result=\"k{i}\"/><feColorMatrix in=\"k{i}\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0\" result=\"a{i}\"/>");
+    // `stops` over the opacity of `from`, into `to`: opaque ramp colours from tables, cut by
+    // the ramp's own opacity.
+    let ramp = |prims: &mut String, stops: &[anicraft_doc::GradientStop], from: &str, to: &str| {
+        // As many samples as the renderer's ramp table, so narrow stops come across.
+        let table = |ch: fn(anicraft_doc::Rgba) -> f32| (0..=RAMP_SAMPLES).map(|j| num(ch(anicraft_doc::ramp_at(stops, j as f32 / RAMP_SAMPLES as f32)))).collect::<Vec<_>>().join(" ");
+        let _ = write!(
+            prims,
+            "<feColorMatrix in=\"{from}\" type=\"matrix\" values=\"0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 1\" result=\"{to}g\"/>\
+             <feComponentTransfer in=\"{to}g\" result=\"{to}c\"><feFuncR type=\"table\" tableValues=\"{}\"/><feFuncG type=\"table\" tableValues=\"{}\"/><feFuncB type=\"table\" tableValues=\"{}\"/></feComponentTransfer>\
+             <feComponentTransfer in=\"{from}\" result=\"{to}m\"><feFuncA type=\"table\" tableValues=\"{}\"/></feComponentTransfer>\
+             <feComposite in=\"{to}c\" in2=\"{to}m\" operator=\"in\" result=\"{to}\"/>",
+            table(|c| c.r),
+            table(|c| c.g),
+            table(|c| c.b),
+            table(|c| c.a)
+        );
+    };
+    // Both bevels: the blurred opacity towards the light (l) and away from it (d).
+    let bevel_offsets = |prims: &mut String| {
+        let _ = write!(prims, "<feGaussianBlur in=\"a{i}\" {blur} result=\"b{i}\"/><feOffset in=\"b{i}\" dx=\"{ndx}\" dy=\"{ndy}\" result=\"l{i}\"/><feOffset in=\"b{i}\" dx=\"{dx}\" dy=\"{dy}\" result=\"d{i}\"/>");
+    };
+    let (inner, outer) = match f {
+        Filter::Bevel { shadow_color, highlight_color, .. } => {
+            bevel_offsets(prims);
+            let flood = |c: anicraft_doc::Rgba| format!("flood-color=\"{}\" flood-opacity=\"{}\"", hex(c), num(c.a));
+            let _ = write!(
+                prims,
+                "<feComposite in=\"l{i}\" in2=\"d{i}\" operator=\"arithmetic\" k2=\"{s}\" k3=\"-{s}\" result=\"hm{i}\"/>\
+                 <feComposite in=\"d{i}\" in2=\"l{i}\" operator=\"arithmetic\" k2=\"{s}\" k3=\"-{s}\" result=\"sm{i}\"/>\
+                 <feFlood {}/><feComposite in2=\"hm{i}\" operator=\"in\" result=\"hc{i}\"/>\
+                 <feFlood {}/><feComposite in2=\"sm{i}\" operator=\"in\" result=\"sc{i}\"/>\
+                 <feComposite in=\"hc{i}\" in2=\"sc{i}\" operator=\"arithmetic\" k2=\"1\" k3=\"1\" result=\"e{i}\"/>",
+                flood(*highlight_color),
+                flood(*shadow_color)
+            );
+            (format!("e{i}"), format!("e{i}"))
+        }
+        Filter::GradientBevel { stops, .. } => {
+            // The ramp position: 0.5 − strength × (towards − away) / 2.
+            bevel_offsets(prims);
+            let half = num(strength * 0.5);
+            let _ = write!(prims, "<feComposite in=\"l{i}\" in2=\"d{i}\" operator=\"arithmetic\" k2=\"-{half}\" k3=\"{half}\" k4=\"0.5\" result=\"t{i}\"/>");
+            ramp(prims, stops, &format!("t{i}"), &format!("e{i}"));
+            (format!("e{i}"), format!("e{i}"))
+        }
+        Filter::GradientGlow { stops, .. } => {
+            // Intensity: the blurred opacity (outside) or transparency (inside), offset.
+            let glow = |prims: &mut String, src: &str, to: &str| {
+                let _ = write!(prims, "<feGaussianBlur in=\"{src}\" {blur}/><feOffset dx=\"{dx}\" dy=\"{dy}\"/><feComposite operator=\"arithmetic\" k2=\"{s}\" result=\"{to}t\"/>");
+                ramp(prims, stops, &format!("{to}t"), to);
+            };
+            if side != FilterSide::Outer {
+                let _ = write!(prims, "<feComponentTransfer in=\"a{i}\" result=\"v{i}\"><feFuncA type=\"table\" tableValues=\"1 0\"/></feComponentTransfer>");
+                glow(prims, &format!("v{i}"), &format!("ei{i}"));
+            }
+            if side != FilterSide::Inner {
+                glow(prims, &format!("a{i}"), &format!("eo{i}"));
+            }
+            (format!("ei{i}"), format!("eo{i}"))
+        }
+        _ => return,
+    };
+    let _ = match (side, knockout) {
+        (FilterSide::Inner, false) => write!(prims, "<feComposite in=\"{inner}\" in2=\"k{i}\" operator=\"atop\"/>"),
+        (FilterSide::Inner, true) => write!(prims, "<feComposite in=\"{inner}\" in2=\"k{i}\" operator=\"in\"/>"),
+        (FilterSide::Outer, false) => write!(prims, "<feComposite in=\"k{i}\" in2=\"{outer}\" operator=\"over\"/>"),
+        (FilterSide::Outer, true) => write!(prims, "<feComposite in=\"{outer}\" in2=\"k{i}\" operator=\"out\"/>"),
+        (FilterSide::Full, false) => write!(prims, "<feComposite in=\"{inner}\" in2=\"k{i}\" operator=\"atop\" result=\"x{i}\"/><feComposite in=\"x{i}\" in2=\"{outer}\" operator=\"over\"/>"),
+        (FilterSide::Full, true) => write!(
+            prims,
+            "<feComposite in=\"{inner}\" in2=\"k{i}\" operator=\"in\" result=\"x{i}\"/><feComposite in=\"{outer}\" in2=\"k{i}\" operator=\"out\" result=\"y{i}\"/><feComposite in=\"x{i}\" in2=\"y{i}\" operator=\"arithmetic\" k2=\"1\" k3=\"1\"/>"
+        ),
+    };
 }
 
 /// The fill attribute for `paint`, defining a gradient in `defs` when needed. `None` when the

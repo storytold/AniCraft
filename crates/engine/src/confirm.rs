@@ -73,6 +73,17 @@ fn overwrite(path: &Path, what: &str) -> Confirmation {
     }
 }
 
+/// Removing the camera asks only when it moves (its keyframes are the animation lost).
+fn camera_removal(_: &Session, l: &Layer) -> Option<Confirmation> {
+    let n = crate::cmds_camera::camera_moves(l);
+    (n > 0).then(|| Confirmation {
+        title: "Remove camera?".into(),
+        message: format!("The camera moves over {}. Removing it removes those moves, and the movie shows the stage as it is. You can undo this.", plural(n, "keyframe")),
+        action: "Remove Camera".into(),
+        irreversible: false,
+    })
+}
+
 /// The confirmation `id` with `p` needs right now, if any.
 pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
     match id {
@@ -98,7 +109,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && path.exists()).then(|| overwrite(path, "Saving"))
         }
-        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_audio" => {
+        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             path.exists().then(|| overwrite(path, "Exporting"))
         }
@@ -134,8 +145,23 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: false,
             })
         }
+        "draw.erase_all" => {
+            // Double-clicking the Eraser: everything on the stage at this frame (ADR 0034).
+            let layers = crate::cmds_erase::erasable_layers(s);
+            let elements: usize = layers.iter().map(|(_, n)| n).sum();
+            (elements > 0).then(|| Confirmation {
+                title: "Erase everything?".into(),
+                message: format!("Everything on the stage at frame {} goes: {} on {}. Locked and hidden layers are kept. You can undo this.", s.frame + 1, plural(elements, "element"), plural(layers.len(), "layer")),
+                action: "Erase Everything".into(),
+                irreversible: false,
+            })
+        }
+        "camera.remove" => camera_removal(s, s.doc.timeline(s.scene).camera_layer()?),
         "layer.delete" => {
             let l = target_layer(s, p)?;
+            if l.kind == anicraft_doc::LayerKind::Camera {
+                return camera_removal(s, l);
+            }
             if l.kind == anicraft_doc::LayerKind::Folder {
                 // A folder goes with everything in it.
                 let tl = s.doc.timeline(s.scene);

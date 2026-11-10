@@ -286,6 +286,38 @@ impl Path {
         };
     }
 
+    /// Moves anchor `cmd` by `d` with everything attached to it (its other copy on a closed
+    /// subpath and both handles), so the curve keeps its shape around the anchor.
+    pub fn move_anchor(&mut self, cmd: usize, d: Vec2) -> bool {
+        if !d.is_finite() {
+            return false;
+        }
+        let mut moved = false;
+        for (c, slot) in self.anchor_group(cmd) {
+            if let Some(p) = self.point(c, slot) {
+                moved |= self.set_point(c, slot, p + d);
+            }
+        }
+        moved
+    }
+
+    /// Bends segment `cmd` so its point at `t` moves by `d` while its ends stay put: dragging a
+    /// curve, as the Selection tool does. The segment becomes a cubic and its two control
+    /// points take the smallest moves that carry that point exactly (the least-squares
+    /// solution of `b₁·o₁ + b₂·o₂ = d` with the Bernstein weights `b₁ = 3(1−t)²t`,
+    /// `b₂ = 3(1−t)t²`). `t` is kept off the very ends, where no handle move could reach.
+    pub fn bend_segment(&mut self, cmd: usize, t: f32, d: Vec2) -> bool {
+        if !t.is_finite() || !d.is_finite() || self.segment_start(cmd).is_none() {
+            return false;
+        }
+        self.to_cubic(cmd);
+        let t = t.clamp(0.02, 0.98);
+        let (b1, b2) = (3.0 * (1.0 - t) * (1.0 - t) * t, 3.0 * (1.0 - t) * t * t);
+        let norm = b1 * b1 + b2 * b2;
+        let (Some(c1), Some(c2)) = (self.point(cmd, C1), self.point(cmd, C2)) else { return false };
+        self.set_point(cmd, C1, c1 + d * (b1 / norm)) && self.set_point(cmd, C2, c2 + d * (b2 / norm))
+    }
+
     /// The segment nearest to `p` (in the space `m` maps to): `(cmd, t, distance)`.
     pub fn nearest_segment(&self, p: Vec2, m: &Affine) -> Option<(usize, f32, f32)> {
         let mut best: Option<(usize, f32, f32)> = None;
@@ -379,6 +411,39 @@ mod tests {
         let mut p = Path::new();
         p.move_to(Vec2::new(0.0, 0.0)).cubic_to(Vec2::new(10.0, 20.0), Vec2::new(30.0, 20.0), Vec2::new(40.0, 0.0)).line_to(Vec2::new(40.0, -20.0));
         p
+    }
+
+    #[test]
+    fn bending_carries_the_grabbed_point_and_keeps_the_ends() {
+        for t in [0.2f32, 0.5, 0.7] {
+            let mut p = cubic_path();
+            let before = p.segment_point(1, t).unwrap();
+            let d = Vec2::new(3.0, -7.0);
+            assert!(p.bend_segment(1, t, d));
+            assert!(p.segment_point(1, t).unwrap().distance(before + d) < 1e-3, "t {t}");
+            assert_eq!(p.point(0, ANCHOR), Some(Vec2::new(0.0, 0.0)));
+            assert_eq!(p.point(1, ANCHOR), Some(Vec2::new(40.0, 0.0)));
+        }
+        // A line bends into a curve.
+        let mut p = cubic_path();
+        assert!(p.bend_segment(2, 0.5, Vec2::new(10.0, 0.0)));
+        assert!(matches!(p.cmds[2], PathCmd::CubicTo(..)));
+        assert!(p.segment_point(2, 0.5).unwrap().distance(Vec2::new(50.0, -10.0)) < 1e-3);
+        assert!(!p.bend_segment(0, 0.5, Vec2::new(1.0, 0.0)), "a move is no segment");
+        assert!(!p.bend_segment(1, f32::NAN, Vec2::new(1.0, 0.0)));
+    }
+
+    #[test]
+    fn moving_an_anchor_takes_its_handles() {
+        let mut p = cubic_path();
+        p.to_cubic(2);
+        let h = p.point(2, C1).unwrap();
+        assert!(p.move_anchor(1, Vec2::new(5.0, 5.0)));
+        assert_eq!(p.point(1, ANCHOR), Some(Vec2::new(45.0, 5.0)));
+        assert_eq!(p.point(1, C2), Some(Vec2::new(35.0, 25.0)), "in-handle");
+        assert_eq!(p.point(2, C1), Some(h + Vec2::new(5.0, 5.0)), "out-handle");
+        assert_eq!(p.point(1, C1), Some(Vec2::new(10.0, 20.0)), "the previous anchor's handle stays");
+        assert!(!p.move_anchor(1, Vec2::new(f32::NAN, 0.0)));
     }
 
     #[test]

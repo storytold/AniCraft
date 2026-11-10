@@ -1,0 +1,304 @@
+use super::*;
+use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Target};
+use crate::{ColorEffect, Keyframe, Layer, LayerId, Paint, Rgba, Shape, Symbol, SymbolId, SymbolKind, evaluate, evaluate_player, sample};
+use anicraft_geom::Path;
+use std::sync::Arc;
+
+fn rect(id: u64, x: f32, y: f32, w: f32, h: f32) -> Arc<Element> {
+    Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(x, y, w, h), Paint::Solid(Rgba::BLACK))) })
+}
+
+fn inst(id: u64, symbol: u64, name: &str, x: f32, y: f32, events: Vec<EventHandler>) -> Arc<Element> {
+    Arc::new(Element {
+        id: ElementId(id),
+        name: name.into(),
+        transform: Affine::translate(x, y),
+        color: ColorEffect::default(),
+        kind: ElementKind::Symbol { symbol: SymbolId(symbol), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events },
+    })
+}
+
+fn kf(start: u32, duration: u32, elements: Vec<Arc<Element>>, actions: Vec<Action>, label: &str) -> Arc<Keyframe> {
+    let mut k = Keyframe::new(start, duration);
+    k.elements = elements;
+    k.label = label.into();
+    k.script = (!actions.is_empty()).then_some(FrameScript::Actions(actions));
+    Arc::new(k)
+}
+
+fn layer(id: u64, keys: Vec<Arc<Keyframe>>) -> Arc<Layer> {
+    let mut l = Layer::new(LayerId(id), format!("L{id}"));
+    l.keyframes = keys;
+    Arc::new(l)
+}
+
+fn symbol(id: u64, kind: SymbolKind, layers: Vec<Arc<Layer>>) -> Arc<Symbol> {
+    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, timeline: Timeline { layers } })
+}
+
+fn doc(root: Vec<Arc<Layer>>, library: Vec<Arc<Symbol>>) -> Document {
+    let mut d = Document::default();
+    d.timeline_mut(0).layers = root;
+    d.library = library;
+    d.next_id = 10_000;
+    d
+}
+
+fn stop() -> Action {
+    Action::Stop { target: Target::this() }
+}
+
+fn goto_stop(target: &str, frame: FrameRef) -> Action {
+    Action::GotoAndStop { target: Target::new(target), frame, scene: None }
+}
+
+fn run(d: &Document, steps: usize) -> Step {
+    let mut s = start(d, &mut NoScripts);
+    for _ in 0..steps {
+        s = step(d, &s.state, &[], &mut NoScripts);
+    }
+    s
+}
+
+#[test]
+fn a_stop_action_holds_the_playhead_on_its_frame() {
+    let d = doc(vec![layer(1, vec![kf(0, 3, vec![], vec![], ""), kf(3, 7, vec![], vec![stop()], "")]), layer(2, vec![kf(0, 10, vec![rect(5, 0.0, 0.0, 10.0, 10.0)], vec![], "")])], vec![]);
+    let s = start(&d, &mut NoScripts);
+    assert_eq!((s.state.root.frame, s.state.root.playing), (0, true));
+    let s = run(&d, 6);
+    assert_eq!((s.state.root.frame, s.state.root.playing), (3, false), "stops on the frame with the action");
+}
+
+#[test]
+fn goto_a_label_jumps_and_unknown_labels_are_reported() {
+    let jump = Action::GotoAndPlay { target: Target::this(), frame: FrameRef::Label("loop".into()), scene: None };
+    let d = doc(vec![layer(1, vec![kf(0, 1, vec![], vec![jump], ""), kf(1, 4, vec![], vec![], ""), kf(5, 5, vec![], vec![], "loop")])], vec![]);
+    let s = start(&d, &mut NoScripts);
+    assert_eq!((s.state.root.frame, s.state.root.playing), (5, true));
+    let missing = doc(vec![layer(1, vec![kf(0, 4, vec![], vec![goto_stop("", FrameRef::Label("nowhere".into()))], "")])], vec![]);
+    let s = start(&missing, &mut NoScripts);
+    assert_eq!(s.state.root.frame, 0);
+    assert!(s.output.iter().any(|l| l.contains("no frame labelled “nowhere”")), "{:?}", s.output);
+}
+
+/// Root (10 frames) → `hero` (movie clip, 6 frames, "run" at 3) → `arm` (movie clip, 4 frames;
+/// its frame 2 stops the main timeline through `parent.parent`).
+fn nested() -> Document {
+    let arm = symbol(200, SymbolKind::MovieClip, vec![layer(21, vec![kf(0, 2, vec![rect(22, 0.0, 0.0, 5.0, 5.0)], vec![], ""), kf(2, 2, vec![rect(22, 0.0, 0.0, 5.0, 5.0)], vec![Action::Stop { target: Target::new("parent.parent") }], "")])]);
+    let hero = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 3, vec![inst(12, 200, "arm", 5.0, 0.0, vec![])], vec![], ""), kf(3, 3, vec![inst(12, 200, "arm", 5.0, 0.0, vec![])], vec![], "run")])]);
+    let root_actions = vec![goto_stop("hero", FrameRef::Label("run".into())), goto_stop("hero.arm", FrameRef::Number(2))];
+    doc(vec![layer(1, vec![kf(0, 1, vec![], root_actions, ""), kf(1, 9, vec![], vec![], "")]), layer(2, vec![kf(0, 10, vec![inst(3, 100, "hero", 50.0, 50.0, vec![])], vec![], "")])], vec![hero, arm])
+}
+
+#[test]
+fn actions_control_nested_movie_clips_by_instance_name_path() {
+    let d = nested();
+    let s = start(&d, &mut NoScripts);
+    let hero = s.state.clips[&vec![ElementId(3)]];
+    let arm = s.state.clips[&vec![ElementId(3), ElementId(12)]];
+    assert_eq!((hero.frame, hero.playing), (3, false), "hero went to “run” and stopped");
+    assert_eq!((arm.frame, arm.playing), (2, false), "arm went to frame 3 and stopped");
+    // Entering arm's frame 2 ran its action, which stopped the main timeline.
+    assert!(!s.state.root.playing);
+    let later = run(&d, 5);
+    assert_eq!(later.state, s.state.clone().with_tick(5), "nothing plays any more");
+}
+
+impl PlayerState {
+    fn with_tick(mut self, t: u64) -> Self {
+        self.tick = t;
+        self
+    }
+}
+
+#[test]
+fn movie_clips_play_on_their_own_and_restart_when_they_reappear() {
+    // hero is on the stage for frames 0-4, gone at 5, back at 6.
+    let hero = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 4, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], "")])]);
+    let d = doc(vec![layer(1, vec![kf(0, 5, vec![inst(3, 100, "hero", 0.0, 0.0, vec![])], vec![], ""), kf(5, 1, vec![], vec![], ""), kf(6, 4, vec![inst(3, 100, "hero", 0.0, 0.0, vec![])], vec![], "")])], vec![hero]);
+    let frame = |s: &Step| s.state.clips.get(&vec![ElementId(3)]).map(|c| c.frame);
+    assert_eq!(frame(&run(&d, 3)), Some(3));
+    assert_eq!(frame(&run(&d, 4)), Some(0), "loops round its 4 frames");
+    assert_eq!(frame(&run(&d, 5)), None, "gone");
+    assert_eq!(frame(&run(&d, 6)), Some(0), "back from its first frame");
+}
+
+/// A button `go` at (100, 100): its art is 10 × 10, its Hit frame 100 × 100. Click goes to
+/// frame 5 and stops; Over and Out trace.
+fn button_doc() -> Document {
+    let art = |id| vec![rect(id, 0.0, 0.0, 10.0, 10.0)];
+    let b = symbol(300, SymbolKind::Button, vec![layer(31, vec![kf(0, 1, art(32), vec![], ""), kf(1, 1, art(32), vec![], ""), kf(2, 1, art(32), vec![], ""), kf(3, 1, vec![rect(33, 0.0, 0.0, 100.0, 100.0)], vec![], "")])]);
+    let events = vec![
+        EventHandler { event: ButtonEvent::Click, actions: vec![goto_stop("", FrameRef::Number(4))] },
+        EventHandler { event: ButtonEvent::Over, actions: vec![Action::Trace { message: "over".into() }] },
+        EventHandler { event: ButtonEvent::Out, actions: vec![Action::Trace { message: "out".into() }] },
+    ];
+    doc(vec![layer(1, vec![kf(0, 10, vec![], vec![stop()], "")]), layer(2, vec![kf(0, 10, vec![inst(3, 300, "go", 100.0, 100.0, events)], vec![], "")])], vec![b])
+}
+
+#[test]
+fn buttons_follow_the_pointer_through_their_hit_area_and_route_clicks() {
+    let d = button_doc();
+    let path = vec![ElementId(3)];
+    let mut s = start(&d, &mut NoScripts);
+    let at = |x, y| Vec2::new(x, y);
+    // Inside the Hit frame's area but outside the visible art: still the button.
+    s = step(&d, &s.state, &[Event::Move(at(180.0, 180.0))], &mut NoScripts);
+    assert_eq!(s.state.hover.as_ref(), Some(&path));
+    assert_eq!(s.state.button_frame(&path, 4), 1, "Over");
+    assert_eq!(s.output, ["over"]);
+    s = step(&d, &s.state, &[Event::Down(at(180.0, 180.0))], &mut NoScripts);
+    assert_eq!(s.state.button_frame(&path, 4), 2, "Down");
+    assert_eq!(s.state.root.frame, 0);
+    s = step(&d, &s.state, &[Event::Up(at(181.0, 181.0))], &mut NoScripts);
+    assert_eq!((s.state.root.frame, s.state.root.playing), (4, false), "the click went to frame 5");
+    // Off the button: Out, Up state.
+    s = step(&d, &s.state, &[Event::Move(at(300.0, 300.0))], &mut NoScripts);
+    assert_eq!((s.state.hover.as_ref(), s.output.as_slice()), (None, ["out".to_string()].as_slice()));
+    assert_eq!(s.state.button_frame(&path, 4), 0);
+    // Pressed on it, released off it: no click.
+    let mut s = start(&d, &mut NoScripts);
+    s = step(&d, &s.state, &[Event::Down(at(150.0, 150.0)), Event::Move(at(400.0, 400.0)), Event::Up(at(400.0, 400.0))], &mut NoScripts);
+    assert_eq!(s.state.root.frame, 0);
+    assert!(hit(&d, &s.state, at(150.0, 150.0)).is_some() && hit(&d, &s.state, at(99.0, 99.0)).is_none());
+}
+
+#[test]
+fn script_set_properties_change_what_the_player_draws() {
+    let hero = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 1, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], "")])]);
+    let set = |p, v| Action::SetProperty { target: Target::new("hero"), property: p, value: v };
+    let d = doc(vec![layer(1, vec![kf(0, 1, vec![], vec![set(Property::X, 300.0), set(Property::Alpha, 0.5)], ""), kf(1, 1, vec![], vec![set(Property::Visible, 0.0)], "")]), layer(2, vec![kf(0, 2, vec![inst(3, 100, "hero", 0.0, 0.0, vec![])], vec![], "")])], vec![hero]);
+    let s = start(&d, &mut NoScripts);
+    let dl = evaluate_player(&d, &s.state);
+    assert_eq!(dl.items.len(), 1);
+    assert_eq!(dl.items[0].transform.translation().x, 300.0);
+    assert_eq!(dl.effective_alpha(&dl.items[0]), 0.5);
+    assert_eq!(evaluate(&d, 0).items[0].transform.translation().x, 0.0, "the document is untouched");
+    let s = step(&d, &s.state, &[], &mut NoScripts);
+    assert!(evaluate_player(&d, &s.state).items.is_empty(), "hidden");
+}
+
+#[test]
+fn without_actions_the_player_draws_what_the_timeline_does() {
+    // The demo with its star as a movie clip: the player's clip playheads must match the
+    // authoring formula frame for frame.
+    let mut d = sample::demo();
+    for sym in &mut d.library {
+        Arc::make_mut(sym).kind = SymbolKind::MovieClip;
+    }
+    let mut s = start(&d, &mut NoScripts);
+    for f in 0..d.frame_count() {
+        let (a, b) = (evaluate(&d, f), evaluate_player(&d, &s.state));
+        assert_eq!(a.items.len(), b.items.len(), "frame {f}");
+        for (x, y) in a.items.iter().zip(&b.items) {
+            assert_eq!(x.transform, y.transform, "frame {f}");
+        }
+        s = step(&d, &s.state, &[], &mut NoScripts);
+    }
+}
+
+#[test]
+fn the_same_inputs_give_the_same_movie() {
+    let d = sample::interactive();
+    let script = |tick: usize| -> Vec<Event> {
+        match tick {
+            2 => vec![Event::Move(Vec2::new(640.0, 400.0))],
+            3 => vec![Event::Down(Vec2::new(640.0, 400.0))],
+            4 => vec![Event::Up(Vec2::new(640.0, 400.0))],
+            9 => vec![Event::Leave],
+            _ => vec![],
+        }
+    };
+    let play = || {
+        let mut s = start(&d, &mut NoScripts);
+        let mut trace = vec![(s.state.clone(), s.output.clone())];
+        for t in 0..80 {
+            s = step(&d, &s.state, &script(t), &mut NoScripts);
+            trace.push((s.state.clone(), s.output.clone()));
+        }
+        trace
+    };
+    let (a, b) = (play(), play());
+    assert_eq!(a, b);
+    // The click started the show; its last frame went back to the menu and stopped.
+    let out: Vec<String> = a.iter().flat_map(|(_, o)| o.clone()).collect();
+    assert_eq!(out, ["The show starts", "Back to the menu"]);
+    let last = &a.last().unwrap().0;
+    assert_eq!((last.root.frame, last.root.playing), (0, false));
+}
+
+#[test]
+fn go_to_loops_end_in_a_message_not_a_hang() {
+    let d = doc(vec![layer(1, vec![kf(0, 1, vec![], vec![goto_stop("", FrameRef::Number(1))], ""), kf(1, 1, vec![], vec![goto_stop("", FrameRef::Number(0))], "")])], vec![]);
+    let s = start(&d, &mut NoScripts);
+    assert!(s.output.iter().any(|l| l.starts_with("Stopped running actions this frame")), "{:?}", s.output);
+    let s = step(&d, &s.state, &[], &mut NoScripts);
+    assert!(s.output.len() <= 2);
+    // More traces than one step keeps: the rest are counted.
+    let many: Vec<Action> = (0..crate::actions::MAX_ACTIONS).map(|i| Action::Trace { message: format!("{i}") }).collect();
+    let d = doc((1..=5).map(|l| layer(l, vec![kf(0, 1, vec![], many.clone(), "")])).collect(), vec![]);
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(s.output.len(), MAX_OUTPUT_PER_STEP + 1);
+    assert_eq!(s.output.last().map(String::as_str), Some("… 280 more lines"));
+}
+
+#[test]
+fn bad_targets_and_graphics_are_reported() {
+    let g = symbol(100, SymbolKind::Graphic, vec![layer(11, vec![kf(0, 1, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], "")])]);
+    let acts = vec![Action::Stop { target: Target::new("nobody") }, Action::Play { target: Target::new("g") }, Action::Stop { target: Target::new("parent") }, Action::GotoAndStop { target: Target::this(), frame: FrameRef::Number(0), scene: Some("Nope".into()) }];
+    let d = doc(vec![layer(1, vec![kf(0, 2, vec![inst(3, 100, "g", 0.0, 0.0, vec![])], acts, "")])], vec![g]);
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(s.output.len(), 4, "{:?}", s.output);
+    assert!(s.output[1].contains("is a graphic"));
+}
+
+#[test]
+fn plug_in_frame_scripts_run_through_the_host() {
+    struct Host(u32);
+    impl ScriptHost for Host {
+        fn run(&mut self, script: &PluginScript, cx: &ScriptContext<'_>) -> ScriptRun {
+            self.0 += 1;
+            ScriptRun { actions: vec![stop()], output: vec![format!("{} at {} of “{}”", script.entry, cx.frame, cx.nodes[cx.timeline].name)] }
+        }
+    }
+    let mut k = Keyframe::new(2, 8);
+    k.script = Some(FrameScript::Plugin(PluginScript { id: "org.test.s".into(), entry: "main".into() }));
+    let d = doc(vec![layer(1, vec![kf(0, 2, vec![], vec![], ""), Arc::new(k)])], vec![]);
+    let mut h = Host(0);
+    let mut s = start(&d, &mut h);
+    for _ in 0..5 {
+        s = step(&d, &s.state, &[], &mut h);
+    }
+    assert_eq!(h.0, 1, "entered once");
+    assert_eq!((s.state.root.frame, s.state.root.playing), (2, false));
+    let s = run(&d, 3);
+    assert!(s.state.root.playing);
+}
+
+#[test]
+fn input_between_frames_moves_no_playhead() {
+    let d = button_doc();
+    let s = start(&d, &mut NoScripts);
+    let s = input(&d, &s.state, &[Event::Move(Vec2::new(150.0, 150.0)), Event::Down(Vec2::new(150.0, 150.0)), Event::Up(Vec2::new(150.0, 150.0))], &mut NoScripts);
+    assert_eq!((s.state.root.frame, s.state.tick), (4, 0), "the click ran, no frame advanced");
+}
+
+
+#[test]
+fn the_player_sees_through_the_camera_and_buttons_are_hit_where_they_show() {
+    let mut d = button_doc();
+    // A camera zoomed 2x on the button's corner (100, 100): it shows at the output's middle.
+    let cam = crate::Camera { center: Vec2::new(100.0, 100.0), zoom: 2.0, ..crate::Camera::rest(&d.stage) };
+    let mut cl = Layer::new(LayerId(90), "Camera");
+    cl.kind = crate::LayerKind::Camera;
+    cl.keyframes = vec![kf(0, 10, vec![Arc::new(cam.to_element(ElementId(91)))], vec![], "")];
+    d.timeline_mut(0).layers.insert(0, Arc::new(cl));
+    let s = start(&d, &mut NoScripts);
+    let mid = Vec2::new(d.stage.width as f32 / 2.0, d.stage.height as f32 / 2.0);
+    let item = &evaluate_player(&d, &s.state).items[0];
+    assert!(item.transform.apply(Vec2::ZERO).distance(mid) < 1e-3, "drawn through the camera");
+    assert!((item.transform.mean_scale() - 2.0).abs() < 1e-4);
+    // The Hit area (100 x 100 at the corner) is now 200 x 200 from the middle.
+    assert!(hit(&d, &s.state, mid + Vec2::new(150.0, 150.0)).is_some());
+    assert!(hit(&d, &s.state, mid - Vec2::new(5.0, 5.0)).is_none());
+}

@@ -5,7 +5,7 @@
 //! subpath's start is one anchor even though the path stores it twice; commands accept either
 //! copy. Deltas and positions in params are in stage space.
 
-use crate::cmds_draw::{MAX_EXTENT, add_shape, style};
+use crate::cmds_draw::{MAX_EXTENT, add_shape, object_param, style};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
 use anicraft_doc::{Element, ElementId, ElementKind, Shape};
@@ -18,13 +18,13 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.path", "Pen Path", "", None, "{d: SVG path data (stage space), fill?, stroke?, stroke_width?}", true, draw_path as crate::RunFn),
+        c("draw.path", "Pen Path", "", None, "{d: SVG path data (stage space), fill?, stroke?, stroke_width?, object?}", true, draw_path as crate::RunFn),
         c(
             "draw.freehand",
             "Pencil Stroke",
             "",
             None,
-            "{points: [[x, y], ..], mode?: \"smooth\"|\"straighten\"|\"ink\", tolerance? (stage units), closed?, stroke?, stroke_width?}",
+            "{points: [[x, y], ..], mode?: \"smooth\"|\"straighten\"|\"ink\", tolerance? (stage units), closed?, stroke?, stroke_width?, object?}",
             true,
             draw_freehand,
         ),
@@ -63,7 +63,7 @@ fn add_path(s: &mut Session, kind: &str, mut path: Path, p: &Value) -> Result<Va
     let (fill, stroke) = style(s, p, closed)?;
     let c = path.bounds().center();
     let local = path.transformed(&Affine::translate(-c.x, -c.y));
-    add_shape(s, kind, local, c, fill, stroke)
+    add_shape(s, kind, local, c, fill, stroke, object_param(s, p)?)
 }
 
 fn draw_path(s: &mut Session, p: &Value) -> Result<Value> {
@@ -129,6 +129,7 @@ fn shape_mut<'a>(s: &'a mut Session, p: &Value) -> Result<(&'a mut Shape, Affine
         ElementKind::Shape(sh) => Ok((sh, m)),
         ElementKind::Symbol { .. } => Err(EngineError::State("symbol instances have no points to edit (double-click to edit the symbol)".into())),
         ElementKind::Text(_) => Err(EngineError::State("text has no points to edit; break it apart (Ctrl+B) to edit its outlines".into())),
+        ElementKind::Camera => Err(EngineError::State("the camera has no points to edit".into())),
     }
 }
 

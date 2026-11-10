@@ -142,7 +142,7 @@ fn path_bytes(e: &Element) -> usize {
     match &e.kind {
         ElementKind::Shape(s) => size_of::<anicraft_geom::Path>() + s.path.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
         ElementKind::Text(t) => size_of::<anicraft_geom::Path>() + t.outline.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
-        ElementKind::Symbol { .. } => 0,
+        ElementKind::Symbol { .. } | ElementKind::Camera => 0,
     }
 }
 
@@ -174,7 +174,7 @@ fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>) -> usize {
                 .filter_map(|e| match &e.kind {
                     ElementKind::Shape(s) => Some(ptr(&s.path)),
                     ElementKind::Text(t) => Some(ptr(&t.outline)),
-                    ElementKind::Symbol { .. } => None,
+                    ElementKind::Symbol { .. } | ElementKind::Camera => None,
                 })
                 .collect()
         })

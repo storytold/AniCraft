@@ -32,8 +32,23 @@ struct TileTex {
     key: u64,
     /// Stage-space rectangle `[x0, y0, x1, y1]` this tile covers.
     rect: [f32; 4],
-    tex: egui::TextureHandle,
+    tex: TileImage,
     used: u64,
+}
+
+/// A tile's texture: uploaded from the CPU's bytes, or drawn there by the GPU stage (ADR 0029).
+enum TileImage {
+    Uploaded(egui::TextureHandle),
+    Drawn(crate::gpu_stage::NativeTile),
+}
+
+impl TileImage {
+    fn id(&self) -> egui::TextureId {
+        match self {
+            TileImage::Uploaded(t) => t.id(),
+            TileImage::Drawn(t) => t.id(),
+        }
+    }
 }
 
 pub struct Cache {
@@ -88,9 +103,18 @@ impl Cache {
         if self.tiles.iter().any(|t| t.key == img.key) {
             return None;
         }
-        let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
+        let tex = match &img.native {
+            // Already on the window's device: shown as it is, nothing to upload.
+            Some(native) => match self.gpu.register(native) {
+                Some(t) => TileImage::Drawn(t),
+                None => return Some("The GPU stage drew a picture the window can't show.".into()),
+            },
+            None => {
+                let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
+                TileImage::Uploaded(ctx.load_texture(format!("tile-{:x}", img.key), image, egui::TextureOptions::LINEAR))
+            }
+        };
         self.tick += 1;
-        let tex = ctx.load_texture(format!("tile-{:x}", img.key), image, egui::TextureOptions::LINEAR);
         self.tiles.push(TileTex { key: img.key, rect, tex, used: self.tick });
         // Evict least recently used tiles that are not on screen.
         while self.tiles.len() > MAX_TILE_TEXTURES {
@@ -149,6 +173,9 @@ fn to_v(p: Pos2) -> Vec2 {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let canvas = ui.max_rect();
+    let now = ui.input(|i| i.time);
+    crate::camera_tool::on_tool_change(app);
+    crate::camera_tool::tick(app, ui.ctx(), now);
     app.stage_cache.canvas = canvas;
     let resp = ui.allocate_rect(canvas, Sense::click_and_drag());
     // The drawing surface: Ctrl+F6 lands here, and screen readers hear the tool in hand.
@@ -178,6 +205,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if (zoom_delta - 1.0).abs() > 1e-4 {
                 let z = app.view.zoom * zoom_delta;
                 app.zoom_about(canvas, p, z);
+            } else if app.tool == Tool::Camera && scroll.y != 0.0 {
+                // With the Camera tool the wheel zooms the camera, not the view.
+                crate::camera_tool::wheel(app, scroll.y, now);
             } else if scroll != egui::Vec2::ZERO {
                 app.view.pan += scroll;
             }
@@ -218,6 +248,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let to_stage = |p: Pos2| pos2((p.x - origin.x) / zoom, (p.y - origin.y) / zoom);
     let stage_rect = Rect::from_min_size(origin, size * zoom);
     let painter = ui.painter_at(canvas);
+    // View > Preview Through Camera: the stage shows the movie's picture (ADR 0027). Artwork
+    // tools pause meanwhile (what they'd edit is in stage space, not where it shows).
+    let preview = crate::camera_tool::previewing(app);
+    let cam_geo = crate::camera_tool::Geo { origin, zoom, stage_rect, preview };
 
 
     // ---- tools ----------------------------------------------------------------------------
@@ -225,21 +259,41 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
     app.cursor_stage = pointer.filter(|p| canvas.contains(*p)).map(to_stage);
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
+    let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom);
+    if paused && (resp.drag_started() || resp.clicked()) {
+        app.status_ok("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit.");
+    }
     // Selection box in screen space (free transform handles live on it).
     let sel_bounds = bounds_arr(app.s.selection_bounds());
     let sel_rect = sel_bounds.map(|b| Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))));
     // Shape hint markers take the pointer first with the selection tools (ADR 0023).
-    let hint_tools = matches!(app.tool, Tool::Select | Tool::Transform | Tool::Subselect) && !panning;
+    let hint_tools = matches!(app.tool, Tool::Select | Tool::Transform | Tool::Subselect) && !panning && !preview;
     let hint_marks = if hint_tools { crate::shape_hints::markers(app) } else { Vec::new() };
     let hint_at = |p: Pos2| crate::shape_hints::hit(&hint_marks, p, to_screen);
     let hint_hot = pointer.and_then(hint_at);
 
     let xf = crate::pathtools::Xf { origin, zoom };
+    // Pen pressure, when a tablet reports it (the Brush tool's width follows it).
+    let pressure = crate::brushtool::frame_pressure(ui.ctx());
+    // The motion path takes the pointer with the selection tools (ADR 0030): its ends and
+    // handles before the object under them, the path itself only where no object is.
+    let mp_tools = matches!(app.tool, Tool::Select | Tool::Subselect) && !panning && !preview;
+    let mp_grab = |app: &App, p: Pos2| {
+        let shown = crate::motion_path::shown(app)?;
+        let open = app.s.hit_test(to_v(to_stage(p)), 3.0 / zoom).is_none();
+        crate::motion_path::hit(app, &shown, p, xf, open).map(|g| (shown, g))
+    };
+    let mp_hot = if mp_tools && app.drag == Drag::None { pointer.and_then(|p| mp_grab(app, p)).map(|(_, g)| g) } else { None };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
-            _ if matches!(app.drag, Drag::Hint { .. }) => CursorIcon::Grabbing,
+            _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. }) => CursorIcon::Grabbing,
+            _ if paused => CursorIcon::NotAllowed,
+            Tool::Camera if app.drag == Drag::None && pointer.is_some_and(|p| crate::camera_tool::on_knob(app, &cam_geo, p)) => CursorIcon::Alias,
+            Tool::Camera => CursorIcon::Grab,
             _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
+            _ if matches!(app.drag, Drag::MotionPath { .. }) => CursorIcon::Grabbing,
+            _ if mp_hot.is_some() => CursorIcon::Grab,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
@@ -256,7 +310,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -274,7 +328,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Ctrl+X/C/V go back to artwork.
         app.timeline_focus = false;
     }
-    if app.tool == Tool::Pen && !panning {
+    if app.tool == Tool::Pen && !panning && !paused {
         crate::pathtools::pen_input(app, ui, &resp, xf);
     }
 
@@ -283,9 +337,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let sp = to_stage(press);
         app.drag = if panning {
             Drag::Pan
+        } else if paused {
+            Drag::None
         } else if let Some(m) = hint_at(press) {
             app.s.begin_gesture("Move Shape Hint");
             Drag::Hint { index: m.index, side: m.side }
+        } else if let Some((shown, grab)) = mp_tools.then(|| mp_grab(app, press)).flatten() {
+            crate::motion_path::drag_start(app, shown, grab, to_v(sp))
         } else {
             match app.tool {
                 Tool::Select => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
@@ -327,14 +385,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
                 }
-                Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle => Drag::None,
+                Tool::Brush => crate::brushtool::start(app, to_v(sp), pressure),
+                // With the Faucet on, the eraser deletes on a click instead.
+                Tool::Eraser if !app.eraser.faucet => crate::erasertool::start(app, to_v(sp)),
+                Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Eraser => Drag::None,
                 Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => Drag::Shape { start: sp, cur: sp },
+                Tool::Camera => crate::camera_tool::drag_start(app, &cam_geo, press),
                 Tool::Hand => Drag::Pan,
                 Tool::Zoom => Drag::None,
             }
         };
     }
 
+    if resp.dragged()
+        && let Some(p) = resp.interact_pointer_pos()
+        && matches!(app.drag, Drag::CameraPan { .. } | Drag::CameraRotate { .. })
+    {
+        let mut d = app.drag;
+        crate::camera_tool::drag_to(app, &cam_geo, &mut d, p);
+        app.drag = d;
+    }
     if resp.dragged() {
         let cur = resp.interact_pointer_pos().map(to_stage);
         match (&mut app.drag, cur) {
@@ -360,6 +430,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
+            (Drag::MotionPath { grab, start }, Some(c)) => {
+                let (grab, start) = (*grab, *start);
+                crate::motion_path::drag_to(app, grab, start, c, alt);
+            }
             (Drag::Hint { index, side }, Some(c)) => {
                 // Live: the hint snaps to the nearest edge as the pointer moves.
                 let (index, side) = (*index, *side);
@@ -378,6 +452,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
             }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
+            (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf),
+            (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
             _ => {}
@@ -386,10 +462,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } => app.s.end_gesture(),
+            Drag::Move { .. } => {
+                app.drop_raw();
+                app.s.end_gesture();
+            }
+            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
+            Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
+            Drag::Brush => crate::brushtool::commit(app, xf),
+            Drag::Eraser => crate::erasertool::commit(app, xf),
             Drag::Marquee { start, cur } => {
                 let r = Rect::from_two_pos(start, cur);
                 let ids: Vec<u64> = app
@@ -408,16 +491,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             Drag::Shape { start, cur } => create_shape(app, start, cur),
-            Drag::Pan | Drag::None => {}
+            Drag::Pan | Drag::None | Drag::CameraWheel { .. } => {}
         }
         app.drag = Drag::None;
     }
 
     if resp.clicked()
+        && !paused
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
-                Tool::Subselect if !panning => crate::pathtools::subselect_click(app, p, shift, xf),
+                Tool::Subselect if !panning => {
+                    if !crate::motion_path::click(app, p, xf) {
+                        crate::pathtools::subselect_click(app, p, shift, xf);
+                    }
+                }
                 Tool::Width if !panning => crate::widthtool::click(app, p, xf),
                 Tool::PaintBucket if !panning => {
                     // The gap size is set in screen points, so it feels the same at any zoom.
@@ -426,6 +514,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         app.status_ok(if v.get("recolored").is_some() { "Recoloured the fill. Ctrl+Z to undo." } else { "Filled the area. Ctrl+Z to undo." });
                     }
                 }
+                Tool::Brush if !panning => {
+                    // A click paints a dab.
+                    crate::brushtool::start(app, to_v(sp), pressure);
+                    crate::brushtool::commit(app, xf);
+                }
+                Tool::Eraser if !panning => {
+                    if app.eraser.faucet {
+                        crate::erasertool::faucet(app, to_v(sp), zoom);
+                    } else {
+                        // A click erases a dab.
+                        crate::erasertool::start(app, to_v(sp));
+                        crate::erasertool::commit(app, xf);
+                    }
+                }
+                Tool::Eyedropper if !panning => crate::erasertool::eyedropper(app, to_v(sp), shift, zoom),
                 Tool::InkBottle if !panning => {
                     app.run("paint.ink", json!({"x": sp.x, "y": sp.y, "slop": 4.0 / zoom.max(1e-3)}));
                 }
@@ -454,6 +557,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     if resp.secondary_clicked()
         && app.hint_menu.is_none()
+        && !preview
         && let Some(p) = resp.interact_pointer_pos()
     {
         let sp = to_stage(p);
@@ -464,13 +568,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Double-clicking text with the Selection tool edits it, as in Animate.
     if app.tool == Tool::Select
+        && !preview
         && resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
         commit_text(app);
-        open_text_at(app, to_stage(p), 3.0 / zoom.max(1e-3));
+        let sp = to_stage(p);
+        // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and its outline.
+        if !open_text_at(app, sp, 3.0 / zoom.max(1e-3)) {
+            app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": 3.0 / zoom.max(1e-3)}));
+        }
     }
     if app.tool == Tool::Subselect
+        && !preview
         && resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -547,7 +657,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Render jobs take movie frames: the current scene starts at `start`.
         let start = app.s.doc.scene_start(app.s.scene);
         let frame = app.s.frame;
-        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion); (t, j) }).collect();
+        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion).through_camera(preview); (t, j) }).collect();
         let keys: Vec<u64> = jobs.iter().map(|(_, j)| j.key).collect();
         let missing: Vec<usize> = (0..jobs.len()).filter(|&i| !app.stage_cache.has(keys[i])).collect();
 
@@ -612,10 +722,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let n = app.s.frame_count().max(1);
                 for d in 1..=LOOKAHEAD.min(n - 1) {
                     let f = (frame + d) % n;
-                    ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, false)));
+                    ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, false).through_camera(preview)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion).through_camera(preview)));
             }
             svc.prefetch(ahead);
         }
@@ -640,7 +750,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
         // While a background render catches up with a drag, outline where the selection is now,
         // so the artwork never seems to lag the pointer.
-        if ready < keys.len() && matches!(app.drag, Drag::Move { .. } | Drag::Transform { .. }) {
+        if ready < keys.len() && !preview && matches!(app.drag, Drag::Move { .. } | Drag::Transform { .. }) {
             let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
             let dl = app.s.display_list();
             let stroke = Stroke::new(1.5, T.selection);
@@ -655,6 +765,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_stroke(stage_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
 
     // ---- overlays -------------------------------------------------------------------------
+    // The camera frame (or, previewing, the Camera tool's handle) comes first, under the
+    // selection.
+    crate::camera_tool::draw(app, &painter, &cam_geo, pointer);
+    if preview {
+        // The movie's picture: stage-space overlays don't belong on it.
+        painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, "Camera view", crate::theme::font(crate::theme::Type::Caption), T.text_dim);
+        let badge = format!("{:.0}%", zoom * 100.0);
+        painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
+        crate::a11y::surface(ui, &resp, &format!("Stage · previewing through the camera · {} tool · frame {}", app.tool.label(), app.s.frame + 1));
+        return;
+    }
     // Mask artwork is never painted; while its layer is unlocked (editable), its edge shows in
     // the layer colour so it can be seen, picked and reshaped. Locking the mask hides the edge.
     // Guide artwork never renders either: it always shows here, as a line in the guide's layer
@@ -672,12 +793,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let sel_stroke = Stroke::new(1.0, T.selection);
+    let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None
         && app.palette.is_none()
         && !app.modal_open()
         && let Some(sp) = app.cursor_stage
             && let Some((_, el)) = app.s.hit_test(to_v(sp), 3.0 / zoom)
-                && !app.s.selection.contains(&el) {
+                && !app.s.selection.contains(&el) && !raw.contains(&el) {
                     let b = app.s.element_bounds(el);
                     if !b.is_empty() {
                         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max));
@@ -685,6 +807,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
     let transforming = app.tool == Tool::Transform;
+    // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
+    if app.tool == Tool::Select {
+        let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
+        let mut mesh = egui::Mesh::default();
+        let mut budget = MAX_DOTS;
+        for item in app.s.display_list().items.iter().filter(|i| app.s.selection.contains(&i.element) && raw.contains(&i.element)) {
+            selection_dots(&mut mesh, item, &to_px.mul(&item.transform), canvas, &mut budget);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
     for id in app.s.selection.clone() {
         let b = app.s.element_bounds(id);
         if b.is_empty() {
@@ -694,6 +826,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if matches!(app.tool, Tool::Subselect | Tool::Width) {
             // Subselection and Width show outlines and points instead (below).
             continue;
+        }
+        if app.tool == Tool::Select && raw.contains(&id) {
+            continue; // dots above
         }
         if transforming {
             // Free transform shows one box for the whole selection (below); members get a hint.
@@ -729,6 +864,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
+    crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
+    crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
+    // After this frame's edits, so a drag on the path shows where it is now.
+    if !preview
+        && let Some(shown) = crate::motion_path::shown(app)
+    {
+        let hot = match app.drag {
+            Drag::MotionPath { grab, .. } => Some(grab),
+            _ => mp_hot,
+        };
+        crate::motion_path::draw(app, &painter, &shown, xf, hot);
+    }
     match app.drag {
         Drag::Marquee { start, cur } => {
             let r = Rect::from_two_pos(to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)));
@@ -766,6 +913,99 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         n => format!(" · {n} elements selected"),
     };
     crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
+}
+
+// ----- raw shapes (ADR 0031) ---------------------------------------------------------------------
+
+/// The raw shapes (parts of the layer's merged drawing) on the active layer.
+fn raw_ids(app: &App) -> std::collections::HashSet<anicraft_engine::doc::ElementId> {
+    app.s.visible_elements().iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(|e| e.id).collect()
+}
+
+/// Most selection dots drawn in a frame.
+const MAX_DOTS: usize = 60_000;
+
+/// Animate's selection look for raw shapes: fine dots over the selected fill or stroke, light and
+/// dark in a checker so they show on any colour. They sit on a fixed screen grid, so they don't
+/// crawl when the view pans; `m` maps the item's path to the screen.
+fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
+    const GAP: f32 = 3.0;
+    let mut dot = |p: Pos2| {
+        if clip.contains(p) && *budget > 0 {
+            *budget -= 1;
+            let dark = ((p.x / GAP).round() as i64 + (p.y / GAP).round() as i64).rem_euclid(2) == 0;
+            mesh.add_colored_rect(Rect::from_center_size(p, vec2(1.5, 1.5)), if dark { T.selection } else { Color32::WHITE });
+        }
+        *budget > 0
+    };
+    let lines = item.path.flatten(m, 0.5);
+    if item.fill.is_some() {
+        let b = item.path.bounds().transformed(m);
+        let mut y = (b.min.y.max(clip.top()) / GAP).ceil() * GAP;
+        let bottom = b.max.y.min(clip.bottom());
+        let mut xs: Vec<f32> = Vec::new();
+        while y <= bottom {
+            // Where this row crosses the outline; pairs of crossings are inside (even-odd: raw
+            // fills never overlap themselves).
+            xs.clear();
+            for pl in &lines {
+                let n = pl.points.len();
+                for i in 0..n {
+                    let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
+                    if (a.y > y) != (c.y > y) {
+                        xs.push(a.x + (y - a.y) * (c.x - a.x) / (c.y - a.y));
+                    }
+                }
+            }
+            xs.sort_by(f32::total_cmp);
+            for [x0, x1] in xs.as_chunks::<2>().0 {
+                let mut x = (x0.max(clip.left()) / GAP).ceil() * GAP;
+                while x <= x1.min(clip.right()) {
+                    if !dot(pos2(x, y)) {
+                        return;
+                    }
+                    x += GAP;
+                }
+            }
+            y += GAP;
+        }
+    }
+    if let Some(st) = &item.stroke {
+        // Along the stroke, in rows across its width; segments off the screen are skipped.
+        let half = (st.reach() * m.mean_scale()).max(0.5);
+        let rows = (half / GAP).floor() as i32;
+        let near = clip.expand(half + GAP);
+        for pl in &lines {
+            let n = pl.points.len();
+            let segs = if pl.closed { n } else { n.saturating_sub(1) };
+            let mut carry = 0.0;
+            for i in 0..segs {
+                let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
+                let d = c - a;
+                let len = d.length();
+                if len <= 1e-6 {
+                    continue;
+                }
+                if !near.intersects(Rect::from_two_pos(pos2(a.x, a.y), pos2(c.x, c.y))) {
+                    carry = (carry - len).rem_euclid(GAP);
+                    continue;
+                }
+                let (dir, normal) = (d * (1.0 / len), d.perp() * (1.0 / len));
+                let mut t = carry;
+                while t < len {
+                    let p = a + dir * t;
+                    for k in -rows..=rows {
+                        let q = p + normal * (k as f32 * GAP);
+                        if !dot(pos2(q.x, q.y)) {
+                            return;
+                        }
+                    }
+                    t += GAP;
+                }
+                carry = t - len;
+            }
+        }
+    }
 }
 
 // ----- text ----------------------------------------------------------------------------------------
@@ -953,7 +1193,7 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
 }
 
 fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32) {
-    let st = app.s.style;
+    let st = &app.s.style;
     let fill = if st.use_fill { crate::theme::to_color32(st.fill).gamma_multiply(0.6) } else { Color32::TRANSPARENT };
     let stroke = Stroke::new((st.stroke_width * zoom).max(1.0), if st.use_stroke { crate::theme::to_color32(st.stroke) } else { T.selection });
     match app.tool {

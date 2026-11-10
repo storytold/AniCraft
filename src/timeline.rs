@@ -113,7 +113,7 @@ pub fn paste_params(app: &App) -> Option<serde_json::Value> {
 
 /// An icon button: a full-size target around a Lucide glyph, named by its tooltip.
 /// `on` is a toggle's state (`None` for a plain button); a toggle that is on is filled.
-fn icon_button(ui: &mut egui::Ui, tip: &str, on: Option<bool>, icon: Icon) -> egui::Response {
+pub fn icon_button(ui: &mut egui::Ui, tip: &str, on: Option<bool>, icon: Icon) -> egui::Response {
     let active = on == Some(true);
     let (rect, resp) = ui.allocate_exact_size(vec2(TARGET + 4.0, TARGET), Sense::click());
     // Same language as the tools: a toggle that is on is a lighter gray block, icon white.
@@ -152,6 +152,18 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
     let onion = app.onion;
     if icon_button(ui, "Onion skin", Some(onion), Icon::Onion).clicked() {
         app.onion = !app.onion;
+    }
+    // Add Camera, as Animate has it on the timeline: on while the scene has a camera; a click
+    // then takes it away (asking first when the camera moves; undoable).
+    let has = app.s.doc.timeline(app.s.scene).camera_layer().is_some();
+    if icon_button(ui, if has { "Remove camera" } else { "Add camera" }, Some(has), Icon::Camera).clicked() {
+        if has {
+            app.request("camera.remove", json!({}));
+        } else if app.run("camera.add", json!({})).is_some() {
+            app.tool = crate::app::Tool::Camera;
+            app.last_tool = crate::app::Tool::Camera;
+            app.status_ok("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. Ctrl+Z to undo.");
+        }
     }
 }
 
@@ -348,6 +360,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 type_icon(x0 + 7.0, Icon::Guide);
                 x0 + 20.0
             }
+            LayerKind::Camera => {
+                type_icon(x0 + 7.0, Icon::Camera);
+                x0 + 20.0
+            }
             _ => x0 + 4.0,
         };
         painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
@@ -356,7 +372,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let toggle = |k: f32| Rect::from_center_size(pos2(left.right() - 16.0 - k * (TOGGLE + 2.0), left.center().y), vec2(TOGGLE, TOGGLE));
         let (eye, lock, outl) = (toggle(2.0), toggle(1.0), toggle(0.0));
         let hover = ui.input(|inp| inp.pointer.hover_pos());
-        for r in [eye, lock, outl] {
+        // The camera has no artwork to outline: its row has the eye (camera on or off) and lock.
+        let is_camera = layer.kind == LayerKind::Camera;
+        for r in [eye, lock, outl].into_iter().take(if is_camera { 2 } else { 3 }) {
             if hover.is_some_and(|h| r.contains(h)) {
                 painter.rect_filled(r, T.rc(), T.hover);
             }
@@ -369,7 +387,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         icons::paint(&painter, glyph(lock), if layer.locked { Icon::Lock } else { Icon::Unlock }, if layer.locked { c_on } else { c_off });
         // outline swatch
         let sw = Rect::from_center_size(outl.center(), vec2(10.0, 10.0));
-        if layer.outline {
+        if is_camera {
+            // The swatch shows the frame's colour on the stage.
+            painter.rect_filled(sw.shrink(2.0), 0.0, to_color32(layer.color));
+        } else if layer.outline {
             painter.rect_stroke(sw, 0.0, Stroke::new(1.5, to_color32(layer.color)), StrokeKind::Inside);
         } else {
             painter.rect_filled(sw, 0.0, to_color32(layer.color));
@@ -381,6 +402,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             LayerKind::Folder => "folder",
             LayerKind::Mask => "mask layer",
             LayerKind::Guide => "guide layer",
+            LayerKind::Camera => "camera layer",
             LayerKind::Normal if masked => "masked layer",
             LayerKind::Normal => "layer",
         };
@@ -390,7 +412,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if is_active || r == first_row {
             a11y::anchor(ui, a11y::Region::Timeline, dock, &nr);
         }
-        for (r, id, salt, verb, on) in [(eye, "layer.toggle_visible", "eye", "Show", layer.visible), (lock, "layer.toggle_lock", "lock", "Lock", layer.locked), (outl, "layer.toggle_outline", "outline", "Outline", layer.outline)] {
+        for (r, id, salt, verb, on) in [(eye, "layer.toggle_visible", "eye", "Show", layer.visible), (lock, "layer.toggle_lock", "lock", "Lock", layer.locked), (outl, "layer.toggle_outline", "outline", "Outline", layer.outline)].into_iter().take(if is_camera { 2 } else { 3 }) {
             let rr = ui.interact(r, ui.id().with((salt, layer.id.0)), Sense::click());
             a11y::control(ui, &rr, WidgetType::Checkbox, &format!("{verb} {}", layer.name), Some(on));
             if rr.clicked() {
@@ -416,6 +438,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         nr.context_menu(|ui| {
             ui.set_min_width(200.0);
+            if is_camera {
+                // The camera layer: on or off, locked or not, or gone.
+                for id in ["layer.rename", "layer.toggle_visible", "layer.toggle_lock"] {
+                    menus::cmd_item(app, ui, id);
+                }
+                ui.separator();
+                if ui.button("Preview Through Camera").clicked() {
+                    app.toggle_camera_preview();
+                    ui.close();
+                }
+                if ui.button("Remove Camera").clicked() {
+                    app.request("camera.remove", json!({}));
+                    ui.close();
+                }
+                return;
+            }
             for id in ["layer.rename", "layer.new", "layer.new_folder", "layer.delete"] {
                 menus::cmd_item(app, ui, id);
             }
@@ -535,8 +573,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 cp.circle_filled(kc, 4.0, mark);
             }
+            // Keyframes that run actions carry an "a" after the dot (Animate puts one there too).
+            let after = if k.script.is_some() {
+                cp.text(kc + vec2(6.5, -1.0), Align2::LEFT_CENTER, "a", font(Type::DataSmall), mark);
+                9.0
+            } else {
+                0.0
+            };
             if !k.label.is_empty() {
-                cp.text(kc + vec2(8.0, -1.0), Align2::LEFT_CENTER, &k.label, font(Type::Caption), mark);
+                cp.text(kc + vec2(8.0 + after, -1.0), Align2::LEFT_CENTER, &k.label, font(Type::Caption), mark);
             }
         }
         // Selected frames, and where a keyframe drag would drop them.
@@ -922,6 +967,14 @@ pub fn easing_param(e: Easing) -> serde_json::Value {
 }
 
 /// The timeline header, left to right: tabs, transport, readouts, frame and tween buttons.
+/// The frame rate as the header shows it: whole rates without decimals ("24 fps"), others
+/// with as many as they need ("29.97 fps", "12.5 fps").
+fn fps_label(fps: f32) -> String {
+    let s = format!("{fps:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{s} fps")
+}
+
 fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
     // Two tabs share the dock: the timeline and the Motion Editor.
     for (tab, name, tip) in [(BottomTab::Timeline, "Timeline", "Layers and frames"), (BottomTab::MotionEditor, "Motion Editor", "Property curves of the motion tween at the playhead (double-click a motion span)")] {
@@ -934,16 +987,16 @@ fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
             app.bottom = tab;
         }
     }
-    ui.add_space(8.0);
+    ui.add_space(4.0);
     transport(app, ui);
-    ui.add_space(8.0);
+    ui.add_space(4.0);
     let fps = app.s.doc.stage.fps;
     let f = app.s.frame;
     // Fixed-width readouts: digits stay put while the playhead moves.
     let digits = app.s.frame_count().max(f + 1).to_string().len().max(3);
     ui.label(text(Type::DataLarge, format!("{:>digits$}", f + 1)).color(T.accent_text)).named("Current frame").on_hover_text("Current frame");
-    ui.label(text(Type::Data, format!("{fps:.2} fps")).color(T.text_dim)).on_hover_text("Frame rate");
-    ui.label(text(Type::Data, format!("{:>7.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text("Time at the playhead");
+    ui.label(text(Type::Data, fps_label(fps)).color(T.text_dim)).on_hover_text("Frame rate");
+    ui.label(text(Type::Data, format!("{:>6.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text("Time at the playhead");
     ui.separator();
     // Through `invoke`, so the buttons act on the frame selection like the keys do.
     let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
@@ -1030,6 +1083,15 @@ mod tests {
 
     fn layers(n: u64) -> Vec<Arc<Layer>> {
         (1..=n).map(|i| Arc::new(Layer::new(LayerId(i), format!("L{i}")))).collect()
+    }
+
+    #[test]
+    fn frame_rates_read_without_needless_decimals() {
+        assert_eq!(fps_label(24.0), "24 fps");
+        assert_eq!(fps_label(30.0), "30 fps");
+        assert_eq!(fps_label(29.97), "29.97 fps");
+        assert_eq!(fps_label(12.5), "12.5 fps");
+        assert_eq!(fps_label(120.0), "120 fps");
     }
 
     #[test]

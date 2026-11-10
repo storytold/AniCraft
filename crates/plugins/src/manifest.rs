@@ -10,15 +10,32 @@ pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 /// Most parameters a plug-in may declare.
 pub const MAX_PARAMS: usize = 32;
 
-/// What a plug-in is. ABI v1 has command plug-ins only; exporters, easing presets and frame
-/// scripts are later kinds on the same host (ADR 0017).
+/// What a plug-in is (ADR 0017); exporters and easing presets are later kinds on the same
+/// host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
     /// Runs once on demand (a menu item, the palette, `plugin.run`) and edits the document
     /// through commands: generators and selection transforms.
     Command,
+    /// Runs while a movie plays, when the playhead enters a keyframe that names one of its
+    /// entry points; it reads the player state and emits timeline actions, never edits
+    /// (ADR 0024).
+    #[serde(rename = "frame-script")]
+    FrameScript,
 }
+
+impl Kind {
+    pub fn key(self) -> &'static str {
+        match self {
+            Kind::Command => "command",
+            Kind::FrameScript => "frame-script",
+        }
+    }
+}
+
+/// Most entry points a frame-script plug-in may declare.
+pub const MAX_ENTRIES: usize = 32;
 
 /// Whether a command plug-in works on the selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -72,6 +89,10 @@ pub struct Manifest {
     /// Parameters in declaration (dialog) order; a JSON object `{"name": spec, …}` in the manifest.
     #[serde(default, deserialize_with = "ordered_params")]
     pub params: Vec<(String, ParamSpec)>,
+    /// A frame-script plug-in's entry points (`["main"]` when it names none), each
+    /// `[A-Za-z0-9_]{1,32}`; a keyframe picks one.
+    #[serde(default)]
+    pub entries: Vec<String>,
 }
 
 impl Manifest {
@@ -81,8 +102,11 @@ impl Manifest {
             return Err(Error::Manifest(format!("it is {} bytes (limit {MAX_MANIFEST_BYTES})", bytes.len())));
         }
         let text = std::str::from_utf8(bytes).map_err(|_| Error::Manifest("it is not UTF-8".into()))?;
-        let man: Manifest = serde_json::from_str(text).map_err(|e| Error::Manifest(e.to_string()))?;
+        let mut man: Manifest = serde_json::from_str(text).map_err(|e| Error::Manifest(e.to_string()))?;
         man.validate()?;
+        if man.kind == Kind::FrameScript && man.entries.is_empty() {
+            man.entries.push("main".into());
+        }
         Ok(man)
     }
 
@@ -98,6 +122,17 @@ impl Manifest {
         }
         if [&self.version, &self.description, &self.author].iter().any(|s| s.chars().any(|c| (c.is_control() && c != '\n') || hidden_format(c))) {
             return Err(Error::Manifest("`version`, `description` and `author` must be printable text".into()));
+        }
+        if self.entries.len() > MAX_ENTRIES {
+            return Err(Error::Manifest(format!("at most {MAX_ENTRIES} entry points")));
+        }
+        for (i, e) in self.entries.iter().enumerate() {
+            if !(1..=32).contains(&e.len()) || !e.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return Err(Error::Manifest(format!("invalid entry point {e:?}: use 1-32 characters from a-z A-Z 0-9 _")));
+            }
+            if self.entries.iter().take(i).any(|o| o == e) {
+                return Err(Error::Manifest(format!("entry point `{e}` is declared twice")));
+            }
         }
         for (i, (k, _)) in self.params.iter().enumerate() {
             if self.params.iter().take(i).any(|(o, _)| o == k) {
@@ -353,6 +388,11 @@ mod tests {
             assert!(Manifest::parse(b.as_bytes()).is_err(), "accepted {b}");
         }
         assert!(Manifest::parse(&[0xff, 0xfe]).is_err());
+        for bad in [r#"{"id":"a","name":"X","kind":"frame-script","entries":["a b"]}"#, r#"{"id":"a","name":"X","kind":"frame-script","entries":["a","a"]}"#] {
+            assert!(Manifest::parse(bad.as_bytes()).is_err(), "accepted {bad}");
+        }
+        let fs = Manifest::parse(br#"{"id":"a","name":"X","kind":"frame-script"}"#).unwrap();
+        assert_eq!((fs.kind, fs.entries.as_slice()), (Kind::FrameScript, ["main".to_string()].as_slice()));
         assert!(Manifest::parse(&vec![b' '; MAX_MANIFEST_BYTES + 1]).is_err());
         let many: Vec<String> = (0..=MAX_PARAMS).map(|i| format!("\"p{i}\":{{\"type\":\"bool\"}}")).collect();
         assert!(man(&format!("{{{}}}", many.join(","))).is_err());

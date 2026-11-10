@@ -194,7 +194,7 @@ impl Entry {
 
 /// Commands the palette can run without extra input (everything optional, or prompted).
 fn runnable(c: &CommandSpec) -> bool {
-    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
+    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
         return true;
     }
     let inner = c.params.trim().trim_start_matches('{').trim_end_matches('}');
@@ -206,6 +206,7 @@ fn entries() -> Vec<Entry> {
     v.extend(Tool::ALL.iter().map(|t| Entry::Tool(*t)));
     v.push(Entry::View("Play / Stop", "Enter", App::toggle_play));
     v.push(Entry::View("Onion Skin", "", |a| a.onion = !a.onion));
+    v.push(Entry::View("Preview Through Camera", "", App::toggle_camera_preview));
     v.push(Entry::View("Fit Stage in Window", "Ctrl+0", |a| a.view.fit = true));
     v.push(Entry::View("Keyboard Shortcuts", "F1", |a| a.show_shortcuts = true));
     v.push(Entry::View("Project Files & Docs", "", |a| a.show_files = true));
@@ -235,7 +236,7 @@ fn palette(app: &mut App, ctx: &egui::Context) {
     let km = &app.keymap;
     let Some(p) = &mut app.palette else { return };
     let mut all = entries();
-    all.extend(app.s.plugins.list().map(|p| Entry::Plugin(p.id().to_string(), crate::plugins_ui::label(p))));
+    all.extend(app.s.plugins.list().filter(|p| crate::plugins_ui::is_command(p)).map(|p| Entry::Plugin(p.id().to_string(), crate::plugins_ui::label(p))));
     let mut matches: Vec<(i32, Entry, String)> =
         all.into_iter().filter_map(|e| {
             let key = e.shortcut(km);
@@ -446,7 +447,8 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                         let status = match app.stage_cache.gpu.state() {
                             State::Off => None,
                             State::Starting => Some("Starting the graphics card…".to_string()),
-                            State::Running(adapter) => Some(format!("Drawing on {adapter}.")),
+                            State::Running { adapter, direct: true } => Some(format!("Drawing on {adapter}, straight into the window.")),
+                            State::Running { adapter, direct: false } => Some(format!("Drawing on {adapter}, then copied to the window (slower: the window's graphics device can't be shared).")),
                             State::Failed(why) => Some(format!("The graphics card can't draw the stage, so the CPU does: {why}")),
                         };
                         if crate::gpu_stage::wanted(p.stage_renderer) != p.stage_renderer {

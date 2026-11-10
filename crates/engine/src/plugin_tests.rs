@@ -15,12 +15,12 @@ fn esc(s: &str) -> String {
 
 /// A plug-in that sends `requests` in order, then returns `code`. With `check`, it returns 1
 /// as soon as an answer isn't `{"ok":true…` (byte 6 is `t`).
-fn plugin(manifest: &str, requests: &[&str], check: bool, code: i32) -> Vec<u8> {
+pub(crate) fn plugin(manifest: &str, requests: &[&str], check: bool, code: i32) -> Vec<u8> {
     plugin_then(manifest, requests, check, "", code)
 }
 
 /// [`plugin`], running `tail` before it returns.
-fn plugin_then(manifest: &str, requests: &[&str], check: bool, tail: &str, code: i32) -> Vec<u8> {
+pub(crate) fn plugin_then(manifest: &str, requests: &[&str], check: bool, tail: &str, code: i32) -> Vec<u8> {
     let mut data = format!("(data (i32.const 1024) \"{}\")\n", esc(manifest));
     let mut body = String::new();
     let mut at = 8192;
@@ -169,7 +169,7 @@ fn every_command_namespace_has_a_plugin_policy() {
         let ns = c.id.split('.').next().unwrap_or("");
         let verdict = plugin_may_call(c.id);
         match ns {
-            "file" | "plugin" => assert!(verdict.is_err(), "{} must be refused", c.id),
+            "file" | "plugin" | "control" => assert!(verdict.is_err(), "{} must be refused", c.id),
             _ => assert!(verdict.is_ok() || matches!(c.id, "edit.undo" | "edit.redo") || c.id.contains("copy") || c.id.contains("cut") || c.id.contains("paste"), "{} has no plug-in policy (add its namespace to plugin_may_call)", c.id),
         }
     }

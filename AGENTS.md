@@ -11,14 +11,15 @@ crates/geom     L0  Vec2, Affine (decompose/compose), Rect, Path, flattening, hi
 crates/xml      L0  Bounded XML element reader shared by the importers (XFL, SVG)
 crates/plugins  L0  Sandboxed WebAssembly plug-ins: wasmi host, ABI v1, limits, registry (ADR 0017)
 crates/audio    L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing and resampling, WAV, peaks (ADR 0020)
-crates/doc      L1  Document model, easing, timeline evaluation, sample scene
+crates/actions  L0  Timeline action IR: stop/play/goto, targets, button events, frame scripts (ADR 0024)
+crates/doc      L1  Document model, easing, timeline evaluation, the interactive player, sample scene
 crates/text     L1  Fonts on this computer, shaping and line layout into outlines (ADR 0012)
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
 crates/svg      L2  SVG import: shapes, groups, use, styles, gradients, clips/masks → mask layers, text
 crates/mohoproj-import L2  Moho import: .mohoproj/.moho JSON + zip readers, mesh → paths, maop_maohou sidecar
 crates/engine   L3  Session, undo (with gesture coalescing), command registry, .anicraft format
-crates/gpu      L3  wgpu stage renderer over the oracle's fills: tile binning, compute coverage (ADR 0019)
+crates/gpu      L3  wgpu stage renderer (the default stage): tile binning, compute coverage, bitmaps, filters (ADR 0019, 0031)
 crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve/mcp
 src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
 ```
@@ -107,9 +108,6 @@ a new crate needs a row here and in its `LAYERS` table.
   workspace map) conflict-free. ADR numbers are assigned by the lead when a task starts, so
   parallel tracks never collide. A track never merges its own PR: the lead reviews it
   (principal engineer and senior designer) and merges it when CI is green, one at a time.
-* **At most three track agents at once.** All agents share one account's usage limit; seven
-  at once exhausted it within hours and stopped every track and the lead mid-merge. Three
-  keep work moving and leave the lead room to review and merge.
 * **A new command namespace** needs a plug-in policy (`plugin_may_call` in
   `crates/engine/src/cmds_plugin.rs`); a test fails until it has one.
 * **Outside pull requests** that match a roadmap task are reviewed and their good ideas

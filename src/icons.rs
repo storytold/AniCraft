@@ -19,6 +19,9 @@ pub enum Icon {
     Transform,
     Pen,
     Pencil,
+    Brush,
+    Eraser,
+    Eyedropper,
     Rect,
     Oval,
     PolyStar,
@@ -60,11 +63,13 @@ pub enum Icon {
     Type,
     Width,
     Sound,
+    Camera,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 46] = [
+    pub const ALL: [Icon; 50] = [
+        Icon::Camera,
         Icon::Width,
         Icon::Sound,
         Icon::Guide,
@@ -89,6 +94,9 @@ impl Icon {
         Icon::Transform,
         Icon::Pen,
         Icon::Pencil,
+        Icon::Brush,
+        Icon::Eraser,
+        Icon::Eyedropper,
         Icon::Rect,
         Icon::Oval,
         Icon::PolyStar,
@@ -130,6 +138,12 @@ impl Icon {
             Icon::Width => ("anicraft-width", false),
             Icon::Pen => ("pen-tool", false),
             Icon::Pencil => ("pencil", false),
+            // A round brush: handle, ferrule and a painted tip (AniCraft original, on Lucide's grid).
+            Icon::Brush => ("anicraft-brush", false),
+            // A block eraser on its edge, its sleeve marked off (AniCraft original).
+            Icon::Eraser => ("anicraft-eraser", false),
+            // A dropper: bulb, collar, glass tube and a drop (AniCraft original).
+            Icon::Eyedropper => ("anicraft-eyedropper", false),
             Icon::Rect => ("rectangle-horizontal", false),
             Icon::Oval => ("circle", false),
             Icon::PolyStar => ("pentagon", false),
@@ -172,6 +186,8 @@ impl Icon {
             Icon::Mask => ("anicraft-mask", false),
             Icon::Masked => ("anicraft-masked", false),
             Icon::Folder => ("folder", false),
+            // A film camera with its two reels (AniCraft original, on Lucide's grid).
+            Icon::Camera => ("anicraft-camera", false),
             Icon::FolderOpen => ("folder-open", false),
         }
     }
@@ -219,7 +235,11 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-distribute-v", include_str!("../assets/icons/anicraft-distribute-v.svg")),
     ("anicraft-mask", include_str!("../assets/icons/anicraft-mask.svg")),
     ("anicraft-width", include_str!("../assets/icons/anicraft-width.svg")),
+    ("anicraft-brush", include_str!("../assets/icons/anicraft-brush.svg")),
+    ("anicraft-eraser", include_str!("../assets/icons/anicraft-eraser.svg")),
+    ("anicraft-eyedropper", include_str!("../assets/icons/anicraft-eyedropper.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
+    ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
 ];

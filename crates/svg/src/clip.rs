@@ -42,13 +42,13 @@ fn element_bounds(e: &ImportedElement) -> Rect {
     match &e.kind {
         ElementKind::Shape(s) => s.path.bounds().inflate(s.stroke.as_ref().map_or(0.0, |st| st.width * 0.5)).transformed(&e.transform),
         ElementKind::Text(t) => t.outline.bounds().union(&Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0))).transformed(&e.transform),
-        ElementKind::Symbol { .. } => Rect::EMPTY,
+        ElementKind::Symbol { .. } | ElementKind::Camera => Rect::EMPTY,
     }
 }
 
 /// A fill-only shape for mask artwork (its colour doesn't matter: a mask is its fills' area).
 fn mask_part(name: String, path: Path, transform: Affine, rule: FillRule) -> ImportedElement {
-    let shape = Shape { path: Arc::new(path), fill: Some(Paint::Solid(Rgba::BLACK)), stroke: None, fill_rule: rule };
+    let shape = Shape { path: Arc::new(path), fill: Some(Paint::Solid(Rgba::BLACK)), stroke: None, fill_rule: rule, merge: false };
     ImportedElement { name, transform, alpha: 1.0, kind: ElementKind::Shape(shape) }
 }
 
@@ -87,7 +87,7 @@ impl Region {
             let (path, rule) = match &p.kind {
                 ElementKind::Shape(s) => (s.path.transformed(&p.transform), s.fill_rule),
                 ElementKind::Text(t) => (t.outline.transformed(&p.transform), FillRule::NonZero),
-                ElementKind::Symbol { .. } => continue,
+                ElementKind::Symbol { .. } | ElementKind::Camera => continue,
             };
             let cut = clip_convex(&path, poly);
             if !cut.is_empty() {
@@ -175,7 +175,7 @@ impl<'a> Builder<'a> {
                     }
                 }
                 ElementKind::Text(t) => r = r.union(&Rect::new(0.0, 0.0, t.box_width, t.box_height).transformed(&to_user)),
-                ElementKind::Symbol { .. } => {}
+                ElementKind::Symbol { .. } | ElementKind::Camera => {}
             }
         }
         (r.min.x <= r.max.x && r.min.y <= r.max.y).then_some(r)
@@ -308,7 +308,7 @@ impl<'a> Builder<'a> {
                 && match &e.kind {
                     ElementKind::Shape(s) => s.stroke.is_none() && matches!(s.fill, Some(Paint::Solid(c)) if opaque(c)),
                     ElementKind::Text(t) => opaque(t.color),
-                    ElementKind::Symbol { .. } => false,
+                    ElementKind::Symbol { .. } | ElementKind::Camera => false,
                 };
             if !ok {
                 soft = true;

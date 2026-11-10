@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
-        CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{}", mutates: false, run: new_sample },
+        CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{which?: demo (default) | interactive (a menu with a Play button, for Test Movie)}", mutates: false, run: new_sample },
         CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path}", mutates: false, run: open },
         CommandSpec { id: "file.save", label: "Save", menu: "File", shortcut: Some("Ctrl+S"), params: "{path?, confirm?}", mutates: false, run: save },
         CommandSpec {
@@ -83,6 +83,15 @@ pub fn specs() -> Vec<CommandSpec> {
             mutates: false,
             run: export_lottie,
         },
+        CommandSpec {
+            id: "file.export_html",
+            label: "Export HTML Canvas…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.html: one self-contained page), title? (default: the file name), sound? (default true: embed the movie's sounds), fit? (default true: scale to the browser window), confirm?}",
+            mutates: false,
+            run: export_html,
+        },
         CommandSpec { id: "edit.undo", label: "Undo", menu: "Edit", shortcut: Some("Ctrl+Z"), params: "{}", mutates: false, run: |s, _| s.undo() },
         CommandSpec { id: "edit.redo", label: "Redo", menu: "Edit", shortcut: Some("Ctrl+Y"), params: "{}", mutates: false, run: |s, _| s.redo() },
         CommandSpec {
@@ -124,8 +133,13 @@ fn new_doc(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(s.info())
 }
 
-fn new_sample(s: &mut Session, _: &Value) -> Result<Value> {
-    s.replace_document(sample::demo(), None);
+fn new_sample(s: &mut Session, p: &Value) -> Result<Value> {
+    let doc = match opt_str(p, "which")? {
+        None | Some("demo") => sample::demo(),
+        Some("interactive") => sample::interactive(),
+        Some(other) => return Err(EngineError::Param(format!("unknown sample '{other}' (demo or interactive)"))),
+    };
+    s.replace_document(doc, None);
     Ok(json!({"frames": s.frame_count()}))
 }
 
@@ -362,6 +376,7 @@ fn import_image(s: &mut Session, path: &std::path::Path, bytes: Vec<u8>) -> Resu
         fill: Some(anicraft_doc::Paint::Bitmap { bitmap: id, repeat: false, matrix: anicraft_geom::Affine::IDENTITY }),
         stroke: None,
         fill_rule: anicraft_geom::FillRule::NonZero,
+        merge: false,
     };
     Ok(anicraft_svg::SvgImport::single(w, h, vec![anicraft_svg::ImportedElement { name, transform: anicraft_geom::Affine::IDENTITY, alpha: 1.0, kind: anicraft_doc::ElementKind::Shape(shape) }]))
 }
@@ -635,6 +650,44 @@ fn export_lottie(s: &mut Session, p: &Value) -> Result<Value> {
         format!("Approximated or left out: {}.", out.report.iter().map(|(k, n)| format!("{k} on {n}")).collect::<Vec<_>>().join(", "))
     };
     Ok(json!({"written": path.display().to_string(), "frames": to - from + 1, "layers": out.layers, "bytes": out.json.len(), "report": summary, "notes": out.report}))
+}
+
+/// The movie as one web page that plays in a browser, buttons and frame actions included
+/// (see `anicraft_render::html`, ADR 0028).
+fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = PathBuf::from(str_req(p, "path")?);
+    let stem: String = path.file_stem().map_or_else(|| "AniCraft movie".into(), |n| n.to_string_lossy().chars().take(128).collect());
+    let title = match opt_str(p, "title")? {
+        Some(t) if t.chars().count() > 256 => return Err(EngineError::Param("param 'title' is at most 256 characters".into())),
+        Some(t) if !t.trim().is_empty() => t.to_string(),
+        _ => stem,
+    };
+    let opts = anicraft_render::html::HtmlOptions { title, sound: opt_bool(p, "sound")?.unwrap_or(true), fit: opt_bool(p, "fit")?.unwrap_or(true) };
+    let started = std::time::Instant::now();
+    let out = anicraft_render::html::to_html(&s.doc, &opts).map_err(EngineError::Param)?;
+    std::fs::write(&path, out.html.as_bytes())?;
+    let summary = if out.report.is_empty() {
+        String::new()
+    } else {
+        format!("Approximated or left out: {}.", out.report.iter().map(|(k, n)| format!("{k} on {n}")).collect::<Vec<_>>().join(", "))
+    };
+    let st = out.stats;
+    Ok(json!({
+        "written": path.display().to_string(),
+        "bytes": out.html.len(),
+        "frames": s.doc.frame_count(),
+        "scenes": s.doc.scenes.len(),
+        "timelines": st.timelines,
+        "stored_frames": st.contents,
+        "paths": st.paths,
+        "images": st.images,
+        "sounds": st.sounds,
+        "data_bytes": st.data_bytes,
+        "code_bytes": st.code_bytes,
+        "ms": started.elapsed().as_millis() as u64,
+        "report": summary,
+        "notes": out.report,
+    }))
 }
 
 fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {
