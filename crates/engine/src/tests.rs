@@ -580,6 +580,14 @@ fn panic_hunt_every_command() {
         json!({"points": [[0, 0], [40, 40], [90, 5]], "size": 30, "mode": "selected_fills", "x": 30, "y": 30, "slop": 0}),
         json!({"points": [[45, 45]], "size": 2000, "mode": "inside", "x": 45, "y": 45, "other": true, "fill": false, "stroke": true}),
         json!({"points": [[5, 5], [55, 55]], "size": 4, "mode": "lines", "shape": "square", "x": 1, "y": 1, "fill": "yes"}),
+        // The Selection tool on raw shapes (ADR 0041): corners and edges of the raw rectangles,
+        // stale and hostile point lists, huge snaps and marquees, segments that aren't there.
+        json!({"x": 30, "y": 30, "to_x": 1e7, "to_y": -1e7, "snap": 1e9, "merge": false, "dx": 1e7, "dy": -1e7}),
+        json!({"x": 60, "y": 45, "to_x": 30.1, "to_y": 30, "snap": 10, "points": [[1, 99_999], [u64::MAX, 0]], "cmd": 1, "t": 2}),
+        json!({"x": 45, "y": 30, "dx": 5, "dy": 5, "cmd": u64::MAX, "t": f64::NAN, "id": 2, "slop": 1e9}),
+        json!({"x0": 10, "y0": 10, "x1": 45, "y1": 75, "add": true, "from": [1, 2, 3], "snap": 3}),
+        json!({"x0": -1e7, "y0": 1e7, "x1": 1e7, "y1": -1e7, "add": false, "from": [45, 45], "snap": 0.2}),
+        json!({"x0": 30, "y0": 30, "x1": 30, "y1": 30, "point_slop": -5, "ids": [u64::MAX], "points": "x"}),
         // Kept scripts (ADR 0013 tier 1): odd text, unknown languages, class names that aren't.
         json!({"text": "\u{0}\r\n]]>\u{202e}stop();", "language": "other", "class": "a.b", "base": "c", "symbol": 1}),
         json!({"text": "x".repeat(1 << 20), "language": 3, "class": "not a class", "base": ""}),

@@ -256,3 +256,77 @@ fn a_search_that_runs_out_of_steps_declines_the_merge() {
     let (a, b) = (arc(100.0), arc(100.3));
     assert_eq!(merge(&[stroked(&a, None, 1), stroked(&b, None, 1)]).map(|m| m.strokes.len()), Some(2));
 }
+
+// ----- snapping within SNAP and cutting (ADR 0041) -----------------------------------------------
+
+fn ends(p: &Path) -> Vec<Vec2> {
+    p.anchors().into_iter().map(|(_, v)| v).collect()
+}
+
+#[test]
+fn anchors_within_snap_meet_at_their_midpoint() {
+    // Issue #42 §4: two ends 0.1 apart (a keyboard nudge's reach) become one point halfway.
+    let a = Path::line(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0));
+    let b = Path::line(Vec2::new(50.1, 0.1), Vec2::new(50.1, 50.0));
+    let m = run(&[stroked(&a, None, 1), stroked(&b, None, 1)]);
+    assert_eq!(m.strokes.len(), 2, "{m:?}");
+    let mid = Vec2::new(50.05, 0.05);
+    for s in &m.strokes {
+        assert!(ends(&s.path).iter().any(|p| p.distance(mid) < 1e-4), "{:?}", s.path);
+    }
+    // A fill corner and a line end too: the corner moves halfway, so the outline stays closed.
+    let r = rect(0.0, 0.0, 10.0, 10.0);
+    let l = Path::line(Vec2::new(10.12, 10.0), Vec2::new(30.0, 30.0));
+    let m = run(&[fill(&r, 1), stroked(&l, None, 2)]);
+    let corner = Vec2::new(10.06, 10.0);
+    assert!(m.fills.iter().any(|f| ends(&f.path).iter().any(|p| p.distance(corner) < 1e-4)), "{m:?}");
+    assert!(m.strokes.iter().any(|s| ends(&s.path).iter().any(|p| p.distance(corner) < 1e-4)), "{m:?}");
+}
+
+#[test]
+fn an_end_near_a_line_goes_onto_it_and_the_line_stays_straight() {
+    // Issue #42 §4: "an anchor point snaps to a line without modifying it".
+    let a = Path::line(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
+    let b = Path::line(Vec2::new(40.0, 0.15), Vec2::new(40.0, 60.0));
+    let m = run(&[stroked(&a, None, 1), stroked(&b, None, 1)]);
+    // The long line is cut where the other meets it (a T), and every piece stays on y = 0.
+    let flat: Vec<&Piece> = m.strokes.iter().filter(|s| ends(&s.path).iter().all(|p| p.y.abs() < 1e-4)).collect();
+    assert_eq!(flat.len(), 2, "{m:?}");
+    assert!(m.strokes.iter().any(|s| ends(&s.path).iter().any(|p| p.distance(Vec2::new(40.0, 0.0)) < 1e-4) && ends(&s.path).iter().any(|p| p.y > 59.0)), "the end moved onto the line: {m:?}");
+}
+
+#[test]
+fn a_cutter_splits_fills_and_strokes_and_the_parts_add_up() {
+    let r = rect(0.0, 0.0, 100.0, 80.0);
+    let marquee = rect(60.0, -10.0, 100.0, 50.0);
+    let m = merge_cut(&[stroked(&r, Some(1), 2)], &marquee).unwrap_or_default();
+    // The fill in two: 40 × 40 inside (the marquee is x 60–160, y −10–40), the rest outside,
+    // adding up to the whole.
+    let inside: f32 = m.fills.iter().filter(|p| p.inside).map(|p| area(&p.path)).sum();
+    let outside: f32 = m.fills.iter().filter(|p| !p.inside).map(|p| area(&p.path)).sum();
+    assert!(near(inside, 40.0 * 40.0, 0.5), "{inside}");
+    assert!(near(inside + outside, 8000.0, 0.5), "{}", inside + outside);
+    assert!(m.fills.iter().all(|p| p.style == 1));
+    // Nothing of the marquee comes out: only the rectangle's own sides, cut where it crosses
+    // them (the top and the right side are cut there).
+    let len = |p: &Path| p.flatten(&crate::Affine::IDENTITY, 0.01).iter().map(|pl| pl.points.windows(2).map(|w| w[0].distance(w[1])).sum::<f32>()).sum::<f32>();
+    let total: f32 = m.strokes.iter().map(|s| len(&s.path)).sum();
+    assert!(near(total, 360.0, 0.05), "{total}");
+    let inner: f32 = m.strokes.iter().filter(|s| s.inside).map(|s| len(&s.path)).sum();
+    assert!(near(inner, 40.0 + 40.0, 0.05), "the top's right 40 and the right side's upper 40: {inner}");
+    assert!(m.strokes.iter().all(|s| s.style == 2));
+    // Without a cutter nothing is inside.
+    assert!(run(&[stroked(&r, Some(1), 2)]).fills.iter().all(|p| !p.inside));
+}
+
+#[test]
+fn a_cutter_over_a_curve_cuts_exact_pieces() {
+    let c = Path::ellipse(0.0, 0.0, 50.0, 50.0);
+    let marquee = rect(-100.0, -100.0, 100.0, 100.0);
+    let m = merge_cut(&[fill(&c, 1)], &marquee).unwrap_or_default();
+    let inside: f32 = m.fills.iter().filter(|p| p.inside).map(|p| area(&p.path)).sum();
+    let all: f32 = m.fills.iter().map(|p| area(&p.path)).sum();
+    // A quarter of the disc, to within the ellipse's Bézier approximation.
+    assert!(near(inside * 4.0, all, 1.0), "{inside} of {all}");
+    assert_eq!(m.fills.len(), 2);
+}

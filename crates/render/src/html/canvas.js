@@ -332,5 +332,5 @@
     report(player.start());
     resize();
     requestAnimationFrame(tick);
-  });
+  }).catch((e) => console.error("AniCraft: the movie couldn't start", e));
 })();

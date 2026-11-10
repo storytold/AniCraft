@@ -504,4 +504,257 @@ mod tests {
         assert_eq!(handles(&p, &[0, 2]), vec![(1, C1, 0), (2, C2, 2)], "every selected anchor shows its handles");
         assert!(is_end(0, 3) && is_end(2, 3) && !is_end(1, 3));
     }
+
+    /// The pointer and keyboard paths, on a headless app showing the sample's curved motion
+    /// path (the `motionpoints` screenshot setup: the span selected, Subselection, anchor 1).
+    mod headless {
+        use super::*;
+
+        /// Stage and screen coordinates coincide.
+        const XF: Xf = Xf { origin: Pos2::ZERO, zoom: 1.0 };
+
+        #[test]
+        fn hit_finds_handles_anchors_and_segments_per_tool() {
+            let mut app = app();
+            let s = shown(&app).expect("the motion path shows");
+            assert_eq!(s.path.cmds.len(), 3);
+            let handle = s.path.point(1, C2).unwrap();
+            assert_eq!(hit(&app, &s, screen(handle), XF, true), Some(Grab::Handle(1, C2)));
+            assert_eq!(hit(&app, &s, screen(anchor(&s, 1)), XF, true), Some(Grab::Anchor(1)));
+            assert_eq!(hit(&app, &s, far(), XF, true), None);
+            app.tool = Tool::Select;
+            assert_eq!(hit(&app, &s, screen(anchor(&s, 1)), XF, false), None, "Selection takes only the ends");
+            assert_eq!(hit(&app, &s, screen(anchor(&s, 2)), XF, false), Some(Grab::Anchor(2)));
+            let mid = screen(s.path.segment_point(1, 0.5).unwrap());
+            assert!(matches!(hit(&app, &s, mid, XF, true), Some(Grab::Segment(1, _))));
+            assert_eq!(hit(&app, &s, mid, XF, false), None, "the press goes to the object first");
+        }
+
+        #[test]
+        fn clicks_select_anchors_and_shift_toggles_them() {
+            let mut app = app();
+            let s = shown(&app).unwrap();
+            assert!(click(&mut app, screen(anchor(&s, 0)), XF, false));
+            assert_eq!(app.motion_anchors, vec![0]);
+            assert!(click(&mut app, screen(anchor(&s, 2)), XF, true));
+            assert_eq!(app.motion_anchors, vec![0, 2]);
+            assert!(click(&mut app, screen(anchor(&s, 0)), XF, true));
+            assert_eq!(app.motion_anchors, vec![2]);
+            assert!(click(&mut app, screen(s.path.segment_point(1, 0.5).unwrap()), XF, true), "on the path");
+            assert_eq!(app.motion_anchors, vec![2], "Shift on the path keeps the selection");
+            assert!(click(&mut app, screen(s.path.segment_point(1, 0.5).unwrap()), XF, false));
+            assert!(app.motion_anchors.is_empty());
+            app.motion_anchors = vec![1];
+            assert!(!click(&mut app, far(), XF, false), "off the path");
+            assert!(app.motion_anchors.is_empty());
+        }
+
+        #[test]
+        fn a_right_click_selects_the_anchor_under_it() {
+            let mut app = app();
+            let s = shown(&app).unwrap();
+            assert!(secondary_click(&mut app, screen(anchor(&s, 2)), XF));
+            assert_eq!(app.motion_anchors, vec![2]);
+            app.motion_anchors = vec![1, 2];
+            assert!(secondary_click(&mut app, screen(anchor(&s, 2)), XF));
+            assert_eq!(app.motion_anchors, vec![1, 2], "a selection it is part of stays");
+            assert!(secondary_click(&mut app, screen(s.path.segment_point(0, 0.5).unwrap_or_else(|| s.path.segment_point(1, 0.25).unwrap())), XF));
+            assert!(!secondary_click(&mut app, far(), XF));
+            app.tool = Tool::Select;
+            assert!(!secondary_click(&mut app, screen(anchor(&s, 2)), XF), "only with Subselection");
+        }
+
+        #[test]
+        fn a_double_click_on_the_path_adds_an_anchor_in_one_undo_step() {
+            let mut app = app();
+            let s = shown(&app).unwrap();
+            assert!(!double_click(&mut app, far(), XF));
+            assert!(!double_click(&mut app, screen(anchor(&s, 1)), XF), "an anchor is there already");
+            let steps = app.s.history().undo_len();
+            assert!(double_click(&mut app, screen(s.path.segment_point(1, 0.5).unwrap()), XF));
+            assert_eq!(cmds(&app), 4);
+            assert_eq!(app.motion_anchors.len(), 1, "the new anchor is selected");
+            assert!(status(&app).contains("Added a point"));
+            assert_eq!(app.s.history().undo_len(), steps + 1);
+            app.tool = Tool::Select;
+            assert!(!double_click(&mut app, screen(s.path.segment_point(1, 0.5).unwrap()), XF), "only with Subselection");
+        }
+
+        #[test]
+        fn the_pen_adds_with_alt_click_on_the_path_only() {
+            let mut app = app();
+            app.tool = Tool::Pen;
+            let s = shown(&app).unwrap();
+            let mid = screen(s.path.segment_point(1, 0.5).unwrap());
+            assert!(matches!(pen_hot(&app, mid, XF), Some(Grab::Segment(1, _))));
+            assert_eq!(pen_hot(&app, screen(anchor(&s, 1)), XF), None);
+            assert_eq!(pen_hot(&app, far(), XF), None);
+            assert!(pen_alt_click(&mut app, mid, XF));
+            assert_eq!(cmds(&app), 4);
+            app.tool = Tool::Subselect;
+            assert!(!pen_alt_click(&mut app, mid, XF), "only with the Pen");
+        }
+
+        #[test]
+        fn deleting_points_keeps_the_ends_and_says_so() {
+            let mut app = app();
+            app.motion_anchors = vec![0, 1, 9];
+            delete_selected(&mut app);
+            assert_eq!(cmds(&app), 2);
+            assert!(status(&app).contains("its ends stay"), "{}", status(&app));
+            assert!(app.motion_anchors.is_empty());
+            // Nothing selected: nothing happens.
+            let steps = app.s.history().undo_len();
+            delete_selected(&mut app);
+            assert_eq!(app.s.history().undo_len(), steps);
+        }
+
+        #[test]
+        fn deleting_a_middle_point_reports_one_point() {
+            let mut app = app();
+            delete_selected(&mut app);
+            assert_eq!(cmds(&app), 2);
+            assert!(status(&app).starts_with("Deleted 1 point from the motion path."), "{}", status(&app));
+        }
+
+        #[test]
+        fn converting_points_is_one_undo_step() {
+            let mut app = app();
+            let steps = app.s.history().undo_len();
+            convert_selected(&mut app, false);
+            assert_eq!(app.s.history().undo_len(), steps + 1);
+            assert_eq!(app.s.undo_label(), Some("Make Corner"));
+            app.motion_anchors.clear();
+            convert_selected(&mut app, true);
+            assert_eq!(app.s.history().undo_len(), steps + 1, "no anchor, no step");
+        }
+
+        #[test]
+        fn dragging_an_end_moves_it_in_one_undo_step() {
+            let mut app = app();
+            let s = shown(&app).unwrap();
+            let end = anchor(&s, 2);
+            let steps = app.s.history().undo_len();
+            let drag = drag_start(&mut app, s, Grab::Anchor(2), end);
+            assert_eq!(app.motion_anchors, vec![2], "the grabbed anchor becomes the selection");
+            let Drag::MotionPath { grab, start } = drag else { panic!("a motion path drag") };
+            drag_to(&mut app, grab, start, start + vec2(10.0, 0.0), false);
+            drag_to(&mut app, grab, start, start + vec2(20.0, 5.0), false);
+            drag_end(&mut app);
+            assert!(app.motion_drag.is_none());
+            assert_eq!(app.s.history().undo_len(), steps + 1);
+            let moved = anchor(&shown(&app).unwrap(), 2);
+            assert!(moved.distance(end + Vec2::new(20.0, 5.0)) < 1e-2, "{moved:?}");
+            // With no drag in progress, following the pointer does nothing.
+            drag_to(&mut app, grab, start, start + vec2(99.0, 0.0), false);
+            assert_eq!(anchor(&shown(&app).unwrap(), 2), moved);
+        }
+
+        #[test]
+        fn moving_the_whole_path_keeps_its_shape() {
+            let mut app = app();
+            let s = shown(&app).unwrap();
+            assert!(move_hit(&app, screen(anchor(&s, 1)), XF));
+            assert!(move_hit(&app, screen(s.path.segment_point(1, 0.5).unwrap()), XF));
+            assert!(!move_hit(&app, far(), XF));
+            let before: Vec<Vec2> = s.path.anchors().into_iter().map(|(_, q)| q).collect();
+            let drag = move_start(&mut app, before[0]);
+            assert!(matches!(drag, Drag::MotionMove { .. }));
+            move_to(&mut app, Vec2::ZERO);
+            move_to(&mut app, Vec2::new(5.0, -3.0));
+            app.s.end_gesture();
+            assert_eq!(app.s.undo_label(), Some("Move Motion Path"));
+            let after: Vec<Vec2> = shown(&app).unwrap().path.anchors().into_iter().map(|(_, q)| q).collect();
+            for (a, b) in before.iter().zip(&after) {
+                assert!(b.distance(*a + Vec2::new(5.0, -3.0)) < 1e-2, "{a:?} -> {b:?}");
+            }
+        }
+
+        #[test]
+        fn upkeep_forgets_anchors_the_path_lost() {
+            let mut app = app();
+            app.motion_anchors = vec![1, 7];
+            upkeep(&mut app);
+            assert_eq!(app.motion_anchors, vec![1]);
+            app.motion_anchors.clear();
+            upkeep(&mut app);
+            assert!(app.motion_anchors.is_empty());
+        }
+
+        #[test]
+        fn delete_and_escape_act_on_the_selected_points() {
+            let (mut app, ctx) = app_and_ctx();
+            frame_with_key(&ctx, &mut app, Key::Escape);
+            assert!(app.motion_anchors.is_empty(), "Escape drops the anchor selection");
+            app.motion_anchors = vec![1];
+            frame_with_key(&ctx, &mut app, Key::Delete);
+            assert_eq!(cmds(&app), 2);
+            // Not with Selection: Delete is then the global shortcut's.
+            app.tool = Tool::Select;
+            app.motion_anchors = vec![0];
+            frame_with_key(&ctx, &mut app, Key::Escape);
+            assert_eq!(app.motion_anchors, vec![0]);
+        }
+
+        #[test]
+        fn the_menu_and_the_drawing_need_subselection_and_a_selection() {
+            let (mut app, ctx) = app_and_ctx();
+            let s = shown(&app).unwrap();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                assert!(menu(&mut app, ui));
+                draw(&app, ui.painter(), &s, XF, Some(Grab::Handle(1, C2)));
+                app.motion_anchors.clear();
+                assert!(!menu(&mut app, ui), "no anchor selected");
+                app.tool = Tool::Select;
+                assert!(!menu(&mut app, ui));
+                draw(&app, ui.painter(), &s, XF, Some(Grab::Segment(1, 0.5)));
+            });
+            out.textures_delta.clear();
+        }
+
+        // ----- helpers -----
+
+        fn app_and_ctx() -> (App, egui::Context) {
+            let ctx = egui::Context::default();
+            let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+            // Screenshot mode: default preferences, no autosave, no plug-in folder.
+            let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")), None);
+            app.open_panel(Some("motionpoints"));
+            assert_eq!(app.tool, Tool::Subselect);
+            assert_eq!(app.motion_anchors, vec![1]);
+            (app, ctx)
+        }
+
+        fn app() -> App {
+            app_and_ctx().0
+        }
+
+        fn frame_with_key(ctx: &egui::Context, app: &mut App, key: Key) {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+            let mut out = ctx.run_ui(input, |ui| consume_keys(app, ui.ctx()));
+            // The textures it made have nowhere to go: drop them.
+            out.textures_delta.clear();
+        }
+
+        fn anchor(s: &Shown, i: usize) -> Vec2 {
+            s.path.point(i, ANCHOR).unwrap()
+        }
+
+        fn screen(q: Vec2) -> Pos2 {
+            XF.to_screen(q)
+        }
+
+        fn far() -> Pos2 {
+            pos2(-5000.0, -5000.0)
+        }
+
+        fn cmds(app: &App) -> usize {
+            shown(app).map_or(0, |s| s.path.cmds.len())
+        }
+
+        fn status(app: &App) -> String {
+            app.status.as_ref().map(|s| s.text.clone()).unwrap_or_default()
+        }
+    }
 }

@@ -18,7 +18,7 @@ crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes,
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
 crates/svg      L2  SVG import: shapes, groups, use, styles, gradients, clips/masks → mask layers, text
 crates/engine   L3  Session, undo (with gesture coalescing), command registry, .anicraft format
-crates/gpu      L3  wgpu stage renderer (the default stage): tile binning, compute coverage, bitmaps, filters (ADR 0019, 0031)
+crates/gpu      L3  wgpu stage renderer (the default stage): tile binning, compute coverage, bitmaps, filters (ADR 0019, 0029, 0032)
 crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve/mcp
 src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
 ```
@@ -31,7 +31,10 @@ a new crate needs a row here and in its `LAYERS` table.
 
 * **Principal-engineer check.** For every proposal ask: "Is this how a principal engineer
   would do it?" If not, use the better method or ask the project lead. Record hard-to-reverse
-  decisions as ADRs in `docs/adr/`.
+  decisions as ADRs in `docs/adr/`. **ADR numbers never move:** take the next number above
+  every ADR and every reservation in `docs/adr/README.md`, and reserve it there in the same
+  PR. An open PR keeps its number until it merges or closes, so no one renumbers because
+  another PR merged first; maintainers reserve the numbers outside PRs already use.
 * **Users are artists and creatives** (many coming from Adobe Animate). The product must be
   professional, fast, reliable and easy, with smooth, predictable flow: common actions one
   click or key away, shortcuts for power users, no modal interruptions for routine edits.
@@ -106,8 +109,8 @@ a new crate needs a row here and in its `LAYERS` table.
   workspace produce artifacts with the same names, so a single shared folder lets one track's
   build overwrite another's and tests run against the wrong code. Before opening or updating
   a PR, bring in `origin/main` and keep shared files (CHANGELOG, roadmap, Cargo.lock, the
-  workspace map) conflict-free. ADR numbers are assigned by the lead when a task starts, so
-  parallel tracks never collide. A track never merges its own PR: the lead reviews it
+  workspace map) conflict-free. ADR numbers are reserved in `docs/adr/README.md` when a task
+  starts and never move (see below). A track never merges its own PR: the lead reviews it
   (principal engineer and senior designer) and merges it when CI is green, one at a time.
 * **A new command namespace** needs a plug-in policy (`plugin_may_call` in
   `crates/engine/src/cmds_plugin.rs`); a test fails until it has one.
