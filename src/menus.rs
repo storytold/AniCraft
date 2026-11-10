@@ -7,7 +7,7 @@ use anicraft_engine::{CommandSpec, commands};
 
 // Commands sits where Animate has it: after Modify, before Control.
 // English keys (the registry's menu paths start with them), translated where they are drawn.
-const TOP_MENUS: [&str; 9] = [tr_noop!("File"), tr_noop!("Edit"), tr_noop!("View"), tr_noop!("Insert"), tr_noop!("Modify"), tr_noop!("Commands"), tr_noop!("Control"), tr_noop!("Window"), tr_noop!("Help")];
+pub(crate) const TOP_MENUS: [&str; 9] = [tr_noop!("File"), tr_noop!("Edit"), tr_noop!("View"), tr_noop!("Insert"), tr_noop!("Modify"), tr_noop!("Commands"), tr_noop!("Control"), tr_noop!("Window"), tr_noop!("Help")];
 
 pub fn bar(app: &mut App, ui: &mut egui::Ui) {
     let cmds = commands();
@@ -114,7 +114,7 @@ fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>
     clicked
 }
 
-fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
+pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
     if top == "Commands" {
         // Installed plug-ins first (they change at run time), then the registry's items.
         crate::plugins_ui::menu(app, ui, cmds, item);

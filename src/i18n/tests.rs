@@ -423,7 +423,8 @@ const EGUI_OWN: [&str; 1] = ["Close window"];
 
 /// Names a screen reader would announce that are still plain English in the pseudo-locale,
 /// for the window after `setup` (a few frames to settle).
-fn untranslated_names(what: &str, setup: impl FnOnce(&mut crate::app::App, &egui::Context)) -> Vec<String> {
+/// The app on a headless context with AccessKit on, in the pseudo-locale, after `setup`.
+fn pseudo_app(setup: impl FnOnce(&mut crate::app::App, &egui::Context)) -> (crate::app::App, egui::Context) {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
@@ -432,20 +433,22 @@ fn untranslated_names(what: &str, setup: impl FnOnce(&mut crate::app::App, &egui
     app.prefs.language = PSEUDO.into();
     app.apply_prefs(&ctx);
     setup(&mut app, &ctx);
+    (app, ctx)
+}
+
+fn screen() -> egui::RawInput {
+    egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), ..Default::default() }
+}
+
+/// Names in `nodes` that are ours and still plain English.
+fn plain_names(what: &str, app: &crate::app::App, nodes: Vec<(egui::accesskit::NodeId, egui::accesskit::Node)>) -> Vec<String> {
     // Document text is the document's (layer, symbol and scene names): not ours to translate.
     let mut doc_text = BTreeSet::new();
     if let Ok(v) = serde_json::to_value(&app.s.doc) {
         strings_in(&v, &mut doc_text);
     }
-    let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), ..Default::default() };
-    let mut update = None;
-    for _ in 0..3 {
-        let mut out = ctx.run_ui(input(), |ui| app.frame(ui));
-        out.textures_delta.clear();
-        update = out.platform_output.accesskit_update;
-    }
     let mut found = BTreeSet::new();
-    for (_, n) in update.map(|u| u.nodes).unwrap_or_default() {
+    for (_, n) in nodes {
         for name in [n.label(), n.description()].into_iter().flatten() {
             // egui names its own window close button; it offers no way to name it ourselves
             // (docs/localisation.md › Not yet).
@@ -459,6 +462,72 @@ fn untranslated_names(what: &str, setup: impl FnOnce(&mut crate::app::App, &egui
     found.into_iter().collect()
 }
 
+fn untranslated_names(what: &str, setup: impl FnOnce(&mut crate::app::App, &egui::Context)) -> Vec<String> {
+    let (mut app, ctx) = pseudo_app(setup);
+    let mut update = None;
+    for _ in 0..3 {
+        let mut out = ctx.run_ui(screen(), |ui| app.frame(ui));
+        out.textures_delta.clear();
+        update = out.platform_output.accesskit_update;
+    }
+    plain_names(what, &app, update.map(|u| u.nodes).unwrap_or_default())
+}
+
+#[test]
+fn every_menu_item_is_translated() {
+    // The menus are built from the command registry when they open; each is drawn here as it
+    // opens, in the pseudo-locale, and every item it shows must have been translated.
+    let mut found = Vec::new();
+    for top in crate::menus::TOP_MENUS {
+        let (mut app, ctx) = pseudo_app(|_, _| {});
+        let cmds = anicraft_engine::commands();
+        let mut update = None;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(screen(), |ui| crate::menus::menu_contents(&mut app, ui, top, &cmds));
+            out.textures_delta.clear();
+            update = out.platform_output.accesskit_update;
+        }
+        let nodes = update.map(|u| u.nodes).unwrap_or_default();
+        assert!(nodes.len() > 2, "the {top} menu drew nothing");
+        found.extend(plain_names(top, &app, nodes));
+    }
+    assert!(found.is_empty(), "menu items not translated:\n{}", found.join("\n"));
+}
+
+#[test]
+fn status_messages_after_commands_are_translated() {
+    // What the status bar says after a command (and the screen reader announces) is ours.
+    let (mut app, _ctx) = pseudo_app(|_, _| {});
+    let steps: &[(&str, serde_json::Value)] = &[
+        ("layer.select", serde_json::json!({"index": 0})),
+        ("edit.select_all", serde_json::json!({})),
+        ("edit.delete", serde_json::json!({})),
+        ("edit.undo", serde_json::json!({})),
+        ("edit.redo", serde_json::json!({})),
+        ("timeline.clear_keyframe", serde_json::json!({})),
+        ("timeline.remove_frame", serde_json::json!({})),
+        ("draw.erase_all", serde_json::json!({})),
+        ("layer.new", serde_json::json!({})),
+        ("layer.delete", serde_json::json!({"confirm": true})),
+        ("scene.new", serde_json::json!({})),
+        ("scene.prev", serde_json::json!({})),
+        ("scene.next", serde_json::json!({})),
+        ("scene.delete", serde_json::json!({"confirm": true})),
+        ("file.new_sample", serde_json::json!({"which": "interactive"})),
+        ("file.new", serde_json::json!({"confirm": true})),
+    ];
+    let mut plain = Vec::new();
+    for (id, params) in steps {
+        app.status = None;
+        app.perform(id, params.clone());
+        match &app.status {
+            Some(s) if !s.text.chars().any(pseudo::is_accented) => plain.push(format!("{id}: {:?}", s.text)),
+            _ => {}
+        }
+    }
+    assert!(plain.is_empty(), "status lines in plain English:\n{}", plain.join("\n"));
+}
+
 #[test]
 fn screen_reader_names_are_translated_too() {
     // ADR 0022 names every control; ADR 0040 translates them. In the pseudo-locale every name
@@ -469,6 +538,29 @@ fn screen_reader_names_are_translated_too() {
     for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::Eyedropper, Tool::Pen, Tool::Camera] {
         found.extend(untranslated_names(&format!("{tool:?} tool"), |a, _| a.tool = tool));
     }
+    // Selections and states that change what Properties, the timeline and the dialogs show.
+    found.extend(untranslated_names("shape selected", |a, _| {
+        a.run("layer.select", serde_json::json!({"index": 0}));
+        a.run("edit.select_all", serde_json::json!({}));
+    }));
+    found.extend(untranslated_names("text selected", |a, _| {
+        a.run("text.create", serde_json::json!({"x": 40.0, "y": 40.0, "text": "Title"}));
+        a.run("edit.select_all", serde_json::json!({}));
+    }));
+    found.extend(untranslated_names("button instance", |a, _| {
+        a.perform("file.new_sample", serde_json::json!({"which": "interactive"}));
+        if let Some(button) = a.s.doc.library.iter().find(|s| s.kind == anicraft_engine::doc::SymbolKind::Button).map(|s| s.id.0) {
+            a.run("library.place", serde_json::json!({"symbol": button, "x": 100.0, "y": 100.0}));
+        }
+        crate::actions_panel::open(a, crate::actions_panel::Tab::Instance);
+    }));
+    found.extend(untranslated_names("close guard", |a, _| {
+        a.run("layer.new", serde_json::json!({}));
+        a.close_dialog = true;
+    }));
+    found.extend(untranslated_names("library item", |a, _| {
+        a.library_sel = a.s.doc.library.first().map(|s| crate::app::LibraryItem::Symbol(s.id));
+    }));
     for panel in ["select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "testmovie", "exporthtml", "envelope"] {
         found.extend(untranslated_names(panel, |a, _| a.open_panel(Some(panel))));
     }
