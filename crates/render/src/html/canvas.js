@@ -215,7 +215,9 @@
 
   // ----- sound ------------------------------------------------------------------------------------
   // Event and Start sounds play in full from their keyframe; Stream sounds play over their
-  // keyframe's span; Stop stops the sound. Browsers start audio only after a click or a key.
+  // keyframe's span; Stop stops the sound. Each is heard at its layers' volume, through its
+  // effect's envelope (a gain per channel, straight lines between [seconds, left, right]
+  // points). Browsers start audio only after a click or a key.
   let audio = null;
   const buffers = [];
   const voices = [];
@@ -236,7 +238,7 @@
   }
   function play(sounds) {
     if (!audio || audio.state !== "running") return;
-    for (const [i, sync, repeat, loop, span] of sounds) {
+    for (const [i, sync, repeat, loop, span, gain, env] of sounds) {
       const b = buffers[i];
       const playing = voices.filter((v) => v.sound === i && v.end > audio.currentTime);
       if (sync === "stop") {
@@ -246,8 +248,31 @@
       if (!b || (sync === "start" && playing.length)) continue;
       const src = audio.createBufferSource();
       src.buffer = b;
-      src.connect(audio.destination);
       const t = audio.currentTime;
+      let out = src;
+      if (env && env.length) {
+        // Up to stereo (a mono sound on both sides), split, one gain per channel, merged.
+        const up = audio.createGain();
+        up.channelCount = 2;
+        up.channelCountMode = "explicit";
+        up.channelInterpretation = "speakers";
+        const split = audio.createChannelSplitter(2);
+        const merge = audio.createChannelMerger(2);
+        src.connect(up);
+        up.connect(split);
+        for (const c of [0, 1]) {
+          const g = audio.createGain();
+          g.gain.setValueAtTime(env[0][1 + c], t);
+          for (const p of env) g.gain.linearRampToValueAtTime(p[1 + c], t + p[0]);
+          split.connect(g, c);
+          g.connect(merge, 0, c);
+        }
+        out = merge;
+      }
+      const volume = audio.createGain();
+      volume.gain.value = gain === undefined || gain === null ? 1 : gain;
+      out.connect(volume);
+      volume.connect(audio.destination);
       let end = t + b.duration * Math.max(repeat, 1);
       if (sync === "stream") end = t + span / movie.stage.fps;
       src.loop = loop || repeat > 1 || sync === "stream";

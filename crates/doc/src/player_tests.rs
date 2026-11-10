@@ -302,3 +302,42 @@ fn the_player_sees_through_the_camera_and_buttons_are_hit_where_they_show() {
     assert!(hit(&d, &s.state, mid + Vec2::new(150.0, 150.0)).is_some());
     assert!(hit(&d, &s.state, mid - Vec2::new(5.0, 5.0)).is_none());
 }
+
+fn with_sound(k: Arc<Keyframe>, id: u64, sync: crate::SoundSync) -> Arc<Keyframe> {
+    let mut k = (*k).clone();
+    k.sound = Some(crate::FrameSound { sync, ..crate::FrameSound::new(crate::SoundId(id)) });
+    Arc::new(k)
+}
+
+/// The sound ids a step started, with their volumes.
+fn started(s: &Step) -> Vec<(u64, f32)> {
+    s.sounds.iter().map(|x| (x.sound.sound.0, x.gain)).collect()
+}
+
+#[test]
+fn entered_keyframes_start_their_sounds_in_clips_and_graphics_with_layer_volumes() {
+    use crate::SoundSync::{Event, Stop};
+    // A 3-frame movie clip with a sound on its frame 1 (index 1); a 2-frame graphic with one on
+    // its frame 0; the main timeline has its own on frame 0 and a stop at 2.
+    let clip = symbol(20, SymbolKind::MovieClip, vec![layer(21, vec![kf(0, 1, vec![], vec![], ""), with_sound(kf(1, 2, vec![], vec![], ""), 2, Event)])]);
+    let graphic = symbol(30, SymbolKind::Graphic, vec![layer(31, vec![with_sound(kf(0, 1, vec![], vec![], ""), 3, Event), kf(1, 1, vec![], vec![], "")])]);
+    let mut holder = (*layer(2, vec![kf(0, 6, vec![inst(40, 20, "c", 0.0, 0.0, vec![]), inst(41, 30, "g", 0.0, 0.0, vec![])], vec![], "")])).clone();
+    holder.volume = 0.5;
+    let root = layer(1, vec![with_sound(kf(0, 1, vec![], vec![], ""), 1, Event), with_sound(kf(1, 5, vec![], vec![], ""), 1, Stop)]);
+    let d = doc(vec![root, Arc::new(holder)], vec![clip, graphic]);
+    // Frame 1: the main timeline's sound and the graphic's (it appeared on its frame 0).
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(started(&s), vec![(1, 1.0), (3, 0.5)]);
+    // Frame 2: the clip reaches its frame 1; the graphic moves to its frame 1 (no sound); the
+    // main timeline's Stop.
+    let s = step(&d, &s.state, &[], &mut NoScripts);
+    assert_eq!(started(&s), vec![(1, 1.0), (2, 0.5)]);
+    assert_eq!(s.sounds[0].sound.sync, Stop);
+    // Frame 3: the graphic is back on its frame 0.
+    let s = step(&d, &s.state, &[], &mut NoScripts);
+    assert_eq!(started(&s), vec![(3, 0.5)]);
+    // Muted, the sounds still start (Stop and Start still work) but silently.
+    let mut m = d.clone();
+    Arc::make_mut(&mut m.timeline_mut(0).layers[1]).muted = true;
+    assert_eq!(started(&start(&m, &mut NoScripts)), vec![(1, 1.0), (3, 0.0)]);
+}

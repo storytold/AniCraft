@@ -552,6 +552,12 @@ fn panic_hunt_every_command() {
         json!({"sound": SOUND, "frame": 3, "extend": true, "name": "renamed"}),
         json!({"sound": u64::MAX, "repeat": 1e9}),
         json!({"sound": "a", "sync": 3}),
+        // Effects, envelopes and layer volumes (ADR 0039).
+        json!({"effect": "custom", "envelope": [{"at": 1e300, "left": 2, "right": -1}], "volume": 1e30, "muted": "x"}),
+        json!({"effect": "fade_in", "envelope": (0..40).map(|i| json!([i, 0.5, 0.5])).collect::<Vec<_>>(), "volume": -0.5}),
+        json!({"effect": "nope", "envelope": [[0, 1]], "volume": 0.5, "muted": true}),
+        json!({"effect": "custom", "sync": "stream", "loop": true, "envelope": [[0, 0, 1], [86_400, 1, 0]]}),
+        json!({"effect": 7, "envelope": "x", "volume": f64::NAN}),
         json!({"hint": "a", "x": 1e7, "y": -1e7, "side": "end"}),
         json!({"hint": u64::MAX, "side": "middle", "x": 0, "y": 0}),
         json!({"hint": "zz", "frame": 0}),
@@ -583,7 +589,17 @@ fn panic_hunt_every_command() {
     let wav = crate::cmds_sound::test_wav(8000, &[0.25; 4000]);
     with_sound.sounds.push(Arc::new(anicraft_doc::Sound::from_data(anicraft_doc::SoundId(SOUND), "t.wav", wav).unwrap()));
     if let Some(k) = Arc::make_mut(&mut with_sound.timeline_mut(0).layers[0]).keyframe_mut(0) {
-        k.sound = Some(anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)));
+        k.sound = Some(anicraft_doc::FrameSound { effect: anicraft_doc::SoundEffect::FadeOut, ..anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)) });
+    }
+    // ...and a stream with a custom envelope inside every symbol (sounds in symbols, ADR 0039).
+    for sym in &mut with_sound.library {
+        let tl = &mut Arc::make_mut(sym).timeline;
+        if let Some(l) = tl.layers.first_mut()
+            && let Some(k) = Arc::make_mut(l).keyframe_mut(0)
+        {
+            let env = anicraft_doc::SoundEffect::Custom(vec![anicraft_doc::EnvelopePoint::new(0.0, 0.0, 1.0), anicraft_doc::EnvelopePoint::new(0.1, 1.0, 0.0)]);
+            k.sound = Some(anicraft_doc::FrameSound { sync: anicraft_doc::SoundSync::Stream, looping: true, effect: env, ..anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)) });
+        }
     }
     // A motion tween on an oriented motion path, playhead mid-span (ADR 0030).
     let mut on_path = Session::default();
@@ -613,6 +629,10 @@ fn panic_hunt_every_command() {
         for f in [0, 1, 5, 47, 1000] {
             let _ = anicraft_render::render_frame(&s.doc, f, 0.1);
         }
+        // ...and its sounds lay out and mix.
+        let voices = anicraft_doc::sound::voices(&s.doc, 8000);
+        let mut out = vec![0.0; 2 * 4096];
+        anicraft_doc::audio::mix(&voices, 8000, Default::default(), 0, &mut out);
     }
 }
 

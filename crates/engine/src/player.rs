@@ -176,14 +176,19 @@ pub struct Movie {
     pub state: PlayerState,
     /// Every output line so far, with the step it was written in.
     pub output: Vec<(u64, String)>,
+    /// Sounds started since the owner last took them ([`Movie::take_sounds`]), with the step
+    /// that started each (ADR 0039).
+    sounds: Vec<(u64, anicraft_doc::sound::Started)>,
 }
 
 /// Most output lines a [`Movie`] keeps.
 pub const MAX_MOVIE_OUTPUT: usize = 10_000;
+/// Most started sounds a [`Movie`] holds for its owner (older ones are dropped).
+pub const MAX_MOVIE_SOUNDS: usize = 4_096;
 
 impl Movie {
     pub fn start(doc: &Document, scripts: &mut dyn ScriptHost) -> Movie {
-        let mut m = Movie { state: PlayerState::default(), output: Vec::new() };
+        let mut m = Movie { state: PlayerState::default(), output: Vec::new(), sounds: Vec::new() };
         let s = player::start(doc, scripts);
         m.take(s);
         m
@@ -209,6 +214,18 @@ impl Movie {
                 self.output.push((self.state.tick, line));
             }
         }
+        let tick = self.state.tick;
+        self.sounds.extend(s.sounds.into_iter().map(|x| (tick, x)));
+        if self.sounds.len() > MAX_MOVIE_SOUNDS {
+            let extra = self.sounds.len() - MAX_MOVIE_SOUNDS;
+            self.sounds.drain(..extra);
+        }
+    }
+
+    /// The sounds started since the last call, with the step (tick) that started each: what
+    /// a window playing the movie should start hearing.
+    pub fn take_sounds(&mut self) -> Vec<(u64, anicraft_doc::sound::Started)> {
+        std::mem::take(&mut self.sounds)
     }
 }
 

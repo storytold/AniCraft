@@ -5,16 +5,23 @@
 //!
 //! It plays a snapshot of the document taken when it opened (Restart takes a new one), so the
 //! stage editor, its playhead and its undo history are untouched while it runs.
+//!
+//! Its sound (ADR 0039): each step's entered keyframes start their sounds
+//! (`doc::sound::trigger`), movie clips' and graphics' included, and while sound plays the
+//! movie keeps time with it, as the stage does.
 
 use crate::app::App;
 use crate::icons::Icon;
 use crate::theme::{T, Type, text};
+use anicraft_engine::doc::audio::Voice;
 use anicraft_engine::doc::player::Event;
 use anicraft_engine::doc::player::PlayerState;
-use anicraft_engine::doc::{Document, evaluate_player};
+use anicraft_engine::doc::sound::{self, frame_start};
+use anicraft_engine::doc::{Document, SoundId, evaluate_player};
 use anicraft_engine::geom::{Affine, Vec2};
 use anicraft_engine::player::{Movie, ScriptRunner};
 use anicraft_engine::render::{View, render};
+use std::sync::Arc;
 
 /// Most frames played in one UI frame when the window falls behind (a slow frame skips ahead
 /// instead of racing to catch up).
@@ -35,28 +42,67 @@ pub struct TestMovie {
     down: bool,
     title: String,
     pub ms: f32,
+    /// What it plays (with each voice's sound id), and whether the device plays it.
+    voices: Vec<(SoundId, Voice)>,
+    audio: bool,
+}
+
+impl TestMovie {
+    /// Starts the sounds the movie's last steps reached, and hands the result to the player.
+    fn feed(&mut self, out: &mut crate::sound::SoundOut) {
+        let started = self.movie.take_sounds();
+        if started.is_empty() {
+            return;
+        }
+        let (rate, fps) = (out.rate(), self.doc.stage.fps);
+        for (tick, s) in started {
+            sound::trigger(&self.doc, &mut self.voices, std::slice::from_ref(&s), frame_start(tick, fps, rate), rate);
+        }
+        if self.audio {
+            out.set_movie(self.heard());
+        }
+    }
+
+    fn heard(&self) -> Arc<Vec<Voice>> {
+        Arc::new(self.voices.iter().map(|(_, v)| v.clone()).collect())
+    }
+
+    /// Sound from where the movie is (after a pause or at the start).
+    fn resume(&mut self, out: &mut crate::sound::SoundOut) {
+        let at = frame_start(self.movie.state.tick, self.doc.stage.fps, out.rate());
+        self.audio = out.play_movie(self.heard(), at);
+    }
 }
 
 /// Opens Test Movie on a snapshot of the document (or restarts it from frame 1).
 pub fn open(app: &mut App) {
     app.playing = false;
+    app.sound.stop();
     let doc = app.s.doc.clone();
     let mut runner = ScriptRunner::new(&app.s.plugins);
     let movie = Movie::start(&doc, &mut runner);
     let name = app.s.path.as_ref().and_then(|p| p.file_stem()).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
-    app.test_movie = Some(TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, title: format!("Test Movie — {name}"), ms: 0.0 });
+    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, title: format!("Test Movie — {name}"), ms: 0.0, voices: Vec::new(), audio: false };
+    // Sound only when there is some, and never in screenshot runs or tests.
+    if sound::has_sounds(&tm.doc) && app.shot.is_none() {
+        tm.resume(&mut app.sound);
+    }
+    tm.feed(&mut app.sound);
+    app.test_movie = Some(tm);
 }
 
 /// The Test Movie window, when open.
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let plugins = &app.s.plugins;
+    let out = &mut app.sound;
     let Some(tm) = app.test_movie.as_mut() else { return };
     let mut shown = true;
     let mut restart = false;
     let (sw, sh) = (tm.doc.stage.width as f32, tm.doc.stage.height as f32);
     let default_w = 760.0f32;
     let default_h = default_w * sh / sw.max(1.0) + 190.0;
-    egui::Window::new(tm.title.clone())
+    let title = tm.title.clone();
+    let win = egui::Window::new(tm.title.clone())
         .id(egui::Id::new("test_movie"))
         .open(&mut shown)
         .collapsible(false)
@@ -74,10 +120,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 if crate::timeline::icon_button(ui, tip, None, icon).clicked() {
                     tm.paused = !tm.paused;
                     tm.acc = 0.0;
+                    if tm.paused {
+                        out.stop();
+                    } else if tm.audio {
+                        tm.resume(out);
+                    }
                 }
                 if tm.paused && crate::timeline::icon_button(ui, "Step one frame", None, Icon::Next).clicked() {
                     let mut runner = ScriptRunner::new(plugins);
                     tm.movie.step(&tm.doc, &[], &mut runner);
+                    tm.feed(out);
                 }
                 ui.add_space(8.0);
                 let st = &tm.movie.state;
@@ -125,22 +177,34 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             tm.down = down && (tm.down || inside);
             let mut runner = ScriptRunner::new(plugins);
             tm.movie.input(&tm.doc, &events, &mut runner);
+            tm.feed(out);
             if inside && tm.movie.state.hover.is_some() {
                 ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            // ---- time: the document's frame rate ----
+            // ---- time: the document's frame rate, kept by the sound while it plays ----
             if !tm.paused {
                 let fps = f64::from(tm.doc.stage.fps.max(1.0));
-                tm.acc += f64::from(ui.input(|i| i.stable_dt)).min(0.25);
+                let rate = f64::from(out.rate().max(1));
+                let heard = if tm.audio { out.movie_position() } else { None };
                 let mut n = 0;
-                while tm.acc >= 1.0 / fps && n < MAX_CATCH_UP {
-                    tm.acc -= 1.0 / fps;
-                    tm.movie.step(&tm.doc, &[], &mut runner);
-                    n += 1;
+                if let Some(pos) = heard {
+                    let due = (pos as f64 * fps / rate).floor() as u64;
+                    while tm.movie.state.tick < due && n < MAX_CATCH_UP {
+                        tm.movie.step(&tm.doc, &[], &mut runner);
+                        n += 1;
+                    }
+                } else {
+                    tm.acc += f64::from(ui.input(|i| i.stable_dt)).min(0.25);
+                    while tm.acc >= 1.0 / fps && n < MAX_CATCH_UP {
+                        tm.acc -= 1.0 / fps;
+                        tm.movie.step(&tm.doc, &[], &mut runner);
+                        n += 1;
+                    }
+                    if n == MAX_CATCH_UP {
+                        tm.acc = 0.0;
+                    }
                 }
-                if n == MAX_CATCH_UP {
-                    tm.acc = 0.0;
-                }
+                tm.feed(out);
                 ctx.request_repaint();
             }
             // ---- picture ----
@@ -193,9 +257,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 });
             });
         });
+    crate::a11y::name_title_bar(&win, &title);
     let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     if !shown || esc {
-        app.test_movie = None;
+        if app.test_movie.take().is_some_and(|tm| tm.audio) {
+            app.sound.stop();
+        }
     } else if restart {
         open(app);
     }

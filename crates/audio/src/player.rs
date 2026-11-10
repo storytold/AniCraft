@@ -140,7 +140,7 @@ mod tests {
 
     fn tone() -> Arc<Vec<Voice>> {
         let pcm = Arc::new(Pcm::new(8000, 1, vec![0.5; 8000]).unwrap());
-        Arc::new(vec![Voice { pcm, kind: VoiceKind::Stream, at: 0, end: 8000, gain: 1.0 }])
+        Arc::new(vec![Voice::new(pcm, VoiceKind::Stream, 0, 8000)])
     }
 
     #[test]

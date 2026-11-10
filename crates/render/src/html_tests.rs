@@ -517,9 +517,54 @@ fn bitmaps_and_sounds_are_embedded_once() {
     assert_eq!(m.json["timelines"][0]["snd"]["0"], json!([[0, "event", 1, false, 1]]));
     // The player hands the frame's sounds to the page.
     let mut js = Js::new(&m);
-    assert_eq!(js.eval("P.start().sounds"), json!([[0, "event", 1, false, 1]]));
+    assert_eq!(js.eval("P.start().sounds"), json!([[0, "event", 1, false, 1, 1, null]]));
     let silent = movie(&doc, &HtmlOptions { sound: false, ..Default::default() });
     assert_eq!((silent.stats.sounds, silent.json["timelines"][0].get("snd")), (0, None));
+}
+
+#[test]
+fn sounds_carry_their_envelopes_and_volumes_and_start_in_graphics_and_clips_as_in_the_player() {
+    use anicraft_doc::{FrameSound, Keyframe, Layer, LayerId, SoundEffect, SoundId, SoundSync, Symbol, SymbolId, SymbolKind, Timeline};
+    let mut doc = Document::default();
+    doc.stage.fps = 8.0;
+    let wav = anicraft_doc::audio::wav::encode(8000, 1, &[0.25; 4000], anicraft_doc::audio::wav::Bits::Int16);
+    doc.sounds.push(Arc::new(anicraft_doc::Sound::from_data(SoundId(60), "beep", wav).unwrap()));
+    let snd = |sync, effect| Some(FrameSound { sync, effect, ..FrameSound::new(SoundId(60)) });
+    let key = |start, n, sound: Option<FrameSound>, elements: Vec<Arc<Element>>| {
+        let mut k = Keyframe::new(start, n);
+        k.sound = sound;
+        k.elements = elements;
+        Arc::new(k)
+    };
+    let layer = |id, keys, volume| {
+        let mut l = Layer::new(LayerId(id), "L");
+        l.keyframes = keys;
+        l.volume = volume;
+        Arc::new(l)
+    };
+    let inst = |id, symbol| Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: Default::default(), kind: ElementKind::Symbol { symbol: SymbolId(symbol), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() } });
+    // A graphic with a fading sound on its frame 1 (of 2), a clip with a left-channel one on its
+    // frame 0 (of 3), both on a layer at half volume; a sound of the main timeline's own.
+    doc.library.push(Arc::new(Symbol { id: SymbolId(20), name: "g".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![layer(21, vec![key(0, 1, None, vec![]), key(1, 1, snd(SoundSync::Event, SoundEffect::FadeOut), vec![])], 1.0)] } }));
+    doc.library.push(Arc::new(Symbol { id: SymbolId(30), name: "c".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![layer(31, vec![key(0, 3, snd(SoundSync::Stream, SoundEffect::LeftChannel), vec![])], 0.5)] } }));
+    doc.timeline_mut(0).layers = vec![layer(1, vec![key(0, 6, snd(SoundSync::Event, SoundEffect::None), vec![])], 1.0), layer(2, vec![key(0, 6, None, vec![inst(40, 20), inst(41, 30)])], 0.5)];
+    let m = movie(&doc, &HtmlOptions::default());
+    // The fade's points span one play (half a second); the clip's span its 3 frames.
+    let g_tl = m.json["symbols"].as_array().unwrap().iter().find(|s| s["name"] == "g").unwrap()["tl"].as_u64().unwrap() as usize;
+    assert_eq!(m.json["timelines"][g_tl]["snd"]["1"], json!([[0, "event", 1, false, 1, 1, [[0, 1, 1], [0.5, 0, 0]]]]));
+    let c_tl = m.json["symbols"].as_array().unwrap().iter().find(|s| s["name"] == "c").unwrap()["tl"].as_u64().unwrap() as usize;
+    assert_eq!(m.json["timelines"][c_tl]["snd"]["0"], json!([[0, "stream", 1, false, 3, 0.5, [[0, 1, 0]]]]));
+    // Frame by frame, the page starts what the Rust player starts, at the same volumes.
+    let mut js = Js::new(&m);
+    let mut r = anicraft_doc::player::start(&doc, &mut NoScripts);
+    let mut ours = js.eval("P.start().sounds");
+    for step in 0..6 {
+        let theirs: Vec<Value> = r.sounds.iter().map(|s| json!([s.sound.sound.0 - 60, s.sound.sync.key(), f64::from(s.gain)])).collect();
+        let page: Vec<Value> = ours.as_array().unwrap().iter().map(|s| json!([s[0], s[1], s[5].as_f64()])).collect();
+        assert_eq!(page, theirs, "step {step}");
+        r = anicraft_doc::player::step(&doc, &r.state, &[], &mut NoScripts);
+        ours = js.eval("P.step([]).sounds");
+    }
 }
 
 #[test]
