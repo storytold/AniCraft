@@ -29,7 +29,7 @@
 app/                         workspace root; the root package is the desktop app (`anicraft`)
   crates/
     geom      L0  Vec2, Affine (+ decompose/compose for tweening), Rect, Path, flattening, hit test,
-                  planar merge (merge drawing, ADR 0031)
+                  planar merge (merge drawing, ADR 0031), brush sweeps (ADR 0033)
     plugins   L0  WebAssembly plug-in sandbox (wasmi): ABI v1, limits, manifest, registry (ADR 0017)
     audio     L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing/resampling, WAV, waveform peaks
     actions   L0  Timeline action IR: stop/play/goto, instance targets, button events, frame scripts

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+* **Brush tool** (B, ADR 0033, first slice). The brush paints filled shapes in the fill colour,
+  as Animate's Brush tool does: the shape is exactly the area the tip sweeps along the drag.
+  * Tip options: round or square, size, angle and roundness (for oval and flat calligraphic
+    tips).
+  * With a tablet, pen pressure sets the width (from 10 % to the full size); a mouse paints at
+    full size.
+  * Smoothing evens out a shaky hand.
+  * Paint modes: Paint Normal covers lines and fills, Paint Fills leaves lines alone, and Paint
+    Behind paints only empty areas.
+  * With Object Drawing off, brush strokes merge with the drawing like the other tools'
+    shapes; strokes of one colour join.
+  * The paint shows as you drag, a click paints a dab, and `[` and `]` change the size. Each
+    stroke is one undo step.
+  * For scripts and AI assistants: `draw.brush`.
+
+  Also fixed: a closed curve fit could add a straight edge across the shape when its first
+  point wasn't a corner, which affected some Paint Bucket fills.
 * **The stage draws on the graphics card by default** (GPU stage, third slice, ADR 0032).
   Bitmap fills and all seven filters (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient
   Bevel, Adjust Color) are now drawn on the GPU too, so documents imported from Animate no
