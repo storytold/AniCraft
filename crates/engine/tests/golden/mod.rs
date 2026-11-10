@@ -78,7 +78,7 @@ fn compare(golden: &Path, name: &str, width: u32, height: u32, rgba: &[u8], tol:
     let mut bad = 0usize;
     let mut worst = 0u8;
     let mut diff = Vec::with_capacity(rgba.len());
-    for (a, b) in rgba.chunks_exact(4).zip(want.chunks_exact(4)) {
+    for (a, b) in rgba.as_chunks::<4>().0.iter().zip(want.as_chunks::<4>().0) {
         let d = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
         worst = worst.max(d);
         if d > tol.channel {
@@ -112,7 +112,7 @@ fn the_check_passes_within_the_tolerance_and_fails_past_it() {
     assert!(compare(&golden, "self-test-near", w, h, &near, DEFAULT).is_ok());
     // A whole row changed is not.
     let mut off = base.clone();
-    for px in off.chunks_exact_mut(4).take(w as usize) {
+    for px in off.as_chunks_mut::<4>().0.iter_mut().take(w as usize) {
         px[1] = 0;
     }
     let err = compare(&golden, "self-test-off", w, h, &off, DEFAULT).unwrap_err();
