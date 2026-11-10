@@ -580,7 +580,12 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                 });
             });
             ui.separator();
-            ui.label(text(Type::Caption, i18n::fmt("{os} · settings stored in {place}", &[("os", crate::platform::OS.name()), ("place", &crate::platform::config_dir().map_or_else(|| tl!("memory only").to_string(), |d| craft_i18n::ltr(&d.display().to_string())))])));
+            let place = if crate::platform::WEB {
+                tl!("this browser's storage for this site").to_string()
+            } else {
+                crate::platform::config_dir().map_or_else(|| tl!("memory only").to_string(), |d| craft_i18n::ltr(&d.display().to_string()))
+            };
+            ui.label(text(Type::Caption, i18n::fmt("{os} · settings stored in {place}", &[("os", crate::platform::OS.name()), ("place", &place)])));
         }));
     a11y::name_title_bar(&shown, title);
     if reset_confirms {

@@ -1,5 +1,5 @@
 //! User preferences: appearance (fonts, UI scale), stage rendering, file dialogs. Stored as
-//! JSON in the platform's settings folder (`platform::config_dir`). A missing or broken file
+//! JSON in the platform's settings folder (`platform::load_settings`; browser storage on the web). A missing or broken file
 //! falls back to defaults; it never stops the app from starting.
 
 use serde::{Deserialize, Serialize};
@@ -117,10 +117,6 @@ pub const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
 pub const GAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
 
 impl Prefs {
-    fn path() -> Option<std::path::PathBuf> {
-        crate::platform::config_dir().map(|d| d.join("prefs.json"))
-    }
-
     pub fn sanitized(mut self) -> Prefs {
         self.ui_scale = if self.ui_scale.is_finite() { self.ui_scale.clamp(*SCALE_RANGE.start(), *SCALE_RANGE.end()) } else { 1.0 };
         self.timeline_start_gap = if self.timeline_start_gap.is_finite() { self.timeline_start_gap.clamp(*GAP_RANGE.start(), *GAP_RANGE.end()) } else { 0.0 };
@@ -147,19 +143,13 @@ impl Prefs {
     }
 
     pub fn load() -> Prefs {
-        Self::path().and_then(|p| std::fs::read_to_string(p).ok()).map_or_else(Prefs::default, |t| Prefs::from_json(&t))
+        crate::platform::load_settings().map_or_else(Prefs::default, |t| Prefs::from_json(&t))
     }
 
-    /// Writes atomically (temp file + rename).
+    /// Writes where the platform keeps settings (a file, atomically; or browser storage).
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::path().ok_or("no settings folder on this system")?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+        crate::platform::save_settings(&json)
     }
 }
 

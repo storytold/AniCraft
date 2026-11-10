@@ -6,11 +6,17 @@
 //! anicraft --version
 //! ```
 //! `--screenshot` starts normally, draws ~120 frames, saves the window as PNG and exits.
+//!
+//! Built for `wasm32-unknown-unknown` the same program is the web editor (`src/web.rs`,
+//! ADR 0036, docs/web.md).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Release builds are Windows GUI programs, so no console window opens beside the app (the
 // packaging checks the PE subsystem, ADR 0026). Debug builds keep the console for logs; the
 // headless front end is anicraft-cli.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The browser build leaves out what only the desktop has (screenshot runs, the recovery folder,
+// window chrome, `--open` panels); that code stays compiled for it but unused (ADR 0036).
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 mod a11y;
 mod actions_panel;
@@ -38,14 +44,19 @@ mod stage;
 mod test_movie;
 mod theme;
 mod timeline;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod widthtool;
 
+#[cfg(not(target_arch = "wasm32"))]
 use anicraft_engine::Session;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
 /// The session to start with: the file given on the command line (through `file.open`, so
 /// `.fla` / `.xfl` import works the same as from the menu), else the sample. Also the import
 /// report of an Animate document, for the status bar.
+#[cfg(not(target_arch = "wasm32"))]
 fn open_session(file: Option<&Path>) -> (Session, Option<String>) {
     let Some(p) = file else { return (Session::new(anicraft_engine::doc::sample::demo()), None) };
     let mut s = Session::default();
@@ -66,12 +77,14 @@ fn open_session(file: Option<&Path>) -> (Session, Option<String>) {
 
 /// `--theme` / `--scale`: the look for this run only (screenshots of high contrast or 200 %),
 /// over the saved preferences, without saving them.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Default)]
 struct Look {
     theme: Option<theme::Palette>,
     scale: Option<f32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, lang: Option<String>, look: Look) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: platform::viewport(
@@ -100,6 +113,14 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
     )
 }
 
+/// In the browser the page's script calls this once the module is loaded: the editor starts on
+/// the page's canvas.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    web::start();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let mut shot: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;

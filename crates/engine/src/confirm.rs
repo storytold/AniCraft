@@ -18,7 +18,7 @@ pub struct Confirmation {
     /// True when undo cannot bring the loss back (unsaved work, files on disk).
     pub irreversible: bool,
     /// `message` before its values go in, with `{name}` placeholders, and those values: what a
-    /// front end translates to show the message in another language (ADR 0036).
+    /// front end translates to show the message in another language (ADR 0037).
     pub template: &'static str,
     pub args: Vec<(&'static str, Arg)>,
 }
@@ -159,23 +159,22 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
         "file.save" | "file.save_as" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             let same = s.path.as_deref() == Some(path);
-            (!same && path.exists()).then(|| overwrite(path, SAVING_REPLACES))
+            (!same && crate::vfs::exists(path)).then(|| overwrite(path, SAVING_REPLACES))
         }
         "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
-            path.exists().then(|| overwrite(path, EXPORTING_REPLACES))
+            crate::vfs::exists(path).then(|| overwrite(path, EXPORTING_REPLACES))
         }
         "file.export_sprite_sheet" => {
             // The sheet and its frame map: either one already there is replaced.
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             let json = path.with_extension("json");
-            [path, json.as_path()].into_iter().find(|f| f.exists()).map(|f| overwrite(f, EXPORTING_REPLACES))
+            [path, json.as_path()].into_iter().find(|f| crate::vfs::exists(f)).map(|f| overwrite(f, EXPORTING_REPLACES))
         }
         "file.export_png_sequence" => {
             let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
-            let has_frames = std::fs::read_dir(dir).ok()?.take(10_000).flatten().any(|e| {
-                let n = e.file_name();
-                let n = n.to_string_lossy();
+            let has_frames = crate::vfs::list(dir, 10_000).iter().any(|e| {
+                let n = e.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
                 n.starts_with("frame_") && n.ends_with(".png")
             });
             has_frames.then(|| {

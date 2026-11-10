@@ -679,7 +679,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     RenderMode::Auto => app.stage_cache.ms <= IMMEDIATE_BUDGET_MS,
                 };
             let batch: Vec<FrameJob> = missing.iter().map(|&i| jobs[i].1.clone()).collect();
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let results: Vec<Option<std::sync::Arc<FrameImage>>> = if immediate { svc.render_now_batch(batch).into_iter().map(Some).collect() } else { svc.request_batch(batch) };
             let wall = started.elapsed().as_secs_f32() * 1000.0;
             let mut ms = 0.0f32;

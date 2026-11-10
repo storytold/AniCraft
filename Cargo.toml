@@ -51,10 +51,13 @@ rfd = "0.17"
 # (/usr/share/fonts, /usr/local/share/fonts, ~/.local/share/fonts, ~/.fonts).
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 egui = "0.37"
-# Interface translations (ADR 0036): lookup, fallback, CLDR plurals, language names and the system
+# Interface translations (ADR 0037): lookup, fallback, CLDR plurals, language names and the system
 # locale over the craft-i18n catalogs that build.rs embeds from CRAFT_I18N_DIR. The Crafting Apps'
 # shared crate (craft-libs, MIT OR Apache-2.0), at an immutable revision allowed in deny.toml.
 craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "fd5e2feff6ea25bed371a99cc732b3968d621505" }
+# `Instant` and `SystemTime` that work in the browser too (std's panic on wasm32-unknown-unknown);
+# on other targets a re-export of std::time (MIT OR Apache-2.0; already in the tree via winit).
+web-time = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -93,16 +96,30 @@ anicraft-doc.workspace = true
 anicraft-render.workspace = true
 anicraft-engine.workspace = true
 anicraft-gpu = { workspace = true, optional = true }
-eframe.workspace = true
 egui.workspace = true
-rfd.workspace = true
 serde.workspace = true
 fontdb.workspace = true
 anicraft-audio.workspace = true
+serde_json.workspace = true
+web-time.workspace = true
+craft-i18n.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe.workspace = true
+rfd.workspace = true
 # Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
 cpal = { version = "0.18", optional = true }
-serde_json.workspace = true
-craft-i18n.workspace = true
+
+# The web build (ADR 0036, docs/web.md). The window draws with WebGL2 (glow): every current
+# browser has it, the stage is drawn on the CPU there, and leaving wgpu out keeps the download
+# smaller. The browser glue is wasm-bindgen's (MIT OR Apache-2.0), already under eframe's web
+# backend.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
 
 [build-dependencies]
 # Embeds the app icon in anicraft.exe on Windows (build.rs); does nothing on other targets.
@@ -136,7 +153,7 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
-# The egui family on storytold's fork, as the other Crafting Apps use it (ADR 0036): it lays out
+# The egui family on storytold's fork, as the other Crafting Apps use it (ADR 0037): it lays out
 # right-to-left text in its right order (Unicode bidi; crates.io egui shapes each Arabic word but
 # places the words left to right) and mirrors egui's own parts with `Style::right_to_left`.
 # Immutable revisions, allowed in deny.toml.
@@ -151,3 +168,18 @@ egui-wgpu = { git = "https://github.com/storytold/egui.git", rev = "6d518fc79968
 egui_glow = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+
+[profile.web]
+# The web editor (scripts/build-web.sh, ADR 0036): the release build optimized for size, since
+# the browser downloads and compiles the whole module before anything shows (9.1 MB, 3.3 MB
+# gzipped, against 11.3 / 4.0 MB at opt-level 3), and without the symbol names.
+inherits = "release"
+opt-level = "s"
+strip = true
+
+# ...except the CPU renderer and the geometry under it, which draw the stage there on one thread.
+[profile.web.package.anicraft-render]
+opt-level = 3
+
+[profile.web.package.anicraft-geom]
+opt-level = 3
