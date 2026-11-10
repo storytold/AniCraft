@@ -192,6 +192,9 @@ fn a_fla_archive_imports_the_same() {
     let (doc, _) = crate::import_path(&fla).unwrap();
     assert_eq!(doc.timeline(0).layers.len(), 4);
     assert_eq!(doc.library.len(), 1);
+    let (from_bytes, _) = crate::import_fla(&z).unwrap();
+    assert_eq!((from_bytes.timeline(0).layers.len(), from_bytes.library.len()), (4, 1), "the bytes a browser hands over import the same");
+    assert!(crate::import_fla(b"not a zip").is_err());
     std::fs::remove_file(&fla).ok();
     std::fs::remove_dir(&dir).ok();
 }

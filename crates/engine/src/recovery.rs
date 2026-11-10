@@ -26,7 +26,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Version of the `<id>.json` description.
 pub const META_VERSION: u32 = 1;
@@ -97,7 +97,7 @@ impl Entry {
     /// the crash): restoring must not put the older copy back over it.
     pub fn original_is_newer(&self) -> bool {
         let Some(o) = &self.meta.original else { return false };
-        let modified = std::fs::metadata(o).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+        let modified = std::fs::metadata(o).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
         modified.is_some_and(|m| m.as_secs() > self.meta.saved_at)
     }
 
@@ -142,10 +142,12 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let result = (|| -> std::io::Result<()> {
-        let mut f = File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        drop(f);
+        {
+            // Closed before the rename (Windows can't rename an open file).
+            let mut f = File::create(&tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+        }
         std::fs::rename(&tmp, path)
     })();
     if result.is_err() {
@@ -344,6 +346,8 @@ impl SessionLock {
 
     /// Ends the session cleanly: unlocks and removes the lock file. Call [`clear`] first unless
     /// the recovery copy should be offered next time.
+    // (On wasm32 `File` can't exist, so there it has no `Drop`; the desktop needs the close.)
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::drop_non_drop))]
     pub fn release(self) {
         let _ = self.file.unlock();
         drop(self.file);

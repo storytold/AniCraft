@@ -734,18 +734,28 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     Ok((b.doc, b.report))
 }
 
+/// Largest `.fla` archive read.
+pub const MAX_FLA_BYTES: u64 = crate::zip::MAX_ENTRY as u64 * 4;
+
+/// Imports a `.fla` archive from its bytes (a file the browser handed over, say).
+pub fn import_fla(data: &[u8]) -> Result<(Document, Report), XflError> {
+    if data.len() as u64 > MAX_FLA_BYTES {
+        return Err(XflError::NotXfl("the file is too large".into()));
+    }
+    let archive = crate::zip::Archive::open(data)?;
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(p)?) };
+    import_with(&read)
+}
+
 /// Imports from disk: an XFL folder, its `.xfl` file, or a `.fla` archive.
 pub fn import_path(path: &std::path::Path) -> Result<(Document, Report), XflError> {
     let meta = std::fs::metadata(path)?;
     let is_fla = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fla"));
     if meta.is_file() && is_fla {
-        if meta.len() as usize > crate::zip::MAX_ENTRY * 4 {
+        if meta.len() > MAX_FLA_BYTES {
             return Err(XflError::NotXfl("the file is too large".into()));
         }
-        let data = std::fs::read(path)?;
-        let archive = crate::zip::Archive::open(&data)?;
-        let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(p)?) };
-        return import_with(&read);
+        return import_fla(&std::fs::read(path)?);
     }
     let dir = if meta.is_dir() { path.to_path_buf() } else { path.parent().map(std::path::Path::to_path_buf).unwrap_or_default() };
     let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
