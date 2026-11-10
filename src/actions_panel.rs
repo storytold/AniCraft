@@ -66,8 +66,11 @@ fn panel(app: &mut App, ui: &mut egui::Ui) {
             app.actions.tab = Tab::Frame;
         }
         let label = match &inst {
-            Some((e, k)) => format!("{} {}", if *k == SymbolKind::Button { "Button" } else { "Movie clip" }, if e.name.is_empty() { "(unnamed)".to_string() } else { format!("“{}”", e.name) }),
-            None => "Instance".to_string(),
+            Some((e, k)) => {
+                let name = if e.name.is_empty() { tl!("(unnamed)").to_string() } else { format!("“{}”", e.name) };
+                i18n::fmt(if *k == SymbolKind::Button { "Button {name}" } else { "Movie clip {name}" }, &[("name", &name)])
+            }
+            None => tl!("Instance").to_string(),
         };
         let r = ui.add_enabled(inst.is_some(), egui::Button::selectable(app.actions.tab == Tab::Instance, label)).on_hover_text(tl!("What the selected button or movie clip does on clicks and the pointer"));
         let r = r.on_disabled_hover_text(tl!("Select one button or movie clip instance on the stage"));
@@ -423,7 +426,7 @@ fn edit_list(ui: &mut egui::Ui, scope: &str, list: &[Action], cx: &Choices<'_>) 
     ui.add_space(4.0);
     ui.menu_button(tl!("Add action"), |ui| {
         for (op, label) in KINDS {
-            if ui.button(label).clicked() {
+            if ui.button(tl!(label)).clicked() {
                 added = Action::new(op);
                 ui.close();
             }
@@ -457,7 +460,7 @@ fn action_row(ui: &mut egui::Ui, i: usize, n: usize, a: &mut Action, cx: &Choice
     let mut change = None;
     ui.horizontal(|ui| {
         ui.label(text(Type::DataSmall, format!("{:>2}", i + 1)).color(T.text_faint));
-        ui.label(text(Type::Body, a.label()).strong());
+        ui.label(text(Type::Body, tl!(a.label())).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.small_button(tl!("Remove")).on_hover_text(tl!("Remove this action")).clicked() {
                 change = Some(Change::Remove);
@@ -569,9 +572,9 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
         }
         Action::SetProperty { property, value, .. } => {
             form_row(ui, FORM_LABEL_DOCK, "Property", |ui| {
-                egui::ComboBox::from_id_salt("prop").width(110.0).selected_text(property.label()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("prop").width(110.0).selected_text(tl!(property.label())).show_ui(ui, |ui| {
                     for p in Property::ALL {
-                        if ui.selectable_label(*property == p, p.label()).clicked() && *property != p {
+                        if ui.selectable_label(*property == p, tl!(p.label())).clicked() && *property != p {
                             *property = p;
                             *value = match p {
                                 Property::Alpha | Property::Visible | Property::ScaleX | Property::ScaleY => 1.0,
@@ -603,7 +606,7 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                             Property::X | Property::Y => " px",
                             _ => " ×",
                         };
-                        if with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(value).range(lo..=hi).suffix(suffix).speed(0.5).max_decimals(2))).named(p.label()).changed() {
+                        if with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(value).range(lo..=hi).suffix(suffix).speed(0.5).max_decimals(2))).named(tl!(p.label())).changed() {
                             changed = Some(true);
                         }
                     }
