@@ -108,10 +108,12 @@ the program; nothing was copied.
 * Adjacent fills of different colours are separate paths, so antialiasing can show a faint seam
   where they meet, as in Animate.
 * Remaining parts of issue #42 (later slices, on this model):
-  * bending a segment by dragging it with the Selection tool;
-  * snapping dragged points to points and strokes within 10 screen pixels;
-  * moving a point to move every shape that shares it (Subselection and arrows);
-  * a marquee that selects parts of fills and strokes;
+  * ~~bending a segment by dragging it with the Selection tool~~, ~~snapping dragged points
+    to points and strokes within 10 screen pixels~~ (and keyboard moves within 0.2), ~~moving
+    a point to move every shape that shares it~~ (with the Selection tool) and ~~a marquee
+    that selects parts of fills and strokes~~: done in ADR 0041;
+  * moving shared points with the Subselection tool and its arrows;
+  * a marquee that selects across layers (ADR 0041 keeps a selection on one layer);
   * Subselection anchors and handles of connected raw shapes;
   * merging the Paint Bucket's fills and pasted raw shapes;
   * importing Animate's raw shapes (XFL) as raw shapes;
