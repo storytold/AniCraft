@@ -60,6 +60,9 @@ nothing was copied.
    * `element.select {ids, add?, layer?}` takes ids on any visible, unlocked layer (looking on
      the active layer first, then top to bottom, or only on `layer`); the active layer becomes
      the first id's layer unless it holds some of them.
+   * A click on a layer's name in the timeline makes it active and selects all of its artwork at
+     the playhead, as in Animate (`layer.select {layer, select: true}`; nothing on a locked or
+     hidden layer). Without `select`, `layer.select` only changes the active layer, as before.
    * `edit.select_all` takes every visible, unlocked layer's artwork at the playhead (the camera
      and armature layers only while active: one holds the camera, the other's instances are posed
      by their bones). In a document with one layer nothing changes; with several, Select All now
@@ -91,6 +94,10 @@ nothing was copied.
    layers, so masks and overlaps would change how the symbol looks).
 
 7. **In the editor.**
+   * Interface text goes through `tr!`/`trn!` (ADR 0040). "6 elements on 4 layers" has two
+     counts but a template holds one plural: the layers' phrase is its own plural with its
+     preposition ("on {n} layers"), placed by the outer one ("{n} elements {on_layers}"), so each
+     language can inflect both and order them.
    * Every timeline row whose layer holds selected items shows a small square in the layer's
      colour after its name, as in Animate, and screen readers hear "has selected artwork".
    * Properties lists the selection from every layer and titles it "6 elements on 4 layers". For
@@ -126,6 +133,4 @@ nothing was copied.
   * Paste in Place across scenes keeping layers by name only (it uses the active layer and the
     ones below);
   * the plug-in `elements` view of other layers (it shows the active layer, as before);
-  * "mixed" for every Properties row (filters, blending and looping show the first instance's);
-  * clicking a layer name to select everything on it (Animate does; here it makes the layer
-    active and clears the selection, as before).
+  * "mixed" for every Properties row (filters, blending and looping show the first instance's).

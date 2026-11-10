@@ -534,3 +534,31 @@ fn selection_timings() {
     let v = run(&mut s, "raw.select_rect", json!({"x0": 65, "y0": 65, "x1": 215, "y1": 215}));
     eprintln!("a marquee selects {} parts on {} layers ({} cut)", s.selection.len(), s.selected_layers().len(), v["cut"]);
 }
+
+#[test]
+fn clicking_a_layer_name_selects_its_artwork() {
+    let (mut s, top, bottom, a, b) = two_layers();
+    // Another element on Bottom: the click takes both.
+    run(&mut s, "layer.select", json!({"layer": bottom.0}));
+    let c = el_id(&run(&mut s, "draw.rect", json!({"x": 400, "y": 400, "w": 20, "h": 20})));
+    run(&mut s, "layer.select", json!({"layer": top.0}));
+    assert!(s.selection.is_empty(), "without `select`, as before");
+    let v = run(&mut s, "layer.select", json!({"layer": bottom.0, "select": true}));
+    assert_eq!(v["selected"], json!([b.0, c.0]));
+    assert_eq!(s.layer, bottom);
+    assert_eq!(s.selection.iter().collect::<Vec<_>>(), vec![(bottom, b), (bottom, c)]);
+    // Again on the same layer: still all of it. On a locked layer: active, nothing selected.
+    run(&mut s, "element.select", json!({"ids": [a.0]}));
+    run(&mut s, "layer.select", json!({"layer": top.0, "select": true}));
+    assert_eq!(s.selection.iter().collect::<Vec<_>>(), vec![(top, a)]);
+    run(&mut s, "layer.toggle_lock", json!({"layer": bottom.0}));
+    run(&mut s, "layer.select", json!({"layer": bottom.0, "select": true}));
+    assert_eq!(s.layer, bottom);
+    assert!(s.selection.is_empty());
+    // At a frame where the layer is empty, nothing is selected.
+    run(&mut s, "layer.toggle_lock", json!({"layer": bottom.0}));
+    run(&mut s, "timeline.insert_keyframe", json!({"layer": top.0, "frame": 5}));
+    run(&mut s, "timeline.goto", json!({"frame": 5}));
+    run(&mut s, "layer.select", json!({"layer": bottom.0, "select": true}));
+    assert!(s.selection.is_empty());
+}

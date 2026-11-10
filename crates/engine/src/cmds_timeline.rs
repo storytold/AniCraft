@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
-use anicraft_doc::{Keyframe, Layer, LayerId, LayerKind, Tween, TweenKind, evaluate_layer_elements};
+use anicraft_doc::{ElementId, Keyframe, Layer, LayerId, LayerKind, Tween, TweenKind, evaluate_layer_elements};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("layer.toggle_visible", "Show/Hide Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.visible = !l.visible)),
         c("layer.toggle_lock", "Lock/Unlock Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.locked = !l.locked)),
         c("layer.toggle_outline", "Outline Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.outline = !l.outline)),
-        c("layer.select", "Select Layer", "", None, "{layer: id} or {index}", false, select_layer),
+        c("layer.select", "Select Layer", "", None, "{layer: id} or {index}, select?: bool (also select all of its artwork at the playhead, as a click on the layer's name does; nothing on a locked or hidden layer)", false, select_layer),
         c("layer.move_up", "Move Layer Up", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, -1)),
         c("layer.move_down", "Move Layer Down", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, 1)),
         c("layer.toggle_mask", "Mask", "Modify/Timeline", None, "{layer?}", true, toggle_mask),
@@ -753,6 +753,14 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if s.doc.timeline(s.scene).layer(id).is_none() {
         return Err(EngineError::State(format!("no layer with id {}", id.0)));
+    }
+    // A click on a layer's name in Animate: the layer becomes active with all of its artwork at
+    // the playhead selected (ADR 0044).
+    if opt_bool(p, "select")? == Some(true) {
+        s.layer = id;
+        let ids: Vec<ElementId> = if s.selectable(id) { s.elements_on(id).iter().map(|e| e.id).collect() } else { Vec::new() };
+        s.selection = crate::Selection::only(id, ids);
+        return Ok(json!({"layer": id.0, "selected": s.selection.id_list()}));
     }
     if s.layer != id {
         s.layer = id;

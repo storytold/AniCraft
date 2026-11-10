@@ -92,9 +92,9 @@ Next, in order:
      parts cut and re-merged per layer); move, delete, duplicate, arrange, transforms, colour
      effects, filters and break apart act on each layer; align, distribute, Free Transform and
      copy act across them; paste keeps each layer; Convert to Symbol keeps the layers inside and
-     lands on the topmost; the timeline marks layers with selected artwork; Properties shows
-     mixed values. Not yet: clicking a layer name to select its artwork, armature instances from
-     inactive layers in a marquee, "mixed" on every Properties row.
+     lands on the topmost; the timeline marks layers with selected artwork, and a click on a
+     layer's name selects its artwork; Properties shows mixed values. Not yet: armature
+     instances from inactive layers in a marquee, "mixed" on every Properties row.
    * ~~**Subselection on raw drawings, and merging everywhere** (ADR 0042)~~ ✅: hollow anchors
      on connected raw shapes, handles on curves, point marquee on the active layer, dragging a
      segment or fill moves what is connected, arrow keys; Snap to Objects (View › Snapping, the
