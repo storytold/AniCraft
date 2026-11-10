@@ -51,12 +51,14 @@ pub fn tool_id(t: Tool) -> &'static str {
         Tool::Text => "tool.text",
         Tool::Pencil => "tool.pencil",
         Tool::Brush => "tool.brush",
+        Tool::Eraser => "tool.eraser",
         Tool::Rect => "tool.rectangle",
         Tool::Oval => "tool.oval",
         Tool::Star => "tool.polystar",
         Tool::Line => "tool.line",
         Tool::PaintBucket => "tool.paint_bucket",
         Tool::InkBottle => "tool.ink_bottle",
+        Tool::Eyedropper => "tool.eyedropper",
         Tool::Camera => "tool.camera",
         Tool::Hand => "tool.hand",
         Tool::Zoom => "tool.zoom",
@@ -360,6 +362,8 @@ mod tests {
         assert_eq!(m.keys("edit.delete"), ["Delete", "Backspace"], "aliases are second keys");
         assert_eq!(m.primary("tool.pen"), Some("P"));
         assert_eq!(m.primary("tool.brush"), Some("B"));
+        assert_eq!(m.primary("tool.eraser"), Some("E"));
+        assert_eq!(m.primary("tool.eyedropper"), Some("I"));
         assert_eq!(m.keys("view.brush_smaller"), ["["]);
         assert_eq!(m.keys("view.brush_larger"), ["]"]);
         assert_eq!(m.primary("view.onion"), Some("Alt+Shift+O"));

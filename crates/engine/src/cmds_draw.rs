@@ -55,7 +55,8 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
     } else {
         match opt_color(p, "fill")? {
             Some(c) => Some(Paint::Solid(c)),
-            None => s.style.use_fill.then_some(Paint::Solid(s.style.fill)),
+            // The fill swatch, in stage space (`add_shape` maps it into the shape).
+            None => s.style.use_fill.then(|| s.style.fill_paint()),
         }
     };
     let width = match opt_f32(p, "stroke_width")? {
@@ -63,7 +64,7 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
         Some(_) => return Err(EngineError::Param("param 'stroke_width' must be in 0..=1000".into())),
         None => s.style.stroke_width,
     };
-    let profile = opt_profile(p, "profile")?.unwrap_or_else(|| s.style.stroke_profile.profile());
+    let profile = opt_profile(p, "profile")?.unwrap_or_else(|| s.style.profile());
     let stroke = if p.get("stroke").is_some_and(Value::is_null) || width <= 0.0 {
         None
     } else {
@@ -95,6 +96,9 @@ fn rect_params(p: &Value) -> Result<(f32, f32, f32, f32)> {
 /// (Object Drawing), it merges with the raw shapes it touches (ADR 0031), and the pieces of it
 /// that come out are selected.
 pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, fill: Option<Paint>, stroke: Option<Stroke>, object: bool) -> Result<Value> {
+    // A gradient or bitmap from the fill swatch is in stage space: it stays where it is on the
+    // stage (Animate's Lock Fill after the Eyedropper).
+    let fill = fill.map(|f| f.transformed(&Affine::translate(-origin.x, -origin.y)));
     let merge = !object && crate::merge::can_merge(fill.as_ref(), stroke.as_ref());
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
@@ -301,13 +305,13 @@ fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("param 'width' must be in 0..=1000".into()));
     }
     let profile = opt_profile(p, "profile")?;
-    let default = s.style;
+    let default = s.style.clone();
     for sh in shapes_mut(s)? {
         if remove {
             sh.stroke = None;
             continue;
         }
-        let mut st = sh.stroke.take().unwrap_or_else(|| Stroke::new(default.stroke, default.stroke_width).with_profile(default.stroke_profile.profile()));
+        let mut st = sh.stroke.take().unwrap_or_else(|| Stroke::new(default.stroke, default.stroke_width).with_profile(default.profile()));
         if let Some(c) = color {
             st.color = c;
         }

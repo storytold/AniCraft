@@ -20,12 +20,14 @@ pub enum Tool {
     Text,
     Pencil,
     Brush,
+    Eraser,
     Rect,
     Oval,
     Star,
     Line,
     PaintBucket,
     InkBottle,
+    Eyedropper,
     Camera,
     Hand,
     Zoom,
@@ -63,7 +65,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 17] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 19] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -75,12 +77,14 @@ impl Tool {
             Tool::Text => "Text",
             Tool::Pencil => "Pencil",
             Tool::Brush => "Brush",
+            Tool::Eraser => "Eraser",
             Tool::Rect => "Rectangle",
             Tool::Oval => "Oval",
             Tool::Star => "PolyStar",
             Tool::Line => "Line",
             Tool::PaintBucket => "Paint Bucket",
             Tool::InkBottle => "Ink Bottle",
+            Tool::Eyedropper => "Eyedropper",
             Tool::Camera => "Camera",
             Tool::Hand => "Hand",
             Tool::Zoom => "Zoom",
@@ -97,12 +101,14 @@ impl Tool {
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
             Tool::Brush => Some("B"),
+            Tool::Eraser => Some("E"),
             Tool::Rect => Some("R"),
             Tool::Oval => Some("O"),
             Tool::Star => None,
             Tool::Line => Some("N"),
             Tool::PaintBucket => Some("K"),
             Tool::InkBottle => Some("S"),
+            Tool::Eyedropper => Some("I"),
             Tool::Camera => Some("C"),
             Tool::Hand => Some("H"),
             Tool::Zoom => Some("Z"),
@@ -116,6 +122,7 @@ impl Tool {
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
             Tool::Brush => "Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode.",
+            Tool::Eraser => "Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage.",
             Tool::Width => "Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it.",
             Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
             Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
@@ -124,6 +131,7 @@ impl Tool {
             Tool::Line => "Drag to draw a line. Shift snaps to 45°.",
             Tool::PaintBucket => "Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings.",
             Tool::InkBottle => "Click a shape to give it the current stroke colour and width.",
+            Tool::Eyedropper => "Click a fill to pick its colour, gradient or bitmap (then pour it with the Paint Bucket), or a line to pick its colour, width and profile (then apply it with the Ink Bottle). With shapes selected, the picked style goes onto them. Shift-click picks into the other swatch only.",
             Tool::Camera => "Drag on the stage to pan the camera, drag the round handle to turn it, and use the wheel to zoom (each drag is one undo step). Picking the tool adds a camera if the scene has none.",
             Tool::Hand => "Drag to pan the stage. Space works with any tool.",
             Tool::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere.",
@@ -177,6 +185,8 @@ pub enum Drag {
     Pencil,
     /// Brush stroke; the samples are in `App::brush_samples`.
     Brush,
+    /// Eraser stroke; the samples are in `App::brush_samples` too (ADR 0034).
+    Eraser,
     /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
     /// `sub`; `start` is its left and right width when the drag began.
     Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
@@ -291,6 +301,8 @@ pub struct App {
     pub brush: crate::brushtool::BrushOptions,
     pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
     pub pen_pressure: Option<f32>,
+    /// Eraser tool options (ADR 0034); its stroke's samples are `brush_samples`.
+    pub eraser: crate::erasertool::EraserOptions,
     pub bucket_gap: GapSize,
     /// Align panel: align to the stage rather than the selection's bounds.
     pub align_to_stage: bool,
@@ -443,6 +455,7 @@ impl App {
             brush: crate::brushtool::BrushOptions::default(),
             brush_samples: Vec::new(),
             pen_pressure: None,
+            eraser: crate::erasertool::EraserOptions::default(),
             bucket_gap: GapSize::default(),
             align_to_stage: false,
             points: Vec::new(),
@@ -777,6 +790,35 @@ impl App {
                     self.drag = Drag::Brush;
                 }
             }
+            Some(which @ ("eraser" | "erasing")) => {
+                // Erased artwork on a new layer (ADR 0034): a band through an outlined raw
+                // rectangle (Erase Normal), the outline of a raw oval erased but not its fill
+                // (Erase Lines), a fill deleted by the Faucet, and a drawing object the eraser
+                // passed over untouched; "erasing" also has a stroke in progress.
+                self.run("layer.new", json!({"name": "Ink"}));
+                self.run("draw.object_drawing", json!({"on": false}));
+                self.run("draw.rect", json!({"x": 140, "y": 150, "w": 380, "h": 230, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 4}));
+                let band: Vec<[f32; 2]> = (0..=80).map(|i| [100.0 + i as f32 * 5.5, 265.0 + (i as f32 * 0.12).sin() * 60.0]).collect();
+                self.run("draw.erase", json!({"points": band, "size": 30}));
+                self.run("draw.ellipse", json!({"x": 600, "y": 160, "w": 260, "h": 200, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 6}));
+                self.run("draw.erase", json!({"points": [[560, 260], [900, 260]], "size": 40, "mode": "lines"}));
+                self.run("draw.rect", json!({"x": 940, "y": 160, "w": 200, "h": 200, "fill": "#e8553b", "stroke": "#1b2a4a", "stroke_width": 4}));
+                self.run("draw.faucet", json!({"x": 1040, "y": 260}));
+                self.run("draw.rect", json!({"x": 300, "y": 430, "w": 300, "h": 120, "fill": "#8a79c9", "stroke": null, "object": true}));
+                self.run("draw.erase", json!({"points": [[260, 490], [640, 490]], "size": 30}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Eraser;
+                self.eraser = crate::erasertool::EraserOptions { size: 30.0, ..Default::default() };
+                if which == "erasing" {
+                    self.brush_samples = (0..=40).map(|i| (anicraft_engine::geom::Vec2::new(700.0 + i as f32 * 9.0, 470.0 - (i as f32 * 0.2).sin() * 40.0), None)).collect();
+                    self.drag = Drag::Eraser;
+                }
+            }
+            Some("eyedropper") => {
+                // The sample's sky gradient picked with the Eyedropper: the fill swatch holds it.
+                self.run("paint.pick", json!({"x": 640, "y": 40}));
+                self.tool = Tool::Eyedropper;
+            }
             Some("frames") => {
                 // Frames 8–20 selected on the top three layers, with a keyframe drag in progress:
                 // 6 frames later and one layer down.
@@ -1055,6 +1097,10 @@ impl App {
             "edit.redo" => self.status_ok(format!("Redid {}", v["redone"].as_str().unwrap_or(""))),
             "edit.delete" => self.status_ok(format!("Deleted {} {} — Ctrl+Z to undo", selected, if selected == 1 { "element" } else { "elements" })),
             "layer.delete" => self.status_ok("Deleted layer — Ctrl+Z to undo"),
+            "draw.erase_all" => {
+                let n = v["erased"].as_u64().unwrap_or(0);
+                self.status_ok(format!("Erased everything at frame {} ({n} {}). {} to undo.", self.s.frame + 1, if n == 1 { "element" } else { "elements" }, platform::shortcut_label("Ctrl+Z")));
+            }
             "scene.delete" => {
                 self.frame_sel = None;
                 self.status_ok("Deleted scene — Ctrl+Z to undo");
