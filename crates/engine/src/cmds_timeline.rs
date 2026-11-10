@@ -344,7 +344,14 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
             let end = k.end();
             let tween = if copy { k.tween } else { None };
             // A motion tween split in two keeps moving the same way in both halves.
-            let motion = if copy { k.motion.as_ref().map(|m| m.split_at(frame - k.start)) } else { None };
+            let motion = if copy {
+                k.motion.as_ref().map(|m| {
+                    let base = m.target_index(&k.elements).and_then(|t| k.elements.get(t)).map_or(anicraft_doc::Props([0.0; 8]), |e| anicraft_doc::Props::of(e));
+                    m.split_at(&base, frame - k.start)
+                })
+            } else {
+                None
+            };
             k.duration = frame - k.start;
             let mut nk = Keyframe::new(frame, end - frame);
             nk.elements = elements.unwrap_or_default();

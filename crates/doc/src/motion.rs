@@ -7,14 +7,24 @@
 //! cubic Bézier. A property without a track keeps the target's own value (its *base*: how it
 //! looks on the span's first frame). Evaluation is pure: [`MotionTween::apply`] maps the base
 //! element and a frame offset to the element as it looks then.
+//!
+//! A tween may also carry a *motion path* (ADR 0030): a cubic Bézier path in the layer's space
+//! that the registration point travels along by arc length. The X/Y curves then decide only
+//! *when* it gets where: the share of the way along the path at a frame is the share of the
+//! distance the X/Y curves have covered by then. With *orient to path* the object also turns
+//! as the path turns. Without a path the X/Y curves place the object, as before.
 
 use crate::{Element, ElementId, Easing};
-use anicraft_geom::{Affine, Decomposed};
+use anicraft_geom::walk::CurveWalk;
+use anicraft_geom::{Affine, Decomposed, Path, PathCmd, Vec2};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Most keys one track keeps (files and commands alike).
 pub const MAX_KEYS: usize = 10_000;
+
+/// Most segments a motion path keeps (files and commands alike).
+pub const MAX_PATH_SEGMENTS: usize = 1_000;
 
 /// A property a motion tween animates. Values are in the units the Motion Editor shows:
 /// pixels, percent and degrees.
@@ -257,11 +267,242 @@ pub struct MotionTween {
     /// At most one per property, in [`Property::ALL`] order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tracks: Vec<Track>,
+    /// The motion path (ADR 0030), in the layer's space: a move and cubics (see
+    /// [`motion_path`]). Its ends are the start and end positions; the X/Y curves give the
+    /// timing along it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<Path>,
+    /// Orient to path: the object turns as the path turns (relative to its turn at the start).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub orient: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// A path in the form a motion path keeps: its first subpath as one move and cubics (lines and
+/// quadratics raised exactly, a closing edge written out), at most [`MAX_PATH_SEGMENTS`],
+/// inside the X/Y range. `None` when nothing of some length is left.
+pub fn motion_path(p: &Path) -> Option<Path> {
+    let r = Property::X.range();
+    let ok = |v: Vec2| v.is_finite() && r.contains(&v.x) && r.contains(&v.y);
+    let mut cmds: Vec<PathCmd> = Vec::new();
+    let (mut cur, mut start) = (Vec2::ZERO, Vec2::ZERO);
+    for c in &p.cmds {
+        if cmds.len() > MAX_PATH_SEGMENTS {
+            break;
+        }
+        let seg = match *c {
+            // A move before any segment (re)starts the path; one after them ends it.
+            PathCmd::MoveTo(q) if cmds.len() <= 1 => {
+                if !ok(q) {
+                    return None;
+                }
+                (cur, start) = (q, q);
+                cmds = vec![PathCmd::MoveTo(q)];
+                continue;
+            }
+            PathCmd::MoveTo(_) => break,
+            PathCmd::LineTo(q) => PathCmd::CubicTo(cur.lerp(q, 1.0 / 3.0), cur.lerp(q, 2.0 / 3.0), q),
+            PathCmd::QuadTo(c1, q) => PathCmd::CubicTo(cur + (c1 - cur) * (2.0 / 3.0), q + (c1 - q) * (2.0 / 3.0), q),
+            PathCmd::CubicTo(..) => *c,
+            PathCmd::Close => {
+                if cur.distance(start) > 1e-6 && !cmds.is_empty() {
+                    cmds.push(PathCmd::CubicTo(cur.lerp(start, 1.0 / 3.0), cur.lerp(start, 2.0 / 3.0), start));
+                }
+                break;
+            }
+        };
+        let PathCmd::CubicTo(a, b, q) = seg else { continue };
+        if !(ok(a) && ok(b) && ok(q)) {
+            return None;
+        }
+        if cmds.is_empty() {
+            cmds.push(PathCmd::MoveTo(cur));
+        }
+        cmds.push(seg);
+        cur = q;
+    }
+    let out = Path { cmds };
+    CurveWalk::new(&out).map(|_| out)
+}
+
+/// The first and last anchors of a path.
+pub fn path_ends(p: &Path) -> Option<(Vec2, Vec2)> {
+    let anchors = p.anchors();
+    Some((anchors.first()?.1, anchors.last()?.1))
+}
+
+/// A motion path measured for one object: where the object is along it, frame by frame.
+///
+/// Timing: the position keys (frames holding an X or Y key) split the span into legs. On each
+/// leg the X/Y curves run from one key's position to the next; how far along that chord they
+/// are (signed, so an ease that overshoots or backs up does so along the path too) is how far
+/// along the path's matching share the object is. The shares are the chords' lengths. A
+/// straight path therefore reproduces the X/Y curves exactly.
+#[derive(Clone, Debug)]
+pub struct OnPath<'a> {
+    tween: &'a MotionTween,
+    base: Props,
+    walk: CurveWalk,
+    /// Position keys: frame and where the X/Y curves are then.
+    keys: Vec<(f32, Vec2)>,
+    /// `cum[i]`: chord length from the first position key to key `i`.
+    cum: Vec<f32>,
+    /// Direction of travel at the start, radians.
+    start_angle: f32,
+}
+
+impl OnPath<'_> {
+    pub fn walk(&self) -> &CurveWalk {
+        &self.walk
+    }
+
+    /// The share of the path covered `frame` frames into the span: 0 up to the first position
+    /// key (and without two), 1 from the last; an overshooting ease may leave 0..1 in between.
+    /// Where the chords add up to nothing (a path back to its start) the object keeps an even
+    /// pace between the first and last position keys.
+    pub fn progress(&self, frame: f32) -> f32 {
+        let (Some(first), Some(last)) = (self.keys.first(), self.keys.last()) else { return 0.0 };
+        if !frame.is_finite() || frame <= first.0 || last.0 <= first.0 {
+            return 0.0;
+        }
+        if frame >= last.0 {
+            return 1.0;
+        }
+        let total = self.cum.last().copied().unwrap_or(0.0);
+        if total <= 1e-4 {
+            return (frame - first.0) / (last.0 - first.0);
+        }
+        let i = self.keys.partition_point(|k| k.0 <= frame).saturating_sub(1);
+        let (Some(a), Some(b)) = (self.keys.get(i), self.keys.get(i + 1)) else { return 1.0 };
+        let chord = b.1 - a.1;
+        let len = chord.length();
+        let along = if len > 1e-6 { (self.tween.trace_at(&self.base, frame) - a.1).dot(chord) / len } else { 0.0 };
+        let p = (self.cum.get(i).copied().unwrap_or(0.0) + along) / total;
+        if p.is_finite() { p } else { 0.0 }
+    }
+
+    /// Distance along the path at `frame` (beyond the ends while an ease overshoots them).
+    pub fn distance(&self, frame: f32) -> f32 {
+        self.progress(frame) * self.walk.length()
+    }
+
+    /// The registration point at `frame`. Overshooting an end carries on along the path's
+    /// direction there.
+    pub fn point(&self, frame: f32) -> Vec2 {
+        let (s, l) = (self.distance(frame), self.walk.length());
+        if s < 0.0 {
+            self.walk.at(0.0) + self.walk.tangent(0.0) * s
+        } else if s > l {
+            self.walk.at(l) + self.walk.tangent(l) * (s - l)
+        } else {
+            self.walk.at(s)
+        }
+    }
+
+    /// How far the path has turned at `frame` since its start, degrees clockwise on screen
+    /// (within ±180).
+    pub fn turn(&self, frame: f32) -> f32 {
+        let d = self.walk.tangent(self.distance(frame));
+        let a = (d.y.atan2(d.x) - self.start_angle).to_degrees();
+        let a = (a + 180.0).rem_euclid(360.0) - 180.0;
+        if a.is_finite() { a } else { 0.0 }
+    }
 }
 
 impl MotionTween {
     pub fn new(target: ElementId) -> MotionTween {
-        MotionTween { target, tracks: Vec::new() }
+        MotionTween { target, tracks: Vec::new(), path: None, orient: false }
+    }
+
+    /// The first and last frames holding an X or Y key.
+    pub fn position_range(&self) -> Option<(u32, u32)> {
+        let keys = || [Property::X, Property::Y].into_iter().filter_map(|p| self.track(p)).flat_map(|t| t.keys.iter().map(|k| k.frame));
+        Some((keys().min()?, keys().max()?))
+    }
+
+    /// Where the X/Y curves alone put the registration point at `frame`.
+    fn trace_at(&self, base: &Props, frame: f32) -> Vec2 {
+        let v = |p: Property| self.track(p).and_then(|t| t.value_at(frame)).unwrap_or(base.get(p));
+        Vec2::new(v(Property::X), v(Property::Y))
+    }
+
+    /// The motion path measured for an object whose own values are `base`; `None` without a
+    /// path.
+    pub fn on_path(&self, base: &Props) -> Option<OnPath<'_>> {
+        let walk = CurveWalk::new(self.path.as_ref()?)?;
+        let mut frames: Vec<u32> = [Property::X, Property::Y].into_iter().filter_map(|p| self.track(p)).flat_map(|t| t.keys.iter().map(|k| k.frame)).collect();
+        frames.sort_unstable();
+        frames.dedup();
+        let keys: Vec<(f32, Vec2)> = frames.into_iter().map(|f| (f as f32, self.trace_at(base, f as f32))).collect();
+        let mut cum = Vec::with_capacity(keys.len());
+        let mut d = 0.0f32;
+        for (i, k) in keys.iter().enumerate() {
+            d += i.checked_sub(1).and_then(|p| keys.get(p)).map_or(0.0, |p| p.1.distance(k.1));
+            cum.push(d);
+        }
+        let t = walk.tangent(0.0);
+        Some(OnPath { tween: self, base: *base, start_angle: t.y.atan2(t.x), walk, keys, cum })
+    }
+
+    /// The registration point on each of the span's first `frames` frames (at most a day of
+    /// frames): what the stage draws, one dot per frame.
+    pub fn positions(&self, base: &Props, frames: u32) -> Vec<Vec2> {
+        let frames = frames.min(100_000);
+        match self.on_path(base) {
+            Some(op) => (0..frames).map(|f| op.point(f as f32)).collect(),
+            None => (0..frames).map(|f| self.trace_at(base, f as f32)).collect(),
+        }
+    }
+
+    /// A motion path through the X/Y curves' positions at their keys, as straight segments:
+    /// the path a tween without one shows, made editable. `None` when the object doesn't move.
+    pub fn path_from_tracks(&self, base: &Props) -> Option<Path> {
+        let mut frames: Vec<u32> = [Property::X, Property::Y].into_iter().filter_map(|p| self.track(p)).flat_map(|t| t.keys.iter().map(|k| k.frame)).collect();
+        frames.sort_unstable();
+        frames.dedup();
+        let mut pts: Vec<Vec2> = Vec::new();
+        for f in frames.into_iter().take(MAX_PATH_SEGMENTS + 1) {
+            let q = self.trace_at(base, f as f32);
+            if pts.last().is_none_or(|l| l.distance(q) > 1e-3) {
+                pts.push(q);
+            }
+        }
+        let (first, rest) = pts.split_first()?;
+        let mut p = Path::new();
+        p.move_to(*first);
+        for q in rest {
+            p.line_to(*q);
+        }
+        motion_path(&p)
+    }
+
+    /// Gives the tween motion path `path` (made a [`motion_path`]; false when nothing usable
+    /// is left). Its ends become the X/Y keys at the first and last position keys, or at the
+    /// span's first frame and frame `last` when there are none, so the curves start and end
+    /// where the path does.
+    pub fn set_path(&mut self, path: &Path, base: &Props, last: u32) -> bool {
+        let Some(p) = motion_path(path) else { return false };
+        let Some((a, b)) = path_ends(&p) else { return false };
+        let (f0, f1) = match self.position_range() {
+            Some((f0, f1)) if f1 > f0 => (f0, f1),
+            _ if last > 0 => (0, last),
+            _ => return false,
+        };
+        for (prop, v0, v1) in [(Property::X, a.x, b.x), (Property::Y, a.y, b.y)] {
+            // Ends already in place keep their keys exactly (bending the path keeps its timing).
+            let holds = |m: &MotionTween, f: u32, v: f32| m.track(prop).and_then(|t| t.key_at(f).and_then(|i| t.keys.get(i))).is_some_and(|k| k.value == v);
+            if !holds(self, f0, v0) {
+                self.set_key(prop, f0, v0, base.get(prop));
+            }
+            if !holds(self, f1, v1) {
+                self.set_key(prop, f1, v1, base.get(prop));
+            }
+        }
+        self.path = Some(p);
+        true
     }
 
     pub fn track(&self, p: Property) -> Option<&Track> {
@@ -293,11 +534,21 @@ impl MotionTween {
     /// base's exact transform and colour effect.
     pub fn apply(&self, base: &Element, frame: f32) -> Element {
         let mut el = base.clone();
-        if self.tracks.is_empty() {
+        if self.tracks.is_empty() && self.path.is_none() {
             return el;
         }
-        let props = self.props_at(&Props::of(base), frame);
-        if self.tracks.iter().any(|t| t.property.is_transform()) {
+        let base_props = Props::of(base);
+        let mut props = self.props_at(&base_props, frame);
+        let on_path = self.on_path(&base_props);
+        if let Some(op) = &on_path {
+            let p = op.point(frame);
+            props.set(Property::X, p.x);
+            props.set(Property::Y, p.y);
+            if self.orient {
+                props.set(Property::Rotation, props.get(Property::Rotation) + op.turn(frame));
+            }
+        }
+        if on_path.is_some() || self.tracks.iter().any(|t| t.property.is_transform()) {
             let m = props.transform();
             if m.is_finite() {
                 el.transform = m;
@@ -348,8 +599,10 @@ impl MotionTween {
     }
 
     /// The part of this tween from `frame` on, re-based to start there (splitting a span in
-    /// two keeps the motion: each track gets a key at the cut with the value it had there).
-    pub fn split_at(&self, frame: u32) -> MotionTween {
+    /// two keeps the motion: each track gets a key at the cut with the value it had there, and
+    /// the motion path is cut where the object is). `base` is the object's own values; the
+    /// second half's object must be this one as it looks at `frame`.
+    pub fn split_at(&self, base: &Props, frame: u32) -> MotionTween {
         let tracks = self
             .tracks
             .iter()
@@ -361,17 +614,42 @@ impl MotionTween {
                 Some(Track { property: t.property, keys })
             })
             .collect();
-        MotionTween { target: self.target, tracks }
+        let mut tail = MotionTween { target: self.target, tracks, path: None, orient: self.orient };
+        let Some(op) = self.on_path(base) else { return tail };
+        let f = frame as f32;
+        match op.walk().tail(op.distance(f)) {
+            // The cut path starts where the object is; the X/Y keys go on timing it.
+            Some(p) => tail.path = Some(p),
+            // Past the path's end: the object holds where the path ended.
+            None => {
+                let p = op.point(f);
+                tail.tracks.retain(|t| !matches!(t.property, Property::X | Property::Y));
+                tail.set_key(Property::X, 0, p.x, p.x);
+                tail.set_key(Property::Y, 0, p.y, p.y);
+            }
+        }
+        // What the path has turned the object so far, the second half starts from.
+        if self.orient
+            && let Some(t) = tail.track_mut(Property::Rotation)
+        {
+            let turn = op.turn(f);
+            for k in &mut t.keys {
+                k.value = Property::Rotation.clamp(k.value + turn);
+            }
+        }
+        tail
     }
 
     /// Whether loading must repair it (unsorted or duplicate keys, values out of range,
     /// duplicate or empty tracks).
     pub fn is_sane(&self) -> bool {
-        self.tracks.iter().all(|t| !t.keys.is_empty() && t.is_sane()) && self.tracks.windows(2).all(|w| matches!(w, [a, b] if a.property.index() < b.property.index()))
+        self.path.as_ref().is_none_or(|p| motion_path(p).as_ref() == Some(p))
+            && self.tracks.iter().all(|t| !t.keys.is_empty() && t.is_sane()) && self.tracks.windows(2).all(|w| matches!(w, [a, b] if a.property.index() < b.property.index()))
     }
 
     /// Repairs a loaded tween.
     pub fn sanitize(&mut self) {
+        self.path = self.path.as_ref().and_then(motion_path);
         for t in &mut self.tracks {
             t.sanitize();
         }
@@ -485,7 +763,7 @@ mod tests {
         let mut m = MotionTween::new(ElementId(1));
         m.set_key(Property::X, 10, 100.0, 0.0);
         m.set_key(Property::Y, 6, 60.0, 0.0);
-        let tail = m.split_at(4);
+        let tail = m.split_at(&Props::of(&base), 4);
         let tail_base = m.apply(&base, 4.0);
         for f in 4..=12u32 {
             let a = m.apply(&base, f as f32).transform.translation();
@@ -512,6 +790,7 @@ mod tests {
                 track(Property::X, &[(0, 2.0, Easing::Linear)]),
                 track(Property::Y, &[]),
             ],
+            ..MotionTween::new(ElementId(1))
         };
         assert!(!m.is_sane());
         m.sanitize();
@@ -528,5 +807,191 @@ mod tests {
         }
         assert_eq!(Property::from_key("Scale X"), Some(Property::ScaleX));
         assert_eq!(Property::from_key("nope"), None);
+    }
+
+    // ----- motion paths (ADR 0030) ----------------------------------------------------------
+
+    fn line(a: (f32, f32), b: (f32, f32)) -> Path {
+        let mut p = Path::new();
+        p.move_to(Vec2::new(a.0, a.1)).line_to(Vec2::new(b.0, b.1));
+        p
+    }
+
+    /// The cubic quarter circle of radius `r` about `(0, r)`: from the origin heading +x round
+    /// to `(r, r)` heading +y.
+    fn quarter(r: f32) -> Path {
+        let k = 0.552_284_8 * r;
+        let mut p = Path::new();
+        p.move_to(Vec2::new(0.0, 0.0)).cubic_to(Vec2::new(k, 0.0), Vec2::new(r, r - k), Vec2::new(r, r));
+        p
+    }
+
+    fn at(m: &MotionTween, base: &Element, f: f32) -> Vec2 {
+        m.apply(base, f).transform.translation()
+    }
+
+    /// X 0 → 100 and Y 0 → 100 over frames 0..20 with `ease` on both.
+    fn diagonal(ease: Easing) -> MotionTween {
+        let mut m = MotionTween::new(ElementId(1));
+        m.tracks = vec![track(Property::X, &[(0, 0.0, ease), (20, 100.0, Easing::Linear)]), track(Property::Y, &[(0, 0.0, ease), (20, 100.0, Easing::Linear)])];
+        m
+    }
+
+    #[test]
+    fn a_straight_path_reproduces_linear_and_eased_xy() {
+        let base = el(1, 0.0, 0.0);
+        for ease in [Easing::Linear, Easing::QuadIn, Easing::CubicBezier(0.2, 0.9, 0.4, 1.3)] {
+            let plain = diagonal(ease);
+            let mut m = plain.clone();
+            assert!(m.set_path(&line((0.0, 0.0), (100.0, 100.0)), &Props::of(&base), 20));
+            assert_eq!(m.tracks, plain.tracks, "ends already in place: the keys stay as they were");
+            for i in 0..=80 {
+                let f = i as f32 / 4.0;
+                let (a, b) = (at(&plain, &base, f), at(&m, &base, f));
+                assert!(a.distance(b) < 2e-3, "{ease:?} frame {f}: {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_quarter_circle_keeps_the_object_on_the_arc() {
+        let r = 100.0;
+        let base = el(1, 0.0, 0.0);
+        let mut m = diagonal(Easing::Linear);
+        assert!(m.set_path(&quarter(r), &Props::of(&base), 20));
+        let mut last = -1.0f32;
+        for f in 0..=20 {
+            let p = at(&m, &base, f as f32);
+            assert!((p.distance(Vec2::new(0.0, r)) - r).abs() < 0.05, "frame {f}: {p:?}");
+            // Linear X/Y on a straight diagonal: an even pace along the arc.
+            let angle = (p.x / r).clamp(-1.0, 1.0).asin().to_degrees();
+            assert!((angle - 90.0 * f as f32 / 20.0).abs() < 0.2, "frame {f}: {angle}°");
+            assert!(angle >= last);
+            last = angle;
+        }
+        // Before the first position key and after the last, it holds at the ends.
+        assert!(at(&m, &base, 30.0).distance(Vec2::new(r, r)) < 1e-3);
+    }
+
+    #[test]
+    fn orient_to_path_turns_with_the_tangent() {
+        let r = 100.0;
+        for start in [0.0f32, 30.0] {
+            let base = Element { transform: Affine::rotate(start.to_radians()), ..el(1, 0.0, 0.0) };
+            let mut m = diagonal(Easing::Linear);
+            assert!(m.set_path(&quarter(r), &Props::of(&base), 20));
+            m.orient = true;
+            let walk = CurveWalk::new(m.path.as_ref().unwrap()).unwrap();
+            for f in 0..=20 {
+                let rot = m.apply(&base, f as f32).transform.decompose().rotation.to_degrees();
+                let p = at(&m, &base, f as f32);
+                let tan = walk.tangent(walk.project(p));
+                let want = start + tan.y.atan2(tan.x).to_degrees();
+                assert!((rot - want).abs() < 0.05, "start {start}° frame {f}: {rot} vs {want}");
+                assert!((p.distance(Vec2::new(0.0, r)) - r).abs() < 0.05);
+            }
+            // Without orient the rotation stays.
+            m.orient = false;
+            assert!((m.apply(&base, 10.0).transform.decompose().rotation.to_degrees() - start).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn a_rotation_curve_adds_to_the_turn() {
+        let base = el(1, 0.0, 0.0);
+        let mut m = diagonal(Easing::Linear);
+        assert!(m.set_path(&quarter(100.0), &Props::of(&base), 20));
+        m.orient = true;
+        m.set_key(Property::Rotation, 20, 10.0, 0.0);
+        let rot = m.apply(&base, 20.0).transform.decompose().rotation.to_degrees();
+        assert!((rot - 100.0).abs() < 0.1, "a quarter turn from the path and 10° keyed: {rot}");
+    }
+
+    #[test]
+    fn splitting_a_path_tween_keeps_the_motion_and_the_turn() {
+        let base = el(1, 0.0, 0.0);
+        let mut m = diagonal(Easing::QuadOut);
+        assert!(m.set_path(&quarter(100.0), &Props::of(&base), 20));
+        m.orient = true;
+        m.set_key(Property::Rotation, 20, 45.0, 0.0);
+        for cut in [7u32, 20, 25] {
+            let tail = m.split_at(&Props::of(&base), cut);
+            let tail_base = m.apply(&base, cut as f32);
+            for f in cut..=30 {
+                let (a, b) = (m.apply(&base, f as f32), tail.apply(&tail_base, (f - cut) as f32));
+                let (pa, pb) = (a.transform.translation(), b.transform.translation());
+                assert!(pa.distance(pb) < 0.05, "cut {cut} frame {f}: {pa:?} vs {pb:?}");
+                let (ra, rb) = (a.transform.decompose().rotation.to_degrees(), b.transform.decompose().rotation.to_degrees());
+                assert!((ra - rb).abs() < 0.1, "cut {cut} frame {f}: {ra} vs {rb}");
+            }
+            assert_eq!(tail.path.is_some(), cut < 20, "past the end the tail holds still");
+        }
+    }
+
+    #[test]
+    fn a_path_from_the_tracks_moves_the_same_way() {
+        // Right 100 over 10 frames, then down 100 over the next 10.
+        let base = el(1, 0.0, 0.0);
+        let mut plain = MotionTween::new(ElementId(1));
+        plain.tracks = vec![track(Property::X, &[(0, 0.0, Easing::Linear), (10, 100.0, Easing::Linear)]), track(Property::Y, &[(0, 0.0, Easing::Linear), (10, 0.0, Easing::Linear), (20, 100.0, Easing::Linear)])];
+        let path = plain.path_from_tracks(&Props::of(&base)).unwrap();
+        assert_eq!(path.anchors().len(), 3);
+        let mut m = plain.clone();
+        assert!(m.set_path(&path, &Props::of(&base), 20));
+        for f in 0..=20 {
+            assert!(at(&plain, &base, f as f32).distance(at(&m, &base, f as f32)) < 1e-2, "frame {f}");
+        }
+        assert_eq!(m.positions(&Props::of(&base), 21).len(), 21);
+        assert!(MotionTween::new(ElementId(1)).path_from_tracks(&Props::of(&base)).is_none(), "nothing moves");
+    }
+
+    #[test]
+    fn a_path_without_position_keys_spans_the_tween() {
+        let base = el(1, 5.0, 5.0);
+        let mut m = MotionTween::new(ElementId(1));
+        assert!(!m.set_path(&line((0.0, 0.0), (50.0, 0.0)), &Props::of(&base), 0), "a single frame has no room to move");
+        assert!(m.set_path(&line((0.0, 0.0), (50.0, 0.0)), &Props::of(&base), 10));
+        assert_eq!(m.position_range(), Some((0, 10)));
+        assert!(at(&m, &base, 5.0).distance(Vec2::new(25.0, 0.0)) < 1e-3);
+        // A loop (back to the start) is travelled at an even pace.
+        let mut l = MotionTween::new(ElementId(1));
+        let mut ring = Path::new();
+        ring.move_to(Vec2::new(0.0, 0.0)).line_to(Vec2::new(40.0, 0.0)).line_to(Vec2::new(40.0, 40.0)).line_to(Vec2::new(0.0, 40.0)).close();
+        assert!(l.set_path(&ring, &Props::of(&base), 16));
+        assert!(at(&l, &base, 4.0).distance(Vec2::new(40.0, 0.0)) < 1e-2 && at(&l, &base, 8.0).distance(Vec2::new(40.0, 40.0)) < 1e-2);
+    }
+
+    #[test]
+    fn motion_paths_are_normalised_and_hostile_ones_dropped() {
+        let mut p = Path::new();
+        p.move_to(Vec2::new(9.0, 9.0)).move_to(Vec2::new(0.0, 0.0)).quad_to(Vec2::new(10.0, 10.0), Vec2::new(20.0, 0.0)).line_to(Vec2::new(30.0, 0.0)).move_to(Vec2::new(99.0, 99.0)).line_to(Vec2::new(0.0, 0.0));
+        let n = motion_path(&p).unwrap();
+        assert_eq!(n.cmds.len(), 3, "the first subpath, as a move and cubics");
+        assert!(n.cmds.iter().skip(1).all(|c| matches!(c, PathCmd::CubicTo(..))));
+        assert_eq!(motion_path(&n), Some(n.clone()), "normal form is stable");
+        assert!(motion_path(&line((0.0, 0.0), (0.0, 0.0))).is_none());
+        assert!(motion_path(&line((0.0, 0.0), (f32::NAN, 0.0))).is_none());
+        assert!(motion_path(&line((0.0, 0.0), (5e6, 0.0))).is_none());
+        let mut long = Path::new();
+        long.move_to(Vec2::ZERO);
+        for i in 1..=5000 {
+            long.line_to(Vec2::new(i as f32, 0.0));
+        }
+        assert_eq!(motion_path(&long).map(|p| p.cmds.len()), Some(MAX_PATH_SEGMENTS + 1));
+        // Loading repairs a tween holding a bad path, and a good one survives a round trip.
+        let mut m = diagonal(Easing::Linear);
+        m.path = Some(p);
+        m.orient = true;
+        assert!(!m.is_sane());
+        m.sanitize();
+        assert!(m.is_sane() && m.path.is_some());
+        let json = serde_json::to_string(&m).unwrap();
+        let back: MotionTween = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        let old: MotionTween = serde_json::from_str(r#"{"target": 1}"#).unwrap();
+        assert!(old.path.is_none() && !old.orient, "files from before motion paths open unchanged");
+        m.path = Some(line((0.0, 0.0), (f32::INFINITY, 1.0)));
+        m.sanitize();
+        assert!(m.path.is_none());
     }
 }

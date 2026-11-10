@@ -11,6 +11,7 @@ use crate::cmds_timeline::target;
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
 use anicraft_doc::{ColorEffect, Element, ElementId, Keyframe, Layer, LayerId, LayerKind, MotionTween, Property, Props};
+use anicraft_geom::{Affine, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -20,9 +21,15 @@ pub fn specs() -> Vec<CommandSpec> {
         c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|tint, value (px, %, °), frame?, layer?}", true, set_key as crate::RunFn),
         c("motion.remove_key", "Remove Property Keyframe", "", None, "{property? (default: every property), frame?, layer?}", true, remove_key),
         c("motion.set_ease", "Property Ease", "", None, "{easing, property? (default: every property), frame? (inside the segment), layer?}", true, set_ease),
-        c("motion.info", "Motion Tween", "", None, "{layer?, frame?} → the span's properties, keys, eases and values at the frame", false, info),
+        c("motion.info", "Motion Tween", "", None, "{layer?, frame?} → the span's properties, keys, eases and values at the frame, its motion path and where the object is", false, info),
+        c("motion.set_path", "Edit Motion Path", "", None, "{d: SVG path data in stage space (its first subpath; ends are the start and end positions), layer?, frame?}", true, set_path),
+        c("motion.clear_path", "Remove Motion Path", "", None, "{layer?, frame?}: back to the straight path the X/Y curves trace", true, clear_path),
+        c("motion.orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}: turn the object as its motion path turns", true, orient),
     ]
 }
+
+/// The most path data `motion.set_path` reads.
+const MAX_PATH_DATA: usize = 1_000_000;
 
 /// A command editing a motion tween's target (see the module docs).
 #[derive(Clone, Debug)]
@@ -61,6 +68,7 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     let Some(kf) = layer.keyframe_starting_at(e.start).and_then(|i| layer.keyframe_mut(i)) else { return };
     let Some(idx) = kf.elements.iter().position(|x| x.id == e.target) else { return };
     let Some(after) = kf.elements.get(idx).map(|x| (**x).clone()) else { return };
+    let last = kf.duration.saturating_sub(1);
     let Some(m) = kf.motion.as_mut() else { return };
     m.target = e.target;
     let (now_dec, was_dec) = (Props::of(&after), Props::of(&e.before));
@@ -69,7 +77,18 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     let was = m.props_at(&base_props, e.offset as f32);
     let mut new_base = base_props;
     let (mut base_xf, mut base_color) = (false, false);
+    // On a motion path, moving the object reshapes the path (ADR 0030); X/Y keep the timing.
+    let on_path = m.path.is_some();
+    if on_path {
+        let d = Vec2::new(now_dec.get(Property::X) - was_dec.get(Property::X), now_dec.get(Property::Y) - was_dec.get(Property::Y));
+        if d.is_finite() && d.length() > 1e-4 {
+            move_on_path(m, &base_props, e.offset, d, last);
+        }
+    }
     for p in Property::ALL {
+        if on_path && matches!(p, Property::X | Property::Y) {
+            continue;
+        }
         let mut d = now_dec.get(p) - was_dec.get(p);
         if p == Property::Rotation {
             // The turn the edit made, the short way round.
@@ -107,6 +126,104 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     if let Some(slot) = kf.elements.get_mut(idx) {
         *slot = Arc::new(base);
     }
+}
+
+/// Most bends [`move_on_path`] makes to land the object where it was put; each takes 15–35%
+/// off the miss on typical paths (the path's length changes as it bends, sliding the object).
+const BEND_STEPS: usize = 48;
+
+/// The object on a motion path was moved by `d` at `offset`: at or before the first position
+/// key the path's start moves, at or after the last its end, in between the path bends so it
+/// passes where the object was put (a few bends, as the path's length changes with each);
+/// without position keys the whole path moves.
+fn move_on_path(m: &mut MotionTween, base: &Props, offset: u32, d: Vec2, last: u32) {
+    let Some(mut path) = m.path.clone() else { return };
+    let f = offset as f32;
+    match m.position_range() {
+        Some((f0, f1)) if f1 > f0 && offset > f0 && offset < f1 => {
+            let Some(target) = m.on_path(base).map(|op| op.point(f) + d) else { return };
+            let mut trial = m.clone();
+            for _ in 0..BEND_STEPS {
+                let Some(op) = trial.on_path(base) else { return };
+                let miss = target - op.point(f);
+                if miss.length() < 2e-3 {
+                    break;
+                }
+                let (cmd, t) = op.walk().locate(op.distance(f));
+                if !path.bend_segment(cmd, t, miss) {
+                    break;
+                }
+                trial.path = Some(path.clone());
+            }
+        }
+        Some((f0, f1)) if f1 > f0 => {
+            let anchor = if offset <= f0 { 0 } else { path.cmds.len().saturating_sub(1) };
+            path.move_anchor(anchor, d);
+        }
+        _ => path = path.transformed(&Affine::translate(d.x, d.y)),
+    }
+    m.set_path(&path, base, last);
+}
+
+/// The motion tween's object values (its base) on `kf`.
+fn base_of(kf: &Keyframe) -> Result<Props> {
+    kf.motion.as_ref().and_then(|m| m.target_index(&kf.elements)).and_then(|i| kf.elements.get(i)).map(|e| Props::of(e)).ok_or_else(|| EngineError::State("the motion tween's object is no longer on its keyframe".into()))
+}
+
+fn set_path(s: &mut Session, p: &Value) -> Result<Value> {
+    let d = str_req(p, "d")?;
+    if d.len() > MAX_PATH_DATA {
+        return Err(EngineError::Param("param 'd' is too long".into()));
+    }
+    let path = anicraft_geom::svg::parse_path_data(d).map_err(|e| EngineError::Param(format!("param 'd': {e}")))?;
+    let (kf, _) = motion_span(s, p)?;
+    let base = base_of(kf)?;
+    let last = kf.duration.saturating_sub(1);
+    let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
+    if last == 0 && m.position_range().is_none_or(|(a, b)| a == b) {
+        return Err(EngineError::State("a one-frame span has no room to move along a path: make the span longer first".into()));
+    }
+    if !m.set_path(&path, &base, last) {
+        return Err(EngineError::Param("param 'd' needs a segment of some length, with finite points within ±1000000".into()));
+    }
+    Ok(path_summary(m))
+}
+
+fn path_summary(m: &MotionTween) -> Value {
+    let Some(path) = &m.path else { return json!({"path": null, "orient": m.orient}) };
+    let len = anicraft_geom::walk::CurveWalk::new(path).map_or(0.0, |w| w.length());
+    let (a, b) = anicraft_doc::motion::path_ends(path).unwrap_or_default();
+    json!({"path": path.to_svg(), "segments": path.cmds.len().saturating_sub(1), "length": len, "start": [a.x, a.y], "end": [b.x, b.y], "orient": m.orient})
+}
+
+fn clear_path(s: &mut Session, p: &Value) -> Result<Value> {
+    let (kf, offset) = motion_span(s, p)?;
+    let frame = kf.start + offset;
+    let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
+    if m.path.take().is_none() {
+        return Err(EngineError::State(format!("the motion tween at frame {} has no motion path to remove", frame + 1)));
+    }
+    // Orient to path has nothing left to turn with.
+    m.orient = false;
+    Ok(json!({"cleared": true}))
+}
+
+fn orient(s: &mut Session, p: &Value) -> Result<Value> {
+    let on = opt_bool(p, "orient")?.ok_or_else(|| EngineError::Param("param 'orient' is required (true or false)".into()))?;
+    let (kf, _) = motion_span(s, p)?;
+    let base = base_of(kf)?;
+    let last = kf.duration.saturating_sub(1);
+    let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
+    // The straight path the X/Y curves trace becomes the path to turn along.
+    let mut created = false;
+    if on && m.path.is_none() {
+        let path = m.path_from_tracks(&base).ok_or_else(|| EngineError::State("the object doesn't move yet: move it at a later frame of the tween first, then it can turn with its path".into()))?;
+        created = m.set_path(&path, &base, last);
+    }
+    m.orient = on;
+    let mut v = path_summary(m);
+    v["path_created"] = json!(created);
+    Ok(v)
 }
 
 /// Insert Keyframe (F6) inside a motion tween: every property gets a key at `frame` holding its
@@ -293,5 +410,8 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .collect();
     let values: serde_json::Map<String, Value> = Property::ALL.iter().filter_map(|p| now.map(|n| (p.key().to_string(), json!(n.get(*p))))).collect();
-    Ok(json!({"layer": lid.0, "start": kf.start, "frames": kf.duration, "target": m.target.0, "tracks": tracks, "values": values}))
+    // Where the object is (on a motion path the X/Y values are its timing, not its place).
+    let position = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i)).map(|e| m.apply(e, (frame - kf.start) as f32).transform.translation()).map(|q| json!([q.x, q.y]));
+    let path = path_summary(m);
+    Ok(json!({"layer": lid.0, "start": kf.start, "frames": kf.duration, "target": m.target.0, "tracks": tracks, "values": values, "position": position, "path": path["path"], "orient": m.orient}))
 }

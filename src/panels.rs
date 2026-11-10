@@ -21,12 +21,15 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Pen => Icon::Pen,
         Tool::Text => Icon::Type,
         Tool::Pencil => Icon::Pencil,
+        Tool::Brush => Icon::Brush,
+        Tool::Eraser => Icon::Eraser,
         Tool::Rect => Icon::Rect,
         Tool::Oval => Icon::Oval,
         Tool::Star => Icon::PolyStar,
         Tool::Line => Icon::Line,
         Tool::PaintBucket => Icon::Bucket,
         Tool::InkBottle => Icon::Ink,
+        Tool::Eyedropper => Icon::Eyedropper,
         Tool::Camera => Icon::Camera,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
@@ -65,10 +68,15 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             if active {
                 a11y::anchor(ui, a11y::Region::Tools, area, &resp);
             }
-            if resp.on_hover_text(format!("{name}\n{}", tool.hint())).clicked() {
+            let resp = resp.on_hover_text(format!("{name}\n{}", tool.hint()));
+            if resp.clicked() {
                 app.tool = tool;
             }
-            if matches!(tool, Tool::Width | Tool::Pencil | Tool::Line | Tool::InkBottle) {
+            // Animate: double-clicking the Eraser erases everything on the stage (it asks first).
+            if tool == Tool::Eraser && resp.double_clicked() {
+                crate::erasertool::erase_everything(app);
+            }
+            if matches!(tool, Tool::Width | Tool::Eraser | Tool::Line | Tool::Eyedropper) {
                 // Tool groups: select, draw by hand, shapes, view.
                 ui.add_space(3.0);
                 let y = ui.cursor().top();
@@ -78,7 +86,7 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
         }
         ui.add_space(10.0);
         // fill / stroke swatches
-        let st = app.s.style;
+        let st = &app.s.style;
         let (r, _) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::hover());
         let back = Rect::from_min_size(r.left_top() + vec2(14.0, 14.0), vec2(24.0, 24.0));
         let front = Rect::from_min_size(r.left_top() + vec2(2.0, 2.0), vec2(24.0, 24.0));
@@ -198,8 +206,8 @@ fn renderer_tag(app: &App) -> String {
     match (app.stage_cache.gpu.state(), &app.stage_cache.drawn_by) {
         (State::Starting, _) => " · GPU starting".into(),
         (State::Failed(_), _) => " · CPU (GPU unavailable)".into(),
-        (State::Running(_), Some((true, _))) => " · GPU".into(),
-        (State::Running(_), Some((false, Some(why)))) => format!(" · CPU for {why}"),
+        (State::Running { .. }, Some((true, _))) => " · GPU".into(),
+        (State::Running { .. }, Some((false, Some(why)))) => format!(" · CPU for {why}"),
         _ => " · CPU".into(),
     }
 }
@@ -333,7 +341,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     let sel: Vec<_> = elements.iter().filter(|e| app.s.selection.contains(&e.id)).cloned().collect();
 
     // ---- tool options first while a drawing tool is in hand: they're what you reach for ----
-    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle) {
+    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper) {
         let title = format!("{} tool", app.tool.label());
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
     }
@@ -1080,6 +1088,23 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     let keyed: Vec<&str> = m.tracks.iter().map(|t| t.property.label()).collect();
                     let n = m.key_frames().len();
                     ui.label(text(Type::Caption, if keyed.is_empty() { "No property keyframes yet: move or change the object at a later frame to add some.".to_string() } else { format!("{} · {n} {}", keyed.join(", "), if n == 1 { "key frame" } else { "key frames" }) }));
+                    // The motion path (ADR 0030): bent on the stage, straightened here.
+                    let segments = m.path.as_ref().map(|p| p.cmds.len().saturating_sub(1));
+                    row_prose(ui, "Path", |ui| {
+                        let what = match segments {
+                            Some(1) => "Curved · 1 segment".to_string(),
+                            Some(n) => format!("Curved · {n} segments"),
+                            None => "Straight".to_string(),
+                        };
+                        ui.label(text(Type::Body, what)).on_hover_text("Select the object to see its path on the stage. Drag the path to bend it, its ends to move them; the Subselection tool (A) edits its points and handles.");
+                        if segments.is_some() && ui.small_button("Straighten").on_hover_text("Back to the straight path the X and Y curves trace").named("Straighten motion path").clicked() {
+                            app.run("motion.clear_path", json!({}));
+                        }
+                    });
+                    let mut orient = m.orient;
+                    if crate::theme::checkbox(ui, &mut orient, "Orient to path").on_hover_text("Turn the object as its motion path turns").named("Orient to path").changed() {
+                        app.run("motion.orient", json!({"orient": orient}));
+                    }
                     ui.horizontal(|ui| {
                         if ui.button("Motion Editor").on_hover_text("Edit the property curves and eases").clicked() {
                             app.bottom = crate::app::BottomTab::MotionEditor;
@@ -1212,6 +1237,10 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
 }
 
 fn tool_props(app: &mut App, ui: &mut egui::Ui) {
+    if app.tool == Tool::Eraser {
+        eraser_props(app, ui);
+        return;
+    }
     if app.tool == Tool::Text {
         // What new text gets (the last style used, as in Animate).
         let mut st = app.s.text_style.clone();
@@ -1220,21 +1249,33 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }
         return;
     }
-    let mut st = app.s.style;
-    // Each tool shows only what it uses: the bucket always fills, the ink bottle always strokes.
-    let (bucket, ink) = (app.tool == Tool::PaintBucket, app.tool == Tool::InkBottle);
+    let mut st = app.s.style.clone();
+    // Each tool shows only what it uses: the bucket and the brush always fill, the ink bottle
+    // always strokes.
+    let (fills, ink) = (matches!(app.tool, Tool::PaintBucket | Tool::Brush), app.tool == Tool::InkBottle);
     if !ink {
         row(ui, "Fill", |ui| {
             let mut c = rgb(st.fill);
             if ui.color_edit_button_srgb(&mut c).named("Fill colour").changed() {
-                st.fill = Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0);
+                st.set_fill_color(Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0));
             }
-            if !bucket {
+            // A gradient or bitmap picked with the Eyedropper (ADR 0034): the swatch shows its
+            // first colour, and says what it holds.
+            if let Some(p) = &st.fill_paint {
+                let what = match p {
+                    Paint::Linear { .. } => "Linear gradient",
+                    Paint::Radial { .. } => "Radial gradient",
+                    Paint::Bitmap { .. } => "Bitmap fill",
+                    Paint::Solid(_) => "Solid",
+                };
+                ui.label(text(Type::Caption, what)).on_hover_text("Picked with the Eyedropper. It stays where it was on the stage (lock fill). Pick a colour to fill with a solid colour again.");
+            }
+            if !fills {
                 crate::theme::checkbox(ui, &mut st.use_fill, "").named("Fill").on_hover_text("Fill on/off");
             }
         });
     }
-    if !bucket {
+    if !fills {
         row(ui, "Stroke", |ui| {
             let mut c = rgb(st.stroke);
             if ui.color_edit_button_srgb(&mut c).named("Stroke colour").changed() {
@@ -1246,10 +1287,18 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::DragValue::new(&mut st.stroke_width).suffix(" px").speed(0.1).range(0.0..=100.0).max_decimals(1)).set_name("Stroke width");
         });
         // The width profile new strokes get.
-        let current = st.stroke_profile.profile();
+        let current = st.profile();
         if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref()) {
-            st.stroke_profile = pick;
+            st.set_profile(pick);
         }
+    }
+    // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
+    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush) {
+        let key = anicraft_engine::find_command("draw.object_drawing").and_then(|c| c.shortcut).map(crate::platform::shortcut_label).unwrap_or_default();
+        row_prose(ui, "Drawing", |ui| {
+            crate::theme::checkbox(ui, &mut st.object_drawing, "Object drawing")
+                .on_hover_text(format!("On: each shape is an object of its own. Off: shapes cut and merge with the shapes they touch ({key})"));
+        });
     }
     app.s.style = st;
     match app.tool {
@@ -1274,8 +1323,86 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut app.pencil_mode, m, m.label()).on_hover_text(m.hint());
             }
         }),
+        Tool::Brush => brush_props(app, ui),
         _ => {}
     }
+}
+
+/// The Eraser's options (ADR 0034): the Faucet, size, shape and erase mode, as in Animate.
+fn eraser_props(app: &mut App, ui: &mut egui::Ui) {
+    use crate::brushtool::{SIZE_MAX, SIZE_MIN};
+    use anicraft_engine::cmds_erase::EraseMode;
+    use anicraft_engine::geom::brush::TipShape;
+    let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
+    let o = &mut app.eraser;
+    row_prose(ui, "Faucet", |ui| {
+        crate::theme::checkbox(ui, &mut o.faucet, "Delete whole fills and lines").on_hover_text("On: a click deletes the whole fill or line under it. Off: drag to erase");
+    });
+    ui.add_enabled_ui(!o.faucet, |ui| {
+        row(ui, "Size", |ui| {
+            let r = ui.add(egui::DragValue::new(&mut o.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named("Eraser size");
+            if !keys.is_empty() {
+                r.on_hover_text(format!("Eraser size ({keys})"));
+            }
+        });
+        row(ui, "Shape", |ui| {
+            for (shape, label, hint) in [(TipShape::Round, "Round", "A round eraser"), (TipShape::Square, "Square", "A square eraser")] {
+                ui.selectable_value(&mut o.shape, shape, label).on_hover_text(hint);
+            }
+        });
+        row_prose(ui, "Mode", |ui| {
+            egui::ComboBox::from_id_salt("erase_mode").width(170.0).selected_text(o.mode.label()).show_ui(ui, |ui| {
+                for m in EraseMode::ALL {
+                    ui.selectable_value(&mut o.mode, m, m.label()).on_hover_text(m.hint());
+                }
+            })
+            .response
+            .set_name("Erase mode");
+        });
+    });
+    row_prose(ui, "Stage", |ui| {
+        if ui.button("Erase Everything…").on_hover_text("Clears every visible, unlocked layer at this frame, as double-clicking the Eraser tool does. You can undo it").clicked() {
+            crate::erasertool::erase_everything(app);
+        }
+    });
+}
+
+/// The Brush tool's options (ADR 0033): what Animate's brush offers in its options.
+fn brush_props(app: &mut App, ui: &mut egui::Ui) {
+    use crate::brushtool::{SIZE_MAX, SIZE_MIN};
+    use anicraft_engine::cmds_brush::PaintMode;
+    use anicraft_engine::geom::brush::TipShape;
+    let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
+    let b = &mut app.brush;
+    row(ui, "Size", |ui| {
+        let r = ui.add(egui::DragValue::new(&mut b.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named("Brush size");
+        if !keys.is_empty() {
+            r.on_hover_text(format!("Brush size ({keys})"));
+        }
+    });
+    row(ui, "Shape", |ui| {
+        for (shape, label, hint) in [(TipShape::Round, "Round", "A round or oval tip"), (TipShape::Square, "Square", "A square or flat tip")] {
+            ui.selectable_value(&mut b.shape, shape, label).on_hover_text(hint);
+        }
+    });
+    row(ui, "Angle", |ui| {
+        ui.add(egui::DragValue::new(&mut b.angle).suffix("°").speed(1.0).range(0.0..=180.0).max_decimals(0)).named("Brush angle").on_hover_text("Turns a flattened tip (clockwise)");
+    });
+    row(ui, "Roundness", |ui| {
+        ui.add(egui::DragValue::new(&mut b.roundness).suffix(" %").speed(0.5).range(5.0..=100.0).max_decimals(0)).named("Brush roundness").on_hover_text("100 %: as wide as it is tall. Less flattens the tip, for calligraphic strokes");
+    });
+    row(ui, "Smoothing", |ui| {
+        ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named("Brush smoothing").on_hover_text("How much the stroke is smoothed: 0 follows the hand closely");
+    });
+    row_prose(ui, "Mode", |ui| {
+        egui::ComboBox::from_id_salt("brush_mode").width(170.0).selected_text(b.mode.label()).show_ui(ui, |ui| {
+            for m in PaintMode::ALL {
+                ui.selectable_value(&mut b.mode, m, m.label()).on_hover_text(m.hint());
+            }
+        })
+        .response
+        .set_name("Paint mode");
+    });
 }
 
 /// A small picture of a width profile: the stroke's outline, left side up.

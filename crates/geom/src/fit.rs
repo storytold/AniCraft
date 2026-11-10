@@ -12,7 +12,7 @@
 //! follow the zoom), end tangents measured over that window instead of from one noisy
 //! neighbour, and no indexing that input can push out of range. Maths runs in `f64`.
 
-use crate::{Path, Vec2};
+use crate::{Path, PathCmd, Vec2};
 
 type P = (f64, f64);
 
@@ -62,6 +62,10 @@ pub fn fit_curve(points: &[Vec2], tolerance: f32, corner_window: f32, closed: bo
         return path;
     }
     let segs = if closed { fit_closed(&lp, tol, window) } else { fit_open(&lp, tol, window) };
+    // A closed loop with corners starts at its first corner, not necessarily at the first point.
+    if let (Some(s), Some(PathCmd::MoveTo(m))) = (segs.first(), path.cmds.first_mut()) {
+        *m = v(s[0]);
+    }
     for s in segs {
         path.cubic_to(v(s[1]), v(s[2]), v(s[3]));
     }
@@ -328,7 +332,7 @@ fn fit_cubic(pts: &[P], t1: P, t2: P, err2: f64, out: &mut Vec<[P; 4]>, depth: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Affine, PathCmd};
+    use crate::Affine;
 
     fn max_dist(path: &Path, pts: &[Vec2]) -> f32 {
         let lines = path.flatten(&Affine::IDENTITY, 0.05);
@@ -360,6 +364,25 @@ mod tests {
         let path = fit_curve(&pts, 0.5, 3.0, false);
         assert!(path.anchors().iter().any(|(_, a)| a.distance(Vec2::new(0.0, 50.0)) < 1e-3), "an anchor at the corner");
         assert!(max_dist(&path, &pts) <= 0.55);
+    }
+
+    #[test]
+    fn closed_loop_with_corners_starts_on_a_corner() {
+        // A square traced from the middle of a side: the loop must start at a corner, or its
+        // first edge would cut straight across from the first point.
+        let mut pts: Vec<Vec2> = (25..50).map(|i| Vec2::new(i as f32, 0.0)).collect();
+        pts.extend((0..50).map(|i| Vec2::new(50.0, i as f32)));
+        pts.extend((0..50).map(|i| Vec2::new(50.0 - i as f32, 50.0)));
+        pts.extend((0..50).map(|i| Vec2::new(0.0, 50.0 - i as f32)));
+        pts.extend((0..25).map(|i| Vec2::new(i as f32, 0.0)));
+        let path = fit_curve(&pts, 0.5, 3.0, true);
+        assert!(max_dist(&path, &pts) <= 0.55);
+        let start = path.point(0, crate::edit::ANCHOR);
+        assert!(start.is_some_and(|s| [(0.0, 0.0), (50.0, 0.0), (50.0, 50.0), (0.0, 50.0)].iter().any(|c| s.distance(Vec2::new(c.0, c.1)) < 1e-3)), "{start:?}");
+        // Every point of the curve is on the square's outline (no shortcut across it).
+        for pl in path.flatten(&Affine::IDENTITY, 0.05) {
+            assert!(pl.points.iter().all(|p| p.x.min(p.y).min(50.0 - p.x).min(50.0 - p.y).abs() < 0.6), "a segment cuts across");
+        }
     }
 
     #[test]

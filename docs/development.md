@@ -23,11 +23,16 @@ Sound output (ADR 0020) uses `cpal`, which on Linux and the BSDs builds against 
 (Arch, FreeBSD). `cargo build --no-default-features` leaves sound output out (playback is
 silent; import, waveforms and audio export still work). Tests never open an audio device.
 
-### GPU stage (optional)
+### GPU stage
 
-`cargo run --features gpu-stage` adds Preferences › Stage › Renderer (ADR 0019). The
-`anicraft-gpu` crate builds and tests in every build (its GPU tests skip without an adapter);
-`cargo run --release -p anicraft-gpu --example gpu_bench` prints timings and parity.
+The stage draws on the graphics card by default (ADR 0032; the shell's `gpu-stage` feature is
+on by default, and the CPU draws when there is no usable card). For a CPU-only shell:
+`cargo run --no-default-features --features sound-output`; to compare at run time,
+`ANICRAFT_STAGE_RENDERER=cpu|gpu`. The `anicraft-gpu` crate builds and tests in every build:
+its parity tests run on the graphics card, else on a software adapter (lavapipe; WARP fails the self-test, ADR 0032), and
+skip without either; `ANICRAFT_TEST_GPU=software` forces the software adapter and
+`WGPU_BACKEND=dx12|vulkan|metal` picks the backend. `cargo run --release -p anicraft-gpu
+--example gpu_bench` prints timings and parity.
 
 ## Build footprint (biased for disk space, then time)
 

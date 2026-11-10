@@ -19,12 +19,15 @@ pub enum Tool {
     Pen,
     Text,
     Pencil,
+    Brush,
+    Eraser,
     Rect,
     Oval,
     Star,
     Line,
     PaintBucket,
     InkBottle,
+    Eyedropper,
     Camera,
     Hand,
     Zoom,
@@ -62,7 +65,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 16] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 19] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -73,12 +76,15 @@ impl Tool {
             Tool::Pen => "Pen",
             Tool::Text => "Text",
             Tool::Pencil => "Pencil",
+            Tool::Brush => "Brush",
+            Tool::Eraser => "Eraser",
             Tool::Rect => "Rectangle",
             Tool::Oval => "Oval",
             Tool::Star => "PolyStar",
             Tool::Line => "Line",
             Tool::PaintBucket => "Paint Bucket",
             Tool::InkBottle => "Ink Bottle",
+            Tool::Eyedropper => "Eyedropper",
             Tool::Camera => "Camera",
             Tool::Hand => "Hand",
             Tool::Zoom => "Zoom",
@@ -94,12 +100,15 @@ impl Tool {
             Tool::Pen => Some("P"),
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
+            Tool::Brush => Some("B"),
+            Tool::Eraser => Some("E"),
             Tool::Rect => Some("R"),
             Tool::Oval => Some("O"),
             Tool::Star => None,
             Tool::Line => Some("N"),
             Tool::PaintBucket => Some("K"),
             Tool::InkBottle => Some("S"),
+            Tool::Eyedropper => Some("I"),
             Tool::Camera => Some("C"),
             Tool::Hand => Some("H"),
             Tool::Zoom => Some("Z"),
@@ -112,6 +121,8 @@ impl Tool {
             Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
             Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
+            Tool::Brush => "Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode.",
+            Tool::Eraser => "Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage.",
             Tool::Width => "Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it.",
             Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
             Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
@@ -120,6 +131,7 @@ impl Tool {
             Tool::Line => "Drag to draw a line. Shift snaps to 45°.",
             Tool::PaintBucket => "Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings.",
             Tool::InkBottle => "Click a shape to give it the current stroke colour and width.",
+            Tool::Eyedropper => "Click a fill to pick its colour, gradient or bitmap (then pour it with the Paint Bucket), or a line to pick its colour, width and profile (then apply it with the Ink Bottle). With shapes selected, the picked style goes onto them. Shift-click picks into the other swatch only.",
             Tool::Camera => "Drag on the stage to pan the camera, drag the round handle to turn it, and use the wheel to zoom (each drag is one undo step). Picking the tool adds a camera if the scene has none.",
             Tool::Hand => "Drag to pan the stage. Space works with any tool.",
             Tool::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere.",
@@ -171,6 +183,10 @@ pub enum Drag {
     PointMarquee { start: egui::Pos2, cur: egui::Pos2 },
     /// Pencil stroke; the samples are in `App::pencil`.
     Pencil,
+    /// Brush stroke; the samples are in `App::brush_samples`.
+    Brush,
+    /// Eraser stroke; the samples are in `App::brush_samples` too (ADR 0034).
+    Eraser,
     /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
     /// `sub`; `start` is its left and right width when the drag began.
     Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
@@ -178,6 +194,9 @@ pub enum Drag {
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
     Hint { index: usize, side: anicraft_engine::doc::HintSide },
+    /// Editing the motion path (ADR 0030) from stage point `start`; the path as it was when the
+    /// drag began is `App::motion_drag`.
+    MotionPath { grab: crate::motion_path::Grab, start: egui::Pos2 },
     /// Camera tool (ADR 0027): panning from screen point `last`, turning from pointer angle
     /// `last` (radians about the camera centre), or zooming with the wheel until `until`
     /// (seconds; the turns of one burst are one undo step).
@@ -277,6 +296,13 @@ pub struct App {
     /// Pencil samples of the stroke in progress (stage space).
     pub pencil: Vec<anicraft_engine::geom::Vec2>,
     pub pencil_mode: pathtools::PencilMode,
+    /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
+    /// when there is one) and the pen's last pressure (ADR 0033).
+    pub brush: crate::brushtool::BrushOptions,
+    pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
+    pub pen_pressure: Option<f32>,
+    /// Eraser tool options (ADR 0034); its stroke's samples are `brush_samples`.
+    pub eraser: crate::erasertool::EraserOptions,
     pub bucket_gap: GapSize,
     /// Align panel: align to the stage rather than the selection's bounds.
     pub align_to_stage: bool,
@@ -284,6 +310,10 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
+    /// Subselection: the motion path anchor whose handles show (ADR 0030).
+    pub motion_anchor: Option<usize>,
+    /// The motion path as it was when the drag on it began.
+    pub motion_drag: Option<anicraft_engine::geom::Path>,
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
@@ -357,11 +387,17 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+F6", "view.next_panel"),
     ("Ctrl+Shift+F6", "view.prev_panel"),
     ("F9", "view.actions"),
+    // Brush size, as in paint programs.
+    ("[", "view.brush_smaller"),
+    ("]", "view.brush_larger"),
 ];
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
-        App::with_context(&cc.egui_ctx, session, shot)
+        let mut app = App::with_context(&cc.egui_ctx, session, shot);
+        // The GPU stage shares the window's device when it runs on wgpu (ADR 0029).
+        app.stage_cache.gpu.set_window_device(cc.wgpu_render_state.as_ref());
+        app
     }
 
     /// The app on an egui context (the window's, or a headless one in tests).
@@ -380,6 +416,9 @@ impl App {
         std::thread::spawn(|| {
             let _ = anicraft_engine::text::Fonts::get();
         });
+        let mut session = session;
+        // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
+        session.style.object_drawing = false;
         let mut app = App {
             s: session,
             tool: Tool::Select,
@@ -413,10 +452,16 @@ impl App {
             pen: None,
             pencil: Vec::new(),
             pencil_mode: pathtools::PencilMode::default(),
+            brush: crate::brushtool::BrushOptions::default(),
+            brush_samples: Vec::new(),
+            pen_pressure: None,
+            eraser: crate::erasertool::EraserOptions::default(),
             bucket_gap: GapSize::default(),
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
+            motion_anchor: None,
+            motion_drag: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
             bottom: BottomTab::Timeline,
@@ -480,6 +525,15 @@ impl App {
     }
 
     /// Runs an engine command, reporting failures in the status bar.
+    /// After a move, selected raw shapes merge where they land (ADR 0031).
+    pub fn drop_raw(&mut self) {
+        let sel = &self.s.selection;
+        let raw = self.s.visible_elements().iter().any(|e| sel.contains(&e.id) && matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge));
+        if raw {
+            self.run("draw.drop", json!({}));
+        }
+    }
+
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         match self.s.execute(id, &params) {
             Ok(v) => Some(v),
@@ -685,6 +739,86 @@ impl App {
                 }
                 self.tool = Tool::Subselect;
             }
+            Some("merge") => {
+                // Merge drawing (ADR 0031) on a new layer: a rectangle and an oval that cut each
+                // other, a line through both, and the oval's fill with its outline selected.
+                self.run("layer.new", json!({}));
+                for (id, p) in [
+                    ("draw.rect", json!({"x": 180, "y": 120, "w": 300, "h": 200, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.ellipse", json!({"x": 360, "y": 210, "w": 240, "h": 240, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.line", json!({"x0": 140, "y0": 420, "x1": 680, "y1": 140, "stroke": "#d6336c", "stroke_width": 3})),
+                ] {
+                    let mut p = p;
+                    p["object"] = json!(false);
+                    self.run(id, p);
+                }
+                self.run("element.select_connected", json!({"x": 520, "y": 400}));
+                self.tool = Tool::Select;
+            }
+            Some(which @ ("brush" | "brushing")) => {
+                // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
+                // calligraphic tip at 45°, square dabs, and a pink stroke painted behind a raw
+                // oval; "brushing" also has a stroke in progress (the live preview).
+                self.run("layer.new", json!({"name": "Paint"}));
+                self.run("draw.object_drawing", json!({"on": false}));
+                let wave: Vec<[f32; 3]> = (0..=120)
+                    .map(|i| {
+                        let t = i as f32 / 120.0;
+                        [120.0 + t * 520.0, 470.0 + (t * 9.0).sin() * 46.0, (t * std::f32::consts::PI).sin()]
+                    })
+                    .collect();
+                self.run("draw.brush", json!({"points": wave, "size": 34, "color": "#1b2a4a"}));
+                let loops: Vec<[f32; 2]> = (0..=160)
+                    .map(|i| {
+                        let t = i as f32 / 160.0 * std::f32::consts::TAU * 2.0;
+                        [190.0 + i as f32 * 2.6 + 34.0 * t.cos(), 170.0 + 40.0 * t.sin()]
+                    })
+                    .collect();
+                self.run("draw.brush", json!({"points": loops, "size": 22, "roundness": 25, "angle": 45, "color": "#e8553b"}));
+                for (k, x) in [700.0f32, 740.0, 780.0].into_iter().enumerate() {
+                    self.run("draw.brush", json!({"points": [[x, 120.0 + k as f32 * 18.0]], "size": 24, "shape": "square", "angle": 15.0 * k as f32, "color": "#3d8bfd"}));
+                }
+                self.run("draw.ellipse", json!({"x": 820, "y": 380, "w": 220, "h": 160, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let behind: Vec<[f32; 2]> = (0..=60).map(|i| [760.0 + i as f32 * 6.0, 560.0 - i as f32 * 3.4]).collect();
+                self.run("draw.brush", json!({"points": behind, "size": 40, "mode": "behind", "color": "#d6336c"}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Brush;
+                self.brush.size = 24.0;
+                self.brush.mode = crate::brushtool::BrushOptions::default().mode;
+                if which == "brushing" {
+                    self.brush_samples = (0..=40).map(|i| (anicraft_engine::geom::Vec2::new(150.0 + i as f32 * 9.0, 610.0 - (i as f32 * 0.16).sin() * 30.0), Some(0.3 + i as f32 / 60.0))).collect();
+                    self.drag = Drag::Brush;
+                }
+            }
+            Some(which @ ("eraser" | "erasing")) => {
+                // Erased artwork on a new layer (ADR 0034): a band through an outlined raw
+                // rectangle (Erase Normal), the outline of a raw oval erased but not its fill
+                // (Erase Lines), a fill deleted by the Faucet, and a drawing object the eraser
+                // passed over untouched; "erasing" also has a stroke in progress.
+                self.run("layer.new", json!({"name": "Ink"}));
+                self.run("draw.object_drawing", json!({"on": false}));
+                self.run("draw.rect", json!({"x": 140, "y": 150, "w": 380, "h": 230, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 4}));
+                let band: Vec<[f32; 2]> = (0..=80).map(|i| [100.0 + i as f32 * 5.5, 265.0 + (i as f32 * 0.12).sin() * 60.0]).collect();
+                self.run("draw.erase", json!({"points": band, "size": 30}));
+                self.run("draw.ellipse", json!({"x": 600, "y": 160, "w": 260, "h": 200, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 6}));
+                self.run("draw.erase", json!({"points": [[560, 260], [900, 260]], "size": 40, "mode": "lines"}));
+                self.run("draw.rect", json!({"x": 940, "y": 160, "w": 200, "h": 200, "fill": "#e8553b", "stroke": "#1b2a4a", "stroke_width": 4}));
+                self.run("draw.faucet", json!({"x": 1040, "y": 260}));
+                self.run("draw.rect", json!({"x": 300, "y": 430, "w": 300, "h": 120, "fill": "#8a79c9", "stroke": null, "object": true}));
+                self.run("draw.erase", json!({"points": [[260, 490], [640, 490]], "size": 30}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Eraser;
+                self.eraser = crate::erasertool::EraserOptions { size: 30.0, ..Default::default() };
+                if which == "erasing" {
+                    self.brush_samples = (0..=40).map(|i| (anicraft_engine::geom::Vec2::new(700.0 + i as f32 * 9.0, 470.0 - (i as f32 * 0.2).sin() * 40.0), None)).collect();
+                    self.drag = Drag::Eraser;
+                }
+            }
+            Some("eyedropper") => {
+                // The sample's sky gradient picked with the Eyedropper: the fill swatch holds it.
+                self.run("paint.pick", json!({"x": 640, "y": 40}));
+                self.tool = Tool::Eyedropper;
+            }
             Some("frames") => {
                 // Frames 8–20 selected on the top three layers, with a keyframe drag in progress:
                 // 6 frames later and one layer down.
@@ -821,6 +955,30 @@ impl App {
                 self.me_key = Some(0);
                 self.run("timeline.goto", json!({"frame": 6}));
             }
+            Some(which @ ("motionpath" | "motionpoints")) => {
+                // The Star layer's span as a motion tween along a curved, oriented motion path,
+                // the star selected half way along it (ADR 0030); with Subselection, the
+                // middle anchor's handles show.
+                self.run("layer.select", json!({"index": 1}));
+                if self.run("timeline.create_motion_tween", json!({"frame": 0})).is_some() {
+                    let info = self.run("motion.info", json!({"frame": 0}));
+                    let at = |k: &str| info.as_ref().and_then(|v| v["values"][k].as_f64()).unwrap_or(0.0);
+                    let (x, y) = (at("x"), at("y"));
+                    let d = format!("M{x} {y} C{} {} {} {} {} {} C{} {} {} {} {} {}", x + 70.0, y - 150.0, x + 170.0, y - 150.0, x + 230.0, y - 20.0, x + 290.0, y + 110.0, x + 380.0, y + 130.0, x + 430.0, y + 10.0);
+                    self.run("motion.set_path", json!({"d": d}));
+                    self.run("motion.orient", json!({"orient": true}));
+                    self.s.mark_saved();
+                }
+                self.run("timeline.goto", json!({"frame": 9}));
+                self.run("edit.select_all", json!({}));
+                if which == "motionpoints" {
+                    // The span selected instead of the star: Properties shows the tween's rows.
+                    self.run("element.select", json!({"ids": []}));
+                    self.frame_sel = Some(timeline::FrameSel::cell(self.s.layer, 9));
+                    self.tool = Tool::Subselect;
+                    self.motion_anchor = Some(1);
+                }
+            }
             Some("pen") => {
                 // A pen path still being drawn: a corner, a smooth point with handles, a corner.
                 self.tool = Tool::Pen;
@@ -939,6 +1097,10 @@ impl App {
             "edit.redo" => self.status_ok(format!("Redid {}", v["redone"].as_str().unwrap_or(""))),
             "edit.delete" => self.status_ok(format!("Deleted {} {} — Ctrl+Z to undo", selected, if selected == 1 { "element" } else { "elements" })),
             "layer.delete" => self.status_ok("Deleted layer — Ctrl+Z to undo"),
+            "draw.erase_all" => {
+                let n = v["erased"].as_u64().unwrap_or(0);
+                self.status_ok(format!("Erased everything at frame {} ({n} {}). {} to undo.", self.s.frame + 1, if n == 1 { "element" } else { "elements" }, platform::shortcut_label("Ctrl+Z")));
+            }
             "scene.delete" => {
                 self.frame_sel = None;
                 self.status_ok("Deleted scene — Ctrl+Z to undo");
@@ -1276,7 +1438,8 @@ impl App {
             if surface_focused {
                 i.consume_key(Modifiers::NONE, Key::Space);
             }
-            let step = if i.modifiers.shift { 10.0 } else { 1.0 };
+            // Screen pixels, as in Animate: a press moves less the further you zoom in.
+            let step = if i.modifiers.shift { 10.0 } else { 1.0 } / self.view.zoom.max(1e-3);
             for (k, d) in [(Key::ArrowLeft, egui::vec2(-step, 0.0)), (Key::ArrowRight, egui::vec2(step, 0.0)), (Key::ArrowUp, egui::vec2(0.0, -step)), (Key::ArrowDown, egui::vec2(0.0, step))] {
                 if i.key_pressed(k) && !i.modifiers.command {
                     nudge += d;
@@ -1302,6 +1465,8 @@ impl App {
                     }
                 }
                 "view.actions" => self.show_actions = !self.show_actions,
+                "view.brush_smaller" => crate::brushtool::resize(self, false),
+                "view.brush_larger" => crate::brushtool::resize(self, true),
                 id if id.starts_with("tool.") => tool = keymap::tool_for(id).or(tool),
                 _ => self.invoke(id),
             }
@@ -1313,7 +1478,16 @@ impl App {
             self.toggle_play();
         }
         if nudge != egui::Vec2::ZERO && !self.s.selection.is_empty() {
+            // One undo step: the move, and raw shapes merging where they land (ADR 0031).
+            let own = !self.s.in_gesture();
+            if own {
+                self.s.begin_gesture("Move");
+            }
             self.run("element.translate", json!({"dx": nudge.x, "dy": nudge.y}));
+            self.drop_raw();
+            if own {
+                self.s.end_gesture();
+            }
         }
     }
 
@@ -1526,6 +1700,7 @@ impl App {
             self.points.clear();
         }
         pathtools::upkeep(self);
+        crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
         self.tick_playback(&ctx);
         self.scrub_sound();

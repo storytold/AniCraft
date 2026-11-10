@@ -134,6 +134,7 @@ The sample animation, exported as an animated GIF by AniCraft's own renderer fro
 ### Stage and drawing tools
 * **Selection & Subselection**: select, move, nudge with arrow keys, anchor and Bézier handle editing on paths (`Subselection (A)`), add and delete points.
 * **Vector drawing**: Pen (`P`) with smooth handles and corner conversion, Pencil (`Shift+Y`) with Schneider curve fitting and smoothing, Rectangle (with corner radii), Oval, PolyStar, Line and Text (`T`).
+* **Merge drawing**: shapes on a layer cut and join each other as in Animate (fills replace or join, lines split where they cross), with click-a-segment selection, double-click for connected parts, and Object Drawing (`J`) to keep shapes separate.
 * **Free Transform (`Q`)**: interactive scaling, corner/edge handles with proportional Shift and centre Alt modifiers, and rotation with 15° snapping.
 * **Fills and strokes**: Paint Bucket (`K`) with gap closing, Ink Bottle (`S`), solid colours, linear/radial gradients, bitmap fills and stroke styling.
 * **Arrangement & alignment**: align left/center/right/top/middle/bottom (with stage alignment), distribute, rotate 90° CW/CCW, and horizontal/vertical flipping.

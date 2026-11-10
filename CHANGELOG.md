@@ -2,6 +2,125 @@
 
 ## Unreleased
 
+* **Opening Animate files is checked against a corpus of test files** (XFL import, ADR 0035).
+  Eleven hand-written Animate documents cover everything the importer brings across: shapes
+  and strokes, primitives and groups, gradients, bitmaps, symbols in every loop mode, movie
+  clips and buttons, colour effects, classic and shape tweens with eases and shape hints,
+  masks (also in folders and symbols), guides and motion guides, text, filters, blend modes,
+  scenes, labels and frame scripts. Each is imported, and chosen frames are rendered and
+  compared with reference images, so a change that alters how an imported file looks is
+  caught. Each file is also cut short and garbled thousands of ways to make sure opening a
+  damaged file never crashes.
+
+  Fixed while building it:
+  * Symbols saved without a type now open as movie clips (Animate leaves the default out),
+    not graphics.
+  * Brightness on an instance now comes across (it was dropped).
+  * Instance names of movie clips and buttons now come across, so actions can address them.
+  * A frame comment no longer becomes a frame label.
+  * A custom ease with one curve now comes across exactly.
+  * The import report now also lists what is drawn differently from Animate: square and flat
+    line ends and corners (drawn round), gradient strokes (one colour), repeating and
+    reflecting, off-centre, stretched and linear-RGB gradients, advanced colour effects,
+    reverse loop modes and extra spins on tweens.
+* **Eraser and Eyedropper** (E and I, ADR 0034, first slice).
+  * The Eraser sweeps the same tip as the Brush and takes what it covers out of the lines and
+    fills on the active layer that were drawn with Object Drawing off. Drawing objects,
+    symbols and text are kept, as in Animate.
+  * Erase modes: Erase Normal, Erase Fills, Erase Lines, Erase Selected Fills and Erase Inside
+    (only the fill where the stroke starts).
+  * The Faucet option deletes a whole fill or line with one click.
+  * Double-clicking the Eraser tool, or Erase Everything… in its options, clears the visible,
+    unlocked layers at this frame. It asks first, and you can undo it.
+  * The erased area shows as you drag, `[` and `]` change the size, and each stroke is one
+    undo step. A stroke that erases nothing leaves no undo step.
+  * The Eyedropper picks a fill's colour, gradient or bitmap into the fill swatch, or a line's
+    colour, width and width profile into the stroke settings. It then becomes the Paint Bucket
+    or the Ink Bottle.
+  * A picked gradient stays where it is on the stage, so it carries on across the shapes you
+    pour it into.
+  * With shapes selected, the Eyedropper applies the picked style to them. Shift-click picks
+    into the other swatch only.
+  * For scripts and AI assistants: `draw.erase`, `draw.faucet`, `draw.erase_all`,
+    `paint.pick` and `paint.apply_style`.
+* **Brush tool** (B, ADR 0033, first slice). The brush paints filled shapes in the fill colour,
+  as Animate's Brush tool does: the shape is exactly the area the tip sweeps along the drag.
+  * Tip options: round or square, size, angle and roundness (for oval and flat calligraphic
+    tips).
+  * With a tablet, pen pressure sets the width (from 10 % to the full size); a mouse paints at
+    full size.
+  * Smoothing evens out a shaky hand.
+  * Paint modes: Paint Normal covers lines and fills, Paint Fills leaves lines alone, and Paint
+    Behind paints only empty areas.
+  * With Object Drawing off, brush strokes merge with the drawing like the other tools'
+    shapes; strokes of one colour join.
+  * The paint shows as you drag, a click paints a dab, and `[` and `]` change the size. Each
+    stroke is one undo step.
+  * For scripts and AI assistants: `draw.brush`.
+
+  Also fixed: a closed curve fit could add a straight edge across the shape when its first
+  point wasn't a corner, which affected some Paint Bucket fills.
+* **The stage draws on the graphics card by default** (GPU stage, third slice, ADR 0032).
+  Bitmap fills and all seven filters (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient
+  Bevel, Adjust Color) are now drawn on the GPU too, so documents imported from Animate no
+  longer fall back to the CPU. A 4K stage with filtered symbols and a bitmap backdrop draws in
+  about 4 ms (the CPU needs 31 ms), and 200 bitmap fills in about 4 ms (37 ms). Bitmaps are
+  uploaded to the graphics card once and kept. The picture is the same as the CPU's, within
+  one 8-bit step (bitmaps exactly the same). Windows that run on Direct3D 12 now get the GPU
+  stage as well. The GPU stage is in every build and on by default: Preferences › Stage ›
+  Renderer offers *Graphics card (GPU)* (the default) and *CPU (reference)*. The CPU still
+  draws whenever there is no usable graphics card (or only a software one), anything fails, or
+  a tile needs more than the GPU handles (more than 16 different images, or filtered symbols
+  nested more than 4 deep); the status bar says which. Exports always use the CPU.
+* **Merge drawing** (ADR 0031, issue #42). The Rectangle, Oval, PolyStar, Line, Pen and Pencil
+  tools now draw as Animate does:
+  * shapes on a layer cut and join each other;
+  * a fill drawn on top replaces what it covers, or joins a fill of the same colour;
+  * lines cut each other where they cross, and a line right across a fill splits it in two;
+  * a fill hides the lines under it;
+  * points within 0.2 px become one.
+
+  Click a fill or a stroke segment to select just that; selected shapes show a dot pattern
+  instead of a box. Double-click a stroke for every stroke joined to it, or a fill for the fill
+  and its outline. Drag or nudge a shape and it cuts into what it lands on. Each step is one
+  undo.
+
+  **Object Drawing** (J, or the tool's options) switches back to shapes that keep to themselves.
+  Arrow keys now move the selection one screen pixel (Shift: ten) at any zoom.
+
+  Headless: the drawing commands take `object` (scripts and AI assistants still draw objects
+  unless they pass `"object": false`), plus `draw.object_drawing`, `draw.drop` and
+  `element.select_connected`.
+
+  Not yet: bending segments by dragging them, snapping to points and strokes, moving shared
+  points together, partial marquee selection, and merging Paint Bucket fills, pastes and raw
+  shapes from Animate files.
+
+## 0.1.0 (2026-11-09)
+
+* **Motion paths for motion tweens** (ADR 0030). Select a motion tween's object (or a frame of
+  its span) and the stage shows its path in the motion colour, with a dot for every frame.
+  Drag the path with the Selection tool to bend it and its ends to move where the motion
+  starts and ends; with the Subselection tool drag its points and handles (smooth points stay
+  smooth; Alt breaks them). Each drag is one undo step. The object travels the path at the
+  pace its X and Y curves set, so eases (overshoot included) carry over, and a straight path
+  moves exactly as before. Moving the object at a later frame reshapes the path instead of
+  adding keys. **Orient to path** (Properties) turns the object as the path turns; Straighten
+  goes back to the straight path. Every export and Test Movie play it. Headless:
+  `motion.set_path {d}`, `motion.clear_path`, `motion.orient {orient}`; `motion.info` reports
+  the path and where the object is. Not yet: adding or deleting path points on the stage,
+  anchors tied to frames, motion paths from Animate files.
+* **GPU stage, second slice** (ADR 0029; builds with `--features gpu-stage`, Preferences ›
+  Stage › Renderer › GPU (preview)). The graphics card now draws each stage tile straight into
+  the picture the window shows, with no copy back to the CPU: a 4K stage with 1,000 shapes
+  takes about 2 ms, and 10,000 shapes about 10 ms (the CPU needs 16–28 ms). **Mask layers**
+  (nested, several shapes per mask), **symbols that fade as one** and **all 14 blend modes**
+  are drawn on the GPU too, so ordinary documents no longer fall back to the CPU; masked scenes
+  draw up to 7× faster than on the CPU. The picture is the CPU's within one 8-bit step.
+  Filters and bitmaps still draw on the CPU (the status bar says so). When the window runs on
+  OpenGL, the GPU stage uses a device of its own and copies tiles back, as before; Preferences
+  says which.
+
 * **HTML canvas export** (ADR 0028). File › Export › Export HTML Canvas… writes the movie as
   one web page that plays in any modern browser: open it from your disk, put it on a server or
   send it as one file. Everything moves exactly as on the stage, because every frame of every

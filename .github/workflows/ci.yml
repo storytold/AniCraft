@@ -23,7 +23,9 @@ jobs:
     with:
       # Same craft-fonts commit as release.yml.
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      # mesa-vulkan-drivers: lavapipe, a software Vulkan adapter, so the GPU stage's parity
+      # tests run against the CPU oracle on runners without a graphics card (ADR 0031).
       packages: >-
         libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
-        libgtk-3-dev libasound2-dev
+        libgtk-3-dev libasound2-dev mesa-vulkan-drivers
       command: cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
