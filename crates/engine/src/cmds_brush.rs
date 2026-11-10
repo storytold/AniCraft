@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Brush Stroke",
         menu: "",
         shortcut: None,
-        params: "{points: [[x, y] or [x, y, pressure 0..1], ..] (one point paints a dab), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), mode?: normal|fills|behind (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas), color? (default: the fill colour), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
+        params: "{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), mode?: normal|fills|behind (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas), color? (default: the fill colour), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
         mutates: true,
         run: draw_brush,
     }]
@@ -86,9 +86,11 @@ fn samples(p: &Value) -> Result<Vec<Sample>> {
             let xyp = v.as_array().filter(|a| (2..=3).contains(&a.len())).ok_or_else(bad)?;
             let n = |i: usize| xyp.get(i).and_then(Value::as_f64).map(|f| f as f32).filter(|f| f.is_finite());
             let at = Vec2::new(n(0).ok_or_else(bad)?, n(1).ok_or_else(bad)?);
+            // Pressure is a measurement: tablets and arithmetic stray a little past 0..1, so it
+            // is clamped (only a non-number is an error).
             let pressure = match xyp.get(2) {
                 None => 1.0,
-                Some(_) => n(2).filter(|f| (0.0..=1.0).contains(f)).ok_or_else(|| EngineError::Param("a point's pressure must be between 0 and 1".into()))?,
+                Some(_) => n(2).ok_or_else(|| EngineError::Param("a point's pressure must be a number from 0 to 1".into()))?.clamp(0.0, 1.0),
             };
             Ok(Sample { at, pressure })
         })

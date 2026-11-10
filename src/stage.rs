@@ -273,6 +273,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let hint_hot = pointer.and_then(hint_at);
 
     let xf = crate::pathtools::Xf { origin, zoom };
+    // Pen pressure, when a tablet reports it (the Brush tool's width follows it).
+    let pressure = crate::brushtool::frame_pressure(ui.ctx());
     // The motion path takes the pointer with the selection tools (ADR 0030): its ends and
     // handles before the object under them, the path itself only where no object is.
     let mp_tools = matches!(app.tool, Tool::Select | Tool::Subselect) && !panning && !preview;
@@ -308,7 +310,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::PaintBucket | Tool::InkBottle => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBucket | Tool::InkBottle => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -383,6 +385,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
                 }
+                Tool::Brush => crate::brushtool::start(app, to_v(sp), pressure),
                 Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle => Drag::None,
                 Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => Drag::Shape { start: sp, cur: sp },
                 Tool::Camera => crate::camera_tool::drag_start(app, &cam_geo, press),
@@ -447,6 +450,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
             }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
+            (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
             _ => {}
@@ -464,6 +468,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
+            Drag::Brush => crate::brushtool::commit(app, xf),
             Drag::Marquee { start, cur } => {
                 let r = Rect::from_two_pos(start, cur);
                 let ids: Vec<u64> = app
@@ -504,6 +509,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     if let Some(v) = app.run("paint.bucket", json!({"x": sp.x, "y": sp.y, "gap": gap})) {
                         app.status_ok(if v.get("recolored").is_some() { "Recoloured the fill. Ctrl+Z to undo." } else { "Filled the area. Ctrl+Z to undo." });
                     }
+                }
+                Tool::Brush if !panning => {
+                    // A click paints a dab.
+                    crate::brushtool::start(app, to_v(sp), pressure);
+                    crate::brushtool::commit(app, xf);
                 }
                 Tool::InkBottle if !panning => {
                     app.run("paint.ink", json!({"x": sp.x, "y": sp.y, "slop": 4.0 / zoom.max(1e-3)}));
@@ -840,6 +850,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
+    crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     // After this frame's edits, so a drag on the path shows where it is now.
     if !preview
         && let Some(shown) = crate::motion_path::shown(app)

@@ -348,7 +348,7 @@ mod tests {
     fn every_interactive_node_has_a_name_and_a_role() {
         let mut found = Vec::new();
         found.extend(check("default", |_, _| {}));
-        for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::PaintBucket, Tool::InkBottle, Tool::Pen] {
+        for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBucket, Tool::InkBottle, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
         for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "camera", "cameraview", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames"] {

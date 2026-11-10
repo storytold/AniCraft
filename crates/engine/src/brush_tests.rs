@@ -192,7 +192,7 @@ fn bad_params_are_errors() {
     for p in [
         json!({}),
         json!({"points": []}),
-        json!({"points": [[0, 0, 2]]}),
+        json!({"points": [[0, 0, "hard"]]}),
         json!({"points": [[0, 0]], "size": 0}),
         json!({"points": [[0, 0]], "size": 1e9}),
         json!({"points": [[0, 0]], "shape": "star"}),
@@ -205,4 +205,24 @@ fn bad_params_are_errors() {
         assert!(s.execute("draw.brush", &p).is_err(), "{p}");
     }
     assert!(crate::cmds_plugin::plugin_may_call("draw.brush").is_ok(), "plug-ins may paint");
+}
+
+#[test]
+fn a_calligraphic_stroke_merges_whole() {
+    // A flat tip at 45° along a wave: the raw shape covers what the object would.
+    let wave: Vec<[f32; 2]> = (0..=160)
+        .map(|i| {
+            let t = i as f32 / 160.0 * std::f32::consts::TAU * 2.0;
+            [190.0 + i as f32 * 2.6 + 34.0 * t.cos(), 170.0 + 40.0 * t.sin()]
+        })
+        .collect();
+    let areas: Vec<f32> = [true, false]
+        .into_iter()
+        .map(|object| {
+            let mut s = blank(object);
+            run(&mut s, "draw.brush", json!({"points": wave, "size": 22, "roundness": 25, "angle": 45, "color": RED}));
+            shapes(&s).iter().map(|(sh, _)| area(sh)).sum()
+        })
+        .collect();
+    assert!(areas[0] > 7000.0 && (areas[0] - areas[1]).abs() < 1.0, "{areas:?}");
 }
