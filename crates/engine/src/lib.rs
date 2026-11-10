@@ -668,8 +668,8 @@ impl Session {
             .iter()
             .map(|l| {
                 json!({
-                    "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
+                    "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked, "volume": l.volume, "muted": l.muted,
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.as_ref().map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping, "effect": f.effect.key()})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
                 })
             })
             .collect();

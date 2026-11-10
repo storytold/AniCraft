@@ -25,7 +25,7 @@ pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_e
 pub use easing::Easing;
 pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
 pub use motion::{MotionTween, OnPath, Property, PropertyKey, Props, Track, motion_path};
-pub use sound::{FrameSound, Sound, SoundFormat, SoundId, SoundSync};
+pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use camera::Camera;
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, guide_walk, instance_start};
@@ -656,10 +656,22 @@ pub struct Layer {
     /// move a deeper layer less (parallax). Not the nesting depth ([`Timeline::depth`]).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub depth: f32,
+    /// Volume of the sounds on this layer (and in the symbols on it), `0..=1` (ADR 0039).
+    #[serde(default = "full", skip_serializing_if = "is_full")]
+    pub volume: f32,
+    /// The layer's sounds are silent (in playback and every export).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub muted: bool,
 }
 
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
+}
+fn full() -> f32 {
+    1.0
+}
+fn is_full(v: &f32) -> bool {
+    *v == 1.0
 }
 
 impl PartialEq for Layer {
@@ -673,6 +685,8 @@ impl PartialEq for Layer {
             && self.outline == o.outline
             && self.color == o.color
             && self.depth.to_bits() == o.depth.to_bits()
+            && self.volume.to_bits() == o.volume.to_bits()
+            && self.muted == o.muted
             && arcs_eq(&self.keyframes, &o.keyframes)
     }
 }
@@ -697,7 +711,23 @@ impl Layer {
             color: default_layer_color(),
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
             depth: 0.0,
+            volume: 1.0,
+            muted: false,
         }
+    }
+    /// The gain this layer gives its sounds: its volume, or silence when muted.
+    pub fn sound_gain(&self) -> f32 {
+        if self.muted {
+            0.0
+        } else if self.volume.is_finite() {
+            self.volume.clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+    /// Whether a keyframe of this layer holds a sound.
+    pub fn has_sounds(&self) -> bool {
+        self.keyframes.iter().any(|k| k.sound.is_some())
     }
     /// Mutable keyframe `i` (copy-on-write: clones it only if it is shared).
     pub fn keyframe_mut(&mut self, i: usize) -> Option<&mut Keyframe> {

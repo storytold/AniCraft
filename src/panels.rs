@@ -224,7 +224,7 @@ fn hex(c: [u8; 3]) -> String {
 }
 
 /// Runs a command from a continuously-edited widget, coalescing into one undo step.
-fn live(app: &mut App, label: &str, id: &str, p: Value) {
+pub(crate) fn live(app: &mut App, label: &str, id: &str, p: Value) {
     app.s.begin_gesture(label);
     app.run(id, p);
 }
@@ -1090,7 +1090,10 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                         live(app, "Frame label", "timeline.set_label", json!({"label": label}));
                     }
                 });
-                sound_rows(app, ui, k.sound);
+                sound_rows(app, ui, k.sound.clone());
+                if layer.has_sounds() {
+                    volume_row(app, ui, layer);
+                }
                 let key = app.keymap.primary("view.actions").map(crate::platform::shortcut_label).unwrap_or_default();
                 row_prose(ui, "Actions", |ui| {
                     let what = k.script.as_ref().map_or_else(|| "None".to_string(), anicraft_engine::doc::FrameScript::describe);
@@ -1213,22 +1216,37 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
     }
 }
 
-/// The keyframe's sound, as Animate's Sound section: which sound (or none), its sync, and
-/// whether it repeats a number of times or loops.
+/// A layer with sounds: their volume, and Mute (ADR 0039).
+fn volume_row(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::Layer) {
+    let (mut pct, mut muted) = (f64::from(layer.volume) * 100.0, layer.muted);
+    let id = layer.id.0;
+    row_prose(ui, "Volume", |ui| {
+        let r = with_type(ui, Type::Data, |ui| ui.add_enabled(!muted, egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(0.5).max_decimals(0).suffix(" %")));
+        if r.named("Layer volume").on_hover_text("The volume of this layer's sounds, and of the sounds in the symbols on it").changed() {
+            live(app, "Layer Volume", "layer.set_volume", json!({"layer": id, "volume": (pct / 100.0).clamp(0.0, 1.0)}));
+        }
+        if crate::theme::checkbox(ui, &mut muted, "Mute").on_hover_text("Silence this layer's sounds while you work and in every export").named("Mute layer").changed() {
+            app.run("layer.set_volume", json!({"layer": id, "muted": muted}));
+        }
+    });
+}
+
+/// The keyframe's sound, as Animate's Sound section: which sound (or none), its sync, whether
+/// it repeats a number of times or loops, and its effect.
 fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine::doc::FrameSound>) {
-    use anicraft_engine::doc::SoundSync;
+    use anicraft_engine::doc::{SoundEffect, SoundSync};
     let sounds: Vec<(u64, String)> = app.s.doc.sounds.iter().map(|x| (x.id.0, x.name.clone())).collect();
     if sounds.is_empty() && current.is_none() {
         return;
     }
-    let name = current.and_then(|f| app.s.doc.sound(f.sound)).map_or_else(|| "None".to_string(), |x| x.name.clone());
+    let name = current.as_ref().and_then(|f| app.s.doc.sound(f.sound)).map_or_else(|| "None".to_string(), |x| x.name.clone());
     row_prose(ui, "Sound", |ui| {
         egui::ComboBox::from_id_salt("prop_sound").width(150.0).selected_text(name).show_ui(ui, |ui| {
             if ui.selectable_label(current.is_none(), "None").clicked() && current.is_some() {
                 app.run("sound.remove", json!({}));
             }
             for (id, n) in &sounds {
-                if ui.selectable_label(current.is_some_and(|f| f.sound.0 == *id), n.as_str()).clicked() {
+                if ui.selectable_label(current.as_ref().is_some_and(|f| f.sound.0 == *id), n.as_str()).clicked() {
                     app.run("sound.set", json!({"sound": id}));
                 }
             }
@@ -1268,6 +1286,28 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
             if r.named("Times it plays").on_hover_text("Times it plays in a row").changed() {
                 live(app, "Sound repeat", "sound.set", json!({"repeat": n}));
             }
+        }
+    });
+    // The effect, as Animate's Effect menu, with the envelope editor beside it (ADR 0039).
+    row_prose(ui, "Effect", |ui| {
+        egui::ComboBox::from_id_salt("prop_effect").width(150.0).selected_text(f.effect.label()).show_ui(ui, |ui| {
+            for e in SoundEffect::PRESETS {
+                if ui.selectable_label(f.effect == e, e.label()).on_hover_text(e.hint()).clicked() && f.effect != e {
+                    app.run("sound.set", json!({"effect": e.key()}));
+                }
+            }
+            let custom = matches!(f.effect, SoundEffect::Custom(_));
+            if ui.selectable_label(custom, "Custom").on_hover_text(SoundEffect::Custom(Vec::new()).hint()).clicked() {
+                if !custom {
+                    app.run("sound.set", json!({"effect": "custom"}));
+                }
+                crate::envelope::open(app);
+            }
+        })
+        .response
+        .set_name("Sound effect");
+        if ui.small_button("Edit…").on_hover_text("Edit Envelope: the volume of each channel over the sound's time").named("Edit sound envelope").clicked() {
+            crate::envelope::open(app);
         }
     });
     if let Some(x) = app.s.doc.sound(f.sound) {

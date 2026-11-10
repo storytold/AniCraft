@@ -110,6 +110,9 @@ cargo test --bin anicraft palette                      # the contrast checks
   route is `,` `.` Home End and F5/F6/F7 at the playhead.
 * **The Motion Editor graph is pointer only.** Its values are editable in the property list
   beside it, and so are the eases (the Ease menu).
+* **Adding a point in Edit Envelope takes a click.** Each point is named for screen readers
+  ("Point 2 of 4, Left channel: 80 % at 0.400 s"), and the selected point's time and levels
+  are fields that take typed values; the Effect menu sets any preset from the keyboard.
 * **The system's high-contrast or "increase contrast" setting is not followed automatically.**
   Choose High contrast in Preferences.
 * **The menu bar can't be opened from the keyboard** (no Alt or F10 yet). Every menu command is

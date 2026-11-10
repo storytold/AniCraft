@@ -84,6 +84,8 @@ tier). Copied frames carry the sounds they play into other documents.
 
 ## Not in this slice
 
+(Effects, layer volume and mute, and sounds inside symbols came next: ADR 0039.)
+
 Sound effects (fade in/out, left/right, custom envelopes) and per-layer volume or mute; sounds
 inside symbols' timelines (only scene timelines are heard); sounds in XFL import; audio in
 Lottie or HTML export; lossless compression of stored WAVs; playback latency compensation
