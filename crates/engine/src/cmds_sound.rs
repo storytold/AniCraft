@@ -72,10 +72,10 @@ fn file_name(path: &Path, fallback: &str) -> String {
 
 /// Reads a sound file into the library; its id.
 pub(crate) fn add_sound(s: &mut Session, path: &Path, name: Option<&str>) -> Result<SoundId> {
-    if std::fs::metadata(path)?.len() > MAX_SOUND_BYTES {
+    if crate::vfs::len(path)? > MAX_SOUND_BYTES {
         return Err(EngineError::Format(format!("{} is too large to import", path.display())));
     }
-    let bytes = std::fs::read(path)?;
+    let bytes = crate::vfs::read(path)?;
     let id = SoundId(s.doc.alloc_id());
     let name = name.map_or_else(|| file_name(path, "sound"), |n| n.chars().take(128).collect());
     let sound = Sound::from_data(id, name, bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
@@ -97,7 +97,7 @@ fn import_to_library(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     if matches!(ext.as_deref(), Some("png" | "jpg" | "jpeg")) {
-        let bytes = std::fs::read(&path)?;
+        let bytes = crate::vfs::read(&path)?;
         let id = anicraft_doc::BitmapId(s.doc.alloc_id());
         let bitmap = anicraft_doc::Bitmap::from_image(id, file_name(&path, "image"), bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
         let (w, h) = (bitmap.width, bitmap.height);
@@ -250,7 +250,7 @@ pub(crate) fn write_mix(path: &Path, voices: &[Voice], rate: u32, from: u64, to:
     let header = wav::header(rate, 2, bits, frames).ok_or_else(|| EngineError::Param("that much audio does not fit in a WAV file (4 GB); lower 'rate' or the frame range".into()))?;
     let tmp = path.with_extension("wav.tmp");
     let result = (|| -> Result<u64> {
-        let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        let mut f = crate::vfs::Writer::create(&tmp)?;
         f.write_all(&header)?;
         const BLOCK: u64 = 65_536;
         let mut buf = vec![0f32; BLOCK as usize * 2];
@@ -265,7 +265,7 @@ pub(crate) fn write_mix(path: &Path, voices: &[Voice], rate: u32, from: u64, to:
             f.write_all(&bytes)?;
             at += n as u64;
         }
-        f.flush()?;
+        f.finish()?;
         Ok(header.len() as u64 + frames * 2 * u64::from(match bits {
             wav::Bits::Int16 => 2u8,
             wav::Bits::Int24 => 3,
@@ -274,11 +274,11 @@ pub(crate) fn write_mix(path: &Path, voices: &[Voice], rate: u32, from: u64, to:
     })();
     match result {
         Ok(n) => {
-            std::fs::rename(&tmp, path)?;
+            crate::vfs::rename(&tmp, path)?;
             Ok(n)
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = crate::vfs::remove_file(&tmp);
             Err(e)
         }
     }
@@ -304,14 +304,14 @@ pub(crate) struct TempTrack(pub PathBuf);
 
 impl Drop for TempTrack {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = crate::vfs::remove_file(&self.0);
     }
 }
 
 /// The soundtrack of movie frames `first..=last` as a 48 kHz 16-bit WAV in the temp folder.
 pub(crate) fn temp_track(s: &Session, first: u32, last: u32) -> Result<TempTrack> {
     const RATE: u32 = 48_000;
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let nanos = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let track = TempTrack(std::env::temp_dir().join(format!("anicraft-track-{}-{nanos}.wav", std::process::id())));
     let (voices, a, b) = soundtrack(s, first, last, RATE);
     write_mix(&track.0, &voices, RATE, a, b, wav::Bits::Int16)?;

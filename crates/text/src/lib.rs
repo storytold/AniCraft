@@ -132,10 +132,15 @@ impl Fonts {
             for face in EXTRA.get().into_iter().flatten() {
                 db.load_font_data(face.to_vec());
             }
-            if let Some(dir) = std::env::var_os("CRAFT_FONTS_DIR") {
-                db.load_fonts_dir(dir);
+            // A web page can't see the computer's fonts: there, text uses the faces the app
+            // registered (ADR 0036).
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some(dir) = std::env::var_os("CRAFT_FONTS_DIR") {
+                    db.load_fonts_dir(dir);
+                }
+                db.load_system_fonts();
             }
-            db.load_system_fonts();
             Fonts::from_db(db)
         })
     }

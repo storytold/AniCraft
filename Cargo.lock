@@ -283,6 +283,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "wat",
+ "web-time",
 ]
 
 [[package]]
@@ -304,6 +305,7 @@ dependencies = [
  "pollster 1.0.1",
  "rayon",
  "thiserror 2.0.21",
+ "web-time",
  "wgpu",
 ]
 
