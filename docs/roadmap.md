@@ -78,6 +78,19 @@ has a key (P is the Pen, as in Animate).
 
 Next, in order:
 
+0. **Raw drawing as in Animate (issue #42, a user's detailed report).** Merge drawing's first
+   slice (ADR 0031, outside contribution #92) makes the shape tools draw raw strokes and fills
+   that cut and join. Still to match the report, first-party:
+   * **Selection tool on raw drawings** (ADR 0041): drag an unselected segment to bend it;
+     drag an endpoint or corner to move it, moving every shape that shares the point; snap
+     dragged points to points, strokes and fill edges within 10 screen px, and keyboard moves
+     within 0.2 document px; a marquee that selects the parts of fills and strokes under it
+     (cut at its edges) across unlocked layers; Shift adds and removes.
+   * **Subselection on raw drawings, and merging everywhere** (ADR 0042): hollow anchors on
+     connected raw shapes, handles on curves, point marquee on the active layer, dragging a
+     segment or fill moves what is connected; the Paint Bucket's fills and pasted raw shapes
+     merge; raw shapes from Animate files come in raw; gradients and width profiles take part
+     in the merge.
 1. M4 **XFL import, next slices**: ~~masks (with M2 mask layers)~~ ✅, ~~shape tweens~~ ✅,
    ~~every scene~~ ✅, ~~bitmaps~~ ✅ (PNG/JPEG data), ~~text~~ ✅ (one style per line; per-character styles with
    the text model), motion tweens, and ~~a larger self-authored
