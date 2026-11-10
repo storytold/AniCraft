@@ -132,21 +132,53 @@ fn kept_scripts_survive_the_file_and_hostile_ones_are_dropped_whole() {
 }
 
 #[test]
-fn nothing_runs_a_kept_script() {
+fn scripts_in_the_subset_run_and_the_rest_are_kept_and_said_so() {
     let mut s = Session::new(sample::interactive());
     let layer = s.doc.timeline(0).layers[0].id.0;
-    // A script that would stop the movie and trace, on the show keyframe instead of its actions.
-    s.execute("script.set", &json!({"layer": layer, "frame": 1, "text": "trace(\"xyzzy-kept\"); stop();"})).unwrap();
+    // A script that stops the movie and traces, on the show keyframe instead of its actions.
+    let v = s.execute("script.set", &json!({"layer": layer, "frame": 1, "text": "trace(\"xyzzy-\" + 1); stop();"})).unwrap();
+    assert_eq!((v["runs"].as_bool(), v["problems"].as_array().map(Vec::len)), (Some(true), Some(0)), "{v}");
     let v = s.execute("control.test_movie", &json!({"frames": 20, "events": [{"tick": 2, "type": "click", "x": 640, "y": 400}]})).unwrap();
     let lines: Vec<&str> = v["output"].as_array().unwrap().iter().filter_map(|l| l["line"].as_str()).collect();
-    assert!(lines.is_empty(), "{lines:?}");
+    assert_eq!(lines.first().copied(), Some("Frame script runs: Scene 1 › Actions, frame 2"), "{lines:?}");
+    assert!(lines.contains(&"xyzzy-1"), "{lines:?}");
+    assert!(v["state"]["frame"].as_u64().unwrap() < 10 && v["state"]["playing"] == false, "it stopped: {}", v["state"]);
+    // The HTML export runs it too, as the same actions.
+    let out = anicraft_render::html::to_html(&s.doc, &anicraft_render::html::HtmlOptions::default()).unwrap();
+    assert!(out.html.contains("xyzzy-1") && !out.report.keys().any(|k| k.starts_with("kept frame scripts")), "{:?}", out.report);
+    // One outside the subset doesn't run at all, and Test Movie says where and why.
+    let v = s.execute("script.set", &json!({"layer": layer, "frame": 1, "text": "stop();
+var n:int = 1;"})).unwrap();
+    assert_eq!(v["runs"], false);
+    assert_eq!(v["problems"][0], json!({"line": 2, "column": 1, "message": "variables (`var`) aren't supported yet"}));
+    let v = s.execute("control.test_movie", &json!({"frames": 20, "events": [{"tick": 2, "type": "click", "x": 640, "y": 400}]})).unwrap();
+    assert_eq!(v["output"][0]["line"], "Frame script not run: Scene 1 › Actions, frame 2: line 2, column 1: variables (`var`) aren't supported yet");
     assert!(v["state"]["frame"].as_u64().unwrap() > 10, "it played on: {}", v["state"]);
-    // The HTML export draws the movie and says the script isn't in it.
     let out = anicraft_render::html::to_html(&s.doc, &anicraft_render::html::HtmlOptions::default()).unwrap();
     assert!(out.report.keys().any(|k| k.starts_with("kept frame scripts")), "{:?}", out.report);
-    assert!(!out.html.contains("xyzzy-kept"), "the script's text isn't exported");
+    assert!(!out.html.contains("var n:int"), "a kept script's text isn't exported");
+    let list = s.execute("script.list", &json!({"text": false})).unwrap();
+    assert_eq!((list["frames"][0]["runs"].as_bool(), list["frames"][0]["problems"][0]["line"].as_u64()), (Some(false), Some(2)));
     // Plug-ins may read and write kept scripts, as they may actions.
-    for id in ["script.set", "script.clear", "script.list", "script.set_class"] {
+    for id in ["script.set", "script.clear", "script.list", "script.set_class", "script.check"] {
         assert!(crate::cmds_plugin::plugin_may_call(id).is_ok(), "{id}");
     }
+}
+
+#[test]
+fn script_check_says_what_a_text_would_do_and_changes_nothing() {
+    let mut s = Session::new(sample::interactive());
+    let before = s.doc.clone();
+    let v = s.execute("script.check", &json!({"text": "stop();
+btn.addEventListener(MouseEvent.CLICK, go);
+function go(e:MouseEvent):void { gotoAndPlay(\"run\"); }
+navigateToURL(new URLRequest(\"x\"));"})).unwrap();
+    assert_eq!(v["runs"], true);
+    assert_eq!(v["describe"], json!(["Stop", "On click (btn): Go to “run” and play"]));
+    assert_eq!(v["steps"][1]["listen"]["target"], "btn");
+    assert_eq!(v["notes"][0]["line"], 4);
+    let v = s.execute("script.check", &json!({"text": "stop();", "language": "actionscript1or2"})).unwrap();
+    assert_eq!((v["runs"].as_bool(), v["problems"][0]["line"].as_u64()), (Some(false), Some(0)));
+    assert!(s.execute("script.check", &json!({})).is_err());
+    assert!(s.doc == before && s.undo_label().is_none());
 }

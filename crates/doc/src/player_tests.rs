@@ -341,3 +341,110 @@ fn entered_keyframes_start_their_sounds_in_clips_and_graphics_with_layer_volumes
     Arc::make_mut(&mut m.timeline_mut(0).layers[1]).muted = true;
     assert_eq!(started(&start(&m, &mut NoScripts)), vec![(1, 1.0), (3, 0.0)]);
 }
+
+// ----- ActionScript (ADR 0013 tier 2) -----------------------------------------------------------
+
+/// `k` with a kept ActionScript 3.0 script in place of its actions.
+fn as3(k: Arc<Keyframe>, src: &str) -> Arc<Keyframe> {
+    let mut k = (*k).clone();
+    k.script = Some(FrameScript::Source(Arc::new(crate::actions::SourceScript::new(crate::actions::Language::ActionScript3, src))));
+    Arc::new(k)
+}
+
+/// The state without the listeners scripts add (hand-made actions use handlers instead).
+fn lean(st: &PlayerState) -> PlayerState {
+    PlayerState { listeners: BTreeMap::new(), ..st.clone() }
+}
+
+/// Plays both documents through the same pointer events and asserts the same movie: state and
+/// output at every step.
+fn same_movie(a: &Document, b: &Document, events: &[Vec<Event>]) {
+    let (mut x, mut y) = (start(a, &mut NoScripts), start(b, &mut NoScripts));
+    assert_eq!((lean(&x.state), &x.output), (lean(&y.state), &y.output), "start");
+    for (i, ev) in events.iter().enumerate() {
+        x = step(a, &x.state, ev, &mut NoScripts);
+        y = step(b, &y.state, ev, &mut NoScripts);
+        assert_eq!((lean(&x.state), &x.output), (lean(&y.state), &y.output), "step {}", i + 1);
+    }
+}
+
+#[test]
+fn actionscript_and_hand_made_actions_play_the_same_movie() {
+    // Nested clips told what to do by instance-name path.
+    let hand = nested();
+    let mut script = nested();
+    {
+        let l = Arc::make_mut(&mut script.timeline_mut(0).layers[0]);
+        l.keyframes[0] = as3(l.keyframes[0].clone(), "hero.gotoAndStop(\"run\");\nthis.hero.arm.gotoAndStop(3);");
+        let arm = Arc::make_mut(&mut script.library[1]);
+        let al = Arc::make_mut(&mut arm.timeline.layers[0]);
+        al.keyframes[1] = as3(al.keyframes[1].clone(), "MovieClip(this.parent.parent).stop();");
+    }
+    same_movie(&hand, &script, &vec![vec![]; 6]);
+    // A button's handlers, and the same as listeners a frame script adds.
+    let hand = button_doc();
+    let mut script = button_doc();
+    {
+        let tl = script.timeline_mut(0);
+        let l0 = Arc::make_mut(&mut tl.layers[0]);
+        l0.keyframes[0] = as3(l0.keyframes[0].clone(), "import flash.events.MouseEvent;\nstop();\ngo.addEventListener(MouseEvent.CLICK, onGo);\ngo.addEventListener(MouseEvent.ROLL_OVER, function (e:MouseEvent):void { trace(\"over\"); });\ngo.addEventListener(MouseEvent.ROLL_OUT, function (e:MouseEvent):void { trace(\"o\" + \"ut\"); });\nfunction onGo(e:MouseEvent):void {\n  gotoAndStop(5);\n}\n");
+        let l1 = Arc::make_mut(&mut tl.layers[1]);
+        let k = Arc::make_mut(&mut l1.keyframes[0]);
+        if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(&mut k.elements[0]).kind {
+            events.clear();
+        }
+    }
+    let at = |x, y| Vec2::new(x, y);
+    let events = vec![vec![], vec![Event::Move(at(180.0, 180.0))], vec![Event::Down(at(180.0, 180.0))], vec![Event::Up(at(181.0, 181.0))], vec![Event::Move(at(300.0, 300.0))], vec![], vec![Event::Move(at(150.0, 150.0)), Event::Leave]];
+    same_movie(&hand, &script, &events);
+    let s = start(&script, &mut NoScripts);
+    assert_eq!(s.state.listeners.get(&vec![ElementId(3)]).map(Vec::len), Some(3), "three listeners on the button");
+}
+
+#[test]
+fn a_script_outside_the_subset_does_not_run_at_all() {
+    let d = doc(vec![layer(1, vec![as3(kf(0, 10, vec![], vec![], ""), "stop();\ntrace(\"half\");\nif (true) { play(); }")])], vec![]);
+    let s = run(&d, 3);
+    assert!(s.state.root.playing && s.output.is_empty(), "nothing of it ran: {:?}", s.output);
+    assert_eq!(s.state.root.frame, 3);
+    // In ActionScript 1.0 & 2.0 nothing runs either.
+    let mut d2 = doc(vec![layer(1, vec![kf(0, 10, vec![], vec![], "")])], vec![]);
+    Arc::make_mut(&mut Arc::make_mut(&mut d2.timeline_mut(0).layers[0]).keyframes[0]).script = Some(FrameScript::Source(Arc::new(crate::actions::SourceScript::new(crate::actions::Language::ActionScript1or2, "stop();"))));
+    assert!(run(&d2, 2).state.root.playing);
+}
+
+#[test]
+fn listeners_live_with_their_instance_and_are_added_once() {
+    // `pad` is a movie clip with no handlers: a listener makes it clickable. It is on the stage
+    // for frames 0-4; the main timeline loops round 8 frames, adding the listener again each
+    // time it enters frame 1.
+    let pad = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 1, vec![rect(12, 0.0, 0.0, 20.0, 20.0)], vec![], "")])]);
+    let script = "pad.addEventListener(MouseEvent.CLICK, hit);\nfunction hit(e:MouseEvent):void { trace(\"hit\"); }\nghost.addEventListener(MouseEvent.CLICK, hit);";
+    let d = doc(vec![layer(1, vec![as3(kf(0, 8, vec![], vec![], ""), script)]), layer(2, vec![kf(0, 5, vec![inst(3, 100, "pad", 10.0, 10.0, vec![])], vec![], ""), kf(5, 3, vec![], vec![], "")])], vec![pad]);
+    let path = vec![ElementId(3)];
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(s.output, ["Listen for click (ghost): no instance named “ghost” here"]);
+    assert!(hit(&d, &s.state, Vec2::new(15.0, 15.0)).is_some(), "the listener makes the clip clickable");
+    let at = Vec2::new(15.0, 15.0);
+    let s = step(&d, &s.state, &[Event::Move(at), Event::Down(at), Event::Up(at)], &mut NoScripts);
+    assert!(s.output.iter().any(|l| l == "hit"), "{:?}", s.output);
+    let s = run(&d, 5);
+    assert!(s.state.listeners.is_empty(), "pad left the stage, and its listener with it");
+    // Round the loop: the frame-1 script adds the same function again, which changes nothing.
+    let s = run(&d, 8);
+    assert_eq!(s.state.listeners.get(&path).map(Vec::len), Some(1));
+    let s = run(&d, 16);
+    assert_eq!(s.state.listeners.get(&path).map(Vec::len), Some(1));
+}
+
+#[test]
+fn next_scene_in_a_movie_clip_script_stays_in_its_clip() {
+    // A clip's own script calling nextScene(): in ActionScript the clip has one scene, so the
+    // main timeline stays (hand-made Next scene actions do move it, as before).
+    let clip = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![as3(kf(0, 2, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], ""), "nextScene();")])]);
+    let mut d = doc(vec![layer(1, vec![kf(0, 4, vec![inst(3, 100, "c", 0.0, 0.0, vec![])], vec![], "")])], vec![clip]);
+    d.scenes.push(Arc::new(crate::Scene::new("Two")));
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(s.state.scene, 0);
+    assert_eq!(s.output, ["Next scene: a movie clip's timeline has one scene; call it in the main timeline's script"]);
+}

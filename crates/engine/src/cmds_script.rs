@@ -1,16 +1,19 @@
-//! Kept scripts (ADR 0013 tier 1): frame scripts written in another language (ActionScript, as
+//! Kept scripts (ADR 0013): frame scripts written in another language (ActionScript, as
 //! Animate documents bring them), symbol linkage classes and the document class, kept verbatim
-//! with the document. Nothing runs them yet: Test Movie, rendering and every export skip them.
+//! with the document. Scripts in the ActionScript 3.0 subset run in Test Movie and the HTML
+//! canvas export (tier 2); the rest are kept and not run, with the problems that say why.
+//! Rendering and the other exports never run scripts.
 //!
-//! `script.set / clear / list` edit and list a keyframe's kept script; `script.set_class`
-//! sets a symbol's linkage class or the document class. A keyframe holds actions, a plug-in
+//! `script.set / clear / list` edit and list a keyframe's kept script; `script.check` says
+//! whether a text would run; `script.set_class` sets a symbol's linkage class or the document
+//! class. A keyframe holds actions, a plug-in
 //! frame script *or* a kept script (one `Keyframe.script`), so setting one replaces the other,
 //! as one undo step.
 
 use crate::cmds_actions::{Scope, keyframe_in};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::actions::{self, FrameScript, Language, SourceScript};
+use anicraft_doc::actions::{self, CompileResult, FrameScript, Language, SourceScript};
 use anicraft_doc::{Linkage, SymbolId};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -18,9 +21,10 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("script.set", "Set Frame Script", "", None, "{text?: the script, verbatim (\"\" clears; at most 1 MiB), language?: actionscript3|actionscript1or2|other (default: the script's, else actionscript3), symbol?: id, layer?, frame?} keeps a script on the keyframe at the frame (it replaces actions there); it is kept with the document and doesn't run", true, set as crate::RunFn),
+        c("script.set", "Set Frame Script", "", None, "{text?: the script, verbatim (\"\" clears; at most 1 MiB), language?: actionscript3|actionscript1or2|other (default: the script's, else actionscript3), symbol?: id, layer?, frame?} keeps a script on the keyframe at the frame (it replaces actions there); ActionScript 3.0 in the subset runs in Test Movie and the HTML export, the rest is kept and not run (`runs`, `problems` say which)", true, set as crate::RunFn),
         c("script.clear", "Clear Frame Script", "", None, "{symbol?, layer?, frame?} removes the keyframe's kept script (actions are left alone: actions.clear)", true, clear),
-        c("script.list", "List Frame Scripts", "", None, "{text?: bool (default true)} every kept script in every scene and symbol, with its text, plus symbol linkage classes and the document class", false, list),
+        c("script.list", "List Frame Scripts", "", None, "{text?: bool (default true)} every kept script in every scene and symbol, with its text, whether it runs and its problems, plus symbol linkage classes and the document class", false, list),
+        c("script.check", "Check Frame Script", "", None, "{text: the script, language?: actionscript3|actionscript1or2|other (default actionscript3)} whether it would run (the ActionScript 3.0 subset, ADR 0013), its problems with line and column, what is ignored, and the steps it runs; changes nothing", false, check),
         c("script.set_class", "Set Script Class", "", None, "{symbol?: id (default: the document), class: dotted class name (\"\" clears), base?: the class it extends} sets a symbol's linkage class, or the document class; kept as text, not run", true, set_class),
     ]
 }
@@ -40,6 +44,30 @@ fn what(script: &Option<FrameScript>) -> Value {
         Some(FrameScript::Source(_)) => json!("script"),
         None => Value::Null,
     }
+}
+
+/// Whether a script runs, its problems and notes (each `{line, column, message}`; line 0 is
+/// the whole script).
+fn status(c: &CompileResult) -> Value {
+    match c {
+        Ok(c) => json!({"runs": true, "problems": [], "notes": c.notes}),
+        Err(p) => json!({"runs": false, "problems": p, "notes": []}),
+    }
+}
+
+fn check(_: &mut Session, p: &Value) -> Result<Value> {
+    let text = str_req(p, "text")?;
+    if text.len() > actions::MAX_SOURCE_BYTES {
+        return Err(EngineError::Param(format!("a script is at most {} KiB", actions::MAX_SOURCE_BYTES / 1024)));
+    }
+    let script = SourceScript::new(language(p)?.unwrap_or_default(), text);
+    let c = script.compiled();
+    let mut v = status(c);
+    if let Ok(c) = c {
+        v["steps"] = json!(c.ops);
+        v["describe"] = json!(c.ops.iter().map(|o| o.describe()).collect::<Vec<_>>());
+    }
+    Ok(v)
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
@@ -74,7 +102,10 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let script = SourceScript::new(lang.or(old.map(|o| o.language)).unwrap_or_default(), text);
     script.check().map_err(EngineError::Param)?;
-    let out = json!({"layer": lid.0, "keyframe": k.start, "language": script.language.key(), "lines": script.lines(), "bytes": script.text.len(), "replaced": if before == json!("script") { Value::Null } else { before }});
+    let mut out = json!({"layer": lid.0, "keyframe": k.start, "language": script.language.key(), "lines": script.lines(), "bytes": script.text.len(), "replaced": if before == json!("script") { Value::Null } else { before }});
+    if let (Some(o), Value::Object(st)) = (out.as_object_mut(), status(script.compiled())) {
+        o.extend(st);
+    }
     k.script = Some(FrameScript::Source(Arc::new(script)));
     Ok(out)
 }
@@ -97,6 +128,9 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
             for k in &l.keyframes {
                 let Some(src) = k.script.as_ref().and_then(FrameScript::source) else { continue };
                 let mut v = json!({"timeline": name, "layer": l.id.0, "layer_name": l.name, "frame": k.start, "label": k.label, "language": src.language.key(), "lines": src.lines(), "bytes": src.text.len()});
+                if let (Some(o), Value::Object(st)) = (v.as_object_mut(), status(src.compiled())) {
+                    o.extend(st);
+                }
                 if with_text {
                     v["text"] = json!(src.text);
                 }
