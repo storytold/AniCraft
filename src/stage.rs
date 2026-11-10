@@ -7,7 +7,7 @@
 //! state, scaled) underneath, so panning and zooming never reveal an empty stage.
 
 use crate::app::{App, Drag, Tool, XfKind};
-use crate::i18n::tl;
+use crate::i18n::{self, tl};
 use crate::prefs::RenderMode;
 use crate::theme::{T, to_color32};
 use anicraft_engine::geom::{Affine, Vec2};
@@ -108,7 +108,7 @@ impl Cache {
             // Already on the window's device: shown as it is, nothing to upload.
             Some(native) => match self.gpu.register(native) {
                 Some(t) => TileImage::Drawn(t),
-                None => return Some("The GPU stage drew a picture the window can't show.".into()),
+                None => return Some(tl!("The GPU stage drew a picture the window can't show.").into()),
             },
             None => {
                 let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.rgba_premul);
@@ -771,10 +771,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::camera_tool::draw(app, &painter, &cam_geo, pointer);
     if preview {
         // The movie's picture: stage-space overlays don't belong on it.
-        painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, "Camera view", crate::theme::font(crate::theme::Type::Caption), T.text_dim);
+        painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, tl!("Camera view"), crate::theme::font(crate::theme::Type::Caption), T.text_dim);
         let badge = format!("{:.0}%", zoom * 100.0);
         painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
-        crate::a11y::surface(ui, &resp, &format!("Stage · previewing through the camera · {} tool · frame {}", app.tool.label(), app.s.frame + 1));
+        crate::a11y::surface(ui, &resp, &i18n::fmt("Stage · previewing through the camera · {tool} tool · frame {frame}", &[("tool", tl!(app.tool.label())), ("frame", &(app.s.frame + 1).to_string())]));
         return;
     }
     // Mask artwork is never painted; while its layer is unlocked (editable), its edge shows in
@@ -910,10 +910,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let selected = app.s.selection.len();
     let what = match selected {
         0 => String::new(),
-        1 => " · 1 element selected".to_string(),
-        n => format!(" · {n} elements selected"),
+        n => format!(" · {}", i18n::trn(n as u64, "{n} element selected", "{n} elements selected")),
     };
-    crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
+    crate::a11y::surface(ui, &resp, &i18n::fmt("Stage · {tool} tool · frame {frame}{selection}", &[("tool", tl!(app.tool.label())), ("frame", &(app.s.frame + 1).to_string()), ("selection", &what)]));
 }
 
 // ----- raw shapes (ADR 0031) ---------------------------------------------------------------------

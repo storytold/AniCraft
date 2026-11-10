@@ -14,6 +14,7 @@
 //! Nothing here can panic on what the browser returns: every call that can fail is checked
 //! and a failure degrades (no storage: autosave is off and says so; no picker: nothing opens).
 
+use crate::i18n::{self, tl};
 use crate::platform::Picked;
 use anicraft_engine::doc::Document;
 use anicraft_engine::recovery::{Entry, Outcome, RecoveryMeta, WriteStats};
@@ -147,11 +148,11 @@ pub fn pick_file(cmd: &'static str, exts: &[&str]) {
 async fn read_picked(cmd: &'static str, file: web_sys::File) {
     let name = file.name();
     let data = if file.size() > MAX_PICK_BYTES {
-        Err(format!("it is larger than {} MB", MAX_PICK_BYTES as u64 >> 20))
+        Err(i18n::fmt("it is larger than {n} MB", &[("n", &(MAX_PICK_BYTES as u64 >> 20).to_string())]))
     } else {
         match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
             Ok(buf) => Ok(js_sys::Uint8Array::new(&buf).to_vec()),
-            Err(_) => Err("the browser could not read it".to_string()),
+            Err(_) => Err(tl!("the browser could not read it").to_string()),
         }
     };
     PICKED.with(|p| p.borrow_mut().push(Picked { cmd, name, data }));
@@ -230,8 +231,8 @@ pub fn storage_get(key: &str) -> Option<String> {
 }
 
 pub fn storage_set(key: &str, value: &str) -> Result<(), String> {
-    let s = storage().ok_or("this browser keeps no storage for the site (private browsing?)")?;
-    s.set_item(key, value).map_err(|_| "the browser's storage for this site is full (documents with large images or sounds may not fit)".to_string())
+    let s = storage().ok_or(tl!("this browser keeps no storage for the site (private browsing?)"))?;
+    s.set_item(key, value).map_err(|_| tl!("the browser's storage for this site is full (documents with large images or sounds may not fit)").to_string())
 }
 
 fn storage_remove(key: &str) {
@@ -267,7 +268,7 @@ pub struct BrowserSaver {
 
 impl BrowserSaver {
     pub fn start() -> Result<BrowserSaver, String> {
-        storage().ok_or("this browser keeps no storage for the site (private browsing?)")?;
+        storage().ok_or(tl!("this browser keeps no storage for the site (private browsing?)"))?;
         let millis = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let id = format!("web-{millis:x}-{:08x}", (js_sys::Math::random() * f64::from(u32::MAX)) as u32);
         hold_lock(&id);

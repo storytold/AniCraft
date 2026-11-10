@@ -50,9 +50,9 @@ fn plugin(app: &App, id: &str) -> Option<Arc<Plugin>> {
 /// Why `p` can't run now (it works on the selection and nothing is selected).
 fn blocked(s: &Session, p: &Plugin) -> Option<&'static str> {
     if p.manifest().kind == anicraft_engine::plugins::Kind::FrameScript {
-        return Some("A frame script: it runs while the movie plays. Pick it for a keyframe in the Actions panel (F9)");
+        return Some(tl!("A frame script: it runs while the movie plays. Pick it for a keyframe in the Actions panel (F9)"));
     }
-    (p.manifest().selection == SelectionNeed::Required && s.selection.is_empty()).then_some("Select some artwork first")
+    (p.manifest().selection == SelectionNeed::Required && s.selection.is_empty()).then(|| tl!("Select some artwork first"))
 }
 
 /// Plug-ins that run as commands (frame scripts run from keyframes instead).
@@ -74,7 +74,7 @@ pub fn run_or_ask(app: &mut App, id: &str) {
         return;
     };
     if let Some(why) = blocked(&app.s, &p) {
-        app.status_err(format!("{}: {}", p.manifest().name, crate::i18n::t(why)));
+        app.status_err(format!("{}: {}", p.manifest().name, why));
         return;
     }
     if p.manifest().params.is_empty() {
@@ -120,14 +120,14 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui, cmds: &[CommandSpec], item: impl F
         ui.set_min_width(220.0);
         let list: Vec<Arc<Plugin>> = app.s.plugins.list().filter(|p| is_command(p)).cloned().collect();
         if list.is_empty() {
-            ui.label(text(Type::Caption, crate::i18n::t("No plug-ins installed yet")));
+            ui.label(text(Type::Caption, tl!("No plug-ins installed yet")));
         }
         for p in list {
             let why = blocked(&app.s, &p);
             let r = ui.add_enabled(why.is_none(), egui::Button::new(label(&p)));
             let r = if p.manifest().description.is_empty() { r } else { r.on_hover_text(&p.manifest().description) };
             let r = match why {
-                Some(w) => r.on_disabled_hover_text(crate::i18n::t(w)),
+                Some(w) => r.on_disabled_hover_text(w),
                 None => r,
             };
             if r.clicked() {
@@ -213,7 +213,7 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
         ui.label(text(Type::Title, m.name.clone()));
         let by = [m.author.as_str(), m.version.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · ");
         if !by.is_empty() {
-            ui.label(text(Type::Caption, format!("Plug-in · {by}")));
+            ui.label(text(Type::Caption, i18n::fmt("Plug-in · {by}", &[("by", &by)])));
         }
         if !m.description.is_empty() {
             ui.add_space(2.0);
@@ -225,7 +225,7 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
             form_row(ui, FORM_LABEL_DOCK + 40.0, &spec.label, |ui| changed |= control(ui, &spec.label, &spec.kind, v));
         }
         ui.add_space(6.0);
-        if theme::checkbox(ui, &mut d.preview, "Preview on the stage").changed() {
+        if theme::checkbox(ui, &mut d.preview, tl!("Preview on the stage")).changed() {
             changed = true;
         }
         if let Some(e) = &d.error {
@@ -234,18 +234,18 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(96.0, TARGET + 4.0))).clicked() {
+            if ui.add(egui::Button::new(tl!("Cancel")).min_size(egui::vec2(96.0, TARGET + 4.0))).clicked() {
                 cancel = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let run = egui::Button::new(text(Type::Body, "OK").strong()).fill(T.accent_dim).min_size(egui::vec2(96.0, TARGET + 4.0));
+                let run = egui::Button::new(text(Type::Body, tl!("OK")).strong()).fill(T.accent_dim).min_size(egui::vec2(96.0, TARGET + 4.0));
                 if ui.add(run).clicked() {
                     ok = true;
                 }
             });
         });
         ui.add_space(2.0);
-        ui.label(text(Type::Caption, "Enter applies · Esc cancels · one undo step"));
+        ui.label(text(Type::Caption, tl!("Enter applies · Esc cancels · one undo step")));
     });
     let (esc, enter) = ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::Escape), i.consume_key(egui::Modifiers::NONE, Key::Enter)));
     cancel |= esc;
@@ -284,10 +284,10 @@ fn finish(app: &mut App) {
 fn manager(app: &mut App, ctx: &egui::Context) {
     let mut open = app.show_plugins;
     let mut action: Option<(&'static str, String)> = None;
-    let shown = egui::Window::new("Plug-ins").open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
+    let shown = egui::Window::new(tl!("Plug-ins")).id(egui::Id::unique("plugins_window")).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
         let list: Vec<Arc<Plugin>> = app.s.plugins.list().cloned().collect();
         if list.is_empty() {
-            ui.label(text(Type::Label, "No plug-ins installed yet. Plug-ins are WebAssembly (.wasm) files that add commands, such as generators and selection effects."));
+            ui.label(text(Type::Label, tl!("No plug-ins installed yet. Plug-ins are WebAssembly (.wasm) files that add commands, such as generators and selection effects.")));
         }
         for p in &list {
             let m = p.manifest();
@@ -297,11 +297,11 @@ fn manager(app: &mut App, ctx: &egui::Context) {
                     ui.label(text(Type::Data, m.version.clone()));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Remove…").clicked() {
+                    if ui.button(tl!("Remove…")).clicked() {
                         action = Some(("plugin.remove", p.id().to_string()));
                     }
                     let why = blocked(&app.s, p);
-                    let r = ui.add_enabled(why.is_none(), egui::Button::new(if m.params.is_empty() { "Run" } else { "Run…" }));
+                    let r = ui.add_enabled(why.is_none(), egui::Button::new(tl!(if m.params.is_empty() { "Run" } else { "Run…" })));
                     if let Some(w) = why {
                         r.on_disabled_hover_text(w);
                     } else if r.clicked() {
@@ -312,8 +312,9 @@ fn manager(app: &mut App, ctx: &egui::Context) {
             if !m.description.is_empty() {
                 ui.label(text(Type::Label, m.description.clone()));
             }
-            let by = if m.author.is_empty() { String::new() } else { format!("by {} · ", m.author) };
-            ui.label(text(Type::Caption, format!("{by}{} · {} KB", m.id, Plugin::size(p).div_ceil(1024))));
+            let size = format!("{} KB", Plugin::size(p).div_ceil(1024));
+            let line = if m.author.is_empty() { format!("{} · {size}", m.id) } else { i18n::fmt("by {author} · {id} · {size}", &[("author", &m.author), ("id", &m.id), ("size", &size)]) };
+            ui.label(text(Type::Caption, line));
             if let Some(src) = p.source() {
                 ui.label(text(Type::Path, src.display().to_string()).color(T.text_faint));
             }
@@ -326,19 +327,19 @@ fn manager(app: &mut App, ctx: &egui::Context) {
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("Install Plug-in…").clicked() {
+            if ui.button(tl!("Install Plug-in…")).clicked() {
                 action = Some(("plugin.install", String::new()));
             }
-            if ui.add_enabled(folder.is_some(), egui::Button::new("Reload")).clicked() {
+            if ui.add_enabled(folder.is_some(), egui::Button::new(tl!("Reload"))).clicked() {
                 action = Some(("plugin.reload", String::new()));
             }
             if let Some(f) = &folder
-                && ui.add_enabled(f.exists(), egui::Button::new("Show Folder")).clicked()
+                && ui.add_enabled(f.exists(), egui::Button::new(tl!("Show Folder"))).clicked()
             {
                 action = Some(("show", f.display().to_string()));
             }
         });
-        ui.label(text(Type::Caption, "Plug-ins run sandboxed: they can change the open document through AniCraft's commands, never your files."));
+        ui.label(text(Type::Caption, tl!("Plug-ins run sandboxed: they can change the open document through AniCraft's commands, never your files.")));
     });
     a11y::name_title_bar(&shown, "Plug-ins");
     app.show_plugins = open;

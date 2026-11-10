@@ -62,15 +62,15 @@ fn selected_instance(app: &App) -> Option<(Element, SymbolKind)> {
 fn panel(app: &mut App, ui: &mut egui::Ui) {
     let inst = selected_instance(app);
     ui.horizontal(|ui| {
-        if ui.selectable_label(app.actions.tab == Tab::Frame, "Frame").on_hover_text("What runs when the playhead enters a keyframe").clicked() {
+        if ui.selectable_label(app.actions.tab == Tab::Frame, tl!("Frame")).on_hover_text(tl!("What runs when the playhead enters a keyframe")).clicked() {
             app.actions.tab = Tab::Frame;
         }
         let label = match &inst {
             Some((e, k)) => format!("{} {}", if *k == SymbolKind::Button { "Button" } else { "Movie clip" }, if e.name.is_empty() { "(unnamed)".to_string() } else { format!("“{}”", e.name) }),
             None => "Instance".to_string(),
         };
-        let r = ui.add_enabled(inst.is_some(), egui::Button::selectable(app.actions.tab == Tab::Instance, label)).on_hover_text("What the selected button or movie clip does on clicks and the pointer");
-        let r = r.on_disabled_hover_text("Select one button or movie clip instance on the stage");
+        let r = ui.add_enabled(inst.is_some(), egui::Button::selectable(app.actions.tab == Tab::Instance, label)).on_hover_text(tl!("What the selected button or movie clip does on clicks and the pointer"));
+        let r = r.on_disabled_hover_text(tl!("Select one button or movie clip instance on the stage"));
         if r.clicked() {
             app.actions.tab = Tab::Instance;
         }
@@ -79,7 +79,7 @@ fn panel(app: &mut App, ui: &mut egui::Ui) {
     match (app.actions.tab, inst) {
         (Tab::Instance, Some((e, _))) => instance_tab(app, ui, &e),
         (Tab::Instance, None) => {
-            ui.label(text(Type::Caption, "Select one button or movie clip instance on the stage to give it events (a graphic can't have them: set its symbol's Type in Properties)."));
+            ui.label(text(Type::Caption, tl!("Select one button or movie clip instance on the stage to give it events (a graphic can't have them: set its symbol's Type in Properties).")));
         }
         (Tab::Frame, _) => frame_tab(app, ui),
     }
@@ -101,14 +101,14 @@ fn frame_tab(app: &mut App, ui: &mut egui::Ui) {
     if app.actions.symbol.is_some_and(|id| !clips.iter().any(|(c, _)| *c == id)) {
         app.actions.symbol = None;
     }
-    let current = app.actions.symbol.and_then(|id| clips.iter().find(|(c, _)| *c == id)).map_or(scene_name.clone(), |(_, n)| format!("{n} (movie clip)"));
+    let current = app.actions.symbol.and_then(|id| clips.iter().find(|(c, _)| *c == id)).map_or(scene_name.clone(), |(_, n)| i18n::fmt("{name} (movie clip)", &[("name", n)]));
     form_row(ui, FORM_LABEL_DOCK, "Timeline", |ui| {
         egui::ComboBox::from_id_salt("act_timeline").width(220.0).selected_text(current).show_ui(ui, |ui| {
-            if ui.selectable_label(app.actions.symbol.is_none(), format!("{scene_name} (main timeline)")).clicked() {
+            if ui.selectable_label(app.actions.symbol.is_none(), i18n::fmt("{name} (main timeline)", &[("name", &scene_name)])).clicked() {
                 app.actions.symbol = None;
             }
             for (id, n) in &clips {
-                if ui.selectable_label(app.actions.symbol == Some(*id), format!("{n} (movie clip)")).clicked() {
+                if ui.selectable_label(app.actions.symbol == Some(*id), i18n::fmt("{name} (movie clip)", &[("name", n)])).clicked() {
                     app.actions = State { tab: Tab::Frame, symbol: Some(*id), layer: None, frame: 0 };
                 }
             }
@@ -119,10 +119,10 @@ fn frame_tab(app: &mut App, ui: &mut egui::Ui) {
     let is_plugin = matches!(t.script, Some(FrameScript::Plugin(_)));
     let mut to_plugin = None;
     form_row(ui, FORM_LABEL_DOCK, "Runs", |ui| {
-        if ui.selectable_label(!is_plugin, "Actions").on_hover_text("A list of actions, in order").clicked() && is_plugin {
+        if ui.selectable_label(!is_plugin, tl!("Actions")).on_hover_text(tl!("A list of actions, in order")).clicked() && is_plugin {
             to_plugin = Some(false);
         }
-        if ui.selectable_label(is_plugin, "Frame script").on_hover_text("An entry point of a frame-script plug-in (WebAssembly)").clicked() && !is_plugin {
+        if ui.selectable_label(is_plugin, tl!("Frame script")).on_hover_text(tl!("An entry point of a frame-script plug-in (WebAssembly)")).clicked() && !is_plugin {
             to_plugin = Some(true);
         }
     });
@@ -145,7 +145,7 @@ fn frame_tab(app: &mut App, ui: &mut egui::Ui) {
     let list = t.script.as_ref().map(|s| s.actions().to_vec()).unwrap_or_default();
     let cx = Choices::new(&doc, &t.timeline, t.main);
     if list.is_empty() {
-        ui.label(text(Type::Caption, "No actions yet. Add one: Stop on a frame holds the movie there; a button's Click can then go on."));
+        ui.label(text(Type::Caption, tl!("No actions yet. Add one: Stop on a frame holds the movie there; a button's Click can then go on.")));
     }
     if let Some((new, live)) = edit_list(ui, "frame", &list, &cx) {
         let mut p = t.base.clone();
@@ -167,17 +167,17 @@ fn frame_target(app: &mut App, ui: &mut egui::Ui, doc: &Document) -> Option<Fram
                 ui.label(text(Type::Body, layer.name.as_str()).color(T.text_dim));
             });
             if matches!(layer.kind, LayerKind::Folder | LayerKind::Guide) {
-                ui.label(text(Type::Caption, "Folders and guide layers don't run actions. Pick another layer in the timeline."));
+                ui.label(text(Type::Caption, tl!("Folders and guide layers don't run actions. Pick another layer in the timeline.")));
                 return None;
             }
             let Some(k) = layer.keyframe_at(frame) else {
                 let key = app.keymap.primary("timeline.insert_blank_keyframe").map(crate::platform::shortcut_label).unwrap_or_default();
-                ui.label(text(Type::Caption, format!("Frame {} is empty on this layer. Add a blank keyframe ({key}) to give it actions.", frame + 1)));
+                ui.label(text(Type::Caption, i18n::fmt("Frame {frame} is empty on this layer. Add a blank keyframe ({key}) to give it actions.", &[("frame", &(frame + 1).to_string()), ("key", &key)])));
                 return None;
             };
             if k.start != frame {
                 let key = app.keymap.primary("timeline.insert_keyframe").map(crate::platform::shortcut_label).unwrap_or_default();
-                ui.label(text(Type::Caption, format!("These run when the playhead enters frame {} (the keyframe). For frame {}, add a keyframe there ({key}).", k.start + 1, frame + 1)));
+                ui.label(text(Type::Caption, i18n::fmt("These run when the playhead enters frame {start} (the keyframe). For frame {frame}, add a keyframe there ({key}).", &[("start", &(k.start + 1).to_string()), ("frame", &(frame + 1).to_string()), ("key", &key)])));
             }
             Some(FrameTarget { base: json!({"layer": layer.id.0, "frame": k.start}), script: k.script.clone(), timeline: tl.clone(), main: true })
         }
@@ -248,9 +248,9 @@ fn plugin_rows(app: &mut App, ui: &mut egui::Ui, base: &Value, id: &str, entry: 
         });
     });
     if installed.is_none() {
-        ui.label(text(Type::Caption, format!("“{id}” isn't installed here: Test Movie says so and plays on.")).color(T.error));
+        ui.label(text(Type::Caption, i18n::fmt("“{id}” isn't installed here: Test Movie says so and plays on.", &[("id", id)])).color(T.error));
     }
-    ui.label(text(Type::Caption, "The plug-in runs each time the playhead enters this keyframe, reads where the movie is, and sends actions back. It can't change the document."));
+    ui.label(text(Type::Caption, tl!("The plug-in runs each time the playhead enters this keyframe, reads where the movie is, and sends actions back. It can't change the document.")));
     if let Some((pid, e)) = pick {
         set_frame(app, base, json!({"plugin": pid, "entry": e}));
     }
@@ -276,24 +276,24 @@ fn instance_tab(app: &mut App, ui: &mut egui::Ui, e: &Element) {
     let doc = app.s.doc.clone();
     let mut name = e.name.clone();
     form_row(ui, FORM_LABEL_DOCK, "Name", |ui| {
-        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(200.0).hint_text("instance name")).named("Instance name").changed() {
+        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(200.0).hint_text(tl!("instance name"))).named(tl!("Instance name")).changed() {
             run(app, true, "Instance name", "instance.set_name", json!({"element": e.id.0, "name": name}));
         }
     });
     if e.name.is_empty() {
-        ui.label(text(Type::Caption, "Name it to address it from actions (letters, digits and _). Its events work without a name."));
+        ui.label(text(Type::Caption, tl!("Name it to address it from actions (letters, digits and _). Its events work without a name.")));
     }
     let ElementKind::Symbol { events, .. } = &e.kind else { return };
     let tl = doc.timeline(app.s.scene).clone();
     let cx = Choices::new(&doc, &tl, true);
     ui.add_space(4.0);
-    ui.label(text(Type::Caption, "Its actions run on the timeline it is on: “this” is the main timeline."));
+    ui.label(text(Type::Caption, tl!("Its actions run on the timeline it is on: “this” is the main timeline.")));
     for h in events {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(text(Type::Body, format!("On {}", h.event.label().to_lowercase())).strong()).on_hover_text(h.event.hint());
+            ui.label(text(Type::Body, i18n::fmt("On {event}", &[("event", &tl!(h.event.label()).to_lowercase())])).strong()).on_hover_text(tl!(h.event.hint()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Remove event").clicked() {
+                if ui.small_button(tl!("Remove event")).clicked() {
                     app.run("actions.clear", json!({"element": e.id.0, "event": h.event.key()}));
                     app.status_ok(i18n::fmt("Removed the {event} event — Ctrl+Z to undo", &[("event", &tl!(h.event.label()).to_lowercase())]));
                 }
@@ -306,9 +306,9 @@ fn instance_tab(app: &mut App, ui: &mut egui::Ui, e: &Element) {
     let unused: Vec<ButtonEvent> = ButtonEvent::ALL.into_iter().filter(|ev| !events.iter().any(|h| h.event == *ev)).collect();
     if !unused.is_empty() {
         ui.add_space(6.0);
-        ui.menu_button("Add event", |ui| {
+        ui.menu_button(tl!("Add event"), |ui| {
             for ev in unused {
-                if ui.button(ev.label()).on_hover_text(ev.hint()).clicked() {
+                if ui.button(tl!(ev.label())).on_hover_text(tl!(ev.hint())).clicked() {
                     // A new event starts with the action people want most: go on playing.
                     let first = Action::Play { target: Target::this() };
                     app.run("actions.set", json!({"element": e.id.0, "event": ev.key(), "actions": [first]}));
@@ -421,7 +421,7 @@ fn edit_list(ui: &mut egui::Ui, scope: &str, list: &[Action], cx: &Choices<'_>) 
     }
     let mut added = None;
     ui.add_space(4.0);
-    ui.menu_button("Add action", |ui| {
+    ui.menu_button(tl!("Add action"), |ui| {
         for (op, label) in KINDS {
             if ui.button(label).clicked() {
                 added = Action::new(op);
@@ -459,7 +459,7 @@ fn action_row(ui: &mut egui::Ui, i: usize, n: usize, a: &mut Action, cx: &Choice
         ui.label(text(Type::DataSmall, format!("{:>2}", i + 1)).color(T.text_faint));
         ui.label(text(Type::Body, a.label()).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Remove").on_hover_text("Remove this action").clicked() {
+            if ui.small_button(tl!("Remove")).on_hover_text(tl!("Remove this action")).clicked() {
                 change = Some(Change::Remove);
             }
             if i + 1 < n && crate::timeline::icon_button(ui, "Move down", None, Icon::ChevronDown).clicked() {
@@ -485,10 +485,10 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                 let mut opts: Vec<(String, String)> = vec![("".into(), "this".into())];
                 if !main_here {
                     opts.push(("parent".into(), "parent".into()));
-                    opts.push(("root".into(), "root (main timeline)".into()));
+                    opts.push(("root".into(), tl!("root (main timeline)").into()));
                 }
                 for (p, k) in &cx.targets {
-                    opts.push((p.clone(), format!("{p} · {}", if *k == SymbolKind::Button { "button" } else { "movie clip" })));
+                    opts.push((p.clone(), format!("{p} · {}", tl!(if *k == SymbolKind::Button { "button" } else { "movie clip" }))));
                 }
                 if !opts.iter().any(|(p, _)| Target::new(p.clone()).to_string() == shown) {
                     opts.push((shown.clone(), shown.clone()));
@@ -510,11 +510,11 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
             let labels = cx.labels(&target);
             form_row(ui, FORM_LABEL_DOCK, "Go to", |ui| {
                 let is_label = matches!(frame, FrameRef::Label(_));
-                if ui.selectable_label(!is_label, "Frame").clicked() && is_label {
+                if ui.selectable_label(!is_label, tl!("Frame")).clicked() && is_label {
                     *frame = FrameRef::Number(0);
                     changed = Some(false);
                 }
-                if ui.selectable_label(is_label, "Label").on_hover_text("Frame labels survive frames being added or moved").clicked() && !is_label {
+                if ui.selectable_label(is_label, tl!("Label")).on_hover_text(tl!("Frame labels survive frames being added or moved")).clicked() && !is_label {
                     *frame = FrameRef::Label(labels.first().cloned().unwrap_or_else(|| "label".into()));
                     changed = Some(false);
                 }
@@ -522,7 +522,7 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                     FrameRef::Number(n) => {
                         let max = resolved.map_or(anicraft_engine::MAX_FRAME, |(tl, _)| tl.frame_count());
                         let mut shown = *n + 1;
-                        if with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(&mut shown).range(1..=max.max(1)).speed(0.2))).named("Frame number").changed() {
+                        if with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(&mut shown).range(1..=max.max(1)).speed(0.2))).named(tl!("Frame number")).changed() {
                             *n = shown.saturating_sub(1);
                             changed = Some(true);
                         }
@@ -530,7 +530,7 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                     FrameRef::Label(l) => {
                         egui::ComboBox::from_id_salt("label").width(140.0).selected_text(l.as_str()).show_ui(ui, |ui| {
                             if labels.is_empty() {
-                                ui.label(text(Type::Caption, "No frame labels yet: name a keyframe in Properties › Label"));
+                                ui.label(text(Type::Caption, tl!("No frame labels yet: name a keyframe in Properties › Label")));
                             }
                             for x in &labels {
                                 if ui.selectable_label(x == l, x.as_str()).clicked() && x != l {
@@ -544,9 +544,9 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
             });
             if resolved.is_some_and(|(_, main)| main) && cx.doc.scenes.len() > 1 {
                 form_row(ui, FORM_LABEL_DOCK, "Scene", |ui| {
-                    let shown = scene.clone().unwrap_or_else(|| "This scene".into());
+                    let shown = scene.clone().unwrap_or_else(|| tl!("This scene").into());
                     egui::ComboBox::from_id_salt("scene").width(160.0).selected_text(shown).show_ui(ui, |ui| {
-                        if ui.selectable_label(scene.is_none(), "This scene").clicked() && scene.is_some() {
+                        if ui.selectable_label(scene.is_none(), tl!("This scene")).clicked() && scene.is_some() {
                             *scene = None;
                             changed = Some(false);
                         }
@@ -562,7 +562,7 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
         }
         Action::Trace { message } => {
             form_row(ui, FORM_LABEL_DOCK, "Message", |ui| {
-                if ui.add(egui::TextEdit::singleline(message).desired_width(220.0).hint_text("written to Output")).named("Trace message").changed() {
+                if ui.add(egui::TextEdit::singleline(message).desired_width(220.0).hint_text(tl!("written to Output"))).named(tl!("Trace message")).changed() {
                     changed = Some(true);
                 }
             });
@@ -584,14 +584,14 @@ fn fields(ui: &mut egui::Ui, a: &mut Action, cx: &Choices<'_>) -> Option<bool> {
                 match property {
                     Property::Visible => {
                         let mut on = *value != 0.0;
-                        if crate::theme::checkbox(ui, &mut on, "Shown").changed() {
+                        if crate::theme::checkbox(ui, &mut on, tl!("Shown")).changed() {
                             *value = if on { 1.0 } else { 0.0 };
                             changed = Some(false);
                         }
                     }
                     Property::Alpha => {
                         let mut pct = *value * 100.0;
-                        if with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).suffix(" %").speed(0.5).max_decimals(0))).named("Alpha").changed() {
+                        if with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).suffix(" %").speed(0.5).max_decimals(0))).named(tl!("Alpha")).changed() {
                             *value = pct / 100.0;
                             changed = Some(true);
                         }

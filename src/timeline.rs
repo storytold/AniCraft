@@ -445,11 +445,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     menus::cmd_item(app, ui, id);
                 }
                 ui.separator();
-                if ui.button("Preview Through Camera").clicked() {
+                if ui.button(tl!("Preview Through Camera")).clicked() {
                     app.toggle_camera_preview();
                     ui.close();
                 }
-                if ui.button("Remove Camera").clicked() {
+                if ui.button(tl!("Remove Camera")).clicked() {
                     app.request("camera.remove", json!({}));
                     ui.close();
                 }
@@ -784,7 +784,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.separator();
             let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
             if here.is_some_and(|k| k.motion.is_some()) {
-                if ui.button("Motion Editor").clicked() {
+                if ui.button(tl!("Motion Editor")).clicked() {
                     app.bottom = BottomTab::MotionEditor;
                     ui.close();
                 }

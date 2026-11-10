@@ -522,7 +522,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                 section(ui, "prefs_timeline", Section::Rule, tl!("Timeline"), None, |ui| {
                     form_row(ui, LW, "Extra start gap", |ui| {
                         with_type(ui, Type::Data, |ui| {
-                            ui.add(egui::DragValue::new(&mut p.timeline_start_gap).range(crate::prefs::GAP_RANGE).speed(0.5).max_decimals(0).suffix(" pt")).set_name("Extra start gap");
+                            ui.add(egui::DragValue::new(&mut p.timeline_start_gap).range(crate::prefs::GAP_RANGE).speed(0.5).max_decimals(0).suffix(" pt")).set_name(tl!("Extra start gap"));
                         });
                     });
                     form_note(ui, LW, text(Type::Caption, tl!("The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom.")));
@@ -558,7 +558,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                                 }
                             })
                             .response
-                            .set_name("Autosave every");
+                            .set_name(tl!("Autosave every"));
                         });
                         form_row(ui, LW, "Or after", |ui| {
                             with_type(ui, Type::Data, |ui| {
