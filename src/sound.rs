@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 pub struct SoundOut {
     player: Arc<Mutex<Player>>,
     failed: Arc<AtomicBool>,
-    #[cfg(feature = "sound-output")]
+    #[cfg(sound_output)]
     stream: Option<cpal::Stream>,
     tried: bool,
     rate: u32,
@@ -33,7 +33,7 @@ impl SoundOut {
         SoundOut {
             player: Arc::new(Mutex::new(Player::new(48_000))),
             failed: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "sound-output")]
+            #[cfg(sound_output)]
             stream: None,
             tried: false,
             rate: 48_000,
@@ -48,7 +48,7 @@ impl SoundOut {
         if !self.tried {
             self.tried = true;
             match open(&self.player, &self.failed) {
-                #[cfg(feature = "sound-output")]
+                #[cfg(sound_output)]
                 Ok((stream, rate)) => {
                     self.stream = Some(stream);
                     self.rate = rate;
@@ -56,7 +56,7 @@ impl SoundOut {
                         *p = Player::new(rate);
                     }
                 }
-                #[cfg(not(feature = "sound-output"))]
+                #[cfg(not(sound_output))]
                 Ok(rate) => self.rate = rate,
                 Err(e) => self.error = Some(e),
             }
@@ -66,9 +66,9 @@ impl SoundOut {
 
     /// The device is open and working.
     fn live(&self) -> bool {
-        #[cfg(feature = "sound-output")]
+        #[cfg(sound_output)]
         let open = self.stream.is_some();
-        #[cfg(not(feature = "sound-output"))]
+        #[cfg(not(sound_output))]
         let open = false;
         open && !self.failed.load(Ordering::Relaxed)
     }
@@ -149,7 +149,7 @@ impl SoundOut {
     }
 }
 
-#[cfg(feature = "sound-output")]
+#[cfg(sound_output)]
 fn open(player: &Arc<Mutex<Player>>, failed: &Arc<AtomicBool>) -> Result<(cpal::Stream, u32), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     let device = cpal::default_host().default_output_device().ok_or("no sound output device")?;
@@ -168,14 +168,14 @@ fn open(player: &Arc<Mutex<Player>>, failed: &Arc<AtomicBool>) -> Result<(cpal::
     Ok((stream, rate))
 }
 
-#[cfg(not(feature = "sound-output"))]
+#[cfg(not(sound_output))]
 fn open(_: &Arc<Mutex<Player>>, _: &Arc<AtomicBool>) -> Result<u32, String> {
-    Err("this build of AniCraft has no sound output".into())
+    Err(if cfg!(target_arch = "wasm32") { "the web version of AniCraft has no sound output yet".into() } else { "this build of AniCraft has no sound output".into() })
 }
 
 /// An output stream whose callback mixes from the player. The lock is held only while one
 /// buffer is mixed; the UI holds it only to change a few fields.
-#[cfg(feature = "sound-output")]
+#[cfg(sound_output)]
 fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(device: &cpal::Device, config: cpal::StreamConfig, player: &Arc<Mutex<Player>>, failed: &Arc<AtomicBool>) -> Result<cpal::Stream, cpal::Error> {
     use cpal::traits::DeviceTrait;
     let channels = usize::from(config.channels);

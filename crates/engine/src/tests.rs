@@ -583,6 +583,10 @@ fn panic_hunt_every_command() {
         json!({"orient": true, "d": "M0 0 C 1e5 -1e5 -1e5 1e5 10 10 Q 5 5 0 0 Z M 9 9 L 1 1"}),
         json!({"orient": "x", "d": 5, "property": "x", "value": 1e6}),
         json!({"orient": false, "d": "M 1e6 1e6 L -1e6 -1e6", "dx": 1e6, "dy": -1e6}),
+        // Motion path points (ADR 0038): ends, repeats and out-of-range anchors, segments.
+        json!({"anchors": [0, 1, 2, 3, u64::MAX], "anchor": 1, "smooth": true, "segment": 1, "t": 0.5}),
+        json!({"anchors": [1, 1, 1], "anchor": u64::MAX, "smooth": false, "segment": u64::MAX, "t": f64::NAN}),
+        json!({"x": 75, "y": 0, "slop": 1000, "anchors": [1], "anchor": 0, "smooth": true, "dx": -0.5, "dy": 3}),
         // Brush strokes: huge tips over long drags, specks, pressure at the limits.
         json!({"points": [[0, 0, 0.0], [99_999, 99_999, 1.0], [-99_999, 5, 0.5]], "size": 2000, "shape": "square", "angle": 1e6, "roundness": 5, "smoothing": 0, "mode": "behind", "unit": 0.001}),
         json!({"points": (0..3000).map(|i| json!([i % 7, (i * 13) % 11, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "size": 0.1, "mode": "fills", "smoothing": 100, "unit": 1000}),

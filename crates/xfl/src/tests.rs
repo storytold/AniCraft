@@ -192,6 +192,9 @@ fn a_fla_archive_imports_the_same() {
     let (doc, _) = crate::import_path(&fla).unwrap();
     assert_eq!(doc.timeline(0).layers.len(), 4);
     assert_eq!(doc.library.len(), 1);
+    let (from_bytes, _) = crate::import_fla(&z).unwrap();
+    assert_eq!((from_bytes.timeline(0).layers.len(), from_bytes.library.len()), (4, 1), "the bytes a browser hands over import the same");
+    assert!(crate::import_fla(b"not a zip").is_err());
     std::fs::remove_file(&fla).ok();
     std::fs::remove_dir(&dir).ok();
 }
@@ -354,4 +357,32 @@ fn odd_shape_hints_are_reported_not_fatal() {
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
     assert!(d.timeline(0).layers[0].keyframes[0].hints.is_empty());
     assert!(report.skipped.contains_key("shape hints missing on the end keyframe"));
+}
+
+#[test]
+fn eases_names_and_loop_modes_the_corpus_found_missing() {
+    let frame = |attrs: &str, inner: &str| format!(r#"<DOMFrame index="0" duration="4" tweenType="motion" {attrs}>{inner}<elements><DOMSymbolInstance libraryItemName="Clip" name="my clip" loop="loop reverse"/></elements></DOMFrame><DOMFrame index="4"><elements/></DOMFrame>"#);
+    let pts = |p: &[(f32, f32)]| p.iter().map(|(x, y)| format!(r#"<Point x="{x}" y="{y}"/>"#)).collect::<String>();
+    let layers = [
+        // Seven points: a curve of two segments, drawn with the slider's ease.
+        frame(r#"hasCustomEase="true" acceleration="30""#, &format!(r#"<tweens><CustomEase target="all">{}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.2, 0.0), (0.3, 0.5), (0.5, 0.5), (0.7, 0.5), (0.8, 1.0), (1.0, 1.0)]))),
+        // One curve per property: also the slider's.
+        frame(r#"hasCustomEase="true" useSingleEaseCurve="false""#, &format!(r#"<tweens><CustomEase target="position">{0}</CustomEase><CustomEase target="rotation">{0}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (1.0, 1.0)]))),
+        // Said to have a custom ease, with none there.
+        frame(r#"hasCustomEase="true""#, ""),
+    ];
+    let layers: String = layers.iter().map(|f| format!(r#"<DOMLayer name="L"><frames>{f}</frames></DOMLayer>"#)).collect();
+    let doc = format!(r#"<DOMDocument><symbols><Include href="Clip.xml"/></symbols><timelines><DOMTimeline name="Scene 1"><layers>{layers}</layers></DOMTimeline></timelines></DOMDocument>"#);
+    let doc: &'static str = Box::leak(doc.into_boxed_str());
+    let clip = r#"<DOMSymbolItem name="Clip"><timeline><DOMTimeline name="Clip"/></timeline></DOMSymbolItem>"#;
+    let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc), ("LIBRARY/Clip.xml", clip)])).unwrap();
+    let eases: Vec<anicraft_doc::Easing> = d.timeline(0).layers.iter().map(|l| l.keyframes[0].tween.unwrap().easing).collect();
+    assert_eq!(eases, [anicraft_doc::Easing::Classic(30.0), anicraft_doc::Easing::Linear, anicraft_doc::Easing::Linear]);
+    assert_eq!(report.skipped.get("custom ease curves (drawn with the simple ease)"), Some(&3));
+    assert_eq!(d.library[0].kind, SymbolKind::MovieClip, "no symbolType: a movie clip");
+    let ElementKind::Symbol { loop_mode, .. } = &d.timeline(0).layers[0].keyframes[0].elements[0].kind else { panic!() };
+    assert_eq!(*loop_mode, LoopMode::Loop, "loop reverse plays forward");
+    assert_eq!(report.skipped.get("reverse loop modes (played forward)"), Some(&3));
+    assert_eq!(d.timeline(0).layers[0].keyframes[0].elements[0].name, "", "not an identifier: left out");
+    assert_eq!(report.skipped.get("instance names actions can't use (left out)"), Some(&3));
 }

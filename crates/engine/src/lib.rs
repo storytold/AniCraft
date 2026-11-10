@@ -32,6 +32,7 @@ pub mod recovery;
 pub mod render_service;
 pub mod params;
 pub mod player;
+pub mod vfs;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
 use anicraft_geom::{Rect, Vec2};
@@ -734,6 +735,8 @@ mod tests_camera;
 mod merge_tests;
 #[cfg(test)]
 mod brush_tests;
+#[cfg(test)]
+mod web_tests;
 #[cfg(test)]
 mod erase_tests;
 #[cfg(test)]

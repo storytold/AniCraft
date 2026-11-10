@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+web-time.workspace = true
 gif.workspace = true
 
 [dev-dependencies]
@@ -27,6 +28,10 @@ gif.workspace = true
 png.workspace = true
 # Plug-in test fixtures written in WebAssembly text (Apache-2.0 WITH LLVM-exception).
 wat = "1.228"
+
+# Runs tests/wasm.rs inside WebAssembly, in Node (ADR 0036; MIT OR Apache-2.0).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [lints]
 workspace = true

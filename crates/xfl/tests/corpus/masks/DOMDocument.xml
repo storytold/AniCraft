@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: masks. A mask at the top of the scene, a mask inside a folder (with a
+     layer in the folder it doesn't mask), a mask inside a symbol, and a mask's artwork that
+     must never draw. parentLayerIndex counts every layer in the list, folders too.
+     Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <symbols>
+    <Include href="Peephole.xml" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Spot" color="#4F80FF" layerType="mask" locked="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMOvalObject x="20" y="20" objectWidth="80" objectHeight="80">
+                  <fill><SolidColor color="#FF0000"/></fill>
+                </DOMOvalObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Stripes" color="#FF4F4F" parentLayerIndex="0" locked="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape><fills><FillStyle index="1"><SolidColor color="#264653"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="!0 400|2600 400|2600 500|0 500|0 400"/><Edge fillStyle1="1" edges="!0 600|2600 600|2600 700|0 700|0 600"/><Edge fillStyle1="1" edges="!0 800|2600 800|2600 900|0 900|0 800"/><Edge fillStyle1="1" edges="!0 1000|2600 1000|2600 1100|0 1100|0 1000"/><Edge fillStyle1="1" edges="!0 1200|2600 1200|2600 1300|0 1300|0 1200"/><Edge fillStyle1="1" edges="!0 1400|2600 1400|2600 1500|0 1500|0 1400"/><Edge fillStyle1="1" edges="!0 1600|2600 1600|2600 1700|0 1700|0 1600"/><Edge fillStyle1="1" edges="!0 1800|2600 1800|2600 1900|0 1900|0 1800"/></edges></DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Inside" color="#4FFF4F" layerType="folder" open="true"/>
+        <DOMLayer name="Window" color="#4FFFFF" layerType="mask" parentLayerIndex="2" locked="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="150" y="20" objectWidth="80" objectHeight="80" topLeftRadius="20">
+                  <fill><SolidColor color="#00FF00"/></fill>
+                </DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Sky" color="#FF4FFF" parentLayerIndex="3" locked="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills>
+                    <FillStyle index="1">
+                      <RadialGradient>
+                        <matrix><Matrix a="0.07" d="0.07" tx="190" ty="60"/></matrix>
+                        <GradientEntry color="#FFE8D6" ratio="0"/>
+                        <GradientEntry color="#6B705C" ratio="1"/>
+                      </RadialGradient>
+                    </FillStyle>
+                  </fills>
+                  <edges><Edge fillStyle1="1" edges="!2800 0|4800 0|4800 2400|2800 2400|2800 0"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Loose" color="#808080" parentLayerIndex="2">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills><FillStyle index="1"><SolidColor color="#CB997E"/></FillStyle></fills>
+                  <edges><Edge fillStyle1="1" edges="!5400 400|6200 1800|4600 1800|5400 400"/></edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Ground" color="#4F4FFF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Peephole" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="1.2" d="1.2" tx="80" ty="145"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Peephole" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="0.8" b="0.4" c="-0.4" d="0.8" tx="240" ty="145"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

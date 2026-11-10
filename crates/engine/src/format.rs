@@ -97,19 +97,19 @@ pub fn from_json(text: &str) -> Result<Document, EngineError> {
 }
 
 pub fn load(path: &std::path::Path) -> Result<Document, EngineError> {
-    let meta = std::fs::metadata(path)?;
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(EngineError::Format(format!("file is {} bytes; the limit is {MAX_FILE_BYTES}", meta.len())));
+    let len = crate::vfs::len(path)?;
+    if len > MAX_FILE_BYTES {
+        return Err(EngineError::Format(format!("file is {len} bytes; the limit is {MAX_FILE_BYTES}")));
     }
-    from_json(&std::fs::read_to_string(path)?)
+    from_json(&crate::vfs::read_to_string(path)?)
 }
 
 pub fn save(doc: &Document, path: &std::path::Path) -> Result<(), EngineError> {
     let json = to_json(doc)?;
     // Write next to the target, then rename: a crash mid-write never corrupts the old file.
     let tmp = path.with_extension("anicraft.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)?;
+    crate::vfs::write(&tmp, json)?;
+    crate::vfs::rename(&tmp, path)?;
     Ok(())
 }
 

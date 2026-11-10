@@ -12,6 +12,54 @@
 
 ## Unreleased
 
+* **Motion path points and moving the whole path** (ADR 0038, the second slice of motion
+  paths). With the Subselection tool, double-click a motion path to add a point (the curve and
+  the motion don't change), and Shift-click to select several anchors. Delete removes them: the
+  path refits through the rest, and the ends stay, because they are where the motion starts and
+  ends. Right-click makes points smooth or corners, or straightens the path. The Pen's
+  Alt-click adds a point to a motion path or to a selected shape. Ctrl-drag (⌘-drag) the path
+  or its object to move the whole path, and Properties › Path start moves it by number; the
+  timing stays exactly. Headless: `motion.add_point`, `motion.delete_points`,
+  `motion.convert_point`, `motion.move_path`, and `anchors` in `motion.info`. Not yet:
+  anchors tied to frames (spatial keys; ADR 0038 explains why), a marquee over path anchors,
+  nudging and transforming a whole path.
+
+* **AniCraft in a web browser** (ADR 0036, first slice; `docs/web.md`). The editor builds for
+  WebAssembly and runs in a page: `scripts/build-web.sh` (or `.ps1`) makes `web/`, which any
+  static server can serve. The module is about 9 MB, 3.3 MB gzipped.
+  * Open and import with the browser's file picker. Save and exports download the file; Save
+    asks for the name once.
+  * Autosave keeps recovery copies in the browser's storage. Work from a tab that closed or
+    crashed is offered at the next start; a tab that is still open is left alone.
+  * Preferences are kept in the browser too, and leaving the page with unsaved work asks first.
+  * Not yet in the browser: sound playback, the GPU stage, video export and plug-in installs.
+    The menu items that can't work there are dimmed and say why.
+  * For developers: engine commands read and write files through `engine::vfs` (the disk on the
+    desktop, memory in a browser). `file.open` takes `unsaved` and `untitled`. Every crate
+    builds for `wasm32-unknown-unknown` in CI, and the engine's tests also run inside
+    WebAssembly in Node.
+
+* **Opening Animate files is checked against a corpus of test files** (XFL import, ADR 0035).
+  Eleven hand-written Animate documents cover everything the importer brings across: shapes
+  and strokes, primitives and groups, gradients, bitmaps, symbols in every loop mode, movie
+  clips and buttons, colour effects, classic and shape tweens with eases and shape hints,
+  masks (also in folders and symbols), guides and motion guides, text, filters, blend modes,
+  scenes, labels and frame scripts. Each is imported, and chosen frames are rendered and
+  compared with reference images, so a change that alters how an imported file looks is
+  caught. Each file is also cut short and garbled thousands of ways to make sure opening a
+  damaged file never crashes.
+
+  Fixed while building it:
+  * Symbols saved without a type now open as movie clips (Animate leaves the default out),
+    not graphics.
+  * Brightness on an instance now comes across (it was dropped).
+  * Instance names of movie clips and buttons now come across, so actions can address them.
+  * A frame comment no longer becomes a frame label.
+  * A custom ease with one curve now comes across exactly.
+  * The import report now also lists what is drawn differently from Animate: square and flat
+    line ends and corners (drawn round), gradient strokes (one colour), repeating and
+    reflecting, off-centre, stretched and linear-RGB gradients, advanced colour effects,
+    reverse loop modes and extra spins on tweens.
 * **Eraser and Eyedropper** (E and I, ADR 0034, first slice).
   * The Eraser sweeps the same tip as the Brush and takes what it covers out of the lines and
     fills on the active layer that were drawn with Object Drawing off. Drawing objects,

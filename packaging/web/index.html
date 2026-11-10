@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- The page the web editor runs in (ADR 0036, docs/web.md). scripts/build-web.sh copies it into
+     web/ beside the generated anicraft.js and anicraft_bg.wasm; src/web.rs looks for the two ids
+     below. Colours are the Graphite theme's chrome and dim text (src/theme.rs). -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>AniCraft</title>
+    <link rel="icon" href="anicraft.png">
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #131316; }
+      canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      #anicraft_loading {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        padding: 2em; text-align: center; color: #b0b0b8; font: 15px/1.5 system-ui, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="anicraft_canvas"></canvas>
+    <div id="anicraft_loading">Loading AniCraft…</div>
+    <noscript>AniCraft needs JavaScript and WebAssembly.</noscript>
+    <script type="module">
+      import init from "./anicraft.js";
+      // init() loads anicraft_bg.wasm and runs the program's main, which starts the editor.
+      init().catch((e) => {
+        console.error(e);
+        document.getElementById("anicraft_loading").textContent = "AniCraft could not start in this browser: " + e;
+      });
+    </script>
+  </body>
+</html>

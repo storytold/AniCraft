@@ -85,6 +85,14 @@ pub fn pen_input(app: &mut App, ui: &egui::Ui, resp: &egui::Response, xf: Xf) {
     let (pressed, down, alt) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.modifiers.alt));
     let Some(pos) = resp.interact_pointer_pos().or_else(|| resp.hover_pos()) else { return };
     let p = xf.to_stage(pos);
+    // Alt-click on a path, with no path being drawn, adds a point to it: the motion path first
+    // (ADR 0038), then a selected shape's outline.
+    if pressed && resp.hovered() && alt && app.pen.as_ref().is_none_or(|pen| pen.knots.is_empty()) {
+        app.pen = None;
+        if crate::motion_path::pen_alt_click(app, pos, xf) || add_point_on_selected(app, pos, xf) {
+            return;
+        }
+    }
     if pressed && resp.hovered() {
         let tol = PICK * xf.unit();
         let pen = app.pen.get_or_insert_with(PenPath::default);
@@ -319,15 +327,23 @@ pub fn subselect_click(app: &mut App, at: Pos2, shift: bool, xf: Xf) {
 
 /// Double-click on a selected shape's outline adds a point there and selects it.
 pub fn subselect_double_click(app: &mut App, at: Pos2, xf: Xf) {
+    add_point_on_selected(app, at, xf);
+}
+
+/// Adds a point where screen point `at` is on a selected shape's outline and selects it (the
+/// Subselection double-click, the Pen's Alt-click). False when it wasn't on one.
+fn add_point_on_selected(app: &mut App, at: Pos2, xf: Xf) -> bool {
     let sp = xf.to_stage(at);
     for (id, _, _) in selected_shapes(app) {
         let r = app.s.execute("path.add_point", &json!({"id": id.0, "x": sp.x, "y": sp.y, "slop": PICK * xf.unit()}));
         if let Ok(v) = r {
             app.points = v["cmd"].as_u64().map(|c| vec![(id, c as usize, ANCHOR)]).unwrap_or_default();
-            app.status_ok("Added a point. Ctrl+Z to undo.");
-            return;
+            app.motion_anchors.clear();
+            app.status_ok(format!("Added a point. {} to undo.", crate::platform::shortcut_label("Ctrl+Z")));
+            return true;
         }
     }
+    false
 }
 
 /// Anchors in the point selection, grouped per element.

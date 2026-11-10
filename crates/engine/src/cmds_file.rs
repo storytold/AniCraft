@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
         CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{which?: demo (default) | interactive (a menu with a Play button, for Test Movie)}", mutates: false, run: new_sample },
-        CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path}", mutates: false, run: open },
+        CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path, unsaved? (opens it as unsaved work: a restored copy), untitled? (with no file name, so Save asks for one)}", mutates: false, run: open },
         CommandSpec { id: "file.save", label: "Save", menu: "File", shortcut: Some("Ctrl+S"), params: "{path?, confirm?}", mutates: false, run: save },
         CommandSpec {
             id: "file.save_as",
@@ -146,14 +146,14 @@ fn new_sample(s: &mut Session, p: &Value) -> Result<Value> {
 /// Whether `path` is an Animate document: a `.fla` archive, an `.xfl` file or an XFL folder.
 pub fn is_animate(path: &std::path::Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    matches!(ext.as_deref(), Some("fla" | "xfl")) || (path.is_dir() && path.join("DOMDocument.xml").is_file())
+    matches!(ext.as_deref(), Some("fla" | "xfl")) || (crate::vfs::is_dir(path) && crate::vfs::is_file(&path.join("DOMDocument.xml")))
 }
 
 /// Whether `path` is a Moho document: a `.moho` package, a bare `.mohoproj` file, or an
 /// extracted folder holding `Project.mohoproj`.
 pub fn is_moho(path: &std::path::Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    matches!(ext.as_deref(), Some("moho" | "mohoproj")) || (path.is_dir() && path.join(anicraft_mohoproj_import::PROJECT_ENTRY).is_file())
+    matches!(ext.as_deref(), Some("moho" | "mohoproj")) || (crate::vfs::is_dir(path) && crate::vfs::is_file(&path.join(anicraft_mohoproj_import::PROJECT_ENTRY)))
 }
 
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
@@ -170,8 +170,24 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         info["missing_fonts"] = json!(report.missing_fonts);
         return Ok(info);
     }
+    let unsaved = opt_bool(p, "unsaved")?.unwrap_or(false);
+    let untitled = opt_bool(p, "untitled")?.unwrap_or(false);
     if is_animate(&path) {
-        let (doc, report) = anicraft_xfl::import_path(&path).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+        // Imported, not adopted: the document is untitled, so Save asks for a new .anicraft
+        // name and never writes over the Animate file.
+        let fla = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fla")) && crate::vfs::is_file(&path);
+        let imported = if fla {
+            // Through `vfs`, so an archive the browser handed over opens too (ADR 0036).
+            if crate::vfs::len(&path)? > anicraft_xfl::MAX_FLA_BYTES {
+                return Err(EngineError::Format(format!("{} is too large to open", path.display())));
+            }
+            anicraft_xfl::import_fla(&crate::vfs::read(&path)?)
+        } else if crate::vfs::in_memory() {
+            return Err(EngineError::Param("an XFL document is a folder, which a web browser can't hand over: open the .fla instead".into()));
+        } else {
+            anicraft_xfl::import_path(&path)
+        };
+        let (doc, report) = imported.map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
         s.replace_document(doc, None);
         let mut info = s.info();
         info["imported"] = json!(path.display().to_string());
@@ -181,7 +197,10 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(info);
     }
     let doc = format::load(&path)?;
-    s.replace_document(doc, Some(path));
+    s.replace_document(doc, (!untitled).then_some(path));
+    if unsaved {
+        s.mark_unsaved();
+    }
     Ok(s.info())
 }
 
@@ -216,7 +235,7 @@ fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
     let frame = opt_u32(p, "frame")?.unwrap_or(s.frame);
     // `frame` is within the current scene; the renderer takes movie frames.
     let bytes = render_png(&s.doc, s.doc.scene_start(s.scene).saturating_add(frame), scale_param(p)?)?;
-    std::fs::write(&path, &bytes)?;
+    crate::vfs::write(&path, &bytes)?;
     Ok(json!({"written": path.display().to_string(), "bytes": bytes.len(), "frame": frame}))
 }
 
@@ -236,11 +255,11 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     if !matches!(ext.as_deref(), Some("svg" | "png" | "jpg" | "jpeg")) {
         return Err(EngineError::Param("Import to Stage reads SVG drawings, PNG or JPEG images, and WAV, Ogg Vorbis or MP3 sounds".into()));
     }
-    let size = std::fs::metadata(&path)?.len();
+    let size = crate::vfs::len(&path)?;
     if size > MAX_IMPORT_BYTES {
         return Err(EngineError::Format(format!("{} is too large to import", path.display())));
     }
-    let bytes = std::fs::read(&path)?;
+    let bytes = crate::vfs::read(&path)?;
     let (drawing, bitmap) = if ext.as_deref() == Some("svg") {
         (anicraft_svg::import(&bytes).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?, None)
     } else {
@@ -393,7 +412,7 @@ fn export_svg(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param(format!("frame {} is past the end (the timeline has {} frames)", frame + 1, s.frame_count())));
     }
     let svg = frame_svg(&s.doc, s.doc.scene_start(s.scene).saturating_add(frame));
-    std::fs::write(&path, svg.as_bytes())?;
+    crate::vfs::write(&path, svg.as_bytes())?;
     Ok(json!({"written": path.display().to_string(), "bytes": svg.len(), "frame": frame}))
 }
 
@@ -477,8 +496,8 @@ fn export_sprite_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     });
     let json_path = path.with_extension("json");
     let text = serde_json::to_string_pretty(&atlas).map_err(|e| EngineError::Format(e.to_string()))?;
-    std::fs::write(&path, &png)?;
-    std::fs::write(&json_path, text)?;
+    crate::vfs::write(&path, &png)?;
+    crate::vfs::write(&json_path, text)?;
     Ok(json!({"written": path.display().to_string(), "map": json_path.display().to_string(), "frames": n, "columns": cols, "rows": rows, "width": sheet_w, "height": sheet_h}))
 }
 
@@ -497,6 +516,10 @@ fn ffmpeg_program(p: &Value) -> Result<std::ffi::OsString> {
 fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
     use std::io::Write;
     let path = PathBuf::from(str_req(p, "path")?);
+    if crate::vfs::in_memory() {
+        // ffmpeg writes the file itself, and a web browser can't start it (ADR 0036).
+        return Err(EngineError::State("video export runs ffmpeg, which can't run in a web browser: export an animated GIF, a PNG sequence or an HTML page instead".into()));
+    }
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     // Sound is encoded by the same ffmpeg: Opus in WebM (royalty-free), AAC in MP4.
     let (codec, audio_codec): (&[&str], &[&str]) = match ext.as_deref() {
@@ -586,7 +609,7 @@ fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
         let tail: Vec<&str> = log.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
         return Err(EngineError::Format(format!("ffmpeg could not make the video ({status}): {}", if tail.is_empty() { "no message".to_string() } else { tail.join(" | ") })));
     }
-    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let bytes = crate::vfs::len(&path).unwrap_or(0);
     Ok(json!({"written": path.display().to_string(), "frames": written, "bytes": bytes, "width": w, "height": h, "fps": fps, "audio": track.is_some()}))
 }
 
@@ -600,19 +623,22 @@ fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("'to' must not be before 'from'".into()));
     }
     let scale = scale_param(p)?;
-    std::fs::create_dir_all(&dir)?;
+    crate::vfs::create_dir_all(&dir)?;
     // Frames are independent: render and encode them in parallel (each render is itself
-    // row-parallel; rayon balances both levels). Output is identical to a serial export.
+    // row-parallel; rayon balances both levels), a batch at a time so memory stays bounded.
+    // Output is identical to a serial export. Files are written here, on the command's thread,
+    // where `vfs` knows whether they go to disk or to the browser (ADR 0036).
     let doc = &s.doc;
-    let files: Vec<String> = (from..=to)
-        .into_par_iter()
-        .map(|f| {
-            let path = dir.join(format!("frame_{:05}.png", f + 1));
-            std::fs::write(&path, render_png(doc, f, scale)?)?;
-            Ok(path.display().to_string())
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(json!({"frames": files.len(), "dir": dir.display().to_string()}))
+    let mut files = 0usize;
+    let frames: Vec<u32> = (from..=to).collect();
+    for batch in frames.chunks(64) {
+        let pngs = batch.par_iter().map(|&f| render_png(doc, f, scale)).collect::<Result<Vec<_>>>()?;
+        for (f, png) in batch.iter().zip(pngs) {
+            crate::vfs::write(&dir.join(format!("frame_{:05}.png", f + 1)), png)?;
+            files += 1;
+        }
+    }
+    Ok(json!({"frames": files, "dir": dir.display().to_string()}))
 }
 
 /// Largest GIF we produce (frames × pixels), keeping memory and time bounded.
@@ -643,7 +669,7 @@ fn export_lottie(s: &mut Session, p: &Value) -> Result<Value> {
     let background = opt_bool(p, "background")?.unwrap_or(false);
     let name: String = path.file_stem().map_or_else(|| "AniCraft".into(), |n| n.to_string_lossy().chars().take(128).collect());
     let out = anicraft_render::lottie::to_lottie(&s.doc, &name, from, to, background);
-    std::fs::write(&path, out.json.as_bytes())?;
+    crate::vfs::write(&path, out.json.as_bytes())?;
     let summary = if out.report.is_empty() {
         String::new()
     } else {
@@ -663,9 +689,9 @@ fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
         _ => stem,
     };
     let opts = anicraft_render::html::HtmlOptions { title, sound: opt_bool(p, "sound")?.unwrap_or(true), fit: opt_bool(p, "fit")?.unwrap_or(true) };
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     let out = anicraft_render::html::to_html(&s.doc, &opts).map_err(EngineError::Param)?;
-    std::fs::write(&path, out.html.as_bytes())?;
+    crate::vfs::write(&path, out.html.as_bytes())?;
     let summary = if out.report.is_empty() {
         String::new()
     } else {
@@ -732,7 +758,7 @@ fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {
             enc.write_frame(fr).map_err(|e| EngineError::Format(e.to_string()))?;
         }
     }
-    std::fs::write(&path, &bytes)?;
+    crate::vfs::write(&path, &bytes)?;
     Ok(json!({"written": path.display().to_string(), "frames": n, "bytes": bytes.len(), "width": w, "height": h}))
 }
 

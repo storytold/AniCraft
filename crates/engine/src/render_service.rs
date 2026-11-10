@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use web_time::Instant;
 
 /// One image to render: a whole frame or one stage tile.
 #[derive(Clone)]

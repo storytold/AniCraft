@@ -290,7 +290,7 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         jobs.into_par_iter().for_each(|(d, s)| d.copy_from_slice(s));
     }
     // Tens of thousands of small buffers: free them on the pool, off the frame's path.
-    rayon::spawn(move || drop((locals, rows)));
+    anicraft_render::drop_in_background((locals, rows));
 
     // Paints: a fixed record per op, then the gradient tables, then the layers' pixels.
     let mut paints: Vec<[f32; 4]> = Vec::with_capacity(PAINT_VEC4S * ops.len());
