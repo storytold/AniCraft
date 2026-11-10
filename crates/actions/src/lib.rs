@@ -6,6 +6,8 @@
 //! few instance properties. Every front end speaks it: frame actions edited in the Actions
 //! panel, WebAssembly frame scripts (which emit actions through the plug-in ABI) and, later, the
 //! ActionScript subset and the HTML canvas exporter. The player in `anicraft-doc` runs it.
+//! Scripts in another language that AniCraft keeps but doesn't run yet ([`SourceScript`], ADR
+//! 0013 tier 1) sit beside the actions in [`FrameScript`].
 //!
 //! This crate knows nothing about documents: targets are name paths and frames are numbers or
 //! labels, resolved by the player when an action runs. Frames are 0-based, as everywhere in
@@ -13,6 +15,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Most actions in one list (a keyframe's, or one event handler's).
 pub const MAX_ACTIONS: usize = 256;
@@ -494,18 +497,97 @@ impl PluginScript {
     }
 }
 
-/// What runs when the playhead enters a keyframe: a list of actions, or a plug-in's entry
-/// point (a frame script). ActionScript source kept verbatim (ADR 0013 tier 1) becomes a
-/// third kind later.
+/// Longest kept script, in bytes of UTF-8 (1 MiB: far more than any frame script people
+/// write by hand, small enough that every edit can copy it).
+pub const MAX_SOURCE_BYTES: usize = 1 << 20;
+/// Longest linkage or document class name (a dotted, package-qualified name).
+pub const MAX_CLASS_CHARS: usize = 256;
+
+/// The language a kept script is written in. The names are said only to tell people what a
+/// script is written in (`docs/legal/compliance.md`); the feature itself is "frame scripts".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Language {
+    /// ActionScript 3.0, the only language current Animate documents run.
+    #[default]
+    #[serde(rename = "actionscript3")]
+    ActionScript3,
+    /// ActionScript 1.0 and 2.0, from older documents.
+    #[serde(rename = "actionscript1or2")]
+    ActionScript1or2,
+    /// Anything else (kept as text).
+    #[serde(rename = "other")]
+    Other,
+}
+
+impl Language {
+    pub const ALL: [Language; 3] = [Language::ActionScript3, Language::ActionScript1or2, Language::Other];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Language::ActionScript3 => "actionscript3",
+            Language::ActionScript1or2 => "actionscript1or2",
+            Language::Other => "other",
+        }
+    }
+    /// As the app shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Language::ActionScript3 => "ActionScript 3.0",
+            Language::ActionScript1or2 => "ActionScript 1.0 & 2.0",
+            Language::Other => "Other language",
+        }
+    }
+    pub fn from_key(s: &str) -> Option<Language> {
+        let k = s.trim().to_ascii_lowercase();
+        Language::ALL.into_iter().find(|l| l.key() == k)
+    }
+}
+
+/// A script kept verbatim with the document (ADR 0013 tier 1): its text exactly as written,
+/// and its language. AniCraft shows and edits it; nothing runs it yet.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceScript {
+    #[serde(default)]
+    pub language: Language,
+    #[serde(default)]
+    pub text: String,
+}
+
+impl SourceScript {
+    pub fn new(language: Language, text: impl Into<String>) -> SourceScript {
+        SourceScript { language, text: text.into() }
+    }
+    pub fn check(&self) -> Result<(), String> {
+        if self.text.trim().is_empty() {
+            return Err("a script needs some text".into());
+        }
+        if self.text.len() > MAX_SOURCE_BYTES {
+            return Err(format!("a script is at most {} KiB", MAX_SOURCE_BYTES / 1024));
+        }
+        Ok(())
+    }
+    /// Lines of text (a trailing newline doesn't start another).
+    pub fn lines(&self) -> usize {
+        self.text.lines().count()
+    }
+}
+
+/// What runs when the playhead enters a keyframe: a list of actions, a plug-in's entry point
+/// (a frame script), or a script kept verbatim that doesn't run yet (ADR 0013 tier 1). One
+/// field keeps "one of these" true by construction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrameScript {
     Actions(Vec<Action>),
     Plugin(PluginScript),
+    /// Shared: copying the keyframe, an undo snapshot or the render thread's copy doesn't copy
+    /// the text.
+    Source(Arc<SourceScript>),
 }
 
 impl FrameScript {
-    /// Repairs a loaded script; `false` when nothing is left of it.
+    /// Repairs a loaded script; `false` when nothing is left of it. A kept script is never cut
+    /// (that would change its code): one too long or empty is dropped whole.
     pub fn sanitize(&mut self) -> bool {
         match self {
             FrameScript::Actions(list) => {
@@ -513,21 +595,51 @@ impl FrameScript {
                 !list.is_empty()
             }
             FrameScript::Plugin(p) => p.check().is_ok(),
+            FrameScript::Source(s) => s.check().is_ok(),
+        }
+    }
+    /// Whether loading would repair it (so loading un-shares only what it must).
+    pub fn needs_repair(&self) -> bool {
+        match self {
+            FrameScript::Actions(a) => a.is_empty() || check_actions(a).is_err(),
+            FrameScript::Plugin(p) => p.check().is_err(),
+            FrameScript::Source(s) => s.check().is_err(),
         }
     }
     /// The actions, when it is a list.
     pub fn actions(&self) -> &[Action] {
         match self {
             FrameScript::Actions(a) => a,
-            FrameScript::Plugin(_) => &[],
+            FrameScript::Plugin(_) | FrameScript::Source(_) => &[],
+        }
+    }
+    /// The kept script, when it is one.
+    pub fn source(&self) -> Option<&SourceScript> {
+        match self {
+            FrameScript::Source(s) => Some(s),
+            FrameScript::Actions(_) | FrameScript::Plugin(_) => None,
         }
     }
     pub fn describe(&self) -> String {
         match self {
             FrameScript::Actions(a) => a.iter().map(Action::describe).collect::<Vec<_>>().join("; "),
             FrameScript::Plugin(p) => format!("Frame script {} · {}", p.id, p.entry),
+            FrameScript::Source(s) => {
+                let n = s.lines();
+                format!("Script in {} ({n} {}), kept, not run", s.language.label(), if n == 1 { "line" } else { "lines" })
+            }
         }
     }
+}
+
+/// A class name as scripts write it: identifiers (letters, digits, `_`, `$`; not starting with
+/// a digit) joined by dots (`com.example.Hero`), at most [`MAX_CLASS_CHARS`] characters.
+pub fn valid_class_name(s: &str) -> bool {
+    let ident = |p: &str| {
+        let mut c = p.chars();
+        c.next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$') && c.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    };
+    !s.is_empty() && s.chars().count() <= MAX_CLASS_CHARS && s.split('.').all(ident)
 }
 
 /// An instance name actions can address: 1-64 ASCII letters, digits, `_` or `$`, not starting
@@ -631,5 +743,41 @@ mod tests {
         assert!(!bad.sanitize());
         let a = FrameScript::Actions(vec![Action::Stop { target: Target::this() }, Action::GotoAndPlay { target: Target::new("hero"), frame: FrameRef::Number(4), scene: None }]);
         assert_eq!(a.describe(), "Stop; Go to frame 5 and play (hero)");
+    }
+
+    #[test]
+    fn kept_scripts_read_and_write_verbatim() {
+        let text = "stop();\r\n// “quoted” \t tab\nhero_mc.gotoAndPlay(\"run\");\n";
+        let s = FrameScript::Source(Arc::new(SourceScript::new(Language::ActionScript3, text)));
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v, json!({"source": {"language": "actionscript3", "text": text}}));
+        let back: FrameScript = serde_json::from_value(v).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.source().unwrap().text, text, "byte for byte");
+        assert_eq!(s.describe(), "Script in ActionScript 3.0 (3 lines), kept, not run");
+        assert!(s.actions().is_empty() && !s.needs_repair());
+        // The language defaults to ActionScript 3.0; unknown ones are refused.
+        let d: SourceScript = serde_json::from_value(json!({"text": "x"})).unwrap();
+        assert_eq!(d.language, Language::ActionScript3);
+        assert!(serde_json::from_value::<SourceScript>(json!({"language": "cobol", "text": "x"})).is_err());
+        for l in Language::ALL {
+            assert_eq!(Language::from_key(l.key()), Some(l));
+            assert_eq!(serde_json::to_value(l).unwrap(), json!(l.key()));
+        }
+        // Empty or oversized scripts are dropped whole, never cut.
+        let mut empty = FrameScript::Source(Arc::new(SourceScript::new(Language::Other, " \n ")));
+        assert!(empty.needs_repair() && !empty.sanitize());
+        let mut huge = FrameScript::Source(Arc::new(SourceScript::new(Language::Other, "x".repeat(MAX_SOURCE_BYTES + 1))));
+        assert!(!huge.sanitize());
+    }
+
+    #[test]
+    fn class_names_are_dotted_identifiers() {
+        for ok in ["Hero", "com.example.Hero", "_Main", "$x.Y2", "Größe"] {
+            assert!(valid_class_name(ok), "{ok}");
+        }
+        for bad in ["", "1Hero", "com..Hero", "Hero.", "a b", "a-b", &"a".repeat(MAX_CLASS_CHARS + 1)] {
+            assert!(!valid_class_name(bad), "{bad:?}");
+        }
     }
 }

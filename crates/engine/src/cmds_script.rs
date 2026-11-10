@@ -1,0 +1,139 @@
+//! Kept scripts (ADR 0013 tier 1): frame scripts written in another language (ActionScript, as
+//! Animate documents bring them), symbol linkage classes and the document class, kept verbatim
+//! with the document. Nothing runs them yet: Test Movie, rendering and every export skip them.
+//!
+//! `script.set / clear / list` edit and list a keyframe's kept script; `script.set_class`
+//! sets a symbol's linkage class or the document class. A keyframe holds actions, a plug-in
+//! frame script *or* a kept script (one `Keyframe.script`), so setting one replaces the other,
+//! as one undo step.
+
+use crate::cmds_actions::{Scope, keyframe_in};
+use crate::params::*;
+use crate::{CommandSpec, EngineError, Result, Session};
+use anicraft_doc::actions::{self, FrameScript, Language, SourceScript};
+use anicraft_doc::{Linkage, SymbolId};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+pub fn specs() -> Vec<CommandSpec> {
+    let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
+    vec![
+        c("script.set", "Set Frame Script", "", None, "{text?: the script, verbatim (\"\" clears; at most 1 MiB), language?: actionscript3|actionscript1or2|other (default: the script's, else actionscript3), symbol?: id, layer?, frame?} keeps a script on the keyframe at the frame (it replaces actions there); it is kept with the document and doesn't run", true, set as crate::RunFn),
+        c("script.clear", "Clear Frame Script", "", None, "{symbol?, layer?, frame?} removes the keyframe's kept script (actions are left alone: actions.clear)", true, clear),
+        c("script.list", "List Frame Scripts", "", None, "{text?: bool (default true)} every kept script in every scene and symbol, with its text, plus symbol linkage classes and the document class", false, list),
+        c("script.set_class", "Set Script Class", "", None, "{symbol?: id (default: the document), class: dotted class name (\"\" clears), base?: the class it extends} sets a symbol's linkage class, or the document class; kept as text, not run", true, set_class),
+    ]
+}
+
+fn language(p: &Value) -> Result<Option<Language>> {
+    match opt_str(p, "language")? {
+        None => Ok(None),
+        Some(k) => Language::from_key(k).map(Some).ok_or_else(|| EngineError::Param("param 'language' must be actionscript3, actionscript1or2 or other".into())),
+    }
+}
+
+/// What a keyframe held before a kept script replaced it.
+fn what(script: &Option<FrameScript>) -> Value {
+    match script {
+        Some(FrameScript::Actions(_)) => json!("actions"),
+        Some(FrameScript::Plugin(_)) => json!("plugin"),
+        Some(FrameScript::Source(_)) => json!("script"),
+        None => Value::Null,
+    }
+}
+
+fn set(s: &mut Session, p: &Value) -> Result<Value> {
+    let lang = language(p)?;
+    let text = match p.get("text") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(_) => return Err(EngineError::Param("param 'text' must be a string".into())),
+    };
+    if text.is_none() && lang.is_none() {
+        return Err(EngineError::Param("pass 'text' (the script), or 'language' to change a kept script's".into()));
+    }
+    if let Some(t) = &text
+        && t.len() > actions::MAX_SOURCE_BYTES
+    {
+        return Err(EngineError::Param(format!("a script is at most {} KiB", actions::MAX_SOURCE_BYTES / 1024)));
+    }
+    let (lid, k) = keyframe_in(s, p, Scope::Keeps)?;
+    let before = what(&k.script);
+    let old = k.script.as_ref().and_then(FrameScript::source).cloned();
+    let text = match text {
+        Some(t) => t,
+        None => old.as_ref().map(|o| o.text.clone()).ok_or_else(|| EngineError::State(format!("the keyframe at frame {} keeps no script to change the language of", k.start + 1)))?,
+    };
+    if text.trim().is_empty() {
+        // An empty script clears it (not actions that are there).
+        let cleared = old.is_some();
+        if cleared {
+            k.script = None;
+        }
+        return Ok(json!({"layer": lid.0, "keyframe": k.start, "cleared": u32::from(cleared)}));
+    }
+    let script = SourceScript::new(lang.or(old.map(|o| o.language)).unwrap_or_default(), text);
+    script.check().map_err(EngineError::Param)?;
+    let out = json!({"layer": lid.0, "keyframe": k.start, "language": script.language.key(), "lines": script.lines(), "bytes": script.text.len(), "replaced": if before == json!("script") { Value::Null } else { before }});
+    k.script = Some(FrameScript::Source(Arc::new(script)));
+    Ok(out)
+}
+
+fn clear(s: &mut Session, p: &Value) -> Result<Value> {
+    let (lid, k) = keyframe_in(s, p, Scope::Keeps)?;
+    let had = matches!(k.script, Some(FrameScript::Source(_)));
+    if had {
+        k.script = None;
+    }
+    Ok(json!({"layer": lid.0, "keyframe": k.start, "cleared": u32::from(had)}))
+}
+
+fn list(s: &mut Session, p: &Value) -> Result<Value> {
+    let with_text = opt_bool(p, "text")?.unwrap_or(true);
+    let mut frames = Vec::new();
+    let timelines = s.doc.scenes.iter().enumerate().map(|(i, sc)| (json!({"scene": i}), sc.name.as_str(), &sc.timeline)).chain(s.doc.library.iter().map(|sym| (json!({"symbol": sym.id.0}), sym.name.as_str(), &sym.timeline)));
+    for (at, name, tl) in timelines {
+        for l in &tl.layers {
+            for k in &l.keyframes {
+                let Some(src) = k.script.as_ref().and_then(FrameScript::source) else { continue };
+                let mut v = json!({"timeline": name, "layer": l.id.0, "layer_name": l.name, "frame": k.start, "label": k.label, "language": src.language.key(), "lines": src.lines(), "bytes": src.text.len()});
+                if with_text {
+                    v["text"] = json!(src.text);
+                }
+                if let (Some(o), Some(e)) = (v.as_object_mut(), at.as_object()) {
+                    o.extend(e.clone());
+                }
+                frames.push(v);
+            }
+        }
+    }
+    let classes: Vec<Value> = s.doc.library.iter().filter_map(|sym| sym.linkage.as_ref().map(|l| json!({"symbol": sym.id.0, "name": sym.name, "class": l.class, "base": l.base}))).collect();
+    Ok(json!({"frames": frames, "classes": classes, "document_class": s.doc.document_class}))
+}
+
+fn set_class(s: &mut Session, p: &Value) -> Result<Value> {
+    let class = str_req(p, "class")?.trim().to_string();
+    let base = opt_str(p, "base")?.unwrap_or("").trim().to_string();
+    let linkage = (!class.is_empty()).then(|| Linkage { class: class.clone(), base: base.clone() });
+    if let Some(l) = &linkage {
+        l.check().map_err(EngineError::Param)?;
+    } else if !base.is_empty() {
+        return Err(EngineError::Param("a base class needs a class: pass 'class' too".into()));
+    }
+    match opt_u64(p, "symbol")?.map(SymbolId) {
+        None => {
+            if !base.is_empty() {
+                return Err(EngineError::Param("the document class has no base class here: pass 'symbol' for a symbol's linkage".into()));
+            }
+            s.doc.document_class = class.clone();
+            Ok(json!({"document_class": class}))
+        }
+        Some(id) => {
+            let sym = s.doc.library.iter_mut().find(|x| x.id == id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
+            if sym.linkage != linkage {
+                Arc::make_mut(sym).linkage = linkage;
+            }
+            Ok(json!({"symbol": id.0, "class": class, "base": base}))
+        }
+    }
+}

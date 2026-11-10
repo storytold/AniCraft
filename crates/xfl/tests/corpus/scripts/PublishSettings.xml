@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The publish profile's script settings: the language (3) and the document class. Other
+     settings are left out. Self-authored. -->
+<flash_profiles>
+  <flash_profile version="1.0" name="Default" current="true">
+    <PublishFormatProperties enabled="true">
+      <flash>1</flash>
+    </PublishFormatProperties>
+    <PublishFlashProperties enabled="true">
+      <ActionScriptVersion>3</ActionScriptVersion>
+      <DocumentClass>com.example.Main</DocumentClass>
+    </PublishFlashProperties>
+  </flash_profile>
+</flash_profiles>

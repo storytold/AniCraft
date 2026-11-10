@@ -255,7 +255,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
 
     // ---- tools ----------------------------------------------------------------------------
-    let (shift, alt, space) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.key_down(Key::Space)));
+    let (shift, alt, space, command) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.key_down(Key::Space), i.modifiers.command));
     let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
     app.cursor_stage = pointer.filter(|p| canvas.contains(*p)).map(to_stage);
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
@@ -284,6 +284,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         crate::motion_path::hit(app, &shown, p, xf, open).map(|g| (shown, g))
     };
     let mp_hot = if mp_tools && app.drag == Drag::None { pointer.and_then(|p| mp_grab(app, p)).map(|(_, g)| g) } else { None };
+    // Ctrl (⌘) with the path or its object under the pointer: a drag moves the whole path
+    // (ADR 0038). The Pen with Alt over the path adds a point there.
+    let mp_move = mp_tools && command && app.drag == Drag::None && pointer.is_some_and(|p| crate::motion_path::move_hit(app, p, xf));
+    let pen_hot = if app.tool == Tool::Pen && alt && !panning && !preview && app.drag == Drag::None { pointer.and_then(|p| crate::motion_path::pen_hot(app, p, xf)) } else { None };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
@@ -293,7 +297,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Tool::Camera => CursorIcon::Grab,
             _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
             _ if matches!(app.drag, Drag::MotionPath { .. }) => CursorIcon::Grabbing,
+            _ if mp_move || matches!(app.drag, Drag::MotionMove { .. }) => CursorIcon::Move,
             _ if mp_hot.is_some() => CursorIcon::Grab,
+            _ if pen_hot.is_some() => CursorIcon::Copy,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
@@ -342,6 +348,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else if let Some(m) = hint_at(press) {
             app.s.begin_gesture("Move Shape Hint");
             Drag::Hint { index: m.index, side: m.side }
+        } else if mp_tools && command && crate::motion_path::move_hit(app, press, xf) {
+            crate::motion_path::move_start(app, to_v(sp))
         } else if let Some((shown, grab)) = mp_tools.then(|| mp_grab(app, press)).flatten() {
             crate::motion_path::drag_start(app, shown, grab, to_v(sp))
         } else {
@@ -434,6 +442,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let (grab, start) = (*grab, *start);
                 crate::motion_path::drag_to(app, grab, start, c, alt);
             }
+            (Drag::MotionMove { last }, Some(c)) => {
+                let d = c - *last;
+                *last = c;
+                crate::motion_path::move_to(app, Vec2::new(d.x, d.y));
+            }
             (Drag::Hint { index, side }, Some(c)) => {
                 // Live: the hint snaps to the nearest edge as the pointer moves.
                 let (index, side) = (*index, *side);
@@ -466,7 +479,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.drop_raw();
                 app.s.end_gesture();
             }
-            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
+            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
@@ -502,7 +515,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let sp = to_stage(p);
             match app.tool {
                 Tool::Subselect if !panning => {
-                    if !crate::motion_path::click(app, p, xf) {
+                    if !crate::motion_path::click(app, p, xf, shift) {
                         crate::pathtools::subselect_click(app, p, shift, xf);
                     }
                 }
@@ -562,7 +575,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     {
         let sp = to_stage(p);
         let under = app.s.hit_test(to_v(sp), 3.0 / zoom).map(|(_, e)| e);
-        if under.is_none_or(|e| !app.s.selection.contains(&e)) {
+        // On the motion path, the menu is for its points: the selection stays.
+        let on_path = !panning && crate::motion_path::secondary_click(app, p, xf);
+        if !on_path && under.is_none_or(|e| !app.s.selection.contains(&e)) {
             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": false}));
         }
     }
@@ -583,13 +598,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && !preview
         && resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
+        // On the motion path first, else on a selected shape's outline.
+        && !crate::motion_path::double_click(app, p, xf)
     {
         crate::pathtools::subselect_double_click(app, p, xf);
     }
 
     resp.context_menu(|ui| {
         ui.set_min_width(220.0);
-        if crate::shape_hints::menu(app, ui) || crate::pathtools::point_menu(app, ui) {
+        if crate::shape_hints::menu(app, ui) || crate::motion_path::menu(app, ui) || crate::pathtools::point_menu(app, ui) {
             return;
         }
         if app.s.selection.is_empty() {
@@ -678,7 +695,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     RenderMode::Auto => app.stage_cache.ms <= IMMEDIATE_BUDGET_MS,
                 };
             let batch: Vec<FrameJob> = missing.iter().map(|&i| jobs[i].1.clone()).collect();
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let results: Vec<Option<std::sync::Arc<FrameImage>>> = if immediate { svc.render_now_batch(batch).into_iter().map(Some).collect() } else { svc.request_batch(batch) };
             let wall = started.elapsed().as_secs_f32() * 1000.0;
             let mut ms = 0.0f32;
@@ -872,7 +889,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     {
         let hot = match app.drag {
             Drag::MotionPath { grab, .. } => Some(grab),
-            _ => mp_hot,
+            _ => mp_hot.or(pen_hot),
         };
         crate::motion_path::draw(app, &painter, &shown, xf, hot);
     }

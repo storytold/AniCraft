@@ -2,6 +2,8 @@
 /target/
 # release packages (packaging/*/package.*)
 /dist/
+# the web editor built by scripts/build-web.sh (ADR 0036)
+/web/
 # sample plug-ins built by examples/plugins/build.sh (sources are committed, binaries never)
 /examples/plugins/dist/
 /examples/plugins/target/

@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+* **Scripts in Animate documents are kept** (ADR 0013 tier 1). Opening an `.fla` or XFL
+  file used to drop its frame scripts. Now they come across as they were written, together
+  with symbol linkage classes and the document class. Nothing runs them yet.
+  * The scripts are frame scripts in scenes and in every symbol, in the language the
+    document's publish settings name (ActionScript 3.0 unless they say otherwise). The
+    import report lists them as "kept, not run". Scripts on instances, from older documents,
+    are reported as left out.
+  * Actions panel (F9): a keyframe's *Type* is Actions, Plug-in or **Script**. The Script view
+    shows the code in a monospace editor with line numbers, shows its language, and edits it
+    live. A burst of typing undoes in one step. Keyframes with a script get the same "a" on
+    the timeline as keyframes with actions.
+  * Properties shows a symbol's linkage *Class* and the document *Class* in documents that use
+    scripts. Test Movie says how many kept scripts don't run, and the HTML canvas export
+    lists them in its report.
+  * Headless: `script.set`, `script.clear`, `script.list` and `script.set_class`. Plug-ins may
+    call them too. Saved in `.anicraft` without a format change, so older files open as
+    before.
+  * A new XFL corpus package, `scripts`, has frame scripts in a scene and a movie clip, a
+    linkage class and a document class, checked byte for byte and against golden renders.
+
+* **Motion path points and moving the whole path** (ADR 0038, the second slice of motion
+  paths). With the Subselection tool, double-click a motion path to add a point (the curve and
+  the motion don't change), and Shift-click to select several anchors. Delete removes them: the
+  path refits through the rest, and the ends stay, because they are where the motion starts and
+  ends. Right-click makes points smooth or corners, or straightens the path. The Pen's
+  Alt-click adds a point to a motion path or to a selected shape. Ctrl-drag (⌘-drag) the path
+  or its object to move the whole path, and Properties › Path start moves it by number; the
+  timing stays exactly. Headless: `motion.add_point`, `motion.delete_points`,
+  `motion.convert_point`, `motion.move_path`, and `anchors` in `motion.info`. Not yet:
+  anchors tied to frames (spatial keys; ADR 0038 explains why), a marquee over path anchors,
+  nudging and transforming a whole path.
+
+* **AniCraft in a web browser** (ADR 0036, first slice; `docs/web.md`). The editor builds for
+  WebAssembly and runs in a page: `scripts/build-web.sh` (or `.ps1`) makes `web/`, which any
+  static server can serve. The module is about 9 MB, 3.3 MB gzipped.
+  * Open and import with the browser's file picker. Save and exports download the file; Save
+    asks for the name once.
+  * Autosave keeps recovery copies in the browser's storage. Work from a tab that closed or
+    crashed is offered at the next start; a tab that is still open is left alone.
+  * Preferences are kept in the browser too, and leaving the page with unsaved work asks first.
+  * Not yet in the browser: sound playback, the GPU stage, video export and plug-in installs.
+    The menu items that can't work there are dimmed and say why.
+  * For developers: engine commands read and write files through `engine::vfs` (the disk on the
+    desktop, memory in a browser). `file.open` takes `unsaved` and `untitled`. Every crate
+    builds for `wasm32-unknown-unknown` in CI, and the engine's tests also run inside
+    WebAssembly in Node.
+
 * **Opening Animate files is checked against a corpus of test files** (XFL import, ADR 0035).
   Eleven hand-written Animate documents cover everything the importer brings across: shapes
   and strokes, primitives and groups, gradients, bitmaps, symbols in every loop mode, movie

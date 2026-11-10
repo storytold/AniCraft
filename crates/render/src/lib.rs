@@ -236,8 +236,17 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
     });
     // Tens of thousands of small polygon buffers: free them on the pool, off the frame's
     // critical path (it cost about 2 ms at 1080p).
-    rayon::spawn(move || drop((ops, clips)));
+    drop_in_background((ops, clips));
     Ok((pm, stats))
+}
+
+/// Frees `x` on the thread pool, off the caller's path. In the browser (wasm32, one thread, ADR
+/// 0036) it is freed here: rayon runs a spawned job only when the thread next waits on the pool.
+pub fn drop_in_background<T: Send + 'static>(x: T) {
+    #[cfg(not(target_arch = "wasm32"))]
+    rayon::spawn(move || drop(x));
+    #[cfg(target_arch = "wasm32")]
+    drop(x);
 }
 
 /// Why a display list (or one stage tile of it) needs the full renderer: what another renderer

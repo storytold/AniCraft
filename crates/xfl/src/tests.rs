@@ -98,8 +98,14 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
     assert_eq!(report.skipped.get("unknown filters"), Some(&1));
-    // Frame scripts, on the scene's frames and inside symbols, are counted (ADR 0013).
-    assert_eq!(report.skipped.get("frame scripts (ActionScript isn't supported yet)"), Some(&2));
+    // Frame scripts, on the scene's frames and inside symbols, are kept verbatim, not run
+    // (ADR 0013 tier 1).
+    assert_eq!(report.kept.get("frame scripts in ActionScript 3.0"), Some(&2));
+    assert!(report.skipped.keys().all(|k| !k.contains("script")), "{report:?}");
+    assert_eq!(ball.keyframes[1].script.as_ref().and_then(|s| s.source()).map(|s| s.text.as_str()), Some("stop();"));
+    let inner = &doc.library[0].timeline.layers[0].keyframes[0];
+    assert!(matches!(inner.script.as_ref().and_then(|s| s.source()), Some(s) if s.text == "gotoAndPlay(2);" && s.language == anicraft_doc::Language::ActionScript3));
+    assert!(report.summary().contains("Kept, not run: 2 frame scripts in ActionScript 3.0."), "{}", report.summary());
     // Every scene comes across, in order.
     assert_eq!(doc.scenes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Scene 1", "Scene 2"]);
     assert_eq!(doc.timeline(1).layers.len(), 1, "an empty scene gets a layer to draw on");
@@ -192,6 +198,9 @@ fn a_fla_archive_imports_the_same() {
     let (doc, _) = crate::import_path(&fla).unwrap();
     assert_eq!(doc.timeline(0).layers.len(), 4);
     assert_eq!(doc.library.len(), 1);
+    let (from_bytes, _) = crate::import_fla(&z).unwrap();
+    assert_eq!((from_bytes.timeline(0).layers.len(), from_bytes.library.len()), (4, 1), "the bytes a browser hands over import the same");
+    assert!(crate::import_fla(b"not a zip").is_err());
     std::fs::remove_file(&fla).ok();
     std::fs::remove_dir(&dir).ok();
 }
@@ -382,4 +391,47 @@ fn eases_names_and_loop_modes_the_corpus_found_missing() {
     assert_eq!(report.skipped.get("reverse loop modes (played forward)"), Some(&3));
     assert_eq!(d.timeline(0).layers[0].keyframes[0].elements[0].name, "", "not an identifier: left out");
     assert_eq!(report.skipped.get("instance names actions can't use (left out)"), Some(&3));
+}
+
+#[test]
+fn scripts_linkage_and_the_document_class_are_kept_not_run() {
+    // ADR 0013 tier 1: frame scripts verbatim, linkage classes and the document class as text.
+    let doc = r#"<DOMDocument><symbols><Include href="Hero.xml"/><Include href="Old.xml"/><Include href="Bad.xml"/><Include href="Off.xml"/></symbols>
+      <media><DOMBitmapItem name="pic.png" linkageExportForAS="true" linkageClassName="Pic"/></media>
+      <timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="as"><frames>
+        <DOMFrame index="0"><Actionscript><script><![CDATA[var n:int = 1 < 2 ? 1 : 0; // <tags> & "quotes"
+trace(n);]]></script></Actionscript><elements><DOMSymbolInstance libraryItemName="Hero"><Actionscript><script><![CDATA[on (release) { play(); }]]></script></Actionscript></DOMSymbolInstance></elements></DOMFrame>
+        <DOMFrame index="1"><Actionscript><script><![CDATA[   ]]></script></Actionscript><elements/></DOMFrame>
+      </frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#;
+    let sym = |name: &str, attrs: &str| format!(r#"<DOMSymbolItem name="{name}" {attrs}><timeline><DOMTimeline name="{name}"/></timeline></DOMSymbolItem>"#);
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let settings = r#"<flash_profiles><flash_profile name="Old" current="false"><PublishFlashProperties><ActionScriptVersion>3</ActionScriptVersion><DocumentClass>Nope</DocumentClass></PublishFlashProperties></flash_profile>
+      <flash_profile name="Default" current="true"><PublishFlashProperties><ActionScriptVersion>2</ActionScriptVersion><DocumentClass> com.example.Main </DocumentClass></PublishFlashProperties></flash_profile></flash_profiles>"#;
+    let files = HashMap::from([
+        ("DOMDocument.xml", doc),
+        ("PublishSettings.xml", settings),
+        ("LIBRARY/Hero.xml", leak(sym("Hero", r#"linkageExportForAS="true" linkageClassName="com.example.Hero" linkageBaseClass="flash.display.MovieClip""#))),
+        ("LIBRARY/Old.xml", leak(sym("Old", r#"linkageExportForAS="true" linkageIdentifier="oldClip""#))),
+        ("LIBRARY/Bad.xml", leak(sym("Bad", r#"linkageExportForAS="true" linkageClassName="not a class""#))),
+        ("LIBRARY/Off.xml", leak(sym("Off", r#"linkageExportForAS="false" linkageClassName="Off""#))),
+    ]);
+    let (d, report) = import(&files).unwrap();
+    let s = d.timeline(0).layers[0].keyframes[0].script.as_ref().and_then(|s| s.source()).unwrap();
+    assert_eq!(s.text, "var n:int = 1 < 2 ? 1 : 0; // <tags> & \"quotes\"\ntrace(n);", "verbatim");
+    assert_eq!(s.language, anicraft_doc::Language::ActionScript1or2, "the current publish profile says ActionScript 2");
+    assert!(d.timeline(0).layers[0].keyframes[1].script.is_none(), "a blank script is nothing");
+    assert_eq!(d.document_class, "com.example.Main");
+    let linkage: Vec<Option<(&str, &str)>> = d.library.iter().map(|s| s.linkage.as_ref().map(|l| (l.class.as_str(), l.base.as_str()))).collect();
+    assert_eq!(linkage, [Some(("com.example.Hero", "flash.display.MovieClip")), Some(("oldClip", "")), None, None]);
+    let kept: Vec<(&str, usize)> = report.kept.iter().map(|(k, n)| (k.as_str(), *n)).collect();
+    assert_eq!(kept, [("document class", 1), ("frame scripts in ActionScript 1.0 & 2.0", 1), ("linkage classes", 2)]);
+    assert_eq!(report.skipped.get("linkage classes that aren't class names (left out)"), Some(&1));
+    assert_eq!(report.skipped.get("linkage classes on bitmaps and sounds (left out)"), Some(&1));
+    assert_eq!(report.skipped.get("scripts on instances (left out; frame scripts are kept)"), Some(&1));
+    // Broken or missing publish settings change nothing.
+    let mut files = files;
+    files.insert("PublishSettings.xml", "<flash_profiles><unclosed>");
+    let (d, report) = import(&files).unwrap();
+    assert!(d.document_class.is_empty() && !report.kept.contains_key("document class"));
+    assert!(report.kept.contains_key("frame scripts in ActionScript 3.0"));
 }

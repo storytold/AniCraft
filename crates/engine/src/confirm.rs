@@ -107,23 +107,22 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
         "file.save" | "file.save_as" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             let same = s.path.as_deref() == Some(path);
-            (!same && path.exists()).then(|| overwrite(path, "Saving"))
+            (!same && crate::vfs::exists(path)).then(|| overwrite(path, "Saving"))
         }
         "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
-            path.exists().then(|| overwrite(path, "Exporting"))
+            crate::vfs::exists(path).then(|| overwrite(path, "Exporting"))
         }
         "file.export_sprite_sheet" => {
             // The sheet and its frame map: either one already there is replaced.
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             let json = path.with_extension("json");
-            [path, json.as_path()].into_iter().find(|f| f.exists()).map(|f| overwrite(f, "Exporting"))
+            [path, json.as_path()].into_iter().find(|f| crate::vfs::exists(f)).map(|f| overwrite(f, "Exporting"))
         }
         "file.export_png_sequence" => {
             let dir = Path::new(p.get("dir").and_then(Value::as_str)?);
-            let has_frames = std::fs::read_dir(dir).ok()?.take(10_000).flatten().any(|e| {
-                let n = e.file_name();
-                let n = n.to_string_lossy();
+            let has_frames = crate::vfs::list(dir, 10_000).iter().any(|e| {
+                let n = e.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
                 n.starts_with("frame_") && n.ends_with(".png")
             });
             has_frames.then(|| Confirmation {

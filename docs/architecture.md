@@ -120,7 +120,7 @@ iterations and a bisection fallback, the same model CSS uses.
 
 Interactivity is time as a function too (ADR 0013, ADR 0024). Keyframes and button or movie
 clip instances carry lists of typed actions (`anicraft-actions`) or a frame-script plug-in
-entry; nothing in the document changes while a movie plays. `player::step(doc, &state,
+entry, or keep a script in another language verbatim (ADR 0013 tier 1: `FrameScript::Source`, which the player skips); nothing in the document changes while a movie plays. `player::step(doc, &state,
 &events, scripts) -> Step` advances a `PlayerState` (the main timeline's scene and playhead,
 each movie clip instance's playhead by its element-id path, script-set properties, the
 pointer) by one frame, runs the actions of the frames entered and routes pointer events to
@@ -203,6 +203,11 @@ engine itself never depends on the GPU.
   with paths as SVG path strings, shared paths written once and streamed back as shared `Arc`s.
   v1 files still load; unknown fields are ignored and missing fields default. See
   [ADR 0003](adr/0003-file-format-v2.md).
+* **Files go through `vfs`.** Commands read and write files through `anicraft_engine::vfs`,
+  never `std::fs` directly, and only on the command's own thread. On the desktop `vfs` is the
+  file system. In the web build it is an in-memory store: the shell fills it from the
+  browser's file picker and turns what commands wrote into downloads. See
+  [ADR 0036](adr/0036-web-build.md).
 
 ## 6. Headless and agents (`anicraft-cli`)
 
@@ -233,6 +238,11 @@ are drawn with the egui painter in screen space.
 
 `--screenshot <file.png>` runs the normal UI for about 120 frames, then saves the window picture
 and exits. CI and Craft Anything use it for visual checks.
+
+Built for `wasm32-unknown-unknown`, the same shell is the **web editor** (`src/web.rs`,
+[ADR 0036](adr/0036-web-build.md), [docs/web.md](web.md)). `platform.rs` swaps the native
+services for the browser's: file picker and downloads instead of dialogs, browser storage for
+preferences and autosave, and a WebGL2 window with the CPU-drawn stage.
 
 ## 8. Testing strategy
 
