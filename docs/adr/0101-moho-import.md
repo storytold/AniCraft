@@ -1,4 +1,4 @@
-# ADR 0024: Moho import (.mohoproj/.moho) and the maop_maohou sidecar
+# ADR 0101: Moho import (.mohoproj/.moho) and the maop_maohou sidecar
 
 * Status: accepted (2026-11-09)
 * Relates to: ADR 0003 (file format), ADR 0009 (XFL import), ADR 0012 (text), the Moho
