@@ -23,6 +23,26 @@
     line ends and corners (drawn round), gradient strokes (one colour), repeating and
     reflecting, off-centre, stretched and linear-RGB gradients, advanced colour effects,
     reverse loop modes and extra spins on tweens.
+* **Eraser and Eyedropper** (E and I, ADR 0034, first slice).
+  * The Eraser sweeps the same tip as the Brush and takes what it covers out of the lines and
+    fills on the active layer that were drawn with Object Drawing off. Drawing objects,
+    symbols and text are kept, as in Animate.
+  * Erase modes: Erase Normal, Erase Fills, Erase Lines, Erase Selected Fills and Erase Inside
+    (only the fill where the stroke starts).
+  * The Faucet option deletes a whole fill or line with one click.
+  * Double-clicking the Eraser tool, or Erase Everything… in its options, clears the visible,
+    unlocked layers at this frame. It asks first, and you can undo it.
+  * The erased area shows as you drag, `[` and `]` change the size, and each stroke is one
+    undo step. A stroke that erases nothing leaves no undo step.
+  * The Eyedropper picks a fill's colour, gradient or bitmap into the fill swatch, or a line's
+    colour, width and width profile into the stroke settings. It then becomes the Paint Bucket
+    or the Ink Bottle.
+  * A picked gradient stays where it is on the stage, so it carries on across the shapes you
+    pour it into.
+  * With shapes selected, the Eyedropper applies the picked style to them. Shift-click picks
+    into the other swatch only.
+  * For scripts and AI assistants: `draw.erase`, `draw.faucet`, `draw.erase_all`,
+    `paint.pick` and `paint.apply_style`.
 * **Brush tool** (B, ADR 0033, first slice). The brush paints filled shapes in the fill colour,
   as Animate's Brush tool does: the shape is exactly the area the tip sweeps along the drag.
   * Tip options: round or square, size, angle and roundness (for oval and flat calligraphic

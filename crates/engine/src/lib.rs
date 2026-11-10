@@ -9,6 +9,7 @@ mod cmds_actions;
 pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
+pub mod cmds_erase;
 mod cmds_file;
 mod cmds_frames;
 mod cmds_modify;
@@ -107,6 +108,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
     v.extend(cmds_brush::specs());
+    v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
     v.extend(cmds_width::specs());
@@ -134,15 +136,20 @@ pub use history::{Snapshot, StateId};
 pub const MAX_FRAME: u32 = 100_000;
 
 /// Drawing defaults used by the drawing commands when params omit colours.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ToolStyle {
     pub fill: anicraft_doc::Rgba,
+    /// The fill swatch holds a gradient or a bitmap (picked with the Eyedropper, ADR 0034), in
+    /// stage space; `fill` is then its representative colour. `None`: the solid `fill`.
+    pub fill_paint: Option<anicraft_doc::Paint>,
     pub stroke: anicraft_doc::Rgba,
     pub stroke_width: f32,
     pub use_fill: bool,
     pub use_stroke: bool,
     /// The width profile new strokes get (ADR 0018).
     pub stroke_profile: anicraft_doc::ProfilePreset,
+    /// A picked width profile that is none of the presets (it wins over `stroke_profile`).
+    pub custom_profile: Option<anicraft_doc::WidthProfile>,
     /// Object Drawing: new shapes are drawing objects. Off, they merge with the raw shapes they
     /// touch (ADR 0031). On by default, so a script's draw command makes one element; the editor
     /// starts with it off, as Animate does.
@@ -151,7 +158,28 @@ pub struct ToolStyle {
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, object_drawing: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, object_drawing: true }
+    }
+}
+
+impl ToolStyle {
+    /// The fill swatch's paint, in stage space.
+    pub fn fill_paint(&self) -> anicraft_doc::Paint {
+        self.fill_paint.clone().unwrap_or(anicraft_doc::Paint::Solid(self.fill))
+    }
+    /// Sets the fill swatch to a solid colour (dropping a picked gradient or bitmap).
+    pub fn set_fill_color(&mut self, c: anicraft_doc::Rgba) {
+        self.fill = c;
+        self.fill_paint = None;
+    }
+    /// The width profile new strokes get.
+    pub fn profile(&self) -> Option<anicraft_doc::WidthProfile> {
+        self.custom_profile.clone().or_else(|| self.stroke_profile.profile())
+    }
+    /// Sets the profile to a preset (dropping a picked custom one).
+    pub fn set_profile(&mut self, p: anicraft_doc::ProfilePreset) {
+        self.stroke_profile = p;
+        self.custom_profile = None;
     }
 }
 
@@ -293,7 +321,7 @@ impl Session {
 
     /// Replaces the document (new/open), clearing history.
     pub fn replace_document(&mut self, doc: Document, path: Option<PathBuf>) {
-        let style = self.style;
+        let style = std::mem::take(&mut self.style);
         let rev = self.revision;
         let budget = self.history.budget_bytes;
         let clipboard = std::mem::take(&mut self.clipboard);
@@ -706,3 +734,7 @@ mod tests_camera;
 mod merge_tests;
 #[cfg(test)]
 mod brush_tests;
+#[cfg(test)]
+mod erase_tests;
+#[cfg(test)]
+mod eyedropper_tests;

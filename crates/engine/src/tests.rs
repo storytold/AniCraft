@@ -565,6 +565,11 @@ fn panic_hunt_every_command() {
         json!({"points": [[0, 0, 0.0], [99_999, 99_999, 1.0], [-99_999, 5, 0.5]], "size": 2000, "shape": "square", "angle": 1e6, "roundness": 5, "smoothing": 0, "mode": "behind", "unit": 0.001}),
         json!({"points": (0..3000).map(|i| json!([i % 7, (i * 13) % 11, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "size": 0.1, "mode": "fills", "smoothing": 100, "unit": 1000}),
         json!({"points": [[5, 5, -1], [6, 6, "x"]], "shape": 3, "mode": null, "roundness": f64::NAN}),
+        // Eraser and Eyedropper (ADR 0034): strokes over the raw shapes, a tip larger than the
+        // stage, picks into the other swatch, styles applied to whatever is selected.
+        json!({"points": [[0, 0], [40, 40], [90, 5]], "size": 30, "mode": "selected_fills", "x": 30, "y": 30, "slop": 0}),
+        json!({"points": [[45, 45]], "size": 2000, "mode": "inside", "x": 45, "y": 45, "other": true, "fill": false, "stroke": true}),
+        json!({"points": [[5, 5], [55, 55]], "size": 4, "mode": "lines", "shape": "square", "x": 1, "y": 1, "fill": "yes"}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
