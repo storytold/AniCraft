@@ -10,7 +10,10 @@ pub const FORMAT_NAME: &str = "anicraft";
 /// v1: inline tagged paths. v2: SVG path strings, shared paths stored once in `paths`.
 /// v3: `scenes` (a list of named timelines) instead of one `timeline`; v1/v2 files load as one
 /// scene.
-pub const FORMAT_VERSION: u32 = 3;
+/// v4: a document may carry the `maop_maohou` sidecar (the Moho import's untouched source
+/// JSON, dual-write rule: standard document keys stay standard, Moho-only data rides beside
+/// them); older files simply have no sidecar.
+pub const FORMAT_VERSION: u32 = 4;
 /// Largest file we will parse.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Files smaller than this (compact) are pretty-printed for humans and diffs.
@@ -123,11 +126,25 @@ mod tests {
     }
 
     #[test]
+    fn maop_maohou_sidecar_round_trips_and_v3_files_load_without_one() {
+        use anicraft_doc::MaohouSidecar;
+        let mut d = sample::demo();
+        d.maop_maohou = Some(Arc::new(MaohouSidecar { schema: 1, saved_by: "AniCraft 0.1.0".into(), source: "mohoproj 1045".into(), raw: serde_json::json!({"layers": [1, 2, 3]}) }));
+        let back = from_json(&to_json(&d).unwrap()).unwrap();
+        assert_eq!(d, back, "the sidecar survives save/load whole");
+        // A v3 file (no sidecar) still loads as before.
+        let v3 = r#"{"format":"anicraft","version":3,"document":{"stage":{"width":100,"height":80,"fps":12.0,"background":{"r":1.0,"g":1.0,"b":1.0,"a":1.0}}},"next_id":1}"#;
+        let old = from_json(v3).unwrap();
+        assert!(old.maop_maohou.is_none());
+        assert_eq!(old.stage.width, 100);
+    }
+
+    #[test]
     fn shared_paths_are_written_once_and_shared_again_on_load() {
         let d = anicraft_doc::sample::stress(2, 40, 48); // 4 keyframes per element share a path
         let json = to_json(&d).unwrap();
         let env: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(env["version"], 3);
+        assert_eq!(env["version"], 4);
         assert_eq!(env["paths"].as_array().unwrap().len(), 80, "one entry per distinct path");
         let back = from_json(&json).unwrap();
         assert_eq!(d, back);

@@ -505,6 +505,28 @@ fn save_load_round_trip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A Moho import round-trips the `.anicraft` format whole: the mapped document and the
+/// `maop_maohou` sidecar come back byte-structure-equal (the stage-1 gate for empty.moho and
+/// keyframes.moho; needs the maop-corpus beside the workspace or at `MAOHOU_FIXTURES`).
+#[test]
+fn moho_imports_round_trip_through_the_native_format() {
+    let mut dir = std::path::PathBuf::from(std::env::var("MAOHOU_FIXTURES").unwrap_or_default());
+    if !dir.is_dir() {
+        dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../maop-corpus/maop");
+    }
+    if !dir.is_dir() {
+        eprintln!("skipped: no maop-corpus at MAOHOU_FIXTURES or ../../maop-corpus");
+        return;
+    }
+    for name in ["empty", "keyframes"] {
+        let path = dir.join(format!("{name}.moho"));
+        let (doc, _) = anicraft_mohoproj_import::import_path(&path).unwrap_or_else(|e| panic!("{name}.moho: {e}"));
+        let back = format::from_json(&format::to_json(&doc).unwrap()).unwrap();
+        assert_eq!(doc, back, "{name}.moho through save/load");
+        assert!(back.maop_maohou.is_some(), "{name}: the sidecar survives");
+    }
+}
+
 /// Adversarial params for every command: must return Ok or Err, never panic.
 #[test]
 fn panic_hunt_every_command() {

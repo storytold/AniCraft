@@ -135,11 +135,28 @@ pub fn is_animate(path: &std::path::Path) -> bool {
     matches!(ext.as_deref(), Some("fla" | "xfl")) || (path.is_dir() && path.join("DOMDocument.xml").is_file())
 }
 
+/// Whether `path` is a Moho document: a `.moho` package, a bare `.mohoproj` file, or an
+/// extracted folder holding `Project.mohoproj`.
+pub fn is_moho(path: &std::path::Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    matches!(ext.as_deref(), Some("moho" | "mohoproj")) || (path.is_dir() && path.join(anicraft_mohoproj_import::PROJECT_ENTRY).is_file())
+}
+
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
-    if is_animate(&path) {
+    if is_moho(&path) {
         // Imported, not adopted: the document is untitled, so Save asks for a new .anicraft
-        // name and never writes over the Animate file.
+        // name and never writes over the Moho file.
+        let (doc, report) = anicraft_mohoproj_import::import_path(&path).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+        s.replace_document(doc, None);
+        let mut info = s.info();
+        info["imported"] = json!(path.display().to_string());
+        info["report"] = json!(report.summary());
+        info["skipped"] = json!(report.skipped);
+        info["missing_fonts"] = json!(report.missing_fonts);
+        return Ok(info);
+    }
+    if is_animate(&path) {
         let (doc, report) = anicraft_xfl::import_path(&path).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
         s.replace_document(doc, None);
         let mut info = s.info();

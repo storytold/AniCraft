@@ -157,8 +157,8 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_audio" => ("WAV sound", &["wav"]),
         "file.export_sprite_sheet" => ("PNG sprite sheet", &["png"]),
         "file.export_video" => ("Video (WebM or MP4)", &["webm", "mp4"]),
-        // Opening also imports .fla archives and .xfl packages.
-        "file.open" => ("Documents", &["anicraft", "fla", "xfl"]),
+        // Opening also imports .fla/.xfl and Moho .moho/.mohoproj documents.
+        "file.open" => ("Documents", &["anicraft", "fla", "xfl", "moho", "mohoproj"]),
         "plugin.install" => ("WebAssembly plug-in", &["wasm"]),
         _ => ("AniCraft document", &["anicraft"]),
     }

@@ -20,6 +20,7 @@ anicraft-doc = { path = "crates/doc" }
 anicraft-render = { path = "crates/render" }
 anicraft-engine = { path = "crates/engine" }
 anicraft-xfl = { path = "crates/xfl" }
+anicraft-mohoproj-import = { path = "crates/mohoproj-import" }
 anicraft-xml = { path = "crates/xml" }
 anicraft-svg = { path = "crates/svg" }
 anicraft-text = { path = "crates/text" }

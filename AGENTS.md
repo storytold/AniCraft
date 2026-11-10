@@ -16,6 +16,7 @@ crates/text     L1  Fonts on this computer, shaping and line layout into outline
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
 crates/xfl      L2  XFL/FLA import: own XML + zip readers, edges → paths (ADR 0009)
 crates/svg      L2  SVG import: shapes, groups, use, styles, gradients, clips/masks → mask layers, text
+crates/mohoproj-import L2  Moho import: .mohoproj/.moho JSON + zip readers, mesh → paths, maop_maohou sidecar
 crates/engine   L3  Session, undo (with gesture coalescing), command registry, .anicraft format
 crates/gpu      L3  wgpu stage renderer over the oracle's fills: tile binning, compute coverage (ADR 0019)
 crates/cli      L4  anicraft-cli: info/render/render-seq/commands/exec/run/new/serve/mcp

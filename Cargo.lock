@@ -253,6 +253,7 @@ version = "0.1.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
+ "anicraft-mohoproj-import",
  "anicraft-plugins",
  "anicraft-render",
  "anicraft-svg",
@@ -287,6 +288,20 @@ dependencies = [
  "rayon",
  "thiserror 2.0.21",
  "wgpu",
+]
+
+[[package]]
+name = "anicraft-mohoproj-import"
+version = "0.1.0"
+dependencies = [
+ "anicraft-doc",
+ "anicraft-geom",
+ "anicraft-text",
+ "miniz_oxide 0.8.9",
+ "png 0.17.16",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
