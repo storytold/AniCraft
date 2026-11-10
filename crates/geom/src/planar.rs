@@ -334,7 +334,7 @@ fn cut(segs: &[Seg]) -> Option<Vec<Vec<f64>>> {
             if pairs > MAX_PAIRS {
                 return None;
             }
-            for (ta, tb) in meet(&segs[i], &segs[j]) {
+            for (ta, tb) in meet(&segs[i], &segs[j])? {
                 splits[i].push(ta);
                 splits[j].push(tb);
             }
@@ -348,8 +348,9 @@ fn cut(segs: &[Seg]) -> Option<Vec<Vec<f64>>> {
 }
 
 /// Where two segments meet: crossings, ends lying on the other, and the ends of a stretch where
-/// they run along each other.
-fn meet(a: &Seg, b: &Seg) -> Vec<(f64, f64)> {
+/// they run along each other. `None` when the search ran out of steps (a crossing may be missed,
+/// so the merge declines rather than leave it uncut).
+fn meet(a: &Seg, b: &Seg) -> Option<Vec<(f64, f64)>> {
     let mut ends = Vec::new();
     for (t, p) in [(0.0, a.c[0]), (1.0, a.c[3])] {
         let (u, d) = nearest(&b.c, b.line, p);
@@ -364,11 +365,14 @@ fn meet(a: &Seg, b: &Seg) -> Vec<(f64, f64)> {
         }
     }
     if ends.len() >= 2 && coincide(a, b, &ends) {
-        return ends;
+        return Some(ends);
     }
     let mut hits = Vec::new();
     let mut budget = PAIR_BUDGET;
     cross(&a.c, (0.0, 1.0), &b.c, (0.0, 1.0), 0, &mut budget, &mut hits);
+    if budget == 0 {
+        return None;
+    }
     let mut out: Vec<(f64, f64)> = Vec::new();
     for h in ends.into_iter().chain(hits) {
         let p = eval(&a.c, h.0);
@@ -376,7 +380,7 @@ fn meet(a: &Seg, b: &Seg) -> Vec<(f64, f64)> {
             out.push(h);
         }
     }
-    out
+    Some(out)
 }
 
 /// Whether `a` runs along `b` between the extreme ends that touch it.

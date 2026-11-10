@@ -235,3 +235,24 @@ fn a_pile_of_shapes_merges_quickly_and_merges_again_to_the_same() {
     assert_eq!(again.fills.len(), first.fills.len());
     assert_eq!(again.strokes.len(), first.strokes.len());
 }
+
+#[test]
+fn a_search_that_runs_out_of_steps_declines_the_merge() {
+    // Two long arcs 0.3 apart (just outside SNAP) keep their boxes overlapping down to the
+    // finest subdivision; when the crossing search runs out of steps, nothing is cut wrongly:
+    // the merge declines (the engine then keeps the new shape whole).
+    let arc = |r: f32| {
+        let mut p = Path::new();
+        let k = 0.552_284_8 * r;
+        p.move_to(Vec2::new(r, 0.0)).cubic_to(Vec2::new(r, k), Vec2::new(k, r), Vec2::new(0.0, r));
+        p
+    };
+    let (a, b) = (arc(5000.0), arc(5000.3));
+    let seg = |p: &Path| collect(&[stroked(p, None, 1)]).unwrap_or_default().into_iter().next();
+    let (Some(sa), Some(sb)) = (seg(&a), seg(&b)) else { panic!("no segments") };
+    assert!(meet(&sa, &sb).is_none(), "the search should run out on these");
+    assert!(merge(&[stroked(&a, None, 1), stroked(&b, None, 1)]).is_none());
+    // Shorter arcs are searched to the end and merge (they don't cross).
+    let (a, b) = (arc(100.0), arc(100.3));
+    assert_eq!(merge(&[stroked(&a, None, 1), stroked(&b, None, 1)]).map(|m| m.strokes.len()), Some(2));
+}
