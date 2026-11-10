@@ -505,6 +505,39 @@ impl MotionTween {
         true
     }
 
+    /// Moves the whole motion by `d`: the path and every X/Y key, so the object travels the same
+    /// way, `d` over, on the same frames (the timing compares positions only with each other).
+    /// An axis without keys follows the object's own position, which the caller moves. False,
+    /// with nothing changed, when a key or the path would leave the X/Y range.
+    pub fn translate(&mut self, d: Vec2) -> bool {
+        if !d.is_finite() {
+            return false;
+        }
+        let path = match &self.path {
+            Some(p) => match motion_path(&p.transformed(&Affine::translate(d.x, d.y))) {
+                Some(moved) => Some(moved),
+                None => return false,
+            },
+            None => None,
+        };
+        let shift = |p: Property| if p == Property::X { d.x } else { d.y };
+        let fits = [Property::X, Property::Y].into_iter().all(|p| self.track(p).is_none_or(|t| t.keys.iter().all(|k| p.range().contains(&(k.value + shift(p))))));
+        if !fits {
+            return false;
+        }
+        for p in [Property::X, Property::Y] {
+            if let Some(t) = self.track_mut(p) {
+                for k in &mut t.keys {
+                    k.value += shift(p);
+                }
+            }
+        }
+        if path.is_some() {
+            self.path = path;
+        }
+        true
+    }
+
     pub fn track(&self, p: Property) -> Option<&Track> {
         self.tracks.iter().find(|t| t.property == p)
     }
@@ -926,6 +959,30 @@ mod tests {
             }
             assert_eq!(tail.path.is_some(), cut < 20, "past the end the tail holds still");
         }
+    }
+
+    #[test]
+    fn moving_the_whole_path_keeps_the_motion_and_its_timing() {
+        let base = el(1, 0.0, 0.0);
+        let mut m = diagonal(Easing::CubicBezier(0.2, 0.9, 0.4, 1.3));
+        assert!(m.set_path(&quarter(100.0), &Props::of(&base), 20));
+        m.orient = true;
+        m.set_key(Property::Y, 8, 30.0, 0.0);
+        let d = Vec2::new(-37.5, 212.25);
+        let mut moved = m.clone();
+        assert!(moved.translate(d));
+        let moved_base = el(1, d.x, d.y);
+        for i in 0..=100 {
+            let f = i as f32 / 4.0;
+            let (a, b) = (m.apply(&base, f), moved.apply(&moved_base, f));
+            assert!((a.transform.translation() + d).distance(b.transform.translation()) < 1e-3, "frame {f}");
+            assert!((a.transform.decompose().rotation - b.transform.decompose().rotation).abs() < 1e-4, "frame {f}: the turn is the same");
+        }
+        assert_eq!(moved.key_frames(), m.key_frames(), "no key moves in time");
+        // Out of range: refused, nothing changed.
+        let before = moved.clone();
+        assert!(!moved.translate(Vec2::new(2e6, 0.0)) && !moved.translate(Vec2::new(f32::NAN, 0.0)));
+        assert_eq!(moved, before);
     }
 
     #[test]
