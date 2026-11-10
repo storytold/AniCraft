@@ -151,18 +151,20 @@ pub enum PencilMode {
 }
 
 impl PencilMode {
+    /// The English name, translated where it is drawn (`crate::i18n::t`).
     pub fn label(self) -> &'static str {
         match self {
-            PencilMode::Smooth => "Smooth",
-            PencilMode::Straighten => "Straighten",
-            PencilMode::Ink => "Ink",
+            PencilMode::Smooth => tr_noop!("Smooth"),
+            PencilMode::Straighten => tr_noop!("Straighten"),
+            PencilMode::Ink => tr_noop!("Ink"),
         }
     }
+    /// The English hint, translated where it is drawn (`crate::i18n::t`).
     pub fn hint(self) -> &'static str {
         match self {
-            PencilMode::Smooth => "Fits smooth curves to the stroke, keeping sharp corners.",
-            PencilMode::Straighten => "Turns the stroke into straight segments.",
-            PencilMode::Ink => "Follows the hand closely with little smoothing.",
+            PencilMode::Smooth => tr_noop!("Fits smooth curves to the stroke, keeping sharp corners."),
+            PencilMode::Straighten => tr_noop!("Turns the stroke into straight segments."),
+            PencilMode::Ink => tr_noop!("Follows the hand closely with little smoothing."),
         }
     }
     fn id(self) -> &'static str {
@@ -269,7 +271,8 @@ pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> 
             }
             app.points.push(pt);
         }
-        app.s.begin_gesture("Move Points");
+        // Undo labels stay English in the history and are translated where they show.
+        app.s.begin_gesture(tr_noop!("Move Points"));
         return Drag::Points { last: pos2(sp.x, sp.y) };
     }
     if let Some((layer, el)) = app.s.hit_test(sp, 3.0 * xf.unit()) {
@@ -277,7 +280,7 @@ pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> 
             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
             app.points.clear();
         }
-        app.s.begin_gesture("Move");
+        app.s.begin_gesture(tr_noop!("Move"));
         return Drag::Move { last: pos2(sp.x, sp.y) };
     }
     if !shift {
@@ -365,7 +368,7 @@ fn add_point_on_selected(app: &mut App, at: Pos2, xf: Xf) -> bool {
         if let Ok(v) = r {
             app.points = v["cmd"].as_u64().map(|c| vec![(id, c as usize, ANCHOR)]).unwrap_or_default();
             app.motion_anchors.clear();
-            app.status_ok(format!("Added a point. {} to undo.", crate::platform::shortcut_label("Ctrl+Z")));
+            app.status_ok(tr!("Added a point. {undo} to undo.", undo = app.undo_key()));
             return true;
         }
     }
@@ -407,16 +410,16 @@ pub fn point_menu(app: &mut App, ui: &mut egui::Ui) -> bool {
     if app.tool != Tool::Subselect || selected_anchors(app).is_empty() {
         return false;
     }
-    if ui.button("Make Smooth").clicked() {
+    if ui.button(tr!("Make Smooth")).clicked() {
         convert_points(app, true);
         ui.close();
     }
-    if ui.button("Make Corner").clicked() {
+    if ui.button(tr!("Make Corner")).clicked() {
         convert_points(app, false);
         ui.close();
     }
     ui.separator();
-    if ui.button("Delete Point").clicked() {
+    if ui.button(tr!("Delete Point")).clicked() {
         delete_points(app);
         ui.close();
     }
@@ -525,7 +528,7 @@ fn raw_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> Option<Dra
     let pts = raw_shown(app);
     let anchor = match raw_point_at(app, &pts, press, xf) {
         Some(RawHit::Handle(h)) => {
-            app.s.begin_gesture("Move Handle");
+            app.s.begin_gesture(tr_noop!("Move Handle"));
             app.raw_touched.clear();
             return Some(Drag::RawHandle { id: h.id, cmd: h.cmd, slot: h.slot, last: pos2(sp.x, sp.y) });
         }
@@ -546,7 +549,7 @@ fn raw_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> Option<Dra
         app.raw_with = app.raw_anchors.iter().copied().filter(|p| p.distance(q) > SNAP).collect();
         app.raw_points = serde_json::Value::Null;
         app.raw_touched.clear();
-        app.s.begin_gesture("Move Points");
+        app.s.begin_gesture(tr_noop!("Move Points"));
         return Some(Drag::RawPoint { at: pos2(q.x, q.y), off: pos2(q.x, q.y) - pos2(sp.x, sp.y) });
     }
     // A raw line or fill: everything connected to it moves (Animate's Subselection drag).
@@ -554,7 +557,7 @@ fn raw_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> Option<Dra
     if !on_shown && !raw_show_at(app, sp, shift, xf) {
         return None;
     }
-    app.s.begin_gesture("Move");
+    app.s.begin_gesture(tr_noop!("Move"));
     Some(Drag::SnapMove { start: pos2(sp.x, sp.y), applied: egui::Vec2::ZERO })
 }
 
@@ -665,7 +668,7 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
     }
     if app.tool == Tool::Subselect && !app.raw_anchors.is_empty() {
         if take(Key::Delete) || take(Key::Backspace) {
-            app.status_err("Points of merged drawings can't be deleted yet. Select the parts with the Selection tool (V) and delete them.");
+            app.status_err(tr!("Points of merged drawings can't be deleted yet. Select the parts with the Selection tool (V) and delete them."));
         }
         if take(Key::Escape) {
             app.raw_anchors.clear();
@@ -696,7 +699,7 @@ fn arrow_nudge(ctx: &egui::Context, zoom: f32) -> Option<Vec2> {
 fn move_points_step(app: &mut App, d: Vec2) {
     let own = !app.s.in_gesture();
     if own {
-        app.s.begin_gesture("Move Points");
+        app.s.begin_gesture(tr_noop!("Move Points"));
     }
     move_points(app, d);
     if own {

@@ -191,8 +191,8 @@ impl SoundOut {
 #[cfg(sound_output)]
 fn open(player: &Arc<Mutex<Player>>, failed: &Arc<AtomicBool>) -> Result<(cpal::Stream, u32), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    let device = cpal::default_host().default_output_device().ok_or("no sound output device")?;
-    let supported = device.default_output_config().map_err(|e| format!("the sound device has no usable format ({e})"))?;
+    let device = cpal::default_host().default_output_device().ok_or_else(|| tr!("no sound output device").to_string())?;
+    let supported = device.default_output_config().map_err(|e| tr!("the sound device has no usable format ({error})", error = e))?;
     let config = supported.config();
     let rate = config.sample_rate;
     let stream = match supported.sample_format() {
@@ -200,16 +200,16 @@ fn open(player: &Arc<Mutex<Player>>, failed: &Arc<AtomicBool>) -> Result<(cpal::
         cpal::SampleFormat::I16 => build::<i16>(&device, config, player, failed),
         cpal::SampleFormat::U16 => build::<u16>(&device, config, player, failed),
         cpal::SampleFormat::I32 => build::<i32>(&device, config, player, failed),
-        other => return Err(format!("the sound device wants {other:?} samples, which AniCraft doesn't write yet")),
+        other => return Err(tr!("the sound device wants {format} samples, which AniCraft doesn't write yet", format = format!("{other:?}"))),
     }
-    .map_err(|e| format!("could not start sound ({e})"))?;
-    stream.play().map_err(|e| format!("could not start sound ({e})"))?;
+    .map_err(|e| tr!("could not start sound ({error})", error = e))?;
+    stream.play().map_err(|e| tr!("could not start sound ({error})", error = e))?;
     Ok((stream, rate))
 }
 
 #[cfg(not(sound_output))]
 fn open(_: &Arc<Mutex<Player>>, _: &Arc<AtomicBool>) -> Result<u32, String> {
-    Err(if cfg!(target_arch = "wasm32") { "the web version of AniCraft has no sound output yet".into() } else { "this build of AniCraft has no sound output".into() })
+    Err(if cfg!(target_arch = "wasm32") { tr!("the web version of AniCraft has no sound output yet").into() } else { tr!("this build of AniCraft has no sound output").into() })
 }
 
 /// An output stream whose callback mixes from the player. The lock is held only while one

@@ -54,6 +54,7 @@ Priority: **P0** = M0–M2 skeleton must have, **P1** = parity core, **P2** = lo
 | **Fidelity** | Analytic anti-aliasing (exact area coverage), correct non-zero and even-odd fill rules, gradient spread modes, premultiplied-alpha compositing. |
 | **Portability** | Windows, macOS, Linux desktop; the engine layers (L0–L5) also build for `wasm32-unknown-unknown`. |
 | **Accessibility** | Keyboard reachable commands, scalable UI, high-contrast theme, screen-reader labels via AccessKit. |
+| **Localisation** | Every interface string translatable, keyed by its English text (ADR 0040); catalogs from the Craft family's craft-i18n; a missing translation shows English, never an error. The command registry, CLI, MCP and file format stay English. |
 | **Clean room** | Behaviour and look learned only from public documentation, public specs and observation. No proprietary code, shaders, presets or assets. |
 | **Licensing** | MIT OR Apache-2.0. Every third-party asset is permissively licensed and listed in `ATTRIBUTION.md`. |
 

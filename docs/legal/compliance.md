@@ -50,6 +50,17 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
   `examples/plugins` (MIT OR Apache-2.0).
 
+### Interface languages (2026-11-10, ADR 0040)
+
+New crate: `sys-locale` 0.3 (MIT OR Apache-2.0, crates.io), which reads the system's interface
+language (on the web through `js-sys`/`web-sys`, already in the tree). No new licence.
+Translations are **not** a dependency: they come from storytold/craft-i18n (MIT OR Apache-2.0)
+as an optional build input (`CRAFT_I18N_DIR`), embedded at build time like craft-fonts; no
+catalog file is committed here. Its catalogs follow a clean-room rule (written from the plain
+meaning of the English, never from another product's localisation), which `docs/localisation.md`
+repeats for translators. The plural rules are written from the public Unicode CLDR rules
+(`ATTRIBUTION.md`).
+
 ### Web build (2026-11-09, ADR 0036)
 
 New crates, all MIT OR Apache-2.0, from crates.io: `web-time` (clocks that work in a browser;

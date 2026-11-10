@@ -143,7 +143,8 @@ pub fn drag_start(app: &mut App, shown: Shown, grab: Grab, at: Vec2) -> Drag {
         app.motion_anchors = vec![a];
     }
     app.motion_drag = Some(shown.path);
-    app.s.begin_gesture("Edit Motion Path");
+    // Undo labels stay English in the history and are translated where they show.
+    app.s.begin_gesture(tr_noop!("Edit Motion Path"));
     Drag::MotionPath { grab, start: pos2(at.x, at.y) }
 }
 
@@ -205,7 +206,7 @@ pub fn move_hit(app: &App, p: Pos2, xf: Xf) -> bool {
 
 /// Starts moving the whole path from stage point `at`: one undo step until the drag ends.
 pub fn move_start(app: &mut App, at: Vec2) -> Drag {
-    app.s.begin_gesture("Move Motion Path");
+    app.s.begin_gesture(tr_noop!("Move Motion Path"));
     Drag::MotionMove { last: pos2(at.x, at.y) }
 }
 
@@ -229,7 +230,7 @@ fn add_at(app: &mut App, p: Pos2, xf: Xf) -> bool {
     if let Some(v) = app.run("motion.add_point", json!({"x": sp.x, "y": sp.y, "slop": PICK * xf.unit()})) {
         app.motion_anchors = v["anchor"].as_u64().map(|a| vec![a as usize]).unwrap_or_default();
         app.points.clear();
-        app.status_ok(format!("Added a point to the motion path. {} to undo.", crate::platform::shortcut_label("Ctrl+Z")));
+        app.status_ok(tr!("Added a point to the motion path. {undo} to undo.", undo = app.undo_key()));
     }
     true
 }
@@ -278,9 +279,12 @@ pub fn delete_selected(app: &mut App) {
     }
     if let Some(v) = app.run("motion.delete_points", json!({"anchors": anchors})) {
         let n = v["deleted"].as_u64().unwrap_or(0);
-        let what = if n == 1 { "1 point".to_string() } else { format!("{n} points") };
-        let undo = crate::platform::shortcut_label("Ctrl+Z");
-        app.status_ok(if v["kept_ends"].as_bool() == Some(true) { format!("Deleted {what} from the motion path; its ends stay, as they are where the motion starts and ends. {undo} to undo.") } else { format!("Deleted {what} from the motion path. {undo} to undo.") });
+        let undo = app.undo_key();
+        app.status_ok(if v["kept_ends"].as_bool() == Some(true) {
+            trn!("Deleted {n} point from the motion path; its ends stay, as they are where the motion starts and ends. {undo} to undo.", "Deleted {n} points from the motion path; its ends stay, as they are where the motion starts and ends. {undo} to undo.", n, undo = undo)
+        } else {
+            trn!("Deleted {n} point from the motion path. {undo} to undo.", "Deleted {n} points from the motion path. {undo} to undo.", n, undo = undo)
+        });
         app.motion_anchors.clear();
     }
 }
@@ -291,7 +295,7 @@ pub fn convert_selected(app: &mut App, smooth: bool) {
     if anchors.is_empty() {
         return;
     }
-    app.s.begin_gesture(if smooth { "Make Smooth" } else { "Make Corner" });
+    app.s.begin_gesture(if smooth { tr_noop!("Make Smooth") } else { tr_noop!("Make Corner") });
     for a in anchors {
         app.run("motion.convert_point", json!({"anchor": a, "smooth": smooth}));
     }
@@ -359,24 +363,24 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui) -> bool {
     if anchors.is_empty() {
         return false;
     }
-    if ui.button("Make Smooth").clicked() {
+    if ui.button(tr!("Make Smooth")).clicked() {
         convert_selected(app, true);
         ui.close();
     }
-    if ui.button("Make Corner").clicked() {
+    if ui.button(tr!("Make Corner")).clicked() {
         convert_selected(app, false);
         ui.close();
     }
     ui.separator();
     let deletable = anchors.iter().any(|a| !is_end(*a, n));
-    let label = if anchors.len() > 1 { "Delete Points" } else { "Delete Point" };
+    let label = if anchors.len() > 1 { tr!("Delete Points") } else { tr!("Delete Point") };
     let resp = ui.add_enabled(deletable, egui::Button::new(label));
-    let resp = if deletable { resp } else { resp.on_disabled_hover_text("The ends of a motion path are where the motion starts and ends: drag them to move them") };
+    let resp = if deletable { resp } else { resp.on_disabled_hover_text(tr!("The ends of a motion path are where the motion starts and ends: drag them to move them")) };
     if resp.clicked() {
         delete_selected(app);
         ui.close();
     }
-    if ui.button("Straighten Path").on_hover_text("Back to the straight path the X and Y curves trace").clicked() {
+    if ui.button(tr!("Straighten Path")).on_hover_text(tr!("Back to the straight path the X and Y curves trace")).clicked() {
         app.run("motion.clear_path", json!({}));
         app.motion_anchors.clear();
         ui.close();

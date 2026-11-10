@@ -130,7 +130,7 @@ pub fn drag_start(app: &mut App, xf: Xf, press: Pos2) -> Drag {
     match instance_at(app, sp, 3.0 / xf.zoom.max(1e-3), None) {
         Some((_, from)) => Drag::Bone { from, head: pos2(sp.x, sp.y), cur: pos2(sp.x, sp.y) },
         None => {
-            app.status_ok("Start a bone on a symbol instance (convert artwork with F8), then drag to the instance it moves.");
+            app.status_ok(tr!("Start a bone on a symbol instance (convert artwork with F8), then drag to the instance it moves."));
             Drag::None
         }
     }
@@ -140,7 +140,7 @@ pub fn drag_start(app: &mut App, xf: Xf, press: Pos2) -> Drag {
 pub fn drag_end(app: &mut App, xf: Xf, from: ElementId, head: Pos2, cur: Pos2) {
     let tail = Vec2::new(cur.x, cur.y);
     let Some((_, to)) = instance_at(app, tail, 3.0 / xf.zoom.max(1e-3), Some(from)) else {
-        app.status_ok("A bone ends on another symbol instance: release over the instance it should move.");
+        app.status_ok(tr!("A bone ends on another symbol instance: release over the instance it should move."));
         return;
     };
     if let Some(v) = app.run("bone.add", json!({"from": from.0, "to": to.0, "head": [head.x, head.y], "tail": [tail.x, tail.y]})) {
@@ -180,17 +180,17 @@ pub fn select_drag_start(app: &mut App, xf: Xf, press: Pos2) -> Option<Drag> {
             select(app, layer, Some(id));
             let arm = app.s.doc.timeline(app.s.scene).layer(layer).and_then(|l| l.armature.clone())?;
             if armature::movable_chain(&arm, id).is_empty() {
-                app.status_ok("That bone is pinned (or hangs from a pinned bone): unpin it in Properties to drag it.");
+                app.status_ok(tr!("That bone is pinned (or hangs from a pinned bone): unpin it in Properties to drag it."));
                 return Some(Drag::None);
             }
-            app.s.begin_gesture("Pose Armature");
+            app.s.begin_gesture(tr_noop!("Pose Armature"));
             let local = local.or_else(|| arm.bone(id).map(|b| b.tail)).unwrap_or(Vec2::new(0.0, 0.0));
             Some(Drag::BonePose { bone: id, local: pos2(local.x, local.y) })
         }
         None => {
             select(app, layer, None);
             app.run("layer.select", json!({"layer": layer.0}));
-            app.s.begin_gesture("Move Armature");
+            app.s.begin_gesture(tr_noop!("Move Armature"));
             Some(Drag::ArmatureMove { layer, last: pos2(sp.x, sp.y) })
         }
     }

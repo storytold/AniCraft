@@ -144,7 +144,8 @@ mod imp {
             None => None,
         };
         GpuRenderer::new().map_err(|e| match shared {
-            Some(s) => format!("{s}; and on a device of its own: {e}"),
+            // Shown in Preferences: the driver's English, joined in the interface language.
+            Some(s) => tr!("{shared}; and on a device of its own: {e}", shared = s, e = e),
             None => e.to_string(),
         })
     }

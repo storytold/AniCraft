@@ -61,6 +61,7 @@ pub fn start() {
             Err(e) => {
                 web_sys::console::error_1(&JsValue::from_str(&e));
                 if let Some(el) = element(LOADING_ID) {
+                    // i18n-exempt: the page's own loading text, before the interface (and its language) starts
                     el.set_text_content(Some(&format!("AniCraft could not start in this browser: {e}")));
                 }
             }
@@ -69,6 +70,7 @@ pub fn start() {
 }
 
 async fn run() -> Result<(), String> {
+    // i18n-exempt: for the console and the page's loading text, before the interface starts
     let canvas = element(CANVAS_ID).ok_or("the page has no canvas for AniCraft")?.dyn_into::<web_sys::HtmlCanvasElement>().map_err(|_| "the AniCraft element is not a canvas")?;
     // Text needs a face to lay out with, and a page can't see the computer's fonts.
     anicraft_engine::text::Fonts::register(fonts());
@@ -90,7 +92,7 @@ async fn run() -> Result<(), String> {
 fn fonts() -> Vec<Arc<[u8]>> {
     let mut faces = crate::theme::embedded_fonts();
     if faces.is_empty()
-        && let Some(f) = egui::FontDefinitions::default().font_data.get("Ubuntu-Light")
+        && let Some(f) = egui::FontDefinitions::default().font_data.get("Ubuntu-Light") // i18n-exempt: a font key
     {
         faces.push(Arc::from(f.font.as_ref()));
     }
@@ -147,11 +149,12 @@ pub fn pick_file(cmd: &'static str, exts: &[&str]) {
 async fn read_picked(cmd: &'static str, file: web_sys::File) {
     let name = file.name();
     let data = if file.size() > MAX_PICK_BYTES {
-        Err(format!("it is larger than {} MB", MAX_PICK_BYTES as u64 >> 20))
+        // Shown in the status bar: "Could not open {name}: {e}".
+        Err(tr!("it is larger than {size} MB", size = MAX_PICK_BYTES as u64 >> 20))
     } else {
         match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
             Ok(buf) => Ok(js_sys::Uint8Array::new(&buf).to_vec()),
-            Err(_) => Err("the browser could not read it".to_string()),
+            Err(_) => Err(tr!("the browser could not read it").to_string()),
         }
     };
     PICKED.with(|p| p.borrow_mut().push(Picked { cmd, name, data }));
@@ -170,14 +173,15 @@ pub fn take_picked() -> Option<Picked> {
 pub fn download(path: &Path, data: &[u8]) {
     let name = path.file_name().map_or_else(|| "download".to_string(), |n| n.to_string_lossy().into_owned());
     if let Err(e) = try_download(&name, data) {
-        web_sys::console::error_2(&JsValue::from_str(&format!("could not download {name}")), &e);
+        web_sys::console::error_2(&JsValue::from_str(&format!("could not download {name}")), &e); // i18n-exempt: console
     }
 }
 
+/// Its errors go to the browser's console only.
 fn try_download(name: &str, data: &[u8]) -> Result<(), JsValue> {
-    let window = web_sys::window().ok_or("no window")?;
-    let doc = window.document().ok_or("no document")?;
-    let body = doc.body().ok_or("no body")?;
+    let window = web_sys::window().ok_or("no window")?; // i18n-exempt: console text
+    let doc = window.document().ok_or("no document")?; // i18n-exempt: console text
+    let body = doc.body().ok_or("no body")?; // i18n-exempt: console text
     let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(data));
     let opts = web_sys::BlobPropertyBag::new();
     opts.set_type("application/octet-stream");
@@ -210,7 +214,7 @@ fn guard_leaving() {
     let on_leave = Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(|e: web_sys::BeforeUnloadEvent| {
         if UNSAVED.with(Cell::get) {
             e.prevent_default();
-            e.set_return_value("You have unsaved changes.");
+            e.set_return_value(tr!("You have unsaved changes."));
         }
     });
     if window.add_event_listener_with_callback("beforeunload", on_leave.as_ref().unchecked_ref()).is_ok() {
@@ -230,8 +234,8 @@ pub fn storage_get(key: &str) -> Option<String> {
 }
 
 pub fn storage_set(key: &str, value: &str) -> Result<(), String> {
-    let s = storage().ok_or("this browser keeps no storage for the site (private browsing?)")?;
-    s.set_item(key, value).map_err(|_| "the browser's storage for this site is full (documents with large images or sounds may not fit)".to_string())
+    let s = storage().ok_or(tr!("this browser keeps no storage for the site (private browsing?)"))?;
+    s.set_item(key, value).map_err(|_| tr!("the browser's storage for this site is full (documents with large images or sounds may not fit)").to_string())
 }
 
 fn storage_remove(key: &str) {
@@ -267,7 +271,7 @@ pub struct BrowserSaver {
 
 impl BrowserSaver {
     pub fn start() -> Result<BrowserSaver, String> {
-        storage().ok_or("this browser keeps no storage for the site (private browsing?)")?;
+        storage().ok_or(tr!("this browser keeps no storage for the site (private browsing?)"))?;
         let millis = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let id = format!("web-{millis:x}-{:08x}", (js_sys::Math::random() * f64::from(u32::MAX)) as u32);
         hold_lock(&id);

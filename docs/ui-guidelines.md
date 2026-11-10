@@ -181,6 +181,17 @@ are not used for UI text, because they would change metrics per OS.
   (`0.50 s`). Units follow the number with a space: `24.00 fps`, `1280 × 720 px`, `78%`.
 * Use "×" for dimensions and "·" to separate inline facts.
 
+## 8a. Interface languages (ADR 0040, `docs/localisation.md`)
+
+* Write interface text in English through the macros: `tr!("Save")`, `tr!("Saved {path}",
+  path = p)`, `trn!("{n} layer", "{n} layers", n)`; `tr_noop!` in tables, `i18n::t` where they
+  are drawn. Screen-reader names too.
+* One sentence is one template with named placeholders; never glue translated pieces. Counts
+  use `trn!`, never `if n == 1`.
+* Keys stay English (ids, stored values, engine params); translate at the point of display.
+  Translated window titles carry an explicit `.id(..)`.
+* Leave room: labels must survive text a third longer. Check with `--lang pseudo`.
+
 ## 9. Checklist for a UI change
 
 1. Uses `theme::text(Type::…)` / `theme::font` / `with_type`, with no raw sizes or families,
@@ -192,3 +203,5 @@ are not used for UI text, because they would change metrics per OS.
 4. Screenshot checked (`cargo run -- --screenshot shots/now.png`, `--open <panel>` for dialogs),
    also with `--theme high-contrast` and `--scale 200`.
 5. Named for screen readers (section 7a); `cargo test --bin anicraft a11y` passes.
+6. Text goes through `tr!` (section 8a); `cargo test --bin anicraft i18n` passes and a
+   `--lang pseudo` screenshot shows no plain English and no cut-off `]`.
