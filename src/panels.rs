@@ -22,12 +22,14 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Text => Icon::Type,
         Tool::Pencil => Icon::Pencil,
         Tool::Brush => Icon::Brush,
+        Tool::Eraser => Icon::Eraser,
         Tool::Rect => Icon::Rect,
         Tool::Oval => Icon::Oval,
         Tool::Star => Icon::PolyStar,
         Tool::Line => Icon::Line,
         Tool::PaintBucket => Icon::Bucket,
         Tool::InkBottle => Icon::Ink,
+        Tool::Eyedropper => Icon::Eyedropper,
         Tool::Camera => Icon::Camera,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
@@ -66,10 +68,15 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             if active {
                 a11y::anchor(ui, a11y::Region::Tools, area, &resp);
             }
-            if resp.on_hover_text(format!("{name}\n{}", tool.hint())).clicked() {
+            let resp = resp.on_hover_text(format!("{name}\n{}", tool.hint()));
+            if resp.clicked() {
                 app.tool = tool;
             }
-            if matches!(tool, Tool::Width | Tool::Brush | Tool::Line | Tool::InkBottle) {
+            // Animate: double-clicking the Eraser erases everything on the stage (it asks first).
+            if tool == Tool::Eraser && resp.double_clicked() {
+                crate::erasertool::erase_everything(app);
+            }
+            if matches!(tool, Tool::Width | Tool::Eraser | Tool::Line | Tool::Eyedropper) {
                 // Tool groups: select, draw by hand, shapes, view.
                 ui.add_space(3.0);
                 let y = ui.cursor().top();
@@ -334,7 +341,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     let sel: Vec<_> = elements.iter().filter(|e| app.s.selection.contains(&e.id)).cloned().collect();
 
     // ---- tool options first while a drawing tool is in hand: they're what you reach for ----
-    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::Brush | Tool::PaintBucket | Tool::InkBottle) {
+    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper) {
         let title = format!("{} tool", app.tool.label());
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
     }
@@ -1230,6 +1237,10 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
 }
 
 fn tool_props(app: &mut App, ui: &mut egui::Ui) {
+    if app.tool == Tool::Eraser {
+        eraser_props(app, ui);
+        return;
+    }
     if app.tool == Tool::Text {
         // What new text gets (the last style used, as in Animate).
         let mut st = app.s.text_style.clone();
@@ -1315,6 +1326,45 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         Tool::Brush => brush_props(app, ui),
         _ => {}
     }
+}
+
+/// The Eraser's options (ADR 0034): the Faucet, size, shape and erase mode, as in Animate.
+fn eraser_props(app: &mut App, ui: &mut egui::Ui) {
+    use crate::brushtool::{SIZE_MAX, SIZE_MIN};
+    use anicraft_engine::cmds_erase::EraseMode;
+    use anicraft_engine::geom::brush::TipShape;
+    let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
+    let o = &mut app.eraser;
+    row_prose(ui, "Faucet", |ui| {
+        crate::theme::checkbox(ui, &mut o.faucet, "Delete whole fills and lines").on_hover_text("On: a click deletes the whole fill or line under it. Off: drag to erase");
+    });
+    ui.add_enabled_ui(!o.faucet, |ui| {
+        row(ui, "Size", |ui| {
+            let r = ui.add(egui::DragValue::new(&mut o.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named("Eraser size");
+            if !keys.is_empty() {
+                r.on_hover_text(format!("Eraser size ({keys})"));
+            }
+        });
+        row(ui, "Shape", |ui| {
+            for (shape, label, hint) in [(TipShape::Round, "Round", "A round eraser"), (TipShape::Square, "Square", "A square eraser")] {
+                ui.selectable_value(&mut o.shape, shape, label).on_hover_text(hint);
+            }
+        });
+        row_prose(ui, "Mode", |ui| {
+            egui::ComboBox::from_id_salt("erase_mode").width(170.0).selected_text(o.mode.label()).show_ui(ui, |ui| {
+                for m in EraseMode::ALL {
+                    ui.selectable_value(&mut o.mode, m, m.label()).on_hover_text(m.hint());
+                }
+            })
+            .response
+            .set_name("Erase mode");
+        });
+    });
+    row_prose(ui, "Stage", |ui| {
+        if ui.button("Erase Everything…").on_hover_text("Clears every visible, unlocked layer at this frame, as double-clicking the Eraser tool does. You can undo it").clicked() {
+            crate::erasertool::erase_everything(app);
+        }
+    });
 }
 
 /// The Brush tool's options (ADR 0033): what Animate's brush offers in its options.
