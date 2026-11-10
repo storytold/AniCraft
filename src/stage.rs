@@ -455,7 +455,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
+            Drag::Move { .. } => {
+                app.drop_raw();
+                app.s.end_gesture();
+            }
+            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
@@ -545,7 +549,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos()
     {
         commit_text(app);
-        open_text_at(app, to_stage(p), 3.0 / zoom.max(1e-3));
+        let sp = to_stage(p);
+        // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and its outline.
+        if !open_text_at(app, sp, 3.0 / zoom.max(1e-3)) {
+            app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": 3.0 / zoom.max(1e-3)}));
+        }
     }
     if app.tool == Tool::Subselect
         && !preview
@@ -761,12 +769,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let sel_stroke = Stroke::new(1.0, T.selection);
+    let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None
         && app.palette.is_none()
         && !app.modal_open()
         && let Some(sp) = app.cursor_stage
             && let Some((_, el)) = app.s.hit_test(to_v(sp), 3.0 / zoom)
-                && !app.s.selection.contains(&el) {
+                && !app.s.selection.contains(&el) && !raw.contains(&el) {
                     let b = app.s.element_bounds(el);
                     if !b.is_empty() {
                         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max));
@@ -774,6 +783,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
     let transforming = app.tool == Tool::Transform;
+    // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
+    if app.tool == Tool::Select {
+        let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
+        let mut mesh = egui::Mesh::default();
+        let mut budget = MAX_DOTS;
+        for item in app.s.display_list().items.iter().filter(|i| app.s.selection.contains(&i.element) && raw.contains(&i.element)) {
+            selection_dots(&mut mesh, item, &to_px.mul(&item.transform), canvas, &mut budget);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
     for id in app.s.selection.clone() {
         let b = app.s.element_bounds(id);
         if b.is_empty() {
@@ -783,6 +802,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if matches!(app.tool, Tool::Subselect | Tool::Width) {
             // Subselection and Width show outlines and points instead (below).
             continue;
+        }
+        if app.tool == Tool::Select && raw.contains(&id) {
+            continue; // dots above
         }
         if transforming {
             // Free transform shows one box for the whole selection (below); members get a hint.
@@ -865,6 +887,90 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         n => format!(" · {n} elements selected"),
     };
     crate::a11y::surface(ui, &resp, &format!("Stage · {} tool · frame {}{what}", app.tool.label(), app.s.frame + 1));
+}
+
+// ----- raw shapes (ADR 0031) ---------------------------------------------------------------------
+
+/// The raw shapes (parts of the layer's merged drawing) on the active layer.
+fn raw_ids(app: &App) -> std::collections::HashSet<anicraft_engine::doc::ElementId> {
+    app.s.visible_elements().iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(|e| e.id).collect()
+}
+
+/// Most selection dots drawn in a frame.
+const MAX_DOTS: usize = 60_000;
+
+/// Animate's selection look for raw shapes: fine dots over the selected fill or stroke, light and
+/// dark in a checker so they show on any colour. They sit on a fixed screen grid, so they don't
+/// crawl when the view pans; `m` maps the item's path to the screen.
+fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
+    const GAP: f32 = 3.0;
+    let mut dot = |p: Pos2| {
+        if *budget == 0 || !clip.contains(p) {
+            return;
+        }
+        *budget -= 1;
+        let dark = ((p.x / GAP).round() as i64 + (p.y / GAP).round() as i64).rem_euclid(2) == 0;
+        mesh.add_colored_rect(Rect::from_center_size(p, vec2(1.5, 1.5)), if dark { T.selection } else { Color32::WHITE });
+    };
+    let lines = item.path.flatten(m, 0.5);
+    if item.fill.is_some() {
+        let b = item.path.bounds().transformed(m);
+        let mut y = (b.min.y.max(clip.top()) / GAP).ceil() * GAP;
+        let bottom = b.max.y.min(clip.bottom());
+        let mut xs: Vec<f32> = Vec::new();
+        while y <= bottom {
+            // Where this row crosses the outline; pairs of crossings are inside (even-odd: raw
+            // fills never overlap themselves).
+            xs.clear();
+            for pl in &lines {
+                let n = pl.points.len();
+                for i in 0..n {
+                    let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
+                    if (a.y > y) != (c.y > y) {
+                        xs.push(a.x + (y - a.y) * (c.x - a.x) / (c.y - a.y));
+                    }
+                }
+            }
+            xs.sort_by(f32::total_cmp);
+            for w in xs.chunks_exact(2) {
+                let mut x = (w[0].max(clip.left()) / GAP).ceil() * GAP;
+                while x <= w[1].min(clip.right()) {
+                    dot(pos2(x, y));
+                    x += GAP;
+                }
+            }
+            y += GAP;
+        }
+    }
+    if let Some(st) = &item.stroke {
+        // Along the stroke, in rows across its width.
+        let half = (st.reach() * m.mean_scale()).max(0.5);
+        let rows = (half / GAP).floor() as i32;
+        for pl in &lines {
+            let n = pl.points.len();
+            let segs = if pl.closed { n } else { n.saturating_sub(1) };
+            let mut carry = 0.0;
+            for i in 0..segs {
+                let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
+                let d = c - a;
+                let len = d.length();
+                if len <= 1e-6 {
+                    continue;
+                }
+                let (dir, normal) = (d * (1.0 / len), d.perp() * (1.0 / len));
+                let mut t = carry;
+                while t < len {
+                    let p = a + dir * t;
+                    for k in -rows..=rows {
+                        let q = p + normal * (k as f32 * GAP);
+                        dot(pos2(q.x, q.y));
+                    }
+                    t += GAP;
+                }
+                carry = t - len;
+            }
+        }
+    }
 }
 
 // ----- text ----------------------------------------------------------------------------------------
