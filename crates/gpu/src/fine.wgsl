@@ -13,6 +13,12 @@
 // so far and continues on transparent, and its close blends it into the colour below at the
 // group's alpha, in its blend mode (the W3C separable formulas, as the oracle's `blend`).
 //
+// Bitmap fills (ADR 0031) sample one of 16 texture slots (straight RGBA8, one texture per
+// image) with the oracle's bilinear filter, colour effect and repeat rules
+// (crates/render/src/paint.rs › sample), by hand: hardware filtering rounds its weights. A
+// filtered group's layer (drawn and filtered by filters.wgsl) sits in `paints` after the gradient
+// tables, and its fill reads it pixel for pixel.
+//
 // Two entry points: `main` writes a storage buffer (premultiplied RGBA8 or f32, for readback),
 // `main_texture` writes premultiplied RGBA8 into a texture the window shows directly.
 
@@ -31,6 +37,22 @@ struct Params {
 @group(0) @binding(3) var<storage, read> paints: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> out: array<u32>;
 @group(0) @binding(5) var out_texture: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(6) var img0: texture_2d<f32>;
+@group(0) @binding(7) var img1: texture_2d<f32>;
+@group(0) @binding(8) var img2: texture_2d<f32>;
+@group(0) @binding(9) var img3: texture_2d<f32>;
+@group(0) @binding(10) var img4: texture_2d<f32>;
+@group(0) @binding(11) var img5: texture_2d<f32>;
+@group(0) @binding(12) var img6: texture_2d<f32>;
+@group(0) @binding(13) var img7: texture_2d<f32>;
+@group(0) @binding(14) var img8: texture_2d<f32>;
+@group(0) @binding(15) var img9: texture_2d<f32>;
+@group(0) @binding(16) var img10: texture_2d<f32>;
+@group(0) @binding(17) var img11: texture_2d<f32>;
+@group(0) @binding(18) var img12: texture_2d<f32>;
+@group(0) @binding(19) var img13: texture_2d<f32>;
+@group(0) @binding(20) var img14: texture_2d<f32>;
+@group(0) @binding(21) var img15: texture_2d<f32>;
 
 const NONE: u32 = 0xffffffffu;
 const PAINT_VEC4S: u32 = 4u;
@@ -88,10 +110,120 @@ fn fold(w: f32, rule: u32) -> f32 {
     return select(t, 2.0 - t, t > 1.0);
 }
 
-fn shade(op: u32, kind: u32, ramp: u32, p: vec2<f32>) -> vec4<f32> {
+fn texel(slot: u32, p: vec2<i32>) -> vec4<f32> {
+    switch slot {
+        case 0u: { return textureLoad(img0, p, 0); }
+        case 1u: { return textureLoad(img1, p, 0); }
+        case 2u: { return textureLoad(img2, p, 0); }
+        case 3u: { return textureLoad(img3, p, 0); }
+        case 4u: { return textureLoad(img4, p, 0); }
+        case 5u: { return textureLoad(img5, p, 0); }
+        case 6u: { return textureLoad(img6, p, 0); }
+        case 7u: { return textureLoad(img7, p, 0); }
+        case 8u: { return textureLoad(img8, p, 0); }
+        case 9u: { return textureLoad(img9, p, 0); }
+        case 10u: { return textureLoad(img10, p, 0); }
+        case 11u: { return textureLoad(img11, p, 0); }
+        case 12u: { return textureLoad(img12, p, 0); }
+        case 13u: { return textureLoad(img13, p, 0); }
+        case 14u: { return textureLoad(img14, p, 0); }
+        case 15u: { return textureLoad(img15, p, 0); }
+        default: { return vec4<f32>(0.0); }
+    }
+}
+
+// Finite (not NaN or infinite), from the bits: comparisons with NaN may be optimized away.
+fn finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+// One bitmap tap at integer (x, y) (wrapped when repeating, then clamped to the edges as
+// `Pixels::at` does), through the colour effect, premultiplied.
+fn tap(slot: u32, x: i32, y: i32, size: vec2<i32>, repeat: bool, fx: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
+    var q = vec2<i32>(x, y);
+    if repeat {
+        q = ((q % size) + size) % size;
+    }
+    q = clamp(q, vec2<i32>(0), size - vec2<i32>(1));
+    let c = texel(slot, q);
+    let keep = bitcast<u32>(tint.w);
+    let k = fx.z;
+    var rgb = clamp(c.rgb + (tint.rgb - c.rgb) * k, vec3<f32>(0.0), vec3<f32>(1.0));
+    rgb = select(vec3<f32>(0.0), rgb, vec3<bool>((keep & 1u) != 0u, (keep & 2u) != 0u, (keep & 4u) != 0u));
+    let a = clamp(c.a * fx.w, 0.0, 1.0);
+    return vec4<f32>(rgb * a, a);
+}
+
+// Rust's `rem_euclid` for f32.
+fn rem_euclid(u: f32, n: f32) -> f32 {
+    let r = u - n * trunc(u / n);
+    return select(r, r + n, r < 0.0);
+}
+
+// The oracle's bilinear sample of a bitmap at pixel centre `p` (paint.rs › sample).
+fn bitmap(base: u32, p: vec2<f32>) -> vec4<f32> {
+    let h0 = paints[base];
+    let m = paints[base + 1u];
+    let n = paints[base + 2u];
+    let tint = paints[base + 3u];
+    let slot = bitcast<u32>(h0.x);
+    let repeat = bitcast<u32>(h0.y) != 0u;
+    let size = vec2<i32>(i32(bitcast<u32>(h0.z)), i32(bitcast<u32>(h0.w)));
+    let w = f32(size.x);
+    let h = f32(size.y);
+    var u = m.x * p.x + m.z * p.y + n.x;
+    var v = m.y * p.x + m.w * p.y + n.y;
+    if !(finite(u) && finite(v)) || w < 1.0 || h < 1.0 {
+        return vec4<f32>(0.0);
+    }
+    if repeat {
+        u = rem_euclid(u, w);
+        v = rem_euclid(v, h);
+    } else if u < 0.0 || v < 0.0 || u >= w || v >= h {
+        return vec4<f32>(0.0);
+    }
+    let fx_ = u - 0.5;
+    let fy_ = v - 0.5;
+    let x0 = floor(fx_);
+    let y0 = floor(fy_);
+    let tx = fx_ - x0;
+    let ty = fy_ - y0;
+    let xi = i32(x0);
+    let yi = i32(y0);
+    let a = tap(slot, xi, yi, size, repeat, n, tint);
+    let b = tap(slot, xi + 1, yi, size, repeat, n, tint);
+    let c = tap(slot, xi, yi + 1, size, repeat, n, tint);
+    let d = tap(slot, xi + 1, yi + 1, size, repeat, n, tint);
+    let top = a + (b - a) * tx;
+    let bottom = c + (d - c) * tx;
+    return top + (bottom - top) * ty;
+}
+
+// A filtered layer's pixel at (x, y): `w × h` premultiplied colours at `at` in `paints`, its
+// top-left at (x0, y0); transparent outside (paint.rs › Shader::Image).
+fn layer(base: u32, x: u32, y: u32) -> vec4<f32> {
+    let h0 = paints[base];
+    let o = paints[base + 1u];
+    let dx = i32(x) - bitcast<i32>(o.x);
+    let dy = i32(y) - bitcast<i32>(o.y);
+    let w = i32(bitcast<u32>(h0.y));
+    let h = i32(bitcast<u32>(h0.z));
+    if dx < 0 || dy < 0 || dx >= w || dy >= h {
+        return vec4<f32>(0.0);
+    }
+    return paints[bitcast<u32>(h0.x) + u32(dy * w + dx)];
+}
+
+fn shade(op: u32, kind: u32, ramp: u32, p: vec2<f32>, x: u32, y: u32) -> vec4<f32> {
     let base = op * PAINT_VEC4S;
     if kind == 0u {
         return paints[base];
+    }
+    if kind == 3u {
+        return bitmap(base, p);
+    }
+    if kind == 4u {
+        return layer(base, x, y);
     }
     let m = paints[base + 1u];
     let n = paints[base + 2u];
@@ -246,7 +378,7 @@ fn pixel(wg: vec3<u32>, lid: vec3<u32>) -> vec4<f32> {
         if cov <= 1e-4 {
             continue;
         }
-        let s = shade(op, index[h], index[h + 2u], centre);
+        let s = shade(op, index[h], index[h + 2u], centre, x, y);
         c = s * cov + c * (1.0 - s.a * cov);
     }
     return c;
