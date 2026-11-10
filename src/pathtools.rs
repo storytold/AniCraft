@@ -12,6 +12,7 @@
 
 use crate::app::{App, Drag, Tool};
 use crate::theme::T;
+use anicraft_engine::cmds_rawsub::{Handle, RawPoints};
 use anicraft_engine::doc::{ElementId, ElementKind};
 use anicraft_engine::geom::edit::{ANCHOR, C1, C2};
 use anicraft_engine::geom::{Affine, Path, PathCmd, Vec2};
@@ -203,6 +204,8 @@ fn selected_shapes(app: &App) -> Vec<(ElementId, Arc<Path>, Affine)> {
         .into_iter()
         .filter(|e| app.s.selection.contains(&e.id))
         .filter_map(|e| match &e.kind {
+            // Raw shapes show their shared points instead (ADR 0042, below).
+            ElementKind::Shape(sh) if sh.merge => None,
             ElementKind::Shape(sh) => Some((e.id, sh.path.clone(), e.transform)),
             ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
         })
@@ -227,6 +230,7 @@ fn shown_handles(path: &Path, anchors: impl Iterator<Item = usize>) -> Vec<(usiz
 
 /// Drops point references that no longer exist (after undo, deselection or a frame change).
 pub fn upkeep(app: &mut App) {
+    raw_upkeep(app);
     if app.points.is_empty() {
         return;
     }
@@ -255,6 +259,9 @@ fn point_at(app: &App, at: Pos2, xf: Xf) -> Option<PointRef> {
 /// does when you drag an outline), else start a marquee over points.
 pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> Drag {
     let sp = xf.to_stage(press);
+    if let Some(d) = raw_drag_start(app, press, shift, xf) {
+        return d;
+    }
     if let Some(pt) = point_at(app, press, xf) {
         if !app.points.contains(&pt) {
             if !shift {
@@ -275,8 +282,12 @@ pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> 
     }
     if !shift {
         app.points.clear();
+        app.raw_anchors.clear();
+        app.raw_ends.clear();
     }
-    if selected_shapes(app).is_empty() { Drag::Marquee { start: pos2(sp.x, sp.y), cur: pos2(sp.x, sp.y) } } else { Drag::PointMarquee { start: pos2(sp.x, sp.y), cur: pos2(sp.x, sp.y) } }
+    // A marquee shows the points of the shapes it touches on the active layer and selects the
+    // points inside it; it never cuts (that is the Selection tool's).
+    Drag::PointMarquee { start: pos2(sp.x, sp.y), cur: pos2(sp.x, sp.y) }
 }
 
 /// Moves the selected points by a stage-space delta (inside the open gesture).
@@ -289,11 +300,21 @@ pub fn move_points(app: &mut App, d: Vec2) {
     }
 }
 
-/// Selects the anchors inside a stage-space marquee.
+/// The Subselection marquee: the shapes it touches on the active layer are selected whole (raw
+/// ones with everything connected to them, ADR 0042) and the anchors inside it are selected.
 pub fn marquee_points(app: &mut App, a: Pos2, b: Pos2, shift: bool) {
     let r = Rect::from_two_pos(a, b);
     if !shift {
         app.points.clear();
+        app.raw_anchors.clear();
+        app.raw_ends.clear();
+    }
+    if let Some(v) = app.run("raw.subselect_rect", json!({"x0": a.x, "y0": a.y, "x1": b.x, "y1": b.y, "add": shift})) {
+        for q in positions(&v["anchors"]) {
+            if !app.raw_anchors.iter().any(|p| p.distance(q) <= SNAP) {
+                app.raw_anchors.push(q);
+            }
+        }
     }
     for (id, path, m) in selected_shapes(app) {
         for (cmd, q) in path.editable_anchors() {
@@ -308,6 +329,9 @@ pub fn marquee_points(app: &mut App, a: Pos2, b: Pos2, shift: bool) {
 /// Click with the Subselection tool: a point toggles into the point selection, a shape is
 /// selected (showing its points), empty space clears both.
 pub fn subselect_click(app: &mut App, at: Pos2, shift: bool, xf: Xf) {
+    if raw_click(app, at, shift, xf) {
+        return;
+    }
     if let Some(pt) = point_at(app, at, xf) {
         if shift {
             if let Some(i) = app.points.iter().position(|p| *p == pt) {
@@ -323,6 +347,8 @@ pub fn subselect_click(app: &mut App, at: Pos2, shift: bool, xf: Xf) {
     let sp = xf.to_stage(at);
     app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
     app.points.clear();
+    app.raw_anchors.clear();
+    app.raw_ends.clear();
 }
 
 /// Double-click on a selected shape's outline adds a point there and selects it.
@@ -397,6 +423,216 @@ pub fn point_menu(app: &mut App, ui: &mut egui::Ui) -> bool {
     true
 }
 
+// ----- Subselection on raw shapes (ADR 0042) -------------------------------------------------
+
+/// Two positions this close are one shared point.
+const SNAP: f32 = anicraft_engine::geom::planar::SNAP;
+/// How near (screen pixels) a press takes an anchor of a raw shape that isn't shown yet.
+const GRAB_POINT: f32 = 6.0;
+
+fn is_raw(e: &anicraft_engine::doc::Element) -> bool {
+    matches!(&e.kind, ElementKind::Shape(sh) if sh.merge)
+}
+
+/// The selected raw shapes on the active layer: Subselection shows their points.
+fn raw_selected(app: &App) -> Vec<ElementId> {
+    app.s.visible_elements().iter().filter(|e| app.s.selection.contains(&e.id) && is_raw(e)).map(|e| e.id).collect()
+}
+
+/// The anchors and handles of the selected raw shapes.
+pub fn raw_shown(app: &App) -> RawPoints {
+    let ids = raw_selected(app);
+    if ids.is_empty() { RawPoints::default() } else { app.s.raw_points(&ids) }
+}
+
+/// The handles that show: those of the selected anchors' curves and of the clicked edge.
+fn visible_handles<'a>(app: &'a App, pts: &'a RawPoints) -> impl Iterator<Item = &'a Handle> + 'a {
+    pts.handles.iter().filter(|h| app.raw_anchors.iter().chain(&app.raw_ends).any(|a| a.distance(h.anchor) <= SNAP))
+}
+
+fn positions(v: &serde_json::Value) -> Vec<Vec2> {
+    v.as_array().into_iter().flatten().filter_map(|p| Some(Vec2::new(p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32))).collect()
+}
+
+/// What of the shown raw points is under a screen position: a handle (on top), else an anchor.
+enum RawHit {
+    Handle(Handle),
+    Anchor(Vec2),
+}
+
+fn raw_point_at(app: &App, pts: &RawPoints, at: Pos2, xf: Xf) -> Option<RawHit> {
+    let d = |q: Vec2| xf.to_screen(q).distance(at);
+    if let Some(h) = visible_handles(app, pts).filter(|h| d(h.at) <= PICK).min_by(|a, b| d(a.at).total_cmp(&d(b.at))) {
+        return Some(RawHit::Handle(*h));
+    }
+    pts.anchors.iter().copied().filter(|q| d(*q) <= PICK).min_by(|a, b| d(*a).total_cmp(&d(*b))).map(RawHit::Anchor)
+}
+
+/// Keeps the selected anchors on the points that are still there (after a drag merged, undo, or
+/// a frame change), and drops them with their shapes.
+fn raw_upkeep(app: &mut App) {
+    if app.raw_anchors.is_empty() && app.raw_ends.is_empty() {
+        return;
+    }
+    // A drag moves them itself.
+    if matches!(app.drag, Drag::RawPoint { .. } | Drag::RawHandle { .. } | Drag::SnapMove { .. }) {
+        return;
+    }
+    let pts = raw_shown(app);
+    let settle = |list: &mut Vec<Vec2>| {
+        let mut out: Vec<Vec2> = Vec::with_capacity(list.len());
+        for q in list.iter() {
+            // A merge may have met it with a point nearby (at most `SNAP` away, ADR 0041).
+            if let Some(p) = pts.anchors.iter().copied().filter(|p| p.distance(*q) <= 2.5 * SNAP).min_by(|a, b| a.distance(*q).total_cmp(&b.distance(*q)))
+                && !out.contains(&p)
+            {
+                out.push(p);
+            }
+        }
+        *list = out;
+    };
+    settle(&mut app.raw_anchors);
+    settle(&mut app.raw_ends);
+}
+
+/// Shows the connected raw shapes at stage point `sp` (their layer becomes the active one).
+/// False when there is no raw shape there.
+fn raw_show_at(app: &mut App, sp: Vec2, shift: bool, xf: Xf) -> bool {
+    let slop = 3.0 * xf.unit();
+    let Some((layer, id)) = app.s.hit_test(sp, slop) else { return false };
+    // On the active layer, look first; another layer's shape is for the engine to say.
+    if layer == app.s.layer && !app.s.visible_elements().iter().any(|e| e.id == id && is_raw(e)) {
+        return false;
+    }
+    let Some(v) = app.run("raw.subselect", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": slop})) else { return false };
+    if v["raw"] != json!(true) {
+        return false;
+    }
+    if !shift {
+        app.raw_anchors.clear();
+    }
+    app.raw_ends = positions(&v["ends"]);
+    app.points.clear();
+    true
+}
+
+/// A press with Subselection on raw shapes: a shown handle bends its curve, a shown anchor moves
+/// (with the other selected anchors), an anchor of a raw shape not shown yet shows its shapes and
+/// moves, and a raw line or fill shows its connected shapes and moves all of them. `None` when
+/// the press is not on raw artwork.
+fn raw_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> Option<Drag> {
+    let sp = xf.to_stage(press);
+    let pts = raw_shown(app);
+    let anchor = match raw_point_at(app, &pts, press, xf) {
+        Some(RawHit::Handle(h)) => {
+            app.s.begin_gesture("Move Handle");
+            app.raw_touched.clear();
+            return Some(Drag::RawHandle { id: h.id, cmd: h.cmd, slot: h.slot, last: pos2(sp.x, sp.y) });
+        }
+        Some(RawHit::Anchor(q)) => Some(q),
+        // An unselected raw shape's corner or end: show its shapes, then take the point.
+        None => match app.s.raw_grab(sp, 3.0 * xf.unit(), GRAB_POINT * xf.unit()) {
+            Some((_, anicraft_engine::cmds_raw::Grab::Point { at })) if raw_show_at(app, at, false, xf) => Some(at),
+            _ => None,
+        },
+    };
+    if let Some(q) = anchor {
+        if !app.raw_anchors.iter().any(|p| p.distance(q) <= SNAP) {
+            if !shift {
+                app.raw_anchors.clear();
+            }
+            app.raw_anchors.push(q);
+        }
+        app.raw_with = app.raw_anchors.iter().copied().filter(|p| p.distance(q) > SNAP).collect();
+        app.raw_points = serde_json::Value::Null;
+        app.raw_touched.clear();
+        app.s.begin_gesture("Move Points");
+        return Some(Drag::RawPoint { at: pos2(q.x, q.y), off: pos2(q.x, q.y) - pos2(sp.x, sp.y) });
+    }
+    // A raw line or fill: everything connected to it moves (Animate's Subselection drag).
+    let on_shown = app.s.hit_test(sp, 3.0 * xf.unit()).is_some_and(|(l, id)| l == app.s.layer && app.s.selection.contains(&id) && app.s.visible_elements().iter().any(|e| e.id == id && is_raw(e)));
+    if !on_shown && !raw_show_at(app, sp, shift, xf) {
+        return None;
+    }
+    app.s.begin_gesture("Move");
+    Some(Drag::SnapMove { start: pos2(sp.x, sp.y), applied: egui::Vec2::ZERO })
+}
+
+/// A click with Subselection on raw shapes: an anchor toggles into the selection (Shift adds or
+/// removes it), a raw line or fill shows everything connected to it. False when it wasn't on
+/// raw artwork.
+fn raw_click(app: &mut App, at: Pos2, shift: bool, xf: Xf) -> bool {
+    let pts = raw_shown(app);
+    match raw_point_at(app, &pts, at, xf) {
+        Some(RawHit::Anchor(q)) => {
+            match app.raw_anchors.iter().position(|p| p.distance(q) <= SNAP) {
+                Some(i) if shift => {
+                    app.raw_anchors.remove(i);
+                }
+                _ if shift => app.raw_anchors.push(q),
+                _ => app.raw_anchors = vec![q],
+            }
+            true
+        }
+        Some(RawHit::Handle(_)) => true,
+        None => raw_show_at(app, xf.to_stage(at), shift, xf),
+    }
+}
+
+/// The selected raw anchors moved by the arrow keys: every shape sharing them moves too, and
+/// they merge where they land (points within 0.2 px meet, ADR 0041). One undo step a press.
+fn raw_nudge(app: &mut App, d: Vec2) {
+    let Some((&first, rest)) = app.raw_anchors.split_first() else { return };
+    let with: Vec<[f32; 2]> = rest.iter().map(|q| [q.x, q.y]).collect();
+    let p = json!({"x": first.x, "y": first.y, "to_x": first.x + d.x, "to_y": first.y + d.y, "with": with});
+    if app.run("raw.move_point", p).is_some() {
+        for q in app.raw_anchors.iter_mut().chain(app.raw_ends.iter_mut()) {
+            *q = *q + d;
+        }
+    }
+}
+
+/// While raw points are dragged, the selected anchors follow by `d` (the move this frame), and
+/// the clicked edge's ends too when they move (`all`: the whole drawing moves).
+pub fn raw_follow(app: &mut App, d: Vec2, all: bool) {
+    if d == Vec2::ZERO {
+        return;
+    }
+    let moving = app.raw_anchors.clone();
+    for q in app.raw_anchors.iter_mut() {
+        *q = *q + d;
+    }
+    for q in app.raw_ends.iter_mut().filter(|q| all || moving.iter().any(|m| m.distance(**q) <= SNAP)) {
+        *q = *q + d;
+    }
+}
+
+/// The raw shapes' outlines, handles and anchors (hollow squares; selected ones solid).
+fn draw_raw(app: &App, painter: &egui::Painter, xf: Xf) {
+    let ids = raw_selected(app);
+    if ids.is_empty() {
+        return;
+    }
+    let line = Stroke::new(1.0, T.selection);
+    let to_px = Affine::translate(xf.origin.x, xf.origin.y).mul(&Affine::scale(xf.zoom, xf.zoom));
+    for e in app.s.visible_elements().iter().filter(|e| ids.contains(&e.id)) {
+        let ElementKind::Shape(sh) = &e.kind else { continue };
+        for pl in sh.path.flatten(&to_px.mul(&e.transform), 0.35) {
+            let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
+            painter.add(if pl.closed { egui::Shape::closed_line(pts, line) } else { egui::Shape::line(pts, line) });
+        }
+    }
+    let pts = app.s.raw_points(&ids);
+    for h in visible_handles(app, &pts) {
+        let (hs, a) = (xf.to_screen(h.at), xf.to_screen(h.anchor));
+        painter.line_segment([a, hs], line);
+        painter.circle_filled(hs, 3.0, T.selection);
+    }
+    for q in pts.anchors.iter().take(20_000) {
+        anchor_box(painter, xf.to_screen(*q), app.raw_anchors.iter().any(|p| p.distance(*q) <= SNAP));
+    }
+}
+
 // ----- keys ----------------------------------------------------------------------------------
 
 /// Keys the path tools own while they are busy, taken before the global shortcuts (so Enter
@@ -423,6 +659,48 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
         if take(Key::Escape) {
             app.points.clear();
         }
+        if let Some(d) = arrow_nudge(ctx, app.view.zoom) {
+            move_points_step(app, d);
+        }
+    }
+    if app.tool == Tool::Subselect && !app.raw_anchors.is_empty() {
+        if take(Key::Delete) || take(Key::Backspace) {
+            app.status_err("Points of merged drawings can't be deleted yet. Select the parts with the Selection tool (V) and delete them.");
+        }
+        if take(Key::Escape) {
+            app.raw_anchors.clear();
+        }
+        if let Some(d) = arrow_nudge(ctx, app.view.zoom) {
+            raw_nudge(app, d);
+        }
+    }
+}
+
+/// An arrow key press (taken): 1 screen pixel, Shift 10, as Animate's (issue #42 section 4).
+fn arrow_nudge(ctx: &egui::Context, zoom: f32) -> Option<Vec2> {
+    let mut d = Vec2::ZERO;
+    ctx.input_mut(|i| {
+        for (k, v) in [(Key::ArrowLeft, Vec2::new(-1.0, 0.0)), (Key::ArrowRight, Vec2::new(1.0, 0.0)), (Key::ArrowUp, Vec2::new(0.0, -1.0)), (Key::ArrowDown, Vec2::new(0.0, 1.0))] {
+            // Shift first: a plain chord also matches a press with Shift held.
+            for (m, step) in [(Modifiers::SHIFT, 10.0), (Modifiers::NONE, 1.0)] {
+                while i.consume_key(m, k) {
+                    d = d + v * (step / zoom.max(1e-3));
+                }
+            }
+        }
+    });
+    (d != Vec2::ZERO).then_some(d)
+}
+
+/// Selected points of drawing objects nudged by the arrow keys: one undo step.
+fn move_points_step(app: &mut App, d: Vec2) {
+    let own = !app.s.in_gesture();
+    if own {
+        app.s.begin_gesture("Move Points");
+    }
+    move_points(app, d);
+    if own {
+        app.s.end_gesture();
     }
 }
 
@@ -444,6 +722,7 @@ fn anchor_box(painter: &egui::Painter, c: Pos2, filled: bool) {
 pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, hover: Option<Pos2>) {
     let line = Stroke::new(1.0, T.selection);
     if app.tool == Tool::Subselect {
+        draw_raw(app, painter, xf);
         for (id, path, m) in selected_shapes(app) {
             let to_px = Affine::translate(xf.origin.x, xf.origin.y).mul(&Affine::scale(xf.zoom, xf.zoom)).mul(&m);
             for pl in path.flatten(&to_px, 0.35) {
@@ -525,6 +804,87 @@ mod tests {
         // The engine takes it.
         let mut s = anicraft_engine::Session::default();
         assert!(s.execute("draw.path", &json!({"d": pen.to_svg(true)})).is_ok());
+    }
+
+    /// Subselection on a merged drawing (ADR 0042), on a headless app: a raw rectangle with
+    /// its outline at the stage origin, stage and screen coordinates the same.
+    mod raw {
+        use super::*;
+
+        const XF: Xf = Xf { origin: Pos2::ZERO, zoom: 1.0 };
+
+        fn app_and_ctx() -> (App, egui::Context) {
+            let ctx = egui::Context::default();
+            let session = anicraft_engine::Session::new(anicraft_engine::doc::Document::default());
+            let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+            app.run("draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 80, "fill": "#ff0000", "stroke": "#000000", "object": false}));
+            app.run("edit.deselect", json!({}));
+            app.tool = Tool::Subselect;
+            app.view.zoom = 1.0;
+            (app, ctx)
+        }
+
+        fn has(list: &[Vec2], x: f32, y: f32) -> bool {
+            list.iter().any(|q| q.distance(Vec2::new(x, y)) < 1e-2)
+        }
+
+        #[test]
+        fn a_click_shows_the_connected_points_and_selects_anchors() {
+            let (mut app, _) = app_and_ctx();
+            subselect_click(&mut app, pos2(50.0, 0.0), false, XF);
+            assert_eq!(app.s.selection.len(), 5, "the fill and its four sides");
+            assert_eq!(raw_shown(&app).anchors.len(), 4);
+            assert!(has(&app.raw_ends, 0.0, 0.0) && has(&app.raw_ends, 100.0, 0.0), "{:?}", app.raw_ends);
+            subselect_click(&mut app, pos2(100.0, 0.0), false, XF);
+            assert_eq!(app.raw_anchors.len(), 1);
+            subselect_click(&mut app, pos2(0.0, 0.0), true, XF);
+            assert_eq!(app.raw_anchors.len(), 2, "Shift adds");
+            subselect_click(&mut app, pos2(0.0, 0.0), true, XF);
+            assert_eq!(app.raw_anchors.len(), 1, "and removes");
+            subselect_click(&mut app, pos2(500.0, 500.0), false, XF);
+            assert!(app.s.selection.is_empty() && app.raw_anchors.is_empty());
+        }
+
+        #[test]
+        fn arrow_keys_move_the_selected_anchors_with_every_shape_on_them() {
+            let (mut app, ctx) = app_and_ctx();
+            subselect_click(&mut app, pos2(50.0, 0.0), false, XF);
+            subselect_click(&mut app, pos2(100.0, 0.0), false, XF);
+            subselect_click(&mut app, pos2(0.0, 0.0), true, XF);
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Key { key: Key::ArrowUp, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::SHIFT });
+            let mut out = ctx.run_ui(input, |ui| consume_keys(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+            assert!(has(&app.raw_anchors, 0.0, -10.0) && has(&app.raw_anchors, 100.0, -10.0), "{:?}", app.raw_anchors);
+            upkeep(&mut app);
+            assert_eq!(app.raw_anchors.len(), 2, "still on the moved points");
+            let pts = raw_shown(&app);
+            assert!(has(&pts.anchors, 0.0, -10.0) && has(&pts.anchors, 100.0, 80.0) && pts.anchors.len() == 4, "{:?}", pts.anchors);
+            assert!(app.s.can_undo());
+        }
+
+        #[test]
+        fn a_press_takes_an_anchor_or_moves_everything_connected() {
+            let (mut app, _) = app_and_ctx();
+            // An anchor of a drawing not shown yet: it shows, and the point is taken.
+            assert!(matches!(subselect_drag_start(&mut app, pos2(100.0, 80.0), false, XF), Drag::RawPoint { .. }));
+            assert_eq!(app.s.selection.len(), 5);
+            assert!(has(&app.raw_anchors, 100.0, 80.0));
+            app.s.end_gesture();
+            // With another anchor selected, Shift: both move.
+            assert!(matches!(subselect_drag_start(&mut app, pos2(0.0, 80.0), true, XF), Drag::RawPoint { .. }));
+            assert_eq!(app.raw_with.len(), 1);
+            app.s.end_gesture();
+            // Inside the fill: the whole connected drawing moves.
+            assert!(matches!(subselect_drag_start(&mut app, pos2(50.0, 40.0), false, XF), Drag::SnapMove { .. }));
+            app.s.end_gesture();
+            // Empty space: a marquee, which selects the anchors inside it.
+            assert!(matches!(subselect_drag_start(&mut app, pos2(300.0, 300.0), false, XF), Drag::PointMarquee { .. }));
+            marquee_points(&mut app, pos2(90.0, -10.0), pos2(120.0, 10.0), false);
+            assert_eq!(app.s.selection.len(), 5);
+            assert_eq!(app.raw_anchors.len(), 1);
+            assert!(has(&app.raw_anchors, 100.0, 0.0));
+        }
     }
 
     #[test]

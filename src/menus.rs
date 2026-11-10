@@ -61,10 +61,25 @@ fn enabled(app: &App, id: &str) -> bool {
     }
 }
 
+/// Whether a registry command that switches a setting has it on (`None`: not a setting).
+fn checked(app: &App, id: &str) -> Option<bool> {
+    match id {
+        "draw.snap_to_objects" => Some(app.s.style.snap_objects),
+        "draw.object_drawing" => Some(app.s.style.object_drawing),
+        _ => None,
+    }
+}
+
 fn item(app: &mut App, ui: &mut egui::Ui, spec: &CommandSpec) {
     let label = match spec.id {
         "edit.undo" => app.s.undo_label().map_or_else(|| "Undo".to_string(), |l| format!("Undo {l}")),
         _ => spec.label.to_string(),
+    };
+    // Settings show whether they are on, as check items do.
+    let label = match checked(app, spec.id) {
+        Some(true) => format!("✔ {label}"),
+        Some(false) => format!("   {label}"),
+        None => label,
     };
     let button = egui::Button::new(label).shortcut_text(text(Type::Key, platform::shortcut_label(app.keymap.primary(spec.id).unwrap_or(""))));
     // What this build can't do stays in its usual place, dimmed, saying why (the web build).
@@ -111,13 +126,8 @@ fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>
     clicked
 }
 
-fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
-    if top == "Commands" {
-        // Installed plug-ins first (they change at run time), then the registry's items.
-        crate::plugins_ui::menu(app, ui, cmds, item);
-        return;
-    }
-    // Direct items first, then one submenu per "Top/Sub" path, in registry order.
+/// A top menu's registry items: its own, then one submenu per "Top/Sub" path, in order.
+fn registry_items(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
     for spec in cmds.iter().filter(|c| c.menu == top) {
         item(app, ui, spec);
     }
@@ -137,6 +147,19 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
                 item(app, ui, spec);
             }
         });
+    }
+}
+
+fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
+    if top == "Commands" {
+        // Installed plug-ins first (they change at run time), then the registry's items.
+        crate::plugins_ui::menu(app, ui, cmds, item);
+        return;
+    }
+    // Direct items first, then one submenu per "Top/Sub" path, in registry order (in View,
+    // after its zoom and preview items, where Animate keeps Snapping).
+    if top != "View" {
+        registry_items(app, ui, top, cmds);
     }
 
     match top {
@@ -201,6 +224,8 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
                     }
                 }
             });
+            ui.separator();
+            registry_items(app, ui, top, cmds);
         }
         "Control" => {
             ui.separator();
