@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+* **Eraser and Eyedropper** (E and I, ADR 0034, first slice).
+  * The Eraser sweeps the same tip as the Brush and takes what it covers out of the lines and
+    fills on the active layer that were drawn with Object Drawing off. Drawing objects,
+    symbols and text are kept, as in Animate.
+  * Erase modes: Erase Normal, Erase Fills, Erase Lines, Erase Selected Fills and Erase Inside
+    (only the fill where the stroke starts).
+  * The Faucet option deletes a whole fill or line with one click.
+  * Double-clicking the Eraser tool, or Erase Everything… in its options, clears the visible,
+    unlocked layers at this frame. It asks first, and you can undo it.
+  * The erased area shows as you drag, `[` and `]` change the size, and each stroke is one
+    undo step. A stroke that erases nothing leaves no undo step.
+  * The Eyedropper picks a fill's colour, gradient or bitmap into the fill swatch, or a line's
+    colour, width and width profile into the stroke settings. It then becomes the Paint Bucket
+    or the Ink Bottle.
+  * A picked gradient stays where it is on the stage, so it carries on across the shapes you
+    pour it into.
+  * With shapes selected, the Eyedropper applies the picked style to them. Shift-click picks
+    into the other swatch only.
+  * For scripts and AI assistants: `draw.erase`, `draw.faucet`, `draw.erase_all`,
+    `paint.pick` and `paint.apply_style`.
+* **Brush tool** (B, ADR 0033, first slice). The brush paints filled shapes in the fill colour,
+  as Animate's Brush tool does: the shape is exactly the area the tip sweeps along the drag.
+  * Tip options: round or square, size, angle and roundness (for oval and flat calligraphic
+    tips).
+  * With a tablet, pen pressure sets the width (from 10 % to the full size); a mouse paints at
+    full size.
+  * Smoothing evens out a shaky hand.
+  * Paint modes: Paint Normal covers lines and fills, Paint Fills leaves lines alone, and Paint
+    Behind paints only empty areas.
+  * With Object Drawing off, brush strokes merge with the drawing like the other tools'
+    shapes; strokes of one colour join.
+  * The paint shows as you drag, a click paints a dab, and `[` and `]` change the size. Each
+    stroke is one undo step.
+  * For scripts and AI assistants: `draw.brush`.
+
+  Also fixed: a closed curve fit could add a straight edge across the shape when its first
+  point wasn't a corner, which affected some Paint Bucket fills.
 * **The stage draws on the graphics card by default** (GPU stage, third slice, ADR 0032).
   Bitmap fills and all seven filters (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient
   Bevel, Adjust Color) are now drawn on the GPU too, so documents imported from Animate no
