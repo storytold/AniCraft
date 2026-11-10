@@ -19,6 +19,24 @@
     on new interface text that skips them. Not yet: engine messages, right-to-left languages
     (egui can't lay them out yet), Chinese, Japanese and Korean (need a font).
 
+* **Sound effects, layer volume and sounds inside symbols** (ADR 0039, M5 second slice).
+  * Properties › Sound has an **Effect**, as in Animate: Left channel, Right channel, Fade left
+    to right, Fade right to left, Fade in and Fade out, shaped over the time the sound is
+    heard, or **Custom**. **Edit…** opens Edit Envelope: each channel's waveform with its volume
+    line; click to add a point (up to 16), drag to move it, right-click to delete it, or type
+    its time and levels. Play previews the sound with its envelope. Editing a preset makes it
+    Custom. The timeline's waveform follows the envelope.
+  * Layers with sounds have a **Volume** and **Mute** (Properties, and a speaker toggle in the
+    timeline row). Muted layers are silent in playback and in every export.
+  * **Sounds inside symbols play.** A graphic's play on its own frames as its parent shows
+    them (loop mode and first frame apply; a stream reached mid-way is heard from there); a
+    movie clip's on a loop from when it appears. Volumes multiply down through symbols.
+  * **Test Movie has sound**: the sounds of the frames it enters, movie clips' and graphics'
+    included, with the picture keeping time with the sound.
+  * The HTML canvas page carries envelopes, volumes and sounds in graphics. Sounds on button
+    frames are not played yet (reported). Sounds are not read from XFL files yet: Animate
+    keeps their data in an undocumented form.
+  * Commands: `sound.set {effect, envelope}`, `layer.set_volume`, `layer.toggle_mute`.
 * **Scripts in Animate documents are kept** (ADR 0013 tier 1). Opening an `.fla` or XFL
   file used to drop its frame scripts. Now they come across as they were written, together
   with symbol linkage classes and the document class. Nothing runs them yet.

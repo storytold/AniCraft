@@ -103,8 +103,7 @@ impl SoundOut {
 
     /// A one-frame snippet of the stream sounds at movie frame `frame` (scrubbing).
     pub fn scrub(&mut self, doc: &Document, state: StateId, frame: u32) {
-        let streams = doc.scenes.iter().any(|s| s.timeline.layers.iter().any(|l| l.keyframes.iter().any(|k| k.sound.is_some_and(|f| f.sync == sound::SoundSync::Stream))));
-        if !streams || !self.ready() {
+        if !sound::has_streams(doc) || !self.ready() {
             return;
         }
         self.sync(doc, state);
@@ -116,16 +115,56 @@ impl SoundOut {
 
     /// Plays a library sound on its own (the Library's preview button).
     pub fn preview(&mut self, pcm: Arc<Pcm>) {
+        let end = Voice::play_frames(&pcm, self.rate);
+        self.preview_voice(Voice::new(pcm, VoiceKind::Event, 0, end));
+    }
+
+    /// Plays one voice on its own from its start (a library sound, or a keyframe's sound with
+    /// its effect from the envelope editor).
+    pub fn preview_voice(&mut self, voice: Voice) {
         if !self.ready() {
             return;
         }
-        let end = Voice::play_frames(&pcm, self.rate);
-        let voices = Arc::new(vec![Voice { pcm, kind: VoiceKind::Event, at: 0, end, gain: 1.0 }]);
+        self.previewing = true;
+        self.with_player(|p| {
+            p.set_voices(Arc::new(vec![voice]));
+            p.play(0);
+        });
+    }
+
+    /// The output rate (what voices for [`SoundOut::preview_voice`] and
+    /// [`SoundOut::set_movie`] are laid out at).
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// Test Movie's sound (ADR 0039): plays `voices` (laid out by the player as the movie
+    /// runs) from output frame `from`. Whether sound can be heard.
+    pub fn play_movie(&mut self, voices: Arc<Vec<Voice>>, from: u64) -> bool {
+        if !self.ready() {
+            return false;
+        }
         self.previewing = true;
         self.with_player(|p| {
             p.set_voices(voices);
-            p.play(0);
-        });
+            p.play(from);
+        })
+        .is_some()
+    }
+
+    /// New voices for Test Movie, carrying on from where it plays.
+    pub fn set_movie(&mut self, voices: Arc<Vec<Voice>>) {
+        if self.previewing {
+            self.with_player(|p| p.set_voices(voices));
+        }
+    }
+
+    /// The output frame Test Movie's sound has reached while it plays.
+    pub fn movie_position(&self) -> Option<u64> {
+        if !self.previewing || !self.is_playing() {
+            return None;
+        }
+        self.with_player(|p| p.position())
     }
 
     /// Fades out and goes quiet.
