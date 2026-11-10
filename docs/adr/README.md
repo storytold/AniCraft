@@ -25,3 +25,6 @@ has to renumber because another PR merged first.
 | 0037 | #38 (outside contribution) | Interface languages |
 | 0039 | #100 | Sound effects, volume and sounds inside symbols |
 | 0040 | branch `m8/localisation` (PR to come) | Localisation of the interface |
+| 0041 | branch `m1/raw-selection` (PR to come) | Selection tool on raw drawings (issue #42) |
+| 0042 | branch `m1/raw-subselection` (PR to come) | Subselection on raw drawings, merging everywhere (issue #42) |
+| 0043 | branch `m7/bones` (PR to come) | Bone tool and inverse kinematics |
