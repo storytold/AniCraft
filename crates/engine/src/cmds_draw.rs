@@ -10,10 +10,11 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?}", true, draw_rect as crate::RunFn),
-        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?}", true, draw_ellipse),
-        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?}", true, draw_star),
-        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..])}", true, draw_line),
+        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_rect as crate::RunFn),
+        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_ellipse),
+        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, object?}", true, draw_star),
+        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
+        c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
         c("edit.select_all", "Select All", "Edit", Some("Ctrl+A"), "{}", false, select_all),
         c("edit.deselect", "Deselect All", "Edit", Some("Ctrl+Shift+A"), "{}", false, |s, _| {
             s.selection.clear();
@@ -90,16 +91,24 @@ fn rect_params(p: &Value) -> Result<(f32, f32, f32, f32)> {
     Ok((x.min(x + w), y.min(y + h), w.abs(), h.abs()))
 }
 
-/// Adds a shape whose local origin is its centre, placed with a translation.
-pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, fill: Option<Paint>, stroke: Option<Stroke>) -> Result<Value> {
+/// Adds a shape whose local origin is its centre, placed with a translation. Unless `object`
+/// (Object Drawing), it merges with the raw shapes it touches (ADR 0031), and the pieces of it
+/// that come out are selected.
+pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, fill: Option<Paint>, stroke: Option<Stroke>, object: bool) -> Result<Value> {
+    let merge = !object && crate::merge::can_merge(fill.as_ref(), stroke.as_ref());
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
         name: String::new(),
         transform: Affine::translate(origin.x, origin.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill, stroke, fill_rule: Default::default() }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill, stroke, fill_rule: Default::default(), merge }),
     };
+    if merge {
+        s.selection = crate::merge::merge_in(s, vec![el])?;
+        let ids: Vec<u64> = s.selection.iter().map(|e| e.0).collect();
+        return Ok(json!({"element": ids.first(), "elements": ids, "kind": name, "merged": true}));
+    }
     let kf = s.editable_keyframe()?;
     if kf.elements.len() >= 100_000 {
         return Err(EngineError::State("too many elements on this keyframe".into()));
@@ -109,17 +118,22 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
     Ok(json!({"element": id.0, "kind": name}))
 }
 
+/// The `object` param: draw an object instead of merging (default: the Object Drawing setting).
+pub(crate) fn object_param(s: &Session, p: &Value) -> Result<bool> {
+    Ok(opt_bool(p, "object")?.unwrap_or(s.style.object_drawing))
+}
+
 fn draw_rect(s: &mut Session, p: &Value) -> Result<Value> {
     let (x, y, w, h) = rect_params(p)?;
     let r = opt_f32(p, "radius")?.unwrap_or(0.0).max(0.0);
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "rect", Path::rounded_rect(-w / 2.0, -h / 2.0, w, h, r), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke)
+    add_shape(s, "rect", Path::rounded_rect(-w / 2.0, -h / 2.0, w, h, r), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke, object_param(s, p)?)
 }
 
 fn draw_ellipse(s: &mut Session, p: &Value) -> Result<Value> {
     let (x, y, w, h) = rect_params(p)?;
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "ellipse", Path::ellipse(0.0, 0.0, w / 2.0, h / 2.0), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke)
+    add_shape(s, "ellipse", Path::ellipse(0.0, 0.0, w / 2.0, h / 2.0), Vec2::new(x + w / 2.0, y + h / 2.0), fill, stroke, object_param(s, p)?)
 }
 
 fn draw_star(s: &mut Session, p: &Value) -> Result<Value> {
@@ -133,7 +147,7 @@ fn draw_star(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("param 'points' must be between 3 and 64".into()));
     }
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "star", Path::star(0.0, 0.0, outer, inner, points), Vec2::new(cx, cy), fill, stroke)
+    add_shape(s, "star", Path::star(0.0, 0.0, outer, inner, points), Vec2::new(cx, cy), fill, stroke, object_param(s, p)?)
 }
 
 fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
@@ -144,7 +158,12 @@ fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let (_, stroke) = style(s, p, false)?;
     let c = (a + b) * 0.5;
-    add_shape(s, "line", Path::line(a - c, b - c), c, None, stroke)
+    add_shape(s, "line", Path::line(a - c, b - c), c, None, stroke, object_param(s, p)?)
+}
+
+fn object_drawing(s: &mut Session, p: &Value) -> Result<Value> {
+    s.style.object_drawing = opt_bool(p, "on")?.unwrap_or(!s.style.object_drawing);
+    Ok(json!({"object_drawing": s.style.object_drawing}))
 }
 
 // ----- selection --------------------------------------------------------------------------
@@ -681,6 +700,7 @@ fn place_bitmap(s: &mut Session, p: &Value, bitmap: anicraft_doc::BitmapId) -> R
             fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }),
             stroke: None,
             fill_rule: anicraft_geom::FillRule::NonZero,
+            merge: false,
         }),
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));

@@ -1268,6 +1268,14 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
             st.stroke_profile = pick;
         }
     }
+    // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
+    if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil) {
+        let key = anicraft_engine::find_command("draw.object_drawing").and_then(|c| c.shortcut).map(crate::platform::shortcut_label).unwrap_or_default();
+        row_prose(ui, "Drawing", |ui| {
+            crate::theme::checkbox(ui, &mut st.object_drawing, "Object drawing")
+                .on_hover_text(format!("On: each shape is an object of its own. Off: shapes cut and merge with the shapes they touch ({key})"));
+        });
+    }
     app.s.style = st;
     match app.tool {
         Tool::Rect => row(ui, "Corners", |ui| {

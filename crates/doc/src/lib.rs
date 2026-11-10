@@ -214,17 +214,21 @@ pub struct Shape {
     pub stroke: Option<Stroke>,
     #[serde(default)]
     pub fill_rule: FillRule,
+    /// Part of its layer's merged drawing (ADR 0031): cut and joined by what is drawn over it.
+    /// Otherwise a drawing object, which keeps to itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merge: bool,
 }
 
 impl PartialEq for Shape {
     fn eq(&self, o: &Shape) -> bool {
-        arc_eq(&self.path, &o.path) && self.fill == o.fill && self.stroke == o.stroke && self.fill_rule == o.fill_rule
+        arc_eq(&self.path, &o.path) && self.fill == o.fill && self.stroke == o.stroke && self.fill_rule == o.fill_rule && self.merge == o.merge
     }
 }
 
 impl Shape {
     pub fn filled(path: Path, fill: Paint) -> Shape {
-        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero }
+        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
         self.stroke = Some(Stroke::new(color, width));

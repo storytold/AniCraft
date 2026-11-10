@@ -578,7 +578,13 @@ fn panic_hunt_every_command() {
         on_path.execute(id, &p).unwrap();
     }
     on_path.set_frame(9);
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path] {
+    // Merge drawing (ADR 0031): every drawing command cuts into raw shapes already there.
+    let mut raw = Session::default();
+    raw.style.object_drawing = false;
+    for p in [json!({"x": 0, "y": 0, "w": 60, "h": 60}), json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"}), json!({"x": 1, "y": 1, "w": 10, "h": 10, "radius": 5})] {
+        raw.execute("draw.rect", &p).unwrap();
+    }
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
