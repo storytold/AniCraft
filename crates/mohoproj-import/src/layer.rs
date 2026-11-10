@@ -336,7 +336,7 @@ fn image_elements(b: &mut Builder, layer: &Value, world: Affine, alpha: f32, out
         name: String::new(),
         transform: b.to_px.mul(&world),
         color: fx,
-        kind: ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(paint), stroke: None, fill_rule: FillRule::NonZero }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(paint), stroke: None, fill_rule: FillRule::NonZero, merge: false }),
     }));
 }
 

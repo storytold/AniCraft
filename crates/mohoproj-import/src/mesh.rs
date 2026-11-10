@@ -155,7 +155,7 @@ fn shape_element(b: &mut Builder, shape: &Value, data: &MeshData, transform: Aff
             name: String::new(),
             transform,
             color: fx,
-            kind: ElementKind::Shape(Shape { path: Arc::new(path.clone()), fill: Some(p), stroke: None, fill_rule: FillRule::NonZero }),
+            kind: ElementKind::Shape(Shape { path: Arc::new(path.clone()), fill: Some(p), stroke: None, fill_rule: FillRule::NonZero, merge: false }),
         }));
     }
     if let Some(s) = stroke {
@@ -164,7 +164,7 @@ fn shape_element(b: &mut Builder, shape: &Value, data: &MeshData, transform: Aff
             name: String::new(),
             transform,
             color: fx,
-            kind: ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero }),
+            kind: ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero, merge: false }),
         }));
     }
 }
