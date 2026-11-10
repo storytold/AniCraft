@@ -713,7 +713,7 @@ fn screen_reader_names_are_translated_too() {
     // the source guideline can't see: ones passed through variables or built at run time).
     use crate::app::Tool;
     let mut found = untranslated_names("default", |_, _| {});
-    for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::Eyedropper, Tool::Pen, Tool::Camera] {
+    for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::Eyedropper, Tool::Pen, Tool::Camera, Tool::Bone] {
         found.extend(untranslated_names(&format!("{tool:?} tool"), |a, _| a.tool = tool));
     }
     // Selections and states that change what Properties, the timeline and the dialogs show.

@@ -30,6 +30,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::InkBottle => Icon::Ink,
         Tool::Eyedropper => Icon::Eyedropper,
         Tool::Camera => Icon::Camera,
+        Tool::Bone => Icon::Bone,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
     }
@@ -386,6 +387,14 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     let camera_layer = app.s.doc.timeline(app.s.scene).camera_layer().map(|l| l.id);
     if camera_layer.is_some() && (app.tool == Tool::Camera || camera_layer == Some(app.s.layer)) {
         section(ui, "prop_camera", Section::Rule, tr!("Camera"), None, |ui| camera_props(app, ui));
+    }
+    // ---- the bone picked on the stage (ADR 0043) ----
+    if let Some(id) = app.bone_sel {
+        let name = app.s.doc.timeline(app.s.scene).layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| b.name.clone()));
+        if let Some(name) = name {
+            let title = if name.is_empty() { tr!("Bone").to_string() } else { tr!("Bone: {name}", name = name) };
+            section(ui, "prop_bone", Section::Rule, &title, None, |ui| bone_props(app, ui, id));
+        }
     }
     if let Some(e) = sel.first() {
         let title = if sel.len() > 1 { trn!("{n} element", "{n} elements", sel.len()) } else { element_title(&app.s.doc, e) };
@@ -1088,6 +1097,46 @@ fn camera_props(app: &mut App, ui: &mut egui::Ui) {
     });
     let hidden = app.s.doc.timeline(app.s.scene).camera_layer().is_some_and(|l| !l.visible);
     ui.label(text(Type::Caption, if hidden { tr!("The camera layer is hidden: the movie shows the stage as it is.") } else { tr!("The movie shows what the frame on the stage shows. Layer depth (in Frame, per layer) moves far layers less.") }));
+}
+
+/// The selected bone: its joint angle at the playhead (editing it keys the pose), the joint's
+/// limits, the pin, and removal.
+fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId) {
+    let tl = app.s.doc.timeline(app.s.scene);
+    let Some((layer, bone)) = tl.layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| (l.clone(), b.clone()))) else { return };
+    let pose = anicraft_engine::doc::armature::pose_at(&layer, app.s.frame).unwrap_or_default();
+    let mut angle = bone.allow(pose.angle(id)).to_degrees();
+    row(ui, tr!("Angle"), |ui| {
+        if ui.add(egui::DragValue::new(&mut angle).suffix("°").speed(0.5).max_decimals(1)).named(tr!("Bone angle")).on_hover_text(tr!("The joint's turn from where the bone was drawn, measured from the bone it hangs from")).changed() {
+            live(app, tr_noop!("Pose Bone"), "bone.pose", json!({"bone": id.0, "angle": angle}));
+        }
+    });
+    let mut constrain = bone.limits.is_some();
+    let mut pinned = bone.pinned;
+    ui.horizontal_wrapped(|ui| {
+        if crate::theme::checkbox(ui, &mut constrain, tr!("Constrain rotation")).on_hover_text(tr!("Limit how far the joint turns, in every pose")).changed() {
+            app.run("bone.set_limits", json!({"bone": id.0, "constrain": constrain}));
+        }
+        if crate::theme::checkbox(ui, &mut pinned, tr!("Pin")).on_hover_text(tr!("A pinned bone, and the bones it hangs from, stay put while you drag the bones below it")).changed() {
+            app.run("bone.pin", json!({"bone": id.0, "pinned": pinned}));
+        }
+    });
+    if let Some(l) = bone.limits {
+        let (mut min, mut max) = (l.min.to_degrees(), l.max.to_degrees());
+        row(ui, tr!("Limits"), |ui| {
+            let a = ui.add(egui::DragValue::new(&mut min).prefix("min ").suffix("°").speed(0.5).range(-360.0..=max).max_decimals(0)).named(tr!("Joint minimum angle"));
+            let b = ui.add(egui::DragValue::new(&mut max).prefix("max ").suffix("°").speed(0.5).range(min..=360.0).max_decimals(0)).named(tr!("Joint maximum angle"));
+            if a.changed() || b.changed() {
+                live(app, tr_noop!("Joint Limits"), "bone.set_limits", json!({"bone": id.0, "min": min, "max": max}));
+            }
+        });
+    }
+    ui.horizontal_wrapped(|ui| {
+        if ui.button(tr!("Remove Bone")).named(tr!("Remove bone")).on_hover_text(tr!("Removes the bone and the bones below it; their instances stay where they are, on a layer of their own")).clicked() {
+            app.request("bone.remove", json!({"bone": id.0}));
+        }
+    });
+    ui.label(text(Type::Caption, tr!("Drag bones or instances with the Selection tool to pose; a pose at another frame keys it, and poses tween.")));
 }
 
 fn document_props(app: &mut App, ui: &mut egui::Ui) {

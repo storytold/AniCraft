@@ -293,7 +293,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
-            _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. }) => CursorIcon::Grabbing,
+            _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::BonePose { .. }) => CursorIcon::Grabbing,
+            _ if matches!(app.drag, Drag::ArmatureMove { .. }) => CursorIcon::Move,
+            Tool::Select if app.drag == Drag::None && pointer.is_some_and(|p| crate::bone_tool::hit(app, xf, p).is_some()) => CursorIcon::Grab,
             _ if paused => CursorIcon::NotAllowed,
             Tool::Camera if app.drag == Drag::None && pointer.is_some_and(|p| crate::camera_tool::on_knob(app, &cam_geo, p)) => CursorIcon::Alias,
             Tool::Camera => CursorIcon::Grab,
@@ -318,7 +320,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -356,7 +358,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else if let Some((shown, grab)) = mp_tools.then(|| mp_grab(app, press)).flatten() {
             crate::motion_path::drag_start(app, shown, grab, to_v(sp))
         } else {
-            match app.tool {
+            let tool = app.tool;
+            match tool {
+                // On an armature, a drag poses it (ADR 0043).
+                Tool::Select if let Some(d) = crate::bone_tool::select_drag_start(app, xf, press) => d,
                 // Raw shapes (ADR 0041): an unselected corner or end moves, an unselected segment
                 // or fill edge bends; anything else is picked (unless it already is) and moved.
                 Tool::Select => match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
@@ -409,6 +414,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 Tool::Subselect => crate::pathtools::subselect_drag_start(app, press, shift, xf),
+                Tool::Bone => crate::bone_tool::drag_start(app, xf, press),
                 Tool::Width => crate::widthtool::drag_start(app, press, xf),
                 Tool::Pencil => {
                     app.pencil = vec![to_v(sp)];
@@ -432,6 +438,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     {
         let mut d = app.drag;
         crate::camera_tool::drag_to(app, &cam_geo, &mut d, p);
+        app.drag = d;
+    }
+    if resp.dragged()
+        && let Some(c) = resp.interact_pointer_pos().map(to_stage)
+        && matches!(app.drag, Drag::Bone { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. })
+    {
+        let mut d = app.drag;
+        crate::bone_tool::drag_to(app, &mut d, c);
         app.drag = d;
     }
     if resp.dragged() {
@@ -532,7 +546,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.raw_points = serde_json::Value::Null;
                 app.s.end_gesture();
             }
-            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
+            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
+            Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
@@ -593,8 +608,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         app.text_edit = Some(crate::app::TextEditing { at: sp, element: None, text: String::new(), original: String::new(), focus: true });
                     }
                 }
+                Tool::Bone if !panning => crate::bone_tool::click(app, xf, p),
+                // A click on a bone picks it (ADR 0043).
+                Tool::Select if !panning && let Some((layer, bone, _)) = crate::bone_tool::hit(app, xf, p) => crate::bone_tool::select(app, layer, Some(bone)),
                 // A click on a hint marker leaves the selection alone.
                 Tool::Select | Tool::Transform if !panning && hint_at(p).is_none() => {
+                    app.bone_sel = None;
                     app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                 }
                 Tool::Zoom => {
@@ -851,6 +870,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     }
+    // Armatures' bones over their artwork (ADR 0043).
+    crate::bone_tool::draw(app, &painter, xf);
     let sel_stroke = Stroke::new(1.0, T.selection);
     let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None

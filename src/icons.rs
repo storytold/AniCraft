@@ -66,11 +66,13 @@ pub enum Icon {
     SoundOff,
     Camera,
     Magnet,
+    Bone,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 52] = [
+    pub const ALL: [Icon; 53] = [
+        Icon::Bone,
         Icon::Magnet,
         Icon::SoundOff,
         Icon::Camera,
@@ -196,6 +198,8 @@ impl Icon {
             Icon::Camera => ("anicraft-camera", false),
             // A horseshoe magnet, poles up (AniCraft original, on Lucide's grid): Snap to Objects.
             Icon::Magnet => ("anicraft-magnet", false),
+            // A bone: a wedge from its joint to its end (AniCraft original, on Lucide's grid).
+            Icon::Bone => ("anicraft-bone", false),
             Icon::FolderOpen => ("folder-open", false),
         }
     }
@@ -250,6 +254,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-eyedropper", include_str!("../assets/icons/anicraft-eyedropper.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
+    ("anicraft-bone", include_str!("../assets/icons/anicraft-bone.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
 ];

@@ -364,6 +364,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 type_icon(x0 + 7.0, Icon::Camera);
                 x0 + 20.0
             }
+            LayerKind::Armature => {
+                type_icon(x0 + 7.0, Icon::Bone);
+                x0 + 20.0
+            }
             _ => x0 + 4.0,
         };
         painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
@@ -409,6 +413,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             LayerKind::Mask => tr!("{name} · mask layer", name = name),
             LayerKind::Guide => tr!("{name} · guide layer", name = name),
             LayerKind::Camera => tr!("{name} · camera layer", name = name),
+            LayerKind::Armature => tr!("{name} · armature layer", name = name),
             LayerKind::Normal if masked => tr!("{name} · masked layer", name = name),
             LayerKind::Normal => tr!("{name} · layer", name = name),
         };
