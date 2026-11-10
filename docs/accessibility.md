@@ -118,5 +118,8 @@ cargo test --bin anicraft palette                      # the contrast checks
   right-hand panels, timeline, stage). Ctrl+F6 gives the panel order listed above.
 * **Scroll bars inside lists** have no name (egui doesn't offer one).
 * **Slider tracks** are dim in high contrast; their handles and number fields are outlined.
+* **Names follow the interface language** (ADR 0040): the audit runs the window in the
+  pseudo-locale too and fails on a name that stayed English. Document text (layer and symbol
+  names) is announced as written.
 * **Manual passes with Narrator, VoiceOver and Orca** are still to do on real machines for each
   platform. The automated audit checks names and roles, not how each reader phrases them.

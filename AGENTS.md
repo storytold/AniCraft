@@ -40,6 +40,9 @@ a new crate needs a row here and in its `LAYERS` table.
   (labels, menus, buttons, names, dialog text) is proportional. No raw font sizes or colours
   outside `theme.rs` (enforced by `guidelines_tests`). Typefaces: Inter + JetBrains Mono via
   `CRAFT_FONTS_DIR`, with egui defaults as fallback.
+* **Interface text is translatable** (ADR 0040, `docs/localisation.md`): write English through
+  `tr!` / `trn!` / `tr_noop!`, one template per sentence, and translate keys only where they are
+  drawn. Command ids, the CLI, MCP and the file format stay English. Check with `--lang pseudo`.
 * **Cross-platform** (ADR 0006): macOS, Windows and Linux are first-class. OS-specific
   behaviour lives only in `src/platform.rs` (shortcut labels with ⌘ on macOS, app menu,
   window chrome, settings folder, native dialogs, GPU backend fallback). Shortcut text always

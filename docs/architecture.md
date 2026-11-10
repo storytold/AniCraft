@@ -232,6 +232,12 @@ Library on the right. The timeline at the bottom has layer rows (eye and lock to
 grid with keyframe dots, tween spans and a playhead, plus transport controls and
 fps/time readouts. Theme tokens live in `theme.rs`.
 
+Interface text is English in the code and translated as it is drawn (`src/i18n/`,
+[ADR 0040](adr/0040-interface-languages.md), [docs/localisation.md](localisation.md)): `tr!`
+looks the English up in the craft-i18n catalogs build.rs embedded, and menus translate the
+registry's labels, so nothing below the shell (commands, the CLI, MCP, the file format) sees
+another language.
+
 The stage texture comes from the CPU renderer and is cached per
 `(revision, frame, zoom, viewport)`. Overlays (selection boxes, drag previews, the stage frame)
 are drawn with the egui painter in screen space.
