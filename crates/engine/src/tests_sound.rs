@@ -125,7 +125,7 @@ fn sounds_survive_save_undo_and_copy_paste_into_another_document() {
     let back = format::from_json(&json).unwrap();
     assert_eq!(back, s.doc, "lossless");
     let k = &back.timeline(0).layers[0].keyframes[0];
-    assert_eq!(k.sound.map(|f| (f.sync, f.looping)), Some((SoundSync::Stream, true)));
+    assert_eq!(k.sound.as_ref().map(|f| (f.sync, f.looping)), Some((SoundSync::Stream, true)));
     assert_eq!(back.sounds[0].decoded().unwrap().pcm.frames(), 2500, "decodes again after loading");
     // Older files (no sounds) still open: covered by every older-format test; and a file
     // without the field reads as no sound.
@@ -143,7 +143,7 @@ fn sounds_survive_save_undo_and_copy_paste_into_another_document() {
     let mut other = Session { frame_clipboard: clip, ..Default::default() };
     run(&mut other, "timeline.paste_frames", json!({"frame": 0}));
     assert_eq!(other.doc.sounds.len(), 1);
-    assert!(other.doc.timeline(0).layers[0].keyframes[0].sound.is_some_and(|f| f.sound == SoundId(id)));
+    assert!(other.doc.timeline(0).layers[0].keyframes[0].sound.as_ref().is_some_and(|f| f.sound == SoundId(id)));
     assert!(other.doc.next_id > id);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -161,7 +161,7 @@ fn settings_removal_deletion_and_import_to_stage() {
     assert!(s.execute("sound.place", &json!({"sound": 424_242})).is_err());
     run(&mut s, "sound.set", json!({"sync": "stream", "repeat": 3}));
     run(&mut s, "sound.set", json!({"loop": true}));
-    let f = s.doc.timeline(0).layers[0].keyframes[0].sound.unwrap();
+    let f = s.doc.timeline(0).layers[0].keyframes[0].sound.clone().unwrap();
     assert_eq!((f.sync, f.repeat, f.looping), (SoundSync::Stream, 3, true));
     let v = run(&mut s, "sound.remove", json!({}));
     assert_eq!(v["removed"], true);
@@ -175,8 +175,8 @@ fn settings_removal_deletion_and_import_to_stage() {
     let l = s.active_layer().unwrap();
     assert_eq!(l.name, "beat");
     let k = l.keyframe_at(1).unwrap();
-    assert_eq!((k.start, k.duration, k.sound.map(|f| f.sync)), (1, 3, Some(SoundSync::Event)));
-    let second = k.sound.unwrap().sound;
+    assert_eq!((k.start, k.duration, k.sound.as_ref().map(|f| f.sync)), (1, 3, Some(SoundSync::Event)));
+    let second = k.sound.as_ref().unwrap().sound;
     assert_ne!(second.0, id, "a second library item");
 
     // Deleting a sound in use asks first (undoable tier) and takes it off its keyframes.
@@ -217,6 +217,114 @@ fn video_export_carries_the_soundtrack() {
         assert!(bytes.windows(codec.len()).any(|w| w == codec), "{name} has an audio track");
         let v = run(&mut s, "file.export_video", json!({"path": dir.join(format!("silent-{name}")).display().to_string(), "scale": 0.05, "audio": false}));
         assert_eq!(v["audio"], false);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn right(p: &audio::Pcm) -> Vec<f32> {
+    p.samples.iter().skip(1).step_by(2).copied().collect()
+}
+
+#[test]
+fn effects_shape_the_exported_soundtrack_and_custom_starts_from_the_preset() {
+    use anicraft_doc::SoundEffect;
+    use audio::mix::lerp;
+    let dir = temp_dir("effects");
+    let (mut s, id) = session_with_sound(&dir);
+    run(&mut s, "sound.place", json!({"sound": id, "frame": 0, "extend": true, "effect": "fade_in"}));
+    let src = source();
+    let mix = export(&mut s, &dir, "a.wav", json!({}));
+    let (l, r) = (left(&mix), right(&mix));
+    for i in [0usize, 1, 999, 1250, 2499] {
+        let g = lerp(0.0, 1.0, i as f64 / 2500.0);
+        assert_eq!((l[i], r[i]), (src[i] * g, src[i] * g), "fade in at {i}");
+    }
+    // Left channel only: the right side is silent; Fade left to right crosses over.
+    run(&mut s, "sound.set", json!({"effect": "left_channel"}));
+    let mix = export(&mut s, &dir, "b.wav", json!({}));
+    assert_eq!(&left(&mix)[..2500], &src[..]);
+    assert!(right(&mix).iter().all(|&x| x == 0.0));
+    run(&mut s, "sound.set", json!({"effect": "Fade left to right"}));
+    let mix = export(&mut s, &dir, "c.wav", json!({}));
+    assert_eq!((left(&mix)[2000], right(&mix)[2000]), (src[2000] * lerp(1.0, 0.0, 0.8), src[2000] * lerp(0.0, 1.0, 0.8)));
+    // Custom starts from the preset's points over the time the sound is heard (2500 / 8000 s).
+    let v = run(&mut s, "sound.set", json!({"effect": "custom"}));
+    assert_eq!(v["envelope"], json!([{"at": 0.0, "left": 1.0, "right": 0.0}, {"at": 0.3125, "left": 0.0, "right": 1.0}]));
+    // Points of one's own, in seconds; then back to none.
+    run(&mut s, "sound.set", json!({"envelope": [{"at": 0.125, "left": 0.5, "right": 0.5}, [0.25, 0, 1]]}));
+    let mix = export(&mut s, &dir, "d.wav", json!({}));
+    assert_eq!((left(&mix)[500], right(&mix)[1500]), (src[500] * 0.5, src[1500] * lerp(0.5, 1.0, 0.5)));
+    assert_eq!((left(&mix)[2200], right(&mix)[2200]), (0.0, src[2200]));
+    for bad in [json!({"effect": "louder"}), json!({"envelope": []}), json!({"envelope": [[0, 2, 0]]}), json!({"envelope": [[-1, 1, 1]]}), json!({"envelope": (0..17).map(|i| json!([i, 1, 1])).collect::<Vec<_>>()}), json!({"envelope": [{"at": 0}]})] {
+        assert!(s.execute("sound.set", &bad).is_err(), "{bad}");
+    }
+    let f = s.doc.timeline(0).layers[0].keyframes[0].sound.clone().unwrap();
+    assert!(matches!(&f.effect, SoundEffect::Custom(p) if p.len() == 2));
+    // Saved and opened again, the envelope is the same; undo goes back step by step.
+    let back = format::from_json(&format::to_json(&s.doc).unwrap()).unwrap();
+    assert_eq!(back, s.doc);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(matches!(&s.doc.timeline(0).layers[0].keyframes[0].sound.as_ref().unwrap().effect, SoundEffect::Custom(p) if p.len() == 2 && p[1].at == 0.3125));
+    run(&mut s, "sound.set", json!({"effect": "none"}));
+    assert_eq!(left(&export(&mut s, &dir, "e.wav", json!({})))[..2500], src[..]);
+    // Custom from None: full volume, a point at each end of the heard time.
+    let v = run(&mut s, "sound.set", json!({"effect": "custom"}));
+    assert_eq!(v["envelope"], json!([{"at": 0.0, "left": 1.0, "right": 1.0}, {"at": 0.3125, "left": 1.0, "right": 1.0}]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn layer_volume_and_mute_reach_the_export_and_are_undoable() {
+    let dir = temp_dir("volume");
+    let (mut s, id) = session_with_sound(&dir);
+    run(&mut s, "sound.place", json!({"sound": id, "frame": 0, "extend": true}));
+    let src = source();
+    let v = run(&mut s, "layer.set_volume", json!({"volume": 0.5}));
+    assert_eq!((v["volume"].as_f64(), v["muted"].as_bool()), (Some(0.5), Some(false)));
+    let l = left(&export(&mut s, &dir, "a.wav", json!({})));
+    assert!(l[..2500].iter().zip(&src).all(|(a, b)| *a == b * 0.5));
+    let v = run(&mut s, "layer.toggle_mute", json!({}));
+    assert_eq!(v["muted"], true);
+    assert!(left(&export(&mut s, &dir, "b.wav", json!({}))).iter().all(|&x| x == 0.0), "muted layers are silent in exports");
+    assert_eq!(s.info()["layers"][0]["muted"], true);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(!s.doc.timeline(0).layers[0].muted);
+    for bad in [json!({}), json!({"volume": 1.5}), json!({"volume": -0.1}), json!({"muted": "yes"}), json!({"volume": 0.5, "layer": 999_999})] {
+        assert!(s.execute("layer.set_volume", &bad).is_err(), "{bad}");
+    }
+    run(&mut s, "layer.new_folder", json!({}));
+    assert!(s.execute("layer.set_volume", &json!({"volume": 0.2})).is_err(), "folders hold no sounds");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sounds_inside_symbols_are_in_the_exported_soundtrack_at_their_offset_and_loops() {
+    use anicraft_doc::{Element, ElementId, ElementKind, FrameSound, Keyframe, Layer, LayerId, LoopMode, Symbol, SymbolId, SymbolKind, Timeline};
+    let dir = temp_dir("nested");
+    let (mut s, id) = session_with_sound(&dir);
+    // A 4-frame graphic with the sound (an event) on its frame 1, shown looping from frame 1 to
+    // 9 of the main timeline at half volume: heard at frames 2 and 6.
+    let mut inner = Layer::new(LayerId(500), "voice");
+    let mut k = Keyframe::new(1, 3);
+    k.sound = Some(FrameSound::new(SoundId(id)));
+    inner.keyframes = vec![Arc::new(Keyframe::new(0, 1)), Arc::new(k)];
+    s.doc.library.push(Arc::new(Symbol { linkage: None, id: SymbolId(501), name: "Talk".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![Arc::new(inner)] } }));
+    let mut k = Keyframe::new(1, 8);
+    k.elements.push(Arc::new(Element { id: ElementId(502), name: String::new(), transform: Default::default(), color: Default::default(), kind: ElementKind::Symbol { symbol: SymbolId(501), loop_mode: LoopMode::Loop, first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() } }));
+    let mut outer = Layer::new(LayerId(503), "puppet");
+    outer.keyframes = vec![Arc::new(Keyframe::new(0, 1)), Arc::new(k)];
+    outer.volume = 0.5;
+    s.doc.timeline_mut(0).layers = vec![Arc::new(outer)];
+    let v = run(&mut s, "file.export_audio", json!({"path": dir.join("a.wav").display().to_string(), "rate": 8000, "bits": 32}));
+    assert_eq!(v["sounds"], 2);
+    let l = left(&audio::decode(&std::fs::read(dir.join("a.wav")).unwrap()).unwrap());
+    let src = source();
+    assert!(l[..2000].iter().all(|&x| x == 0.0));
+    // The second play starts at frame 6 while the first is still sounding: they add up.
+    for i in [2000usize, 4000, 5999, 6000, 7000, 8999] {
+        let first = src.get(i - 2000).copied().unwrap_or(0.0) * 0.5;
+        let second = if i >= 6000 { src.get(i - 6000).copied().unwrap_or(0.0) * 0.5 } else { 0.0 };
+        assert_eq!(l[i], first + second, "output frame {i}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

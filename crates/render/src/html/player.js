@@ -18,6 +18,7 @@ var AniCraft = (function () {
   const MAX_NODES = 10000;
   const MAX_OUTPUT_PER_STEP = 1000;
   const MAX_EVENTS_PER_STEP = 256;
+  const MAX_SOUNDS_PER_STEP = 256;
   const MAX_SYMBOL_DEPTH = 32;
   const ROOT = 0, GRAPHIC = 1, CLIP = 2, BUTTON = 3;
   const KINDS = { graphic: GRAPHIC, movieclip: CLIP, button: BUTTON };
@@ -187,7 +188,7 @@ var AniCraft = (function () {
 
   function tree(M, st) {
     const tl = M.scenes[st.scene] ? M.scenes[st.scene].tl : 0;
-    const out = [{ path: [], key: "", parent: -1, owner: 0, name: "", sym: -1, kind: ROOT, frame: st.root.frame, frames: M.timelines[tl].n, xf: I, hittable: true, events: null }];
+    const out = [{ path: [], key: "", parent: -1, owner: 0, name: "", sym: -1, kind: ROOT, frame: st.root.frame, frames: M.timelines[tl].n, xf: I, hittable: true, events: null, gain: 1 }];
     walk(M, st, tl, st.root.frame, 0, 0, I, 1, true, out);
     return out;
   }
@@ -198,6 +199,8 @@ var AniCraft = (function () {
       const hit = hittable && L.mk === undefined;
       // Through a camera, a scene's layer is placed by the camera and its depth.
       const lxf = L.v || xf;
+      // The volume the sounds inside get: the layers holding them, from the main timeline down.
+      const gain = out[parent].gain * (L.sg === undefined ? 1 : L.sg);
       for (const e of L.e) {
         if (out.length >= MAX_NODES) return;
         if (e.y === undefined) continue;
@@ -213,7 +216,7 @@ var AniCraft = (function () {
         const local = kind === GRAPHIC ? e.g || 0 : kind === CLIP ? clipFrame(st, key, len) : buttonFrame(st, path, len);
         const idx = out.length;
         const nxf = mul(lxf, m);
-        out.push({ path: path, key: key, parent: parent, owner: owner, name: e.n || "", sym: e.y, kind: kind, frame: local, frames: len, xf: nxf, hittable: hit && shown, events: e.ev || null });
+        out.push({ path: path, key: key, parent: parent, owner: owner, name: e.n || "", sym: e.y, kind: kind, frame: local, frames: len, xf: nxf, hittable: hit && shown, events: e.ev || null, gain: gain });
         // A graphic's contents belong to the timeline the graphic is on.
         walk(M, st, sym.tl, local, idx, kind === GRAPHIC ? owner : idx, nxf, depth + 1, hit && shown, out);
       }
@@ -379,6 +382,7 @@ var AniCraft = (function () {
     const r = new Run(this);
     this.st.tick += 1;
     r.refresh();
+    r.rememberGraphics();
     r.advance();
     r.settle();
     for (const e of (events || []).slice(0, MAX_EVENTS_PER_STEP)) r.event(e);
@@ -387,6 +391,7 @@ var AniCraft = (function () {
   Player.prototype.input = function (events) {
     const r = new Run(this);
     r.refresh();
+    r.rememberGraphics();
     for (const e of (events || []).slice(0, MAX_EVENTS_PER_STEP)) r.event(e);
     return r.finish();
   };
@@ -419,7 +424,22 @@ var AniCraft = (function () {
     this.output = [];
     this.dropped = 0;
     this.sounds = [];
+    // The frame each graphic showed when the step began: one on another frame at its end has
+    // entered it (and starts its sounds).
+    this.graphics = new Dict();
   }
+  Run.prototype.rememberGraphics = function () {
+    this.graphics = new Dict();
+    for (const n of this.nodes) if (n.kind === GRAPHIC) this.graphics.set(n.key, n.frame);
+  };
+  // The sounds of timeline `tl`'s keyframes starting at `frame`, as
+  // [sound, sync, repeat, loop, span, gain, envelope], the gain times `gain`.
+  Run.prototype.soundsAt = function (tl, frame, gain) {
+    for (const s of (tl.snd && tl.snd[frame]) || []) {
+      if (this.sounds.length >= MAX_SOUNDS_PER_STEP) return;
+      this.sounds.push([s[0], s[1], s[2], s[3], s[4], (s[5] === undefined ? 1 : s[5]) * gain, s[6] || null]);
+    }
+  };
   Run.prototype.out = function (line) {
     if (this.output.length < MAX_OUTPUT_PER_STEP) this.output.push(line);
     else this.dropped += 1;
@@ -537,7 +557,7 @@ var AniCraft = (function () {
     const tl = this.timelineOf(i);
     if (!tl) return;
     const frame = this.nodes[i].frame;
-    for (const s of (tl.snd && tl.snd[frame]) || []) this.sounds.push(s);
+    this.soundsAt(tl, frame, this.nodes[i].gain);
     for (const script of (tl.a && tl.a[frame]) || []) {
       if (Array.isArray(script)) this.runList(path, script);
       else this.out("Frame script " + script.plugin + " not run: frame scripts are not exported");
@@ -752,6 +772,12 @@ var AniCraft = (function () {
   };
   Run.prototype.finish = function () {
     this.refresh();
+    // Graphics keep step with their timelines: one now on another frame (or new) entered it.
+    const entered = this.nodes.filter((n) => n.kind === GRAPHIC && !(this.graphics.has(n.key) && this.graphics.get(n.key) === n.frame));
+    for (const n of entered) {
+      const s = this.M.symbols[n.sym];
+      if (s) this.soundsAt(this.M.timelines[s.tl], n.frame, n.gain);
+    }
     if (this.dropped > 0) this.output.push("… " + this.dropped + " more lines");
     return { output: this.output, sounds: this.sounds };
   };

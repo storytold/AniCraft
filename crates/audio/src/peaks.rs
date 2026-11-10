@@ -26,6 +26,20 @@ impl Peaks {
         Peaks { min, max, frames: pcm.frames() }
     }
 
+    /// The peaks of one channel of `pcm` (0 left, 1 right; a mono sound's one channel for
+    /// either), for drawing the channels apart (the envelope editor).
+    pub fn of_channel(pcm: &Pcm, channel: usize) -> Peaks {
+        let ch = usize::from(pcm.channels.max(1));
+        let c = channel.min(ch - 1);
+        let (mut min, mut max) = (Vec::new(), Vec::new());
+        for block in pcm.samples.chunks(Self::BLOCK * ch) {
+            let (lo, hi) = block.iter().skip(c).step_by(ch).fold((0.0f32, 0.0f32), |(lo, hi), &s| (lo.min(s), hi.max(s)));
+            min.push(lo);
+            max.push(hi);
+        }
+        Peaks { min, max, frames: pcm.frames() }
+    }
+
     /// Frames of the sound summarised.
     pub fn frames(&self) -> usize {
         self.frames
