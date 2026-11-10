@@ -2,15 +2,134 @@
 
 ## Unreleased
 
-* **Moho import** (ADR 0024). `File › Open` now reads Moho documents: `.moho` packages and
-  bare `.mohoproj` files, alongside `.fla`/`.xfl` and AniCraft's own format. The stage, the
-  inline layer tree (flattened, folders kept), vector meshes as paths with solid and linear/
-  radial gradient fills, solid strokes, text layers (laid out with this computer's fonts) and
-  image layers all come across; what the document model can't hold yet — bones, keyframed
-  channels, layer effect stacks, reflected/angle gradients, physics, camera animation — is
-  counted in the import report instead of guessed at, and the untouched original JSON rides
-  in the file as the `maop_maohou` sidecar (`.anicraft` format v4; older files open
-  unchanged) so later milestones can re-project it.
+* **Merge drawing** (ADR 0031, issue #42). The Rectangle, Oval, PolyStar, Line, Pen and Pencil
+  tools now draw as Animate does:
+  * shapes on a layer cut and join each other;
+  * a fill drawn on top replaces what it covers, or joins a fill of the same colour;
+  * lines cut each other where they cross, and a line right across a fill splits it in two;
+  * a fill hides the lines under it;
+  * points within 0.2 px become one.
+
+  Click a fill or a stroke segment to select just that; selected shapes show a dot pattern
+  instead of a box. Double-click a stroke for every stroke joined to it, or a fill for the fill
+  and its outline. Drag or nudge a shape and it cuts into what it lands on. Each step is one
+  undo.
+
+  **Object Drawing** (J, or the tool's options) switches back to shapes that keep to themselves.
+  Arrow keys now move the selection one screen pixel (Shift: ten) at any zoom.
+
+  Headless: the drawing commands take `object` (scripts and AI assistants still draw objects
+  unless they pass `"object": false`), plus `draw.object_drawing`, `draw.drop` and
+  `element.select_connected`.
+
+  Not yet: bending segments by dragging them, snapping to points and strokes, moving shared
+  points together, partial marquee selection, and merging Paint Bucket fills, pastes and raw
+  shapes from Animate files.
+
+## 0.1.0 (2026-11-09)
+
+* **Motion paths for motion tweens** (ADR 0030). Select a motion tween's object (or a frame of
+  its span) and the stage shows its path in the motion colour, with a dot for every frame.
+  Drag the path with the Selection tool to bend it and its ends to move where the motion
+  starts and ends; with the Subselection tool drag its points and handles (smooth points stay
+  smooth; Alt breaks them). Each drag is one undo step. The object travels the path at the
+  pace its X and Y curves set, so eases (overshoot included) carry over, and a straight path
+  moves exactly as before. Moving the object at a later frame reshapes the path instead of
+  adding keys. **Orient to path** (Properties) turns the object as the path turns; Straighten
+  goes back to the straight path. Every export and Test Movie play it. Headless:
+  `motion.set_path {d}`, `motion.clear_path`, `motion.orient {orient}`; `motion.info` reports
+  the path and where the object is. Not yet: adding or deleting path points on the stage,
+  anchors tied to frames, motion paths from Animate files.
+* **GPU stage, second slice** (ADR 0029; builds with `--features gpu-stage`, Preferences ›
+  Stage › Renderer › GPU (preview)). The graphics card now draws each stage tile straight into
+  the picture the window shows, with no copy back to the CPU: a 4K stage with 1,000 shapes
+  takes about 2 ms, and 10,000 shapes about 10 ms (the CPU needs 16–28 ms). **Mask layers**
+  (nested, several shapes per mask), **symbols that fade as one** and **all 14 blend modes**
+  are drawn on the GPU too, so ordinary documents no longer fall back to the CPU; masked scenes
+  draw up to 7× faster than on the CPU. The picture is the CPU's within one 8-bit step.
+  Filters and bitmaps still draw on the CPU (the status bar says so). When the window runs on
+  OpenGL, the GPU stage uses a device of its own and copies tiles back, as before; Preferences
+  says which.
+
+* **HTML canvas export** (ADR 0028). File › Export › Export HTML Canvas… writes the movie as
+  one web page that plays in any modern browser: open it from your disk, put it on a server or
+  send it as one file. Everything moves exactly as on the stage, because every frame of every
+  timeline is computed by AniCraft (classic, shape and motion tweens, easing, motion guides,
+  shape hints); shapes, gradients, strokes (variable-width ones too), text, bitmaps, masks,
+  symbols that fade or blend as one, alpha and tint all come across. It is interactive: movie
+  clips play on their own timelines, buttons show Up, Over and Down and answer in their Hit
+  area, and frame actions and button events (stop, play, go to a frame or label in any scene,
+  next/previous frame and scene, trace, set properties, instance paths like `panel.door`)
+  behave as in Test Movie: the page's player is a port of AniCraft's and the tests run both
+  side by side. Sounds play with the first click (Event, Start, Stop; Stream over its span).
+  The movie fits the browser window, sharp on high-density screens. The demo exports in 1 ms
+  to a 59 KB page (18 KB of movie data). Filters, Subtract and Invert blending, tints on
+  bitmaps and plug-in frame scripts are reported, not exported. Headless:
+  `file.export_html {path, title?, sound?, fit?}`.
+
+* **Camera layer with layer depth** (ADR 0027). Click the camera button in the timeline
+  header (or pick the **Camera tool**, C) to add a camera: a Camera layer on top of the
+  timeline whose frame shows on the stage as an orange outline of what the movie will show.
+  With the Camera tool, drag to pan it, turn it with the round handle above the frame and zoom
+  with the wheel (each drag is one undo step); Properties › Camera sets position, zoom (5–2,000
+  %), rotation and a tint over the whole view, or resets it. The camera animates like any
+  object: add keyframes on its layer and create a classic or motion tween (the zoom is Scale X
+  in the Motion Editor). Give layers a **Depth** (Properties › Frame, once there is a camera):
+  a layer behind the stage moves less as the camera pans, for parallax. **View › Preview
+  Through Camera** shows the stage as the movie will look. Every export (PNG, sequences, GIF,
+  video, sprite sheets, SVG, Lottie), Test Movie and the GPU stage see the camera; the stage
+  stays in stage space while you edit. Hiding the camera layer turns the camera off; removing
+  an animated camera asks first. Headless: `camera.add`, `camera.remove`, `camera.set`,
+  `camera.info`, `layer.set_depth`.
+* **Installers for Windows, macOS and Linux** (ADR 0026, `docs/release.md`). A push to the
+  `release` branch now builds installable AniCraft for every platform and drafts a GitHub
+  Release: a Windows **MSI** (x64 and arm64) that installs for your account without an admin
+  prompt, or for everyone if you choose, with a Start menu entry; a macOS **DMG** with the
+  universal app (drag to Applications); a Linux **AppImage**, **deb**, **rpm**, **Flatpak** and
+  tarball. Everywhere, `.anicraft` documents get AniCraft's icon and open in AniCraft, and FLA
+  and XFL files list AniCraft under "Open with" without changing your default app.
+  `anicraft-cli` is installed next to the app. Windows and macOS builds are signed (macOS also
+  notarized) and the Linux packages and checksums are signed when the release secrets are set.
+  `anicraft --version` and `anicraft-cli --version` print the version. On Windows, AniCraft no
+  longer opens a console window beside the app. On Linux the window now
+  reports the app id `ai.storyteller.anicraft`, so docks show AniCraft's icon. Not yet: on macOS,
+  double-clicking a document starts AniCraft but doesn't open the file.
+
+* **Bevel, Gradient Glow and Gradient Bevel filters** (ADR 0025). Properties › Filters ›
+  Add filter now offers all seven of Animate's filters on movie clip and button instances.
+  **Bevel** lights the edges that face the light and shades the others (shadow and highlight
+  colours with opacity, angle, distance, blur, strength, quality); **Gradient Glow** colours a
+  glow by a ramp, from where it fades out to where it is strongest; **Gradient Bevel** colours
+  a bevel by a ramp, highlight at the left, shadow at the right. Each can sit inside the
+  artwork's edge, outside it or both (Type), and Knockout shows only the effect. The gradient
+  filters open with a ramp editor: click the strip to add a colour stop, drag a marker to move
+  it, pick one to change its colour and opacity or remove it; the glow's first stop and the
+  bevel's middle stop stay transparent, as in Animate, so nothing is painted away from the
+  edges. SVG export writes them as standard SVG filters, Animate documents keep them, and
+  `.anicraft` files save them. Headless: `element.set_filters` with `bevel`, `gradient_glow`
+  and `gradient_bevel` (colours as `#rrggbbaa`).
+* **Fixed**: a filter reaching very far (a long drop shadow distance, or several large
+  filters) could stop the whole frame from drawing; it is now cut far off the stage instead.
+  Inner glows and inner shadows came out weaker near the edge of their drawing area; blurs
+  of an even width were half a pixel off centre; and exported SVG cut shadows that reached
+  far from small artwork.
+* **Interactivity: actions, buttons and Test Movie** (ADR 0024). Make a movie stop on a
+  frame, wait for a click and go on, without writing code. **Window › Actions** (F9) edits
+  what a keyframe does when the playhead reaches it and what a button or movie clip does on
+  Click, Press, Release, Pointer over and Pointer out: add Stop, Play, Go to and play, Go to
+  and stop, Next/Previous frame or scene, Trace or Set property from a menu, and pick the
+  target instance, frame, label or scene from your document. Name instances under
+  **Properties › Instance** to steer movie clips by name (`hero.arm`); keyframes with actions
+  show an "a" on the timeline. **Control › Test Movie** (Ctrl+Enter) plays the movie in its
+  own window at its frame rate, with buttons showing their Up, Over and Down frames and
+  answering clicks within their Hit area, and an **Output** panel for traces and anything
+  that couldn't run; Restart, Pause and Step are at the top, and your stage stays as it was.
+  **Frame scripts**: a WebAssembly plug-in of kind `frame-script` can run on a keyframe,
+  read where the movie is and send actions back, within 20 million instructions per frame
+  (`docs/plugins.md`). Headless: `actions.set`, `actions.clear`, `actions.list`,
+  `instance.set_name`, `control.test_movie` (plays with timed clicks and returns the output),
+  and `file.new_sample {"which": "interactive"}`. Exports still show the timeline as
+  authored.
 
 * **Shape hints** (Modify › Shape; ADR 0023). On a shape tween, Add Shape Hint (Ctrl+Shift+H)
   adds a lettered marker, `a` to `z`, at the shape's centre. Drag it onto an edge on the
