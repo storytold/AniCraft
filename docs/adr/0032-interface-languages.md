@@ -1,4 +1,4 @@
-# ADR 0031: Interface languages and right to left
+# ADR 0032: Interface languages and right to left
 
 * Status: proposed (2026-11-07)
 * Relates to: roadmap M8 (localisation), ADR 0004 (confirmations), ADR 0005 (typography), ADR 0008

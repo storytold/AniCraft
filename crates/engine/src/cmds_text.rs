@@ -184,5 +184,5 @@ fn fonts(_: &mut Session, _: &Value) -> Result<Value> {
 /// A text block as a plain shape with the same outlines (Break Apart).
 pub(crate) fn to_shape(t: &TextBlock) -> anicraft_doc::Shape {
     let path: Arc<Path> = t.outline.clone();
-    anicraft_doc::Shape { path, fill: Some(anicraft_doc::Paint::Solid(t.color)), stroke: None, fill_rule: anicraft_geom::FillRule::NonZero }
+    anicraft_doc::Shape { path, fill: Some(anicraft_doc::Paint::Solid(t.color)), stroke: None, fill_rule: anicraft_geom::FillRule::NonZero, merge: false }
 }

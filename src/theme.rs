@@ -376,7 +376,7 @@ pub type UserFont = (String, Vec<u8>, u32);
 /// Installs the UI typefaces (ADR 0005). Order in each family: the user's system font (from
 /// Preferences), then the craft-fonts pair (when embedded at build time), then egui's bundled
 /// fonts, which stay as fallbacks for glyph coverage, then Noto Sans Arabic for the Arabic
-/// letters none of them has (ADR 0031).
+/// letters none of them has (ADR 0032).
 pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&UserFont>, data_font: Option<&UserFont>) {
     use egui::{FontData, FontDefinitions, FontFamily};
     use std::sync::Arc;
@@ -495,7 +495,7 @@ pub fn radio_value<V: PartialEq>(ui: &mut egui::Ui, current: &mut V, value: V, l
     with_control_edges(ui, |ui| ui.radio_value(current, value, label))
 }
 
-// ----- right to left (ADR 0031) -------------------------------------------------------------
+// ----- right to left (ADR 0032) -------------------------------------------------------------
 // In a right-to-left language (Arabic) the window mirrors: rows start at the right, the tools
 // sit on the right and the dock on the left. The stage, the timeline's frames and the playback
 // buttons keep their direction: they follow time and the artwork, not the reading order.

@@ -25,6 +25,7 @@ mod cmds_width;
 pub mod confirm;
 pub mod format;
 pub mod history;
+mod merge;
 pub mod recovery;
 pub mod render_service;
 pub mod params;
@@ -101,6 +102,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
+    v.extend(merge::specs());
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
     v.extend(cmds_paint::specs());
@@ -139,11 +141,15 @@ pub struct ToolStyle {
     pub use_stroke: bool,
     /// The width profile new strokes get (ADR 0018).
     pub stroke_profile: anicraft_doc::ProfilePreset,
+    /// Object Drawing: new shapes are drawing objects. Off, they merge with the raw shapes they
+    /// touch (ADR 0031). On by default, so a script's draw command makes one element; the editor
+    /// starts with it off, as Animate does.
+    pub object_drawing: bool,
 }
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, object_drawing: true }
     }
 }
 
@@ -694,3 +700,5 @@ mod hint_tests;
 mod tests_actions;
 #[cfg(test)]
 mod tests_camera;
+#[cfg(test)]
+mod merge_tests;

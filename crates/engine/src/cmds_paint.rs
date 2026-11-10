@@ -91,7 +91,7 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(Paint::Solid(color)), stroke: None, fill_rule: FillRule::EvenOdd }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(Paint::Solid(color)), stroke: None, fill_rule: FillRule::EvenOdd, merge: false }),
     };
     let kf = s.editable_keyframe()?;
     if kf.elements.len() >= 100_000 {
