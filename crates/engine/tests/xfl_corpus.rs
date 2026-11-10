@@ -172,3 +172,31 @@ fn every_package_opens_with_file_open_and_round_trips_through_the_file_format() 
         assert!(s.doc == t.doc, "{case}: the saved document opens differently");
     }
 }
+
+/// Animate's raw shapes open as raw shapes, each keyframe's merged into one drawing (ADR 0042),
+/// and look as they did: the goldens still match. A raw outline is one stroke per side (ADR
+/// 0031), so at a corner two round caps overlap where one round join was and their antialiased
+/// edges add up: a few corner pixels may be darker (47 of the shapes frame's 14,400).
+#[test]
+fn raw_shapes_open_raw_merged_and_unchanged_to_the_eye() {
+    let mut failures = Vec::new();
+    let (mut raw_total, mut merged_total) = (0, 0);
+    for (case, frames) in FRAMES.iter().filter(|(c, _)| !matches!(*c, "text")) {
+        let mut s = Session::default();
+        let info = s.execute("file.open", &json!({"path": corpus().join(case).display().to_string()})).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let raw = s.doc.scenes.iter().flat_map(|sc| sc.timeline.layers.iter()).chain(s.doc.library.iter().flat_map(|sym| sym.timeline.layers.iter())).flat_map(|l| l.keyframes.iter()).flat_map(|k| k.elements.iter()).filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).count();
+        raw_total += raw;
+        // (Keyframes a tween joins keep their shapes as they came.)
+        merged_total += info["merged_keyframes"].as_u64().unwrap_or(0);
+        for &f in *frames {
+            let (w, h, rgba) = render(&s.doc, f);
+            let golden = corpus().join(case).join("golden").join(format!("frame-{f:03}.png"));
+            let corners = golden::Tolerance { pixels: 0.005, ..golden::DEFAULT };
+            if let Err(e) = golden::compare(&golden, &format!("{case}-merged-frame-{f:03}"), w, h, &rgba, corners) {
+                failures.push(e);
+            }
+        }
+    }
+    assert!(raw_total > 0 && merged_total > 0, "the corpus has raw shapes, merged: {raw_total} shapes, {merged_total} keyframes");
+    assert!(failures.is_empty(), "merged raw shapes look different:\n{}", failures.join("\n"));
+}

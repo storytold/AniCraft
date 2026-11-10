@@ -435,3 +435,28 @@ trace(n);]]></script></Actionscript><elements><DOMSymbolInstance libraryItemName
     assert!(d.document_class.is_empty() && !report.kept.contains_key("document class"));
     assert!(report.kept.contains_key("frame scripts in ActionScript 3.0"));
 }
+
+#[test]
+fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
+    // Animate's raw shapes (merge drawing) are loose `DOMShape`s; a drawing object says so, and
+    // a group is an object whatever it holds (ADR 0042).
+    let square = |attrs: &str, x: u32| {
+        format!(
+            r##"<DOMShape {attrs}><fills><FillStyle index="1"><SolidColor color="#FF0000"/></FillStyle></fills><strokes><StrokeStyle index="1"><SolidStroke weight="2"><fill><SolidColor/></fill></SolidStroke></StrokeStyle></strokes>
+            <edges><Edge fillStyle1="1" strokeStyle="1" edges="!{x} 0|{} 0|{} 2000|{x} 2000|{x} 0"/></edges></DOMShape>"##,
+            x + 2000,
+            x + 2000
+        )
+    };
+    let doc = format!(
+        r#"<DOMDocument width="400" height="100"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Art"><frames><DOMFrame index="0"><elements>{}{}<DOMGroup><members>{}</members></DOMGroup></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#,
+        square("", 0),
+        square(r#"isDrawingObject="true""#, 4000),
+        square("", 8000),
+    );
+    let doc: &'static str = Box::leak(doc.into_boxed_str());
+    let (d, _) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
+    let merge: Vec<bool> = d.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    // Each square is a fill and a stroke.
+    assert_eq!(merge, [true, true, false, false, false, false]);
+}

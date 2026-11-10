@@ -116,20 +116,31 @@ fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
     import_symbols(s, &s.clipboard.symbols.clone());
     let mut fresh = Vec::new();
     let mut out = Vec::new();
+    let mut raw = Vec::new();
     for e in s.clipboard.elements.clone() {
         let mut e = e;
         e.id = ElementId(s.doc.alloc_id());
         e.transform = Affine::translate(offset.x, offset.y).mul(&e.transform);
-        fresh.push(e.id);
-        out.push(Arc::new(e));
+        // Raw shapes go into the drawing where they land, cutting and joining what they touch
+        // (ADR 0042); objects go on top.
+        if crate::merge::mergeable(&e).is_some() {
+            raw.push(e);
+        } else {
+            fresh.push(e.id);
+            out.push(Arc::new(e));
+        }
     }
     let kf = s.editable_keyframe()?;
-    if kf.elements.len() + out.len() > 100_000 {
+    if kf.elements.len() + out.len() + raw.len() > 100_000 {
         return Err(EngineError::State("too many elements on this keyframe".into()));
     }
     kf.elements.extend(out);
+    let merged = !raw.is_empty();
+    if merged {
+        fresh.extend(crate::merge::merge_in(s, raw)?);
+    }
     s.selection = fresh.clone();
-    Ok(json!({"pasted": fresh.iter().map(|e| e.0).collect::<Vec<_>>()}))
+    Ok(json!({"pasted": fresh.iter().map(|e| e.0).collect::<Vec<_>>(), "merged": merged}))
 }
 
 /// Adds the symbols this document lacks (from a clipboard, maybe another document's) and

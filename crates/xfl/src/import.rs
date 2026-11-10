@@ -247,9 +247,12 @@ impl<'a> Builder<'a> {
     }
 
     /// Shapes for one `DOMShape`: a fill-only shape per fill style (bottom), then a stroke-only
-    /// shape per stroke style, as Animate draws them.
-    fn shape(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
+    /// shape per stroke style, as Animate draws them. A shape loose on a frame (not in a group,
+    /// not a drawing object) is raw artwork: its shapes are marked to merge (ADR 0042), and the
+    /// engine merges each keyframe's raw shapes into one drawing when it opens the file.
+    fn shape(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>, loose: bool) {
         let m = parent.mul(&matrix(el));
+        let merge = loose && !el.bool("isDrawingObject").unwrap_or(false);
         let fills: Vec<(u32, Option<Paint>)> = el.list("fills").iter().map(|f| (f.u32("index").unwrap_or(0), f.children.first().and_then(|d| paint(d, &self.bitmaps, &mut self.report)))).collect();
         let strokes: Vec<(u32, Option<Stroke>)> = el.list("strokes").iter().map(|s| (s.u32("index").unwrap_or(0), s.children.first().and_then(|d| stroke(d, &self.bitmaps, &mut self.report)))).collect();
         let edges: Vec<Edge> = el
@@ -262,14 +265,14 @@ impl<'a> Builder<'a> {
             let (Some(p), true) = (p, index > 0) else { continue };
             let path = edges::fill_path(&edges, index);
             if !path.is_empty() {
-                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(p), stroke: None, fill_rule: FillRule::EvenOdd, merge: false }), m, ColorEffect::default()));
+                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(p), stroke: None, fill_rule: FillRule::EvenOdd, merge }), m, ColorEffect::default()));
             }
         }
         for (index, s) in strokes {
             let (Some(s), true) = (s, index > 0) else { continue };
             let path = edges::stroke_path(&edges, index);
             if !path.is_empty() {
-                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero, merge: false }), m, ColorEffect::default()));
+                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero, merge }), m, ColorEffect::default()));
             }
         }
     }
@@ -443,7 +446,7 @@ impl<'a> Builder<'a> {
         }
         for el in list {
             match el.name.as_str() {
-                "DOMShape" => self.shape(el, parent, out),
+                "DOMShape" => self.shape(el, parent, out, depth == 0),
                 "DOMGroup" => {
                     let m = parent.mul(&matrix(el));
                     self.elements(el.list("members"), &m, out, depth + 1);
