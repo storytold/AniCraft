@@ -348,10 +348,10 @@ mod tests {
     fn every_interactive_node_has_a_name_and_a_role() {
         let mut found = Vec::new();
         found.extend(check("default", |_, _| {}));
-        for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Pen] {
+        for tool in [Tool::Bone, Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
-        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "rawsub", "camera", "cameraview", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script"] {
+        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "rawsub", "camera", "cameraview", "bones", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
         // The layer depth row shows on artwork layers once the scene has a camera.

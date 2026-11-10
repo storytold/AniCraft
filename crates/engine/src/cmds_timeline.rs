@@ -135,6 +135,9 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Camera) {
         return Err(EngineError::State("the camera layer holds the camera; it can't become another kind of layer (Remove Camera takes it away)".into()));
     }
+    if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Armature) {
+        return Err(EngineError::State("an armature layer holds its armature; it can't become another kind of layer (removing its bones frees the instances)".into()));
+    }
     // Whatever the type, the layer stays in the folder it is in.
     let folder = tl.folder_of(i);
     let (kind, parent) = match ty {
@@ -169,6 +172,7 @@ fn layer_type_json(s: &Session, id: LayerId) -> Value {
         LayerKind::Guide => "guide",
         LayerKind::Folder => "folder",
         LayerKind::Camera => "camera",
+        LayerKind::Armature => "armature",
         LayerKind::Normal if masked_by.is_some() => "masked",
         LayerKind::Normal if guided_by.is_some() => "guided",
         LayerKind::Normal => "normal",
@@ -326,11 +330,14 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
                 k.elements.clear();
                 k.tween = None;
                 k.motion = None;
+                k.pose = anicraft_doc::Pose::default();
             }
         }
         return Ok(());
     }
     let elements = if copy { evaluate_layer_elements(layer, frame).map(|(_, e)| e.into_owned()) } else { None };
+    // On an armature layer a copy keeps the pose the frame shows (tweened between keys).
+    let pose = if copy { anicraft_doc::armature::pose_at(layer, frame) } else { None };
     // Past the end of a motion tween, a copy starts from how its object looks at the end.
     let last_state = match layer.keyframes.iter().rposition(|k| k.start < frame) {
         Some(i) if copy && layer.keyframe_index_at(frame).is_none() => {
@@ -357,6 +364,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
             nk.elements = elements.unwrap_or_default();
             nk.tween = tween;
             nk.motion = motion;
+            nk.pose = pose.unwrap_or_default();
             layer.keyframes.insert(i + 1, Arc::new(nk));
         }
         None => {
@@ -368,6 +376,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
                 if let Some(k) = layer.keyframe_mut(i) {
                     if copy {
                         nk.elements = last_state.unwrap_or_else(|| k.elements.clone());
+                        nk.pose = k.pose.clone();
                     }
                     k.duration = frame - k.start;
                 }

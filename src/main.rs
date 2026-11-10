@@ -25,6 +25,7 @@ mod autosave;
 mod brushtool;
 mod envelope;
 mod erasertool;
+mod bone_tool;
 mod camera_tool;
 mod dialogs;
 mod gpu_stage;

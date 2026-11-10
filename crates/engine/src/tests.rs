@@ -597,6 +597,15 @@ fn panic_hunt_every_command() {
         json!({"text": "\u{0}\r\n]]>\u{202e}stop();", "language": "other", "class": "a.b", "base": "c", "symbol": 1}),
         json!({"text": "x".repeat(1 << 20), "language": 3, "class": "not a class", "base": ""}),
         json!({"text": "", "language": "ActionScript3", "class": "", "base": "Orphan"}),
+        // Bones (ADR 0043): the rigged session's bones are 100 and 102 (its armature layer 101),
+        // its instances 10–12.
+        json!({"bone": 102, "x": 1e30, "y": -1e30, "local": [1e9, "a"], "frame": 99_999}),
+        json!({"bone": 102, "x": 0, "y": 0, "local": [f64::MAX, 0], "angle": 1e9, "rotate_by": -1e9, "dx": 1e7, "dy": -1e7}),
+        json!({"bone": 100, "min": 400, "max": -400, "constrain": true, "pinned": "x"}),
+        json!({"bone": 100, "min": 10, "max": 10, "constrain": "yes", "pinned": true, "x": 250, "y": 250}),
+        json!({"from": 10, "to": 12, "head": [0, 0], "tail": [1e30, 0], "name": "x".repeat(300)}),
+        json!({"from": 12, "to": 10, "head": [5], "tail": "x", "bone": u64::MAX}),
+        json!({"from": 11, "to": 13, "head": [-1e6, 1e6], "layer": 101}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -630,7 +639,14 @@ fn panic_hunt_every_command() {
     for p in [json!({"x": 0, "y": 0, "w": 60, "h": 60}), json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"}), json!({"x": 1, "y": 1, "w": 10, "h": 10, "radius": 5})] {
         raw.execute("draw.rect", &p).unwrap();
     }
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw] {
+    // An armature: two bones, posed at two frames with a limit and a pin (ADR 0043).
+    let (mut rig, b1, b2) = crate::tests_bone::rigged();
+    for (id, p) in [("bone.pose", json!({"bone": b1, "angle": 30, "frame": 8})), ("bone.set_limits", json!({"bone": b2, "min": -30, "max": 30})), ("bone.pin", json!({"bone": b1, "pinned": true}))] {
+        rig.execute(id, &p).unwrap();
+    }
+    assert_eq!((b1, b2), (100, 102), "the hostile params name these bones");
+    rig.set_frame(4);
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {

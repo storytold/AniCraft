@@ -416,6 +416,9 @@ pub(crate) fn create(s: &mut Session, p: &Value) -> Result<Value> {
         if layer.kind == LayerKind::Folder {
             return Err(EngineError::State("a folder holds layers, not frames; pick a layer inside it".into()));
         }
+        if layer.kind == LayerKind::Armature {
+            return Err(EngineError::State("an armature layer tweens its poses: add a pose at another frame and Create Classic Tween between them".into()));
+        }
         let k = layer.keyframe_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;
         if let Some(m) = &k.motion {
             return Ok(json!({"motion": k.start, "target": m.target.0, "frames": k.duration, "converted": false}));

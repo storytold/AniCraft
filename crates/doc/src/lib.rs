@@ -7,6 +7,7 @@
 pub use anicraft_audio as audio;
 pub use anicraft_actions as actions;
 
+pub mod armature;
 mod bitmap;
 pub mod camera;
 mod filter;
@@ -28,6 +29,7 @@ pub use motion::{MotionTween, OnPath, Property, PropertyKey, Props, Track, motio
 pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use camera::Camera;
+pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, guide_walk, instance_start};
 pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, Language, PluginScript, SourceScript};
 
@@ -586,17 +588,20 @@ pub struct Keyframe {
     /// script (ADR 0024). Rendering and exports ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<FrameScript>,
+    /// On an armature layer: the joint angles this keyframe poses the armature with (ADR 0043).
+    #[serde(default, skip_serializing_if = "Pose::is_empty")]
+    pub pose: Pose,
 }
 
 impl PartialEq for Keyframe {
     fn eq(&self, o: &Keyframe) -> bool {
-        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && self.script == o.script && arcs_eq(&self.elements, &o.elements)
+        self.start == o.start && self.duration == o.duration && self.tween == o.tween && self.motion == o.motion && self.hints == o.hints && self.label == o.label && self.sound == o.sound && self.script == o.script && self.pose == o.pose && arcs_eq(&self.elements, &o.elements)
     }
 }
 
 impl Keyframe {
     pub fn new(start: u32, duration: u32) -> Self {
-        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None, script: None }
+        Keyframe { start, duration: duration.max(1), elements: Vec::new(), tween: None, motion: None, hints: Vec::new(), label: String::new(), sound: None, script: None, pose: Pose::default() }
     }
     /// Mutable access to the elements whose ids satisfy `pick`, cloning only those.
     pub fn elements_mut_where(&mut self, mut pick: impl FnMut(ElementId) -> bool) -> Vec<&mut Element> {
@@ -625,6 +630,9 @@ pub enum LayerKind {
     /// The camera (ADR 0027): at most one per scene timeline, always the top layer; its
     /// keyframes hold the camera, which views every other layer. Draws nothing itself.
     Camera,
+    /// An armature (ADR 0043): symbol instances joined by bones ([`Layer::armature`]), posed
+    /// on each keyframe ([`Keyframe::pose`]) and tweened between poses.
+    Armature,
 }
 
 /// Deepest nesting of folders (and a mask inside them) that is kept.
@@ -662,6 +670,9 @@ pub struct Layer {
     /// The layer's sounds are silent (in playback and every export).
     #[serde(default, skip_serializing_if = "is_false")]
     pub muted: bool,
+    /// An armature layer's bones (ADR 0043); `None` on every other kind of layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armature: Option<Arc<Armature>>,
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -687,6 +698,10 @@ impl PartialEq for Layer {
             && self.depth.to_bits() == o.depth.to_bits()
             && self.volume.to_bits() == o.volume.to_bits()
             && self.muted == o.muted
+            && match (&self.armature, &o.armature) {
+                (Some(a), Some(b)) => arc_eq(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
             && arcs_eq(&self.keyframes, &o.keyframes)
     }
 }
@@ -713,6 +728,7 @@ impl Layer {
             depth: 0.0,
             volume: 1.0,
             muted: false,
+            armature: None,
         }
     }
     /// The gain this layer gives its sounds: its volume, or silence when muted.
@@ -1185,6 +1201,9 @@ impl Document {
         let mut max_id = 0u64;
         let scan = |l: &Layer, max_id: &mut u64| {
             *max_id = (*max_id).max(l.id.0);
+            for b in l.armature.iter().flat_map(|a| &a.bones) {
+                *max_id = (*max_id).max(b.id.0);
+            }
             for k in &l.keyframes {
                 for e in &k.elements {
                     *max_id = (*max_id).max(e.id.0);
@@ -1204,6 +1223,7 @@ impl Document {
                 Arc::make_mut(l).normalize();
                 sanitize_scripts(l);
                 sanitize_depth(l);
+                sanitize_armature(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1226,6 +1246,7 @@ impl Document {
                     Arc::make_mut(l).kind = LayerKind::Normal;
                 }
                 sanitize_depth(l);
+                sanitize_armature(l);
                 scan(l, &mut max_id);
             }
             tl.repair_masks();
@@ -1245,6 +1266,36 @@ fn sanitize_depth(layer: &mut Arc<Layer>) {
     let d = camera::clamp_depth(layer.depth);
     if d.to_bits() != layer.depth.to_bits() {
         Arc::make_mut(layer).depth = d;
+    }
+}
+
+/// Repairs a loaded layer's armature (ADR 0043): only an armature layer has one, its bones are
+/// sane and ordered, and its keyframes' poses are finite. Touches only what needs it.
+fn sanitize_armature(layer: &mut Arc<Layer>) {
+    let is_armature = layer.kind == LayerKind::Armature;
+    // (A pose on another layer's keyframe, pasted from an armature, is kept and plays no part.)
+    if !is_armature {
+        if layer.armature.is_some() {
+            Arc::make_mut(layer).armature = None;
+        }
+        return;
+    }
+    if let Some(a) = &layer.armature {
+        let mut fixed = (**a).clone();
+        if fixed.sanitize() {
+            Arc::make_mut(layer).armature = Some(Arc::new(fixed));
+        }
+    }
+    let bad = |k: &Keyframe| {
+        let mut p = k.pose.clone();
+        p.sanitize()
+    };
+    if layer.keyframes.iter().any(|k| bad(k)) {
+        for k in &mut Arc::make_mut(layer).keyframes {
+            if bad(k) {
+                Arc::make_mut(k).pose.sanitize();
+            }
+        }
     }
 }
 
