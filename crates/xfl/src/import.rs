@@ -7,7 +7,9 @@
 //! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
-//! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014).
+//! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014);
+//! frame scripts, symbol linkage classes and the document class, kept verbatim and not run
+//! (ADR 0013 tier 1; the report lists them as kept).
 //! Everything else (sound, motion tweens with property curves, unknown filters,
 //! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
 //! and so is whatever is drawn the nearest way AniCraft can (square caps, reflecting
@@ -18,7 +20,7 @@ use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
     Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind,
+    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, SourceScript,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
@@ -45,11 +47,14 @@ pub enum XflError {
     NotXfl(String),
 }
 
-/// What the import couldn't bring across, by kind ("3 bitmaps"), and the fonts it couldn't
-/// find.
+/// What the import couldn't bring across, by kind ("3 bitmaps"), what it kept without
+/// running (scripts), and the fonts it couldn't find.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Report {
     pub skipped: BTreeMap<String, usize>,
+    /// Kept in the document but not run, by kind ("2 frame scripts in ActionScript 3.0"; ADR
+    /// 0013 tier 1).
+    pub kept: BTreeMap<String, usize>,
     pub notes: Vec<String>,
     /// Font families the document's text asks for that aren't on this computer.
     pub missing_fonts: BTreeSet<String>,
@@ -61,13 +66,23 @@ impl Report {
     pub(crate) fn skip(&mut self, what: &str) {
         *self.skipped.entry(what.to_string()).or_default() += 1;
     }
-    /// One line for a status bar: "Imported. Not yet supported: 2 sounds. Fonts not on this
-    /// computer, drawn in Inter: Futura, Gotham."
+    pub(crate) fn keep(&mut self, what: &str) {
+        *self.kept.entry(what.to_string()).or_default() += 1;
+    }
+    /// One line for a status bar: "Imported. Kept, not run: 3 frame scripts in ActionScript
+    /// 3.0. Not yet supported: 2 sounds. Fonts not on this computer, drawn in Inter: Futura,
+    /// Gotham."
     pub fn summary(&self) -> String {
+        let kept = if self.kept.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = self.kept.iter().map(|(k, n)| format!("{n} {k}")).collect();
+            format!(" Kept, not run: {}.", parts.join(", "))
+        };
         if self.skipped.is_empty() && self.notes.is_empty() && self.missing_fonts.is_empty() {
-            return "Imported everything in the file.".into();
+            return format!("Imported everything in the file.{kept}");
         }
-        let mut out = String::from("Imported.");
+        let mut out = format!("Imported.{kept}");
         let mut parts: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{n} {k}")).collect();
         parts.extend(self.notes.iter().cloned());
         if !parts.is_empty() {
@@ -99,8 +114,10 @@ struct Builder<'a> {
     /// Library item name → symbol id (allocated before timelines are built, so instances can
     /// refer to any symbol).
     ids: HashMap<String, SymbolId>,
-    /// Parsed symbol files waiting to be built.
-    pending: Vec<(SymbolId, String, SymbolKind, X)>,
+    /// Parsed symbol files waiting to be built, with their script class.
+    pending: Vec<(SymbolId, String, SymbolKind, Option<Linkage>, X)>,
+    /// The language the document's frame scripts are written in (from its publish settings).
+    language: Language,
     /// Library item name → bitmap id, for the bitmaps that could be read.
     bitmaps: HashMap<String, BitmapId>,
     report: Report,
@@ -412,6 +429,11 @@ impl<'a> Builder<'a> {
                 self.report.skip("instance names actions can't use (left out)");
             }
         }
+        // Older documents put handlers (`on (release) { … }`) on instances; only frame
+        // scripts have a place yet.
+        if el.child("Actionscript").is_some() {
+            self.report.skip("scripts on instances (left out; frame scripts are kept)");
+        }
         out.push(Arc::new(e));
     }
 
@@ -496,9 +518,9 @@ impl<'a> Builder<'a> {
                 if let Some(h) = f.child("shapeHints").filter(|h| !h.children.is_empty()) {
                     raw_hints.insert(start, self.raw_hints(h));
                 }
-                // Frame scripts aren't kept yet (ADR 0013); say so instead of dropping them quietly.
-                if f.child("Actionscript").is_some() {
-                    self.report.skip("frame scripts (ActionScript isn't supported yet)");
+                // Frame scripts are kept verbatim and not run (ADR 0013 tier 1).
+                if let Some(a) = f.child("Actionscript") {
+                    k.script = self.frame_script(a);
                 }
                 let mut els = Vec::new();
                 self.elements(f.list("elements"), &Affine::IDENTITY, &mut els, 0);
@@ -521,6 +543,23 @@ impl<'a> Builder<'a> {
         // Links that do not form an unbroken run under their mask are dropped.
         tl.repair_masks();
         tl
+    }
+
+    /// A frame's `<Actionscript><script>` text, exactly as written (its `<script>` elements in
+    /// order, though files have one), in the document's language.
+    fn frame_script(&mut self, a: &X) -> Option<FrameScript> {
+        let parts: Vec<&str> = a.children.iter().filter(|c| c.name == "script").map(|c| c.text.as_str()).collect();
+        let text = parts.join("\n");
+        if text.trim().is_empty() {
+            return None;
+        }
+        let script = SourceScript::new(self.language, text);
+        if script.check().is_err() {
+            self.report.skip("frame scripts over 1 MiB (left out)");
+            return None;
+        }
+        self.report.keep(&format!("frame scripts in {}", self.language.label()));
+        Some(FrameScript::Source(Arc::new(script)))
     }
 
     /// A tween's ease: the classic single-slider `acceleration`, or a custom ease curve. A
@@ -672,20 +711,65 @@ impl<'a> Builder<'a> {
                 _ => SymbolKind::MovieClip,
             };
             let id = SymbolId(self.doc.alloc_id());
+            let linkage = self.linkage(&item);
             self.ids.insert(name.clone(), id);
-            self.pending.push((id, name, kind, item));
+            self.pending.push((id, name, kind, linkage, item));
+        }
+        Ok(())
+    }
+
+    /// A library symbol's script class (`linkageClassName`, or an older document's
+    /// `linkageIdentifier`, when `linkageExportForAS` doesn't turn it off) and its base class.
+    fn linkage(&mut self, item: &X) -> Option<Linkage> {
+        if item.attr("linkageExportForAS").is_some_and(|v| v.trim() != "true") {
+            return None;
+        }
+        let class = ["linkageClassName", "linkageIdentifier"].iter().find_map(|k| item.attr(k).map(str::trim).filter(|c| !c.is_empty()))?;
+        let base = item.attr("linkageBaseClass").map(str::trim).filter(|b| anicraft_doc::actions::valid_class_name(b)).unwrap_or("");
+        let l = Linkage { class: class.to_string(), base: base.to_string() };
+        if l.check().is_err() {
+            self.report.skip("linkage classes that aren't class names (left out)");
+            return None;
+        }
+        self.report.keep("linkage classes");
+        Some(l)
+    }
+
+    /// The script settings of the package's publish profile (`PublishSettings.xml`): the
+    /// language its frame scripts are written in (`ActionScriptVersion`; 3 when the file
+    /// doesn't say) and the document class (`DocumentClass`). The profile marked current is
+    /// used, else the first. A missing or unreadable file changes nothing: it is settings, not
+    /// content.
+    fn publish_settings(&mut self) -> Result<(), XflError> {
+        let Some(bytes) = (self.read)("PublishSettings.xml")? else { return Ok(()) };
+        let Ok(root) = xml::parse(&bytes) else { return Ok(()) };
+        let profiles: Vec<&X> = root.children.iter().filter(|c| c.name == "flash_profile").collect();
+        let profile = profiles.iter().find(|p| p.bool("current") == Some(true)).or(profiles.first()).copied().unwrap_or(&root);
+        let flash = profile.child("PublishFlashProperties").unwrap_or(profile);
+        let text = |name: &str| flash.child(name).map(|e| e.text.trim().to_string()).filter(|t| !t.is_empty());
+        self.language = match text("ActionScriptVersion").as_deref() {
+            Some("1" | "2") => Language::ActionScript1or2,
+            _ => Language::ActionScript3,
+        };
+        if let Some(class) = text("DocumentClass") {
+            if anicraft_doc::actions::valid_class_name(&class) {
+                self.doc.document_class = class;
+                self.report.keep("document class");
+            } else {
+                self.report.skip("document classes that aren't class names (left out)");
+            }
         }
         Ok(())
     }
 
     fn build_symbols(&mut self) {
-        for (id, name, kind, item) in std::mem::take(&mut self.pending) {
+        for (id, name, kind, linkage, item) in std::mem::take(&mut self.pending) {
             let timeline = match item.child("timeline").and_then(|t| t.child("DOMTimeline")) {
                 Some(tl) => self.timeline(tl),
                 None => Timeline { layers: vec![Arc::new(Layer::new(LayerId(self.doc.alloc_id()), "Layer 1"))] },
             };
             let short = name.rsplit('/').next().unwrap_or(&name).to_string();
-            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, timeline }));
+            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, timeline }));
         }
     }
 }
@@ -708,7 +792,12 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     if root.name != "DOMDocument" {
         return Err(XflError::NotXfl(format!("the root element is <{}>", root.name)));
     }
-    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), bitmaps: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
+    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), language: Language::ActionScript3, bitmaps: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
+    b.publish_settings()?;
+    // Only symbols keep a script class yet.
+    for _ in root.list("media").iter().filter(|m| m.attr("linkageClassName").is_some_and(|c| !c.trim().is_empty())) {
+        b.report.skip("linkage classes on bitmaps and sounds (left out)");
+    }
     b.doc.library.clear();
     b.doc.scenes.clear();
     b.doc.stage = Stage {

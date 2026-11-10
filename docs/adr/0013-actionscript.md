@@ -1,6 +1,7 @@
 # ADR 0013: ActionScript compatibility
 
-* Status: accepted (2026-11-08) as scope and placement; the parts are built later (roadmap M6)
+* Status: accepted (2026-11-08) as scope and placement. **Tier 1 built** (2026-11-09, see
+  "Tier 1 as built" below); tier 2 is a later PR (roadmap M6)
 * Relates to: requirements U2 (scripting surface), roadmap M6, ADR 0009 (XFL import),
   `docs/legal/compliance.md`
 
@@ -106,3 +107,59 @@ blocking anything else.
   plan. Their artwork and timelines still come across, and their scripts are kept.
 * The subset is a moving line. It grows from user reports of the "not run" messages, never
   by guessing what unsupported code would have done.
+
+## Tier 1 as built (2026-11-09)
+
+Tier 1 follows the decision above. Where the build refines it:
+
+* **Where scripts live.** A kept script is a third variant of the frame-script enum ADR 0024
+  put on keyframes: `Keyframe.script: Option<FrameScript>` with
+  `FrameScript::Source(Arc<SourceScript>)` beside `Actions` and `Plugin`. `SourceScript` (in
+  `anicraft-actions`, L0, so the tier-2 parser can read it) holds `language` (`actionscript3`,
+  `actionscript1or2`, `other`) and `text`, byte for byte. A separate field would have allowed a
+  keyframe to hold actions *and* a script, and then nobody could say which one runs once tier 2
+  lowers scripts to actions. One field keeps "one of them" true by construction. Setting
+  actions on a keyframe with a script replaces it (undo restores it), as switching between
+  actions and plug-ins already did. The `Arc` means copying a keyframe, taking an undo
+  snapshot or handing the document to the render thread never copies the text.
+* **Class names.** `Symbol.linkage: Option<Linkage { class, base }>` and
+  `Document.document_class: String`, as dotted identifiers (at most 256 characters). An older
+  document's `linkageIdentifier` is stored as `class`. All of these fields are
+  `#[serde(default)]` and are left out of the file when empty, so the format stays version 3,
+  as it did for ADR 0024's fields, and older files open unchanged.
+* **Limits and repair.** A script is at most 1 MiB. Loading drops a script that is empty or
+  too long *whole*, because cutting code would change it, and drops class names that aren't
+  names. The XFL importer reports dropped scripts the same way.
+* **XFL.** `<Actionscript><script>` on frames in scenes and in every kind of symbol is kept
+  (graphic and button timelines and guide layers too: nothing there runs, but it is content).
+  Linkage comes from `linkageClassName` (else `linkageIdentifier`) unless `linkageExportForAS`
+  turns it off, and `linkageBaseClass` gives the base class. The language and the document
+  class come from the publish profile (`PublishSettings.xml`, the profile marked current, its
+  `ActionScriptVersion` and `DocumentClass`). When a file doesn't say, the language is
+  ActionScript 3.0. A missing or unreadable profile changes nothing, because it holds settings,
+  not content. These element names come from public descriptions of the format and are checked
+  against self-authored files only, as the rest of ADR 0009 is. The report gains a **kept, not
+  run** list next to "not yet supported" (counts of frame scripts by language, linkage classes
+  and the document class). Scripts on instances (older documents' `on (…)` handlers) and linkage
+  on bitmaps and sounds have no place yet and are reported as left out.
+* **Commands.** `script.set` (`text` and/or `language`; empty text clears), `script.clear`
+  (kept scripts only, never actions), `script.list` (every kept script with its text, every
+  linkage class and the document class) and `script.set_class` (a symbol's linkage, or the
+  document class). They reach any symbol's timeline and guide layers, which `actions.*`
+  can't (`Scope::Keeps`). **Plug-in policy:** command plug-ins may call all of `script.*`.
+  Scripts are document content like actions and frame labels, which plug-ins already read and
+  write (`actions.*` is allowed). Writing a script runs nothing, and when tier 2 runs scripts
+  it does so in the pure, budgeted player, which can't reach outside the movie. Frame-script
+  plug-ins still can't call commands at all.
+* **App.** The Actions panel's Frame tab gets a *Type* row (Actions, Plug-in, Script). Script
+  shows the language, the line count and the text in a monospace (`Type::Path`) editor with
+  line numbers. Typing edits the document live, and a burst of typing is one undo step. Tabs
+  are typed into the code. Esc leaves the editor. A file's CR LF line ends show as one break,
+  and the stored text is changed only by an edit. Symbols with kept scripts appear in the
+  panel's timeline list whatever their kind. The timeline's "a" marker covers kept scripts.
+  Properties shows the symbol's linkage *Class* and the document *Class* in documents that use
+  scripts. A class field commits when it loses focus, because a half-typed name isn't a name
+  yet. Test Movie says how many kept scripts don't run (once, not every time one passes), and
+  the HTML canvas export lists them in its report.
+* **Not in tier 1:** scripts on instances, linkage on bitmaps and sounds, a document-wide
+  default language, syntax colouring, and exporting scripts back to XFL.

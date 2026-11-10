@@ -30,6 +30,7 @@ const FRAMES: &[(&str, &[u32])] = &[
     ("masks", &[0]),
     ("primitives", &[0]),
     ("scenes", &[0, 3, 7, 8, 10]),
+    ("scripts", &[0, 4]),
     ("shapes", &[0]),
     ("symbols", &[0, 5]),
     ("text", &[0]),
@@ -81,6 +82,12 @@ const PROBES: &[(&str, u32, f32, f32, u32)] = &[
     ("scenes", 7, 160.0, 90.0, 0xE5E5E5),
     ("scenes", 8, 160.0, 90.0, 0xFCA311),
     ("scenes", 10, 160.0, 90.0, 0x14213D),
+    // Kept scripts change nothing: the authored frames, the clip on its first frame.
+    ("scripts", 0, 90.0, 90.0, 0xE76F51),
+    ("scripts", 0, 240.0, 90.0, 0x2A9D8F),
+    ("scripts", 0, 10.0, 170.0, 0x264653),
+    ("scripts", 4, 160.0, 90.0, 0xE76F51),
+    ("scripts", 4, 240.0, 90.0, 0xF4F1EA),
     ("text", 0, 300.0, 80.0, 0xE9EDC9),
 ];
 
