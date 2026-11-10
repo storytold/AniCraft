@@ -1178,7 +1178,7 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
 }
 
 fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32) {
-    let st = app.s.style;
+    let st = &app.s.style;
     let fill = if st.use_fill { crate::theme::to_color32(st.fill).gamma_multiply(0.6) } else { Color32::TRANSPARENT };
     let stroke = Stroke::new((st.stroke_width * zoom).max(1.0), if st.use_stroke { crate::theme::to_color32(st.stroke) } else { T.selection });
     match app.tool {

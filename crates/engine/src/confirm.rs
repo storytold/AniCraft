@@ -145,6 +145,17 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: false,
             })
         }
+        "draw.erase_all" => {
+            // Double-clicking the Eraser: everything on the stage at this frame (ADR 0034).
+            let layers = crate::cmds_erase::erasable_layers(s);
+            let elements: usize = layers.iter().map(|(_, n)| n).sum();
+            (elements > 0).then(|| Confirmation {
+                title: "Erase everything?".into(),
+                message: format!("Everything on the stage at frame {} goes: {} on {}. Locked and hidden layers are kept. You can undo this.", s.frame + 1, plural(elements, "element"), plural(layers.len(), "layer")),
+                action: "Erase Everything".into(),
+                irreversible: false,
+            })
+        }
         "camera.remove" => camera_removal(s, s.doc.timeline(s.scene).camera_layer()?),
         "layer.delete" => {
             let l = target_layer(s, p)?;

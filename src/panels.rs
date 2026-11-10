@@ -79,7 +79,7 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
         }
         ui.add_space(10.0);
         // fill / stroke swatches
-        let st = app.s.style;
+        let st = &app.s.style;
         let (r, _) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::hover());
         let back = Rect::from_min_size(r.left_top() + vec2(14.0, 14.0), vec2(24.0, 24.0));
         let front = Rect::from_min_size(r.left_top() + vec2(2.0, 2.0), vec2(24.0, 24.0));
@@ -1238,7 +1238,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }
         return;
     }
-    let mut st = app.s.style;
+    let mut st = app.s.style.clone();
     // Each tool shows only what it uses: the bucket and the brush always fill, the ink bottle
     // always strokes.
     let (fills, ink) = (matches!(app.tool, Tool::PaintBucket | Tool::Brush), app.tool == Tool::InkBottle);
@@ -1246,7 +1246,18 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         row(ui, "Fill", |ui| {
             let mut c = rgb(st.fill);
             if ui.color_edit_button_srgb(&mut c).named("Fill colour").changed() {
-                st.fill = Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0);
+                st.set_fill_color(Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0));
+            }
+            // A gradient or bitmap picked with the Eyedropper (ADR 0034): the swatch shows its
+            // first colour, and says what it holds.
+            if let Some(p) = &st.fill_paint {
+                let what = match p {
+                    Paint::Linear { .. } => "Linear gradient",
+                    Paint::Radial { .. } => "Radial gradient",
+                    Paint::Bitmap { .. } => "Bitmap fill",
+                    Paint::Solid(_) => "Solid",
+                };
+                ui.label(text(Type::Caption, what)).on_hover_text("Picked with the Eyedropper. It stays where it was on the stage (lock fill). Pick a colour to fill with a solid colour again.");
             }
             if !fills {
                 crate::theme::checkbox(ui, &mut st.use_fill, "").named("Fill").on_hover_text("Fill on/off");
@@ -1265,9 +1276,9 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::DragValue::new(&mut st.stroke_width).suffix(" px").speed(0.1).range(0.0..=100.0).max_decimals(1)).set_name("Stroke width");
         });
         // The width profile new strokes get.
-        let current = st.stroke_profile.profile();
+        let current = st.profile();
         if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref()) {
-            st.stroke_profile = pick;
+            st.set_profile(pick);
         }
     }
     // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
