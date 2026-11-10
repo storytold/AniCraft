@@ -99,6 +99,32 @@
         <array><string>xfl</string></array>
       </dict>
     </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>ai.storyteller.anicraft.moho</string>
+      <key>UTTypeDescription</key>
+      <string>Moho Document</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>moho</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>ai.storyteller.anicraft.mohoproj</string>
+      <key>UTTypeDescription</key>
+      <string>Moho Project Document</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>mohoproj</string></array>
+      </dict>
+    </dict>
   </array>
 
   <key>CFBundleDocumentTypes</key>
@@ -127,6 +153,8 @@
       <array>
         <string>ai.storyteller.anicraft.fla</string>
         <string>ai.storyteller.anicraft.xfl</string>
+        <string>ai.storyteller.anicraft.moho</string>
+        <string>ai.storyteller.anicraft.mohoproj</string>
       </array>
     </dict>
   </array>
