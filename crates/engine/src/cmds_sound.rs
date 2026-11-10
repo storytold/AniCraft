@@ -1,12 +1,13 @@
-//! Sound commands (ADR 0020): import sounds into the library, put them on keyframes and set
-//! their sync and repeats, delete them, and mix the movie's soundtrack to a WAV file.
+//! Sound commands (ADR 0020, ADR 0039): import sounds into the library, put them on keyframes,
+//! set their sync, repeats and effect envelopes, set layer volumes and mutes, delete sounds,
+//! and mix the movie's soundtrack to a WAV file.
 
 use crate::cmds_timeline::{keyframe_mut, target};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
 use anicraft_doc::audio::{Voice, mix, wav};
-use anicraft_doc::sound::{self, MAX_REPEAT, frame_start};
-use anicraft_doc::{FrameSound, LayerKind, Sound, SoundId, SoundSync, Timeline};
+use anicraft_doc::sound::{self, MAX_ENVELOPE_POINTS, MAX_ENVELOPE_SECONDS, MAX_REPEAT, clean_points, frame_start};
+use anicraft_doc::{EnvelopePoint, FrameSound, LayerKind, Sound, SoundEffect, SoundId, SoundSync, Timeline};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,11 +38,21 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Sound",
             "",
             None,
-            "{sound, layer?, frame? (a blank keyframe is made there if the frame is empty), sync?: event|start|stop|stream, repeat?, loop?, extend? (lengthen the layer's last span to the sound's length)}",
+            "{sound, layer?, frame? (a blank keyframe is made there if the frame is empty), sync?: event|start|stop|stream, repeat?, loop?, effect?, envelope?, extend? (lengthen the layer's last span to the sound's length)}",
             true,
             place,
         ),
-        c("sound.set", "Sound Settings", "", None, "{layer?, frame?, sound?: id | null (null takes the sound off), sync?, repeat?, loop?}", true, set),
+        c(
+            "sound.set",
+            "Sound Settings",
+            "",
+            None,
+            "{layer?, frame?, sound?: id | null (null takes the sound off), sync?, repeat?, loop?, effect?: none|left_channel|right_channel|fade_left_to_right|fade_right_to_left|fade_in|fade_out|custom (presets shape over the time the sound is heard; custom starts from the effect before), envelope?: [{at (seconds from the sound's start), left (0–1), right (0–1)}…] (1–16 points; makes the effect custom)}",
+            true,
+            set,
+        ),
+        c("layer.toggle_mute", "Mute/Unmute Layer", "", None, "{layer?} (its sounds, and those in the symbols on it, go silent in playback and every export)", true, toggle_mute),
+        c("layer.set_volume", "Layer Volume", "", None, "{volume? (0–1: the layer's sounds and those in the symbols on it), muted?, layer?}", true, set_volume),
         c("sound.remove", "Remove Sound", "", None, "{layer?, frame?}", true, |s, p| set(s, &with_null_sound(p))),
         c("sound.delete", "Delete Sound", "", None, "{sound} (from the library and every keyframe that uses it)", true, delete),
         c("sound.rename", "Rename Sound", "", None, "{sound, name}", true, rename),
@@ -121,8 +132,49 @@ pub(crate) fn import_to_stage(s: &mut Session, path: &Path) -> Result<Value> {
     Ok(out)
 }
 
+/// Custom envelope points from `[{at, left, right}…]` (or `[[at, left, right]…]`): seconds
+/// from the sound's start, volumes `0..=1`.
+fn envelope_param(v: &Value) -> Result<Vec<EnvelopePoint>> {
+    let bad = || EngineError::Param(format!("param 'envelope' must be 1 to {MAX_ENVELOPE_POINTS} points [{{at (seconds, 0–{MAX_ENVELOPE_SECONDS}), left (0–1), right (0–1)}}…]"));
+    let list = v.as_array().filter(|a| (1..=MAX_ENVELOPE_POINTS).contains(&a.len())).ok_or_else(bad)?;
+    let mut out = Vec::with_capacity(list.len());
+    for item in list {
+        let field = |k: &str, i: usize| item.get(k).or_else(|| item.get(i)).and_then(Value::as_f64).filter(|x| x.is_finite());
+        let (Some(at), Some(left), Some(right)) = (field("at", 0), field("left", 1), field("right", 2)) else { return Err(bad()) };
+        if !(0.0..=MAX_ENVELOPE_SECONDS).contains(&at) || !(0.0..=1.0).contains(&left) || !(0.0..=1.0).contains(&right) {
+            return Err(bad());
+        }
+        out.push(EnvelopePoint::new(at, left as f32, right as f32));
+    }
+    Ok(clean_points(&out))
+}
+
+/// `sync`, `repeat`, `loop`, `effect` and `envelope` from params over `fs`. `heard` is how
+/// long the sound would be heard, in seconds (Custom starts from the effect's shape over it).
+fn apply_settings(p: &Value, fs: FrameSound, heard: &dyn Fn(&FrameSound) -> f64) -> Result<FrameSound> {
+    let mut fs = apply_timing(p, fs)?;
+    if let Some(e) = opt_str(p, "effect")? {
+        let want = SoundEffect::from_key(e).ok_or_else(|| EngineError::Param("param 'effect' must be none, left_channel, right_channel, fade_left_to_right, fade_right_to_left, fade_in, fade_out or custom".into()))?;
+        fs.effect = match want {
+            // Custom keeps the points it has, or starts from the effect chosen before (full
+            // volume: a point at each end, to drag).
+            SoundEffect::Custom(_) if matches!(fs.effect, SoundEffect::Custom(_)) => fs.effect,
+            SoundEffect::Custom(_) => {
+                let t = heard(&fs);
+                let pts = if fs.effect.is_none() { vec![EnvelopePoint::new(0.0, 1.0, 1.0), EnvelopePoint::new(t, 1.0, 1.0)] } else { fs.effect.points(t) };
+                SoundEffect::Custom(clean_points(&pts))
+            }
+            preset => preset,
+        };
+    }
+    if let Some(v) = p.get("envelope") {
+        fs.effect = SoundEffect::Custom(envelope_param(v)?);
+    }
+    Ok(fs)
+}
+
 /// `sync`, `repeat` and `loop` from params over `fs`.
-fn apply_settings(p: &Value, mut fs: FrameSound) -> Result<FrameSound> {
+fn apply_timing(p: &Value, mut fs: FrameSound) -> Result<FrameSound> {
     if let Some(x) = opt_str(p, "sync")? {
         fs.sync = SoundSync::from_key(x).ok_or_else(|| EngineError::Param("param 'sync' must be event, start, stop or stream".into()))?;
     }
@@ -150,10 +202,12 @@ fn sound_param(s: &Session, p: &Value) -> Result<SoundId> {
 /// length so its waveform shows in full.
 fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let id = sound_param(s, p)?;
-    let fs = apply_settings(p, FrameSound::new(id))?;
+    let fps = s.doc.stage.fps;
+    let want = s.doc.sound(id).map_or(1, |x| x.movie_frames(fps));
+    let snd = s.doc.sound(id).cloned();
+    let fs = apply_settings(p, FrameSound::new(id), &|fs| snd.as_ref().map_or(0.0, |x| fs.heard_seconds(x, want, want, fps)))?;
     let (lid, frame) = target(s, p)?;
     let extend = opt_bool(p, "extend")?.unwrap_or(false);
-    let want = s.doc.sound(id).map_or(1, |x| x.movie_frames(s.doc.stage.fps));
     let layer = s.layer_mut(lid)?;
     if layer.kind == LayerKind::Folder {
         return Err(EngineError::State(format!("'{}' is a folder; sounds go on a layer's keyframes", layer.name)));
@@ -168,8 +222,9 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
     if extend && last && k.duration < want {
         k.duration = want.min(MAX_FRAME.saturating_sub(k.start).saturating_add(1)).max(1);
     }
+    let out = json!({"layer": layer_id.0, "keyframe": k.start, "duration": k.duration, "sound": id.0, "sync": fs.sync.key(), "effect": fs.effect.key(), "frames": want});
     k.sound = Some(fs);
-    Ok(json!({"layer": layer_id.0, "keyframe": k.start, "duration": k.duration, "sound": id.0, "sync": fs.sync.key(), "frames": want}))
+    Ok(out)
 }
 
 /// Sound Settings: changes the keyframe's sound (keeping its settings), its sync, repeats or
@@ -180,32 +235,82 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         None => Some(None),
         Some(_) => Some(Some(sound_param(s, p)?)),
     };
+    // The keyframe's span and the frames from it to the movie's end: the time a preset is
+    // shaped over, which Custom starts from.
+    let (lid, frame) = target(s, p)?;
+    let fps = s.doc.stage.fps;
+    let tl = s.doc.timeline(s.scene);
+    let place = tl.layer(lid.unwrap_or(s.layer)).and_then(|l| l.keyframe_at(frame)).map(|k| (k.duration, s.doc.frame_count().saturating_sub(s.doc.scene_start(s.scene).saturating_add(k.start))));
+    let sounds = s.doc.sounds.clone();
+    let heard = move |fs: &FrameSound| match (sounds.iter().find(|x| x.id == fs.sound), place) {
+        (Some(x), Some((span, rest))) => fs.heard_seconds(x, span, rest, fps),
+        _ => 0.0,
+    };
     let k = keyframe_mut(s, p)?;
     let Some(change) = new_id else {
         let had = k.sound.take().is_some();
         return Ok(json!({"keyframe": k.start, "removed": had}));
     };
-    let base = match (change, k.sound) {
+    let base = match (change, k.sound.clone()) {
         (Some(id), Some(cur)) => FrameSound { sound: id, ..cur },
         (Some(id), None) => FrameSound::new(id),
         (None, Some(cur)) => cur,
         (None, None) => return Err(EngineError::State(format!("the keyframe at frame {} has no sound; pass \"sound\"", k.start + 1))),
     };
-    let fs = apply_settings(p, base)?;
+    let fs = apply_settings(p, base, &heard)?;
+    let out = json!({"keyframe": k.start, "sound": fs.sound.0, "sync": fs.sync.key(), "repeat": fs.repeat, "loop": fs.looping, "effect": fs.effect.key(), "envelope": envelope_json(&fs.effect)});
     k.sound = Some(fs);
-    Ok(json!({"keyframe": k.start, "sound": fs.sound.0, "sync": fs.sync.key(), "repeat": fs.repeat, "loop": fs.looping}))
+    Ok(out)
+}
+
+/// A custom effect's points as `[{at, left, right}…]` (`null` for the presets).
+fn envelope_json(e: &SoundEffect) -> Value {
+    match e {
+        SoundEffect::Custom(p) => Value::Array(p.iter().map(|p| json!({"at": p.at, "left": p.left, "right": p.right})).collect()),
+        _ => Value::Null,
+    }
+}
+
+/// Mute or unmute a layer's sounds (and those in the symbols on it).
+fn toggle_mute(s: &mut Session, p: &Value) -> Result<Value> {
+    let layer = s.layer_mut(opt_u64(p, "layer")?.map(anicraft_doc::LayerId))?;
+    layer.muted = !layer.muted;
+    Ok(json!({"layer": layer.id.0, "muted": layer.muted, "volume": layer.volume}))
+}
+
+/// Layer Volume: the volume of a layer's sounds, and whether they are muted.
+fn set_volume(s: &mut Session, p: &Value) -> Result<Value> {
+    let volume = opt_f32(p, "volume")?;
+    if volume.is_some_and(|v| !(0.0..=1.0).contains(&v)) {
+        return Err(EngineError::Param("param 'volume' must be between 0 and 1".into()));
+    }
+    let muted = opt_bool(p, "muted")?;
+    if volume.is_none() && muted.is_none() {
+        return Err(EngineError::Param("pass 'volume' (0–1), 'muted' or both".into()));
+    }
+    let layer = s.layer_mut(opt_u64(p, "layer")?.map(anicraft_doc::LayerId))?;
+    if layer.kind == LayerKind::Folder {
+        return Err(EngineError::State(format!("'{}' is a folder; set the volume of the layers in it", layer.name)));
+    }
+    if let Some(v) = volume {
+        layer.volume = v;
+    }
+    if let Some(m) = muted {
+        layer.muted = m;
+    }
+    Ok(json!({"layer": layer.id.0, "volume": layer.volume, "muted": layer.muted}))
 }
 
 /// Keyframes in `tl` that use sound `id`.
 pub fn uses_in(tl: &Timeline, id: SoundId) -> usize {
-    tl.layers.iter().map(|l| l.keyframes.iter().filter(|k| k.sound.is_some_and(|f| f.sound == id)).count()).sum()
+    tl.layers.iter().map(|l| l.keyframes.iter().filter(|k| k.sound.as_ref().is_some_and(|f| f.sound == id)).count()).sum()
 }
 
 /// Takes sound `id` off every keyframe of `tl`, touching (un-sharing) only those keyframes.
 fn strip(tl: &mut Timeline, id: SoundId) {
-    for l in tl.layers.iter_mut().filter(|l| l.keyframes.iter().any(|k| k.sound.is_some_and(|f| f.sound == id))) {
+    for l in tl.layers.iter_mut().filter(|l| l.keyframes.iter().any(|k| k.sound.as_ref().is_some_and(|f| f.sound == id))) {
         let l = Arc::make_mut(l);
-        for k in l.keyframes.iter_mut().filter(|k| k.sound.is_some_and(|f| f.sound == id)) {
+        for k in l.keyframes.iter_mut().filter(|k| k.sound.as_ref().is_some_and(|f| f.sound == id)) {
             Arc::make_mut(k).sound = None;
         }
     }
