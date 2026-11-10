@@ -574,6 +574,10 @@ fn panic_hunt_every_command() {
         json!({"points": [[0, 0], [40, 40], [90, 5]], "size": 30, "mode": "selected_fills", "x": 30, "y": 30, "slop": 0}),
         json!({"points": [[45, 45]], "size": 2000, "mode": "inside", "x": 45, "y": 45, "other": true, "fill": false, "stroke": true}),
         json!({"points": [[5, 5], [55, 55]], "size": 4, "mode": "lines", "shape": "square", "x": 1, "y": 1, "fill": "yes"}),
+        // Kept scripts (ADR 0013 tier 1): odd text, unknown languages, class names that aren't.
+        json!({"text": "\u{0}\r\n]]>\u{202e}stop();", "language": "other", "class": "a.b", "base": "c", "symbol": 1}),
+        json!({"text": "x".repeat(1 << 20), "language": 3, "class": "not a class", "base": ""}),
+        json!({"text": "", "language": "ActionScript3", "class": "", "base": "Orphan"}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
