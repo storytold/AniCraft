@@ -98,7 +98,7 @@ fn copy_frames(s: &mut Session, p: &Value) -> Result<Value> {
     let symbols = collect_symbols(s, &elements);
     let n = clip.layers.len();
     let mut sounds: Vec<Arc<anicraft_doc::Sound>> = Vec::new();
-    for id in clip.layers.iter().flat_map(|l| l.keys.iter().filter_map(|k| k.sound.map(|f| f.sound))) {
+    for id in clip.layers.iter().flat_map(|l| l.keys.iter().filter_map(|k| k.sound.as_ref().map(|f| f.sound))) {
         if let Some(x) = s.doc.sounds.iter().find(|x| x.id == id) && !sounds.iter().any(|y| y.id == id) {
             sounds.push(x.clone());
         }

@@ -19,7 +19,7 @@ mod player;
 mod vorbis;
 pub mod wav;
 
-pub use mix::{MixOptions, Voice, VoiceKind, mix};
+pub use mix::{EnvPoint, Envelope, MixOptions, Voice, VoiceKind, mix};
 pub use peaks::Peaks;
 pub use player::{Player, RAMP_FRAMES};
 

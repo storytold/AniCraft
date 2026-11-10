@@ -15,6 +15,7 @@
 
 use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Seg, Target};
 use crate::eval::{Play, evaluate_guided, evaluate_symbol, guide_walk};
+use crate::sound::Started;
 use crate::{Document, Element, ElementId, ElementKind, LayerKind, MAX_SYMBOL_DEPTH, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Vec2};
 use std::collections::{BTreeMap, VecDeque};
@@ -157,13 +158,17 @@ pub enum Event {
     Leave,
 }
 
-/// The state after a step, and what the movie wrote to the Output panel (traces, and why an
-/// action could not run).
+/// The state after a step, what the movie wrote to the Output panel (traces, and why an
+/// action could not run), and the sounds of the keyframes it entered (ADR 0039).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Step {
     pub state: PlayerState,
     pub output: Vec<String>,
+    pub sounds: Vec<Started>,
 }
+
+/// Most sounds one step starts.
+pub const MAX_SOUNDS_PER_STEP: usize = 256;
 
 /// What a node of the movie's instance tree is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +199,8 @@ pub struct Node {
     /// Pointer events can reach it (visible, not mask artwork).
     pub hittable: bool,
     pub events: Vec<EventHandler>,
+    /// The volume its sounds get: the layers holding it, from the main timeline down.
+    pub gain: f32,
 }
 
 /// Runs plug-in frame scripts for the player (the engine implements it over the plug-in host).
@@ -250,6 +257,7 @@ pub fn step(doc: &Document, state: &PlayerState, events: &[Event], host: &mut dy
     let mut r = Run::new(doc, state.clone(), host);
     r.st.tick = r.st.tick.saturating_add(1);
     r.refresh();
+    r.remember_graphics();
     r.advance();
     r.settle();
     for e in events.iter().take(MAX_EVENTS_PER_STEP) {
@@ -265,6 +273,7 @@ pub fn input(doc: &Document, state: &PlayerState, events: &[Event], host: &mut d
     host.begin_step();
     let mut r = Run::new(doc, state.clone(), host);
     r.refresh();
+    r.remember_graphics();
     for e in events.iter().take(MAX_EVENTS_PER_STEP) {
         r.event(*e);
     }
@@ -275,7 +284,7 @@ pub fn input(doc: &Document, state: &PlayerState, events: &[Event], host: &mut d
 /// drawing order (parents before their contents).
 pub fn tree(doc: &Document, st: &PlayerState) -> Vec<Node> {
     let tl = doc.timeline(st.scene);
-    let mut out = vec![Node { path: Vec::new(), parent: None, owner: 0, name: String::new(), symbol: None, kind: NodeKind::Root, frame: st.root.frame, frames: tl.frame_count(), xf: Affine::IDENTITY, hittable: true, events: Vec::new() }];
+    let mut out = vec![Node { path: Vec::new(), parent: None, owner: 0, name: String::new(), symbol: None, kind: NodeKind::Root, frame: st.root.frame, frames: tl.frame_count(), xf: Affine::IDENTITY, hittable: true, events: Vec::new(), gain: 1.0 }];
     // The main timeline is seen through its camera (ADR 0027): instances are where the pointer
     // sees them.
     let camera = tl.camera_at(st.root.frame, &doc.stage);
@@ -300,10 +309,12 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
         return;
     }
     let base: InstancePath = out.get(parent).map(|n| n.path.clone()).unwrap_or_default();
+    let parent_gain = out.get(parent).map_or(1.0, |n| n.gain);
     for (index, layer) in tl.layers.iter().enumerate().rev() {
         if !plays(tl, index) {
             continue;
         }
+        let gain = parent_gain * layer.sound_gain();
         let hit = hittable && layer.kind != LayerKind::Mask;
         let path_walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, els)) = evaluate_guided(layer, frame, path_walk.as_ref()) else { continue };
@@ -328,7 +339,7 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
             };
             let idx = out.len();
             let node_xf = layer_xf.mul(&e.transform);
-            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, hittable: hit && shown, events: events.clone() });
+            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, hittable: hit && shown, events: events.clone(), gain });
             // Names inside a movie clip (or a button's states) are its own; a graphic's
             // contents belong to the timeline the graphic is on.
             let inner_owner = if kind == NodeKind::Graphic { owner } else { idx };
@@ -389,11 +400,32 @@ struct Run<'a, 'h> {
     halted: bool,
     output: Vec<String>,
     dropped: usize,
+    sounds: Vec<Started>,
+    /// The frame each graphic showed when the step began: one that shows another frame at
+    /// its end has entered it (and starts its sounds).
+    graphics: BTreeMap<InstancePath, u32>,
 }
 
 impl<'a, 'h> Run<'a, 'h> {
     fn new(doc: &'a Document, st: PlayerState, host: &'h mut dyn ScriptHost) -> Self {
-        Run { doc, st, host, nodes: Vec::new(), dirty: true, pending: VecDeque::new(), actions: 0, enters: 0, halted: false, output: Vec::new(), dropped: 0 }
+        Run { doc, st, host, nodes: Vec::new(), dirty: true, pending: VecDeque::new(), actions: 0, enters: 0, halted: false, output: Vec::new(), dropped: 0, sounds: Vec::new(), graphics: BTreeMap::new() }
+    }
+
+    fn remember_graphics(&mut self) {
+        self.graphics = self.nodes.iter().filter(|n| n.kind == NodeKind::Graphic).map(|n| (n.path.clone(), n.frame)).collect();
+    }
+
+    /// The sounds on keyframes of `tl` starting at `frame` (every layer but guides, as the
+    /// soundtrack has them), at volume `gain` times their layer's.
+    fn sounds_at(&mut self, tl: &Timeline, frame: u32, gain: f32) {
+        for layer in tl.layers.iter().filter(|l| !matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera)) {
+            let Some(k) = layer.keyframe_starting_at(frame).and_then(|i| layer.keyframes.get(i)) else { continue };
+            if let Some(fs) = &k.sound
+                && self.sounds.len() < MAX_SOUNDS_PER_STEP
+            {
+                self.sounds.push(Started { sound: fs.clone(), gain: gain * layer.sound_gain(), span: k.duration });
+            }
+        }
     }
 
     fn out(&mut self, line: impl Into<String>) {
@@ -522,6 +554,8 @@ impl<'a, 'h> Run<'a, 'h> {
         let Some(i) = self.index_of(path) else { return };
         let Some(tl) = self.timeline_of(i) else { return };
         let frame = self.nodes.get(i).map_or(0, |n| n.frame);
+        let gain = self.nodes.get(i).map_or(1.0, |n| n.gain);
+        self.sounds_at(tl, frame, gain);
         let scripts: Vec<&'a FrameScript> = tl.layers.iter().enumerate().filter(|(ix, _)| plays(tl, *ix)).filter_map(|(_, l)| l.keyframe_starting_at(frame).and_then(|k| l.keyframes.get(k))).filter_map(|k| k.script.as_ref()).collect();
         for script in scripts {
             match script {
@@ -753,11 +787,24 @@ impl<'a, 'h> Run<'a, 'h> {
 
     fn finish(mut self) -> Step {
         self.refresh();
+        // Graphics keep step with their timelines: one now on another frame (or new on the
+        // stage) has entered it.
+        let entered: Vec<(SymbolId, u32, f32)> = self
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Graphic && self.graphics.get(&n.path) != Some(&n.frame))
+            .filter_map(|n| Some((n.symbol?, n.frame, n.gain)))
+            .collect();
+        for (symbol, frame, gain) in entered {
+            if let Some(sym) = self.doc.symbol(symbol) {
+                self.sounds_at(&sym.timeline, frame, gain);
+            }
+        }
         if self.dropped > 0 {
             let n = self.dropped;
             self.output.push(format!("… {n} more lines"));
         }
-        Step { state: self.st, output: self.output }
+        Step { state: self.st, output: self.output, sounds: self.sounds }
     }
 }
 

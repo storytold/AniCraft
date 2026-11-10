@@ -347,6 +347,8 @@ pub struct App {
     pub actions: crate::actions_panel::State,
     /// Control › Test Movie: the movie playing in its own window.
     pub test_movie: Option<crate::test_movie::TestMovie>,
+    /// Edit Envelope: a keyframe sound's volume per channel, in its own window (ADR 0039).
+    pub envelope: Option<crate::envelope::EnvelopeEditor>,
     pub show_shortcuts: bool,
     /// The window close was intercepted because of unsaved changes.
     pub close_dialog: bool,
@@ -492,6 +494,7 @@ impl App {
             show_actions: false,
             actions: crate::actions_panel::State::default(),
             test_movie: None,
+            envelope: None,
             show_shortcuts: false,
             close_dialog: false,
             allow_close: false,
@@ -679,6 +682,25 @@ impl App {
     }
 
     /// `--open` at start-up: shows a panel, for visual checks and documentation screenshots.
+    /// Imports a two-second beat made here (decaying 220 Hz pulses every half second) to the
+    /// stage, for screenshots; whether it worked.
+    fn import_demo_beat(&mut self) -> bool {
+        let rate = 22_050u32;
+        let beat: Vec<f32> = (0..rate * 2)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                let env = (-(t % 0.5) * 9.0).exp() * if ((t / 0.5) as u32).is_multiple_of(2) { 0.9 } else { 0.5 };
+                env * (t * 220.0 * std::f32::consts::TAU).sin()
+            })
+            .collect();
+        let path = std::env::temp_dir().join("anicraft-beat.wav");
+        if std::fs::write(&path, anicraft_audio::wav::encode(rate, 1, &beat, anicraft_audio::wav::Bits::Int16)).is_err() {
+            return false;
+        }
+        self.perform("file.import", json!({"path": path.display().to_string()}));
+        true
+    }
+
     pub fn open_panel(&mut self, which: Option<&str>) {
         match which {
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
@@ -896,21 +918,23 @@ impl App {
                 self.run("edit.deselect", json!({}));
             }
             Some("sound") => {
-                // A two-second beat (made here: decaying 220 Hz pulses every half second)
-                // imported to the stage, stream sync, its keyframe's Sound properties showing.
-                let rate = 22_050u32;
-                let beat: Vec<f32> = (0..rate * 2)
-                    .map(|i| {
-                        let t = i as f32 / rate as f32;
-                        let env = (-(t % 0.5) * 9.0).exp() * if ((t / 0.5) as u32).is_multiple_of(2) { 0.9 } else { 0.5 };
-                        env * (t * 220.0 * std::f32::consts::TAU).sin()
-                    })
-                    .collect();
-                let path = std::env::temp_dir().join("anicraft-beat.wav");
-                if std::fs::write(&path, anicraft_audio::wav::encode(rate, 1, &beat, anicraft_audio::wav::Bits::Int16)).is_ok() {
-                    self.perform("file.import", json!({"path": path.display().to_string()}));
+                // A two-second beat imported to the stage, stream sync, its keyframe's Sound
+                // properties showing.
+                if self.import_demo_beat() {
                     self.run("sound.set", json!({"frame": 0, "sync": "stream"}));
                     self.run("timeline.goto", json!({"frame": 14}));
+                }
+            }
+            Some("envelope") => {
+                // The beat with a custom envelope (in from the left, out to the right), its
+                // envelope editor open on a selected point, the layer at 80 %.
+                if self.import_demo_beat() {
+                    let pts = json!([[0.0, 0.0, 0.0], [0.4, 1.0, 0.25], [1.2, 0.6, 1.0], [2.0, 0.0, 0.1]]);
+                    self.run("sound.set", json!({"frame": 0, "envelope": pts}));
+                    self.run("layer.set_volume", json!({"volume": 0.8}));
+                    self.run("timeline.goto", json!({"frame": 10}));
+                    crate::envelope::open(self);
+                    crate::envelope::select(self, 1);
                 }
             }
             Some(which @ ("hints" | "hintsend")) => {
@@ -1876,6 +1900,7 @@ impl App {
         crate::plugins_ui::show(self, &ctx);
         crate::actions_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
+        crate::envelope::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {
