@@ -358,8 +358,8 @@ fn history(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn properties(app: &mut App, ui: &mut egui::Ui) {
-    let elements = app.s.visible_elements();
-    let sel: Vec<_> = elements.iter().filter(|e| app.s.selection.contains(&e.id)).cloned().collect();
+    // The selection on every layer (ADR 0044).
+    let sel: Vec<_> = app.s.selected_elements().into_iter().map(|(_, e)| e).collect();
 
     // ---- tool options first while a drawing tool is in hand: they're what you reach for ----
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper) {
@@ -393,8 +393,12 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     if let Some(e) = sel.first() {
-        let title = if sel.len() > 1 { format!("{} elements", sel.len()) } else { element_label(&app.s.doc, e) };
-        section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, sel.len()));
+        let title = match (sel.len(), app.s.selected_layers().len()) {
+            (1, _) => element_label(&app.s.doc, e),
+            (n, 0 | 1) => format!("{n} elements"),
+            (n, l) => format!("{n} elements on {l} layers"),
+        };
+        section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, &sel));
     } else {
         section(ui, "prop_document", Section::Rule, "Document", None, |ui| document_props(app, ui));
     }
@@ -407,7 +411,17 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, _count: usize) {
+/// "mixed" after a value that differs across the selection (the field shows the first one's).
+fn mixed(ui: &mut egui::Ui, differs: bool) {
+    if differs {
+        ui.label(text(Type::Caption, "mixed").color(T.text_faint)).on_hover_text("The selected elements differ here; it shows the first one's. A change applies to all of them");
+    }
+}
+
+/// The selection's properties: `e` is the first selected element, `all` the whole selection.
+fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, all: &[std::sync::Arc<anicraft_engine::doc::Element>]) {
+    let many = all.len() > 1;
+    let differs = |f: &dyn Fn(&anicraft_engine::doc::Element) -> f32| all.iter().any(|x| (f(x) - f(e)).abs() > 1e-4);
     if let ElementKind::Symbol { symbol, events, .. } = &e.kind
         && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
     {
@@ -416,30 +430,51 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
     {
         let d = e.transform.decompose();
         let (mut x, mut y, mut sx, mut sy, mut rot) = (d.tx, d.ty, d.sx * 100.0, d.sy * 100.0, d.rotation.to_degrees());
-        row(ui, "Position", |ui| {
-            let a = ui.add(egui::DragValue::new(&mut x).prefix("X ").speed(1.0).max_decimals(1)).named("Position X");
-            let b = ui.add(egui::DragValue::new(&mut y).prefix("Y ").speed(1.0).max_decimals(1)).named("Position Y");
-            if a.changed() || b.changed() {
-                live(app, "Move", "element.set_transform", json!({"x": x, "y": y}));
-            }
-        });
+        if many {
+            // Several elements: where their combined box is, as in Animate; a change moves them
+            // all together.
+            let b = app.s.selection_bounds();
+            let (ox, oy) = (b.min.x, b.min.y);
+            let (mut bx, mut by) = (ox, oy);
+            row(ui, "Position", |ui| {
+                let a = ui.add(egui::DragValue::new(&mut bx).prefix("X ").speed(1.0).max_decimals(1)).named("Position X");
+                let c = ui.add(egui::DragValue::new(&mut by).prefix("Y ").speed(1.0).max_decimals(1)).named("Position Y");
+                if (a.changed() || c.changed()) && !b.is_empty() {
+                    live(app, "Move", "element.translate", json!({"dx": bx - ox, "dy": by - oy}));
+                }
+            });
+        } else {
+            row(ui, "Position", |ui| {
+                let a = ui.add(egui::DragValue::new(&mut x).prefix("X ").speed(1.0).max_decimals(1)).named("Position X");
+                let b = ui.add(egui::DragValue::new(&mut y).prefix("Y ").speed(1.0).max_decimals(1)).named("Position Y");
+                if a.changed() || b.changed() {
+                    live(app, "Move", "element.set_transform", json!({"x": x, "y": y}));
+                }
+            });
+        }
+        let scale_mixed = many && (differs(&|x| x.transform.decompose().sx) || differs(&|x| x.transform.decompose().sy));
         row(ui, "Scale", |ui| {
             let a = ui.add(egui::DragValue::new(&mut sx).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named("Scale width");
             let b = ui.add(egui::DragValue::new(&mut sy).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named("Scale height");
             if a.changed() || b.changed() {
                 live(app, "Scale", "element.set_transform", json!({"sx": sx / 100.0, "sy": sy / 100.0}));
             }
+            mixed(ui, scale_mixed);
         });
+        let rot_mixed = many && differs(&|x| x.transform.decompose().rotation);
         row(ui, "Rotation", |ui| {
             if ui.add(egui::DragValue::new(&mut rot).suffix("°").speed(0.5).range(-360.0..=360.0).max_decimals(1)).named("Rotation").changed() {
                 live(app, "Rotate", "element.set_transform", json!({"rotation": rot}));
             }
+            mixed(ui, rot_mixed);
         });
         let mut alpha = e.color.alpha * 100.0;
+        let alpha_mixed = many && differs(&|x| x.color.alpha);
         row(ui, "Alpha", |ui| {
             if a11y::slider(ui, &mut alpha, 0.0..=100.0, "Alpha", a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() }).changed() {
                 live(app, "Alpha", "element.set_alpha", json!({"alpha": alpha / 100.0}));
             }
+            mixed(ui, alpha_mixed);
         });
         // Blending and filters, on movie clips and buttons as in Animate.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
@@ -546,6 +581,14 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         if let ElementKind::Shape(sh) = &e.kind {
             ui.add_space(4.0);
             let fill = sh.fill.as_ref().map(Paint::primary_color);
+            // Mixed: the selected shapes' fills, or lines, are not all alike.
+            let shapes: Vec<&anicraft_engine::doc::Shape> = all.iter().filter_map(|x| match &x.kind {
+                ElementKind::Shape(s) => Some(s),
+                _ => None,
+            }).collect();
+            let fill_mixed = shapes.iter().any(|s| s.fill.as_ref().map(Paint::primary_color) != fill);
+            let line = |s: &anicraft_engine::doc::Shape| s.stroke.as_ref().map(|st| (st.color, st.width.to_bits()));
+            let stroke_mixed = shapes.iter().any(|s| line(s) != line(sh));
             row(ui, "Fill", |ui| {
                 let is_grad = matches!(sh.fill, Some(Paint::Linear { .. } | Paint::Radial { .. }));
                 let mut c = rgb(fill.unwrap_or(Rgba::WHITE));
@@ -562,6 +605,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 } else if is_grad {
                     ui.label(text(Type::Caption, "gradient"));
                 }
+                mixed(ui, fill_mixed);
             });
             let mut sc = rgb(sh.stroke.as_ref().map_or(app.s.style.stroke, |s| s.color));
             let mut sw = sh.stroke.as_ref().map_or(0.0, |s| s.width);
@@ -572,6 +616,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 if ui.add(egui::DragValue::new(&mut sw).suffix(" px").speed(0.1).range(0.0..=200.0).max_decimals(1)).named("Stroke width").changed() {
                     live(app, "Stroke width", "element.set_stroke", json!({"width": sw}));
                 }
+                mixed(ui, stroke_mixed);
             });
             if let Some(st) = &sh.stroke {
                 // The width profile, as Animate's Width menu: built-ins with a picture of each.
