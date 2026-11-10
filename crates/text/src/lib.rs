@@ -280,7 +280,11 @@ const MAX_FACES: usize = 6;
 
 /// A character that is drawn (not a space, a line break or another control).
 fn needs_glyph(c: char) -> bool {
-    !c.is_control() && !c.is_whitespace()
+    // Invisible format characters (ZWNJ, ZWJ, direction marks and embeddings, variation
+    // selectors, the BOM) draw as nothing, and fonts often don't map them.
+    let invisible = unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::BN
+        || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}');
+    !c.is_control() && !c.is_whitespace() && !invisible
 }
 
 /// Drops from `chars` those the face in `data` has (its charmap read once).
@@ -649,6 +653,8 @@ mod tests {
         assert!(mixed.outline.cmds.len() > lay("ab").outline.cmds.len());
         // A character no font has is counted, so the command can say so.
         assert_eq!(lay("a\u{10FFFD}").missing, 1);
+        // Invisible format characters aren't boxes, so they aren't missing either.
+        assert_eq!(lay("a\u{200C}b\u{200D}\u{200F}\u{FE0F}").missing, 0);
     }
 
     #[test]

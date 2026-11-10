@@ -109,11 +109,11 @@ pub(crate) fn lay_out(text: &str, style: &TextStyle, width: Option<f32>) -> Resu
     if !style.font.trim().is_empty() && !layout.family.eq_ignore_ascii_case(style.font.trim()) {
         notes.push(format!("“{}” isn't installed on this computer; used {}", style.font.trim(), layout.family));
     }
-    // Letters no installed font has (after the fallbacks) would otherwise show as boxes unsaid.
+    // Letters neither the font nor the fallback fonts have would otherwise show as boxes unsaid.
     match layout.missing {
         0 => {}
-        1 => notes.push("1 character isn't in any font on this computer and shows as a box".to_string()),
-        n => notes.push(format!("{n} characters aren't in any font on this computer and show as boxes")),
+        1 => notes.push(format!("1 character isn't in {} or the fallback fonts and shows as a box", layout.family)),
+        n => notes.push(format!("{n} characters aren't in {} or the fallback fonts and show as boxes", layout.family)),
     }
     let note = (!notes.is_empty()).then(|| notes.join("; "));
     let block = TextBlock {
