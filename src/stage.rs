@@ -274,6 +274,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let hint_hot = pointer.and_then(hint_at);
 
     let xf = crate::pathtools::Xf { origin, zoom };
+    // The motion path takes the pointer with the selection tools (ADR 0030): its ends and
+    // handles before the object under them, the path itself only where no object is.
+    let mp_tools = matches!(app.tool, Tool::Select | Tool::Subselect) && !panning && !preview;
+    let mp_grab = |app: &App, p: Pos2| {
+        let shown = crate::motion_path::shown(app)?;
+        let open = app.s.hit_test(to_v(to_stage(p)), 3.0 / zoom).is_none();
+        crate::motion_path::hit(app, &shown, p, xf, open).map(|g| (shown, g))
+    };
+    let mp_hot = if mp_tools && app.drag == Drag::None { pointer.and_then(|p| mp_grab(app, p)).map(|(_, g)| g) } else { None };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
@@ -282,6 +291,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Tool::Camera if app.drag == Drag::None && pointer.is_some_and(|p| crate::camera_tool::on_knob(app, &cam_geo, p)) => CursorIcon::Alias,
             Tool::Camera => CursorIcon::Grab,
             _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
+            _ if matches!(app.drag, Drag::MotionPath { .. }) => CursorIcon::Grabbing,
+            _ if mp_hot.is_some() => CursorIcon::Grab,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
@@ -330,6 +341,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else if let Some(m) = hint_at(press) {
             app.s.begin_gesture("Move Shape Hint");
             Drag::Hint { index: m.index, side: m.side }
+        } else if let Some((shown, grab)) = mp_tools.then(|| mp_grab(app, press)).flatten() {
+            crate::motion_path::drag_start(app, shown, grab, to_v(sp))
         } else {
             match app.tool {
                 Tool::Select => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
@@ -413,6 +426,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
+            (Drag::MotionPath { grab, start }, Some(c)) => {
+                let (grab, start) = (*grab, *start);
+                crate::motion_path::drag_to(app, grab, start, c, alt);
+            }
             (Drag::Hint { index, side }, Some(c)) => {
                 // Live: the hint snaps to the nearest edge as the pointer moves.
                 let (index, side) = (*index, *side);
@@ -441,6 +458,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         match app.drag {
             Drag::Move { .. } | Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
+            Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Marquee { start, cur } => {
@@ -471,7 +489,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
-                Tool::Subselect if !panning => crate::pathtools::subselect_click(app, p, shift, xf),
+                Tool::Subselect if !panning => {
+                    if !crate::motion_path::click(app, p, xf) {
+                        crate::pathtools::subselect_click(app, p, shift, xf);
+                    }
+                }
                 Tool::Width if !panning => crate::widthtool::click(app, p, xf),
                 Tool::PaintBucket if !panning => {
                     // The gap size is set in screen points, so it feels the same at any zoom.
@@ -797,6 +819,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
+    // After this frame's edits, so a drag on the path shows where it is now.
+    if !preview
+        && let Some(shown) = crate::motion_path::shown(app)
+    {
+        let hot = match app.drag {
+            Drag::MotionPath { grab, .. } => Some(grab),
+            _ => mp_hot,
+        };
+        crate::motion_path::draw(app, &painter, &shown, xf, hot);
+    }
     match app.drag {
         Drag::Marquee { start, cur } => {
             let r = Rect::from_two_pos(to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)));

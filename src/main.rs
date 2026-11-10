@@ -25,6 +25,7 @@ mod keymap;
 mod menus;
 mod motion_editor;
 mod panels;
+mod motion_path;
 mod pathtools;
 mod platform;
 mod plugins_ui;
@@ -146,7 +147,7 @@ fn main() -> eframe::Result {
             }
             "--help" | "-h" => {
                 println!(
-                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--lang en|ar|auto] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie|exporthtml]\n\
+                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--lang en|ar|auto] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|testmovie|exporthtml]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --lang       the interface language for this run, over Preferences (needs CRAFT_I18N_DIR at build time)\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\

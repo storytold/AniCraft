@@ -1107,6 +1107,23 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     let keyed: Vec<&str> = m.tracks.iter().map(|t| t.property.label()).collect();
                     let n = m.key_frames().len();
                     ui.label(text(Type::Caption, if keyed.is_empty() { "No property keyframes yet: move or change the object at a later frame to add some.".to_string() } else { format!("{} · {n} {}", keyed.join(", "), if n == 1 { "key frame" } else { "key frames" }) }));
+                    // The motion path (ADR 0030): bent on the stage, straightened here.
+                    let segments = m.path.as_ref().map(|p| p.cmds.len().saturating_sub(1));
+                    row_prose(ui, "Path", |ui| {
+                        let what = match segments {
+                            Some(1) => "Curved · 1 segment".to_string(),
+                            Some(n) => format!("Curved · {n} segments"),
+                            None => "Straight".to_string(),
+                        };
+                        ui.label(text(Type::Body, what)).on_hover_text("Select the object to see its path on the stage. Drag the path to bend it, its ends to move them; the Subselection tool (A) edits its points and handles.");
+                        if segments.is_some() && ui.small_button("Straighten").on_hover_text("Back to the straight path the X and Y curves trace").named("Straighten motion path").clicked() {
+                            app.run("motion.clear_path", json!({}));
+                        }
+                    });
+                    let mut orient = m.orient;
+                    if crate::theme::checkbox(ui, &mut orient, "Orient to path").on_hover_text("Turn the object as its motion path turns").named("Orient to path").changed() {
+                        app.run("motion.orient", json!({"orient": orient}));
+                    }
                     ui.horizontal(|ui| {
                         if ui.button("Motion Editor").on_hover_text("Edit the property curves and eases").clicked() {
                             app.bottom = crate::app::BottomTab::MotionEditor;

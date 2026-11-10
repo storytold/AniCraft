@@ -59,7 +59,7 @@ here.
 
 ### Optional build input: craft-i18n (not files in this repo)
 
-Builds made with `CRAFT_I18N_DIR` (ADR 0030) embed the interface translations from the shared
+Builds made with `CRAFT_I18N_DIR` (ADR 0031) embed the interface translations from the shared
 [storytold/craft-i18n](https://github.com/storytold/craft-i18n) catalogs (`locales/<code>/common.tsv`
 and `anicraft.tsv`, MIT OR Apache-2.0); its `ATTRIBUTION.md` credits the translators.
 
