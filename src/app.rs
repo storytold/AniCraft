@@ -1161,6 +1161,13 @@ impl App {
             self.status_ok(tr!("Restored “{name}”. It isn't saved yet: Save to keep it.", name = name));
             return Some(v);
         }
+        self.announce(id, &v, selected);
+        Some(v)
+    }
+
+    /// What a command's result means for the window: the status line, and the view state a
+    /// new document resets. `selected` is how many elements were selected before it ran.
+    pub(crate) fn announce(&mut self, id: &str, v: &Value, selected: usize) {
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
@@ -1294,7 +1301,6 @@ impl App {
             }
             _ => {}
         }
-        Some(v)
     }
 
     /// Invokes a command from a menu, shortcut, palette or context menu, asking for a path or

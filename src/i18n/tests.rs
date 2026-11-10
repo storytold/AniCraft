@@ -585,6 +585,42 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
 }
 
 #[test]
+fn status_lines_for_every_result_are_translated() {
+    // What the status bar says for results a test can't produce for real (saves, exports,
+    // imports, recovered work, plug-ins), from results shaped as the commands return them.
+    use serde_json::json;
+    let (mut app, _ctx) = pseudo_app(|_, _| {});
+    let full = json!({
+        "saved": "walk.anicraft", "written": "walk.png", "seconds": 1.5, "frames": 3, "columns": 2, "rows": 2, "map": "walk.json",
+        "kb": 12, "layers": 2, "masks": 1, "elements": 3, "report": "Imported walk.fla.", "copied": 2, "cut": 2, "pasted": 2,
+        "removed": 2, "cleared": 2, "original_newer": true, "sounds": 1, "name": "beat", "sound": 1, "log": ["Did it."],
+        "installed": [{"name": "Tint", "version": "1.0"}], "failed": ["bad.wasm: not a plug-in"], "replaced": "Tint 0.9",
+        "plugin": {"name": "Tint", "version": "1.0"}, "undone": "Move", "redone": "Move",
+    });
+    let bare = json!({});
+    let ids = [
+        "file.new", "file.open", "file.recover", "file.discard_recovery", "file.save", "file.save_as", "file.import", "file.import_to_library",
+        "file.export_audio", "file.export_sprite_sheet", "file.export_html", "file.export_lottie", "file.export_png", "file.export_gif",
+        "sound.delete", "edit.undo", "edit.redo", "edit.delete", "layer.delete", "draw.erase_all", "scene.delete", "scene.new",
+        "timeline.clear_keyframe", "timeline.copy_frames", "timeline.cut_frames", "timeline.paste_frames", "timeline.remove_frame",
+        "plugin.run", "plugin.install", "plugin.remove", "plugin.reload",
+    ];
+    let mut plain = Vec::new();
+    for id in ids {
+        for (shape, v) in [("full", &full), ("bare", &bare)] {
+            app.status = None;
+            app.announce(id, v, 2);
+            if let Some(s) = &app.status
+                && !s.text.chars().any(pseudo::is_accented)
+            {
+                plain.push(format!("{id} ({shape}): {:?}", s.text));
+            }
+        }
+    }
+    assert!(plain.is_empty(), "status lines in plain English:\n{}", plain.join("\n"));
+}
+
+#[test]
 fn tool_status_lines_are_translated() {
     // The Eraser's and Eyedropper's results on the sample (on the sun and the hills, and on
     // empty stage), as the status bar shows them.
