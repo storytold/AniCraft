@@ -89,6 +89,7 @@ const FILTERS: &str = "filters (not exported; drawn without them)";
 const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
 const BITMAP_TINT: &str = "tints on bitmap fills (drawn untinted)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
+const KEPT_SCRIPTS: &str = "kept frame scripts (not run; kept in the document only)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
 fn num(v: f32, scale: f64) -> Value {
@@ -508,6 +509,10 @@ impl<'a> Bake<'a> {
                     Some(FrameScript::Plugin(p)) => {
                         self.notes.entry(PLUGIN_SCRIPTS).or_default().insert(u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0));
                         a.push(json!({"plugin": format!("{} · {}", p.id, p.entry)}));
+                    }
+                    // Kept scripts don't run anywhere yet (ADR 0013 tier 1).
+                    Some(FrameScript::Source(_)) => {
+                        self.notes.entry(KEPT_SCRIPTS).or_default().insert(u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0));
                     }
                     None => {}
                 }
