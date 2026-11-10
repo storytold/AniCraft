@@ -13,4 +13,4 @@ StartupNotify=false
 StartupWMClass=ai.storyteller.anicraft
 Categories=Graphics;2DGraphics;VectorGraphics;
 Keywords=animation;animator;timeline;keyframe;tween;vector;drawing;cartoon;motion;
-MimeType=application/x-anicraft;application/x-fla;application/x-xfl;;application/x-moho;application/x-mohoproj
+MimeType=application/x-anicraft;application/x-fla;application/x-xfl;application/x-moho;application/x-mohoproj
