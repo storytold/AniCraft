@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+* **Merge drawing** (ADR 0031, issue #42). The Rectangle, Oval, PolyStar, Line, Pen and Pencil
+  tools now draw as Animate does:
+  * shapes on a layer cut and join each other;
+  * a fill drawn on top replaces what it covers, or joins a fill of the same colour;
+  * lines cut each other where they cross, and a line right across a fill splits it in two;
+  * a fill hides the lines under it;
+  * points within 0.2 px become one.
+
+  Click a fill or a stroke segment to select just that; selected shapes show a dot pattern
+  instead of a box. Double-click a stroke for every stroke joined to it, or a fill for the fill
+  and its outline. Drag or nudge a shape and it cuts into what it lands on. Each step is one
+  undo.
+
+  **Object Drawing** (J, or the tool's options) switches back to shapes that keep to themselves.
+  Arrow keys now move the selection one screen pixel (Shift: ten) at any zoom.
+
+  Headless: the drawing commands take `object` (scripts and AI assistants still draw objects
+  unless they pass `"object": false`), plus `draw.object_drawing`, `draw.drop` and
+  `element.select_connected`.
+
+  Not yet: bending segments by dragging them, snapping to points and strokes, moving shared
+  points together, partial marquee selection, and merging Paint Bucket fills, pastes and raw
+  shapes from Animate files.
+
 ## 0.1.0 (2026-11-09)
 
 * **Motion paths for motion tweens** (ADR 0030). Select a motion tween's object (or a frame of
