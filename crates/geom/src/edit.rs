@@ -395,7 +395,8 @@ fn merge_cubics(a: [Vec2; 4], b: [Vec2; 4]) -> Option<[Vec2; 4]> {
     let t1 = leaving([a[1] - p0, a[2] - p0, a[3] - p0]).unwrap_or_else(|| (p3 - p0).normalized());
     let t2 = leaving([b[2] - p3, b[1] - p3, b[0] - p3]).unwrap_or_else(|| (p0 - p3).normalized());
     let poly = |c: &[Vec2; 4]| c[0].distance(c[1]) + c[1].distance(c[2]) + c[2].distance(c[3]);
-    if !(poly(&a) + poly(&b) > 1e-6) {
+    // (The points are finite, so the lengths are too.)
+    if poly(&a) + poly(&b) <= 1e-6 {
         // Nothing of any length: the straight cubic between the ends.
         return Some([p0, p0.lerp(p3, 1.0 / 3.0), p0.lerp(p3, 2.0 / 3.0), p3]);
     }

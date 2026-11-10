@@ -203,3 +203,186 @@ fn motion_paths_round_trip_through_the_file_format() {
     assert_eq!(back, plain.doc);
     assert!(pos(&mut plain, 12).distance(Vec2::new(5.0 + 100.0 * 12.0 / 23.0, 5.0)) < 1e-3);
 }
+
+// ----- point editing and moving the whole path (ADR 0038) ---------------------------------
+
+/// The object's place on every frame of the span.
+fn track_of(s: &mut Session) -> Vec<Vec2> {
+    (0..24).map(|f| pos(s, f)).collect()
+}
+
+fn path_d(s: &Session) -> String {
+    motion(s).path.as_ref().map(|p| p.to_svg()).unwrap_or_default()
+}
+
+/// An S through (55, -40): up from the start, over, and down to the end, with a smooth middle.
+const S_CURVE: &str = "M5 5 C5 -40 30 -40 55 -40 C80 -40 105 -40 105 5";
+
+#[test]
+fn adding_a_point_leaves_the_curve_and_the_motion_unchanged() {
+    let mut s = moving();
+    run(&mut s, "motion.set_path", json!({"d": HUMP}));
+    let before = track_of(&mut s);
+    let keys = motion(&s).tracks.clone();
+    let steps = s.history_len();
+    // On the path where the object is at frame 9, as a click there would be.
+    let at = pos(&mut s, 9);
+    let v = run(&mut s, "motion.add_point", json!({"x": at.x, "y": at.y}));
+    assert_eq!((v["anchor"].as_u64(), v["segments"].as_u64()), (Some(1), Some(2)));
+    assert_eq!(s.history_len(), steps + 1, "one undo step");
+    let new = Vec2::new(v["anchors"][1][0].as_f64().unwrap_or(0.0) as f32, v["anchors"][1][1].as_f64().unwrap_or(0.0) as f32);
+    assert!(new.distance(at) < 0.05, "the new anchor is where the object passes: {new:?} vs {at:?}");
+    assert_eq!(motion(&s).tracks, keys, "the timing keeps its keys");
+    for (f, (a, b)) in before.iter().zip(track_of(&mut s)).enumerate() {
+        assert!(a.distance(b) < 0.01, "frame {f}: {a:?} vs {b:?}");
+    }
+    // By segment and curve parameter too.
+    let v = run(&mut s, "motion.add_point", json!({"segment": 2, "t": 0.5}));
+    assert_eq!((v["anchor"].as_u64(), v["segments"].as_u64()), (Some(2), Some(3)));
+    for (f, (a, b)) in before.iter().zip(track_of(&mut s)).enumerate() {
+        assert!(a.distance(b) < 0.01, "frame {f}: {a:?} vs {b:?}");
+    }
+    // Refused: off the path, on an anchor, no such segment, mixed or missing params.
+    let d = path_d(&s);
+    for p in [
+        json!({"x": 55, "y": 300}),
+        json!({"segment": 1, "t": 0.0}),
+        json!({"segment": 0, "t": 0.5}),
+        json!({"segment": 9, "t": 0.5}),
+        json!({"segment": 1, "t": 1.5}),
+        json!({"segment": 1}),
+        json!({"x": 5, "y": 5, "segment": 1, "t": 0.5}),
+        json!({}),
+        json!({"x": 5, "y": 5, "slop": -1}),
+    ] {
+        assert!(s.execute("motion.add_point", &p).is_err(), "{p}");
+    }
+    assert_eq!(path_d(&s), d, "refusals change nothing");
+}
+
+#[test]
+fn deleting_a_point_keeps_the_ends_and_the_timing() {
+    let mut s = moving();
+    run(&mut s, "motion.set_path", json!({"d": S_CURVE}));
+    let keys = motion(&s).tracks.clone();
+    let steps = s.history_len();
+    let v = run(&mut s, "motion.delete_points", json!({"anchors": [1]}));
+    assert_eq!((v["deleted"].as_u64(), v["segments"].as_u64(), v["kept_ends"].as_bool()), (Some(1), Some(1), Some(false)));
+    assert_eq!(s.history_len(), steps + 1, "one undo step");
+    assert_eq!(motion(&s).tracks, keys, "the ends didn't move, so neither did a key");
+    assert!(pos(&mut s, 0).distance(Vec2::new(5.0, 5.0)) < 1e-3 && pos(&mut s, 23).distance(Vec2::new(105.0, 5.0)) < 1e-3, "the ends stay");
+    // The one cubic left still leaves straight up and comes straight down, over the top.
+    let Some(anicraft_geom::PathCmd::CubicTo(c1, c2, _)) = motion(&s).path.as_ref().and_then(|p| p.cmds.get(1)).copied() else { panic!("a cubic") };
+    assert!((c1.x - 5.0).abs() < 1e-3 && c1.y < 5.0 && (c2.x - 105.0).abs() < 1e-3 && c2.y < 5.0, "{c1:?} {c2:?}");
+    assert!(pos(&mut s, 12).y < -25.0, "still over the top: {:?}", pos(&mut s, 12));
+    // The ends can't go; asking for an end and a middle point deletes the middle one.
+    let d = path_d(&s);
+    let e = s.execute("motion.delete_points", &json!({"anchors": [0, 1]})).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("ends"), "{e}");
+    assert_eq!(path_d(&s), d);
+    run(&mut s, "motion.add_point", json!({"segment": 1, "t": 0.4}));
+    let v = run(&mut s, "motion.delete_points", json!({"anchors": [0, 1, 2]}));
+    assert_eq!((v["deleted"].as_u64(), v["kept_ends"].as_bool()), (Some(1), Some(true)));
+    for p in [json!({"anchors": [7]}), json!({"anchors": []}), json!({"anchors": "1"}), json!({})] {
+        assert!(s.execute("motion.delete_points", &p).is_err(), "{p}");
+    }
+}
+
+#[test]
+fn a_point_added_then_deleted_gives_the_path_back() {
+    let mut s = moving();
+    run(&mut s, "motion.set_path", json!({"d": HUMP}));
+    let before = track_of(&mut s);
+    run(&mut s, "motion.add_point", json!({"segment": 1, "t": 0.3}));
+    run(&mut s, "motion.delete_points", json!({"anchors": [1]}));
+    for (f, (a, b)) in before.iter().zip(track_of(&mut s)).enumerate() {
+        assert!(a.distance(b) < 0.02, "frame {f}: {a:?} vs {b:?}");
+    }
+}
+
+#[test]
+fn converting_a_point_makes_it_a_corner_or_smooth() {
+    let mut s = moving();
+    run(&mut s, "motion.set_path", json!({"d": S_CURVE}));
+    let point = |s: &Session, cmd: usize, slot: u8| motion(s).path.as_ref().and_then(|p| p.point(cmd, slot)).unwrap_or_default();
+    let v = run(&mut s, "motion.convert_point", json!({"anchor": 1, "smooth": false}));
+    assert_eq!(v["changed"], true);
+    let a = point(&s, 1, 0);
+    assert!(point(&s, 1, 2).distance(a) < 1e-4 && point(&s, 2, 1).distance(a) < 1e-4, "both handles on the anchor");
+    run(&mut s, "motion.convert_point", json!({"anchor": 1, "smooth": true}));
+    let (i, o) = (point(&s, 1, 2) - a, point(&s, 2, 1) - a);
+    assert!(i.length() > 1.0 && o.length() > 1.0 && i.normalized().dot(o.normalized()) < -0.9999, "in line again: {i:?} {o:?}");
+    assert!(pos(&mut s, 0).distance(Vec2::new(5.0, 5.0)) < 1e-3 && pos(&mut s, 23).distance(Vec2::new(105.0, 5.0)) < 1e-3);
+    for p in [json!({"anchor": 9, "smooth": true}), json!({"anchor": 1}), json!({"smooth": true})] {
+        assert!(s.execute("motion.convert_point", &p).is_err(), "{p}");
+    }
+}
+
+#[test]
+fn editing_points_of_a_straight_motion_makes_its_path() {
+    let mut s = moving();
+    assert!(motion(&s).path.is_none());
+    let before = track_of(&mut s);
+    run(&mut s, "motion.add_point", json!({"x": 55, "y": 5}));
+    assert!(motion(&s).path.is_some(), "the straight path became the tween's own");
+    for (f, (a, b)) in before.iter().zip(track_of(&mut s)).enumerate() {
+        assert!(a.distance(b) < 0.01, "frame {f}: {a:?} vs {b:?}");
+    }
+    // A tween that doesn't move has no path to edit.
+    let mut still = Session::default();
+    run(&mut still, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    run(&mut still, "timeline.create_motion_tween", json!({}));
+    for (id, p) in [("motion.add_point", json!({"x": 5, "y": 5})), ("motion.delete_points", json!({"anchors": [1]})), ("motion.convert_point", json!({"anchor": 0, "smooth": true}))] {
+        assert!(still.execute(id, &p).is_err(), "{id}");
+    }
+}
+
+#[test]
+fn moving_the_whole_path_keeps_its_shape_and_timing() {
+    let mut s = moving();
+    run(&mut s, "motion.set_path", json!({"d": S_CURVE}));
+    run(&mut s, "motion.orient", json!({"orient": true}));
+    s.set_frame(12);
+    run(&mut s, "modify.rotate_cw", json!({}));
+    let before = track_of(&mut s);
+    let turns: Vec<f32> = (0..24).map(|f| rotation(&mut s, f)).collect();
+    let keys = motion(&s).key_frames();
+    let steps = s.history_len();
+    let d = Vec2::new(-40.5, 120.25);
+    let v = run(&mut s, "motion.move_path", json!({"dx": d.x, "dy": d.y}));
+    assert_eq!(s.history_len(), steps + 1, "one undo step");
+    assert!(v["path"].as_str().is_some_and(|p| p.starts_with("M-35.5 125.25")), "{}", v["path"]);
+    for (f, a) in before.iter().enumerate() {
+        let b = pos(&mut s, f as u32);
+        assert!((*a + d).distance(b) < 1e-3, "frame {f}: {a:?} + d vs {b:?}");
+        assert!((rotation(&mut s, f as u32) - turns[f]).abs() < 1e-3, "frame {f}: the same turn");
+    }
+    assert_eq!(motion(&s).key_frames(), keys, "no key moved in time");
+    // A drag is a gesture: one undo step for many moves; undo puts it back.
+    let steps = s.history_len();
+    s.begin_gesture("Move Motion Path");
+    for _ in 0..6 {
+        run(&mut s, "motion.move_path", json!({"dx": 2.5, "dy": -1}));
+    }
+    s.end_gesture();
+    assert_eq!(s.history_len(), steps + 1);
+    assert!(pos(&mut s, 23).distance(before[23] + d + Vec2::new(15.0, -6.0)) < 1e-3);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert!(pos(&mut s, 23).distance(before[23]) < 1e-3);
+    for p in [json!({"dx": 2e6, "dy": 0}), json!({"dx": 1}), json!({"dx": "1", "dy": 0})] {
+        assert!(s.execute("motion.move_path", &p).is_err(), "{p}");
+    }
+}
+
+#[test]
+fn moving_a_straight_motion_moves_it_all() {
+    // No path: the X/Y keys move; an axis without keys moves with the object itself.
+    let mut s = moving();
+    let before = track_of(&mut s);
+    run(&mut s, "motion.move_path", json!({"dx": 10, "dy": 30}));
+    assert!(motion(&s).path.is_none(), "no path was made");
+    for (f, a) in before.iter().enumerate() {
+        assert!((*a + Vec2::new(10.0, 30.0)).distance(pos(&mut s, f as u32)) < 1e-3, "frame {f}");
+    }
+}

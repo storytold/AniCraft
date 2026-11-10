@@ -25,6 +25,10 @@ pub fn specs() -> Vec<CommandSpec> {
         c("motion.set_path", "Edit Motion Path", "", None, "{d: SVG path data in stage space (its first subpath; ends are the start and end positions), layer?, frame?}", true, set_path),
         c("motion.clear_path", "Remove Motion Path", "", None, "{layer?, frame?}: back to the straight path the X/Y curves trace", true, clear_path),
         c("motion.orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}: turn the object as its motion path turns", true, orient),
+        c("motion.add_point", "Add Motion Path Point", "", None, "{x, y, slop? (stage units, default 4) | segment, t (0..1), layer?, frame?}: an anchor on the motion path, its shape unchanged → {anchor}", true, add_point),
+        c("motion.delete_points", "Delete Motion Path Points", "", None, "{anchors: [index, ..] (as motion.info lists them; the ends stay), layer?, frame?}: the path refits through the rest", true, delete_points),
+        c("motion.convert_point", "Convert Motion Path Point", "", None, "{anchor, smooth: bool, layer?, frame?}: smooth (handles in line) or corner (handles on the anchor)", true, convert_point),
+        c("motion.move_path", "Move Motion Path", "", None, "{dx, dy, layer?, frame?}: the whole path with its object, keeping the timing", true, move_path),
     ]
 }
 
@@ -193,7 +197,149 @@ fn path_summary(m: &MotionTween) -> Value {
     let Some(path) = &m.path else { return json!({"path": null, "orient": m.orient}) };
     let len = anicraft_geom::walk::CurveWalk::new(path).map_or(0.0, |w| w.length());
     let (a, b) = anicraft_doc::motion::path_ends(path).unwrap_or_default();
-    json!({"path": path.to_svg(), "segments": path.cmds.len().saturating_sub(1), "length": len, "start": [a.x, a.y], "end": [b.x, b.y], "orient": m.orient})
+    // Anchor `i` is path command `i` (a motion path is a move and cubics).
+    let anchors: Vec<[f32; 2]> = path.anchors().into_iter().map(|(_, q)| [q.x, q.y]).collect();
+    json!({"path": path.to_svg(), "segments": path.cmds.len().saturating_sub(1), "length": len, "start": [a.x, a.y], "end": [b.x, b.y], "anchors": anchors, "orient": m.orient})
+}
+
+/// Edits the motion path at the target frame with `edit`: the tween's own path, or the straight
+/// one its X/Y curves trace (which the edit makes its own, as on the stage). The ends' keys stay
+/// unless the edit moved an end, so the timing is kept. Returns what `edit` returned and the
+/// path's summary.
+fn edit_path<T>(s: &mut Session, p: &Value, edit: impl FnOnce(&mut anicraft_geom::Path) -> Result<T>) -> Result<(T, Value)> {
+    let (kf, _) = motion_span(s, p)?;
+    let base = base_of(kf)?;
+    let last = kf.duration.saturating_sub(1);
+    let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
+    let mut path = m.path.clone().or_else(|| m.path_from_tracks(&base)).ok_or_else(|| EngineError::State("the object doesn't move yet, so it has no path: move it at a later frame of the tween first".into()))?;
+    let out = edit(&mut path)?;
+    if !m.set_path(&path, &base, last) {
+        return Err(EngineError::State("that would leave the motion path with no length".into()));
+    }
+    Ok((out, path_summary(m)))
+}
+
+/// An anchor index param, checked against the path.
+fn anchor_index(p: &Value, key: &str, path: &anicraft_geom::Path) -> Result<usize> {
+    let i = opt_u64(p, key)?.ok_or_else(|| EngineError::Param(format!("param '{key}' is required")))?;
+    let n = path.cmds.len();
+    usize::try_from(i).ok().filter(|i| *i < n).ok_or_else(|| EngineError::Param(format!("no anchor {i} on this motion path (it has {n}, from 0 at the start)")))
+}
+
+/// Where `motion.add_point` adds: near a stage point, or at a curve parameter of a segment.
+enum PointAt {
+    Near(Vec2),
+    On(usize, f32),
+}
+
+fn add_point(s: &mut Session, p: &Value) -> Result<Value> {
+    let at = match (opt_f32(p, "x")?, opt_f32(p, "y")?, opt_u64(p, "segment")?) {
+        (Some(x), Some(y), None) => PointAt::Near(Vec2::new(x, y)),
+        (None, None, Some(seg)) => PointAt::On(usize::try_from(seg).unwrap_or(usize::MAX), opt_f32(p, "t")?.ok_or_else(|| EngineError::Param("param 't' is required with 'segment' (0..1 along it)".into()))?),
+        _ => return Err(EngineError::Param("give either x and y (a point on the path) or segment and t".into())),
+    };
+    let slop = opt_f32(p, "slop")?.unwrap_or(4.0);
+    if !(0.0..=1000.0).contains(&slop) {
+        return Err(EngineError::Param("param 'slop' must be between 0 and 1000".into()));
+    }
+    let (anchor, mut v) = edit_path(s, p, |path| {
+        if path.cmds.len() > anicraft_doc::motion::MAX_PATH_SEGMENTS {
+            return Err(EngineError::State(format!("a motion path holds at most {} segments", anicraft_doc::motion::MAX_PATH_SEGMENTS)));
+        }
+        let (cmd, t) = match at {
+            PointAt::Near(q) => {
+                let (cmd, t, dist) = path.nearest_segment(q, &Affine::IDENTITY).ok_or_else(|| EngineError::State("the motion path has no segments".into()))?;
+                if dist > slop {
+                    return Err(EngineError::State(format!("({}, {}) is not on the motion path ({dist:.1} px away)", q.x, q.y)));
+                }
+                (cmd, t)
+            }
+            PointAt::On(seg, t) => {
+                if !(0.0..=1.0).contains(&t) {
+                    return Err(EngineError::Param("param 't' must be between 0 and 1".into()));
+                }
+                if seg == 0 || seg >= path.cmds.len() {
+                    return Err(EngineError::Param(format!("no segment {seg} on this motion path (1 to {})", path.cmds.len().saturating_sub(1))));
+                }
+                (seg, t)
+            }
+        };
+        // At an existing anchor there is nothing to add.
+        if !(1e-3..=1.0 - 1e-3).contains(&t) {
+            return Err(EngineError::State("there is already an anchor there".into()));
+        }
+        if !path.split_segment(cmd, t) {
+            return Err(EngineError::State("cannot add a point there".into()));
+        }
+        // The new anchor ends the first half.
+        Ok(cmd)
+    })?;
+    v["anchor"] = json!(anchor);
+    Ok(v)
+}
+
+fn delete_points(s: &mut Session, p: &Value) -> Result<Value> {
+    let wanted = opt_u64_list(p, "anchors")?.ok_or_else(|| EngineError::Param("param 'anchors' is required (a list of anchor indices)".into()))?;
+    if wanted.is_empty() {
+        return Err(EngineError::Param("param 'anchors' lists no anchor".into()));
+    }
+    let ((deleted, kept_ends), mut v) = edit_path(s, p, |path| {
+        let n = path.cmds.len();
+        let mut set = std::collections::BTreeSet::new();
+        for &i in wanted.iter().take(100_000) {
+            match usize::try_from(i).ok().filter(|i| *i < n) {
+                Some(i) => set.insert(i),
+                None => return Err(EngineError::Param(format!("no anchor {i} on this motion path (it has {n}, from 0 at the start)"))),
+            };
+        }
+        let ends = set.remove(&0) | set.remove(&n.saturating_sub(1));
+        if set.is_empty() {
+            return Err(EngineError::State("the ends of a motion path can't be deleted: they are where the motion starts and ends. Drag them to move them, or Straighten the path".into()));
+        }
+        // Last first, so the indices still to go stay where they were.
+        let mut deleted = 0;
+        for i in set.into_iter().rev() {
+            if path.merge_at(i) {
+                deleted += 1;
+            }
+        }
+        Ok((deleted, ends))
+    })?;
+    v["deleted"] = json!(deleted);
+    v["kept_ends"] = json!(kept_ends);
+    Ok(v)
+}
+
+fn convert_point(s: &mut Session, p: &Value) -> Result<Value> {
+    let smooth = opt_bool(p, "smooth")?.ok_or_else(|| EngineError::Param("param 'smooth' is required (true: smooth, false: corner)".into()))?;
+    let (changed, mut v) = edit_path(s, p, |path| {
+        let a = anchor_index(p, "anchor", path)?;
+        Ok(if smooth { path.make_smooth(a) } else { path.make_corner(a) })
+    })?;
+    v["changed"] = json!(changed);
+    Ok(v)
+}
+
+fn move_path(s: &mut Session, p: &Value) -> Result<Value> {
+    let d = Vec2::new(f32_req(p, "dx")?, f32_req(p, "dy")?);
+    if !d.is_finite() {
+        return Err(EngineError::Param("params 'dx' and 'dy' must be finite".into()));
+    }
+    let (kf, _) = motion_span(s, p)?;
+    let i = kf.motion.as_ref().and_then(|m| m.target_index(&kf.elements)).ok_or_else(|| EngineError::State("the motion tween's object is no longer on its keyframe".into()))?;
+    let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
+    if !m.translate(d) {
+        return Err(EngineError::Param("that would move the motion path beyond ±1000000 px".into()));
+    }
+    // The object's own place moves too (an axis without keys is where it is).
+    if let Some(slot) = kf.elements.get_mut(i) {
+        let mut el = (**slot).clone();
+        el.transform = Affine::translate(d.x, d.y).mul(&el.transform);
+        *slot = Arc::new(el);
+    }
+    let mut v = kf.motion.as_ref().map_or(Value::Null, path_summary);
+    v["moved"] = json!([d.x, d.y]);
+    Ok(v)
 }
 
 fn clear_path(s: &mut Session, p: &Value) -> Result<Value> {
