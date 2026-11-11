@@ -215,7 +215,7 @@ impl Session {
 /// at opacity `alpha` (a symbol added to `doc`, which is only drawn).
 fn placed(doc: &mut Document, timeline: Timeline, transform: Affine, frame: u32, alpha: f32) -> Arc<Layer> {
     let symbol = SymbolId(doc.alloc_id());
-    doc.library.push(Arc::new(Symbol { id: symbol, name: String::new(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline }));
+    doc.library.push(Arc::new(Symbol { id: symbol, name: String::new(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline }));
     let mut k = Keyframe::new(0, 1);
     k.elements.push(Arc::new(Element {
         id: ElementId(doc.alloc_id()),

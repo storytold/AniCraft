@@ -824,7 +824,7 @@ impl<'a> Builder<'a> {
             };
             let short = name.rsplit('/').next().unwrap_or(&name).to_string();
             let scale_grid = self.scale_grid(&item);
-            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, scale_grid, timeline }));
+            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, scale_grid, scale_grid_kept: None, timeline }));
             self.place_in_folder(&name, anicraft_doc::LibraryItem::Symbol(id));
         }
     }

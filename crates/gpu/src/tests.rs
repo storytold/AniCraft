@@ -476,7 +476,7 @@ fn nine_slice_sample() -> anicraft_doc::Document {
     k.elements.push(el(2, Affine::IDENTITY, ElementKind::Shape(shape)));
     let mut l = Layer::new(LayerId(3), "art");
     l.keyframes = vec![std::sync::Arc::new(k)];
-    d.library.push(std::sync::Arc::new(Symbol { id: SymbolId(4), name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid: Some(ScaleGrid { left: 8.0, right: 52.0, top: 8.0, bottom: 22.0 }), timeline: Timeline { layers: vec![std::sync::Arc::new(l)] } }));
+    d.library.push(std::sync::Arc::new(Symbol { id: SymbolId(4), name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: Some(ScaleGrid { left: 8.0, right: 52.0, top: 8.0, bottom: 22.0 }), timeline: Timeline { layers: vec![std::sync::Arc::new(l)] } }));
     let inst = |id, xf| el(id, xf, ElementKind::Symbol { symbol: SymbolId(4), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() });
     let mut k = Keyframe::new(0, 1);
     k.elements.push(inst(5, Affine::translate(10.0, 10.0).mul(&Affine::scale(4.5, 1.2))));

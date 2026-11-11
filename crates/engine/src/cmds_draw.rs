@@ -39,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "9-Slice Scaling",
             "",
             None,
-            "{symbol?: id (default: the symbol open for editing, else the selected instance's), on?: bool, left?, right?, top?, bottom? (guide positions in the symbol's space)} turns a symbol's guides for 9-slice scaling on or off, or moves them (ADR 0055). Turning them on puts them a quarter of the way in from each edge of the symbol's artwork; moving one turns them on. Scaled instances then keep the corners outside the guides unscaled, stretch the edges one way and the centre both ways → {symbol, scale_grid: {left, right, top, bottom} | null}",
+            "{symbol?: id (default: the symbol open for editing, else the selected instance's), on?: bool, left?, right?, top?, bottom? (guide positions in the symbol's space)} turns a symbol's guides for 9-slice scaling on or off, or moves them (ADR 0055). Turning them on brings back the guides it had when they were turned off (ADR 0057), else puts them a quarter of the way in from each edge of the symbol's artwork; moving one turns them on. Scaled instances then keep the corners outside the guides unscaled, stretch the edges one way and the centre both ways → {symbol, scale_grid: {left, right, top, bottom} | null}",
             true,
             set_scale_grid,
         ),
@@ -602,7 +602,8 @@ fn set_scale_grid(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None
     } else {
-        let start = sym.scale_grid.unwrap_or_else(|| {
+        // Switched on again, the guides come back where they were (ADR 0057).
+        let start = sym.scale_grid.or(sym.scale_grid_kept).unwrap_or_else(|| {
             let b = anicraft_doc::symbol_box(&s.doc, sym);
             ScaleGrid::inset(&if b.is_empty() { anicraft_geom::Rect::new(0.0, 0.0, 100.0, 100.0) } else { b })
         });
@@ -611,10 +612,14 @@ fn set_scale_grid(s: &mut Session, p: &Value) -> Result<Value> {
         g.check().map_err(EngineError::Param)?;
         Some(g)
     };
+    // Off, the guides are kept (only hidden), so switching back on finds them.
+    let kept = if grid.is_none() { sym.scale_grid.or(sym.scale_grid_kept) } else { None };
     if let Some(sym) = s.doc.library.iter_mut().find(|x| x.id == id)
-        && sym.scale_grid != grid
+        && (sym.scale_grid != grid || sym.scale_grid_kept != kept)
     {
-        Arc::make_mut(sym).scale_grid = grid;
+        let sym = Arc::make_mut(sym);
+        sym.scale_grid = grid;
+        sym.scale_grid_kept = kept;
     }
     Ok(json!({"symbol": id.0, "scale_grid": grid.map(|g| json!({"left": g.left, "right": g.right, "top": g.top, "bottom": g.bottom}))}))
 }
@@ -767,7 +772,7 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         }
         inner.push(Arc::new(layer));
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, scale_grid: None, timeline: Timeline { layers: inner } }));
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: inner } }));
     if folder.is_some() {
         s.doc.place_entry(LibraryEntry::Item(LibraryItem::Symbol(sym_id)), folder);
     }

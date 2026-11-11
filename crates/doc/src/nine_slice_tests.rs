@@ -25,7 +25,7 @@ fn doc(xf: Affine, grid: Option<ScaleGrid>, extra: Vec<Element>) -> Document {
     k.elements.extend(extra.into_iter().map(Arc::new));
     let mut layer = Layer::new(LayerId(901), "art");
     layer.keyframes = vec![Arc::new(k)];
-    d.library.push(Arc::new(Symbol { id: SYM, name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid: grid, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
+    d.library.push(Arc::new(Symbol { id: SYM, name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: grid, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
     let mut k = Keyframe::new(0, 1);
     k.elements.push(Arc::new(instance(SYM, xf)));
     Arc::make_mut(&mut d.timeline_mut(0).layers[0]).keyframes = vec![Arc::new(k)];
@@ -147,7 +147,7 @@ fn unscaled_instances_and_nested_symbols_draw_as_they_are() {
     k.elements.push(Arc::new(el(3, Affine::IDENTITY, ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Solid(Rgba::WHITE))))));
     let mut l = Layer::new(LayerId(951), "dot");
     l.keyframes = vec![Arc::new(k)];
-    d.library.push(Arc::new(Symbol { id: SymbolId(950), name: "Dot".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(l)] } }));
+    d.library.push(Arc::new(Symbol { id: SymbolId(950), name: "Dot".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(l)] } }));
     let dl = evaluate(&d, 0);
     let dot = dl.items.iter().find(|i| i.path.bounds().width() == 4.0).unwrap();
     assert_eq!(dot.transform, Affine::scale(3.0, 3.0).mul(&Affine::translate(50.0, 20.0)));

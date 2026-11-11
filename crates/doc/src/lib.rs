@@ -1025,6 +1025,10 @@ pub struct Symbol {
     /// unscaled. `None`: the symbol scales as a whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale_grid: Option<ScaleGrid>,
+    /// The guides as they were when 9-slice scaling was switched off (ADR 0057): switching it on
+    /// again brings them back where they were. Only kept, never drawn or applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_grid_kept: Option<ScaleGrid>,
     pub timeline: Timeline,
 }
 
@@ -1316,6 +1320,10 @@ impl Document {
             // 9-slice guides that aren't usable are dropped: the symbol scales as a whole.
             if sym.scale_grid.as_ref().is_some_and(|g| g.check().is_err()) {
                 Arc::make_mut(sym).scale_grid = None;
+            }
+            // Kept guides (ADR 0057) only while 9-slice is off, and only usable ones.
+            if sym.scale_grid_kept.as_ref().is_some_and(|g| sym.scale_grid.is_some() || g.check().is_err()) {
+                Arc::make_mut(sym).scale_grid_kept = None;
             }
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {
