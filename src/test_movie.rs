@@ -9,6 +9,11 @@
 //! Its sound (ADR 0039): each step's entered keyframes start their sounds
 //! (`doc::sound::trigger`), movie clips' and graphics' included, and while sound plays the
 //! movie keeps time with it, as the stage does.
+//!
+//! Its keyboard (ADR 0052): while the movie has the focus (it takes it when the window
+//! opens and when clicked), keys go to the movie's keyboard listeners as ActionScript key
+//! codes, Tab and the arrows included; shortcuts with Ctrl (⌘ on macOS) still reach the app,
+//! and Esc closes the window.
 
 use crate::app::App;
 use crate::icons::Icon;
@@ -28,6 +33,68 @@ use std::sync::Arc;
 const MAX_CATCH_UP: u32 = 4;
 /// Largest picture edge rendered, in pixels.
 const MAX_EDGE: f32 = 2048.0;
+
+/// The movie surface's id: while it has the focus, keys go to the movie.
+pub fn surface_id() -> egui::Id {
+    egui::Id::new("test_movie_surface")
+}
+
+/// Whether the movie has the keyboard.
+pub fn has_keys(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.focused()) == Some(surface_id())
+}
+
+/// The ActionScript key code (`flash.ui.Keyboard`) of a key, for the movie's listeners.
+pub fn key_code(k: egui::Key) -> Option<u32> {
+    use egui::Key as K;
+    let name = k.name();
+    let mut chars = name.chars();
+    if let (Some(c), None) = (chars.next(), chars.next())
+        && (c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return Some(u32::from(c));
+    }
+    Some(match k {
+        K::ArrowLeft => 37,
+        K::ArrowUp => 38,
+        K::ArrowRight => 39,
+        K::ArrowDown => 40,
+        K::Space => 32,
+        K::Enter => 13,
+        K::Tab => 9,
+        K::Backspace => 8,
+        K::Delete => 46,
+        K::Insert => 45,
+        K::Home => 36,
+        K::End => 35,
+        K::PageUp => 33,
+        K::PageDown => 34,
+        K::Minus => 189,
+        K::Equals | K::Plus => 187,
+        K::Comma => 188,
+        K::Period => 190,
+        K::Slash => 191,
+        K::Semicolon => 186,
+        K::Quote => 222,
+        K::OpenBracket => 219,
+        K::CloseBracket => 221,
+        K::Backslash => 220,
+        K::Backtick => 192,
+        K::F1 => 112,
+        K::F2 => 113,
+        K::F3 => 114,
+        K::F4 => 115,
+        K::F5 => 116,
+        K::F6 => 117,
+        K::F7 => 118,
+        K::F8 => 119,
+        K::F9 => 120,
+        K::F10 => 121,
+        K::F11 => 122,
+        K::F12 => 123,
+        _ => return None,
+    })
+}
 
 pub struct TestMovie {
     doc: Document,
@@ -49,6 +116,8 @@ pub struct TestMovie {
     audio: bool,
     /// Kept scripts that don't run (ADR 0013), counted when it opened.
     skipped: usize,
+    /// The movie takes the keyboard the next time it is drawn.
+    focus: bool,
 }
 
 impl TestMovie {
@@ -84,10 +153,12 @@ pub fn open(app: &mut App) {
     app.sound.stop();
     let doc = app.s.doc.clone();
     let mut runner = ScriptRunner::new(&app.s.plugins);
-    let movie = Movie::start(&doc, &mut runner);
+    // Each run draws its own Math.random() numbers; the player itself stays deterministic.
+    let seed = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    let movie = Movie::start_seeded(&doc, if app.shot.is_some() { 0 } else { seed }, &mut runner);
     let name = app.s.path.as_ref().and_then(|p| p.file_stem()).map(|n| n.to_string_lossy().into_owned());
     let skipped = anicraft_engine::player::kept_scripts(&doc).iter().filter(|k| !k.runs()).count();
-    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, name, ms: 0.0, voices: Vec::new(), audio: false, skipped };
+    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, name, ms: 0.0, voices: Vec::new(), audio: false, skipped, focus: true };
     // Sound only when there is some, and never in screenshot runs or tests.
     if sound::has_sounds(&tm.doc) && app.shot.is_none() {
         tm.resume(&mut app.sound);
@@ -144,6 +215,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.label(text(Type::Data, format!("{:>4} / {frames}", st.root.frame + 1))).on_hover_text(tr!("Main timeline frame"));
                 let what = if tm.paused { tr!("paused") } else if st.root.playing { tr!("playing") } else { tr!("stopped") };
                 ui.label(text(Type::Caption, what));
+                // A movie that listens for keys says where they go.
+                if tm.movie.state.stage.iter().any(|l| l.event.is_key()) {
+                    let keys = if has_keys(ctx) { tr!("Keys go to the movie") } else { tr!("Click the movie to give it the keyboard") };
+                    ui.label(text(Type::Caption, keys).color(T.text_dim));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // i18n-exempt: numbers and units (data)
                     ui.label(text(Type::Data, format!("{:.0} fps · {:.1} ms", tm.doc.stage.fps, tm.ms)).color(T.text_faint)).on_hover_text(tr!("Frame rate, and the time the last picture took to draw"));
@@ -155,8 +231,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let avail = egui::vec2(ui.available_width(), (ui.available_height() - output_h - 40.0).max(60.0));
             let k = (avail.x / sw.max(1.0)).min(avail.y / sh.max(1.0)).max(0.01);
             let size = egui::vec2(sw * k, sh * k);
-            let (outer, resp) = ui.allocate_exact_size(egui::vec2(avail.x, size.y), egui::Sense::click_and_drag());
-            crate::a11y::surface(ui, &resp, tr!("The movie: point and click its buttons"));
+            let (outer, _) = ui.allocate_exact_size(egui::vec2(avail.x, size.y), egui::Sense::hover());
+            let resp = ui.interact(outer, surface_id(), egui::Sense::click_and_drag());
+            crate::a11y::surface(ui, &resp, tr!("The movie: point, click and type to play it"));
+            if tm.focus || resp.is_pointer_button_down_on() {
+                resp.request_focus();
+                tm.focus = false;
+            }
+            // Tab and the arrows are the movie's keys while it has them, not focus moves.
+            if resp.has_focus() {
+                ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false }));
+            }
             let rect = egui::Rect::from_center_size(outer.center(), size);
             // The pointer, in stage coordinates, to the player.
             let mut events = Vec::new();
@@ -181,6 +266,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 tm.pointer = inside.then_some(p);
             }
             tm.down = down && (tm.down || inside);
+            // The keyboard, while the movie has it (Ctrl/⌘ shortcuts stay the app's).
+            if resp.has_focus() {
+                ui.input(|i| {
+                    for e in &i.events {
+                        if let egui::Event::Key { key, pressed, modifiers, .. } = e
+                            && !modifiers.command
+                            && *key != egui::Key::Escape
+                            && let Some(code) = key_code(*key)
+                        {
+                            events.push(if *pressed { Event::KeyDown(code) } else { Event::KeyUp(code) });
+                        }
+                    }
+                });
+            }
             let mut runner = ScriptRunner::new(plugins);
             tm.movie.input(&tm.doc, &events, &mut runner);
             tm.feed(out);
@@ -293,4 +392,71 @@ pub fn demo_pointer(app: &mut App) {
     }
     tm.movie.input(&tm.doc, &[Event::Move(Vec2::new(700.0, 410.0))], &mut r);
     tm.paused = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+        out.textures_delta.clear();
+    }
+
+    fn key(key: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    fn lines(app: &App) -> Vec<String> {
+        app.test_movie.as_ref().map(|t| t.movie.output.iter().map(|(_, l)| l.clone()).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn keys_go_to_the_movie_while_it_has_them() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::interactive());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        app.run("layer.select", json!({"index": 0}));
+        // i18n-exempt: script source, document content
+        let script = "stop();\nstage.addEventListener(KeyboardEvent.KEY_DOWN, function (e:KeyboardEvent):void { trace(\"down \" + e.keyCode); });\nstage.addEventListener(KeyboardEvent.KEY_UP, function (e:KeyboardEvent):void { trace(\"up \" + e.keyCode); });";
+        assert!(app.run("script.set", json!({"frame": 0, "text": script})).is_some_and(|v| v["runs"] == true));
+        open(&mut app);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, vec![]);
+        }
+        assert!(has_keys(&ctx), "the movie takes the keyboard when Test Movie opens");
+        let tool = app.tool;
+        // A letter that is a tool shortcut on the stage goes to the movie instead.
+        frame(&ctx, &mut app, vec![key(egui::Key::R, true)]);
+        frame(&ctx, &mut app, vec![key(egui::Key::R, false), key(egui::Key::ArrowLeft, true), key(egui::Key::Space, true)]);
+        assert_eq!(app.tool, tool, "R didn't change the tool");
+        let out = lines(&app);
+        for want in ["down 82", "up 82", "down 37", "down 32"] {
+            assert!(out.iter().any(|l| l == want), "{want} not in {out:?}");
+        }
+        assert!(has_keys(&ctx), "the arrows didn't move the focus away");
+        // Esc still closes the window.
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape, true)]);
+        assert!(app.test_movie.is_none());
+    }
+
+    #[test]
+    fn key_codes_are_actionscript_s() {
+        use egui::Key as K;
+        for (k, code) in [(K::A, 65), (K::Z, 90), (K::Num0, 48), (K::Num9, 57), (K::ArrowLeft, 37), (K::ArrowUp, 38), (K::ArrowRight, 39), (K::ArrowDown, 40), (K::Space, 32), (K::Enter, 13), (K::Tab, 9), (K::Backspace, 8), (K::F1, 112), (K::F12, 123), (K::Comma, 188)] {
+            assert_eq!(key_code(k), Some(code), "{k:?}");
+            assert!(anicraft_engine::doc::actions::as3::ir::key_code(match k {
+                K::ArrowLeft => "LEFT",
+                K::Space => "SPACE",
+                K::A => "A",
+                K::Num0 => "NUMBER_0",
+                _ => "F1",
+            })
+            .is_some());
+        }
+        assert_eq!(anicraft_engine::doc::actions::as3::ir::key_code("LEFT"), key_code(K::ArrowLeft));
+        assert_eq!(anicraft_engine::doc::actions::as3::ir::key_code("NUMBER_7"), key_code(K::Num7));
+    }
 }

@@ -15,12 +15,14 @@
 //!
 //! What doesn't carry across is counted in the report: filters, Subtract and Invert blending,
 //! tints on bitmaps, plug-in frame scripts (they need the plug-in host) and kept scripts
-//! outside the ActionScript subset. Scripts in the subset (ADR 0013 tier 2) come across as the
-//! same actions and listeners the Rust player runs.
+//! outside the ActionScript subset. Scripts in the subset (ADR 0013 tiers 2 and 2.5) come
+//! across as the same script IR the Rust player runs (as JSON), with each timeline's functions
+//! and variable types, and `player.js` evaluates it the same way.
 
 use crate::stroke::stroke_outline;
-use anicraft_doc::actions::as3::ScriptOp;
+use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
+use anicraft_doc::player::TimelineRef;
 use anicraft_doc::{BlendMode, ColorEffect, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
@@ -257,27 +259,6 @@ fn actions(list: &[Action]) -> Value {
     Value::Array(list.iter().map(action).collect())
 }
 
-/// A compiled script's steps (ADR 0013 tier 2): actions, and `listen` steps with the target,
-/// the event `ev`, the function `k` and the actions `h` it runs.
-fn script_ops(ops: &[ScriptOp]) -> Value {
-    Value::Array(
-        ops.iter()
-            .map(|op| match op {
-                ScriptOp::Action(a) => action(a),
-                ScriptOp::Listen(l) => {
-                    let mut o = Map::new();
-                    o.insert("op".into(), json!("listen"));
-                    target(&mut o, &l.target);
-                    o.insert("ev".into(), json!(l.event.key()));
-                    o.insert("k".into(), json!(l.function));
-                    o.insert("h".into(), actions(&l.actions));
-                    o.insert("d".into(), json!(format!("Listen for {} ({})", l.event.key(), l.target)));
-                    Value::Object(o)
-                }
-            })
-            .collect(),
-    )
-}
 
 /// Whether timeline layer `index` takes part in playback (what the player walks and draws):
 /// shown, not a folder or guide, not in a hidden folder.
@@ -505,7 +486,9 @@ impl<'a> Bake<'a> {
     /// `nm`, labels `lb`, and per frame the scripts `a` and sounds `snd` of keyframes starting
     /// there (top layer first). A scene's frames seen through its camera (ADR 0027) carry the
     /// camera's tint (`cc`) and each layer its view (`v`: the camera and the layer's depth).
-    fn timeline(&mut self, tl: &Timeline, scene: bool) -> Value {
+    /// `decls`: the declarations its frame scripts share (ADR 0052), for timelines that
+    /// run scripts; their functions go out as `fn` and their variables' types as `vt`.
+    fn timeline(&mut self, tl: &Timeline, scene: bool, decls: Option<&Decls>) -> Value {
         let n = tl.frame_count();
         // One clip slot per visible mask layer, top first (as the evaluator numbers them).
         let slots: HashMap<u64, usize> = tl.layers.iter().filter(|l| l.kind == LayerKind::Mask && l.visible).enumerate().map(|(i, l)| (l.id.0, i)).collect();
@@ -574,14 +557,19 @@ impl<'a> Bake<'a> {
                     // kept (ADR 0013).
                     Some(FrameScript::Source(src)) => {
                         let key = u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0);
-                        match src.compiled() {
-                            Ok(c) => {
-                                a.push(json!({"as": script_ops(&c.ops)}));
+                        match (src.compiled(), decls) {
+                            // It runs where its names from other frames are all there.
+                            (Ok(c), Some(d)) if d.problems(c).is_empty() => {
+                                let mut o = json!({"b": c.body});
+                                if !c.inner.is_empty() {
+                                    o["i"] = json!(c.inner);
+                                }
+                                a.push(json!({"as": o}));
                                 if !c.notes.is_empty() {
                                     self.notes.entry(OUTSIDE_CALLS).or_default().insert(key);
                                 }
                             }
-                            Err(_) => {
+                            _ => {
                                 self.notes.entry(KEPT_SCRIPTS).or_default().insert(key);
                             }
                         }
@@ -643,6 +631,14 @@ impl<'a> Bake<'a> {
         if !sounds.is_empty() {
             o["snd"] = Value::Object(sounds);
         }
+        if let Some(d) = decls {
+            if !d.functions.is_empty() {
+                o["fn"] = json!(d.functions);
+            }
+            if !d.vars.is_empty() {
+                o["vt"] = json!(d.vars);
+            }
+        }
         o
     }
 }
@@ -692,15 +688,18 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
     let scenes = doc.scenes.len();
     let mut timelines = Vec::with_capacity(scenes + used.len());
     let mut frames = 0usize;
+    // The main timeline's scripts share one set of declarations over every scene.
+    let root = anicraft_doc::player::decls(doc, TimelineRef::Root);
     for s in &doc.scenes {
         frames += s.timeline.frame_count() as usize;
-        timelines.push(b.timeline(&s.timeline, true));
+        timelines.push(b.timeline(&s.timeline, true, Some(&root)));
     }
     let mut symbols = Vec::with_capacity(used.len());
     for (i, id) in used.iter().enumerate() {
         let Some(sym) = doc.symbol(*id) else { continue };
         frames += sym.timeline.frame_count() as usize;
-        timelines.push(b.timeline(&sym.timeline, false));
+        let decls = (sym.kind == SymbolKind::MovieClip).then(|| anicraft_doc::player::decls(doc, TimelineRef::Symbol(*id)));
+        timelines.push(b.timeline(&sym.timeline, false, decls.as_ref()));
         if b.sound && sym.kind == SymbolKind::Button && sym.timeline.layers.iter().any(|l| l.has_sounds()) {
             b.notes.entry(BUTTON_SOUNDS).or_default().insert(sym.id.0);
         }

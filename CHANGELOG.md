@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+* **Frame scripts in ActionScript 3.0 run small logic** (ADR 0052, M6).
+  * Typed variables (`var score:int = 0;` as Number, int, uint, Boolean, String or untyped),
+    kept per timeline instance across its frame scripts as Animate timelines keep them;
+    expressions (arithmetic, comparison, logic, joining text, `Math.min/max/abs/floor/ceil/
+    round/random`, casts); `if`/`else`, `for`, `while` and `do` loops; functions with
+    parameters and results, callable from any frame of the same timeline.
+  * Scripts read properties of instances and timelines (`x`, `y`, `alpha`, `visible`,
+    `rotation`, `scaleX/Y`, `currentFrame`, `totalFrames`, `currentLabel`, `mouseX/Y`, `name`),
+    remove listeners, and listen for `Event.ENTER_FRAME` and for keys on the stage
+    (`KeyboardEvent.KEY_DOWN`/`KEY_UP`, `e.keyCode`); `e.target` and `e.currentTarget` work.
+  * Test Movie sends your keys to the movie (it says so in its bar); `Math.random()` is
+    seeded, so a headless `control.test_movie` with the same `seed` and events always plays the
+    same; key events and `seed` there too.
+  * An endless loop or an error stops only its script, with a line in Output, and the movie
+    plays on. A script that uses a name no frame of its timeline declares doesn't run, and the
+    Actions panel shows the name in place.
+  * The HTML canvas export runs the same scripts, keys included, checked against Test Movie
+    step by step.
+
 * **Repeating bitmap fills on the GL backend** (M3): the GPU stage wrapped a repeating
   bitmap with a signed remainder, which GLSL leaves undefined for negative values, so on
   OpenGL (llvmpipe in the FreeBSD VM) the texels at the bitmap's left and top edges came out
