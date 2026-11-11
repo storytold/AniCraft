@@ -289,26 +289,58 @@ fn keep_layers(dl: &mut DisplayList, layers: &[LayerId]) {
 /// Reordering items is safe: a group's run lies within one layer (it stays unbroken), and the
 /// renderers take mask artwork apart from what they draw, whatever its place in the list.
 fn interleave(tl: &Timeline, parts: Vec<DisplayList>) -> (DisplayList, Vec<usize>) {
+    let n = tl.layers.len();
     let rank: std::collections::HashMap<LayerId, usize> = tl.layers.iter().enumerate().map(|(i, l)| (l.id, i)).collect();
+    // Back to front: the bottom layer (the highest index) first; an unknown layer before all.
+    let bucket = |l: LayerId| rank.get(&l).map_or(0, |r| n - r);
+    let total = parts.iter().map(|p| p.items.len()).sum();
     let mut dl = DisplayList::default();
-    let mut from = Vec::new();
-    for (k, part) in parts.into_iter().enumerate() {
-        from.extend(std::iter::repeat_n(k, part.items.len()));
-        dl.append(part);
+    let mut iters = Vec::with_capacity(parts.len());
+    for part in parts {
+        // Clips and groups renumbered as `DisplayList::append` does.
+        let (base, gbase) = (dl.clip_parents.len() as u32, dl.groups.len() as u32);
+        let shift = move |c: Option<u32>| c.map(|c| c + base);
+        let gshift = move |g: Option<u32>| g.map(|g| g + gbase);
+        dl.clip_parents.extend(part.clip_parents.into_iter().map(shift));
+        dl.groups.extend(part.groups.into_iter().map(|g| anicraft_doc::Group { parent: gshift(g.parent), clip: shift(g.clip), ..g }));
+        iters.push(
+            part.items
+                .into_iter()
+                .map(move |mut i| {
+                    i.clip = shift(i.clip);
+                    i.masks = shift(i.masks);
+                    i.group = gshift(i.group);
+                    i
+                })
+                .peekable(),
+        );
     }
-    // Back to front: the bottom layer (the highest index) first; stable, so parts keep order.
-    let mut order: Vec<usize> = (0..dl.items.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(dl.items.get(i).and_then(|it| rank.get(&it.layer)).copied().unwrap_or(usize::MAX)));
-    let mut items: Vec<Option<anicraft_doc::DisplayItem>> = std::mem::take(&mut dl.items).into_iter().map(Some).collect();
-    dl.items = order.iter().filter_map(|&i| items.get_mut(i).and_then(Option::take)).collect();
-    let from = order.iter().map(|&i| from.get(i).copied().unwrap_or(0)).collect();
+    // Each part is already back to front, layer by layer: one merge, each item moved once.
+    let mut items = Vec::with_capacity(total);
+    let mut from = Vec::with_capacity(total);
+    for b in 0..=n {
+        for (k, it) in iters.iter_mut().enumerate() {
+            while let Some(x) = it.next_if(|x| bucket(x.layer) <= b) {
+                items.push(x);
+                from.push(k);
+            }
+        }
+    }
+    // (Nothing is left unless a part was out of layer order; keep it rather than drop it.)
+    for (k, it) in iters.into_iter().enumerate() {
+        for x in it {
+            items.push(x);
+            from.push(k);
+        }
+    }
+    dl.items = items;
     (dl, from)
 }
 
 /// Scene `scene` at its frame `local` with what `skin` adds (nothing for `None`): onion frames,
 /// or Edit Multiple Frames' keyframes, each under the playhead's artwork on its own layer.
 /// `eval` evaluates one frame of the scene (with or without its camera).
-pub fn compose(doc: &Document, scene: usize, local: u32, skin: Option<&OnionSkin>, eval: impl Fn(usize, u32) -> DisplayList) -> DisplayList {
+pub fn compose(doc: &Document, scene: usize, local: u32, skin: Option<&OnionSkin>, eval: impl Fn(usize, u32) -> DisplayList + Sync) -> DisplayList {
     let now = eval(scene, local);
     let Some(skin) = skin.filter(|s| s.shows()) else { return now };
     let tl = doc.timeline(scene);
@@ -317,10 +349,11 @@ pub fn compose(doc: &Document, scene: usize, local: u32, skin: Option<&OnionSkin
     if extras.is_empty() {
         return now;
     }
-    let mut parts = Vec::with_capacity(extras.len() + 1);
-    for e in extras {
-        let mut part = eval(scene, e.frame);
-        keep_layers(&mut part, &e.layers);
+    // The frames are independent: evaluated in parallel, kept in order.
+    use rayon::prelude::*;
+    let mut parts: Vec<DisplayList> = extras.par_iter().map(|e| eval(scene, e.frame)).collect();
+    for (part, e) in parts.iter_mut().zip(&extras) {
+        keep_layers(part, &e.layers);
         if let Some(past) = e.past {
             let reach = if past { local.saturating_sub(first) } else { last.saturating_sub(local) };
             let (fx, outline) = skin.look(past, e.distance, reach);
@@ -331,7 +364,6 @@ pub fn compose(doc: &Document, scene: usize, local: u32, skin: Option<&OnionSkin
                 }
             }
         }
-        parts.push(part);
     }
     parts.push(now);
     interleave(tl, parts).0

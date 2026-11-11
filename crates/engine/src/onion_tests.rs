@@ -344,8 +344,29 @@ fn every_setting_composes_and_renders_on_the_sample() {
 #[test]
 #[ignore]
 fn onion_timings() {
-    use crate::render_service::{RenderService, make_job, render_batch};
+    use crate::render_service::{RenderService, make_job};
+    for doc in [sample::demo(), sample::stress(20, 100, 48)] {
+        println!("-- {} items on a frame", evaluate_scene(&doc, 0, 30).items.len());
+        timings_of(&doc);
+    }
+    // The cache: the same frame and settings again are hits, other settings keyed apart.
     let doc = sample::demo();
+    let five = OnionSkin { markers: Markers::Relative { before: 5, after: 5 }, ..OnionSkin::default() };
+    let view = View { transform: Affine::scale(1.5, 1.5), width: 256, height: 256, background: Some(doc.stage.background) };
+    let jobs = |o: &OnionSkin| (0..40).map(|i| make_job(1, &doc, 30, View { transform: Affine::translate(-(i as f32) * 10.0, 0.0).mul(&view.transform), ..view }, Some(o))).collect::<Vec<_>>();
+    let svc = RenderService::new(1 << 30, None);
+    let first = svc.render_now_batch(jobs(&five));
+    let t = std::time::Instant::now();
+    let again = svc.request_batch(jobs(&five));
+    let hit = t.elapsed().as_secs_f32() * 1000.0;
+    assert!(again.iter().all(Option::is_some) && first.len() == again.len());
+    let outlined = svc.request_batch(jobs(&OnionSkin { outlines: true, ..five }));
+    assert!(outlined.iter().all(Option::is_none), "other settings are other pictures");
+    println!("cache: {} tiles, second look {hit:.3} ms, all hits", again.len());
+}
+
+fn timings_of(doc: &anicraft_doc::Document) {
+    use crate::render_service::{make_job, render_batch};
     let (w, h) = (1920u32, 1080u32);
     let z = w as f32 / doc.stage.width as f32;
     let tile = 256u32;
@@ -354,7 +375,7 @@ fn onion_timings() {
         for ty in 0..h.div_ceil(tile) {
             for tx in 0..w.div_ceil(tile) {
                 let view = View { transform: Affine::translate(-((tx * tile) as f32), -((ty * tile) as f32)).mul(&Affine::scale(z, z)), width: tile.min(w - tx * tile), height: tile.min(h - ty * tile), background: Some(doc.stage.background) };
-                v.push(make_job(1, &doc, frame, view, onion));
+                v.push(make_job(1, doc, frame, view, onion));
             }
         }
         v
@@ -369,28 +390,16 @@ fn onion_timings() {
     ];
     for (name, o) in cases {
         let mut best = f32::MAX;
-        let mut items = 0;
         for frame in [12u32, 30, 48] {
             let t = std::time::Instant::now();
             let _ = render_batch(&jobs(o.as_ref(), frame));
             best = best.min(t.elapsed().as_secs_f32() * 1000.0);
-            items = crate::render_service::display_list_with_onion(&doc, frame, o.as_ref()).items.len();
         }
         let t = std::time::Instant::now();
-        let _ = crate::render_service::display_list_with_onion(&doc, 30, o.as_ref());
+        let items = crate::render_service::display_list_with_onion(doc, 30, o.as_ref()).items.len();
         let eval = t.elapsed().as_secs_f32() * 1000.0;
-        println!("{name}: 1080p {best:.1} ms (best of 3 frames), scene {eval:.2} ms, {items} items");
+        println!("{name}: 1080p {best:.1} ms (best of frames 12, 30, 48), scene {eval:.2} ms, {items} items on frame 30");
     }
-    // The cache: the same frame and settings again are hits, other settings keyed apart.
-    let svc = RenderService::new(1 << 30, None);
-    let first = svc.render_now_batch(jobs(Some(&five), 30));
-    let t = std::time::Instant::now();
-    let again = svc.request_batch(jobs(Some(&five), 30));
-    let hit = t.elapsed().as_secs_f32() * 1000.0;
-    assert!(again.iter().all(Option::is_some) && first.len() == again.len());
-    let outlined = svc.request_batch(jobs(Some(&OnionSkin { outlines: true, ..five }), 30));
-    assert!(outlined.iter().all(Option::is_none), "other settings are other pictures");
-    println!("cache: {} tiles, second look {hit:.3} ms, all hits", again.len());
 }
 
 #[test]
