@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0051 | M1 track (multi-frame editing) | Edit Multiple Frames, complete; onion skin inside symbols |
