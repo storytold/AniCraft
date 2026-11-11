@@ -144,6 +144,53 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: false,
             })
         }
+        "library.delete" => {
+            // Routine when nothing deleted is in use and no folder holds anything (undo is there);
+            // asks when instances go with it or a folder takes its contents (ADR 0050).
+            let list = crate::cmds_library::entries_of(s, p, "items").ok()?;
+            let (items, folders) = crate::cmds_library::deletion(s, &list);
+            let uses = s.doc.library_uses();
+            let used: Vec<&anicraft_doc::LibraryItem> = items.iter().filter(|i| uses.get(i).is_some_and(|n| *n > 0)).collect();
+            let n_uses: usize = used.iter().filter_map(|i| uses.get(*i)).sum();
+            let inside = items.len() + folders.len() - list.len();
+            if used.is_empty() && inside == 0 {
+                return None;
+            }
+            let what = match list.as_slice() {
+                [one] => format!("“{}”", s.doc.entry_name(*one).unwrap_or("")),
+                _ => plural(list.len(), "item"),
+            };
+            let mut parts = Vec::new();
+            if inside > 0 {
+                parts.push(format!("{what} {} {}, deleted with {}.", if list.len() == 1 { "holds" } else { "hold" }, plural(inside, "item"), if list.len() == 1 { "it" } else { "them" }));
+            }
+            if !used.is_empty() {
+                parts.push(format!("{} used {} in the movie; {} go too.", if used.len() == 1 { "One of them is".to_string() } else { format!("{} of them are", used.len()) }, plural(n_uses, "time"), if n_uses == 1 { "that use" } else { "those uses" }));
+            }
+            parts.push("You can undo this.".into());
+            Some(Confirmation {
+                title: if inside > 0 && list.len() == 1 { "Delete folder?".into() } else { "Delete from Library?".into() },
+                message: parts.join(" "),
+                action: "Delete".into(),
+                irreversible: false,
+            })
+        }
+        "library.delete_unused" => {
+            let unused = s.doc.unused_items();
+            let names: Vec<String> = unused.iter().take(5).filter_map(|i| s.doc.item_name(*i)).map(|n| format!("“{n}”")).collect();
+            let more = unused.len().saturating_sub(names.len());
+            (!unused.is_empty()).then(|| Confirmation {
+                title: "Delete unused items?".into(),
+                message: format!(
+                    "Nothing in the movie uses {}: {}{}. They leave the Library. You can undo this.",
+                    if unused.len() == 1 { "this item".to_string() } else { format!("these {} items", unused.len()) },
+                    names.join(", "),
+                    if more > 0 { format!(" and {more} more") } else { String::new() }
+                ),
+                action: "Delete Unused".into(),
+                irreversible: false,
+            })
+        }
         "draw.erase_all" => {
             // Double-clicking the Eraser: everything on the stage at this frame (ADR 0034).
             let layers = crate::cmds_erase::erasable_layers(s);
