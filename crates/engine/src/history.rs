@@ -28,6 +28,8 @@ pub struct Snapshot {
     pub doc: Document,
     pub state: StateId,
     pub scene: usize,
+    /// The symbols open for editing (ADR 0045).
+    pub editing: Vec<crate::editing::EditLevel>,
     pub frame: u32,
     pub layer: LayerId,
     pub selection: crate::Selection,

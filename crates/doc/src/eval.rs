@@ -127,6 +127,15 @@ pub fn evaluate_scene(doc: &Document, scene: usize, frame: u32) -> DisplayList {
     out
 }
 
+/// A symbol's timeline at its own `frame`, in the symbol's space, as the stage edits it while the
+/// symbol is open for editing (ADR 0045): what picking and bounds use then. Its layers are the
+/// top-level ones, as a scene's are in [`evaluate_scene`].
+pub fn evaluate_timeline(doc: &Document, tl: &Timeline, frame: u32) -> DisplayList {
+    let mut out = DisplayList::default();
+    eval_timeline(doc, tl, frame, &Ctx::top(Affine::IDENTITY), &mut out, None);
+    out
+}
+
 /// Scene `scene` at its own `frame` as the movie shows it: through the scene's camera, each
 /// layer shifted by its depth, the camera's tint over everything (ADR 0027). Without a camera
 /// this is [`evaluate_scene`].

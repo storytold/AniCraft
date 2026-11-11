@@ -298,7 +298,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         // Clips and masks (ADR 0021): a folder named after the file holding, top first, each
         // run of artwork, with a mask layer over the runs that are masked.
         let made = layers.len() + masks + 1;
-        let tl = s.doc.timeline(s.scene);
+        let tl = s.timeline();
         if tl.layers.len() + made > 1000 {
             return Err(EngineError::State(format!("importing {} would make {made} layers; a timeline holds at most 1000", path.display())));
         }
@@ -343,7 +343,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
             cl.keyframes = keys(els);
             stack.push(cl);
         }
-        let tl = s.doc.timeline_mut(s.scene);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
         for (k, l) in stack.into_iter().enumerate() {
             tl.layers.insert((at + k).min(tl.layers.len()), Arc::new(l));
         }

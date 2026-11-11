@@ -121,8 +121,8 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => tr_noop!("Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection."),
-            Tool::Subselect => tr_noop!("Click a shape to show its points; on a merged drawing, the points of everything connected to it. Drag points or handles to reshape (a shared point moves every shape that has it); drag a line or fill to move everything connected. Shift adds to the point selection, drag on empty space to marquee points, arrow keys nudge them. On drawing objects, double-click an edge to add a point, Delete removes points, and right-click makes a point smooth or a corner. A motion path's points edit the same way (its ends stay)."),
-            Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape or a motion path to add a point to it."),
+            Tool::Subselect => tr_noop!("Click a shape to show its points; on a merged drawing, the points of everything connected to it. Drag points or handles to reshape (a shared point moves every shape that has it; a smooth point's handles stay in line, Alt moves one alone); drag a line or fill to move everything connected. Shift adds to the point selection, drag on empty space to marquee points, arrow keys nudge them. Double-click an edge to add a point, Delete removes points, and right-click makes a point smooth or a corner. A motion path's points edit the same way (its ends stay)."),
+            Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape, a merged drawing's line or a motion path to add a point to it. Points snap to points and lines while Snap to Objects is on."),
             Tool::Text => tr_noop!("Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too."),
             Tool::Pencil => tr_noop!("Drag to draw freehand. The options bar sets Smooth, Straighten or Ink."),
             Tool::Brush => tr_noop!("Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode."),
@@ -575,7 +575,7 @@ impl App {
     /// through, so it says how to add one.
     pub fn toggle_camera_preview(&mut self) {
         self.camera_preview = !self.camera_preview;
-        if self.camera_preview && self.s.doc.timeline(self.s.scene).camera_layer().is_none() {
+        if self.camera_preview && self.s.timeline().camera_layer().is_none() {
             self.status_ok(tr!("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it."));
         }
     }
@@ -984,6 +984,49 @@ impl App {
                     self.drag = Drag::RawHandle { id: h.id, cmd: h.cmd, slot: h.slot, last: egui::pos2(h.at.x + 40.0, h.at.y + 10.0) };
                 }
             }
+            Some("rawpoints") => {
+                // Raw points (ADR 0045) on a new layer: an outlined square whose top-left corner
+                // was deleted (the fill and its outline joined across the diagonal), and a point
+                // added on its right side, pulled out and made smooth, selected with its handle
+                // pair showing.
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 240, "y": 140, "w": 320, "h": 260, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("draw.ellipse", json!({"x": 640, "y": 170, "w": 240, "h": 200, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("edit.deselect", json!({}));
+                self.run("raw.delete_points", json!({"points": [[240, 140]]}));
+                self.run("raw.add_point", json!({"x": 560, "y": 270}));
+                self.run("raw.move_point", json!({"x": 560, "y": 270, "to_x": 620, "to_y": 270}));
+                self.run("raw.convert_points", json!({"points": [[620, 270]], "smooth": true}));
+                self.tool = Tool::Subselect;
+                self.run("raw.subselect", json!({"x": 400, "y": 400, "slop": 4}));
+                self.raw_ends = Vec::new();
+                self.raw_anchors = vec![anicraft_engine::geom::Vec2::new(620.0, 270.0)];
+            }
+            Some("rawsnap") => {
+                // Snapping while drawing (ADR 0045): a line being drawn from a corner of a raw
+                // square, its end snapping onto the square's other corner (the ring).
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 240, "y": 140, "w": 320, "h": 260, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Line;
+                self.drag = Drag::Shape { start: egui::pos2(240.0, 400.0), cur: egui::pos2(560.0, 140.0) };
+                self.snap_ring = Some(anicraft_engine::geom::Vec2::new(560.0, 140.0));
+            }
+            Some("symboledit") => {
+                // A symbol open for editing in place (ADR 0045): a raw drawing inside it, merged
+                // with a line drawn across it there, its connected points showing under the
+                // Subselection tool; the stage around it dimmed, the way back above.
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 260, "y": 160, "w": 300, "h": 220, "fill": "#e8553b", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("modify.convert_to_symbol", json!({"name": "Badge"}));
+                self.run("symbol.edit", json!({}));
+                self.run("draw.line", json!({"x0": -190, "y0": 40, "x1": 190, "y1": -40, "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("draw.ellipse", json!({"x": 60, "y": -150, "w": 140, "h": 140, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Subselect;
+                self.run("raw.subselect", json!({"x": 0, "y": 60, "slop": 4}));
+                self.raw_ends = Vec::new();
+            }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
                 // calligraphic tip at 45°, square dabs, and a pink stroke painted behind a raw
@@ -1051,7 +1094,7 @@ impl App {
             Some("frames") => {
                 // Frames 8–20 selected on the top three layers, with a keyframe drag in progress:
                 // 6 frames later and one layer down.
-                let layers = &self.s.doc.timeline(self.s.scene).layers;
+                let layers = &self.s.timeline().layers;
                 if let (Some(a), Some(b)) = (layers.first(), layers.get(2)) {
                     self.frame_sel = Some(timeline::FrameSel { anchor: (a.id, 7), head: (b.id, 19) });
                     self.tl_drag = timeline::TlDrag::Move { grab: 10, by: 6, grab_row: 0, rows_by: 1 };
@@ -1164,7 +1207,7 @@ impl App {
             }
             Some("span") => {
                 // Stretching the Star layer's span by its end, with the length readout.
-                if let Some(l) = self.s.doc.timeline(self.s.scene).layers.get(1)
+                if let Some(l) = self.s.timeline().layers.get(1)
                     && let Some(k) = l.keyframes.first()
                 {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
@@ -1800,7 +1843,7 @@ impl App {
                     self.status_ok(if self.align_to_stage { tr!("Align: to stage") } else { tr!("Align: to the selection") });
                 }
                 "view.select_all_frames" => {
-                    let layers = &self.s.doc.timeline(self.s.scene).layers;
+                    let layers = &self.s.timeline().layers;
                     if let (Some(a), Some(b)) = (layers.first(), layers.last()) {
                         let last = self.s.frame_count().saturating_sub(1);
                         self.frame_sel = Some(timeline::FrameSel { anchor: (a.id, 0), head: (b.id, last) });

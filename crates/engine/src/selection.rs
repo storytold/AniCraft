@@ -184,13 +184,13 @@ fn merge_results(results: Vec<(LayerId, Value)>) -> Value {
 impl Session {
     /// The elements on `layer` at the playhead (tweens applied).
     pub fn elements_on(&self, layer: LayerId) -> Vec<Arc<Element>> {
-        self.doc.timeline(self.scene).layer(layer).and_then(|l| evaluate_layer_elements(l, self.frame)).map(|(_, e)| e.into_owned()).unwrap_or_default()
+        self.timeline().layer(layer).and_then(|l| evaluate_layer_elements(l, self.frame)).map(|(_, e)| e.into_owned()).unwrap_or_default()
     }
 
     /// Whether artwork on `layer` can be selected: it is in this scene, shown and unlocked
     /// (folders included), and not a folder.
     pub fn selectable(&self, layer: LayerId) -> bool {
-        let tl = self.doc.timeline(self.scene);
+        let tl = self.timeline();
         let Some(i) = tl.layers.iter().position(|l| l.id == layer) else { return false };
         tl.layers.get(i).is_some_and(|l| l.visible && !l.locked && l.kind != LayerKind::Folder) && !tl.locked_by_folder(layer) && !tl.hidden_by_folder(i)
     }
@@ -199,14 +199,14 @@ impl Session {
     /// artwork on it. The camera layer holds only the camera, and an armature layer's
     /// instances are posed by their bones, so they are gathered only while active.
     pub fn gathers(&self, layer: LayerId) -> bool {
-        let kind = self.doc.timeline(self.scene).layer(layer).map(|l| l.kind);
+        let kind = self.timeline().layer(layer).map(|l| l.kind);
         self.selectable(layer) && (layer == self.layer || !matches!(kind, Some(LayerKind::Camera | LayerKind::Armature)))
     }
 
     /// The layers with selected items, top to bottom.
     pub fn selected_layers(&self) -> Vec<LayerId> {
         let mine = self.selection.layers();
-        self.doc.timeline(self.scene).layers.iter().map(|l| l.id).filter(|l| mine.contains(l)).collect()
+        self.timeline().layers.iter().map(|l| l.id).filter(|l| mine.contains(l)).collect()
     }
 
     /// Every selected element as it looks at the playhead, with its layer: layers top to
@@ -249,8 +249,10 @@ impl Session {
     /// locked (a locked or hidden layer is never selected), and keeps the active layer valid.
     pub fn fix_selection(&mut self) {
         self.scene = self.scene.min(self.doc.scenes.len().saturating_sub(1));
-        if self.doc.timeline(self.scene).layer(self.layer).is_none() {
-            self.layer = self.doc.timeline(self.scene).layers.first().map_or(LayerId(0), |l| l.id);
+        // A symbol that is gone closes (ADR 0045).
+        self.fix_editing();
+        if self.timeline().layer(self.layer).is_none() {
+            self.layer = self.timeline().layers.first().map_or(LayerId(0), |l| l.id);
         }
         if self.selection.is_empty() {
             return;
@@ -321,7 +323,7 @@ impl Session {
                 }
             }
         }
-        if self.doc.timeline(self.scene).layer(active).is_some() {
+        if self.timeline().layer(active).is_some() {
             self.layer = active;
         }
         self.selection = after;
@@ -341,7 +343,7 @@ impl Session {
             crate::cmds_motion::finish_edit(self, edit);
         }
         self.dl_cache.replace(None);
-        if self.doc.timeline(self.scene).layer(active).is_some() {
+        if self.timeline().layer(active).is_some() {
             self.layer = active;
         }
         r
