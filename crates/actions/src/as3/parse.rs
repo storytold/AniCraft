@@ -1,8 +1,8 @@
 //! The parser: tokens to a syntax tree, by recursive descent (the grammar of ECMA-262 3rd
 //! edition §11–14, with ActionScript 3.0's type annotations, `import`, `as`, `is`, rest
 //! parameters and `for each`). It reads more of the language than AniCraft runs, so lowering
-//! can say exactly which construct isn't run and where; what it reads but never runs (loop
-//! headers, `switch` and `try` bodies) is skipped by balanced brackets. Bounded: nesting
+//! can say exactly which construct isn't run and where; what it reads but never runs (`for in`
+//! heads, `switch` and `try` bodies) is skipped by balanced brackets. Bounded: nesting
 //! deeper than [`super::MAX_DEPTH`] is a problem, not a stack overflow.
 
 use super::lex::{Tok, Token};
@@ -47,7 +47,9 @@ pub enum E {
 pub struct Param {
     pub name: String,
     pub pos: Pos,
-    pub default: bool,
+    /// The type annotation as written (`int`, `MouseEvent`, `*`), when there is one.
+    pub ty: Option<(String, Pos)>,
+    pub default: Option<Expr>,
     pub rest: bool,
 }
 
@@ -56,7 +58,18 @@ pub struct Func {
     pub name: Option<String>,
     pub pos: Pos,
     pub params: Vec<Param>,
+    /// The result type as written (`void`, `int`), when there is one.
+    pub ret: Option<(String, Pos)>,
     pub body: Vec<Stmt>,
+}
+
+/// One name of a `var` (or `const`) statement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VarDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub ty: Option<(String, Pos)>,
+    pub init: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,8 +84,15 @@ pub enum S {
     Import,
     Function(Func),
     /// `var`, `const`.
-    Var(&'static str),
+    Var(&'static str, Vec<VarDecl>),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
+    /// `for (init; cond; update) body` (`init` a `var` statement or an expression).
+    For(Option<Box<Stmt>>, Option<Expr>, Option<Expr>, Vec<Stmt>),
+    While(Expr, Vec<Stmt>),
+    DoWhile(Vec<Stmt>, Expr),
+    /// `break` and `continue` (without a label).
+    Break,
+    Continue,
     Return(Option<Expr>),
     Block(Vec<Stmt>),
     Empty,
@@ -228,12 +248,83 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `: Type` (read and dropped: `*`, `void`, `a.b.C`, `Vector.<T>`).
-    fn annotation(&mut self) -> R<()> {
+    /// `: Type` (`*`, `void`, `a.b.C`, `Vector.<T>`), as written.
+    fn annotation(&mut self) -> R<Option<(String, Pos)>> {
         if !self.eat(":") {
-            return Ok(());
+            return Ok(None);
         }
-        self.type_name()
+        let pos = self.pos();
+        let start = self.i;
+        self.type_name()?;
+        let text: String = self
+            .toks
+            .get(start..self.i)
+            .unwrap_or_default()
+            .iter()
+            .map(|t| match &t.tok {
+                Tok::Name(n) => n.clone(),
+                Tok::Punct(p) => (*p).to_string(),
+                _ => String::new(),
+            })
+            .collect();
+        Ok(Some((text, pos)))
+    }
+
+    /// The names of a `var` statement after the keyword.
+    fn var_list(&mut self) -> R<Vec<VarDecl>> {
+        let mut out = Vec::new();
+        loop {
+            let (name, pos) = self.name("a variable name")?;
+            let ty = self.annotation()?;
+            let init = if self.eat("=") { Some(self.assign()?) } else { None };
+            out.push(VarDecl { name, pos, ty, init });
+            if !self.eat(",") {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// `( init ; cond ; update )` after `for`, or `None` for `for … in` (read, not run).
+    #[allow(clippy::type_complexity)]
+    fn for_head(&mut self) -> R<Option<(Option<Box<Stmt>>, Option<Expr>, Option<Expr>)>> {
+        let open = self.i;
+        self.expect("(", "after `for`")?;
+        let pos = self.pos();
+        let init = if self.is(";") {
+            None
+        } else if self.is_word("var") || self.is_word("const") {
+            let w = if self.is_word("var") { "var" } else { "const" };
+            self.i += 1;
+            let list = self.var_list()?;
+            if self.is_word("in") || list.iter().any(|d| matches!(&d.init, Some(Expr { kind: E::Binary("in", ..), .. }))) {
+                self.i = open;
+                self.skip_group()?;
+                return Ok(None);
+            }
+            Some(Box::new(Stmt { pos, kind: S::Var(w, list) }))
+        } else {
+            let e = self.expr()?;
+            if matches!(e.kind, E::Binary("in", ..)) {
+                self.i = open;
+                self.skip_group()?;
+                return Ok(None);
+            }
+            Some(Box::new(Stmt { pos, kind: S::Expr(e) }))
+        };
+        self.expect(";", "after the loop's start")?;
+        let cond = if self.is(";") { None } else { Some(self.expr()?) };
+        self.expect(";", "after the loop's condition")?;
+        let update = if self.is(")") { None } else { Some(self.expr()?) };
+        self.expect(")", "to close the loop's head")?;
+        Ok(Some((init, cond, update)))
+    }
+
+    /// `( expr )`
+    fn paren(&mut self, what: &str) -> R<Expr> {
+        self.expect("(", what)?;
+        let e = self.expr()?;
+        self.expect(")", "after the condition")?;
+        Ok(e)
     }
 
     fn type_name(&mut self) -> R<()> {
@@ -323,18 +414,9 @@ impl<'a> Parser<'a> {
                 "var" | "const" => {
                     let w = if w == "var" { "var" } else { "const" };
                     self.i += 1;
-                    loop {
-                        self.name("a variable name")?;
-                        self.annotation()?;
-                        if self.eat("=") {
-                            self.assign()?;
-                        }
-                        if !self.eat(",") {
-                            break;
-                        }
-                    }
+                    let list = self.var_list()?;
                     self.end()?;
-                    S::Var(w)
+                    S::Var(w, list)
                 }
                 "if" => {
                     self.i += 1;
@@ -353,14 +435,20 @@ impl<'a> Parser<'a> {
                 }
                 "for" => {
                     self.i += 1;
-                    self.eat_word("each");
-                    self.skip_group()?;
-                    S::Other("for", self.body()?)
+                    if self.eat_word("each") {
+                        self.skip_group()?;
+                        S::Other("for each", self.body()?)
+                    } else {
+                        match self.for_head()? {
+                            Some((init, cond, update)) => S::For(init, cond, update, self.body()?),
+                            None => S::Other("for in", self.body()?),
+                        }
+                    }
                 }
                 "while" => {
                     self.i += 1;
-                    self.skip_group()?;
-                    S::Other("while", self.body()?)
+                    let c = self.paren("after `while`")?;
+                    S::While(c, self.body()?)
                 }
                 "do" => {
                     self.i += 1;
@@ -368,9 +456,9 @@ impl<'a> Parser<'a> {
                     if !self.eat_word("while") {
                         return Err(self.unexpected("`while` after the `do` body"));
                     }
-                    self.skip_group()?;
+                    let c = self.paren("after `while`")?;
                     self.end()?;
-                    S::Other("do", b)
+                    S::DoWhile(b, c)
                 }
                 "with" => {
                     self.i += 1;
@@ -408,11 +496,17 @@ impl<'a> Parser<'a> {
                         _ => "throw",
                     };
                     self.i += 1;
-                    if !(self.is(";") || self.is("}") || matches!(self.tok(), Tok::Eof) || self.nl()) {
+                    let bare = self.is(";") || self.is("}") || matches!(self.tok(), Tok::Eof) || self.nl();
+                    if !bare {
                         self.expr()?;
                     }
                     self.end()?;
-                    S::Other(w, Vec::new())
+                    match (w, bare) {
+                        ("break", true) => S::Break,
+                        ("continue", true) => S::Continue,
+                        ("throw", _) => S::Other("throw", Vec::new()),
+                        _ => S::Other("labelled break", Vec::new()),
+                    }
                 }
                 // Applications, not timeline scripts (ADR 0013 tier 3).
                 "package" | "class" | "interface" | "namespace" | "use" | "include" | "default" => {
@@ -454,21 +548,18 @@ impl<'a> Parser<'a> {
             loop {
                 let rest = self.eat("...");
                 let (n, p) = self.name("a parameter name")?;
-                self.annotation()?;
-                let default = self.eat("=");
-                if default {
-                    self.assign()?;
-                }
-                params.push(Param { name: n, pos: p, default, rest });
+                let ty = self.annotation()?;
+                let default = if self.eat("=") { Some(self.assign()?) } else { None };
+                params.push(Param { name: n, pos: p, ty, default, rest });
                 if self.eat(")") {
                     break;
                 }
                 self.expect(",", "or `)` after the parameter")?;
             }
         }
-        self.annotation()?;
+        let ret = self.annotation()?;
         let body = self.block()?;
-        Ok(Func { name, pos, params, body })
+        Ok(Func { name, pos, params, ret, body })
     }
 
     /// An expression (`a, b` included).
@@ -534,29 +625,44 @@ impl<'a> Parser<'a> {
         ];
         let Some(ops) = LEVELS.get(level) else { return self.unary() };
         let mut lhs = self.binary(level + 1)?;
-        loop {
+        // Each operator in a row nests the tree one deeper: it counts toward the depth limit,
+        // so what runs the tree can't recurse without bound.
+        let mut chain = 0;
+        let r = loop {
             let op = match self.tok() {
                 Tok::Punct(p) if ops.contains(p) => ops.iter().find(|o| *o == p).copied(),
                 Tok::Name(n) if ops.contains(&n.as_str()) => ops.iter().find(|o| **o == n.as_str()).copied(),
                 _ => None,
             };
-            let Some(op) = op else { return Ok(lhs) };
+            let Some(op) = op else { break Ok(lhs) };
+            chain += 1;
+            self.depth += 1;
+            if self.depth > MAX_DEPTH {
+                break Err(Problem::at(self.pos(), format!("this expression has too many operators in a row (code nests at most {MAX_DEPTH} levels deep)")));
+            }
             self.i += 1;
             // The right side of `as` and `is` is a type.
             let rhs = if matches!(op, "as" | "is") {
                 let pos = self.pos();
                 let start = self.i;
-                self.type_name()?;
+                if let Err(e) = self.type_name() {
+                    break Err(e);
+                }
                 let name = match self.toks.get(start..self.i) {
                     Some([Token { tok: Tok::Name(n), .. }]) => n.clone(),
                     _ => "*".into(),
                 };
                 Expr { pos, kind: E::Name(name) }
             } else {
-                self.binary(level + 1)?
+                match self.binary(level + 1) {
+                    Ok(e) => e,
+                    Err(e) => break Err(e),
+                }
             };
             lhs = Expr { pos: lhs.pos, kind: E::Binary(op, Box::new(lhs), Box::new(rhs)) };
-        }
+        };
+        self.depth -= chain;
+        r
     }
 
     fn unary(&mut self) -> R<Expr> {
