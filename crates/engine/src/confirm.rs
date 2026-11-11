@@ -144,6 +144,16 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: false,
             })
         }
+        "find.replace" => {
+            // Replace All over many places asks first (ADR 0058); one undo step takes it back.
+            let n = crate::find::replace_count(s, p)?;
+            (n > crate::find::REPLACE_ASK).then(|| Confirmation {
+                title: "Replace all?".into(),
+                message: format!("This replaces what was found in {}. You can undo this in one step.", plural(n, "place")),
+                action: "Replace All".into(),
+                irreversible: false,
+            })
+        }
         "library.delete" => {
             // Routine when nothing deleted is in use and no folder holds anything (undo is there);
             // asks when instances go with it or a folder takes its contents (ADR 0050).

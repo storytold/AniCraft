@@ -319,7 +319,7 @@ fn instance(s: &Session, id: ElementId) -> Option<(LayerId, Arc<Element>)> {
     s.timeline().layers.iter().map(|l| l.id).find_map(|l| s.elements_on(l).into_iter().find(|e| e.id == id).map(|e| (l, e)))
 }
 
-fn edit(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     if s.editing.len() >= MAX_LEVELS {
         return Err(EngineError::State(format!("at most {MAX_LEVELS} symbols can be open inside each other")));
     }
