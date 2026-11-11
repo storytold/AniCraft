@@ -289,7 +289,7 @@ fn points_json(pts: &RawPoints) -> Value {
 fn points_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let ids: Vec<ElementId> = match opt_u64_list(p, "ids")? {
         Some(v) => v.into_iter().map(ElementId).collect(),
-        None => s.selection.clone(),
+        None => s.selection.on(s.layer),
     };
     Ok(points_json(&s.raw_points(&ids)))
 }
@@ -304,7 +304,7 @@ fn subselect(s: &mut Session, p: &Value) -> Result<Value> {
         if !add {
             s.selection.clear();
         }
-        return Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>(), "raw": false, "ends": []}));
+        return Ok(json!({"selected": s.selection.id_list(), "raw": false, "ends": []}));
     };
     if layer != s.layer {
         s.layer = layer;
@@ -330,13 +330,9 @@ fn subselect(s: &mut Session, p: &Value) -> Result<Value> {
     if !add {
         s.selection.clear();
     }
-    for id in picked {
-        if !s.selection.contains(&id) {
-            s.selection.push(id);
-        }
-    }
-    let mut v = if raw { points_json(&s.raw_points(&s.selection.clone())) } else { json!({}) };
-    v["selected"] = json!(s.selection.iter().map(|e| e.0).collect::<Vec<_>>());
+    s.selection.extend_on(s.layer, picked);
+    let mut v = if raw { points_json(&s.raw_points(&s.selection.on(s.layer))) } else { json!({}) };
+    v["selected"] = json!(s.selection.id_list());
     v["raw"] = json!(raw);
     v["ends"] = json!(ends.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>());
     Ok(v)
@@ -383,7 +379,7 @@ fn subselect_rect(s: &mut Session, p: &Value) -> Result<Value> {
         s.selection.clear();
     }
     let usable = s.active_layer().is_some_and(|l| l.visible && !l.locked) && !s.doc.timeline(s.scene).locked_by_folder(s.layer);
-    let empty = json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>(), "anchors": []});
+    let empty = json!({"selected": s.selection.id_list(), "anchors": []});
     if !usable || !(r.width() > 0.0 || r.height() > 0.0) {
         return Ok(empty);
     }
@@ -396,13 +392,10 @@ fn subselect_rect(s: &mut Session, p: &Value) -> Result<Value> {
         if mergeable(e).is_some() { seeds.push(e.id) } else { objects.push(e.id) }
     }
     let raw = connected(&els, &seeds);
-    for id in raw.iter().chain(&objects) {
-        if !s.selection.contains(id) {
-            s.selection.push(*id);
-        }
-    }
+    // Subselection's marquee stays on the active layer, as in Animate (ADR 0042, 0044).
+    s.selection.extend_on(s.layer, raw.iter().chain(&objects).copied());
     let inside: Vec<[f32; 2]> = s.raw_points(&raw).anchors.into_iter().filter(|q| r.contains(*q)).map(|q| [q.x, q.y]).collect();
-    Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>(), "anchors": inside}))
+    Ok(json!({"selected": s.selection.id_list(), "anchors": inside}))
 }
 
 // ----- handles -----------------------------------------------------------------------------------

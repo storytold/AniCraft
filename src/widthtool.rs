@@ -131,7 +131,7 @@ fn hit(app: &App, at: Pos2, xf: Xf) -> Option<Hit> {
 /// Returns the drag (the gesture is open: one undo step).
 pub fn drag_start(app: &mut App, press: Pos2, xf: Xf) -> Drag {
     let Some(h) = hit(app, press, xf) else { return Drag::None };
-    if !app.s.selection.contains(&h.id) {
+    if !app.s.selection.contains(app.s.layer, h.id) {
         app.run("element.select", json!({"ids": [h.id.0]}));
     }
     // Undo labels stay English in the history and are translated where they show.

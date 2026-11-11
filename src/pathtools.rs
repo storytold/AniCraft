@@ -204,7 +204,7 @@ fn selected_shapes(app: &App) -> Vec<(ElementId, Arc<Path>, Affine)> {
     app.s
         .visible_elements()
         .into_iter()
-        .filter(|e| app.s.selection.contains(&e.id))
+        .filter(|e| app.s.selection.contains(app.s.layer, e.id))
         .filter_map(|e| match &e.kind {
             // Raw shapes show their shared points instead (ADR 0042, below).
             ElementKind::Shape(sh) if sh.merge => None,
@@ -275,8 +275,8 @@ pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> 
         app.s.begin_gesture(tr_noop!("Move Points"));
         return Drag::Points { last: pos2(sp.x, sp.y) };
     }
-    if let Some((_, el)) = app.s.hit_test(sp, 3.0 * xf.unit()) {
-        if !app.s.selection.contains(&el) {
+    if let Some((layer, el)) = app.s.hit_test(sp, 3.0 * xf.unit()) {
+        if !app.s.selection.contains(layer, el) {
             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
             app.points.clear();
         }
@@ -439,7 +439,7 @@ fn is_raw(e: &anicraft_engine::doc::Element) -> bool {
 
 /// The selected raw shapes on the active layer: Subselection shows their points.
 fn raw_selected(app: &App) -> Vec<ElementId> {
-    app.s.visible_elements().iter().filter(|e| app.s.selection.contains(&e.id) && is_raw(e)).map(|e| e.id).collect()
+    app.s.visible_elements().iter().filter(|e| app.s.selection.contains(app.s.layer, e.id) && is_raw(e)).map(|e| e.id).collect()
 }
 
 /// The anchors and handles of the selected raw shapes.
@@ -553,7 +553,7 @@ fn raw_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> Option<Dra
         return Some(Drag::RawPoint { at: pos2(q.x, q.y), off: pos2(q.x, q.y) - pos2(sp.x, sp.y) });
     }
     // A raw line or fill: everything connected to it moves (Animate's Subselection drag).
-    let on_shown = app.s.hit_test(sp, 3.0 * xf.unit()).is_some_and(|(l, id)| l == app.s.layer && app.s.selection.contains(&id) && app.s.visible_elements().iter().any(|e| e.id == id && is_raw(e)));
+    let on_shown = app.s.hit_test(sp, 3.0 * xf.unit()).is_some_and(|(l, id)| l == app.s.layer && app.s.selection.contains(l, id) && app.s.visible_elements().iter().any(|e| e.id == id && is_raw(e)));
     if !on_shown && !raw_show_at(app, sp, shift, xf) {
         return None;
     }

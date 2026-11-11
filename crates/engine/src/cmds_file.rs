@@ -352,7 +352,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         s.layer = lid;
         (lid, ids, made, Some(fid.0))
     };
-    s.selection = ids.clone();
+    s.select_only(ids.iter().copied());
     Ok(json!({
         "layer": layer_id.0,
         "folder": folder,

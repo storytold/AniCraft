@@ -85,19 +85,20 @@ fn parse_actions(p: &Value) -> Result<Vec<Action>> {
     Ok(list)
 }
 
-/// The symbol instance `element` (or the selected one) on the active layer's keyframe at the
-/// playhead, for editing.
+/// The symbol instance `element` on the active layer's keyframe at the playhead (or the selected
+/// one, on its layer), for editing.
 fn instance_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Element> {
-    let id = match opt_u64(p, "element")? {
-        Some(id) => ElementId(id),
-        None => match s.selection.as_slice() {
-            [one] => *one,
-            [] => return Err(EngineError::State("select a movie clip or button instance, or pass 'element'".into())),
+    let (layer, id) = match opt_u64(p, "element")? {
+        // A selected element is looked for on its own layer.
+        Some(id) => (s.selection.iter().find(|(_, e)| e.0 == id).map_or(s.layer, |(l, _)| l), ElementId(id)),
+        None => match (s.selection.first(), s.selection.len()) {
+            (Some(one), 1) => one,
+            (None, _) => return Err(EngineError::State("select a movie clip or button instance, or pass 'element'".into())),
             _ => return Err(EngineError::State("select one instance".into())),
         },
     };
     let frame = s.frame;
-    let layer = s.layer_mut(None)?;
+    let layer = s.layer_mut(Some(layer))?;
     let i = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;
     let k = layer.keyframe_mut(i).ok_or_else(|| EngineError::State("keyframe vanished".into()))?;
     let e = k.elements.iter_mut().find(|e| e.id == id).ok_or_else(|| EngineError::State(format!("no element {} on the active layer at frame {}", id.0, frame + 1)))?;

@@ -381,8 +381,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         app.raw_touched.clear();
                         Drag::Bend { id, cmd, t, last: sp }
                     }
-                    Some((_, Grab::Fill { id } | Grab::Object { id })) => {
-                        if !app.s.selection.contains(&id) {
+                    Some((layer, Grab::Fill { id } | Grab::Object { id })) => {
+                        if !app.s.selection.contains(layer, id) {
                             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
                         }
                         app.s.begin_gesture(tr_noop!("Move"));
@@ -635,10 +635,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos()
     {
         let sp = to_stage(p);
-        let under = app.s.hit_test(to_v(sp), 3.0 / zoom).map(|(_, e)| e);
+        let under = app.s.hit_test(to_v(sp), 3.0 / zoom);
         // On the motion path, the menu is for its points: the selection stays.
         let on_path = !panning && crate::motion_path::secondary_click(app, p, xf);
-        if !on_path && under.is_none_or(|e| !app.s.selection.contains(&e)) {
+        if !on_path && under.is_none_or(|(l, e)| !app.s.selection.contains(l, e)) {
             app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": false}));
         }
     }
@@ -832,7 +832,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
             let dl = app.s.display_list();
             let stroke = Stroke::new(1.5, T.selection);
-            for item in dl.items.iter().filter(|i| app.s.selection.contains(&i.element)).take(2_000) {
+            for item in dl.items.iter().filter(|i| app.s.selection.contains(i.layer, i.element)).take(2_000) {
                 for pl in item.path.flatten(&to_px.mul(&item.transform), 0.5) {
                     let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
                     painter.add(if pl.closed { egui::Shape::closed_line(pts, stroke) } else { egui::Shape::line(pts, stroke) });
@@ -878,9 +878,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && app.palette.is_none()
         && !app.modal_open()
         && let Some(sp) = app.cursor_stage
-            && let Some((_, el)) = app.s.hit_test(to_v(sp), 3.0 / zoom)
-                && !app.s.selection.contains(&el) && !raw.contains(&el) {
-                    let b = app.s.element_bounds(el);
+            && let Some((layer, el)) = app.s.hit_test(to_v(sp), 3.0 / zoom)
+                && !app.s.selection.contains(layer, el) && !raw.contains(&(layer, el)) {
+                    let b = app.s.element_bounds_on(layer, el);
                     if !b.is_empty() {
                         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max));
                         painter.rect_stroke(r, 0.0, Stroke::new(1.0, T.selection.gamma_multiply(0.55)), StrokeKind::Middle);
@@ -892,13 +892,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
         let mut mesh = egui::Mesh::default();
         let mut budget = MAX_DOTS;
-        for item in app.s.display_list().items.iter().filter(|i| app.s.selection.contains(&i.element) && raw.contains(&i.element)) {
+        for item in app.s.display_list().items.iter().filter(|i| app.s.selection.contains(i.layer, i.element) && raw.contains(&(i.layer, i.element))) {
             selection_dots(&mut mesh, item, &to_px.mul(&item.transform), canvas, &mut budget);
         }
         painter.add(egui::Shape::mesh(mesh));
     }
-    for id in app.s.selection.clone() {
-        let b = app.s.element_bounds(id);
+    // Every selected element, on whichever layer it is (ADR 0044).
+    for (layer, e) in app.s.selected_elements() {
+        let id = e.id;
+        let b = app.s.element_bounds_on(layer, id);
         if b.is_empty() {
             continue;
         }
@@ -907,7 +909,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             // Subselection and Width show outlines and points instead (below).
             continue;
         }
-        if app.tool == Tool::Select && raw.contains(&id) {
+        if app.tool == Tool::Select && raw.contains(&(layer, id)) {
             continue; // dots above
         }
         if transforming {
@@ -922,10 +924,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_stroke(h, 0.0, sel_stroke, StrokeKind::Middle);
         }
         // registration point
-        if let Some(e) = app.s.visible_elements().iter().find(|e| e.id == id) {
-            let o = to_screen(e.transform.translation());
-            painter.circle(o, 3.5, Color32::WHITE, Stroke::new(1.0, Color32::BLACK));
-        }
+        let o = to_screen(e.transform.translation());
+        painter.circle(o, 3.5, Color32::WHITE, Stroke::new(1.0, Color32::BLACK));
     }
     // Free transform box: recomputed every frame so it follows the artwork while you drag.
     if transforming && let Some(b) = bounds_arr(app.s.selection_bounds()) {
@@ -1004,10 +1004,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
     // Last, so the focus ring is drawn over the artwork.
     let selected = app.s.selection.len();
+    let on = app.s.selected_layers().len();
     let (tool, frame) = (crate::i18n::t(app.tool.label()), app.s.frame + 1);
-    let name = match selected {
-        0 => tr!("Stage · {tool} tool · frame {frame}", tool = tool, frame = frame),
-        n => trn!("Stage · {tool} tool · frame {frame} · {n} element selected", "Stage · {tool} tool · frame {frame} · {n} elements selected", n, tool = tool, frame = frame),
+    let name = match (selected, on) {
+        (0, _) => tr!("Stage · {tool} tool · frame {frame}", tool = tool, frame = frame),
+        (n, 0 | 1) => trn!("Stage · {tool} tool · frame {frame} · {n} element selected", "Stage · {tool} tool · frame {frame} · {n} elements selected", n, tool = tool, frame = frame),
+        // A selection across layers (ADR 0044): the layers' phrase is its own plural.
+        (n, l) => trn!(
+            "Stage · {tool} tool · frame {frame} · {n} element selected {on_layers}",
+            "Stage · {tool} tool · frame {frame} · {n} elements selected {on_layers}",
+            n,
+            tool = tool,
+            frame = frame,
+            on_layers = trn!("on {n} layer", "on {n} layers", l)
+        ),
     };
     crate::a11y::surface(ui, &resp, &name);
 }
@@ -1098,8 +1108,10 @@ fn grab_mark(painter: &egui::Painter, p: Pos2, grab: Grab) {
 }
 
 /// The raw shapes (parts of the layer's merged drawing) on the active layer.
-fn raw_ids(app: &App) -> std::collections::HashSet<anicraft_engine::doc::ElementId> {
-    app.s.visible_elements().iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(|e| e.id).collect()
+/// The raw shapes at the playhead, on every layer, with their layers.
+fn raw_ids(app: &App) -> std::collections::HashSet<(anicraft_engine::doc::LayerId, anicraft_engine::doc::ElementId)> {
+    let layers: Vec<_> = app.s.doc.timeline(app.s.scene).layers.iter().map(|l| l.id).collect();
+    layers.into_iter().flat_map(|l| app.s.elements_on(l).into_iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(move |e| (l, e.id))).collect()
 }
 
 /// Most selection dots drawn in a frame.

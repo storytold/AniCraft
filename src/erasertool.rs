@@ -113,8 +113,8 @@ pub fn eyedropper(app: &mut App, p: Vec2, shift: bool, zoom: f32) {
     // One whole sentence per kind of paint, so each translates as a sentence.
     let paint = v["paint"].as_str();
     let width = v["width"].as_f64().map_or(String::new(), |w| format!("{w:.1}"));
-    let sel = &app.s.selection;
-    let shapes = app.s.visible_elements().iter().filter(|e| sel.contains(&e.id) && matches!(e.kind, ElementKind::Shape(_))).count();
+    // The selected shapes on every layer (ADR 0044).
+    let shapes = app.s.selected_elements().iter().filter(|(_, e)| matches!(e.kind, ElementKind::Shape(_))).count();
     if shapes > 0 {
         if let Some(r) = app.run("paint.apply_style", json!({"fill": into_fill, "stroke": !into_fill})) {
             let n = r["changed"].as_u64().unwrap_or(0);

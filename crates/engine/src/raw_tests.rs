@@ -297,7 +297,7 @@ fn a_marquee_selects_the_parts_under_it_and_the_parts_add_up() {
     assert_eq!(r["cut"], 3, "part of the fill, of the top and of the right side: {r}");
     let sel = s.selection.clone();
     let els = s.visible_elements();
-    let chosen: Vec<&Arc<Element>> = els.iter().filter(|e| sel.contains(&e.id)).collect();
+    let chosen: Vec<&Arc<Element>> = els.iter().filter(|e| sel.has_id(e.id)).collect();
     assert!(chosen.iter().any(|e| matches!(&e.kind, ElementKind::Shape(sh) if !sh.merge && (area(e) - 400.0).abs() < 0.5)), "the object inside");
     assert!(!chosen.iter().any(|e| (area(e) - 2000.0).abs() < 0.5), "not the one across the edge");
     // Inside: 50 × 45 of the fill (y from 0 to 45), the right side's upper 45 and the top's
@@ -333,7 +333,7 @@ fn letting_go_of_a_marquee_puts_the_drawing_back_whole() {
     run(&mut s, "element.pick", json!({"x": 20, "y": 40}));
     assert_eq!(count(&s), (1, 4));
     assert_eq!(s.selection.len(), 1);
-    assert!(raw(&s).iter().any(|e| s.selection.contains(&e.id) && is_fill(e) && (area(e) - 8000.0).abs() < 0.5));
+    assert!(raw(&s).iter().any(|e| s.selection.has_id(e.id) && is_fill(e) && (area(e) - 8000.0).abs() < 0.5));
     // A new marquee replaces the old one.
     run(&mut s, "raw.select_rect", json!({"x0": 50, "y0": -20, "x1": 200, "y1": 200}));
     run(&mut s, "raw.select_rect", json!({"x0": -20, "y0": -20, "x1": 50, "y1": 40}));

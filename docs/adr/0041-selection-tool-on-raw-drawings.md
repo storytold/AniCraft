@@ -101,10 +101,9 @@ was copied.
    *Rejected:* keeping cuts permanently (seams and ever more fragments after every marquee), and
    a lazy "region" selection that every command would have to understand.
 
-6. **A selection lives on one layer.** The marquee uses the active layer when it has something
-   under the rectangle, else the topmost visible, unlocked layer that does. Selecting across
-   layers, as Animate does, needs a selection model of `(layer, element)` pairs through every
-   command. It is left for a later change, and is a question for the lead.
+6. ~~**A selection lives on one layer.**~~ Superseded by ADR 0044: the selection is a set of
+   `(layer, element)` pairs and the marquee works on every visible, unlocked layer, cutting raw
+   parts per layer.
 
 ## Consequences
 
@@ -125,7 +124,7 @@ was copied.
 * The midpoint rule changes where any two ends within 0.2 meet (before, the lower shape's point
   won). The move is at most 0.2, and merging again changes nothing (tested).
 * Not in this slice:
-  * selecting across layers;
+  * ~~selecting across layers~~ (ADR 0044);
   * snapping while drawing with the shape tools;
   * ~~a Snap to Objects switch~~ (ADR 0042);
   * ~~Subselection anchors and handles of connected raw shapes~~ (ADR 0042);

@@ -34,6 +34,7 @@ pub mod history;
 mod merge;
 pub mod recovery;
 pub mod render_service;
+pub mod selection;
 pub mod params;
 pub mod player;
 pub mod vfs;
@@ -140,6 +141,7 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
 }
 
 pub use history::{Snapshot, StateId};
+pub use selection::Selection;
 
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
 pub const MAX_FRAME: u32 = 100_000;
@@ -212,8 +214,8 @@ pub struct Session {
     pub frame: u32,
     /// Active layer.
     pub layer: LayerId,
-    /// Selected elements on the active layer.
-    pub selection: Vec<ElementId>,
+    /// Selected elements at the playhead, each with its layer (ADR 0044).
+    pub selection: Selection,
     /// Bumped on every document change, undo and redo (UI invalidation).
     pub revision: u64,
     /// Identity of the current document content (equal ids ⇒ identical content).
@@ -292,7 +294,7 @@ impl Session {
             scene: 0,
             frame: 0,
             layer,
-            selection: Vec::new(),
+            selection: Selection::default(),
             revision: 1,
             state,
             saved_state: Some(state),
@@ -509,7 +511,7 @@ impl Session {
             self.provisional = None;
         }
         let Some(p) = self.live_cut() else { return };
-        let held = self.selection.iter().any(|s| p.inside.contains(s));
+        let held = self.selection.ids().any(|s| p.inside.contains(&s));
         let fresh_marquee = id == "raw.select_rect" && params.get("add").and_then(Value::as_bool) != Some(true);
         if !held || fresh_marquee || id.starts_with("file.") || id == "edit.undo" || id == "edit.redo" {
             self.heal_cut();
@@ -523,12 +525,10 @@ impl Session {
         if p.state != self.state || self.gesture.is_some() {
             return;
         }
-        let mut sel: Vec<ElementId> = Vec::with_capacity(self.selection.len());
-        for id in &self.selection {
-            let id = p.origin.iter().find(|(piece, _)| piece == id).map_or(*id, |o| o.1);
-            if !sel.contains(&id) {
-                sel.push(id);
-            }
+        let mut sel = Selection::default();
+        for (layer, id) in self.selection.iter() {
+            let id = p.origin.iter().find(|(piece, _)| *piece == id).map_or(id, |o| o.1);
+            sel.insert(layer, id);
         }
         if self.saved_state == Some(p.state) {
             self.saved_state = Some(p.before.state);
@@ -728,24 +728,6 @@ impl Session {
         r
     }
 
-    /// Bounds of the whole selection.
-    pub fn selection_bounds(&self) -> Rect {
-        self.selection.iter().fold(Rect::EMPTY, |r, id| r.union(&self.element_bounds(*id)))
-    }
-
-    /// Drops selected ids that no longer exist on the active layer at the playhead.
-    pub fn fix_selection(&mut self) {
-        self.scene = self.scene.min(self.doc.scenes.len().saturating_sub(1));
-        if self.doc.timeline(self.scene).layer(self.layer).is_none() {
-            self.layer = self.doc.timeline(self.scene).layers.first().map_or(LayerId(0), |l| l.id);
-        }
-        if self.selection.is_empty() {
-            return;
-        }
-        let ids: Vec<ElementId> = self.visible_elements().iter().map(|e| e.id).collect();
-        self.selection.retain(|s| ids.contains(s));
-    }
-
     pub fn set_frame(&mut self, frame: u32) {
         self.frame = frame.min(MAX_FRAME);
         self.fix_selection();
@@ -815,7 +797,7 @@ impl Session {
 
     /// Selected elements in the editable keyframe (copy-on-write: only these are cloned).
     pub(crate) fn selected_elements_mut(&mut self) -> Result<Vec<&mut Element>> {
-        let sel = self.selection.clone();
+        let sel: std::collections::HashSet<ElementId> = self.selection.on(self.layer).into_iter().collect();
         if sel.is_empty() {
             return Err(EngineError::State("nothing is selected".into()));
         }
@@ -847,7 +829,8 @@ impl Session {
             "scenes": self.doc.scenes.iter().map(|s| json!({"name": s.name, "frames": s.timeline.frame_count()})).collect::<Vec<_>>(),
             "movie_frames": self.doc.frame_count(),
             "layer": self.layer.0,
-            "selection": self.selection.iter().map(|e| e.0).collect::<Vec<_>>(),
+            "selection": self.selection.id_list(),
+            "selection_layers": self.selected_layers().iter().map(|l| l.0).collect::<Vec<_>>(),
             "layers": layers,
             "library": symbols,
             "sounds": sounds,
@@ -926,3 +909,5 @@ mod web_tests;
 mod erase_tests;
 #[cfg(test)]
 mod eyedropper_tests;
+#[cfg(test)]
+mod selection_tests;

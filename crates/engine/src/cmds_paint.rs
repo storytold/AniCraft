@@ -41,7 +41,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?, profile?}", true, ink),
         c("paint.pick", "Eyedropper", "", None, "{x, y, other?: bool (into the other swatch only: a fill's colour into the stroke, a line's into the fill), slop?} picks the style under the point on any visible layer into the tool settings: a fill's paint (solid, gradient or bitmap, kept where it is on the stage) into the fill swatch, a line's colour, width and profile into the stroke settings", false, pick_style),
-        c("paint.apply_style", "Apply Style", "", None, "{fill?: bool, stroke?: bool} (default both) gives the selected shapes the fill swatch's paint (shapes with a fill) and the stroke settings (shapes with a line, and drawing objects without one)", true, apply_style),
+        c("paint.apply_style", "Apply Style", "", None, "{fill?: bool, stroke?: bool} (default both) gives the selected shapes the fill swatch's paint (shapes with a fill) and the stroke settings (shapes with a line, and drawing objects without one)", true, |s, p| s.each_layer(false, |s| apply_style(s, p))),
     ]
 }
 

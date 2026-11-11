@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
         c("text.create", "New Text", "", None, "{text, x?, y? (top-left; default: centred), font?, size?, bold?, italic?, color?, align?, letter_spacing?, line_spacing?, width?}", true, create as crate::RunFn),
-        c("text.edit", "Edit Text", "", None, "{text?, font?, size? (px), bold?, italic?, color?, align?: left|center|right, letter_spacing?, line_spacing?, width? (px, wraps; null: one line per paragraph)} on the selected text", true, edit),
+        c("text.edit", "Edit Text", "", None, "{text?, font?, size? (px), bold?, italic?, color?, align?: left|center|right, letter_spacing?, line_spacing?, width? (px, wraps; null: one line per paragraph)} on the selected text", true, |s, p| s.each_layer(false, |s| edit(s, p))),
         c("text.fonts", "Fonts", "", None, "{}", false, fonts),
     ]
 }
@@ -143,7 +143,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     s.text_style = TextStyle { font: block.font.clone(), ..style };
     let el = Element { id, name: String::new(), transform: Affine::translate(x, y), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(block)) };
     s.editable_keyframe()?.elements.push(Arc::new(el));
-    s.selection = vec![id];
+    s.select_only([id]);
     Ok(out)
 }
 

@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{Element, ElementId, ElementKind, Symbol, SymbolId};
+use anicraft_doc::{Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Symbol, SymbolId};
 use anicraft_geom::{Affine, Rect, Vec2};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -12,15 +12,15 @@ pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
         c("edit.cut", "Cut", "Edit", Some("Ctrl+X"), "{}", true, cut as crate::RunFn),
-        c("edit.copy", "Copy", "Edit", Some("Ctrl+C"), "{}", false, copy),
-        c("edit.paste", "Paste in Center", "Edit", Some("Ctrl+V"), "{x?, y?} (centre of the pasted artwork; default: offset 10 px)", true, paste),
-        c("edit.paste_in_place", "Paste in Place", "Edit", Some("Ctrl+Shift+V"), "{}", true, paste_in_place),
-        c("modify.transform", "Transform", "", None, "{a, b, c, d, e, f} affine applied in stage space (free transform)", true, transform),
+        c("edit.copy", "Copy", "Edit", Some("Ctrl+C"), "{} (the selection on every layer, each layer's artwork kept apart)", false, copy),
+        c("edit.paste", "Paste in Center", "Edit", Some("Ctrl+V"), "{x?, y?} (centre of the pasted artwork; default: offset 10 px). Artwork copied from one layer lands on the active layer; from several, back on those layers when they are all here, else on the active layer and the ones below it, creating missing ones", true, paste),
+        c("edit.paste_in_place", "Paste in Place", "Edit", Some("Ctrl+Shift+V"), "{} (layers as edit.paste)", true, paste_in_place),
+        c("modify.transform", "Transform", "", None, "{a, b, c, d, e, f} affine applied in stage space (free transform), to the selection on every layer", true, |s, p| s.each_layer(true, |s| transform(s, p))),
         c("modify.rotate_cw", "Rotate 90° CW", "Modify/Transform", Some("Ctrl+Shift+9"), "{}", true, |s, _| about_center(s, Affine::rotate(std::f32::consts::FRAC_PI_2))),
         c("modify.rotate_ccw", "Rotate 90° CCW", "Modify/Transform", Some("Ctrl+Shift+7"), "{}", true, |s, _| about_center(s, Affine::rotate(-std::f32::consts::FRAC_PI_2))),
         c("modify.flip_h", "Flip Horizontal", "Modify/Transform", None, "{}", true, |s, _| about_center(s, Affine::scale(-1.0, 1.0))),
         c("modify.flip_v", "Flip Vertical", "Modify/Transform", None, "{}", true, |s, _| about_center(s, Affine::scale(1.0, -1.0))),
-        c("modify.remove_transform", "Remove Transform", "Modify/Transform", Some("Ctrl+Shift+Z"), "{}", true, remove_transform),
+        c("modify.remove_transform", "Remove Transform", "Modify/Transform", Some("Ctrl+Shift+Z"), "{}", true, |s, p| s.each_layer(true, |s| remove_transform(s, p))),
         c("align.left", "Left", "Modify/Align", Some("Ctrl+Alt+1"), "{to_stage?}", true, |s, p| align(s, p, Edge::Left)),
         c("align.hcenter", "Horizontal Center", "Modify/Align", Some("Ctrl+Alt+2"), "{to_stage?}", true, |s, p| align(s, p, Edge::HCenter)),
         c("align.right", "Right", "Modify/Align", Some("Ctrl+Alt+3"), "{to_stage?}", true, |s, p| align(s, p, Edge::Right)),
@@ -34,17 +34,34 @@ pub fn specs() -> Vec<CommandSpec> {
 
 // ----- clipboard --------------------------------------------------------------------------------
 
-/// Copied artwork: elements as they look at the playhead, plus every symbol they need, so a
-/// paste into another document is complete.
+/// Copied artwork: elements as they look at the playhead, kept apart by the layer they came from,
+/// plus every symbol they need, so a paste into another document is complete.
 #[derive(Clone, Default)]
 pub struct Clipboard {
-    pub elements: Vec<Element>,
+    /// One entry per layer the selection was on, top to bottom.
+    pub layers: Vec<ClipLayer>,
     pub symbols: Vec<Arc<Symbol>>,
+}
+
+/// One layer's copied artwork.
+#[derive(Clone)]
+pub struct ClipLayer {
+    /// The layer it came from, and its name (for a layer a paste has to create).
+    pub layer: LayerId,
+    pub name: String,
+    pub elements: Vec<Element>,
 }
 
 impl Clipboard {
     pub fn is_empty(&self) -> bool {
-        self.elements.is_empty()
+        self.layers.iter().all(|l| l.elements.is_empty())
+    }
+    /// Every copied element, layer by layer.
+    pub fn elements(&self) -> impl Iterator<Item = &Element> {
+        self.layers.iter().flat_map(|l| l.elements.iter())
+    }
+    pub fn len(&self) -> usize {
+        self.layers.iter().map(|l| l.elements.len()).sum()
     }
 }
 
@@ -76,26 +93,35 @@ pub(crate) fn collect_symbols(s: &Session, roots: &[Element]) -> Vec<Arc<Symbol>
 }
 
 fn copy(s: &mut Session, _: &Value) -> Result<Value> {
-    let sel = s.selection.clone();
-    if sel.is_empty() {
+    let layers = s.selected_layers();
+    if layers.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));
     }
     // What you see is what you copy: the evaluated state at the playhead (tweens applied).
-    let elements: Vec<Element> = s.visible_elements().iter().filter(|e| sel.contains(&e.id)).map(|e| (**e).clone()).collect();
-    let symbols = collect_symbols(s, &elements);
-    let n = elements.len();
-    s.clipboard = Clipboard { elements, symbols };
-    Ok(json!({"copied": n}))
+    let mut copied = Vec::with_capacity(layers.len());
+    for l in layers {
+        let elements: Vec<Element> = s.elements_on(l).iter().filter(|e| s.selection.contains(l, e.id)).map(|e| (**e).clone()).collect();
+        let name = s.doc.timeline(s.scene).layer(l).map(|x| x.name.clone()).unwrap_or_default();
+        if !elements.is_empty() {
+            copied.push(ClipLayer { layer: l, name, elements });
+        }
+    }
+    let all: Vec<Element> = copied.iter().flat_map(|c| c.elements.iter().cloned()).collect();
+    let symbols = collect_symbols(s, &all);
+    let n = all.len();
+    let layers = copied.len();
+    s.clipboard = Clipboard { layers: copied, symbols };
+    Ok(json!({"copied": n, "layers": layers}))
 }
 
 fn cut(s: &mut Session, p: &Value) -> Result<Value> {
     copy(s, p)?;
-    crate::cmds_draw::delete(s, p)?;
-    Ok(json!({"cut": s.clipboard.elements.len()}))
+    crate::cmds_draw::delete_selection(s, p)?;
+    Ok(json!({"cut": s.clipboard.len()}))
 }
 
 fn clipboard_bounds(s: &Session) -> Rect {
-    s.clipboard.elements.iter().fold(Rect::EMPTY, |r, e| r.union(&clip_element_bounds(s, e)))
+    s.clipboard.elements().fold(Rect::EMPTY, |r, e| r.union(&clip_element_bounds(s, e)))
 }
 
 fn clip_element_bounds(s: &Session, e: &Element) -> Rect {
@@ -109,15 +135,81 @@ fn clip_element_bounds(s: &Session, e: &Element) -> Rect {
     e.bounds(&doc)
 }
 
+/// The layers a paste puts each copied layer's artwork on (ADR 0044). One copied layer goes on
+/// the active layer. Several go back on the layers they came from when every one of them is in
+/// this scene (same id and name) and can be drawn on; else on the active layer and the drawable
+/// layers below it, in order, with missing layers created at the bottom named after the copied
+/// ones, as Paste Frames does.
+fn paste_targets(s: &mut Session) -> Result<Vec<LayerId>> {
+    let n = s.clipboard.layers.len();
+    if n <= 1 {
+        return Ok(vec![s.layer]);
+    }
+    let tl = s.doc.timeline(s.scene);
+    let drawable = |s: &Session, l: &Layer| s.selectable(l.id) && !matches!(l.kind, LayerKind::Folder | LayerKind::Camera | LayerKind::Armature);
+    let home: Vec<LayerId> = s.clipboard.layers.iter().filter_map(|c| tl.layer(c.layer).filter(|l| l.name == c.name && drawable(s, l)).map(|l| l.id)).collect();
+    if home.len() == n {
+        return Ok(home);
+    }
+    let at = s.active_layer_index().unwrap_or(0);
+    let mut out = vec![s.layer];
+    out.extend(tl.layers.iter().skip(at + 1).filter(|l| drawable(s, l)).map(|l| l.id).take(n - 1));
+    let names: Vec<String> = s.clipboard.layers.iter().skip(out.len()).map(|c| c.name.clone()).collect();
+    for name in names {
+        if s.doc.timeline(s.scene).layers.len() >= 1000 {
+            return Err(EngineError::State("too many layers (limit 1000)".into()));
+        }
+        let id = LayerId(s.doc.alloc_id());
+        let count = s.doc.timeline(s.scene).layers.len();
+        let mut layer = Layer::new(id, name);
+        if let Some(k) = layer.keyframe_mut(0) {
+            k.duration = s.frame_count().max(1);
+        }
+        layer.color = crate::cmds_timeline::layer_color(count + 1);
+        let tl = s.doc.timeline_mut(s.scene);
+        tl.layers.push(Arc::new(layer));
+        tl.repair_masks();
+        out.push(id);
+    }
+    Ok(out)
+}
+
 fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
     if s.clipboard.is_empty() {
         return Err(EngineError::State("the clipboard is empty".into()));
     }
     import_symbols(s, &s.clipboard.symbols.clone());
+    let targets = paste_targets(s)?;
+    let copied = s.clipboard.layers.clone();
+    let mut sel = crate::Selection::default();
+    let mut all = Vec::new();
+    let mut merged = false;
+    for (c, &layer) in copied.iter().zip(&targets) {
+        let (fresh, m) = s.with_layer(layer, |s| paste_layer(s, &c.elements, offset))?;
+        merged |= m;
+        all.extend(fresh.iter().map(|e| e.0));
+        sel.extend_on(layer, fresh);
+    }
+    s.selection = sel;
+    if let Some(&first) = targets.first()
+        && targets.len() > 1
+    {
+        s.layer = first;
+    }
+    let mut v = json!({"pasted": all, "merged": merged});
+    if targets.len() > 1 {
+        v["layers"] = json!(targets.iter().map(|l| l.0).collect::<Vec<_>>());
+    }
+    Ok(v)
+}
+
+/// Pastes `elements` moved by `offset` into the active layer's keyframe at the playhead; their
+/// new ids, and whether raw shapes merged.
+fn paste_layer(s: &mut Session, elements: &[Element], offset: Vec2) -> Result<(Vec<ElementId>, bool)> {
     let mut fresh = Vec::new();
     let mut out = Vec::new();
     let mut raw = Vec::new();
-    for e in s.clipboard.elements.clone() {
+    for e in elements.iter().cloned() {
         let mut e = e;
         e.id = ElementId(s.doc.alloc_id());
         e.transform = Affine::translate(offset.x, offset.y).mul(&e.transform);
@@ -139,8 +231,7 @@ fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
     if merged {
         fresh.extend(crate::merge::merge_in(s, raw)?);
     }
-    s.selection = fresh.clone();
-    Ok(json!({"pasted": fresh.iter().map(|e| e.0).collect::<Vec<_>>(), "merged": merged}))
+    Ok((fresh, merged))
 }
 
 /// Adds the symbols this document lacks (from a clipboard, maybe another document's) and
@@ -218,6 +309,7 @@ fn remove_transform(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"reset": n}))
 }
 
+/// `m` about the centre of the whole selection's bounds, on every layer it is on.
 fn about_center(s: &mut Session, m: Affine) -> Result<Value> {
     let b = s.selection_bounds();
     if b.is_empty() {
@@ -225,8 +317,7 @@ fn about_center(s: &mut Session, m: Affine) -> Result<Value> {
     }
     let c = b.center();
     let full = Affine::translate(c.x, c.y).mul(&m).mul(&Affine::translate(-c.x, -c.y));
-    let n = apply(s, &full)?;
-    Ok(json!({"transformed": n}))
+    s.each_layer(true, |s| Ok(json!({"transformed": apply(s, &full)?})))
 }
 
 // ----- align ------------------------------------------------------------------------------------
@@ -241,7 +332,10 @@ enum Edge {
     Bottom,
 }
 
-fn moves_for(bounds: &[(ElementId, Rect)], target: Rect, edge: Edge) -> Vec<(ElementId, Vec2)> {
+/// A selected element: its layer and id.
+type Item = (LayerId, ElementId);
+
+fn moves_for(bounds: &[(Item, Rect)], target: Rect, edge: Edge) -> Vec<(Item, Vec2)> {
     bounds
         .iter()
         .map(|(id, b)| {
@@ -258,23 +352,38 @@ fn moves_for(bounds: &[(ElementId, Rect)], target: Rect, edge: Edge) -> Vec<(Ele
         .collect()
 }
 
-fn translate_each(s: &mut Session, moves: &[(ElementId, Vec2)]) -> Result<usize> {
-    let kf = s.editable_keyframe()?;
+/// Moves each element by its own amount, on its own layer.
+fn translate_each(s: &mut Session, moves: &[(Item, Vec2)]) -> Result<usize> {
+    let mut layers: Vec<LayerId> = Vec::new();
+    for ((l, _), _) in moves {
+        if !layers.contains(l) {
+            layers.push(*l);
+        }
+    }
     let mut n = 0;
-    for (id, d) in moves {
-        if d.x == 0.0 && d.y == 0.0 {
-            continue; // untouched elements stay shared with the undo snapshot
+    for layer in layers {
+        let mine: Vec<(ElementId, Vec2)> = moves.iter().filter(|((l, _), d)| *l == layer && (d.x != 0.0 || d.y != 0.0)).map(|((_, id), d)| (*id, *d)).collect();
+        if mine.is_empty() {
+            continue; // untouched layers stay shared with the undo snapshot
         }
-        for e in kf.elements_mut_where(|e| e == *id) {
-            e.transform = Affine::translate(d.x, d.y).mul(&e.transform);
-            n += 1;
-        }
+        n += s.with_layer(layer, |s| -> Result<usize> {
+            let kf = s.editable_keyframe()?;
+            let mut n = 0;
+            for (id, d) in &mine {
+                for e in kf.elements_mut_where(|e| e == *id) {
+                    e.transform = Affine::translate(d.x, d.y).mul(&e.transform);
+                    n += 1;
+                }
+            }
+            Ok(n)
+        })?;
     }
     Ok(n)
 }
 
-fn selected_bounds(s: &Session) -> Vec<(ElementId, Rect)> {
-    s.selection.iter().map(|id| (*id, s.element_bounds(*id))).filter(|(_, b)| !b.is_empty()).collect()
+/// Each selected element's bounds, over every layer: alignment works across layers.
+fn selected_bounds(s: &Session) -> Vec<(Item, Rect)> {
+    s.selected_elements().iter().map(|(l, e)| ((*l, e.id), s.element_bounds_on(*l, e.id))).filter(|(_, b)| !b.is_empty()).collect()
 }
 
 fn align(s: &mut Session, p: &Value, edge: Edge) -> Result<Value> {
@@ -304,7 +413,7 @@ fn distribute(s: &mut Session, horizontal: bool) -> Result<Value> {
     let (Some(first), Some(last)) = (bounds.first(), bounds.last()) else { return Ok(json!({"moved": 0})) };
     let (a, z) = (key(&first.1), key(&last.1));
     let step = (z - a) / (bounds.len() - 1) as f32;
-    let moves: Vec<(ElementId, Vec2)> = bounds
+    let moves: Vec<(Item, Vec2)> = bounds
         .iter()
         .enumerate()
         .map(|(i, (id, b))| {

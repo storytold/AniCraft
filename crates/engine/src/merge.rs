@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.drop", "Drop", "", None, "{} the selected raw shapes cut and join the raw shapes they touch (after a move)", true, drop as crate::RunFn),
+        c("draw.drop", "Drop", "", None, "{} the selected raw shapes cut and join the raw shapes they touch (after a move), on each layer", true, (|s, p| s.each_layer(true, |s| drop(s, p))) as crate::RunFn),
         c("element.select_connected", "Select Connected", "", None, "{x, y, add?, slop?} a raw stroke and the strokes joined to it, or a raw fill and the strokes on and in it", false, select_connected),
     ]
 }
@@ -272,7 +272,7 @@ fn index_of<T: PartialEq>(table: &mut Vec<T>, v: T) -> u32 {
 /// `draw.drop`: the selected raw shapes go back into the drawing, on top (Animate merges a moved
 /// shape when it is let go).
 fn drop(s: &mut Session, _: &Value) -> Result<Value> {
-    let sel = s.selection.clone();
+    let sel = s.selection.on(s.layer);
     let kf = s.editable_keyframe()?;
     let mut moving = Vec::new();
     kf.elements.retain(|e| {
@@ -288,8 +288,8 @@ fn drop(s: &mut Session, _: &Value) -> Result<Value> {
     }
     let mut keep: Vec<ElementId> = sel.into_iter().filter(|id| !moving.iter().any(|e| e.id == *id)).collect();
     keep.extend(merge_in(s, moving)?);
-    s.selection = keep;
-    Ok(json!({"dropped": n, "selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>()}))
+    s.select_only(keep);
+    Ok(json!({"dropped": n, "selected": s.selection.id_list()}))
 }
 
 // ----- the Paint Bucket and imported drawings (ADR 0042) ---------------------------------------
@@ -489,10 +489,6 @@ fn select_connected(s: &mut Session, p: &Value) -> Result<Value> {
     if !add {
         s.selection.clear();
     }
-    for id in picked {
-        if !s.selection.contains(&id) {
-            s.selection.push(id);
-        }
-    }
-    Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>()}))
+    s.selection.extend_on(s.layer, picked);
+    Ok(json!({"selected": s.selection.id_list()}))
 }
