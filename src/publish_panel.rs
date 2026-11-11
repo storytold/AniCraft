@@ -781,3 +781,138 @@ fn report_rows(ui: &mut egui::Ui, r: &Report) {
         ui.label(text(Type::Caption, tr!("In {folder}", folder = dir.display().to_string())));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anicraft_engine::Session;
+    use anicraft_engine::doc::sample;
+
+    fn app(name: &str) -> (App, egui::Context, std::path::PathBuf) {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, Session::new(sample::demo()), Some(std::path::PathBuf::from("unused.png")));
+        let dir = std::env::temp_dir().join(format!("anicraft-publish-ui-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.run("file.save", json!({"path": dir.join("walk.anicraft").display().to_string()}));
+        (app, ctx, dir)
+    }
+
+    /// Draws the windows and moves the publish along until it is done (or `frames` run out).
+    fn frames(app: &mut App, ctx: &egui::Context, n: usize) {
+        for _ in 0..n {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| show(app, &ui.ctx().clone()));
+            out.textures_delta.clear();
+            if !app.publish.running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn publish_runs_on_a_worker_and_reports_once() {
+        let (mut app, ctx, dir) = app("worker");
+        app.run("publish.settings_set", json!({"format": "gif", "enabled": true, "scale": 0.1, "to": 5}));
+        app.run("publish.settings_set", json!({"format": "audio", "enabled": true}));
+        app.publish.open = true;
+        app.request("file.publish", json!({}));
+        assert!(app.publish.running(), "it starts in the background");
+        app.request("file.publish", json!({}));
+        frames(&mut app, &ctx, 2000);
+        assert!(!app.publish.running());
+        let r = app.publish.report.clone().expect("a report");
+        assert_eq!((r.count(Status::Published), r.count(Status::Skipped)), (2, 1));
+        assert!(dir.join("walk.gif").is_file() && dir.join("walk.html").is_file());
+        assert!(app.s.published.contains(&dir.join("walk.gif")), "the session knows what it published");
+        // Published again: no question, this session wrote them.
+        assert!(app.s.confirmation("file.publish", &json!({})).is_none());
+        frames(&mut app, &ctx, 1);
+        open_settings_from_report(&mut app);
+        assert!(app.publish.open);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancel_stops_the_worker() {
+        let (mut app, ctx, dir) = app("cancel");
+        app.run("publish.settings_set", json!({"format": "png_sequence", "enabled": true, "scale": 0.2}));
+        app.run("publish.settings_set", json!({"format": "svg", "enabled": true}));
+        start(&mut app, &json!({}));
+        cancel(&mut app);
+        frames(&mut app, &ctx, 2000);
+        let r = app.publish.report.clone().expect("a report");
+        assert!(r.count(Status::Cancelled) >= 1, "{:?}", r.to_json());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publishing_here_steps_one_format_per_frame() {
+        let (mut app, ctx, dir) = app("here");
+        app.run("publish.settings_set", json!({"format": "svg", "enabled": true}));
+        begin(&mut app, &json!({}), false);
+        let mut seen_running = false;
+        for _ in 0..20 {
+            seen_running |= app.publish.job.as_ref().is_some_and(|j| j.running.is_some());
+            frames(&mut app, &ctx, 1);
+        }
+        assert!(seen_running && !app.publish.running());
+        assert_eq!(app.publish.report.as_ref().map(|r| r.count(Status::Published)), Some(2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_publish_cant_run_says_why() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, Session::new(sample::demo()), Some(std::path::PathBuf::from("unused.png")));
+        start(&mut app, &json!({}));
+        assert!(!app.publish.running(), "untitled: saves first");
+        start(&mut app, &json!({"formats": 5}));
+        assert!(!app.publish.running());
+        let (mut app, _, dir) = self::app("none");
+        app.run("publish.settings_set", json!({"format": "html", "enabled": false}));
+        start(&mut app, &json!({}));
+        assert!(!app.publish.running() && app.publish.open, "nothing on: the settings open");
+        app.run("publish.settings_set", json!({"format": "sprite_sheet", "enabled": true}));
+        app.run("publish.settings_set", json!({"format": "png", "enabled": true, "output": "{name}_sheet.png"}));
+        start(&mut app, &json!({}));
+        assert!(!app.publish.running(), "two formats on one file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn presets_save_apply_and_delete() {
+        let (mut app, ctx, dir) = app("presets");
+        app.run("publish.settings_set", json!({"format": "gif", "enabled": true, "scale": 0.5}));
+        app.publish.preset_name = "  Small GIF ".into();
+        save_preset(&mut app);
+        assert!(app.prefs.publish_presets.get("Small GIF").is_some_and(|p| p.gif.enabled && p.gif.scale == 0.5));
+        app.publish.preset_name = "Small GIF".into();
+        save_preset(&mut app);
+        assert_eq!(app.prefs.publish_presets.len(), 1, "the same name replaces it");
+        app.publish.preset_name = "   ".into();
+        save_preset(&mut app);
+        assert_eq!(app.prefs.publish_presets.len(), 1);
+        for i in 0..crate::prefs::MAX_PUBLISH_PRESETS {
+            app.prefs.publish_presets.insert(format!("p{i}"), PublishProfile::default());
+        }
+        app.publish.preset_name = "one too many".into();
+        save_preset(&mut app);
+        assert!(!app.prefs.publish_presets.contains_key("one too many"));
+        delete_preset(&mut app, "Small GIF");
+        assert!(!app.prefs.publish_presets.contains_key("Small GIF") && app.publish.preset.is_none());
+        // Every format's options draw.
+        app.publish.open = true;
+        for f in PublishFormat::ALL {
+            app.publish.selected = f;
+            app.publish.output_edit = Some((f, "../nope".into()));
+            frames(&mut app, &ctx, 1);
+        }
+        app.publish.preset = Some("p1".into());
+        app.publish.confirm_delete = true;
+        frames(&mut app, &ctx, 1);
+        assert_eq!(sentence("the movie has no sounds"), "The movie has no sounds.");
+        assert_eq!(sentence(""), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
