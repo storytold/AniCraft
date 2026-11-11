@@ -2,8 +2,9 @@
 //!
 //! The shapes, bottom to top, are cut into a planar map:
 //! - every segment is cut where it meets another (exact sub-curves by de Casteljau);
-//! - points closer than [`SNAP`] become one vertex, and pieces that run along each other become
-//!   one edge;
+//! - points closer than [`SNAP`] become one vertex (anchors meet at their midpoint; a point that
+//!   lands on a line goes onto it, and the line stays), and pieces that run along each other
+//!   become one edge;
 //! - each face of the map takes the fill of the topmost shape covering it (winding at a point
 //!   inside the face).
 //!
@@ -52,6 +53,8 @@ pub struct Piece {
     pub style: u32,
     pub path: Path,
     pub item: usize,
+    /// Inside the cutter ([`merge_cut`]); always false from [`merge`].
+    pub inside: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -62,7 +65,28 @@ pub struct Merged {
 
 /// Merges `items` (bottom to top). `None` when there is too much to merge at once.
 pub fn merge(items: &[Item]) -> Option<Merged> {
-    let segs = collect(items)?;
+    merge_with(items, None)
+}
+
+/// [`merge`], also cutting everything along `cutter` (a closed outline that only cuts, such as
+/// the Selection tool's marquee, ADR 0041): fills are split at its edges and stroke runs end
+/// there, nothing of the cutter itself comes out, and each piece says whether it lies inside it.
+pub fn merge_cut(items: &[Item], cutter: &Path) -> Option<Merged> {
+    merge_with(items, Some(cutter))
+}
+
+/// The item number the cutter's segments carry.
+const CUTTER: usize = usize::MAX;
+
+fn merge_with(items: &[Item], cutter: Option<&Path>) -> Option<Merged> {
+    let mut segs = collect(items)?;
+    if let Some(path) = cutter {
+        let edge = Item { path, fill: None, fill_rule: FillRule::EvenOdd, stroke: Some(0) };
+        segs.extend(collect(&[edge])?.into_iter().map(|s| Seg { item: CUTTER, ..s }));
+        if segs.len() > MAX_SEGMENTS {
+            return None;
+        }
+    }
     let splits = cut(&segs)?;
     let map = Map::build(&segs, &splits);
     Some(map.output(items, &segs))
@@ -448,10 +472,42 @@ struct Map {
     slot: Vec<usize>,
 }
 
-/// Greedy clustering: a point joins the first vertex within [`TOL`], so none moves farther.
+/// Greedy clustering: a point joins the nearest vertex whose first point is within [`TOL`].
 struct Verts {
     pts: Vec<P>,
     grid: HashMap<(i64, i64), Vec<usize>>,
+}
+
+/// What fell into one vertex, to decide where it goes (issue #42: anchor points closer than
+/// [`SNAP`] meet at their midpoint; a point that lands on a line goes onto it, and the line stays).
+#[derive(Default)]
+struct Cluster {
+    /// A point inside a segment, away from its ends (where an end lies on a line, or lines
+    /// cross): the vertex stays there.
+    on_line: Option<P>,
+    /// Segment ends, each position once.
+    ends: Vec<P>,
+}
+
+impl Cluster {
+    fn add(&mut self, p: P, end: bool, on_line: bool) {
+        if on_line {
+            self.on_line.get_or_insert(p);
+        } else if end && !self.ends.iter().any(|q| q.dist(p) < 1e-9) && self.ends.len() < 64 {
+            self.ends.push(p);
+        }
+    }
+    fn place(&self, seed: P) -> P {
+        if let Some(p) = self.on_line {
+            return p;
+        }
+        if self.ends.is_empty() {
+            return seed;
+        }
+        let n = self.ends.len() as f64;
+        let sum = self.ends.iter().fold(P::default(), |s, p| s.add(*p));
+        sum.mul(1.0 / n)
+    }
 }
 
 impl Verts {
@@ -491,13 +547,35 @@ fn pinned(c: &Cubic, line: bool, a: P, b: P) -> Cubic {
 impl Map {
     fn build(segs: &[Seg], splits: &[Vec<f64>]) -> Map {
         let mut vs = Verts { pts: Vec::new(), grid: HashMap::new() };
+        // Every cut point into a vertex first, then each vertex placed (see `Cluster`), so the
+        // pieces are pinned to where their vertices end up.
+        let mut clusters: Vec<Cluster> = Vec::new();
+        let mut ids: Vec<Vec<usize>> = Vec::with_capacity(segs.len());
+        for (s, ts) in segs.iter().zip(splits) {
+            let mut row = Vec::with_capacity(ts.len());
+            for &t in ts {
+                let end = t <= 0.0 || t >= 1.0;
+                let p = if t <= 0.0 { s.c[0] } else if t >= 1.0 { s.c[3] } else { eval(&s.c, t) };
+                let v = vs.at(p);
+                if clusters.len() <= v {
+                    clusters.resize_with(v + 1, Cluster::default);
+                }
+                let on_line = !end && p.dist(s.c[0]) >= TOL && p.dist(s.c[3]) >= TOL;
+                clusters[v].add(p, end, on_line);
+                row.push(v);
+            }
+            ids.push(row);
+        }
+        for (p, c) in vs.pts.iter_mut().zip(&clusters) {
+            *p = c.place(*p);
+        }
         let mut edges: Vec<Edge> = Vec::new();
         let mut by_ends: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-        for (si, (s, ts)) in segs.iter().zip(splits).enumerate() {
-            for w in ts.windows(2) {
+        for (si, ((s, ts), row)) in segs.iter().zip(splits).zip(&ids).enumerate() {
+            for (w, v) in ts.windows(2).zip(row.windows(2)) {
                 let (t0, t1) = (w[0], w[1]);
                 let c = sub(&s.c, t0, t1);
-                let (a, b) = (vs.at(c[0]), vs.at(c[3]));
+                let (a, b) = (v[0], v[1]);
                 if a == b {
                     continue; // shorter than SNAP (longer loops were halved when collected)
                 }
@@ -655,16 +733,19 @@ impl Map {
             .iter()
             .enumerate()
             .map(|(e, edge)| {
-                let z = edge.strokes.iter().copied().max()?;
+                let z = edge.strokes.iter().copied().filter(|&i| i < items.len()).max()?;
                 let (l, r) = (face(2 * e), face(2 * e + 1));
                 let hidden = l.zip(r).is_some_and(|(l, r)| covers[l].iter().any(|&i| i > z && covers[r].contains(&i)));
                 (!hidden).then_some(z)
             })
             .collect();
+        // The cutter's edges divide like a stroke that never shows.
+        let cut_edge: Vec<bool> = self.edges.iter().map(|e| e.strokes.contains(&CUTTER)).collect();
+        let cutter = Region::new(segs, CUTTER, cut_edge.contains(&true));
         // Faces of one fill with no stroke between them are one region.
         let mut group = Dsu::new(samples.len());
         for (e, stroke) in stroke_of.iter().enumerate() {
-            if let (None, Some(l), Some(r)) = (stroke, face(2 * e), face(2 * e + 1))
+            if let (None, false, Some(l), Some(r)) = (stroke, cut_edge[e], face(2 * e), face(2 * e + 1))
                 && l != r
                 && fill_of(l).map(|f| f.0) == fill_of(r).map(|f| f.0)
                 && fill_of(l).is_some()
@@ -674,11 +755,13 @@ impl Map {
         }
         let roots = group.roots();
         let gid = |f: Option<usize>| f.filter(|&f| fill_of(f).is_some()).and_then(|f| roots.get(f).copied());
-        // Each region's style and topmost item.
-        let mut top: HashMap<usize, (u32, usize)> = HashMap::new();
-        for f in 0..samples.len() {
+        // Each region's style and topmost item, and whether it is inside the cutter (the
+        // cutter's edges bound every region, so one sample tells).
+        let mut top: HashMap<usize, (u32, usize, bool)> = HashMap::new();
+        for (f, sample) in samples.iter().enumerate() {
             if let (Some(g), Some((style, item))) = (gid(Some(f)), fill_of(f)) {
-                let t = top.entry(g).or_insert((style, item));
+                let inside = sample.is_some_and(|p| cutter.covers(p, FillRule::EvenOdd));
+                let t = top.entry(g).or_insert((style, item, inside));
                 t.1 = t.1.max(item);
             }
         }
@@ -708,25 +791,27 @@ impl Map {
             match piece_of.get(&g) {
                 Some(&i) => out.fills[i].path.cmds.extend(path.cmds),
                 None => {
-                    let (style, item) = top.get(&g).copied().unwrap_or((0, 0));
+                    let (style, item, inside) = top.get(&g).copied().unwrap_or((0, 0, false));
                     piece_of.insert(g, out.fills.len());
-                    out.fills.push(Piece { style, path, item });
+                    out.fills.push(Piece { style, path, item, inside });
                 }
             }
         }
-        self.strokes(items, &stroke_of, segs, &mut out);
+        self.strokes(items, &stroke_of, &cut_edge, &cutter, segs, &mut out);
         out
     }
 
-    /// Visible strokes, chained through vertices where exactly two of one style meet smoothly.
-    fn strokes(&self, items: &[Item], stroke_of: &[Option<usize>], segs: &[Seg], out: &mut Merged) {
+    /// Visible strokes, chained through vertices where exactly two of one style meet smoothly
+    /// (and never across the cutter).
+    fn strokes(&self, items: &[Item], stroke_of: &[Option<usize>], cut_edge: &[bool], cutter: &Region, segs: &[Seg], out: &mut Merged) {
         let style = |e: usize| stroke_of[e].and_then(|z| items[z].stroke);
         let shown: Vec<Vec<Half>> = self.around.iter().map(|l| l.iter().copied().filter(|&h| style(h / 2).is_some()).collect()).collect();
+        let on_cut: Vec<bool> = self.around.iter().map(|l| l.iter().any(|&h| cut_edge[h / 2])).collect();
         // The half that carries on from `h` at its end, if the run goes on.
         let carry = |h: Half| -> Option<Half> {
             let v = self.dest(h);
             let list = &shown[v];
-            if list.len() != 2 {
+            if list.len() != 2 || on_cut[v] {
                 return None;
             }
             let n = list.iter().copied().find(|&o| o != (h ^ 1))?;
@@ -763,7 +848,9 @@ impl Map {
                 h = n;
             }
             let item = halves.iter().filter_map(|&h| stroke_of[h / 2]).max().unwrap_or(0);
-            out.strokes.push(Piece { style: st, path: self.emit(&halves, closed, segs), item });
+            // A run along the cutter's edge counts as inside it.
+            let inside = halves.iter().any(|&h| cut_edge[h / 2]) || halves.get(halves.len() / 2).is_some_and(|&h| cutter.covers(eval(&self.curve(h), 0.5), FillRule::EvenOdd));
+            out.strokes.push(Piece { style: st, path: self.emit(&halves, closed, segs), item, inside });
         }
     }
 

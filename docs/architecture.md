@@ -65,7 +65,8 @@ Document
 ├── stage: width, height, fps, background
 ├── timeline: Timeline                 (main scene; scenes list arrives in M2)
 │   └── layers: [Layer]                (index 0 = top of the stack, as in the timeline panel)
-│       ├── name, visible, locked, outline, depth, volume, muted, kind (Normal | Guide | Mask | Folder | Camera)
+│       ├── name, visible, locked, outline, depth, volume, muted, kind (Normal | Guide | Mask | Folder | Camera | Armature),
+│       │   armature?: bones joining symbol instances (armature layer; ADR 0043)
 │       └── keyframes: [Keyframe]      (sorted by start, spans do not overlap)
 │           ├── start, duration        (frames covered by this keyframe)
 │           ├── elements: [Element]
@@ -99,6 +100,13 @@ when they are compatible:
   tween's first keyframe steer it: placed hints join subpaths, cut both outlines at the hinted
   points and match the pieces in order by length.
 
+**Armatures** (ADR 0043): on an armature layer, bones join symbol instances (a joint on the
+parent, the child turning about it) and each keyframe's `pose` holds joint angles, tweened at
+the span's eased time. `evaluate_layer_elements` places the instances by forward kinematics
+(`W_child = R_joint(angle) · W_parent · rest`), so every export and the player see poses;
+`armature::solve` finds a pose from a dragged bone end by cyclic coordinate descent with joint
+limits and pins.
+
 **The camera** (ADR 0027): a scene's top layer may be its camera layer. `evaluate` (every
 export), `evaluate_player` and `evaluate_scene_camera` draw each top-level layer through
 `Camera::view(stage, layer.depth)`: the camera's centre at the middle of the output, zoomed
@@ -121,7 +129,7 @@ iterations and a bisection fallback, the same model CSS uses.
 
 Interactivity is time as a function too (ADR 0013, ADR 0024). Keyframes and button or movie
 clip instances carry lists of typed actions (`anicraft-actions`) or a frame-script plug-in
-entry, or keep a script in another language verbatim (ADR 0013 tier 1: `FrameScript::Source`, which the player skips); nothing in the document changes while a movie plays. `player::step(doc, &state,
+entry, or keep a script in another language verbatim (ADR 0013 tier 1: `FrameScript::Source`; ActionScript 3.0 in the timeline subset compiles once, in `anicraft_actions::as3`, to actions and mouse listeners the player runs, tier 2); nothing in the document changes while a movie plays. `player::step(doc, &state,
 &events, scripts) -> Step` advances a `PlayerState` (the main timeline's scene and playhead,
 each movie clip instance's playhead by its element-id path, script-set properties, the
 pointer) by one frame, runs the actions of the frames entered and routes pointer events to
@@ -154,7 +162,7 @@ frame changes), and `doc::sound::trigger` turns them into voices for Test Movie.
 DisplayList ──► for each item:
                   flatten Bézier path under (view × item) transform, tolerance 0.1 px
                   ├─ fill:   lines ──► signed-area coverage accumulator (bbox-sized)
-                  └─ stroke: polylines ──► stroker (segment quads + round joins/caps) ──► accumulator
+                  └─ stroke: polylines ──► stroker (segment quads + joins/caps, dashes; ADR 0046) ──► accumulator
                 coverage ──► fill rule (non-zero / even-odd) ──► paint shader ──► src-over blend
                            (rows of the bbox in parallel with rayon)
 ```
@@ -240,6 +248,12 @@ under it. Tools are on the left, the stage in the centre over a pasteboard, and 
 Library on the right. The timeline at the bottom has layer rows (eye and lock toggles), a frame
 grid with keyframe dots, tween spans and a playhead, plus transport controls and
 fps/time readouts. Theme tokens live in `theme.rs`.
+
+Interface text is English in the code and translated as it is drawn (`src/i18n/`,
+[ADR 0040](adr/0040-interface-languages.md), [docs/localisation.md](localisation.md)): `tr!`
+looks the English up in the craft-i18n catalogs build.rs embedded, and menus translate the
+registry's labels, so nothing below the shell (commands, the CLI, MCP, the file format) sees
+another language.
 
 The stage texture comes from the CPU renderer and is cached per
 `(revision, frame, zoom, viewport)`. Overlays (selection boxes, drag previews, the stage frame)

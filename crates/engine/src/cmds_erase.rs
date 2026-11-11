@@ -101,7 +101,7 @@ pub(crate) fn erase_with(s: &mut Session, eraser: &Path, mode: EraseMode, start:
         EraseMode::Fills => (fills.clone(), touching.clone()),
         // Only the lines take part, so the fills stay exactly as they are.
         EraseMode::Lines => (lines.clone(), lines.clone()),
-        EraseMode::SelectedFills => (fills.iter().copied().filter(|i| el(i).is_some_and(|e| s.selection.contains(&e.id))).collect(), touching.clone()),
+        EraseMode::SelectedFills => (fills.iter().copied().filter(|i| el(i).is_some_and(|e| s.selection.contains(s.layer, e.id))).collect(), touching.clone()),
         EraseMode::Inside => {
             // The topmost raw fill under the start of the stroke.
             let at = fills.iter().rev().copied().find(|i| el(i).is_some_and(|e| mergeable(e).is_some_and(|sh| sh.path.contains(start, &e.transform, sh.fill_rule))));
@@ -111,7 +111,7 @@ pub(crate) fn erase_with(s: &mut Session, eraser: &Path, mode: EraseMode, start:
     if targets.is_empty() {
         s.doc = before;
         return nothing(match mode {
-            EraseMode::SelectedFills if s.selection.is_empty() => "select the fills to erase first",
+            EraseMode::SelectedFills if s.selection.on(s.layer).is_empty() => "select the fills to erase first",
             EraseMode::Inside => "start the stroke on a fill to erase inside it",
             _ => "nothing raw to erase there",
         });
@@ -120,8 +120,9 @@ pub(crate) fn erase_with(s: &mut Session, eraser: &Path, mode: EraseMode, start:
     // cut the fills they cross and nothing hides them).
     let rest: Vec<usize> = members.iter().copied().filter(|i| !targets.contains(i)).collect();
     let (rest_fills, rest_lines): (Vec<usize>, Vec<usize>) = rest.into_iter().partition(is_fill);
+    let here = s.layer;
     let selected = s.selection.clone();
-    let shape = |i: &usize| el(i).map(|e| Part::Shape(e, selected.contains(&e.id)));
+    let shape = |i: &usize| el(i).map(|e| Part::Shape(e, selected.contains(here, e.id)));
     let parts: Vec<Part> = targets.iter().filter_map(shape).chain(std::iter::once(Part::Eraser(eraser))).chain(rest_fills.iter().filter_map(shape)).chain(rest_lines.iter().filter_map(shape)).collect();
     let Some((out, picked)) = merge::remerge(s, &parts) else {
         s.doc = before;
@@ -139,8 +140,8 @@ pub(crate) fn erase_with(s: &mut Session, eraser: &Path, mode: EraseMode, start:
     let gone: Vec<ElementId> = members.iter().filter_map(el).map(|e| e.id).collect();
     merge::replace(s, &members, out, false)?;
     // What stays selected: the rest of the selection, and what is left of selected shapes.
-    s.selection.retain(|id| !gone.contains(id));
-    s.selection.extend(picked);
+    s.selection.retain(|l, id| l != here || !gone.contains(&id));
+    s.selection.extend_on(here, picked);
     Ok(json!({"erased": true, "mode": mode.key(), "elements": ids, "area_erased": (was.0 - now.0).max(0.0), "length_erased": (was.1 - now.1).max(0.0)}))
 }
 
@@ -258,7 +259,8 @@ fn faucet(s: &mut Session, p: &Value) -> Result<Value> {
     let (id, line) = (hit.id, matches!(&hit.kind, ElementKind::Shape(sh) if sh.fill.is_none()));
     let kf = s.editable_keyframe()?;
     kf.elements.retain(|e| e.id != id);
-    s.selection.retain(|x| *x != id);
+    let here = s.layer;
+    s.selection.remove(here, id);
     Ok(json!({"deleted": id.0, "kind": if line { "line" } else { "fill" }}))
 }
 

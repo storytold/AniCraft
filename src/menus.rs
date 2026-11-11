@@ -6,7 +6,8 @@ use crate::theme::{Type, text};
 use anicraft_engine::{CommandSpec, commands};
 
 // Commands sits where Animate has it: after Modify, before Control.
-const TOP_MENUS: [&str; 9] = ["File", "Edit", "View", "Insert", "Modify", "Commands", "Control", "Window", "Help"];
+// English keys (the registry's menu paths start with them), translated where they are drawn.
+pub(crate) const TOP_MENUS: [&str; 9] = [tr_noop!("File"), tr_noop!("Edit"), tr_noop!("View"), tr_noop!("Insert"), tr_noop!("Modify"), tr_noop!("Commands"), tr_noop!("Control"), tr_noop!("Window"), tr_noop!("Help")];
 
 pub fn bar(app: &mut App, ui: &mut egui::Ui) {
     let cmds = commands();
@@ -17,22 +18,22 @@ pub fn bar(app: &mut App, ui: &mut egui::Ui) {
             // The application menu, as every Mac app has (About, Settings, Quit).
             ui.menu_button(text(Type::Body, "AniCraft").strong(), |ui| {
                 ui.set_min_width(220.0);
-                if ui_item(ui, "About AniCraft", "", None) {
+                if ui_item(ui, tr!("About AniCraft"), "", None) {
                     app.show_about = true;
                 }
                 ui.separator();
-                if ui_item(ui, "Settings…", "Ctrl+,", None) {
+                if ui_item(ui, tr!("Settings…"), "Ctrl+,", None) {
                     app.open_prefs();
                 }
                 ui.separator();
-                if ui_item(ui, "Quit AniCraft", "Ctrl+Q", None) {
+                if ui_item(ui, tr!("Quit AniCraft"), "Ctrl+Q", None) {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
         }
         // Windows and Linux: no name before the menus; the window title already shows it.
         for top in TOP_MENUS {
-            ui.menu_button(top, |ui| {
+            ui.menu_button(crate::i18n::t(top), |ui| {
                 ui.set_min_width(230.0);
                 menu_contents(app, ui, top, &cmds);
             });
@@ -61,17 +62,32 @@ fn enabled(app: &App, id: &str) -> bool {
     }
 }
 
+/// Whether a registry command that switches a setting has it on (`None`: not a setting).
+fn checked(app: &App, id: &str) -> Option<bool> {
+    match id {
+        "draw.snap_to_objects" => Some(app.s.style.snap_objects),
+        "draw.object_drawing" => Some(app.s.style.object_drawing),
+        _ => None,
+    }
+}
+
 fn item(app: &mut App, ui: &mut egui::Ui, spec: &CommandSpec) {
     let label = match spec.id {
-        "edit.undo" => app.s.undo_label().map_or_else(|| "Undo".to_string(), |l| format!("Undo {l}")),
-        _ => spec.label.to_string(),
+        "edit.undo" => app.s.undo_label().map_or_else(|| crate::i18n::t_cmd(spec.id, spec.label).to_string(), |l| tr!("Undo {action}", action = crate::i18n::t_dyn(l))),
+        _ => crate::i18n::t_cmd(spec.id, spec.label).to_string(),
+    };
+    // Settings show whether they are on, as check items do.
+    let label = match checked(app, spec.id) {
+        Some(true) => format!("✔ {label}"),
+        Some(false) => format!("   {label}"),
+        None => label,
     };
     let button = egui::Button::new(label).shortcut_text(text(Type::Key, platform::shortcut_label(app.keymap.primary(spec.id).unwrap_or(""))));
     // What this build can't do stays in its usual place, dimmed, saying why (the web build).
     let missing = platform::unavailable(spec.id);
     let r = ui.add_enabled(enabled(app, spec.id) && missing.is_none(), button);
     let r = match missing {
-        Some(why) => r.on_disabled_hover_text(why),
+        Some(why) => r.on_disabled_hover_text(crate::i18n::t(why)),
         None => r,
     };
     if r.clicked() {
@@ -88,7 +104,8 @@ pub fn cmd_item(app: &mut App, ui: &mut egui::Ui, id: &str) {
     }
 }
 
-/// A check item for state that is not a registry command's own (context menus).
+/// A check item for state that is not a registry command's own (context menus). `label` is
+/// already in the interface language (`tr!`).
 pub fn check_item(ui: &mut egui::Ui, label: &str, checked: bool, enabled: bool) -> bool {
     let label = if checked { format!("✔ {label}") } else { format!("   {label}") };
     let clicked = ui.add_enabled(enabled, egui::Button::new(label)).clicked();
@@ -98,6 +115,7 @@ pub fn check_item(ui: &mut egui::Ui, label: &str, checked: bool, enabled: bool) 
     clicked
 }
 
+/// A view item (not a registry command); `label` is already translated.
 fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) -> bool {
     let label_text = match checked {
         Some(true) => format!("✔ {label}"),
@@ -111,13 +129,8 @@ fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>
     clicked
 }
 
-fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
-    if top == "Commands" {
-        // Installed plug-ins first (they change at run time), then the registry's items.
-        crate::plugins_ui::menu(app, ui, cmds, item);
-        return;
-    }
-    // Direct items first, then one submenu per "Top/Sub" path, in registry order.
+/// A top menu's registry items: its own, then one submenu per "Top/Sub" path, in order.
+fn registry_items(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
     for spec in cmds.iter().filter(|c| c.menu == top) {
         item(app, ui, spec);
     }
@@ -131,12 +144,25 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
     }
     for sub in subs {
         let path = format!("{top}/{sub}");
-        ui.menu_button(sub, |ui| {
+        ui.menu_button(crate::i18n::t(sub), |ui| {
             ui.set_min_width(220.0);
             for spec in cmds.iter().filter(|c| c.menu == path) {
                 item(app, ui, spec);
             }
         });
+    }
+}
+
+pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
+    if top == "Commands" {
+        // Installed plug-ins first (they change at run time), then the registry's items.
+        crate::plugins_ui::menu(app, ui, cmds, item);
+        return;
+    }
+    // Direct items first, then one submenu per "Top/Sub" path, in registry order (in View,
+    // after its zoom and preview items, where Animate keeps Snapping).
+    if top != "View" {
+        registry_items(app, ui, top, cmds);
     }
 
     match top {
@@ -144,109 +170,115 @@ fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpe
         // A web page is closed with its tab.
         "File" if platform::OS != Os::Mac && !platform::WEB => {
             ui.separator();
-            if ui_item(ui, "Exit", "Ctrl+Q", None) {
+            if ui_item(ui, tr!("Exit"), "Ctrl+Q", None) {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
         "Edit" if platform::OS != Os::Mac => {
             ui.separator();
-            if ui_item(ui, "Preferences…", "Ctrl+U", None) {
+            if ui_item(ui, tr!("Preferences…"), "Ctrl+U", None) {
                 app.open_prefs();
             }
         }
         "View" => {
             let canvas = app.stage_cache.canvas;
             let center = canvas.center();
-            if ui_item(ui, "Zoom In", "Ctrl+=", None) {
+            if ui_item(ui, tr!("Zoom In"), "Ctrl+=", None) {
                 let z = app.view.zoom * 1.5;
                 app.zoom_about(canvas, center, z);
             }
-            if ui_item(ui, "Zoom Out", "Ctrl+-", None) {
+            if ui_item(ui, tr!("Zoom Out"), "Ctrl+-", None) {
                 let z = app.view.zoom / 1.5;
                 app.zoom_about(canvas, center, z);
             }
-            if ui_item(ui, "Fit in Window", "Ctrl+0", None) {
+            if ui_item(ui, tr!("Fit in Window"), "Ctrl+0", None) {
                 app.view.fit = true;
             }
             if ui_item(ui, "100%", "Ctrl+1", None) {
                 app.zoom_about(canvas, center, 1.0);
             }
             ui.separator();
-            if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
-                app.onion = !app.onion;
+            if ui_item(ui, tr!("Onion Skin"), app.keymap.primary("view.onion").unwrap_or(""), Some(app.onion.ghosts)) {
+                crate::onion::toggle_ghosts(app);
             }
-            if ui_item(ui, "Preview Through Camera", "", Some(app.camera_preview)) {
+            if ui_item(ui, tr!("Edit Multiple Frames"), "", Some(app.onion.edit_multiple)) {
+                crate::onion::toggle_edit_multiple(app);
+            }
+            ui.menu_button(tr!("Onion Skin Options"), |ui| crate::onion::menu(app, ui));
+            if ui_item(ui, tr!("Preview Through Camera"), "", Some(app.camera_preview)) {
                 app.toggle_camera_preview();
             }
-            ui.menu_button("Stage Rendering", |ui| {
+            ui.menu_button(tr!("Stage Rendering"), |ui| {
                 for (mode, name, tip) in crate::prefs::RenderMode::ALL {
-                    if ui_item(ui, name, "", Some(app.prefs.render_mode == mode)) {
+                    if ui_item(ui, crate::i18n::t(name), "", Some(app.prefs.render_mode == mode)) {
                         let mut p = app.prefs.clone();
                         p.render_mode = mode;
                         let ctx = ui.ctx().clone();
                         app.set_prefs(&ctx, p);
                     }
-                    ui.label(text(Type::Caption, tip));
+                    ui.label(text(Type::Caption, crate::i18n::t(tip)));
                 }
                 if crate::gpu_stage::AVAILABLE {
                     ui.separator();
                     for (choice, name, tip) in crate::prefs::StageRenderer::ALL {
-                        if ui_item(ui, name, "", Some(app.prefs.stage_renderer == choice)) {
+                        if ui_item(ui, crate::i18n::t(name), "", Some(app.prefs.stage_renderer == choice)) {
                             let mut p = app.prefs.clone();
                             p.stage_renderer = choice;
                             let ctx = ui.ctx().clone();
                             app.set_prefs(&ctx, p);
                         }
-                        ui.label(text(Type::Caption, tip));
+                        ui.label(text(Type::Caption, crate::i18n::t(tip)));
                     }
                 }
             });
+            ui.separator();
+            registry_items(app, ui, top, cmds);
         }
         "Control" => {
             ui.separator();
-            if ui_item(ui, if app.playing { "Stop" } else { "Play" }, "Enter", None) {
+            if ui_item(ui, if app.playing { tr!("Stop") } else { tr!("Play") }, "Enter", None) {
                 app.toggle_play();
             }
-            if ui_item(ui, "Loop Playback", "", Some(app.looping)) {
+            if ui_item(ui, tr!("Loop Playback"), "", Some(app.looping)) {
                 app.looping = !app.looping;
             }
         }
         "Window" => {
             use crate::app::BottomTab;
-            if ui_item(ui, "Timeline", "", Some(app.bottom == BottomTab::Timeline)) {
+            if ui_item(ui, tr!("Timeline"), "", Some(app.bottom == BottomTab::Timeline)) {
                 app.bottom = BottomTab::Timeline;
             }
-            if ui_item(ui, "Motion Editor", "", Some(app.bottom == BottomTab::MotionEditor)) {
+            if ui_item(ui, tr!("Motion Editor"), "", Some(app.bottom == BottomTab::MotionEditor)) {
                 app.bottom = BottomTab::MotionEditor;
             }
-            if ui_item(ui, "Actions", app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
+            if ui_item(ui, tr!("Actions"), app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
                 app.show_actions = !app.show_actions;
             }
             ui.separator();
-            if ui_item(ui, "Onion Skin", "", Some(app.onion)) {
-                app.onion = !app.onion;
+            if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion.ghosts)) {
+                crate::onion::toggle_ghosts(app);
             }
-            ui.label(text(Type::Caption, "Panels are docked: Tools, Stage, Timeline, Properties, Library"));
+            ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library")));
         }
         "Help" => {
-            if ui_item(ui, "Command Palette…", "Ctrl+K", None) {
+            if ui_item(ui, tr!("Command Palette…"), "Ctrl+K", None) {
                 app.palette = Some(crate::dialogs::Palette::default());
             }
-            if ui_item(ui, "Keyboard Shortcuts", "F1", None) {
+            if ui_item(ui, tr!("Keyboard Shortcuts"), "F1", None) {
                 app.show_shortcuts = true;
             }
             ui.separator();
             // (The web build has no folders to show.)
-            if !platform::WEB && ui_item(ui, "Project Files & Docs…", "", None) {
+            if !platform::WEB && ui_item(ui, tr!("Project Files & Docs…"), "", None) {
                 app.show_files = true;
             }
-            if ui_item(ui, "Licenses & Notices", "", None) {
+            if ui_item(ui, tr!("Licenses & Notices"), "", None) {
                 app.show_licenses = true;
             }
-            if ui_item(ui, "About AniCraft", "", None) {
+            if ui_item(ui, tr!("About AniCraft"), "", None) {
                 app.show_about = true;
             }
-            ui.label(text(Type::Caption, format!("{} commands are scriptable via anicraft-cli", cmds.len())));
+            ui.label(text(Type::Caption, trn!("{n} command is scriptable with anicraft-cli", "{n} commands are scriptable with anicraft-cli", cmds.len())));
         }
         _ => {}
     }

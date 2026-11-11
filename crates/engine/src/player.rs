@@ -9,9 +9,9 @@
 //! its scripts, so a script that loops forever costs one frame's budget, then stops with a
 //! message.
 
-use anicraft_doc::actions::{Action, MAX_ACTIONS, PluginScript, check_actions};
+use anicraft_doc::actions::{Action, CompileResult, FrameScript, MAX_ACTIONS, PluginScript, check_actions};
 use anicraft_doc::player::{Event, Node, NodeKind, PlayerState, ScriptContext, ScriptHost, ScriptRun, Step};
-use anicraft_doc::{Document, player};
+use anicraft_doc::{Document, LayerKind, SymbolKind, Timeline, player};
 use anicraft_geom::Vec2;
 use anicraft_plugins::{Host, Kind, Limits, Registry};
 use serde_json::{Map, Value, json};
@@ -187,8 +187,12 @@ pub const MAX_MOVIE_OUTPUT: usize = 10_000;
 pub const MAX_MOVIE_SOUNDS: usize = 4_096;
 
 impl Movie {
+    /// The movie at its first frame. The Output starts with a line for each kept script: which
+    /// run and which are skipped and why (ADR 0013 tier 2), said once rather than each time the
+    /// playhead passes.
     pub fn start(doc: &Document, scripts: &mut dyn ScriptHost) -> Movie {
         let mut m = Movie { state: PlayerState::default(), output: Vec::new(), sounds: Vec::new() };
+        m.output.extend(script_summary(doc).into_iter().map(|l| (0, l)));
         let s = player::start(doc, scripts);
         m.take(s);
         m
@@ -245,4 +249,71 @@ pub fn parse_events(v: &Value) -> Result<Vec<Event>, String> {
         }
         other => return Err(format!("unknown event type '{other}' (move, down, up, click or leave)")),
     })
+}
+
+/// A kept script (ADR 0013) and where it is.
+pub struct KeptScript<'a> {
+    /// "Scene 1 › Actions, frame 1" (frames 1-based, as the app shows them).
+    pub place: String,
+    /// The timeline runs frame scripts there (a scene or a movie clip, on a layer that plays).
+    pub plays: bool,
+    pub compiled: &'a CompileResult,
+}
+
+impl KeptScript<'_> {
+    /// It runs when the movie plays.
+    pub fn runs(&self) -> bool {
+        self.plays && self.compiled.is_ok()
+    }
+}
+
+/// Most kept scripts listed.
+pub const MAX_LISTED_SCRIPTS: usize = 1_000;
+
+fn layer_plays(tl: &Timeline, index: usize) -> bool {
+    tl.layers.get(index).is_some_and(|l| l.visible && !matches!(l.kind, LayerKind::Folder | LayerKind::Guide)) && !tl.hidden_by_folder(index)
+}
+
+/// Every kept script in the document: the scenes' first, then the symbols'.
+pub fn kept_scripts(doc: &Document) -> Vec<KeptScript<'_>> {
+    let scenes = doc.scenes.iter().map(|s| (s.name.as_str(), &s.timeline, true));
+    let symbols = doc.library.iter().map(|s| (s.name.as_str(), &s.timeline, s.kind == SymbolKind::MovieClip));
+    let mut out = Vec::new();
+    for (name, tl, runs) in scenes.chain(symbols) {
+        for (index, layer) in tl.layers.iter().enumerate() {
+            for k in &layer.keyframes {
+                let Some(FrameScript::Source(src)) = &k.script else { continue };
+                if out.len() >= MAX_LISTED_SCRIPTS {
+                    return out;
+                }
+                out.push(KeptScript { place: format!("{name} › {}, frame {}", layer.name, u64::from(k.start) + 1), plays: runs && layer_plays(tl, index), compiled: src.compiled() });
+            }
+        }
+    }
+    out
+}
+
+/// The Output's opening lines: each kept script that runs (and what in it is ignored), and
+/// each that doesn't, with why.
+pub fn script_summary(doc: &Document) -> Vec<String> {
+    let mut lines = Vec::new();
+    for k in kept_scripts(doc) {
+        match (k.plays, k.compiled) {
+            (false, _) => lines.push(format!("Frame script not run: {}: graphic and button timelines, guide layers and hidden layers don't run frame scripts", k.place)),
+            (true, Ok(c)) => {
+                lines.push(format!("Frame script runs: {}", k.place));
+                lines.extend(c.notes.iter().map(|n| format!("Frame script at {}: {n}", k.place)));
+            }
+            (true, Err(problems)) => {
+                let first = problems.first().map_or_else(String::new, ToString::to_string);
+                let more = match problems.len() {
+                    0 | 1 => String::new(),
+                    2 => " (and 1 more problem: see the Actions panel)".into(),
+                    n => format!(" (and {} more problems: see the Actions panel)", n - 1),
+                };
+                lines.push(format!("Frame script not run: {}: {first}{more}", k.place));
+            }
+        }
+    }
+    lines
 }

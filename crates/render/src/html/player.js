@@ -1,7 +1,8 @@
 // AniCraft HTML canvas player: the core (ADR 0028). SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Plays a movie exported by File > Export > HTML Canvas: the instance tree, movie clip
-// playheads, frame actions and button events. It is a line-by-line port of the Rust player
+// playheads, frame actions, button events, and frame scripts in the ActionScript subset
+// (compiled by AniCraft to the same actions, with the mouse listeners they add). It is a line-by-line port of the Rust player
 // (crates/doc/src/player.rs, the reference) over the exported data, and the tests run it in a
 // JavaScript engine against that player. Nothing here touches the page: canvas.js draws and
 // listens to the pointer; this file only computes.
@@ -20,6 +21,7 @@ var AniCraft = (function () {
   const MAX_EVENTS_PER_STEP = 256;
   const MAX_SOUNDS_PER_STEP = 256;
   const MAX_SYMBOL_DEPTH = 32;
+  const MAX_LISTENERS_PER_INSTANCE = 16;
   const ROOT = 0, GRAPHIC = 1, CLIP = 2, BUTTON = 3;
   const KINDS = { graphic: GRAPHIC, movieclip: CLIP, button: BUTTON };
   const I = [1, 0, 0, 1, 0, 0];
@@ -141,9 +143,10 @@ var AniCraft = (function () {
   // ----- the player state ------------------------------------------------------------------------
 
   function newState() {
-    return { scene: 0, root: { frame: 0, playing: true }, clips: new Dict(), props: new Dict(), pointer: null, down: false, hover: null, pressed: null, tick: 0 };
+    return { scene: 0, root: { frame: 0, playing: true }, clips: new Dict(), props: new Dict(), listeners: new Dict(), pointer: null, down: false, hover: null, pressed: null, tick: 0 };
   }
-  // Each clip entry: { path, frame, playing }; each props entry: { path, ...overrides }.
+  // Each clip entry: { path, frame, playing }; each props entry: { path, ...overrides }; each
+  // listeners entry: [{ ev, owner, k, h, path }] in the order added.
   function clipFrame(st, key, len) {
     const c = st.clips.get(key);
     return Math.min(c ? c.frame : 0, Math.max(len, 1) - 1);
@@ -296,7 +299,7 @@ var AniCraft = (function () {
     }
     const xf = mul(cx.xf, m);
     if (e.y === undefined) {
-      const it = { p: e.p, m: xf, f: e.f === undefined ? -1 : e.f, s: e.s || null, eo: !!e.eo, c: concat(cx.c, fx), clip: clip, masks: masks, group: cx.group };
+      const it = { p: e.p, m: xf, f: e.f === undefined ? -1 : e.f, s: e.s || null, k: e.k || null, eo: !!e.eo, c: concat(cx.c, fx), clip: clip, masks: masks, group: cx.group };
       dl.items.push(it);
       if (v) v.item(it);
       return;
@@ -331,7 +334,7 @@ var AniCraft = (function () {
   function hitIn(M, st, nodes, host, x, y) {
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
-      const interactive = n.kind === BUTTON || (n.kind === CLIP && n.events);
+      const interactive = n.kind === BUTTON || (n.kind === CLIP && (n.events || st.listeners.has(n.key)));
       if (!n.hittable || !interactive) continue;
       const sym = M.symbols[n.sym];
       if (!sym) continue;
@@ -408,7 +411,8 @@ var AniCraft = (function () {
       for (const k of Object.keys(p)) if (k !== "path") o[k] = p[k];
       return [p.path, o];
     });
-    return { scene: st.scene, frame: st.root.frame, playing: st.root.playing, clips: clips, props: props, hover: st.hover, pressed: st.pressed, down: st.down };
+    const listeners = Array.from(st.listeners.values()).filter((l) => l.length > 0).sort((a, b) => comparePaths(a[0].path, b[0].path)).map((l) => [l[0].path, l.map((x) => [x.ev, x.owner, x.k])]);
+    return { scene: st.scene, frame: st.root.frame, playing: st.root.playing, clips: clips, props: props, listeners: listeners, hover: st.hover, pressed: st.pressed, down: st.down };
   };
 
   function Run(player) {
@@ -477,6 +481,12 @@ var AniCraft = (function () {
       this.queue(path);
     }
     for (const k of Array.from(st.props.keys())) if (!all.has(k)) st.props.delete(k);
+    // A listener goes with its instance, and with the timeline whose script added it.
+    for (const [k, list] of st.listeners.entries()) {
+      const kept = list.filter((l) => all.has(keyOf(l.owner)));
+      if (!all.has(k) || kept.length === 0) st.listeners.delete(k);
+      else st.listeners.set(k, kept);
+    }
     if (st.hover !== null && !all.has(keyOf(st.hover))) st.hover = null;
     if (st.pressed !== null && !all.has(keyOf(st.pressed))) st.pressed = null;
   };
@@ -559,20 +569,57 @@ var AniCraft = (function () {
     const frame = this.nodes[i].frame;
     this.soundsAt(tl, frame, this.nodes[i].gain);
     for (const script of (tl.a && tl.a[frame]) || []) {
-      if (Array.isArray(script)) this.runList(path, script);
+      if (Array.isArray(script)) this.runList(path, script, false);
+      else if (script.as) this.runOps(path, script.as);
       else this.out("Frame script " + script.plugin + " not run: frame scripts are not exported");
     }
   };
-  Run.prototype.runList = function (owner, list) {
-    for (const a of list) {
-      if (this.halted) return;
-      this.actions += 1;
-      if (this.actions > MAX_ACTIONS_PER_STEP) {
-        this.halt("more than " + MAX_ACTIONS_PER_STEP + " actions");
-        return;
-      }
-      this.exec(owner, a);
+  // Counts one action against the step's budget; false when nothing more may run.
+  Run.prototype.budget = function () {
+    if (this.halted) return false;
+    this.actions += 1;
+    if (this.actions > MAX_ACTIONS_PER_STEP) {
+      this.halt("more than " + MAX_ACTIONS_PER_STEP + " actions");
+      return false;
     }
+    return true;
+  };
+  // `script`: the actions come from ActionScript.
+  Run.prototype.runList = function (owner, list, script) {
+    for (const a of list) {
+      if (!this.budget()) return;
+      this.exec(owner, a, script);
+    }
+  };
+  // A compiled script's steps: actions, and `listen` (addEventListener).
+  Run.prototype.runOps = function (owner, ops) {
+    for (const a of ops) {
+      if (!this.budget()) return;
+      if (a.op === "listen") this.listen(owner, a);
+      else this.exec(owner, a, true);
+    }
+  };
+  // The instance the listener's target names gets it (once per function and event).
+  Run.prototype.listen = function (owner, a) {
+    this.refresh();
+    const from = this.indexOf(owner);
+    if (from < 0) return;
+    const [i, err] = this.resolve(from, a);
+    if (i < 0) return this.out(a.d + ": " + err);
+    const node = this.nodes[i];
+    if (!node) return;
+    if (node.kind !== BUTTON && node.kind !== CLIP) {
+      const why = node.kind === ROOT ? "the main timeline doesn't get pointer events here" : "“" + node.name + "” is a graphic; only buttons and movie clips get pointer events";
+      return this.out(a.d + ": " + why);
+    }
+    let list = this.st.listeners.get(node.key);
+    if (list && list.some((x) => x.ev === a.ev && samePath(x.owner, owner) && x.k === a.k)) return;
+    if (list && list.length >= MAX_LISTENERS_PER_INSTANCE) return this.out(a.d + ": “" + node.name + "” already has " + MAX_LISTENERS_PER_INSTANCE + " listeners");
+    if (!list) {
+      list = [];
+      this.st.listeners.set(node.key, list);
+    }
+    list.push({ ev: a.ev, owner: owner, k: a.k, h: a.h, path: node.path });
   };
   // The node `a`'s target names, seen from timeline node `from`: [index] or [-1, why].
   Run.prototype.resolve = function (from, a) {
@@ -593,7 +640,7 @@ var AniCraft = (function () {
     }
     return [cur];
   };
-  Run.prototype.exec = function (owner, a) {
+  Run.prototype.exec = function (owner, a, script) {
     this.refresh();
     const from = this.indexOf(owner);
     if (from < 0) return;
@@ -604,6 +651,8 @@ var AniCraft = (function () {
         return;
       case "next_scene":
       case "prev_scene": {
+        // In ActionScript a movie clip's timeline has one scene.
+        if (script && owner.length > 0) return this.out(a.d + ": a movie clip's timeline has one scene; call it in the main timeline's script");
         const s = a.op === "next_scene" ? st.scene + 1 : st.scene - 1;
         if (s >= 0 && s < this.M.scenes.length) this.gotoRoot(s, 0);
         return;
@@ -757,17 +806,19 @@ var AniCraft = (function () {
       if (now !== null) this.fire(now, "over");
     }
   };
-  // Runs an instance's handler for `event`, in the timeline the instance is on.
+  // Runs an instance's handler for `event`, in the timeline the instance is on, then the
+  // listeners scripts added for it (each in its script's timeline), in the order added.
   Run.prototype.fire = function (path, event) {
     this.refresh();
     const i = this.indexOf(path);
     if (i < 0) return;
     const n = this.nodes[i];
     const h = (n.events || []).find((x) => x[0] === event);
-    if (!h) return;
+    const ls = (this.st.listeners.get(n.key) || []).filter((l) => l.ev === event);
+    if (!h && ls.length === 0) return;
     const owner = this.nodes[n.owner];
-    if (!owner) return;
-    this.runList(owner.path, h[1]);
+    if (h && owner) this.runList(owner.path, h[1], false);
+    for (const l of ls) this.runList(l.owner, l.h, true);
     this.settle();
   };
   Run.prototype.finish = function () {

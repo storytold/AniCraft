@@ -4,7 +4,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, Result, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Paint, Shape, Stroke};
+use anicraft_doc::{ColorEffect, Document, Element, ElementId, ElementKind, Paint, Shape, Stroke, Timeline};
 use anicraft_geom::planar::{self, Item, SNAP};
 use anicraft_geom::{Affine, Path, PathCmd, Rect, Vec2};
 use serde_json::{Value, json};
@@ -13,23 +13,26 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.drop", "Drop", "", None, "{} the selected raw shapes cut and join the raw shapes they touch (after a move)", true, drop as crate::RunFn),
+        c("draw.drop", "Drop", "", None, "{} the selected raw shapes cut and join the raw shapes they touch (after a move), on each layer", true, (|s, p| s.each_layer(true, |s| drop(s, p))) as crate::RunFn),
         c("element.select_connected", "Select Connected", "", None, "{x, y, add?, slop?} a raw stroke and the strokes joined to it, or a raw fill and the strokes on and in it", false, select_connected),
     ]
 }
 
-/// A raw shape the merge can take: a solid fill (or none) and a stroke of one width (or none).
+/// A raw shape the merge can take: any fill (solid, gradient or bitmap: the paint is carried
+/// into each piece, ADR 0042) or none, and a stroke of one width or none. A width profile runs
+/// along the whole stroke, so cutting it would need its length carried through the merge; those
+/// strokes stay whole, as objects, for now.
 pub(crate) fn mergeable(e: &Element) -> Option<&Shape> {
     match &e.kind {
-        ElementKind::Shape(s) if s.merge && matches!(s.fill, None | Some(Paint::Solid(_))) && s.stroke.as_ref().is_none_or(|st| st.profile.is_none()) => Some(s),
+        ElementKind::Shape(s) if s.merge && s.stroke.as_ref().is_none_or(|st| st.profile.is_none()) => Some(s),
         _ => None,
     }
 }
 
-/// Whether a new shape with this style can join the drawing (other paints and width profiles are
+/// Whether a new shape with this style can join the drawing (strokes with a width profile are
 /// drawn as objects for now).
-pub(crate) fn can_merge(fill: Option<&Paint>, stroke: Option<&Stroke>) -> bool {
-    matches!(fill, None | Some(Paint::Solid(_))) && stroke.is_none_or(|st| st.profile.is_none())
+pub(crate) fn can_merge(stroke: Option<&Stroke>) -> bool {
+    stroke.is_none_or(|st| st.profile.is_none())
 }
 
 pub(crate) fn reach(s: &Shape, m: &Affine) -> Rect {
@@ -113,6 +116,27 @@ const ERASED: u32 = u32::MAX;
 /// and returns them with the ids of the pieces whose topmost source part was marked. `None` when
 /// there is too much to merge at once.
 pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Element>>, Vec<ElementId>)> {
+    remerge_with(s, parts, None).map(|r| (r.out, r.picked))
+}
+
+/// What [`remerge_with`] makes.
+pub(crate) struct Remerged {
+    pub out: Vec<Arc<Element>>,
+    /// Pieces whose topmost source part was marked.
+    pub picked: Vec<ElementId>,
+    /// Pieces inside the cutter (ADR 0041).
+    pub inside: Vec<ElementId>,
+    /// Each piece and the index in `parts` of its topmost source.
+    pub from: Vec<(ElementId, usize)>,
+}
+
+/// [`remerge`], cutting along `cutter` too when there is one ([`planar::merge_cut`]).
+pub(crate) fn remerge_with(s: &mut Session, parts: &[Part], cutter: Option<&Path>) -> Option<Remerged> {
+    remerge_doc(&mut s.doc, parts, cutter)
+}
+
+/// [`remerge_with`] for any document (new pieces take ids from `doc`).
+fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Option<Remerged> {
     // Style tables: equal entries are one style to the merge.
     let mut fills: Vec<(Paint, ColorEffect)> = Vec::new();
     let mut strokes: Vec<(Stroke, ColorEffect)> = Vec::new();
@@ -124,8 +148,10 @@ pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Elemen
             Part::Shape(e, mark) => {
                 let Some(sh) = mergeable(e) else { continue };
                 paths.push(sh.path.transformed(&e.transform));
-                let fill = sh.fill.clone().map(|f| index_of(&mut fills, (f, e.color)));
-                let stroke = sh.stroke.clone().map(|st| index_of(&mut strokes, (Stroke { width: st.width * e.transform.mean_scale(), ..st }, e.color)));
+                // Gradients and bitmaps are placed in keyframe space, so every piece shows its
+                // part of the paint where it was.
+                let fill = sh.fill.as_ref().map(|f| fill_index(&mut fills, (f.transformed(&e.transform), e.color)));
+                let stroke = sh.stroke.clone().map(|st| index_of(&mut strokes, (st.scaled(e.transform.mean_scale()), e.color)));
                 styles.push((fill, stroke, sh.fill_rule));
                 marked.push(*mark);
             }
@@ -137,9 +163,14 @@ pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Elemen
         }
     }
     let items: Vec<Item> = paths.iter().zip(&styles).map(|(path, &(fill, stroke, fill_rule))| Item { path, fill, fill_rule, stroke }).collect();
-    let merged = planar::merge(&items)?;
+    let merged = match cutter {
+        Some(c) => planar::merge_cut(&items, c)?,
+        None => planar::merge(&items)?,
+    };
+    // Item numbers back to part numbers (parts that are not raw shapes made no item).
+    let part_of: Vec<usize> = parts.iter().enumerate().filter(|(_, p)| !matches!(p, Part::Shape(e, _) if mergeable(e).is_none())).map(|(i, _)| i).collect();
     let mut out: Vec<Arc<Element>> = Vec::with_capacity(merged.fills.len() + merged.strokes.len());
-    let mut picked = Vec::new();
+    let (mut picked, mut inside, mut from) = (Vec::new(), Vec::new(), Vec::new());
     for (piece, is_fill) in merged.fills.iter().map(|p| (p, true)).chain(merged.strokes.iter().map(|p| (p, false))) {
         let (fill, stroke, color) = if is_fill {
             // Erased regions (and anything without a style) are left out.
@@ -151,19 +182,25 @@ pub(crate) fn remerge(s: &mut Session, parts: &[Part]) -> Option<(Vec<Arc<Elemen
         };
         // Local origin at the centre of the piece, as the drawing tools place shapes.
         let c = piece.path.bounds().center();
-        let id = ElementId(s.doc.alloc_id());
+        let id = ElementId(doc.alloc_id());
         if marked.get(piece.item).copied().unwrap_or(false) {
             picked.push(id);
+        }
+        if piece.inside {
+            inside.push(id);
+        }
+        if let Some(&part) = part_of.get(piece.item) {
+            from.push((id, part));
         }
         out.push(Arc::new(Element {
             id,
             name: String::new(),
             transform: Affine::translate(c.x, c.y),
             color,
-            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill, stroke, fill_rule: Default::default(), merge: true }),
+            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill: fill.map(|f| f.transformed(&Affine::translate(-c.x, -c.y))), stroke, fill_rule: Default::default(), merge: true }),
         }));
     }
-    Some((out, picked))
+    Some(Remerged { out, picked, inside, from })
 }
 
 /// Replaces the keyframe's elements at `taken` (ascending indices) with `out`, placed where the
@@ -195,6 +232,33 @@ fn add_whole(kf: &mut anicraft_doc::Keyframe, els: Vec<Element>, order: Order) {
     }
 }
 
+/// The fill table's entry for `v`: paints that differ only by rounding (a gradient carried into a
+/// piece and back) are one style, so pieces of one fill join again.
+fn fill_index(table: &mut Vec<(Paint, ColorEffect)>, v: (Paint, ColorEffect)) -> u32 {
+    match table.iter().position(|x| x.1 == v.1 && same_paint(&x.0, &v.0)) {
+        Some(i) => i as u32,
+        None => {
+            table.push(v);
+            (table.len() - 1) as u32
+        }
+    }
+}
+
+/// Whether two paints look the same (positions within a thousandth of a unit).
+pub(crate) fn same_paint(a: &Paint, b: &Paint) -> bool {
+    const EPS: f32 = 1e-3;
+    let near = |p: Vec2, q: Vec2| p.distance(q) <= EPS;
+    match (a, b) {
+        (Paint::Solid(x), Paint::Solid(y)) => x == y,
+        (Paint::Linear { start: s0, end: e0, stops: a }, Paint::Linear { start: s1, end: e1, stops: b }) => near(*s0, *s1) && near(*e0, *e1) && a == b,
+        (Paint::Radial { center: c0, radius: r0, stops: a }, Paint::Radial { center: c1, radius: r1, stops: b }) => near(*c0, *c1) && (r0 - r1).abs() <= EPS && a == b,
+        (Paint::Bitmap { bitmap: b0, repeat: r0, matrix: m0 }, Paint::Bitmap { bitmap: b1, repeat: r1, matrix: m1 }) => {
+            b0 == b1 && r0 == r1 && m0.m.iter().zip(m1.m).all(|(x, y)| (x - y).abs() <= EPS * x.abs().max(y.abs()).max(1.0))
+        }
+        _ => false,
+    }
+}
+
 fn index_of<T: PartialEq>(table: &mut Vec<T>, v: T) -> u32 {
     match table.iter().position(|x| *x == v) {
         Some(i) => i as u32,
@@ -208,7 +272,7 @@ fn index_of<T: PartialEq>(table: &mut Vec<T>, v: T) -> u32 {
 /// `draw.drop`: the selected raw shapes go back into the drawing, on top (Animate merges a moved
 /// shape when it is let go).
 fn drop(s: &mut Session, _: &Value) -> Result<Value> {
-    let sel = s.selection.clone();
+    let sel = s.selection.on(s.layer);
     let kf = s.editable_keyframe()?;
     let mut moving = Vec::new();
     kf.elements.retain(|e| {
@@ -224,8 +288,128 @@ fn drop(s: &mut Session, _: &Value) -> Result<Value> {
     }
     let mut keep: Vec<ElementId> = sel.into_iter().filter(|id| !moving.iter().any(|e| e.id == *id)).collect();
     keep.extend(merge_in(s, moving)?);
-    s.selection = keep;
-    Ok(json!({"dropped": n, "selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>()}))
+    s.select_only(keep);
+    Ok(json!({"dropped": n, "selected": s.selection.id_list()}))
+}
+
+// ----- the Paint Bucket and imported drawings (ADR 0042) ---------------------------------------
+
+/// The probe's fill style: what is left of it after the merge is empty area.
+const PROBE: u32 = u32::MAX - 1;
+
+/// The empty area around `at` that the raw strokes and fills of `els` close off, as Animate's
+/// Paint Bucket fills it: exactly up to the lines and fill edges, holes and all. `None` when the
+/// raw shapes leave it open (it reaches past them), when `at` is on a fill, or when there is too
+/// much to merge at once.
+///
+/// A fill under everything (the probe) is merged with the raw shapes: what remains of it are the
+/// empty areas, divided by every line and fill edge, and the one under `at` is the answer unless
+/// it reaches the probe's border. The probe starts as a small window around `at`, with only the
+/// shapes that reach into it, and grows while the area reaches its border, so a fill costs what
+/// is near it rather than the whole drawing (shapes wholly outside a window cannot touch an area
+/// inside it).
+pub(crate) fn enclosed_area(els: &[Arc<Element>], at: Vec2) -> Option<Path> {
+    let raw: Vec<(&Element, &Shape, Rect)> = els.iter().filter_map(|e| mergeable(e).map(|sh| (e.as_ref(), sh, reach(sh, &e.transform)))).collect();
+    let area = raw.iter().fold(Rect::EMPTY, |r, (_, _, b)| r.union(b));
+    if area.is_empty() || !area.contains(at) {
+        return None;
+    }
+    let all = area.inflate(8.0);
+    let mut half = 64.0f32;
+    loop {
+        let window = Rect::new(at.x - half, at.y - half, at.x + half, at.y + half);
+        let last = window.min.x <= all.min.x && window.min.y <= all.min.y && window.max.x >= all.max.x && window.max.y >= all.max.y;
+        let outer = if last { all } else { window };
+        let near: Vec<&(&Element, &Shape, Rect)> = raw.iter().filter(|(_, _, b)| !b.intersect(&outer).is_empty()).collect();
+        match probe(&near, &outer, at)? {
+            Some(path) => return Some(path),
+            None if last => return None,
+            // It reaches the window's border: look wider.
+            None => half *= 4.0,
+        }
+    }
+}
+
+/// One probe merge over `outer`: `Some(Some(area))` when the empty area at `at` is closed off
+/// inside it, `Some(None)` when it reaches the border, `None` when `at` is not in an empty area
+/// or the merge declines.
+fn probe(raw: &[&(&Element, &Shape, Rect)], outer: &Rect, at: Vec2) -> Option<Option<Path>> {
+    let rect = Path::rect(outer.min.x, outer.min.y, outer.width(), outer.height());
+    let paths: Vec<Path> = raw.iter().map(|(e, sh, _)| sh.path.transformed(&e.transform)).collect();
+    let mut items = vec![Item { path: &rect, fill: Some(PROBE), fill_rule: anicraft_geom::FillRule::NonZero, stroke: None }];
+    for (i, ((_, sh, _), path)) in raw.iter().map(|x| **x).zip(&paths).enumerate() {
+        let n = u32::try_from(i).ok()?;
+        items.push(Item { path, fill: sh.fill.as_ref().map(|_| n), fill_rule: sh.fill_rule, stroke: sh.stroke.as_ref().map(|_| n) });
+    }
+    let merged = planar::merge(&items)?;
+    let piece = merged.fills.into_iter().find(|p| p.style == PROBE && p.path.contains(at, &Affine::IDENTITY, anicraft_geom::FillRule::default()))?;
+    let b = piece.path.bounds();
+    let open = b.min.x <= outer.min.x + 1.0 || b.min.y <= outer.min.y + 1.0 || b.max.x >= outer.max.x - 1.0 || b.max.y >= outer.max.y - 1.0;
+    Some((!open).then_some(piece.path))
+}
+
+/// Merges every keyframe's raw shapes in `doc` into one merged drawing each (scenes and
+/// symbols): what an imported Animate file's raw shapes need, as their styles arrive one shape
+/// per style. Keyframes with too much to merge at once keep their shapes as they are. Returns
+/// how many keyframes changed.
+pub(crate) fn merge_document(doc: &mut Document) -> usize {
+    let mut n = 0;
+    let mut scenes = doc.scenes.clone();
+    for sc in scenes.iter_mut() {
+        let mut tl = sc.timeline.clone();
+        let k = merge_timeline(doc, &mut tl);
+        if k > 0 {
+            Arc::make_mut(sc).timeline = tl;
+            n += k;
+        }
+    }
+    let mut library = doc.library.clone();
+    for sym in library.iter_mut() {
+        let mut tl = sym.timeline.clone();
+        let k = merge_timeline(doc, &mut tl);
+        if k > 0 {
+            Arc::make_mut(sym).timeline = tl;
+            n += k;
+        }
+    }
+    if n > 0 {
+        doc.scenes = scenes;
+        doc.library = library;
+    }
+    n
+}
+
+fn merge_timeline(doc: &mut Document, tl: &mut Timeline) -> usize {
+    let mut n = 0;
+    for layer in tl.layers.iter_mut() {
+        if !layer.keyframes.iter().any(|k| k.elements.iter().any(|e| mergeable(e).is_some())) {
+            continue;
+        }
+        let layer = Arc::make_mut(layer);
+        // A tween pairs its keyframes' shapes in order, so the keyframes it joins keep theirs.
+        let shape_tween = |k: &anicraft_doc::Keyframe| k.tween.is_some() || k.motion.is_some();
+        let morphing: Vec<bool> = (0..layer.keyframes.len()).map(|i| layer.keyframes.get(i).is_some_and(|k| shape_tween(k)) || i.checked_sub(1).and_then(|j| layer.keyframes.get(j)).is_some_and(|k| shape_tween(k))).collect();
+        for (kf, morph) in layer.keyframes.iter_mut().zip(morphing) {
+            let idx: Vec<usize> = kf.elements.iter().enumerate().filter(|(_, e)| mergeable(e).is_some()).map(|(i, _)| i).collect();
+            if idx.is_empty() || morph {
+                continue;
+            }
+            let kf = Arc::make_mut(kf);
+            let existing = kf.elements.clone();
+            let parts: Vec<Part> = idx.iter().filter_map(|&i| existing.get(i)).map(|e| Part::Shape(e.as_ref(), false)).collect();
+            let Some(rm) = remerge_doc(doc, &parts, None) else { continue };
+            let at = idx.first().copied().unwrap_or(0);
+            for &i in idx.iter().rev() {
+                if i < kf.elements.len() {
+                    kf.elements.remove(i);
+                }
+            }
+            let at = at.min(kf.elements.len());
+            kf.elements.splice(at..at, rm.out);
+            n += 1;
+        }
+    }
+    n
 }
 
 /// The ends of every open subpath (where raw strokes join), in keyframe space.
@@ -305,10 +489,6 @@ fn select_connected(s: &mut Session, p: &Value) -> Result<Value> {
     if !add {
         s.selection.clear();
     }
-    for id in picked {
-        if !s.selection.contains(&id) {
-            s.selection.push(id);
-        }
-    }
-    Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>()}))
+    s.selection.extend_on(s.layer, picked);
+    Ok(json!({"selected": s.selection.id_list()}))
 }

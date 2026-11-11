@@ -2,6 +2,195 @@
 
 ## Unreleased
 
+* **Motion path points pinned to frames** (ADR 0049, M2). As in Animate, a motion tween's
+  position keyframes are now points on its path: move the object at a frame and the path gets a
+  point there that the object passes exactly on that frame, whatever else you do to the path.
+  * Moving the object between the ends adds a pinned point where you put it; after the last
+    position keyframe the path carries on to the new place. The eases on X and Y time the
+    object between pinned points as they did between the ends.
+  * Pinned points are diamonds with their frame number on the stage, and Selection can drag
+    them. With Subselection, right-click any point to **Pin to Frame** (the playhead's frame)
+    or **Unpin**. Properties › Frame has **Pin Here** / **Unpin**, and F6 inside a path tween
+    pins where the object is.
+  * The Motion Editor draws a pinned frame's X and Y keys in blue; dragging one moves its
+    point. The timeline marks pinned frames with a larger diamond.
+  * Adding and deleting points keeps the pins on their points; deleting a pinned point, or
+    unpinning it, removes its frame's X and Y keys and the motion flows as before.
+  * Older files open and play exactly as they did (only the ends are pinned).
+  * Headless: new `motion.pin_point` and `motion.unpin_point`; `motion.info` and the path
+    commands report `pins`.
+
+* **Stroke caps, joins, miter limit, and dashed and dotted lines** (ADR 0046, M7). Properties ›
+  Stroke has Animate's rows: **Style** (Solid, Dashed with a dash and gap editor, Dotted with
+  dot spacing), **Cap** (None, Round, Square), **Join** (Miter, Round, Bevel) and **Miter**
+  (the limit past which corners are bevelled). The drawing tools' options set them for new
+  strokes, the Ink Bottle gives them and the Eyedropper picks them.
+  * Drawn exactly by the CPU renderer and the GPU stage: butt and square caps, miter joins with
+    their limit, dashes by arc length along curves (restarting on each subpath, an offset into
+    the pattern), round dots one width across, and dashes that keep a width profile's widths.
+    Patterns finer than a pixel draw solid and lighter. No slower than round strokes.
+  * SVG, HTML canvas and Lottie export write caps, joins, miter limit and dashes; SVG import
+    reads `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `stroke-dasharray` and
+    `stroke-dashoffset`; Animate documents bring their caps, joins, miter limit, dashed and
+    dotted strokes (ragged, stipple and hatched strokes are drawn solid and reported).
+  * Merge drawing keeps a dashed line's style on every piece it is cut into; shape tweens blend
+    miter limits and dash lengths. Older files open unchanged.
+  * Headless: new `stroke.set_style`; `cap`, `join`, `miter`, `style`, `dash`, `dash_offset`
+    and `dot_spacing` on `element.set_stroke`, the drawing commands and `paint.ink`.
+* **Onion skin controls and Edit Multiple Frames** (ADR 0047, M1). Onion skin works as Animate
+  users expect:
+  * **Markers** on the frame ruler: drag the start and end brackets to choose how many frames
+    show before and after the playhead. The onion menu (the arrow next to the timeline's onion
+    buttons, a right-click on the ruler, or View › Onion Skin Options) has Always Show Markers,
+    Anchor Markers (they stay put when the playhead moves), and the Onion 2, Onion 5 and Onion
+    All presets.
+  * Frames before the playhead are tinted blue and frames after it green, each fainter the
+    farther it is. Pick your own colours or turn tinting or fading off in the menu; **Outlines**
+    draws onion frames as outlines only, and **Keyframes Only** shows only keyframes. Your
+    choices are remembered.
+  * Onion frames now show over a background layer (they used to be hidden under it), and locked
+    layers are left out, as in Animate.
+  * **Edit Multiple Frames** (the timeline button next to Onion Skin) shows every keyframe
+    between the markers at full strength. Click, Shift-click, marquee or Select All to select
+    artwork on all of them, then drag it or use the arrow keys to move it everywhere at once:
+    one undo step. A motion tween's path moves with its object.
+  * Headless: `frames.artwork` lists the artwork on those keyframes and
+    `frames.edit_multiple` moves it.
+* **ActionScript that controls the timeline now runs** (ADR 0013 tier 2). Frame scripts in
+  Animate documents, and ones you type in the Actions panel, play in Test Movie and in the
+  HTML canvas export when they use the ActionScript 3.0 most animation and e-learning files
+  use: `stop()`, `play()`, `gotoAndPlay`/`gotoAndStop` by frame or label (and scene),
+  `nextFrame()`, `prevFrame()`, `nextScene()`, `prevScene()`, on this timeline or on named
+  instances (`hero_mc.gotoAndStop("run")`, `MovieClip(parent).play()`); button and movie clip
+  listeners (`btn.addEventListener(MouseEvent.CLICK, onClick)` for click, mouse down and up,
+  roll over and out, with a named or inline function); `trace`; and setting `x`, `y`,
+  `alpha`, `visible`, `rotation`, `scaleX` and `scaleY`.
+  * A script runs whole or not at all. Anything else (variables, `if`, loops, reading
+    properties) keeps it from running, and AniCraft says where: the Script view lists each
+    problem with its line and column above the code and marks the lines (click one to go
+    there), or says the script runs. Test Movie's Output begins with which scripts run and
+    which don't, and why.
+  * `navigateToURL` and other calls that reach outside the movie are ignored and noted.
+  * The XFL import report lists the frame scripts that run apart from those only kept.
+  * Headless: `script.set` and `script.list` say `runs` and `problems`; new `script.check`
+    compiles a text without storing it. A new XFL corpus package, `interactive`, plays its
+    ActionScript through the player.
+* **Selection across layers** (ADR 0044, issue #42, M1). A selection can hold artwork on several
+  layers, as in Animate:
+  * The Selection tool's **marquee** selects on every visible, unlocked layer, cutting raw fills
+    and lines at its edges on each layer (and taking the cut back when you let go of it).
+    **Shift-click** adds or removes artwork on any layer; **Select All** (Ctrl+A) takes every
+    unlocked layer. Locked and hidden layers are never selected; locking or hiding a layer lets
+    go of what was selected on it.
+  * Move, nudge, delete, duplicate, arrange (within each layer), transforms, alpha, fill and
+    stroke, filters, blending, break apart and width profiles act on every selected layer, one
+    undo step per gesture. Inside a tween each layer gets its own keyframe.
+  * Align and distribute work across the layers; Free Transform's box covers the whole
+    selection; copy keeps each layer's artwork apart, and paste puts it back on those layers
+    (or on the active layer and the ones below, creating missing layers in another document).
+  * **Convert to Symbol** (F8) of a selection on several layers keeps those layers inside the
+    symbol and places the instance on the topmost of them.
+  * The **timeline** shows a square in the layer's colour after the name of every layer with
+    selected artwork. **Properties** says "6 elements on 4 layers", shows the combined box's
+    position, and marks values that differ as "mixed".
+  * Headless: `element.select` takes ids on any layer (and `layer?`); `doc.info` reports
+    `selection_layers`; per-layer commands report the `layers` they ran on.
+  * Clicking a layer's name in the timeline selects all of its artwork at the playhead and
+    makes it active, as in Animate (`layer.select {select: true}`).
+  * Not yet: "mixed" on every Properties row.
+
+* **Interface languages** (ADR 0040, first slice; `docs/localisation.md`). Every string the
+  window shows, and every name a screen reader announces, can now be translated.
+  * Preferences › Appearance › **Language**: *System language* by default, or any language
+    this build has, named in itself. A change shows at once. `--lang <code>` sets it for one
+    run.
+  * Translations come from the Craft family's shared **craft-i18n** catalogs, built in with
+    `CRAFT_I18N_DIR`; a missing one shows the English. craft-i18n has no AniCraft catalog yet,
+    so builds are English for now: `scripts/i18n-extract.sh` lists every string for
+    translators (and, with a craft-i18n checkout, how much each language already covers).
+  * A **pseudo-locale** (`--lang pseudo`) draws everything accented, longer and bracketed, to
+    find text that skipped translation or gets cut off.
+  * Messages that say how to undo show your Undo key as this computer writes it (⌘Z on a
+    Mac, and a rebound key wherever it is), instead of a fixed "Ctrl+Z".
+  * Menus, the command palette and the shortcut sheet translate the command registry's labels
+    as they are drawn; command ids, `.anicraft` files, `anicraft-cli` and MCP stay English.
+  * For developers: `tr!`, `trn!` (plurals by CLDR rules), `trc!` and `tr_noop!`; a test fails
+    on new interface text that skips them. Not yet: engine messages, right-to-left languages
+    (egui can't lay them out yet), Chinese, Japanese and Korean (need a font).
+
+* **Bone tool and inverse kinematics, first slice** (ADR 0043, M7). Join symbol instances into
+  an armature and pose it:
+  * With the **Bone tool** (M), drag from one symbol instance to another: a bone joins them and
+    both move to a new **armature layer** (bone icon in the timeline). Drag from a bone's end to
+    the next instance to continue the chain; drag from any instance of the armature to branch.
+  * Bones show on the stage as wedges from their round joint to their end, in the armature
+    layer's colour; click one to select it (selection colour).
+  * With the **Selection tool**, drag a bone or an instance to pose the armature by inverse
+    kinematics: the bones above it turn so it follows the pointer; an unreachable point leaves
+    the chain stretched straight toward it. Drag the root instance to move the whole armature.
+    Each drag is one undo step.
+  * A pose at another frame keys it; poses tween with the span's easing and are exact at their
+    keyframes. Every export, the GPU stage and Test Movie show them.
+  * **Properties › Bone**: the joint angle at the playhead, Constrain rotation with min and
+    max (kept in every pose), Pin (the bone and those it hangs from stay put while you drag
+    below it), and Remove Bone (also Delete). Removing frees the instances where they are, on
+    a layer of their own; it asks first when the armature has more than one pose.
+  * Headless: `bone.add`, `bone.remove`, `bone.set_limits`, `bone.pin`, `bone.pose`,
+    `bone.solve` (IK) and `bone.info`; plug-ins may call them. A 64-bone chain solves in about
+    5 ms from rest.
+  * Not yet: shape armatures, spring, joint translation, runtime armatures, XFL import of
+    armature layers, editing armature members' colour effects in place.
+
+* **Subselection on raw drawings, Snap to Objects, and merging everywhere** (ADR 0042, issue
+  #42). With Object Drawing off:
+  * Click a raw line or fill with the **Subselection tool** (A) to see the points of everything
+    connected to it: hollow squares, one per shared corner. Click a point to select it (Shift
+    adds or removes). The curve handles of the selected points, and of the edge you clicked,
+    show as lines ending in dots.
+  * Drag a point to move it together with the other selected points; every shape that shares
+    a point moves with it, and it snaps as with the Selection tool. Drag a handle to change the
+    curve; a fill and its outline change together.
+  * Drag a line or fill to move everything connected to it. A marquee shows the shapes it
+    touches on the active layer and selects the points inside it. Arrow keys move the selected
+    points 1 screen pixel (Shift: 10). Each drag or press is one undo step.
+  * **Snap to Objects**, in View › Snapping, as the magnet under the tools and in the
+    selection tools' options, turns snapping on and off. It is on by default.
+  * **The Paint Bucket** fills a raw drawing exactly up to its lines and fill edges, and the
+    fill joins any fill of its colour it touches. Recolouring a fill joins it to its new
+    colour's neighbours.
+  * **Pasted** raw shapes (Paste and Paste in Place) cut and join the drawing they land on.
+  * **Animate files**: raw shapes open as raw shapes, merged into one drawing per keyframe.
+    Drawing objects and groups stay objects.
+  * **Gradient and bitmap fills** now merge like solid ones, each piece keeping its part of the
+    gradient. Strokes with a width profile are still drawn as objects.
+
+  Headless: `raw.subselect`, `raw.subselect_rect`, `raw.points`, `raw.move_handle`, `with` on
+  `raw.move_point`, `draw.snap_to_objects`, and `object` on `paint.bucket`; plug-ins may call
+  them.
+
+* **The Selection tool on raw drawings** (ADR 0041, issue #42). With Object Drawing off, the
+  Selection tool now edits raw strokes and fills the way Animate does:
+  * Drag an unselected line or the edge of a fill to **bend** it. The segment becomes a curve
+    through the point you drag, its ends stay put, and a fill under an outline (or next to it)
+    bends with it. Straight lines stay straight until you drag them.
+  * Drag an unselected **corner or end** to move it. Every raw shape that shares the point
+    moves with it, so the drawing stays joined; where a line ends on an edge, the edge moves
+    too.
+  * Drag a fill to move only that fill, not its outline. Drag anything selected to move the
+    selection.
+  * A small corner or curve mark next to the pointer shows what a drag will do.
+  * Dragged points and selections **snap** to corners, ends, lines and fill edges within 10
+    screen pixels, at any zoom, with a ring where they snap. Arrow-key nudges join ends within
+    0.2 px at their midpoint, and an end that comes within 0.2 px of a line goes onto it
+    without changing the line.
+  * The **marquee** selects the parts of raw fills and lines under it, cut at its edges, and
+    objects wholly inside it; Shift adds more. If you click away without changing them, the
+    drawing is whole again: selecting is never an undo step and leaves a saved file saved.
+  * Each drag is one undo step, and what it changed merges again when you let go.
+
+  Headless: `path.bend_segment`, `raw.move_point`, `raw.select_rect`, `raw.merge`, `raw.hit`,
+  and `snap`/`from` on `element.translate`; plug-ins may call them.
+
 * **Sound effects, layer volume and sounds inside symbols** (ADR 0039, M5 second slice).
   * Properties › Sound has an **Effect**, as in Animate: Left channel, Right channel, Fade left
     to right, Fade right to left, Fade in and Fade out, shaped over the time the sound is

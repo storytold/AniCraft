@@ -132,7 +132,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     s.layer = id;
     s.frame = frame;
     let out: Result<Camera> = (|| {
-        let kf = s.editable_keyframe_in(true)?;
+        let kf = s.editable_keyframe_in(crate::KeyEdit::Camera)?;
         let i = match kf.elements.iter().position(|e| matches!(e.kind, ElementKind::Camera)) {
             Some(i) => i,
             None => {

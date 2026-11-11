@@ -15,7 +15,8 @@
 //! a budget of their own, and only the shell knows what they are.
 
 use crate::history::StateId;
-use anicraft_doc::{ColorEffect, DisplayList, Document, Rgba, evaluate_scene, evaluate_scene_camera};
+use crate::onion::OnionSkin;
+use anicraft_doc::{DisplayList, Document, evaluate_scene, evaluate_scene_camera};
 use anicraft_render::{RenderStats, View, render};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -35,7 +36,8 @@ pub struct FrameJob {
     pub doc: Document,
     pub frame: u32,
     pub view: View,
-    pub onion: bool,
+    /// Onion skin or Edit Multiple Frames (ADR 0047); `None`: the frame alone.
+    pub onion: Option<OnionSkin>,
     /// Seen through the scene's camera (View › Preview Through Camera, ADR 0027): what the
     /// movie shows, rather than the stage as edited.
     pub camera: bool,
@@ -94,15 +96,20 @@ pub enum Raster {
 /// draws it).
 pub type Rasterizer = Arc<dyn Fn(&DisplayList, &View) -> Result<(Raster, RenderStats), String> + Send + Sync>;
 
+/// What onion settings add to a key: nothing when they show nothing.
+fn onion_key(onion: Option<&OnionSkin>) -> u64 {
+    onion.filter(|o| o.shows()).map_or(0, OnionSkin::key)
+}
+
 /// Identity of an evaluated scene: the display list depends on these and nothing else.
-pub fn scene_key(state: StateId, frame: u32, onion: bool) -> u64 {
+pub fn scene_key(state: StateId, frame: u32, onion: Option<&OnionSkin>) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (state, frame, onion).hash(&mut h);
+    (state, frame, onion_key(onion)).hash(&mut h);
     h.finish()
 }
 
 /// Cache key for a scene seen through a view (a frame or a tile).
-pub fn frame_key(state: StateId, frame: u32, view: &View, onion: bool) -> u64 {
+pub fn frame_key(state: StateId, frame: u32, view: &View, onion: Option<&OnionSkin>) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     state.hash(&mut h);
     frame.hash(&mut h);
@@ -114,18 +121,19 @@ pub fn frame_key(state: StateId, frame: u32, view: &View, onion: bool) -> u64 {
     if let Some(bg) = view.background {
         [bg.r, bg.g, bg.b, bg.a].map(f32::to_bits).hash(&mut h);
     }
-    onion.hash(&mut h);
+    onion_key(onion).hash(&mut h);
     h.finish()
 }
 
 /// A job whose `scene` is derived from the same inputs as its key.
-pub fn make_job(state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
-    FrameJob { key: frame_key(state, frame, &view, onion), raster: 0, scene: scene_key(state, frame, onion), doc: doc.clone(), frame, view, onion, camera: false }
+pub fn make_job(state: StateId, doc: &Document, frame: u32, view: View, onion: Option<&OnionSkin>) -> FrameJob {
+    let onion = onion.filter(|o| o.shows()).copied();
+    FrameJob { key: frame_key(state, frame, &view, onion.as_ref()), raster: 0, scene: scene_key(state, frame, onion.as_ref()), doc: doc.clone(), frame, view, onion, camera: false }
 }
 
 /// A job for rasterizer `raster` (from [`RenderService::raster_id`]; 0 is the CPU oracle, and
 /// gives [`make_job`]'s key), keyed apart from other rasterizers' pictures.
-pub fn make_job_for(raster: u64, state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
+pub fn make_job_for(raster: u64, state: StateId, doc: &Document, frame: u32, view: View, onion: Option<&OnionSkin>) -> FrameJob {
     let mut j = make_job(state, doc, frame, view, onion);
     if raster != 0 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -136,33 +144,16 @@ pub fn make_job_for(raster: u64, state: StateId, doc: &Document, frame: u32, vie
     j
 }
 
-/// Movie frame `frame`'s display list, with ±2 onion-skin frames (tinted red before, green after)
-/// underneath, taken from the same scene only.
-pub fn display_list_with_onion(doc: &Document, frame: u32, onion: bool) -> DisplayList {
+/// Movie frame `frame`'s display list, with what `onion` adds underneath (onion frames or Edit
+/// Multiple Frames' keyframes, ADR 0047), taken from the same scene only.
+pub fn display_list_with_onion(doc: &Document, frame: u32, onion: Option<&OnionSkin>) -> DisplayList {
     display_list_for(doc, frame, onion, false)
 }
 
 /// [`display_list_with_onion`], seen through the scene's camera when `camera` (ADR 0027).
-pub fn display_list_for(doc: &Document, frame: u32, onion: bool, camera: bool) -> DisplayList {
-    let eval = |scene: usize, f: u32| if camera { evaluate_scene_camera(doc, scene, f) } else { evaluate_scene(doc, scene, f) };
-    let mut dl = DisplayList::default();
+pub fn display_list_for(doc: &Document, frame: u32, onion: Option<&OnionSkin>, camera: bool) -> DisplayList {
     let (scene, local) = doc.locate(frame);
-    if onion {
-        let n = i64::from(doc.timeline(scene).frame_count());
-        for (off, tint, alpha) in [(-2i64, 0xff5a5a, 0.12f32), (2, 0x4cd07d, 0.12), (-1, 0xff5a5a, 0.25), (1, 0x4cd07d, 0.25)] {
-            let f = i64::from(local) + off;
-            if f < 0 || f >= n {
-                continue;
-            }
-            let mut ghost = eval(scene, f as u32);
-            for item in &mut ghost.items {
-                item.color = item.color.concat(&ColorEffect { alpha, tint: Rgba::hex(tint), tint_amount: 1.0 });
-            }
-            dl.append(ghost);
-        }
-    }
-    dl.append(eval(scene, local));
-    dl
+    crate::onion::compose(doc, scene, local, onion, |scene, f| if camera { evaluate_scene_camera(doc, scene, f) } else { evaluate_scene(doc, scene, f) })
 }
 
 /// Renders a job against an already evaluated scene, on the CPU oracle.
@@ -201,7 +192,7 @@ fn render_job_by(job: &FrameJob, dl: &DisplayList, raster: Option<&Rasterizer>) 
 
 /// Renders a job synchronously, evaluating its scene.
 pub fn render_job(job: &FrameJob) -> FrameImage {
-    render_job_with(job, &display_list_for(&job.doc, job.frame, job.onion, job.camera))
+    render_job_with(job, &display_list_for(&job.doc, job.frame, job.onion.as_ref(), job.camera))
 }
 
 /// Renders a batch: one scene evaluation per distinct `scene`, then all images in parallel.
@@ -213,7 +204,7 @@ pub fn render_batch(jobs: &[FrameJob]) -> Vec<FrameImage> {
 fn render_batch_by(jobs: &[FrameJob], slot: &RasterSlot) -> Vec<FrameImage> {
     let mut scenes: HashMap<u64, Arc<DisplayList>> = HashMap::new();
     for j in jobs {
-        scenes.entry(j.scene).or_insert_with(|| Arc::new(display_list_for(&j.doc, j.frame, j.onion, j.camera)));
+        scenes.entry(j.scene).or_insert_with(|| Arc::new(display_list_for(&j.doc, j.frame, j.onion.as_ref(), j.camera)));
     }
     jobs.par_iter()
         .map(|j| {
@@ -221,7 +212,7 @@ fn render_batch_by(jobs: &[FrameJob], slot: &RasterSlot) -> Vec<FrameImage> {
             let raster = slot.raster.as_ref().filter(|_| j.raster != 0 && j.raster == slot.id);
             match scenes.get(&j.scene) {
                 Some(dl) => render_job_by(j, dl, raster),
-                None => render_job_by(j, &display_list_for(&j.doc, j.frame, j.onion, j.camera), raster),
+                None => render_job_by(j, &display_list_for(&j.doc, j.frame, j.onion.as_ref(), j.camera), raster),
             }
         })
         .collect()
@@ -391,7 +382,7 @@ impl RenderService {
     }
 
     /// A job for the rasterizer in use ([`make_job_for`] with [`RenderService::raster_id`]).
-    pub fn job(&self, state: StateId, doc: &Document, frame: u32, view: View, onion: bool) -> FrameJob {
+    pub fn job(&self, state: StateId, doc: &Document, frame: u32, view: View, onion: Option<&OnionSkin>) -> FrameJob {
         make_job_for(self.raster_id(), state, doc, frame, view, onion)
     }
 
@@ -594,7 +585,7 @@ mod tests {
 
     fn job(doc: &Document, state: u64, frame: u32) -> FrameJob {
         let view = View { transform: Affine::scale(0.25, 0.25), width: 320, height: 180, background: Some(doc.stage.background) };
-        make_job(state, doc, frame, view, false)
+        make_job(state, doc, frame, view, None)
     }
 
     #[test]
@@ -629,7 +620,7 @@ mod tests {
         let z = 0.37f32; // deliberately odd zoom
         let (w, h) = ((1280.0 * z).ceil() as u32, (720.0 * z).ceil() as u32);
         let bg = Some(doc.stage.background);
-        let full = render_job(&make_job(1, &doc, 13, View { transform: Affine::scale(z, z), width: w, height: h, background: bg }, false));
+        let full = render_job(&make_job(1, &doc, 13, View { transform: Affine::scale(z, z), width: w, height: h, background: bg }, None));
         let t = 128u32;
         let mut jobs = Vec::new();
         for ty in 0..h.div_ceil(t) {
@@ -640,7 +631,7 @@ mod tests {
                     height: t.min(h - ty * t),
                     background: bg,
                 };
-                jobs.push((tx, ty, make_job(1, &doc, 13, view, false)));
+                jobs.push((tx, ty, make_job(1, &doc, 13, view, None)));
             }
         }
         let batch: Vec<FrameJob> = jobs.iter().map(|(_, _, j)| j.clone()).collect();
@@ -698,10 +689,10 @@ mod tests {
         let doc = sample::demo();
         let svc = RenderService::new(64 << 20, None);
         let view = View { transform: Affine::scale(0.25, 0.25), width: 320, height: 180, background: Some(doc.stage.background) };
-        let cpu = svc.job(1, &doc, 9, view, false);
-        assert_eq!(cpu.key, make_job(1, &doc, 9, view, false).key, "no rasterizer: the oracle's keys");
+        let cpu = svc.job(1, &doc, 9, view, None);
+        assert_eq!(cpu.key, make_job(1, &doc, 9, view, None).key, "no rasterizer: the oracle's keys");
         // A stand-in GPU that paints everything one colour, and refuses onion-skinned frames.
-        let plain = display_list_with_onion(&doc, 9, false).items.len();
+        let plain = display_list_with_onion(&doc, 9, None).items.len();
         let flat: Rasterizer = Arc::new(move |dl: &DisplayList, v: &View| {
             if dl.items.len() > plain {
                 return Err("too much".into());
@@ -710,23 +701,23 @@ mod tests {
         });
         svc.set_rasterizer(Some(flat));
         assert!(svc.has_rasterizer());
-        let gpu = svc.job(1, &doc, 9, view, false);
+        let gpu = svc.job(1, &doc, 9, view, None);
         assert_ne!(gpu.key, cpu.key, "pictures are keyed by who drew them");
         let img = svc.render_now(gpu.clone());
         assert!(img.gpu && img.fallback.is_none() && img.rgba_premul[..4] == [10, 20, 30, 255]);
         // What it refuses, the oracle draws, saying why.
-        let onion = svc.job(1, &doc, 9, view, true);
+        let onion = svc.job(1, &doc, 9, view, Some(&OnionSkin::default()));
         let img = svc.render_now(onion.clone());
         assert!(!img.gpu && img.fallback.as_deref() == Some("too much"));
-        assert_eq!(img.rgba_premul, render_job(&make_job(1, &doc, 9, view, true)).rgba_premul);
+        assert_eq!(img.rgba_premul, render_job(&make_job(1, &doc, 9, view, Some(&OnionSkin::default()))).rgba_premul);
         // Through the worker too; and a job made for an older rasterizer is drawn by the oracle.
-        let ahead = svc.job(1, &doc, 10, view, false);
+        let ahead = svc.job(1, &doc, 10, view, None);
         svc.prefetch(vec![ahead.clone()]);
         assert!(svc.wait_for(ahead.key, 10_000).is_some_and(|i| i.gpu));
         svc.set_rasterizer(None);
         let stale = FrameJob { key: 77, ..ahead };
         assert!(!render_batch_by(&[stale], &svc.slot())[0].gpu);
-        assert_eq!(svc.job(1, &doc, 9, view, false).key, cpu.key, "back to the oracle's keys");
+        assert_eq!(svc.job(1, &doc, 9, view, None).key, cpu.key, "back to the oracle's keys");
     }
 
     #[test]
@@ -773,11 +764,11 @@ mod tests {
             Ok((Raster::Native { image: Arc::new(7u32), width: v.width + u32::from(bad), height: v.height }, RenderStats::default()))
         });
         svc.set_rasterizer(Some(native));
-        let img = svc.render_now(svc.job(1, &doc, 3, view, false));
+        let img = svc.render_now(svc.job(1, &doc, 3, view, None));
         assert!(img.gpu && img.rgba_premul.is_empty());
         assert_eq!(img.native.as_ref().and_then(|n| n.downcast_ref::<u32>()), Some(&7));
         wrong.store(true, std::sync::atomic::Ordering::Relaxed);
-        let img = svc.render_now(svc.job(1, &doc, 4, view, false));
+        let img = svc.render_now(svc.job(1, &doc, 4, view, None));
         assert!(!img.gpu && img.native.is_none() && img.fallback.as_deref() == Some("the GPU returned a wrong-sized image"));
         assert_eq!(img.rgba_premul.len(), 320 * 180 * 4, "the oracle drew it instead");
     }
@@ -794,8 +785,12 @@ mod tests {
     #[test]
     fn onion_adds_neighbour_frames() {
         let doc = sample::demo();
-        let plain = display_list_with_onion(&doc, 10, false).items.len();
-        let onion = display_list_with_onion(&doc, 10, true).items.len();
-        assert_eq!(onion, plain * 5);
+        let plain = display_list_with_onion(&doc, 10, None).items.len();
+        let onion = display_list_with_onion(&doc, 10, Some(&OnionSkin::default())).items.len();
+        // ±2 frames of every unlocked layer (Animate doesn't onion-skin locked ones).
+        let tl = doc.timeline(0);
+        let unlocked = display_list_with_onion(&doc, 10, None).items.iter().filter(|i| tl.layer(i.layer).is_some_and(|l| !l.locked)).count();
+        assert!(unlocked < plain, "the sample has a locked layer");
+        assert_eq!(onion, plain + 4 * unlocked);
     }
 }

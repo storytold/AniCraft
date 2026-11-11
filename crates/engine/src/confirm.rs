@@ -156,6 +156,27 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             })
         }
         "camera.remove" => camera_removal(s, s.doc.timeline(s.scene).camera_layer()?),
+        "bone.remove" => {
+            // The bone's moves in every pose go with it (ADR 0043); one pose loses nothing.
+            let id = anicraft_doc::BoneId(p.get("bone").and_then(Value::as_u64)?);
+            let l = s.doc.timeline(s.scene).layers.iter().find(|l| l.armature.as_ref().is_some_and(|a| a.bone(id).is_some()))?;
+            let arm = l.armature.as_deref()?;
+            let n = crate::cmds_bone::poses(l);
+            let below = arm.subtree(id).len().saturating_sub(1);
+            let name = arm.bone(id).map(|b| if b.name.is_empty() { "The bone".to_string() } else { format!("“{}”", b.name) })?;
+            (n > 1).then(|| Confirmation {
+                title: "Remove bone?".into(),
+                message: format!(
+                    "{name}{} {} posed over {}; removing takes {} out of every pose. The instances stay where they are now, on a layer of their own. You can undo this.",
+                    if below > 0 { format!(" and the {} below it", plural(below, "bone")) } else { String::new() },
+                    if below > 0 { "are" } else { "is" },
+                    plural(n, "keyframe"),
+                    if below > 0 { "them" } else { "it" },
+                ),
+                action: "Remove Bone".into(),
+                irreversible: false,
+            })
+        }
         "layer.delete" => {
             let l = target_layer(s, p)?;
             if l.kind == anicraft_doc::LayerKind::Camera {

@@ -4,8 +4,9 @@
 //! [`PlayerState`] holds what changes while a movie plays: the main timeline's scene, frame and
 //! playing flag, each movie clip instance's playhead, the properties actions have set, and the
 //! pointer. [`step`] advances it by one frame: every playing timeline moves on, the actions on
-//! the keyframes they enter run, then that frame's pointer events go to the buttons under the
-//! pointer and run their handlers. [`crate::evaluate_player`] draws a state.
+//! the keyframes they enter run (and kept ActionScript in the subset that compiles, ADR 0013
+//! tier 2, with the mouse listeners it adds), then that frame's pointer events go to the buttons
+//! under the pointer and run their handlers. [`crate::evaluate_player`] draws a state.
 //!
 //! Nothing here changes the document, so the authoring stage and every export stay
 //! script-free; and nothing reads a clock or a random source, so the same document, state and
@@ -13,12 +14,14 @@
 //! frames entered, instances walked, output lines), so a `goto` loop ends in a message instead
 //! of a hang.
 
+use crate::actions::as3::{Listener, ScriptOp};
 use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Seg, Target};
 use crate::eval::{Play, evaluate_guided, evaluate_symbol, guide_walk};
 use crate::sound::Started;
 use crate::{Document, Element, ElementId, ElementKind, LayerKind, MAX_SYMBOL_DEPTH, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Vec2};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 /// An instance's place in the movie: the element ids from the main timeline down to it (empty
 /// for the main timeline itself). Element ids stay the same across keyframes that hold the same
@@ -35,6 +38,8 @@ pub const MAX_NODES: usize = 10_000;
 pub const MAX_OUTPUT_PER_STEP: usize = 1_000;
 /// Most pointer events one step handles.
 pub const MAX_EVENTS_PER_STEP: usize = 256;
+/// Most listeners scripts add to one instance.
+pub const MAX_LISTENERS_PER_INSTANCE: usize = 16;
 
 /// A timeline's playhead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +108,18 @@ impl Overrides {
     }
 }
 
+/// A mouse listener a script added to an instance (ADR 0013 tier 2): it lives while the
+/// instance (and the script's timeline) stay on the stage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listening {
+    pub event: ButtonEvent,
+    /// The timeline whose script added it: the actions run there.
+    pub owner: InstancePath,
+    /// The function's name: the same function for the same event is added once.
+    pub function: String,
+    pub actions: Arc<Vec<Action>>,
+}
+
 /// Everything that changes while a movie plays.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayerState {
@@ -113,6 +130,8 @@ pub struct PlayerState {
     pub clips: BTreeMap<InstancePath, ClipState>,
     /// Properties actions have set, per instance.
     pub props: BTreeMap<InstancePath, Overrides>,
+    /// Mouse listeners scripts added, per instance, in the order added.
+    pub listeners: BTreeMap<InstancePath, Vec<Listening>>,
     /// The pointer in stage space (`None` when it is outside the movie), and whether it is down.
     pub pointer: Option<Vec2>,
     pub down: bool,
@@ -350,7 +369,7 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
 
 fn hit_in(doc: &Document, st: &PlayerState, nodes: &[Node], p: Vec2) -> Option<InstancePath> {
     for n in nodes.iter().rev() {
-        let interactive = n.kind == NodeKind::Button || (n.kind == NodeKind::MovieClip && !n.events.is_empty());
+        let interactive = n.kind == NodeKind::Button || (n.kind == NodeKind::MovieClip && (!n.events.is_empty() || st.listeners.contains_key(&n.path)));
         if !n.hittable || !interactive {
             continue;
         }
@@ -468,6 +487,11 @@ impl<'a, 'h> Run<'a, 'h> {
         }
         let all: std::collections::BTreeSet<&InstancePath> = self.nodes.iter().map(|n| &n.path).collect();
         self.st.props.retain(|p, _| all.contains(p));
+        // A listener goes with its instance, and with the timeline whose script added it.
+        self.st.listeners.retain(|p, list| {
+            list.retain(|l| all.contains(&l.owner));
+            all.contains(p) && !list.is_empty()
+        });
         for slot in [&mut self.st.hover, &mut self.st.pressed] {
             if slot.as_ref().is_some_and(|p| !all.contains(p)) {
                 *slot = None;
@@ -559,7 +583,7 @@ impl<'a, 'h> Run<'a, 'h> {
         let scripts: Vec<&'a FrameScript> = tl.layers.iter().enumerate().filter(|(ix, _)| plays(tl, *ix)).filter_map(|(_, l)| l.keyframe_starting_at(frame).and_then(|k| l.keyframes.get(k))).filter_map(|k| k.script.as_ref()).collect();
         for script in scripts {
             match script {
-                FrameScript::Actions(list) => self.run_list(path, list),
+                FrameScript::Actions(list) => self.run_list(path, list, false),
                 FrameScript::Plugin(p) => {
                     let Some(i) = self.index_of(path) else { return };
                     let label = label_at(tl, frame);
@@ -569,27 +593,80 @@ impl<'a, 'h> Run<'a, 'h> {
                         self.out(line);
                     }
                     let list: Vec<Action> = run.actions.into_iter().take(crate::actions::MAX_ACTIONS).collect();
-                    self.run_list(path, &list);
+                    self.run_list(path, &list, false);
                 }
-                // Kept with the document, not run (ADR 0013 tier 1). The Test Movie window says
-                // so once, rather than a line every time the playhead passes.
-                FrameScript::Source(_) => {}
+                // ActionScript in the subset runs, whole (ADR 0013 tier 2); a script outside it
+                // doesn't run at all. Test Movie lists which is which once, at the start, rather
+                // than a line every time the playhead passes.
+                FrameScript::Source(src) => {
+                    if let Ok(c) = src.compiled() {
+                        self.run_ops(path, &c.ops);
+                    }
+                }
             }
         }
     }
 
-    fn run_list(&mut self, owner: &[ElementId], list: &[Action]) {
-        for a in list {
-            if self.halted {
-                return;
-            }
-            self.actions += 1;
-            if self.actions > MAX_ACTIONS_PER_STEP {
-                self.halt(&format!("more than {MAX_ACTIONS_PER_STEP} actions"));
-                return;
-            }
-            self.exec(owner, a);
+    /// Counts one action against the step's budget; `false` when nothing more may run.
+    fn budget(&mut self) -> bool {
+        if self.halted {
+            return false;
         }
+        self.actions += 1;
+        if self.actions > MAX_ACTIONS_PER_STEP {
+            self.halt(&format!("more than {MAX_ACTIONS_PER_STEP} actions"));
+            return false;
+        }
+        true
+    }
+
+    /// Runs a list of actions from timeline `owner`; `script`: they come from ActionScript.
+    fn run_list(&mut self, owner: &[ElementId], list: &[Action], script: bool) {
+        for a in list {
+            if !self.budget() {
+                return;
+            }
+            self.exec(owner, a, script);
+        }
+    }
+
+    /// Runs a compiled script's steps (ADR 0013 tier 2), each one action of the budget.
+    fn run_ops(&mut self, owner: &[ElementId], ops: &[ScriptOp]) {
+        for op in ops {
+            if !self.budget() {
+                return;
+            }
+            match op {
+                ScriptOp::Action(a) => self.exec(owner, a, true),
+                ScriptOp::Listen(l) => self.listen(owner, l),
+            }
+        }
+    }
+
+    /// `addEventListener`: the instance the listener's target names gets it (once per
+    /// function and event).
+    fn listen(&mut self, owner: &[ElementId], l: &Listener) {
+        self.refresh();
+        let Some(from) = self.index_of(owner) else { return };
+        let what = format!("Listen for {} ({})", l.event.key(), l.target);
+        let i = match self.resolve(from, &l.target) {
+            Ok(i) => i,
+            Err(e) => return self.out(format!("{what}: {e}")),
+        };
+        let Some(node) = self.nodes.get(i) else { return };
+        if !matches!(node.kind, NodeKind::Button | NodeKind::MovieClip) {
+            let why = if node.kind == NodeKind::Root { "the main timeline doesn't get pointer events here".to_string() } else { format!("“{}” is a graphic; only buttons and movie clips get pointer events", node.name) };
+            return self.out(format!("{what}: {why}"));
+        }
+        let (path, name) = (node.path.clone(), node.name.clone());
+        let list = self.st.listeners.entry(path).or_default();
+        if list.iter().any(|x| x.event == l.event && x.owner == owner && x.function == l.function) {
+            return;
+        }
+        if list.len() >= MAX_LISTENERS_PER_INSTANCE {
+            return self.out(format!("{what}: “{name}” already has {MAX_LISTENERS_PER_INSTANCE} listeners"));
+        }
+        list.push(Listening { event: l.event, owner: owner.to_vec(), function: l.function.clone(), actions: l.actions.clone() });
     }
 
     /// The node `target` names, seen from timeline node `from`.
@@ -608,11 +685,16 @@ impl<'a, 'h> Run<'a, 'h> {
         Ok(cur)
     }
 
-    fn exec(&mut self, owner: &[ElementId], a: &Action) {
+    /// Runs one action from timeline `owner`. `script`: it comes from ActionScript, where
+    /// `nextScene()` on a movie clip's timeline has no other scene to go to.
+    fn exec(&mut self, owner: &[ElementId], a: &Action, script: bool) {
         self.refresh();
         let Some(from) = self.index_of(owner) else { return };
         match a {
             Action::Trace { message } => self.out(message.clone()),
+            Action::NextScene | Action::PrevScene if script && !owner.is_empty() => {
+                self.out(format!("{}: a movie clip's timeline has one scene; call it in the main timeline's script", a.describe()));
+            }
             Action::NextScene | Action::PrevScene => {
                 let next = if matches!(a, Action::NextScene) { self.st.scene.checked_add(1) } else { self.st.scene.checked_sub(1) };
                 if let Some(s) = next.filter(|s| *s < self.doc.scenes.len()) {
@@ -774,14 +856,23 @@ impl<'a, 'h> Run<'a, 'h> {
         }
     }
 
-    /// Runs an instance's handler for `event` (in the timeline the instance is on).
+    /// Runs an instance's handler for `event` (in the timeline the instance is on), then the
+    /// listeners scripts added for it (each in the timeline of its script), in the order added.
     fn fire(&mut self, path: &[ElementId], event: ButtonEvent) {
         self.refresh();
         let Some(n) = self.index_of(path).and_then(|i| self.nodes.get(i)) else { return };
-        let Some(h) = n.events.iter().find(|h| h.event == event) else { return };
-        let (actions, owner) = (h.actions.clone(), n.owner);
-        let Some(owner_path) = self.nodes.get(owner).map(|o| o.path.clone()) else { return };
-        self.run_list(&owner_path, &actions);
+        let handler = n.events.iter().find(|h| h.event == event).map(|h| h.actions.clone());
+        let owner_path = self.nodes.get(n.owner).map(|o| o.path.clone());
+        let listeners: Vec<(InstancePath, Arc<Vec<Action>>)> = self.st.listeners.get(path).map(|l| l.iter().filter(|l| l.event == event).map(|l| (l.owner.clone(), l.actions.clone())).collect()).unwrap_or_default();
+        if handler.is_none() && listeners.is_empty() {
+            return;
+        }
+        if let (Some(actions), Some(owner)) = (handler, owner_path) {
+            self.run_list(&owner, &actions, false);
+        }
+        for (owner, actions) in listeners {
+            self.run_list(&owner, &actions, true);
+        }
         self.settle();
     }
 

@@ -1,7 +1,7 @@
 //! Drawing, selection, element and symbol commands.
 
 use crate::params::*;
-use crate::{CommandSpec, EngineError, Result, Session};
+use crate::{CommandSpec, EngineError, Result, Selection, Session};
 use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Layer, LayerId, LoopMode, Paint, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Decomposed, Path, Vec2};
 use serde_json::{Value, json};
@@ -10,36 +10,37 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_rect as crate::RunFn),
-        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_ellipse),
-        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, object?}", true, draw_star),
-        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
+        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_rect as crate::RunFn),
+        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_ellipse),
+        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, cap?, join?, style?, dash?, object?}", true, draw_star),
+        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (the line style, as stroke.set_style; default: the tool's), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
         c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
+        c("draw.snap_to_objects", "Snap to Objects", "View/Snapping", None, "{on?: bool} (default: toggle) dragged points and selections snap to points, lines and fill edges (the `snap` params of element.translate, raw.move_point and raw.move_handle do nothing while it is off)", false, snap_to_objects),
         c("edit.select_all", "Select All", "Edit", Some("Ctrl+A"), "{}", false, select_all),
         c("edit.deselect", "Deselect All", "Edit", Some("Ctrl+Shift+A"), "{}", false, |s, _| {
             s.selection.clear();
             Ok(json!({"selected": 0}))
         }),
-        c("edit.delete", "Clear", "Edit", Some("Delete"), "{}", true, delete),
-        c("edit.duplicate", "Duplicate", "Edit", Some("Ctrl+D"), "{dx?, dy?}", true, duplicate),
-        c("element.select", "Select Elements", "", None, "{ids: [..], add?: bool}", false, select),
-        c("element.pick", "Select at Point", "", None, "{x, y, add?: bool}", false, pick),
-        c("element.translate", "Move", "", None, "{dx, dy}", true, translate),
-        c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, set_transform),
-        c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, set_fill),
-        c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..]}", true, set_stroke),
-        c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, set_alpha),
-        c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, set_blend),
-        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, set_filters),
-        c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, set_loop),
+        c("edit.delete", "Clear", "Edit", Some("Delete"), "{} (on every layer with selected items)", true, delete_selection),
+        c("edit.duplicate", "Duplicate", "Edit", Some("Ctrl+D"), "{dx?, dy?} (each copy on its original's layer)", true, |s, p| s.each_layer(true, |s| duplicate(s, p))),
+        c("element.select", "Select Elements", "", None, "{ids: [..], add?: bool, layer?} selects elements on any visible, unlocked layer at the playhead (ids are unique; `layer` looks only there); the active layer becomes the first one's unless it has some of them", false, select),
+        c("element.pick", "Select at Point", "", None, "{x, y, add?: bool} the topmost element there on a visible, unlocked layer; `add` (Shift) adds it to the selection, or lets go of it, on any layer", false, pick),
+        c("element.translate", "Move", "", None, "{dx, dy, snap?, from?: [x, y]} moves the selection, on every layer; with `snap` (a distance) one of its corners or ends (the nearest to `from`) then snaps onto a point, line or fill edge of the rest within that distance", true, translate),
+        c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, |s, p| s.each_layer(true, |s| set_transform(s, p))),
+        c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, |s, p| s.each_layer(false, |s| set_fill(s, p))),
+        c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..], cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (as stroke.set_style)}", true, |s, p| s.each_layer(false, |s| set_stroke(s, p))),
+        c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
+        c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
+        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
+        c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
-        c("element.rename", "Instance Name", "", None, "{name}", true, rename),
-        c("arrange.bring_to_front", "Bring to Front", "Modify/Arrange", Some("Ctrl+Shift+Up"), "{}", true, |s, _| arrange(s, true)),
-        c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{}", true, |s, _| arrange_step(s, true)),
-        c("arrange.send_backward", "Send Backward", "Modify/Arrange", Some("Ctrl+Down"), "{}", true, |s, _| arrange_step(s, false)),
-        c("arrange.send_to_back", "Send to Back", "Modify/Arrange", Some("Ctrl+Shift+Down"), "{}", true, |s, _| arrange(s, false)),
-        c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name?}", true, convert_to_symbol),
-        c("modify.break_apart", "Break Apart", "Modify", Some("Ctrl+B"), "{}", true, break_apart),
+        c("element.rename", "Instance Name", "", None, "{name}", true, |s, p| s.each_layer(true, |s| rename(s, p))),
+        c("arrange.bring_to_front", "Bring to Front", "Modify/Arrange", Some("Ctrl+Shift+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, true))),
+        c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, true))),
+        c("arrange.send_backward", "Send Backward", "Modify/Arrange", Some("Ctrl+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, false))),
+        c("arrange.send_to_back", "Send to Back", "Modify/Arrange", Some("Ctrl+Shift+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, false))),
+        c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name?} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)", true, convert_to_symbol),
+        c("modify.break_apart", "Break Apart", "Modify", Some("Ctrl+B"), "{}", true, |s, p| s.each_layer(false, |s| break_apart(s, p))),
         c("library.place", "Place Instance", "", None, "{symbol | bitmap, x?, y?}", true, place),
     ]
 }
@@ -65,6 +66,7 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
         None => s.style.stroke_width,
     };
     let profile = opt_profile(p, "profile")?.unwrap_or_else(|| s.style.profile());
+    let line = opt_stroke_style(p, &s.style.line, width)?.unwrap_or_else(|| s.style.line.clone());
     let stroke = if p.get("stroke").is_some_and(Value::is_null) || width <= 0.0 {
         None
     } else {
@@ -73,7 +75,7 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
             None => (s.style.use_stroke || !closed).then_some(Stroke::new(s.style.stroke, width)),
         }
     }
-    .map(|st| st.with_profile(profile));
+    .map(|st| st.with_profile(profile).with_style(line));
     if fill.is_none() && stroke.is_none() {
         return Err(EngineError::Param("shape would be invisible: give it a fill or a stroke".into()));
     }
@@ -99,7 +101,7 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
     // A gradient or bitmap from the fill swatch is in stage space: it stays where it is on the
     // stage (Animate's Lock Fill after the Eyedropper).
     let fill = fill.map(|f| f.transformed(&Affine::translate(-origin.x, -origin.y)));
-    let merge = !object && crate::merge::can_merge(fill.as_ref(), stroke.as_ref());
+    let merge = !object && crate::merge::can_merge(stroke.as_ref());
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
@@ -109,8 +111,9 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
         kind: ElementKind::Shape(Shape { path: Arc::new(local), fill, stroke, fill_rule: Default::default(), merge }),
     };
     if merge {
-        s.selection = crate::merge::merge_in(s, vec![el])?;
-        let ids: Vec<u64> = s.selection.iter().map(|e| e.0).collect();
+        let merged = crate::merge::merge_in(s, vec![el])?;
+        s.select_only(merged);
+        let ids: Vec<u64> = s.selection.id_list();
         return Ok(json!({"element": ids.first(), "elements": ids, "kind": name, "merged": true}));
     }
     let kf = s.editable_keyframe()?;
@@ -118,7 +121,7 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
         return Err(EngineError::State("too many elements on this keyframe".into()));
     }
     kf.elements.push(Arc::new(el));
-    s.selection = vec![id];
+    s.select_only([id]);
     Ok(json!({"element": id.0, "kind": name}))
 }
 
@@ -165,6 +168,11 @@ fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     add_shape(s, "line", Path::line(a - c, b - c), c, None, stroke, object_param(s, p)?)
 }
 
+fn snap_to_objects(s: &mut Session, p: &Value) -> Result<Value> {
+    s.style.snap_objects = opt_bool(p, "on")?.unwrap_or(!s.style.snap_objects);
+    Ok(json!({"snap_to_objects": s.style.snap_objects}))
+}
+
 fn object_drawing(s: &mut Session, p: &Value) -> Result<Value> {
     s.style.object_drawing = opt_bool(p, "on")?.unwrap_or(!s.style.object_drawing);
     Ok(json!({"object_drawing": s.style.object_drawing}))
@@ -172,27 +180,63 @@ fn object_drawing(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ----- selection --------------------------------------------------------------------------
 
+/// Everything on every visible, unlocked layer at the playhead, as Animate's Select All.
 fn select_all(s: &mut Session, _: &Value) -> Result<Value> {
-    s.selection = s.visible_elements().iter().map(|e| e.id).collect();
+    let layers: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).collect();
+    let mut sel = Selection::default();
+    for l in layers.into_iter().filter(|l| s.gathers(*l)) {
+        sel.extend_on(l, s.elements_on(l).iter().map(|e| e.id));
+    }
+    s.selection = sel;
     Ok(json!({"selected": s.selection.len()}))
 }
 
+/// Most ids `element.select` takes.
+const MAX_SELECT: usize = 100_000;
+
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = opt_u64_list(p, "ids")?.ok_or_else(|| EngineError::Param("param 'ids' is required".into()))?;
+    if ids.len() > MAX_SELECT {
+        return Err(EngineError::Param(format!("param 'ids' has more than {MAX_SELECT} ids")));
+    }
     let add = opt_bool(p, "add")?.unwrap_or(false);
-    let present: Vec<ElementId> = s.visible_elements().iter().map(|e| e.id).collect();
+    // Where each element is at the playhead: on `layer`, else the active layer first, then the
+    // others top to bottom.
+    let order: Vec<LayerId> = match opt_u64(p, "layer")?.map(LayerId) {
+        Some(l) if s.doc.timeline(s.scene).layer(l).is_none() => return Err(EngineError::State(format!("no layer with id {}", l.0))),
+        Some(l) => vec![l],
+        None => std::iter::once(s.layer).chain(s.doc.timeline(s.scene).layers.iter().map(|l| l.id).filter(|l| *l != s.layer)).collect(),
+    };
+    let mut at: std::collections::HashMap<ElementId, LayerId> = std::collections::HashMap::new();
+    for l in order {
+        for e in s.elements_on(l) {
+            at.entry(e.id).or_insert(l);
+        }
+    }
+    let mut picked: Vec<(LayerId, ElementId)> = Vec::with_capacity(ids.len());
+    for id in ids.into_iter().map(ElementId) {
+        let Some(&l) = at.get(&id) else {
+            return Err(EngineError::State(format!("element {} is not on the active layer, or any layer, at this frame", id.0)));
+        };
+        if !s.selectable(l) {
+            let name = s.doc.timeline(s.scene).layer(l).map(|x| x.name.clone()).unwrap_or_default();
+            return Err(EngineError::State(format!("element {} is on layer '{name}', which is locked or hidden", id.0)));
+        }
+        picked.push((l, id));
+    }
     if !add {
         s.selection.clear();
     }
-    for id in ids.into_iter().map(ElementId) {
-        if !present.contains(&id) {
-            return Err(EngineError::State(format!("element {} is not on the active layer at this frame", id.0)));
-        }
-        if !s.selection.contains(&id) {
-            s.selection.push(id);
-        }
+    for &(l, id) in &picked {
+        s.selection.insert(l, id);
     }
-    Ok(json!({"selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>()}))
+    // As a click does: the active layer is where the artwork is.
+    if let Some(&(l, _)) = picked.first()
+        && !picked.iter().any(|(x, _)| *x == s.layer)
+    {
+        s.layer = l;
+    }
+    Ok(json!({"selected": s.selection.id_list()}))
 }
 
 fn pick(s: &mut Session, p: &Value) -> Result<Value> {
@@ -200,19 +244,13 @@ fn pick(s: &mut Session, p: &Value) -> Result<Value> {
     let add = opt_bool(p, "add")?.unwrap_or(false);
     match s.hit_test(pt, 2.0) {
         Some((layer, el)) => {
-            if layer != s.layer {
-                s.layer = layer;
-                s.selection.clear();
-            }
+            // Shift adds it to (or takes it from) the selection, whichever layers that is on.
             if add {
-                if let Some(i) = s.selection.iter().position(|e| *e == el) {
-                    s.selection.remove(i);
-                } else {
-                    s.selection.push(el);
-                }
-            } else if !s.selection.contains(&el) {
-                s.selection = vec![el];
+                s.selection.toggle(layer, el);
+            } else if !s.selection.contains(layer, el) {
+                s.selection = Selection::only(layer, [el]);
             }
+            s.layer = layer;
             Ok(json!({"layer": layer.0, "element": el.0}))
         }
         None => {
@@ -227,13 +265,39 @@ fn pick(s: &mut Session, p: &Value) -> Result<Value> {
 // ----- element edits ----------------------------------------------------------------------
 
 fn translate(s: &mut Session, p: &Value) -> Result<Value> {
-    let (dx, dy) = (f32_req(p, "dx")?, f32_req(p, "dy")?);
-    let els = s.selected_elements_mut()?;
-    let n = els.len();
-    for e in els {
-        e.transform = Affine::translate(dx, dy).mul(&e.transform);
+    let (mut dx, mut dy) = (f32_req(p, "dx")?, f32_req(p, "dy")?);
+    let snap = s.style.snap_radius(opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0));
+    let from = match p.get("from").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => {
+            let xy = v.as_array().filter(|a| a.len() == 2).and_then(|a| Some(Vec2::new(a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32)));
+            Some(xy.filter(|q| q.is_finite()).ok_or_else(|| EngineError::Param("param 'from' must be [x, y]".into()))?)
+        }
+    };
+    let n = move_by(s, Vec2::new(dx, dy))?;
+    // Snapping while dragging (ADR 0041): a little more, onto what is near.
+    let mut snapped = Value::Null;
+    if snap > 0.0
+        && let Some((extra, at, kind)) = crate::cmds_raw::snap_selection(s, snap, from)
+    {
+        move_by(s, extra)?;
+        (dx, dy) = (dx + extra.x, dy + extra.y);
+        snapped = json!({"x": at.x, "y": at.y, "to": kind.key()});
     }
-    Ok(json!({"moved": n}))
+    Ok(json!({"moved": n, "dx": dx, "dy": dy, "snapped": snapped}))
+}
+
+/// Moves the selection by `d` on every layer it is on; how many elements moved.
+fn move_by(s: &mut Session, d: Vec2) -> Result<u64> {
+    let v = s.each_layer(true, |s| {
+        let els = s.selected_elements_mut()?;
+        let n = els.len();
+        for e in els {
+            e.transform = Affine::translate(d.x, d.y).mul(&e.transform);
+        }
+        Ok(json!({"moved": n}))
+    })?;
+    Ok(v["moved"].as_u64().unwrap_or(0))
 }
 
 fn set_transform(s: &mut Session, p: &Value) -> Result<Value> {
@@ -306,12 +370,14 @@ fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let profile = opt_profile(p, "profile")?;
     let default = s.style.clone();
+    // Checked once up front, so a bad style param changes nothing.
+    opt_stroke_style(p, &default.line, default.stroke_width)?;
     for sh in shapes_mut(s)? {
         if remove {
             sh.stroke = None;
             continue;
         }
-        let mut st = sh.stroke.take().unwrap_or_else(|| Stroke::new(default.stroke, default.stroke_width).with_profile(default.profile()));
+        let mut st = sh.stroke.take().unwrap_or_else(|| default.new_stroke(default.stroke, default.stroke_width));
         if let Some(c) = color {
             st.color = c;
         }
@@ -320,6 +386,9 @@ fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(pr) = &profile {
             st = st.with_profile(pr.clone());
+        }
+        if let Some(line) = opt_stroke_style(p, &st.style, st.width)? {
+            st = st.with_style(line);
         }
         sh.stroke = (st.width > 0.0).then_some(st);
     }
@@ -467,8 +536,8 @@ fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
         Some(id) => SymbolId(id),
         None => {
             // The symbol of the selected instance.
-            let sel = s.selection.first().copied().ok_or_else(|| EngineError::State("select a symbol instance, or pass 'symbol'".into()))?;
-            s.visible_elements()
+            let (layer, sel) = s.selection.first().ok_or_else(|| EngineError::State("select a symbol instance, or pass 'symbol'".into()))?;
+            s.elements_on(layer)
                 .iter()
                 .find(|e| e.id == sel)
                 .and_then(|e| match e.kind {
@@ -491,8 +560,13 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"name": name}))
 }
 
-pub(crate) fn delete(s: &mut Session, _: &Value) -> Result<Value> {
-    let sel = s.selection.clone();
+/// Clear: the selection goes, on every layer it is on.
+pub(crate) fn delete_selection(s: &mut Session, p: &Value) -> Result<Value> {
+    s.each_layer(true, |s| delete(s, p))
+}
+
+fn delete(s: &mut Session, _: &Value) -> Result<Value> {
+    let sel = s.selection.on(s.layer);
     if sel.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));
     }
@@ -507,7 +581,7 @@ pub(crate) fn delete(s: &mut Session, _: &Value) -> Result<Value> {
 fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     let dx = opt_f32(p, "dx")?.unwrap_or(10.0);
     let dy = opt_f32(p, "dy")?.unwrap_or(10.0);
-    let sel = s.selection.clone();
+    let sel = s.selection.on(s.layer);
     if sel.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));
     }
@@ -521,12 +595,12 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         out.push(Arc::new(e));
     }
     s.editable_keyframe()?.elements.extend(out);
-    s.selection = new_ids.clone();
+    s.select_only(new_ids.iter().copied());
     Ok(json!({"created": new_ids.iter().map(|e| e.0).collect::<Vec<_>>()}))
 }
 
 fn arrange(s: &mut Session, front: bool) -> Result<Value> {
-    let sel = s.selection.clone();
+    let sel = s.selection.on(s.layer);
     if sel.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));
     }
@@ -539,7 +613,7 @@ fn arrange(s: &mut Session, front: bool) -> Result<Value> {
 /// Bring Forward / Send Backward: each selected element swaps with the unselected neighbour
 /// above (or below) it; a selected block moves as one, keeping its order.
 fn arrange_step(s: &mut Session, forward: bool) -> Result<Value> {
-    let sel = s.selection.clone();
+    let sel = s.selection.on(s.layer);
     if sel.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));
     }
@@ -565,31 +639,22 @@ fn arrange_step(s: &mut Session, forward: bool) -> Result<Value> {
 
 // ----- symbols ----------------------------------------------------------------------------
 
+/// Convert to Symbol. The registration point is the centre of the selection's bounds. A
+/// selection on several layers becomes one symbol with those layers inside it (named and
+/// stacked as they are), and its instance lands on the topmost of them, where its first
+/// selected element was; the other layers lose what was selected (ADR 0044).
 pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
-    let sel = s.selection.clone();
-    if sel.is_empty() {
+    let layers = s.selected_layers();
+    let Some(&top) = layers.first() else {
         return Err(EngineError::State("select something to convert".into()));
-    }
+    };
     let n = s.doc.library.len() + 1;
     let name: String = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| format!("Symbol {n}"));
     let bounds = s.selection_bounds();
     let center = if bounds.is_empty() { Vec2::ZERO } else { bounds.center() };
     let sym_id = SymbolId(s.doc.alloc_id());
-    let layer_id = LayerId(s.doc.alloc_id());
+    let first_layer = LayerId(s.doc.alloc_id());
     let inst_id = ElementId(s.doc.alloc_id());
-    let kf = s.editable_keyframe()?;
-    let first_pos = kf.elements.iter().position(|e| sel.contains(&e.id)).unwrap_or(kf.elements.len());
-    let (picked, rest): (Vec<Arc<Element>>, Vec<Arc<Element>>) = kf.elements.drain(..).partition(|e| sel.contains(&e.id));
-    // Children are stored relative to the registration point (the selection centre).
-    let to_local = Affine::translate(-center.x, -center.y);
-    let children: Vec<Arc<Element>> = picked
-        .into_iter()
-        .map(|e| {
-            let mut e = Arc::unwrap_or_clone(e);
-            e.transform = to_local.mul(&e.transform);
-            Arc::new(e)
-        })
-        .collect();
     let instance = Element {
         id: inst_id,
         name: String::new(),
@@ -597,20 +662,46 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         color: ColorEffect::default(),
         kind: ElementKind::Symbol { symbol: sym_id, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new(), events: Vec::new() },
     };
-    let mut elements = rest;
-    elements.insert(first_pos.min(elements.len()), Arc::new(instance));
-    kf.elements = elements;
-    let mut layer = Layer::new(layer_id, "Layer 1");
-    if let Some(k) = layer.keyframe_mut(0) {
-        k.elements = children;
+    // Children are stored relative to the registration point (the selection centre).
+    let to_local = Affine::translate(-center.x, -center.y);
+    let single = layers.len() == 1;
+    let mut inner: Vec<Arc<Layer>> = Vec::with_capacity(layers.len());
+    for l in layers {
+        let sel = s.selection.on(l);
+        let source = s.doc.timeline(s.scene).layer(l).map(|x| x.name.clone()).unwrap_or_default();
+        let picked = s.with_layer(l, |s| -> Result<Vec<Arc<Element>>> {
+            let kf = s.editable_keyframe()?;
+            let first_pos = kf.elements.iter().position(|e| sel.contains(&e.id)).unwrap_or(kf.elements.len());
+            let (picked, mut rest): (Vec<Arc<Element>>, Vec<Arc<Element>>) = kf.elements.drain(..).partition(|e| sel.contains(&e.id));
+            if l == top {
+                rest.insert(first_pos.min(rest.len()), Arc::new(instance.clone()));
+            }
+            kf.elements = rest;
+            Ok(picked)
+        })?;
+        let children: Vec<Arc<Element>> = picked
+            .into_iter()
+            .map(|e| {
+                let mut e = Arc::unwrap_or_clone(e);
+                e.transform = to_local.mul(&e.transform);
+                Arc::new(e)
+            })
+            .collect();
+        let id = if inner.is_empty() { first_layer } else { LayerId(s.doc.alloc_id()) };
+        let mut layer = Layer::new(id, if single { "Layer 1".to_string() } else { source });
+        if let Some(k) = layer.keyframe_mut(0) {
+            k.elements = children;
+        }
+        inner.push(Arc::new(layer));
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
-    s.selection = vec![inst_id];
-    Ok(json!({"symbol": sym_id.0, "instance": inst_id.0, "name": name}))
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: inner } }));
+    s.layer = top;
+    s.select_only([inst_id]);
+    Ok(json!({"symbol": sym_id.0, "instance": inst_id.0, "name": name, "layer": top.0}))
 }
 
 fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
-    let sel = s.selection.clone();
+    let sel = s.selection.on(s.layer);
     if sel.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));
     }
@@ -657,7 +748,7 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
         return Err(EngineError::State("the selection has no symbol instances or text to break apart".into()));
     }
     s.editable_keyframe()?.elements = out;
-    s.selection = fresh_ids.clone();
+    s.select_only(fresh_ids.iter().copied());
     Ok(json!({"created": fresh_ids.len()}))
 }
 
@@ -682,7 +773,7 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
         kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new(), events: Vec::new() },
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
-    s.selection = vec![id];
+    s.select_only([id]);
     Ok(json!({"element": id.0}))
 }
 
@@ -708,6 +799,6 @@ fn place_bitmap(s: &mut Session, p: &Value, bitmap: anicraft_doc::BitmapId) -> R
         }),
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
-    s.selection = vec![id];
+    s.select_only([id]);
     Ok(json!({"element": id.0}))
 }

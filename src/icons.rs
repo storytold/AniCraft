@@ -65,11 +65,17 @@ pub enum Icon {
     Sound,
     SoundOff,
     Camera,
+    Magnet,
+    Bone,
+    EditMultiple,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 51] = [
+    pub const ALL: [Icon; 54] = [
+        Icon::EditMultiple,
+        Icon::Bone,
+        Icon::Magnet,
         Icon::SoundOff,
         Icon::Camera,
         Icon::Width,
@@ -192,6 +198,13 @@ impl Icon {
             Icon::Folder => ("folder", false),
             // A film camera with its two reels (AniCraft original, on Lucide's grid).
             Icon::Camera => ("anicraft-camera", false),
+            // A horseshoe magnet, poles up (AniCraft original, on Lucide's grid): Snap to Objects.
+            Icon::Magnet => ("anicraft-magnet", false),
+            // A bone: a wedge from its joint to its end (AniCraft original, on Lucide's grid).
+            Icon::Bone => ("anicraft-bone", false),
+            // Frames stacked one behind the other, all edited at once (AniCraft original, on
+            // Lucide's grid): Edit Multiple Frames.
+            Icon::EditMultiple => ("anicraft-edit-multiple", false),
             Icon::FolderOpen => ("folder-open", false),
         }
     }
@@ -222,6 +235,7 @@ static FILES: &[(&str, &str)] = &[
     ("type", include_str!("../assets/icons/type.svg")),
     ("volume-2", include_str!("../assets/icons/volume-2.svg")),
     ("anicraft-sound-off", include_str!("../assets/icons/anicraft-sound-off.svg")),
+    ("anicraft-magnet", include_str!("../assets/icons/anicraft-magnet.svg")),
     ("play", include_str!("../assets/icons/play.svg")),
     ("pause", include_str!("../assets/icons/pause.svg")),
     ("rotate-cw", include_str!("../assets/icons/rotate-cw.svg")),
@@ -245,6 +259,8 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-eyedropper", include_str!("../assets/icons/anicraft-eyedropper.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
+    ("anicraft-bone", include_str!("../assets/icons/anicraft-bone.svg")),
+    ("anicraft-edit-multiple", include_str!("../assets/icons/anicraft-edit-multiple.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
 ];

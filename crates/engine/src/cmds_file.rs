@@ -168,14 +168,19 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             anicraft_xfl::import_path(&path)
         };
-        let (doc, report) = imported.map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+        let (mut doc, report) = imported.map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+        // Raw artwork arrives one shape per style: each keyframe's becomes one merged drawing,
+        // as it was in Animate (ADR 0042).
+        let merged = crate::merge::merge_document(&mut doc);
         s.replace_document(doc, None);
         let mut info = s.info();
         info["imported"] = json!(path.display().to_string());
         info["report"] = json!(report.summary());
         info["skipped"] = json!(report.skipped);
         info["kept"] = json!(report.kept);
+        info["runs"] = json!(report.runs);
         info["missing_fonts"] = json!(report.missing_fonts);
+        info["merged_keyframes"] = json!(merged);
         return Ok(info);
     }
     let doc = format::load(&path)?;
@@ -347,7 +352,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         s.layer = lid;
         (lid, ids, made, Some(fid.0))
     };
-    s.selection = ids.clone();
+    s.select_only(ids.iter().copied());
     Ok(json!({
         "layer": layer_id.0,
         "folder": folder,

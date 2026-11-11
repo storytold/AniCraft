@@ -1,6 +1,6 @@
 # ADR 0038: Editing motion path points and moving the whole path
 
-* Status: accepted (2026-11-09)
+* Status: accepted (2026-11-09); anchors tied to frames came in ADR 0049
 * Relates to: ADR 0030 (motion paths), ADR 0016 (motion tweens), ADR 0004 (destructive
   actions), roadmap M2
 
@@ -97,6 +97,10 @@ the timing model of ADR 0030 cleanly:
 Until then, moving the object at a frame bends the path through that point (ADR 0030 §4),
 which covers the common "be here on this frame" case without a new model.
 
+*ADR 0049 does this: pinned anchors with frames, whose X/Y keys hold their place, cutting the
+timing into legs. Point edits keep pins on their anchors, deleting a pinned point lets its pin
+go, and unpinning brings back this ADR's behaviour.*
+
 ## Consequences
 
 * The X/Y keys never change from a point edit, so retiming and path editing stay independent.
@@ -111,7 +115,7 @@ which covers the common "be here on this frame" case without a new model.
 
   Most of the cost is measuring the path again (`CurveWalk`) and snapshotting the keyframe.
 * Not yet (later PRs):
-  * anchors tied to frames (above);
+  * ~~anchors tied to frames (above)~~ (ADR 0049);
   * a marquee over motion path anchors;
   * arrow-key nudging and Free Transform (scale, rotate) of a whole path;
   * deleting an end by giving the start to the next anchor (with its keys);

@@ -13,8 +13,16 @@
 //! *when* it gets where: the share of the way along the path at a frame is the share of the
 //! distance the X/Y curves have covered by then. With *orient to path* the object also turns
 //! as the path turns. Without a path the X/Y curves place the object, as before.
+//!
+//! Anchors of the path may be *pinned* to frames (ADR 0049): the object passes a pinned anchor
+//! exactly on its frame, and the X/Y keys there hold the anchor's place. The ends are always
+//! pinned, to the first and last position keys. Pins cut the motion into legs; on each leg the
+//! X/Y curves time the object along the stretch of path between its two pinned anchors, as they
+//! time the whole path when only the ends are pinned. Anchors that aren't pinned shape the path
+//! only.
 
 use crate::{Element, ElementId, Easing};
+use anicraft_geom::edit::ANCHOR;
 use anicraft_geom::walk::CurveWalk;
 use anicraft_geom::{Affine, Decomposed, Path, PathCmd, Vec2};
 use serde::{Deserialize, Serialize};
@@ -258,6 +266,36 @@ impl Track {
     }
 }
 
+/// A motion path anchor pinned to a frame (ADR 0049): the object passes the anchor exactly
+/// then. Only anchors between the ends are stored; the ends are pinned to the first and last
+/// position keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pin {
+    /// Frames from the span's first frame.
+    pub frame: u32,
+    /// The anchor: path command `anchor` (0 is the start).
+    pub anchor: u32,
+}
+
+/// Why an anchor can't be pinned (or a pin added) where asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinError {
+    /// The tween has no motion path.
+    NoPath,
+    /// No such anchor on the path.
+    NoAnchor,
+    /// An end: always pinned to the first or last position key.
+    End,
+    /// The frame isn't strictly between the first and last position keys (these frames).
+    Outside(u32, u32),
+    /// Pins keep the path's order (a later frame on a later anchor); this one is in the way.
+    Order(Pin),
+    /// The object is off the path at that frame (an ease overshooting an end).
+    OffPath,
+    /// The path holds as many segments as it may.
+    Full,
+}
+
 /// A motion tween on a keyframe span (see the module docs).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MotionTween {
@@ -275,6 +313,10 @@ pub struct MotionTween {
     /// Orient to path: the object turns as the path turns (relative to its turn at the start).
     #[serde(default, skip_serializing_if = "is_false")]
     pub orient: bool,
+    /// Anchors between the ends pinned to frames (ADR 0049), by frame; both frames and anchors
+    /// increase. Files from before pins have none: only the ends are pinned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<Pin>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -350,6 +392,9 @@ pub struct OnPath<'a> {
     keys: Vec<(f32, Vec2)>,
     /// `cum[i]`: chord length from the first position key to key `i`.
     cum: Vec<f32>,
+    /// Where the legs start and end: the first position key, each pin and the last position key,
+    /// as an index into `keys` and the distance along the path of the anchor pinned there.
+    stations: Vec<(usize, f32)>,
     /// Direction of travel at the start, radians.
     start_angle: f32,
 }
@@ -359,34 +404,46 @@ impl OnPath<'_> {
         &self.walk
     }
 
-    /// The share of the path covered `frame` frames into the span: 0 up to the first position
-    /// key (and without two), 1 from the last; an overshooting ease may leave 0..1 in between.
-    /// Where the chords add up to nothing (a path back to its start) the object keeps an even
-    /// pace between the first and last position keys.
+    /// The share of the path covered `frame` frames into the span (see [`OnPath::distance`]).
     pub fn progress(&self, frame: f32) -> f32 {
+        let l = self.walk.length();
+        if l > 0.0 { self.distance(frame) / l } else { 0.0 }
+    }
+
+    /// Distance along the path at `frame`: 0 up to the first position key (and without two), the
+    /// whole length from the last; an overshooting ease may go beyond in between.
+    ///
+    /// The pins cut the span into legs, each from one pinned anchor to the next. On a leg, the
+    /// position keys inside it split it again; on each of those pieces the X/Y curves run from
+    /// one key's position to the next, and how far along that chord they are (signed) is how far
+    /// along the piece's share of the leg's stretch of path the object is, the shares being the
+    /// chords' lengths. Where a leg's chords add up to nothing (a loop) the object keeps an even
+    /// pace across it. With only the ends pinned this is ADR 0030's timing, number for number.
+    pub fn distance(&self, frame: f32) -> f32 {
+        let l = self.walk.length();
         let (Some(first), Some(last)) = (self.keys.first(), self.keys.last()) else { return 0.0 };
         if !frame.is_finite() || frame <= first.0 || last.0 <= first.0 {
             return 0.0;
         }
         if frame >= last.0 {
-            return 1.0;
-        }
-        let total = self.cum.last().copied().unwrap_or(0.0);
-        if total <= 1e-4 {
-            return (frame - first.0) / (last.0 - first.0);
+            return l;
         }
         let i = self.keys.partition_point(|k| k.0 <= frame).saturating_sub(1);
-        let (Some(a), Some(b)) = (self.keys.get(i), self.keys.get(i + 1)) else { return 1.0 };
-        let chord = b.1 - a.1;
-        let len = chord.length();
-        let along = if len > 1e-6 { (self.tween.trace_at(&self.base, frame) - a.1).dot(chord) / len } else { 0.0 };
-        let p = (self.cum.get(i).copied().unwrap_or(0.0) + along) / total;
-        if p.is_finite() { p } else { 0.0 }
-    }
-
-    /// Distance along the path at `frame` (beyond the ends while an ease overshoots them).
-    pub fn distance(&self, frame: f32) -> f32 {
-        self.progress(frame) * self.walk.length()
+        let leg = self.stations.partition_point(|st| st.0 <= i).saturating_sub(1);
+        let (Some(&(ka, sa)), Some(&(kb, sb))) = (self.stations.get(leg), self.stations.get(leg + 1)) else { return l };
+        let (Some(a), Some(b), Some(fa), Some(fb)) = (self.keys.get(i), self.keys.get(i + 1), self.keys.get(ka), self.keys.get(kb)) else { return l };
+        let c0 = self.cum.get(ka).copied().unwrap_or(0.0);
+        let total = self.cum.get(kb).copied().unwrap_or(0.0) - c0;
+        let p = if total <= 1e-4 {
+            (frame - fa.0) / (fb.0 - fa.0)
+        } else {
+            let chord = b.1 - a.1;
+            let len = chord.length();
+            let along = if len > 1e-6 { (self.tween.trace_at(&self.base, frame) - a.1).dot(chord) / len } else { 0.0 };
+            (self.cum.get(i).copied().unwrap_or(0.0) - c0 + along) / total
+        };
+        let p = if p.is_finite() { p } else { 0.0 };
+        sa + p * (sb - sa)
     }
 
     /// The registration point at `frame`. Overshooting an end carries on along the path's
@@ -414,7 +471,7 @@ impl OnPath<'_> {
 
 impl MotionTween {
     pub fn new(target: ElementId) -> MotionTween {
-        MotionTween { target, tracks: Vec::new(), path: None, orient: false }
+        MotionTween { target, tracks: Vec::new(), path: None, orient: false, pins: Vec::new() }
     }
 
     /// The first and last frames holding an X or Y key.
@@ -433,18 +490,32 @@ impl MotionTween {
     /// path.
     pub fn on_path(&self, base: &Props) -> Option<OnPath<'_>> {
         let walk = CurveWalk::new(self.path.as_ref()?)?;
+        let pins = self.live_pins();
         let mut frames: Vec<u32> = [Property::X, Property::Y].into_iter().filter_map(|p| self.track(p)).flat_map(|t| t.keys.iter().map(|k| k.frame)).collect();
+        // A pin's frame holds X/Y keys (commands see to it); a leg ends there all the same.
+        frames.extend(pins.iter().map(|p| p.frame));
         frames.sort_unstable();
         frames.dedup();
-        let keys: Vec<(f32, Vec2)> = frames.into_iter().map(|f| (f as f32, self.trace_at(base, f as f32))).collect();
+        let keys: Vec<(f32, Vec2)> = frames.iter().map(|&f| (f as f32, self.trace_at(base, f as f32))).collect();
         let mut cum = Vec::with_capacity(keys.len());
         let mut d = 0.0f32;
         for (i, k) in keys.iter().enumerate() {
             d += i.checked_sub(1).and_then(|p| keys.get(p)).map_or(0.0, |p| p.1.distance(k.1));
             cum.push(d);
         }
+        let mut stations = vec![(0usize, 0.0f32)];
+        for pin in &pins {
+            if let (Ok(i), Some(s)) = (frames.binary_search(&pin.frame), walk.anchor_distance(pin.anchor as usize))
+                && stations.last().is_some_and(|l| l.0 < i)
+            {
+                stations.push((i, s));
+            }
+        }
+        if keys.len() > 1 {
+            stations.push((keys.len() - 1, walk.length()));
+        }
         let t = walk.tangent(0.0);
-        Some(OnPath { tween: self, base: *base, start_angle: t.y.atan2(t.x), walk, keys, cum })
+        Some(OnPath { tween: self, base: *base, start_angle: t.y.atan2(t.x), walk, keys, cum, stations })
     }
 
     /// The registration point on each of the span's first `frames` frames (at most a day of
@@ -460,13 +531,21 @@ impl MotionTween {
     /// A motion path through the X/Y curves' positions at their keys, as straight segments:
     /// the path a tween without one shows, made editable. `None` when the object doesn't move.
     pub fn path_from_tracks(&self, base: &Props) -> Option<Path> {
+        self.path_and_pins_from_tracks(base).map(|(p, _)| p)
+    }
+
+    /// [`MotionTween::path_from_tracks`] with the position keys between the ends pinned to the
+    /// anchors they made (the first key at a place, where the object holds still a while).
+    pub fn path_and_pins_from_tracks(&self, base: &Props) -> Option<(Path, Vec<Pin>)> {
         let mut frames: Vec<u32> = [Property::X, Property::Y].into_iter().filter_map(|p| self.track(p)).flat_map(|t| t.keys.iter().map(|k| k.frame)).collect();
         frames.sort_unstable();
         frames.dedup();
         let mut pts: Vec<Vec2> = Vec::new();
+        let mut pins = Vec::new();
         for f in frames.into_iter().take(MAX_PATH_SEGMENTS + 1) {
             let q = self.trace_at(base, f as f32);
             if pts.last().is_none_or(|l| l.distance(q) > 1e-3) {
+                pins.push(Pin { frame: f, anchor: pts.len() as u32 });
                 pts.push(q);
             }
         }
@@ -476,16 +555,64 @@ impl MotionTween {
         for q in rest {
             p.line_to(*q);
         }
-        motion_path(&p)
+        let path = motion_path(&p)?;
+        let n = path.cmds.len();
+        pins.retain(|p| p.anchor > 0 && (p.anchor as usize) + 1 < n);
+        Some((path, pins))
+    }
+
+    /// The pins in force: between the ends in both frame and anchor, frames and anchors
+    /// increasing. Others are ignored (and dropped when a file is loaded).
+    pub fn live_pins(&self) -> Vec<Pin> {
+        let (Some(path), Some((f0, f1))) = (&self.path, self.position_range()) else { return Vec::new() };
+        let n = path.cmds.len();
+        let mut out: Vec<Pin> = Vec::new();
+        for p in &self.pins {
+            let inside = p.frame > f0 && p.frame < f1 && p.anchor > 0 && (p.anchor as usize).saturating_add(1) < n;
+            if inside && out.last().is_none_or(|q| q.frame < p.frame && q.anchor < p.anchor) {
+                out.push(*p);
+            }
+        }
+        out
+    }
+
+    /// Every anchor tied to a frame, in order: the start at the first position key, the pins,
+    /// and the end at the last. A tween without a path of its own gives those of the straight
+    /// path its X/Y curves trace. Empty while the object doesn't move.
+    pub fn pinned_anchors(&self, base: &Props) -> Vec<Pin> {
+        let Some((f0, f1)) = self.position_range().filter(|(a, b)| b > a) else { return Vec::new() };
+        let (n, pins) = match &self.path {
+            Some(p) => (p.cmds.len(), self.live_pins()),
+            None => match self.path_and_pins_from_tracks(base) {
+                Some((p, pins)) => (p.cmds.len(), pins),
+                None => return Vec::new(),
+            },
+        };
+        let mut v = Vec::with_capacity(pins.len() + 2);
+        v.push(Pin { frame: f0, anchor: 0 });
+        v.extend(pins);
+        v.push(Pin { frame: f1, anchor: n.saturating_sub(1) as u32 });
+        v
     }
 
     /// Gives the tween motion path `path` (made a [`motion_path`]; false when nothing usable
     /// is left). Its ends become the X/Y keys at the first and last position keys, or at the
     /// span's first frame and frame `last` when there are none, so the curves start and end
-    /// where the path does.
+    /// where the path does; each pinned anchor's place becomes the X/Y keys on its frame.
+    ///
+    /// A tween without a path of its own shows the straight one through its position keys,
+    /// which are pinned to its anchors: a path with as many anchors is that one edited, and
+    /// keeps them pinned. Pins on anchors the new path doesn't have are let go, with their keys.
     pub fn set_path(&mut self, path: &Path, base: &Props, last: u32) -> bool {
         let Some(p) = motion_path(path) else { return false };
         let Some((a, b)) = path_ends(&p) else { return false };
+        if self.path.is_none()
+            && self.pins.is_empty()
+            && let Some((implied, pins)) = self.path_and_pins_from_tracks(base)
+            && implied.cmds.len() == p.cmds.len()
+        {
+            self.pins = pins;
+        }
         let (f0, f1) = match self.position_range() {
             Some((f0, f1)) if f1 > f0 => (f0, f1),
             _ if last > 0 => (0, last),
@@ -501,7 +628,184 @@ impl MotionTween {
                 self.set_key(prop, f1, v1, base.get(prop));
             }
         }
+        let n = p.cmds.len();
         self.path = Some(p);
+        let (keep, gone): (Vec<Pin>, Vec<Pin>) = self.pins.iter().partition(|q| q.anchor > 0 && (q.anchor as usize).saturating_add(1) < n);
+        self.pins = keep;
+        for q in gone {
+            self.remove_pin_keys(q.frame);
+        }
+        self.sync_pins(base);
+        true
+    }
+
+    /// Writes each pinned anchor's place as the X/Y keys on its frame (leaving keys alone that
+    /// already hold it, so editing elsewhere keeps the timing exactly).
+    fn sync_pins(&mut self, base: &Props) {
+        let Some(path) = self.path.clone() else { return };
+        for pin in self.live_pins() {
+            let Some(q) = path.point(pin.anchor as usize, ANCHOR) else { continue };
+            for (prop, v) in [(Property::X, q.x), (Property::Y, q.y)] {
+                let holds = self.track(prop).and_then(|t| t.key_at(pin.frame).and_then(|i| t.keys.get(i))).is_some_and(|k| k.value == v);
+                if !holds {
+                    self.set_key(prop, pin.frame, v, base.get(prop));
+                }
+            }
+        }
+    }
+
+    /// Removes the X/Y keys a pin held on `frame`, unless that frame is an end's.
+    fn remove_pin_keys(&mut self, frame: u32) {
+        if self.position_range().is_some_and(|(f0, f1)| f0 < frame && frame < f1) {
+            self.remove_track_key(Property::X, frame);
+            self.remove_track_key(Property::Y, frame);
+        }
+    }
+
+    /// Pins anchor `anchor` to `frame`: the object passes it exactly then, and the X/Y keys on
+    /// that frame hold its place. A pin already on that frame, or that anchor's pin on another
+    /// frame, gives way.
+    pub fn pin(&mut self, anchor: usize, frame: u32, base: &Props) -> Result<(), PinError> {
+        let Some(path) = &self.path else { return Err(PinError::NoPath) };
+        let n = path.cmds.len();
+        if anchor >= n {
+            return Err(PinError::NoAnchor);
+        }
+        if anchor == 0 || anchor + 1 == n {
+            return Err(PinError::End);
+        }
+        let (f0, f1) = self.position_range().unwrap_or((0, 0));
+        if !(f0 < frame && frame < f1) {
+            return Err(PinError::Outside(f0, f1));
+        }
+        let Some(q) = path.point(anchor, ANCHOR) else { return Err(PinError::NoAnchor) };
+        let a = anchor as u32;
+        let live = self.live_pins();
+        if let Some(p) = live.iter().find(|p| p.frame != frame && p.anchor != a && (p.frame < frame) != (p.anchor < a)) {
+            return Err(PinError::Order(*p));
+        }
+        self.pins = live;
+        if let Some(old) = self.pins.iter().find(|p| p.anchor == a && p.frame != frame).copied() {
+            self.unpin(old.frame);
+        }
+        self.pins.retain(|p| p.frame != frame);
+        let i = self.pins.partition_point(|p| p.frame < frame);
+        self.pins.insert(i, Pin { frame, anchor: a });
+        for (prop, v) in [(Property::X, q.x), (Property::Y, q.y)] {
+            self.set_key(prop, frame, v, base.get(prop));
+        }
+        Ok(())
+    }
+
+    /// Pins the path where the object is on `frame`: on the anchor there, or on a new one (the
+    /// path's shape unchanged). The anchor pinned.
+    pub fn pin_here(&mut self, frame: u32, base: &Props) -> Result<usize, PinError> {
+        if self.path.is_none() {
+            return Err(PinError::NoPath);
+        }
+        let (f0, f1) = self.position_range().unwrap_or((0, 0));
+        if !(f0 < frame && frame < f1) {
+            return Err(PinError::Outside(f0, f1));
+        }
+        if let Some(p) = self.live_pins().into_iter().find(|p| p.frame == frame) {
+            return Ok(p.anchor as usize);
+        }
+        let (s, l, (cmd, t)) = {
+            let op = self.on_path(base).ok_or(PinError::NoPath)?;
+            let s = op.distance(frame as f32);
+            (s, op.walk().length(), op.walk().locate(s))
+        };
+        if !(0.0..=l).contains(&s) {
+            return Err(PinError::OffPath);
+        }
+        let mut trial = self.clone();
+        let anchor = if t <= 1e-3 {
+            cmd.saturating_sub(1)
+        } else if t >= 1.0 - 1e-3 {
+            cmd
+        } else {
+            if self.path.as_ref().is_some_and(|p| p.cmds.len() > MAX_PATH_SEGMENTS) {
+                return Err(PinError::Full);
+            }
+            if !trial.split_path(cmd, t) {
+                return Err(PinError::OffPath);
+            }
+            cmd
+        };
+        trial.pin(anchor, frame, base)?;
+        *self = trial;
+        Ok(anchor)
+    }
+
+    /// Splits the path's segment `cmd` at curve parameter `t` (the curve unchanged; the new
+    /// anchor is `cmd`). Pins after it stay on their anchors. False when there is no such
+    /// segment.
+    pub fn split_path(&mut self, cmd: usize, t: f32) -> bool {
+        let Some(path) = self.path.as_mut() else { return false };
+        if !path.split_segment(cmd, t) {
+            return false;
+        }
+        for p in &mut self.pins {
+            if p.anchor as usize >= cmd {
+                p.anchor = p.anchor.saturating_add(1);
+            }
+        }
+        true
+    }
+
+    /// Deletes anchor `i` between the ends, refitting the two segments around it as one
+    /// ([`Path::merge_at`]). A pin on it goes, with its keys; later pins stay on their anchors.
+    /// False when it can't be deleted (an end, or no such anchor).
+    pub fn delete_anchor(&mut self, i: usize) -> bool {
+        let Some(path) = self.path.as_mut() else { return false };
+        if !path.merge_at(i) {
+            return false;
+        }
+        if let Some(frame) = self.pins.iter().find(|p| p.anchor as usize == i).map(|p| p.frame) {
+            self.unpin(frame);
+        }
+        for p in &mut self.pins {
+            if p.anchor as usize > i {
+                p.anchor -= 1;
+            }
+        }
+        true
+    }
+
+    /// Lets the pin on `frame` go: its X/Y keys go with it and its anchor shapes the path only
+    /// (ADR 0038's behaviour). The pin, if there was one.
+    pub fn unpin(&mut self, frame: u32) -> Option<Pin> {
+        let i = self.pins.iter().position(|p| p.frame == frame)?;
+        let pin = self.pins.remove(i);
+        self.remove_pin_keys(frame);
+        Some(pin)
+    }
+
+    /// Moves anchor `anchor` (its handles with it) by `d`; an end or a pin takes its keys along.
+    pub fn move_anchor(&mut self, anchor: usize, d: Vec2, base: &Props, last: u32) -> bool {
+        let Some(mut path) = self.path.clone() else { return false };
+        path.move_anchor(anchor, d) && self.set_path(&path, base, last)
+    }
+
+    /// Carries the path on from its end to `to`, reached on `frame` after the last position key:
+    /// the old end stays pinned to its frame and the new straight stretch ends the motion. False
+    /// (nothing changed) when the path is full or `frame` isn't after the last position key.
+    pub fn extend_to(&mut self, frame: u32, to: Vec2, base: &Props) -> bool {
+        let (Some(path), Some((f0, f1))) = (&self.path, self.position_range()) else { return false };
+        if frame <= f1 || f1 <= f0 || path.cmds.len() > MAX_PATH_SEGMENTS {
+            return false;
+        }
+        let n = path.cmds.len();
+        let mut longer = path.clone();
+        longer.line_to(to);
+        let Some(longer) = motion_path(&longer).filter(|p| p.cmds.len() == n + 1) else { return false };
+        let mut pins = self.live_pins();
+        pins.push(Pin { frame: f1, anchor: (n - 1) as u32 });
+        self.set_key(Property::X, frame, to.x, base.get(Property::X));
+        self.set_key(Property::Y, frame, to.y, base.get(Property::Y));
+        self.path = Some(longer);
+        self.pins = pins;
+        self.sync_pins(base);
         true
     }
 
@@ -614,8 +918,25 @@ impl MotionTween {
     }
 
     /// Removes property `p`'s key at `frame`; a track left with no keys goes. Whether a key was
-    /// there.
+    /// there. Removing the X or Y key of a pinned frame lets the pin go (with both keys).
     pub fn remove_key(&mut self, p: Property, frame: u32) -> bool {
+        if !matches!(p, Property::X | Property::Y) {
+            return self.remove_track_key(p, frame);
+        }
+        // Only pins in force count (removing an end's keys can leave one outside the motion).
+        self.pins = self.live_pins();
+        if self.pins.iter().any(|q| q.frame == frame) {
+            let had = self.track(p).is_some_and(|t| t.key_at(frame).is_some());
+            self.unpin(frame);
+            return had;
+        }
+        let had = self.remove_track_key(p, frame);
+        // An end's key gone may leave pins outside the motion: they go, never to come back.
+        self.pins = self.live_pins();
+        had
+    }
+
+    fn remove_track_key(&mut self, p: Property, frame: u32) -> bool {
         let Some(t) = self.track_mut(p) else { return false };
         let Some(i) = t.key_at(frame) else { return false };
         t.keys.remove(i);
@@ -647,12 +968,17 @@ impl MotionTween {
                 Some(Track { property: t.property, keys })
             })
             .collect();
-        let mut tail = MotionTween { target: self.target, tracks, path: None, orient: self.orient };
+        let mut tail = MotionTween { target: self.target, tracks, path: None, orient: self.orient, pins: Vec::new() };
         let Some(op) = self.on_path(base) else { return tail };
         let f = frame as f32;
         match op.walk().tail(op.distance(f)) {
-            // The cut path starts where the object is; the X/Y keys go on timing it.
-            Some(p) => tail.path = Some(p),
+            // The cut path starts where the object is; the X/Y keys go on timing it, and the
+            // pins after the cut stay on their anchors (the cut segment's end is anchor 1).
+            Some(p) => {
+                let (cmd, _) = op.walk().locate(op.distance(f));
+                tail.pins = self.live_pins().into_iter().filter(|q| q.frame > frame && q.anchor as usize >= cmd).map(|q| Pin { frame: q.frame - frame, anchor: q.anchor + 1 - cmd as u32 }).collect();
+                tail.path = Some(p);
+            }
             // Past the path's end: the object holds where the path ended.
             None => {
                 let p = op.point(f);
@@ -677,6 +1003,7 @@ impl MotionTween {
     /// duplicate or empty tracks).
     pub fn is_sane(&self) -> bool {
         self.path.as_ref().is_none_or(|p| motion_path(p).as_ref() == Some(p))
+            && self.pins == self.live_pins()
             && self.tracks.iter().all(|t| !t.keys.is_empty() && t.is_sane()) && self.tracks.windows(2).all(|w| matches!(w, [a, b] if a.property.index() < b.property.index()))
     }
 
@@ -689,6 +1016,10 @@ impl MotionTween {
         self.tracks.retain(|t| !t.keys.is_empty());
         self.tracks.sort_by_key(|t| t.property.index());
         self.tracks.dedup_by_key(|t| t.property);
+        self.pins.truncate(MAX_PATH_SEGMENTS);
+        self.pins.sort_by_key(|p| p.frame);
+        self.pins.dedup_by_key(|p| p.frame);
+        self.pins = self.live_pins();
     }
 }
 
@@ -1050,5 +1381,275 @@ mod tests {
         m.path = Some(line((0.0, 0.0), (f32::INFINITY, 1.0)));
         m.sanitize();
         assert!(m.path.is_none());
+    }
+
+    // ----- anchors pinned to frames (ADR 0049) ----------------------------------------------
+
+    /// An S through three anchors: (0, 0), (100, 0) and (200, 0), over a hump and under a dip.
+    fn s_path() -> Path {
+        let mut p = Path::new();
+        p.move_to(Vec2::new(0.0, 0.0)).cubic_to(Vec2::new(40.0, -60.0), Vec2::new(60.0, -60.0), Vec2::new(100.0, 0.0)).cubic_to(Vec2::new(140.0, 60.0), Vec2::new(160.0, 60.0), Vec2::new(200.0, 0.0));
+        p
+    }
+
+    /// X 0 → 200 over frames 0..20 with `ease`, Y still: the S travelled left to right.
+    fn along_s(ease: Easing) -> (MotionTween, Element) {
+        let base = el(1, 0.0, 0.0);
+        let mut m = MotionTween::new(ElementId(1));
+        m.tracks = vec![track(Property::X, &[(0, 0.0, ease), (20, 200.0, Easing::Linear)]), track(Property::Y, &[(0, 0.0, Easing::Linear), (20, 0.0, Easing::Linear)])];
+        assert!(m.set_path(&s_path(), &Props::of(&base), 20));
+        (m, base)
+    }
+
+    fn anchor_at(m: &MotionTween, i: usize) -> Vec2 {
+        m.path.as_ref().and_then(|p| p.point(i, ANCHOR)).unwrap()
+    }
+
+    #[test]
+    fn the_object_passes_each_pinned_anchor_on_its_frame() {
+        let (mut m, base) = along_s(Easing::QuadIn);
+        let props = Props::of(&base);
+        assert!(at(&m, &base, 6.0).distance(Vec2::new(100.0, 0.0)) > 10.0, "unpinned, the middle anchor is passed when the timing says");
+        assert_eq!(m.pin(1, 6, &props), Ok(()));
+        assert_eq!(m.pins, vec![Pin { frame: 6, anchor: 1 }]);
+        assert!(at(&m, &base, 6.0).distance(Vec2::new(100.0, 0.0)) < 1e-3, "{:?}", at(&m, &base, 6.0));
+        assert!(at(&m, &base, 0.0).distance(Vec2::ZERO) < 1e-3 && at(&m, &base, 20.0).distance(Vec2::new(200.0, 0.0)) < 1e-3, "the ends stay pinned");
+        // Pinning where the object is adds an anchor there and moves nothing on that frame.
+        let was = at(&m, &base, 14.0);
+        assert_eq!(m.pin_here(14, &props), Ok(2));
+        assert_eq!(m.path.as_ref().map(|p| p.cmds.len()), Some(4));
+        assert_eq!(m.pins, vec![Pin { frame: 6, anchor: 1 }, Pin { frame: 14, anchor: 2 }]);
+        assert!(at(&m, &base, 14.0).distance(was) < 0.01, "{:?} vs {was:?}", at(&m, &base, 14.0));
+        assert_eq!(m.pin_here(14, &props), Ok(2), "already pinned there");
+        // Moving a pinned anchor takes the object with it on that frame, and its keys follow.
+        assert!(m.move_anchor(2, Vec2::new(0.0, 50.0), &props, 20));
+        let a2 = anchor_at(&m, 2);
+        assert!(at(&m, &base, 14.0).distance(a2) < 1e-3);
+        assert_eq!(m.track(Property::Y).and_then(|t| t.key_at(14).map(|i| t.keys[i].value)), Some(a2.y));
+        assert!(at(&m, &base, 6.0).distance(Vec2::new(100.0, 0.0)) < 1e-3, "the other pin holds");
+        // What can't be pinned says why, and changes nothing.
+        let before = m.clone();
+        assert_eq!(m.pin(1, 16, &props), Err(PinError::Order(Pin { frame: 14, anchor: 2 })));
+        assert_eq!(m.pin(0, 5, &props), Err(PinError::End));
+        assert_eq!(m.pin(3, 5, &props), Err(PinError::End));
+        assert_eq!(m.pin(9, 5, &props), Err(PinError::NoAnchor));
+        assert_eq!(m.pin(1, 25, &props), Err(PinError::Outside(0, 20)));
+        assert_eq!(m.pin_here(0, &props), Err(PinError::Outside(0, 20)));
+        assert_eq!(m, before);
+        // Re-pinning an anchor to another frame retimes it.
+        assert_eq!(m.pin(1, 4, &props), Ok(()));
+        assert_eq!(m.pins, vec![Pin { frame: 4, anchor: 1 }, Pin { frame: 14, anchor: 2 }]);
+        assert!(at(&m, &base, 4.0).distance(Vec2::new(100.0, 0.0)) < 1e-3);
+        assert!(m.track(Property::X).is_some_and(|t| t.key_at(6).is_none()), "the old frame's keys went with the pin");
+        assert!(m.is_sane());
+    }
+
+    #[test]
+    fn between_pins_the_eases_time_the_object_as_before() {
+        // A straight path with an anchor at x = 30 pinned to frame 10: it reproduces the X curve
+        // exactly, eases and overshoot included, on both legs.
+        let base = el(1, 0.0, 0.0);
+        let mut p = Path::new();
+        p.move_to(Vec2::new(0.0, 0.0)).line_to(Vec2::new(30.0, 0.0)).line_to(Vec2::new(100.0, 0.0));
+        for second in [Easing::QuadIn, Easing::CubicBezier(0.2, 0.9, 0.4, 1.3)] {
+            let mut m = MotionTween::new(ElementId(1));
+            m.tracks = vec![track(Property::X, &[(0, 0.0, Easing::QuadIn), (20, 100.0, Easing::Linear)])];
+            assert!(m.set_path(&p, &Props::of(&base), 20));
+            assert_eq!(m.pin(1, 10, &Props::of(&base)), Ok(()));
+            if let Some(t) = m.track_mut(Property::X) {
+                t.keys[1].ease = second;
+            }
+            let x = m.track(Property::X).cloned().unwrap();
+            for i in 0..=80 {
+                let f = i as f32 / 4.0;
+                let q = at(&m, &base, f);
+                assert!((q.x - x.value_at(f).unwrap()).abs() < 2e-3 && q.y.abs() < 1e-3, "{second:?} frame {f}: {q:?} vs {:?}", x.value_at(f));
+            }
+        }
+    }
+
+    #[test]
+    fn unpinning_gives_back_the_unpinned_motion() {
+        let (m, base) = along_s(Easing::CubicOut);
+        let props = Props::of(&base);
+        let mut pinned = m.clone();
+        assert_eq!(pinned.pin(1, 8, &props), Ok(()));
+        assert!(at(&pinned, &base, 5.0).distance(at(&m, &base, 5.0)) > 1.0, "pinning retimes");
+        assert_eq!(pinned.unpin(8), Some(Pin { frame: 8, anchor: 1 }));
+        assert_eq!(pinned, m, "pin then unpin: the same tween, keys and all");
+        assert_eq!(pinned.unpin(8), None);
+        // A pin added where the object was leaves its anchor behind, shaping only: the motion
+        // is ADR 0038's again (the split curve is the same curve).
+        let mut here = m.clone();
+        assert!(here.pin_here(12, &props).is_ok());
+        assert!(here.unpin(12).is_some());
+        assert_eq!(here.path.as_ref().map(|p| p.cmds.len()), Some(4));
+        for f in 0..=20 {
+            assert!(at(&here, &base, f as f32).distance(at(&m, &base, f as f32)) < 0.01, "frame {f}");
+        }
+        // Removing the X (or Y) key of a pinned frame lets the pin go, with both keys.
+        assert_eq!(pinned.pin(1, 8, &props), Ok(()));
+        assert!(pinned.remove_key(Property::X, 8));
+        assert!(pinned.pins.is_empty() && pinned.track(Property::Y).is_some_and(|t| t.key_at(8).is_none()));
+        assert_eq!(pinned, m);
+        // Removing the end's keys lets a pin that is no longer between the ends go; its keys
+        // stay as plain keys, removed one by one.
+        assert_eq!(pinned.pin(1, 8, &props), Ok(()));
+        assert!(pinned.remove_key(Property::X, 20) && pinned.remove_key(Property::Y, 20));
+        assert!(pinned.pins.is_empty(), "frame 8 is the last position key now: an end");
+        assert!(pinned.remove_key(Property::X, 8));
+        assert!(pinned.track(Property::X).is_some_and(|t| t.key_at(8).is_none()) && pinned.track(Property::Y).is_some_and(|t| t.key_at(8).is_some()));
+        assert!(pinned.is_sane());
+    }
+
+    /// ADR 0030's timing as it was before pins: what files without pins must still give.
+    fn legacy_point(m: &MotionTween, base: &Props, frame: f32) -> Vec2 {
+        let walk = CurveWalk::new(m.path.as_ref().unwrap()).unwrap();
+        let mut frames: Vec<u32> = [Property::X, Property::Y].into_iter().filter_map(|p| m.track(p)).flat_map(|t| t.keys.iter().map(|k| k.frame)).collect();
+        frames.sort_unstable();
+        frames.dedup();
+        let keys: Vec<(f32, Vec2)> = frames.into_iter().map(|f| (f as f32, m.trace_at(base, f as f32))).collect();
+        let mut cum = Vec::new();
+        let mut d = 0.0f32;
+        for (i, k) in keys.iter().enumerate() {
+            d += i.checked_sub(1).and_then(|p| keys.get(p)).map_or(0.0, |p| p.1.distance(k.1));
+            cum.push(d);
+        }
+        let progress = (|| {
+            let (first, last) = (keys.first()?, keys.last()?);
+            if !frame.is_finite() || frame <= first.0 || last.0 <= first.0 {
+                return Some(0.0);
+            }
+            if frame >= last.0 {
+                return Some(1.0);
+            }
+            let total = *cum.last()?;
+            if total <= 1e-4 {
+                return Some((frame - first.0) / (last.0 - first.0));
+            }
+            let i = keys.partition_point(|k| k.0 <= frame).saturating_sub(1);
+            let (a, b) = (keys.get(i)?, keys.get(i + 1)?);
+            let chord = b.1 - a.1;
+            let len = chord.length();
+            let along = if len > 1e-6 { (m.trace_at(base, frame) - a.1).dot(chord) / len } else { 0.0 };
+            let p = (cum[i] + along) / total;
+            Some(if p.is_finite() { p } else { 0.0 })
+        })()
+        .unwrap_or(1.0);
+        let (s, l) = (progress * walk.length(), walk.length());
+        if s < 0.0 {
+            walk.at(0.0) + walk.tangent(0.0) * s
+        } else if s > l {
+            walk.at(l) + walk.tangent(l) * (s - l)
+        } else {
+            walk.at(s)
+        }
+    }
+
+    #[test]
+    fn tweens_without_pins_evaluate_exactly_as_before() {
+        let base = el(1, 0.0, 0.0);
+        let props = Props::of(&base);
+        let mut cases = Vec::new();
+        for ease in [Easing::Linear, Easing::QuadOut, Easing::CubicBezier(0.2, 0.9, 0.4, 1.3), Easing::CubicBezier(0.5, -0.6, 0.5, 1.6)] {
+            let mut m = diagonal(ease);
+            assert!(m.set_path(&quarter(100.0), &props, 20));
+            cases.push(m.clone());
+            // Position keys in the middle are timing keys, not pins, in ADR 0030 files.
+            m.set_key(Property::Y, 8, 30.0, 0.0);
+            m.set_key(Property::X, 13, 70.0, 0.0);
+            cases.push(m.clone());
+            let mut s = along_s(ease).0;
+            s.set_key(Property::X, 5, 20.0, 0.0);
+            cases.push(s);
+        }
+        let mut ring = Path::new();
+        ring.move_to(Vec2::new(0.0, 0.0)).line_to(Vec2::new(40.0, 0.0)).line_to(Vec2::new(40.0, 40.0)).line_to(Vec2::new(0.0, 40.0)).close();
+        let mut l = MotionTween::new(ElementId(1));
+        assert!(l.set_path(&ring, &props, 16));
+        cases.push(l);
+        for m in &cases {
+            assert!(m.pins.is_empty() && m.is_sane());
+            let op = m.on_path(&props).unwrap();
+            for i in -4..=120 {
+                let f = i as f32 / 4.0;
+                assert_eq!(op.point(f), legacy_point(m, &props, f), "frame {f}");
+            }
+            let json = serde_json::to_string(m).unwrap();
+            assert!(!json.contains("pins"), "nothing new is written for them");
+        }
+    }
+
+    #[test]
+    fn a_path_made_from_the_tracks_keeps_their_keys_pinned() {
+        // Right 100 over 10 frames, then down 100: no path yet, but an anchor at the corner.
+        let base = el(1, 0.0, 0.0);
+        let props = Props::of(&base);
+        let mut m = MotionTween::new(ElementId(1));
+        m.tracks = vec![track(Property::X, &[(0, 0.0, Easing::Linear), (10, 100.0, Easing::Linear)]), track(Property::Y, &[(0, 0.0, Easing::Linear), (10, 0.0, Easing::Linear), (20, 100.0, Easing::Linear)])];
+        let (mut path, pins) = m.path_and_pins_from_tracks(&props).unwrap();
+        assert_eq!(pins, vec![Pin { frame: 10, anchor: 1 }]);
+        assert_eq!(m.pinned_anchors(&props), vec![Pin { frame: 0, anchor: 0 }, Pin { frame: 10, anchor: 1 }, Pin { frame: 20, anchor: 2 }], "shown pinned before it is a path");
+        // Dragging the corner up edits that path: the corner stays pinned to frame 10.
+        assert!(path.move_anchor(1, Vec2::new(0.0, -40.0)));
+        assert!(m.set_path(&path, &props, 20));
+        assert_eq!(m.pins, pins);
+        assert!(at(&m, &base, 10.0).distance(Vec2::new(100.0, -40.0)) < 1e-3);
+        // A path of another shape is a new path: only its ends are pinned.
+        let mut fresh = m.clone();
+        fresh.path = None;
+        fresh.pins.clear();
+        assert!(fresh.set_path(&line((0.0, 0.0), (100.0, 100.0)), &props, 20));
+        assert!(fresh.pins.is_empty());
+    }
+
+    #[test]
+    fn splitting_keeps_the_pins_after_the_cut() {
+        let (mut m, base) = along_s(Easing::Linear);
+        let props = Props::of(&base);
+        assert_eq!(m.pin(1, 6, &props), Ok(()));
+        for cut in [3u32, 6, 10] {
+            let tail = m.split_at(&props, cut);
+            let tail_base = m.apply(&base, cut as f32);
+            assert_eq!(tail.pins.len(), usize::from(cut < 6), "cut {cut}");
+            for f in cut..=24 {
+                let (a, b) = (at(&m, &base, f as f32), at(&tail, &tail_base, (f - cut) as f32));
+                assert!(a.distance(b) < 0.05, "cut {cut} frame {f}: {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn moving_on_past_the_end_carries_the_path_on() {
+        let (mut m, base) = along_s(Easing::Linear);
+        let props = Props::of(&base);
+        let before: Vec<Vec2> = (0..=20).map(|f| at(&m, &base, f as f32)).collect();
+        assert!(!m.extend_to(20, Vec2::new(250.0, 50.0), &props), "only after the last position key");
+        assert!(m.extend_to(28, Vec2::new(250.0, 50.0), &props));
+        assert_eq!(m.position_range(), Some((0, 28)));
+        assert_eq!(m.pins, vec![Pin { frame: 20, anchor: 2 }], "the old end stays pinned to its frame");
+        assert!(at(&m, &base, 28.0).distance(Vec2::new(250.0, 50.0)) < 1e-3);
+        assert!(at(&m, &base, 24.0).distance(Vec2::new(225.0, 25.0)) < 1e-2, "on to the new end in a straight line");
+        for (f, b) in before.iter().enumerate() {
+            assert!(at(&m, &base, f as f32).distance(*b) < 1e-2, "frame {f}: as it was");
+        }
+    }
+
+    #[test]
+    fn loading_drops_pins_that_cannot_hold() {
+        let (mut m, _) = along_s(Easing::Linear);
+        m.pins = vec![Pin { frame: 5, anchor: 9 }, Pin { frame: 3, anchor: 1 }, Pin { frame: 3, anchor: 1 }, Pin { frame: 25, anchor: 1 }, Pin { frame: 0, anchor: 1 }];
+        assert!(!m.is_sane());
+        m.sanitize();
+        assert!(m.is_sane());
+        assert_eq!(m.pins, vec![Pin { frame: 3, anchor: 1 }]);
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"pins\""));
+        assert_eq!(serde_json::from_str::<MotionTween>(&json).unwrap(), m);
+        // Without a path nothing is pinned.
+        m.path = None;
+        assert!(!m.is_sane());
+        m.sanitize();
+        assert!(m.pins.is_empty());
     }
 }

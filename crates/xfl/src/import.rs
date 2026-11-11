@@ -3,23 +3,25 @@
 //! What maps (first slice of M4): stage size, frame rate and colour; the first scene's
 //! layers (name, colour, visibility, lock, outline; guide layers; folders flattened); frames
 //! and keyframes with durations, labels and classic tweens with their ease; shapes (solid,
-//! linear and radial fills, solid strokes), groups (flattened), rectangle and oval
+//! linear and radial fills, solid, dashed and dotted strokes with their caps, joints and
+//! miter limit), groups (flattened), rectangle and oval
 //! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
 //! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014);
-//! frame scripts, symbol linkage classes and the document class, kept verbatim and not run
-//! (ADR 0013 tier 1; the report lists them as kept).
+//! frame scripts, symbol linkage classes and the document class, kept verbatim (ADR 0013 tier
+//! 1); frame scripts in the ActionScript 3.0 subset run in Test Movie (tier 2), and the report
+//! lists which run and which are only kept.
 //! Everything else (sound, motion tweens with property curves, unknown filters,
 //! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
-//! and so is whatever is drawn the nearest way AniCraft can (square caps, reflecting
-//! gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
+//! and so is whatever is drawn the nearest way AniCraft can (ragged, stipple and hatched
+//! strokes, reflecting gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
 //! every feature listed here, with golden renders (ADR 0035).
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, SourceScript,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
@@ -47,13 +49,16 @@ pub enum XflError {
     NotXfl(String),
 }
 
-/// What the import couldn't bring across, by kind ("3 bitmaps"), what it kept without
-/// running (scripts), and the fonts it couldn't find.
+/// What the import couldn't bring across, by kind ("3 bitmaps"), the scripts it brought that
+/// run and those it kept without running, and the fonts it couldn't find.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Report {
     pub skipped: BTreeMap<String, usize>,
-    /// Kept in the document but not run, by kind ("2 frame scripts in ActionScript 3.0"; ADR
-    /// 0013 tier 1).
+    /// Frame scripts in the ActionScript 3.0 subset, which run in Test Movie and the HTML
+    /// canvas export ("2 frame scripts in ActionScript 3.0"; ADR 0013 tier 2).
+    pub runs: BTreeMap<String, usize>,
+    /// Kept in the document but not run, by kind ("2 frame scripts in ActionScript 3.0", for
+    /// those outside the subset; ADR 0013 tier 1).
     pub kept: BTreeMap<String, usize>,
     pub notes: Vec<String>,
     /// Font families the document's text asks for that aren't on this computer.
@@ -69,16 +74,21 @@ impl Report {
     pub(crate) fn keep(&mut self, what: &str) {
         *self.kept.entry(what.to_string()).or_default() += 1;
     }
-    /// One line for a status bar: "Imported. Kept, not run: 3 frame scripts in ActionScript
-    /// 3.0. Not yet supported: 2 sounds. Fonts not on this computer, drawn in Inter: Futura,
-    /// Gotham."
+    pub(crate) fn run(&mut self, what: &str) {
+        *self.runs.entry(what.to_string()).or_default() += 1;
+    }
+    /// One line for a status bar: "Imported. Runs in Test Movie: 2 frame scripts in
+    /// ActionScript 3.0. Kept, not run: 1 frame scripts in ActionScript 3.0. Not yet supported:
+    /// 2 sounds. Fonts not on this computer, drawn in Inter: Futura, Gotham."
     pub fn summary(&self) -> String {
-        let kept = if self.kept.is_empty() {
-            String::new()
-        } else {
-            let parts: Vec<String> = self.kept.iter().map(|(k, n)| format!("{n} {k}")).collect();
-            format!(" Kept, not run: {}.", parts.join(", "))
-        };
+        let list = |m: &BTreeMap<String, usize>| m.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<String>>().join(", ");
+        let mut kept = String::new();
+        if !self.runs.is_empty() {
+            kept.push_str(&format!(" Runs in Test Movie: {}.", list(&self.runs)));
+        }
+        if !self.kept.is_empty() {
+            kept.push_str(&format!(" Kept, not run: {}.", list(&self.kept)));
+        }
         if self.skipped.is_empty() && self.notes.is_empty() && self.missing_fonts.is_empty() {
             return format!("Imported everything in the file.{kept}");
         }
@@ -215,19 +225,35 @@ fn paint(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> O
     }
 }
 
-/// A stroke definition (`SolidStroke` and friends) as a stroke: weight and its fill colour.
-fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> Option<Stroke> {
+/// A stroke definition (`SolidStroke` and friends) as a stroke: weight, its fill colour, caps,
+/// joints and miter limit, and the dashes of `DashedStroke` and dots of `DottedStroke`
+/// (ADR 0046). Ragged, stipple and hatched strokes are drawn solid.
+pub(crate) fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> Option<Stroke> {
     if !matches!(def.name.as_str(), "SolidStroke" | "DashedStroke" | "DottedStroke" | "RaggedStroke" | "StippleStroke" | "HatchedStroke") {
         return None;
     }
-    if def.name != "SolidStroke" {
-        report.skip("stroke styles drawn as solid");
-    }
-    // AniCraft strokes have round caps and joins (the format's default).
-    let round = |k: &str| def.attr(k).is_none_or(|v| v.trim() == "round");
-    if !round("caps") || !round("joints") {
-        report.skip("stroke caps and joins other than round (drawn round)");
-    }
+    // Round caps and joints are the format's default, and a miter limit of 3.
+    let cap = match def.attr("caps").map(str::trim) {
+        Some("none") => Cap::Butt,
+        Some("square") => Cap::Square,
+        _ => Cap::Round,
+    };
+    let join = match def.attr("joints").map(str::trim) {
+        Some("miter") => Join::Miter,
+        Some("bevel") => Join::Bevel,
+        _ => Join::Round,
+    };
+    let miter_limit = def.f32("miterLimit").unwrap_or(anicraft_doc::stroke_style::DEFAULT_MITER_LIMIT);
+    let dash = match def.name.as_str() {
+        "DashedStroke" => Dash::dashed(def.f32("dash1").unwrap_or(6.0), def.f32("dash2").unwrap_or(3.0)),
+        "DottedStroke" => Dash::dotted(def.f32("dotSpace").unwrap_or(3.0)),
+        "SolidStroke" => None,
+        _ => {
+            report.skip("ragged, stipple and hatched strokes (drawn solid)");
+            None
+        }
+    };
+    let style = StrokeStyle { cap, join, miter_limit, dash };
     let width = def.f32("weight").unwrap_or(1.0).clamp(0.05, 1000.0);
     let fill = def.child("fill").and_then(|f| f.children.first());
     let c = fill.map_or(Rgba::BLACK, |f| {
@@ -238,7 +264,7 @@ fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> 
             paint(f, bitmaps, report).map_or(Rgba::BLACK, |p| p.primary_color())
         }
     });
-    Some(Stroke::new(c, width))
+    Some(Stroke::new(c, width).with_style(style))
 }
 
 impl<'a> Builder<'a> {
@@ -247,9 +273,12 @@ impl<'a> Builder<'a> {
     }
 
     /// Shapes for one `DOMShape`: a fill-only shape per fill style (bottom), then a stroke-only
-    /// shape per stroke style, as Animate draws them.
-    fn shape(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
+    /// shape per stroke style, as Animate draws them. A shape loose on a frame (not in a group,
+    /// not a drawing object) is raw artwork: its shapes are marked to merge (ADR 0042), and the
+    /// engine merges each keyframe's raw shapes into one drawing when it opens the file.
+    fn shape(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>, loose: bool) {
         let m = parent.mul(&matrix(el));
+        let merge = loose && !el.bool("isDrawingObject").unwrap_or(false);
         let fills: Vec<(u32, Option<Paint>)> = el.list("fills").iter().map(|f| (f.u32("index").unwrap_or(0), f.children.first().and_then(|d| paint(d, &self.bitmaps, &mut self.report)))).collect();
         let strokes: Vec<(u32, Option<Stroke>)> = el.list("strokes").iter().map(|s| (s.u32("index").unwrap_or(0), s.children.first().and_then(|d| stroke(d, &self.bitmaps, &mut self.report)))).collect();
         let edges: Vec<Edge> = el
@@ -262,14 +291,14 @@ impl<'a> Builder<'a> {
             let (Some(p), true) = (p, index > 0) else { continue };
             let path = edges::fill_path(&edges, index);
             if !path.is_empty() {
-                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(p), stroke: None, fill_rule: FillRule::EvenOdd, merge: false }), m, ColorEffect::default()));
+                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(p), stroke: None, fill_rule: FillRule::EvenOdd, merge }), m, ColorEffect::default()));
             }
         }
         for (index, s) in strokes {
             let (Some(s), true) = (s, index > 0) else { continue };
             let path = edges::stroke_path(&edges, index);
             if !path.is_empty() {
-                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero, merge: false }), m, ColorEffect::default()));
+                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero, merge }), m, ColorEffect::default()));
             }
         }
     }
@@ -443,7 +472,7 @@ impl<'a> Builder<'a> {
         }
         for el in list {
             match el.name.as_str() {
-                "DOMShape" => self.shape(el, parent, out),
+                "DOMShape" => self.shape(el, parent, out, depth == 0),
                 "DOMGroup" => {
                     let m = parent.mul(&matrix(el));
                     self.elements(el.list("members"), &m, out, depth + 1);
@@ -518,7 +547,7 @@ impl<'a> Builder<'a> {
                 if let Some(h) = f.child("shapeHints").filter(|h| !h.children.is_empty()) {
                     raw_hints.insert(start, self.raw_hints(h));
                 }
-                // Frame scripts are kept verbatim and not run (ADR 0013 tier 1).
+                // Frame scripts are kept verbatim (ADR 0013 tier 1); those in the subset run.
                 if let Some(a) = f.child("Actionscript") {
                     k.script = self.frame_script(a);
                 }
@@ -558,7 +587,9 @@ impl<'a> Builder<'a> {
             self.report.skip("frame scripts over 1 MiB (left out)");
             return None;
         }
-        self.report.keep(&format!("frame scripts in {}", self.language.label()));
+        // Compiling here also fills the script's cache for Test Movie (ADR 0013 tier 2).
+        let what = format!("frame scripts in {}", self.language.label());
+        if script.runs() { self.report.run(&what) } else { self.report.keep(&what) }
         Some(FrameScript::Source(Arc::new(script)))
     }
 

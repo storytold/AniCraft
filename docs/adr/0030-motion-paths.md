@@ -1,6 +1,6 @@
 # ADR 0030: Motion paths for motion tweens
 
-* Status: accepted (2026-11-09)
+* Status: accepted (2026-11-09); §4 between the ends superseded by ADR 0049 (pins)
 * Relates to: ADR 0016 (motion tweens), ADR 0003 (file format), ADR 0004 (destructive
   actions), roadmap M2
 
@@ -88,7 +88,10 @@ and loses nothing irreversible, so it doesn't ask (ADR 0004).
 
 * A path's anchors are not tied to frames: an anchor in the middle of the path is reached when
   the timing says so, not on a frame of its own. Moving the object at a middle frame bends the
-  path through that point rather than adding an anchor there.
+  path through that point rather than adding an anchor there. *Since ADR 0049, anchors can be
+  pinned to frames, and moving the object at a middle frame pins a new anchor there instead;
+  this timing still applies, leg by leg between pinned anchors, and is unchanged for files
+  without pins.*
 * The X/Y values the Motion Editor shows are timing on a path, not the object's place. Editing
   them retimes the motion along the path.
 * Performance: evaluating a tween on an 8-segment path with orient takes 10–15 µs per object
@@ -96,7 +99,7 @@ and loses nothing irreversible, so it doesn't ask (ADR 0004).
   measured on the development machine, release and dev profiles).
 * Adding, deleting and converting path points and moving the whole path came next, in
   ADR 0038, which also explains why anchors tied to frames wait for a model change.
-* Not yet (later PRs): position keys as anchors (spatial keys), copying and pasting
+* Not yet (later PRs): ~~position keys as anchors (spatial keys)~~ (done in ADR 0049), copying and pasting
   a path from a stroke or onto a guide, ease along the path for loop paths, the path shown
   for tweens inside symbols edited in place, snapping the ends, and importing motion paths
   from XFL (motion tween import still waits on samples, ADR 0016).

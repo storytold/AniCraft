@@ -154,13 +154,14 @@ fn moving_the_object_on_a_path_reshapes_the_path() {
     s.set_frame(23);
     run(&mut s, "element.translate", json!({"dx": 10, "dy": 0}));
     assert!(pos(&mut s, 23).distance(Vec2::new(115.0, 5.0)) < 1e-3);
-    // In between: the path bends through where the object was put; no key is added.
-    let before = keys(&s);
+    // In between: an anchor where the object was put, pinned to that frame (ADR 0049; ADR 0030
+    // bent the path instead and added no key).
     let want = pos(&mut s, 9) + Vec2::new(0.0, 40.0);
     s.set_frame(9);
     run(&mut s, "element.translate", json!({"dx": 0, "dy": 40}));
-    assert!(pos(&mut s, 9).distance(want) < 0.01, "{:?} vs {want:?}", pos(&mut s, 9));
-    assert_eq!(keys(&s), before, "the timing keeps its keys");
+    assert!(pos(&mut s, 9).distance(want) < 1e-3, "{:?} vs {want:?}", pos(&mut s, 9));
+    assert_eq!(keys(&s), Some(vec![0, 9, 23]), "a position key on the pinned frame");
+    assert_eq!(motion(&s).pins, vec![anicraft_doc::Pin { frame: 9, anchor: 1 }]);
     assert!(pos(&mut s, 0).distance(Vec2::new(0.0, 25.0)) < 1e-3 && pos(&mut s, 23).distance(Vec2::new(115.0, 5.0)) < 1e-3, "the ends stay");
     // A drag on the stage is a gesture: one undo step however many moves.
     let steps = s.history_len();

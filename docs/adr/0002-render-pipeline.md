@@ -15,7 +15,7 @@ would freeze for that long on every edit.
    placed by the stage area it covers so pan and zoom stay smooth, until the new one arrives.
    Policy: one *urgent* slot (latest wins, so a drag never builds a backlog) plus a *prefetch*
    queue, replaced wholesale. During playback the stage prefetches the next 12 frames.
-2. **Frame cache keyed by content.** `frame_key(state id, frame, view, onion)`, LRU-bounded by
+2. **Frame cache keyed by content.** `frame_key(state id, frame, view, onion)` (the onion settings' key since ADR 0047), LRU-bounded by
    bytes (default 768 MB). Undo/redo and looping playback are cache hits.
 3. **Two-phase, band-parallel rasterization** (`render::render`):
    * Phase 1, parallel over items: cull by control-point bounds, flatten, stroke and build the
