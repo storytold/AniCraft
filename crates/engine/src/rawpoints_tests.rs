@@ -261,3 +261,53 @@ fn an_object_paths_smooth_anchor_keeps_its_handles_opposite() {
     let ElementKind::Shape(sh) = &el.kind else { panic!() };
     assert_eq!(sh.path.point(2, 1), Some(k), "Alt moves the handle alone");
 }
+
+#[test]
+fn raw_points_timings() {
+    // ADR 0042's drawing: 12 × 12 outlined, rounded squares and a line across every row.
+    let mut s = raw_session();
+    for i in 0..12 {
+        for j in 0..12 {
+            run(&mut s, "draw.rect", json!({"x": i * 50, "y": j * 50, "w": 40, "h": 40, "fill": "#ff0000", "stroke": "#000000", "radius": 6}));
+        }
+        run(&mut s, "draw.line", json!({"x0": -10, "y0": i * 50 + 20, "x1": 610, "y1": i * 50 + 20, "stroke": "#0000ff"}));
+    }
+    run(&mut s, "edit.deselect", json!({}));
+    let n = s.visible_elements().len();
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
+    let t = std::time::Instant::now();
+    let v = run(&mut s, "raw.add_point", json!({"x": 320, "y": 300}));
+    let add = ms(t);
+    let at = [v["x"].as_f64().unwrap_or(0.0), v["y"].as_f64().unwrap_or(0.0)];
+    let t = std::time::Instant::now();
+    run(&mut s, "raw.delete_points", json!({"points": [at]}));
+    let delete = ms(t);
+    let t = std::time::Instant::now();
+    run(&mut s, "raw.convert_points", json!({"points": [[306, 300]], "smooth": true}));
+    let smooth = ms(t);
+    let h = handles_at(&s, Vec2::new(306.0, 300.0)).first().copied().unwrap_or_else(|| panic!("handles after Make Smooth"));
+    s.begin_gesture("Move Handle");
+    let t = std::time::Instant::now();
+    run(&mut s, "raw.move_handle", json!({"id": h.id.0, "cmd": h.cmd, "slot": h.slot, "dx": 1, "dy": 1, "merge": false}));
+    let pair = ms(t);
+    s.end_gesture();
+    let t = std::time::Instant::now();
+    for k in 0..100 {
+        let _ = s.execute("draw.snap", &json!({"x": 3 + k * 6, "y": 303, "snap": 10}));
+    }
+    let snap = ms(t) / 100.0;
+    // Inside a symbol: the whole drawing converted, opened in place, and its stage picture.
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Grid"}));
+    let t = std::time::Instant::now();
+    run(&mut s, "symbol.edit", json!({}));
+    let open = ms(t);
+    let t = std::time::Instant::now();
+    let pic = s.stage_picture();
+    let picture = ms(t);
+    let a = anchors(&s).first().copied().unwrap_or_else(|| panic!("anchors inside"));
+    let t = std::time::Instant::now();
+    run(&mut s, "raw.move_point", json!({"x": a.x, "y": a.y, "to_x": a.x - 5.0, "to_y": a.y}));
+    let inside = ms(t);
+    eprintln!("{n} raw shapes; add point {add:.2} ms, delete point {delete:.2} ms, make smooth {smooth:.2} ms, smooth handle frame {pair:.2} ms, draw snap {snap:.3} ms; inside a symbol: open {open:.2} ms, stage picture {picture:.2} ms (frame {}), point move {inside:.2} ms", pic.frame);
+}
