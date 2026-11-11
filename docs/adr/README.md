@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0061 | m1/timeline-polish (M1) | Timeline polish: per-layer onion, outline mode, layer height, Layer Properties, frame view |
