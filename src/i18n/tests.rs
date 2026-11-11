@@ -578,7 +578,7 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
         a.run("symbol.set_kind", serde_json::json!({"symbol": symbol, "kind": "movie_clip"}));
         a.run("element.set_filters", serde_json::json!({"filters": [{"type": "drop_shadow"}, {"type": "gradient_glow"}]}));
     }));
-    for panel in ["sound", "camera", "motion", "actions", "script", "prefs", "envelope"] {
+    for panel in ["sound", "camera", "motion", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
     for tool in [crate::app::Tool::Brush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {

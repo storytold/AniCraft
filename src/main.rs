@@ -38,6 +38,7 @@ mod menus;
 mod motion_editor;
 mod panels;
 mod motion_path;
+mod onion;
 mod pathtools;
 mod platform;
 mod plugins_ui;

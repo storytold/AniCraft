@@ -33,6 +33,7 @@ pub mod confirm;
 pub mod format;
 pub mod history;
 mod merge;
+pub mod onion;
 pub mod recovery;
 pub mod render_service;
 pub mod selection;
@@ -111,6 +112,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
+    v.extend(onion::specs());
     v.extend(cmds_draw::specs());
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
@@ -147,6 +149,27 @@ pub use selection::Selection;
 
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
 pub const MAX_FRAME: u32 = 100_000;
+
+/// The index of the topmost item of `dl` under `p` (stage space) that `ok` accepts (given its
+/// index). A bounding-box test rejects almost every item before any curve is flattened;
+/// masked-away parts cannot be picked.
+pub(crate) fn pick_index(dl: &DisplayList, p: Vec2, slop: f32, ok: impl Fn(usize, &anicraft_doc::DisplayItem) -> bool) -> Option<usize> {
+    for (i, item) in dl.items.iter().enumerate().rev() {
+        let hw = item.stroke.as_ref().map_or(0.0, |s| s.reach() * item.transform.mean_scale());
+        let bounds = item.path.bounds().transformed(&item.transform).inflate(hw + slop);
+        if !bounds.contains(p) || !ok(i, item) {
+            continue;
+        }
+        if item.clip.is_some_and(|c| !dl.clip_contains(c, p)) {
+            continue;
+        }
+        let inside = item.fill.is_some() && item.path.contains(p, &item.transform, item.fill_rule);
+        if inside || item.path.distance_to_edge(p, &item.transform) <= hw + slop {
+            return Some(i);
+        }
+    }
+    None
+}
 
 /// Drawing defaults used by the drawing commands when params omit colours.
 #[derive(Clone, Debug)]
@@ -702,28 +725,10 @@ impl Session {
     /// Topmost element under `p` (stage space) on a visible, unlocked layer. A bounding-box
     /// test rejects almost every item before any curve is flattened.
     pub fn hit_test(&self, p: Vec2, slop: f32) -> Option<(LayerId, ElementId)> {
+        let tl = self.doc.timeline(self.scene);
         let dl = self.display_list();
-        for item in dl.items.iter().rev() {
-            let hw = item.stroke.as_ref().map_or(0.0, |s| s.reach() * item.transform.mean_scale());
-            let bounds = item.path.bounds().transformed(&item.transform).inflate(hw + slop);
-            if !bounds.contains(p) {
-                continue;
-            }
-            let tl = self.doc.timeline(self.scene);
-            let Some(layer) = tl.layer(item.layer) else { continue };
-            if layer.locked || tl.locked_by_folder(layer.id) {
-                continue;
-            }
-            // Masked-away parts cannot be picked.
-            if item.clip.is_some_and(|c| !dl.clip_contains(c, p)) {
-                continue;
-            }
-            let inside = item.fill.is_some() && item.path.contains(p, &item.transform, item.fill_rule);
-            if inside || item.path.distance_to_edge(p, &item.transform) <= hw + slop {
-                return Some((item.layer, item.element));
-            }
-        }
-        None
+        let i = pick_index(&dl, p, slop, |_, it| tl.layer(it.layer).is_some_and(|layer| !layer.locked && !tl.locked_by_folder(layer.id)))?;
+        dl.items.get(i).map(|it| (it.layer, it.element))
     }
 
     /// Stage-space bounds of a top-level element at the playhead.

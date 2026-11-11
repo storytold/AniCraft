@@ -19,6 +19,25 @@
     miter limits and dash lengths. Older files open unchanged.
   * Headless: new `stroke.set_style`; `cap`, `join`, `miter`, `style`, `dash`, `dash_offset`
     and `dot_spacing` on `element.set_stroke`, the drawing commands and `paint.ink`.
+* **Onion skin controls and Edit Multiple Frames** (ADR 0047, M1). Onion skin works as Animate
+  users expect:
+  * **Markers** on the frame ruler: drag the start and end brackets to choose how many frames
+    show before and after the playhead. The onion menu (the arrow next to the timeline's onion
+    buttons, a right-click on the ruler, or View › Onion Skin Options) has Always Show Markers,
+    Anchor Markers (they stay put when the playhead moves), and the Onion 2, Onion 5 and Onion
+    All presets.
+  * Frames before the playhead are tinted blue and frames after it green, each fainter the
+    farther it is. Pick your own colours or turn tinting or fading off in the menu; **Outlines**
+    draws onion frames as outlines only, and **Keyframes Only** shows only keyframes. Your
+    choices are remembered.
+  * Onion frames now show over a background layer (they used to be hidden under it), and locked
+    layers are left out, as in Animate.
+  * **Edit Multiple Frames** (the timeline button next to Onion Skin) shows every keyframe
+    between the markers at full strength. Click, Shift-click, marquee or Select All to select
+    artwork on all of them, then drag it or use the arrow keys to move it everywhere at once:
+    one undo step. A motion tween's path moves with its object.
+  * Headless: `frames.artwork` lists the artwork on those keyframes and
+    `frames.edit_multiple` moves it.
 * **ActionScript that controls the timeline now runs** (ADR 0013 tier 2). Frame scripts in
   Animate documents, and ones you type in the Actions panel, play in Test Movie and in the
   HTML canvas export when they use the ActionScript 3.0 most animation and e-learning files

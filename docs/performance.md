@@ -52,6 +52,25 @@ Timing each step of a frame showed the time was outside the drawing itself:
 Output is unchanged: the sample's frames and a bitmap document render byte-identical before
 and after.
 
+**Onion skin ±5 at 1080p (2026-11-10, ADR 0047).** Through the stage's tiled path (40 tiles
+of 256 px, one scene evaluation per frame, tiles in parallel), release build, 32 threads, best
+of frames 12, 30 and 48:
+`cargo test --release -p anicraft-engine onion_timings -- --ignored --nocapture`.
+
+| Scene | Off | ±5 tinted, fading | ±5 outlines | Keyframes only ±5 | Edit Multiple Frames ±5 |
+|---|---|---|---|---|---|
+| Sample (7 items a frame; 67 with ±5) | 5.9–6.1 ms | 6.0–6.5 ms | 6.5–7.0 ms | 5.8–6.2 ms | 6.0–6.1 ms |
+| Stress 20 × 100 (2,000 items a frame; 22,000 with ±5) | 7.2–7.9 ms | 16.2–17.2 ms | 34–39 ms | 7.5–7.6 ms | 6.6–7.3 ms |
+
+Composing the stress scene with ±5 (ten extra evaluations, then each layer's onion frames
+merged under its own artwork) took 8.3 ms at first: 3.9 ms of it was putting the items in layer
+order (an append, then a reorder). One k-way merge by layer, each item moved once, brought that
+to 0.85 ms, and evaluating the extra frames in parallel brought the whole to 3.0–3.3 ms. Output
+is unchanged (the onion tests compare items and pixels). The settings are part of every tile's
+key, so the frame cache keeps working: looking at the same frame again is 40 hits in 0.02 ms,
+and other settings are other pictures. Hairline outlines cost more to rasterize than fills, so
+outline mode on very heavy scenes is the slow case.
+
 **Crash-recovery autosave (2026-11-09, ADR 0015).** `bench` now runs one autosave the way the
 app does: an `Autosaver` in a scratch recovery folder. The editing thread only hands over an
 `Arc` snapshot of the document; the worker serializes and writes atomically (temp file,
