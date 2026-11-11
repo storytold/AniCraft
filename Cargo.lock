@@ -283,6 +283,7 @@ dependencies = [
  "anicraft-text",
  "anicraft-xfl",
  "gif",
+ "miniz_oxide 0.8.9",
  "png 0.17.16",
  "rayon",
  "serde",
