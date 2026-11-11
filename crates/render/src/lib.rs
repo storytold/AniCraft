@@ -1168,18 +1168,34 @@ mod tests {
     #[test]
     #[ignore = "measurement"]
     fn variable_stroke_cost() {
-        let strokes = |profile: Option<anicraft_doc::WidthProfile>| {
+        use anicraft_doc::{Cap, Dash, Join, StrokeStyle};
+        let strokes = |profile: Option<anicraft_doc::WidthProfile>, style: StrokeStyle| {
             let items = (0..300)
                 .map(|i| {
                     let (x, y) = ((i % 20) as f32 * 64.0, (i / 20) as f32 * 48.0);
                     let mut p = Path::new();
                     p.move_to(Vec2::new(x, y + 40.0)).cubic_to(Vec2::new(x + 10.0, y - 20.0), Vec2::new(x + 50.0, y + 80.0), Vec2::new(x + 60.0, y + 10.0));
-                    stroked(p, 6.0, profile.clone())
+                    let mut it = stroked(p, 6.0, profile.clone());
+                    it.stroke = it.stroke.map(|st| st.with_style(style.clone()));
+                    it
                 })
                 .collect();
             list(items)
         };
-        for (name, dl) in [("uniform", strokes(None)), ("taper_both", strokes(anicraft_doc::ProfilePreset::TaperBoth.profile())), ("bulge", strokes(anicraft_doc::ProfilePreset::Bulge.profile()))] {
+        let round = StrokeStyle::default();
+        let miter = StrokeStyle { cap: Cap::Square, join: Join::Miter, ..StrokeStyle::default() };
+        let dashed = StrokeStyle { cap: Cap::Butt, dash: Dash::dashed(8.0, 4.0), ..StrokeStyle::default() };
+        let dotted = StrokeStyle { dash: Dash::dotted(4.0), ..StrokeStyle::default() };
+        let taper = || anicraft_doc::ProfilePreset::TaperBoth.profile();
+        for (name, dl) in [
+            ("uniform", strokes(None, round.clone())),
+            ("taper_both", strokes(taper(), round)),
+            ("bulge", strokes(anicraft_doc::ProfilePreset::Bulge.profile(), StrokeStyle::default())),
+            ("square + miter", strokes(None, miter)),
+            ("dashed 8/4", strokes(None, dashed.clone())),
+            ("dotted 4", strokes(None, dotted)),
+            ("taper_both dashed", strokes(taper(), dashed)),
+        ] {
             let mut ms: Vec<f64> = (0..9)
                 .map(|_| {
                     let t = std::time::Instant::now();
