@@ -368,10 +368,26 @@ pub fn embedded_fonts() -> Vec<std::sync::Arc<[u8]>> {
     [craft_fonts::UI_FONT, craft_fonts::MONO_FONT].into_iter().flatten().map(std::sync::Arc::from).collect()
 }
 
-/// Noto Sans Georgian (craft-fonts `Geor`) when this build embedded it. The interface offers
-/// Georgian only then (`i18n::ready_codes`).
+/// Noto Sans Georgian (craft-fonts `Geor`) when this build embedded a face that parses. The
+/// interface offers Georgian only then (`i18n::ready_codes`), and `install_fonts` loads the same
+/// face: epaint panics on bytes it cannot parse, so a damaged file must never reach it.
 pub fn georgian_font() -> Option<&'static [u8]> {
-    craft_fonts::GEORGIAN_FONT
+    static FACE: std::sync::OnceLock<Option<&'static [u8]>> = std::sync::OnceLock::new();
+    *FACE.get_or_init(|| craft_fonts::GEORGIAN_FONT.filter(|b| parses_as_font(b)))
+}
+
+/// Whether `bytes` is a font file (any face in it parses).
+fn parses_as_font(bytes: &[u8]) -> bool {
+    !anicraft_engine::text::Fonts::from_faces([bytes.to_vec()]).families().is_empty()
+}
+
+#[cfg(test)]
+mod georgian_face_tests {
+    #[test]
+    fn garbage_bytes_are_not_a_font() {
+        assert!(!super::parses_as_font(b"not a font file at all"));
+        assert!(!super::parses_as_font(&[]));
+    }
 }
 
 /// Which typefaces are active (for About and diagnostics), in the interface language.
@@ -401,7 +417,7 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&UserFont>, data_font:
             defs.families.entry(family).or_default().insert(0, name.to_owned());
         }
     }
-    if let Some(b) = craft_fonts::GEORGIAN_FONT {
+    if let Some(b) = georgian_font() {
         defs.font_data.insert("craft-noto-sans-georgian".to_owned(), Arc::new(FontData::from_static(b)));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             defs.families.entry(family).or_default().push("craft-noto-sans-georgian".to_owned());

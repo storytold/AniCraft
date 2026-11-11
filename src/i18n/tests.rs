@@ -303,8 +303,8 @@ fn georgian_is_offered_only_when_its_face_is_embedded() {
     assert_eq!(ready_codes().contains(&"ka"), crate::theme::georgian_font().is_some());
     // CRAFT_FONTS_REQUIRED=1 (release builds, CI with craft-fonts) makes a missing face a failure.
     let face = crate::theme::georgian_font();
-    if std::env::var("CRAFT_FONTS_REQUIRED").is_ok_and(|v| v == "1") && std::env::var_os("CRAFT_FONTS_DIR").is_some() {
-        assert!(face.is_some(), "CRAFT_FONTS_DIR has no NotoSansGeorgian.ttf (craft-fonts `Geor`)");
+    if std::env::var("CRAFT_FONTS_REQUIRED").is_ok_and(|v| v == "1") {
+        assert!(face.is_some(), "CRAFT_FONTS_REQUIRED=1 but this build embeds no valid NotoSansGeorgian.ttf (craft-fonts `Geor`)");
     }
     let Some(face) = face else {
         println!("georgian face test: skipped, this build embeds no Georgian face");
@@ -314,6 +314,14 @@ fn georgian_is_offered_only_when_its_face_is_embedded() {
     let fonts = anicraft_engine::text::Fonts::from_faces([face.to_vec()]);
     let laid = fonts.layout(&letters, &anicraft_engine::text::Style::default()).expect("layout");
     assert_eq!(laid.missing, 0, "the face lacks some of U+10D0..U+10FA");
+    // ... and through the families the app really builds (Proportional and Monospace).
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx, None, None);
+    let _ = ctx.run(egui::RawInput::default(), |_| {}); // fonts apply at the start of a frame
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let id = egui::FontId::new(14.0, family.clone());
+        assert!(ctx.fonts_mut(|f| f.has_glyphs(&id, &letters)), "{family:?} lacks Georgian letters");
+    }
     println!("georgian face test: ran, {} letters covered", letters.chars().count());
 }
 
