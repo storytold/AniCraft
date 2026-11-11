@@ -235,6 +235,8 @@ pub enum Drag {
     BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
     /// Moving a whole armature by its root, from stage point `last` last frame.
     ArmatureMove { layer: anicraft_engine::doc::LayerId, last: egui::Pos2 },
+    /// Moving one of the open symbol's 9-slice guides (ADR 0055).
+    SliceGuide { guide: crate::scale_grid::Guide },
     Pan,
 }
 
@@ -1109,6 +1111,26 @@ impl App {
                 self.tool = Tool::Subselect;
                 self.run("raw.subselect", json!({"x": 0, "y": 60, "slop": 4}));
                 self.raw_ends = Vec::new();
+            }
+            Some(which @ ("nineslice" | "nineslicedit")) => {
+                // 9-slice scaling (ADR 0055): a rounded panel symbol with its guides on, one
+                // instance as drawn and one stretched wide (its corners stay round), the wide one
+                // selected; "nineslicedit" opens the symbol with its guides on the stage.
+                self.run("layer.new", json!({"name": "Panels"}));
+                self.run("draw.rect", json!({"x": 80, "y": 560, "w": 200, "h": 80, "radius": 24, "fill": "#2a9d8f", "stroke": "#264653", "stroke_width": 4}));
+                self.run("modify.convert_to_symbol", json!({"name": "Panel"}));
+                self.run("symbol.set_kind", json!({"kind": "movie_clip"}));
+                self.run("symbol.set_scale_grid", json!({"left": -70, "right": 70, "top": -14, "bottom": 14}));
+                self.run("edit.duplicate", json!({"dx": 260, "dy": 0}));
+                // Stretched about its left edge (x = 340): 2.9 times as wide, 1.4 times as high.
+                self.run("modify.transform", json!({"a": 2.9, "b": 0, "c": 0, "d": 1.4, "e": 340.0 * -1.9, "f": 600.0 * -0.4}));
+                if which == "nineslicedit" {
+                    // The instance as drawn opens in place, the scene dimmed around it.
+                    self.run("element.pick", json!({"x": 180, "y": 600}));
+                    self.run("symbol.edit", json!({}));
+                    self.run("edit.deselect", json!({}));
+                    self.tool = Tool::Select;
+                }
             }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat

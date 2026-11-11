@@ -303,9 +303,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // (ADR 0038). The Pen with Alt over the path adds a point there.
     let mp_move = mp_tools && command && app.drag == Drag::None && pointer.is_some_and(|p| crate::motion_path::move_hit(app, p, xf));
     let pen_hot = if app.tool == Tool::Pen && alt && !panning && !preview && app.drag == Drag::None { pointer.and_then(|p| crate::motion_path::pen_hot(app, p, xf)) } else { None };
+    // The open symbol's 9-slice guides take the Selection tool's press first (ADR 0055).
+    let slice_hot = if app.drag == Drag::None && !panning && !preview { pointer.and_then(|p| crate::scale_grid::hit(app, p, xf)) } else { None };
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
+            _ if let Drag::SliceGuide { guide } = app.drag => guide.cursor(),
+            _ if let Some(guide) = slice_hot => guide.cursor(),
             _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::BonePose { .. }) => CursorIcon::Grabbing,
             _ if matches!(app.drag, Drag::ArmatureMove { .. }) => CursorIcon::Move,
             Tool::Select if app.drag == Drag::None && pointer.is_some_and(|p| crate::bone_tool::hit(app, xf, p).is_some()) => CursorIcon::Grab,
@@ -362,6 +366,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Pan
         } else if paused {
             Drag::None
+        } else if let Some(guide) = crate::scale_grid::hit(app, press, xf) {
+            crate::scale_grid::drag_start(app, guide)
         } else if let Some(m) = hint_at(press) {
             // Undo labels stay English in the history and are translated where they show.
             app.s.begin_gesture(tr_noop!("Move Shape Hint"));
@@ -556,6 +562,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 *last = c;
                 crate::motion_path::move_to(app, Vec2::new(d.x, d.y));
             }
+            (Drag::SliceGuide { guide }, Some(c)) => {
+                let guide = *guide;
+                crate::scale_grid::drag_to(app, guide, c);
+            }
             (Drag::Hint { index, side }, Some(c)) => {
                 // Live: the hint snaps to the nearest edge as the pointer moves.
                 let (index, side) = (*index, *side);
@@ -597,7 +607,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.raw_points = serde_json::Value::Null;
                 app.s.end_gesture();
             }
-            Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
+            Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
             Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
@@ -1097,6 +1107,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     text_editor(app, ui, to_screen(Vec2::new(0.0, 0.0)), zoom);
 
+    // Inside a symbol with 9-slice guides: the guides, across the stage (ADR 0055).
+    let slice_drag = match app.drag {
+        Drag::SliceGuide { guide } => Some(guide),
+        _ => slice_hot,
+    };
+    crate::scale_grid::draw(app, &painter, xf, canvas, slice_drag);
     // Inside a symbol: its registration point (ADR 0045; the way back is in the edit bar).
     if edit_view.is_some() {
         let c = to_screen(Vec2::ZERO);
