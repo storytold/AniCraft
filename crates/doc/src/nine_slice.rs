@@ -66,6 +66,12 @@ pub(crate) fn slicing(doc: &Document, sym: &Symbol, transform: &Affine) -> Optio
     })
 }
 
+/// Whether an instance of `sym` placed by `transform` is drawn 9-sliced (exporters that place
+/// symbols themselves say when they can't).
+pub fn slices(doc: &Document, sym: &Symbol, transform: &Affine) -> bool {
+    slicing(doc, sym, transform).is_some()
+}
+
 /// The 9-slice map of box `b` with guides `grid`, scaled by `sx`, `sy` (both at least 0). An
 /// axis with no extent (a symbol only a line high) scales plainly.
 pub fn map_for(grid: &ScaleGrid, b: &Rect, sx: f32, sy: f32) -> Option<Slice9> {

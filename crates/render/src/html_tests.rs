@@ -503,8 +503,21 @@ fn what_does_not_carry_across_is_reported() {
         *blend = BlendMode::Subtract;
     }
     Arc::make_mut(&mut tl.layers[0]).keyframe_mut(1).unwrap().script = Some(FrameScript::Plugin(PluginScript { id: "org.example.menu".into(), entry: "main".into() }));
+    // A 9-slice symbol, scaled: the page scales it as a whole (ADR 0055).
+    let sym = match &doc.timeline(0).layers[2].keyframes[0].elements[0].kind {
+        ElementKind::Symbol { symbol, .. } => *symbol,
+        _ => unreachable!(),
+    };
+    if let Some(x) = doc.library.iter_mut().find(|x| x.id == sym) {
+        Arc::make_mut(x).scale_grid = Some(anicraft_doc::ScaleGrid { left: 1.0, right: 2.0, top: 1.0, bottom: 2.0 });
+    }
+    let m = movie(&doc, &HtmlOptions::default());
+    assert_eq!(m.report.get(NINE_SLICE), None, "unscaled instances draw the same either way");
+    let tl = doc.timeline_mut(0);
+    Arc::make_mut(&mut Arc::make_mut(&mut tl.layers[2]).keyframe_mut(0).unwrap().elements[0]).transform = Affine::scale(2.0, 1.0);
     let m = movie(&doc, &HtmlOptions::default());
     assert_eq!(m.report.get(FILTERS), Some(&1));
+    assert_eq!(m.report.get(NINE_SLICE), Some(&1));
     assert_eq!(m.report.get(BLENDS), Some(&1));
     assert_eq!(m.report.get(PLUGIN_SCRIPTS), Some(&1));
     // The player says so when the frame script's keyframe is entered.
