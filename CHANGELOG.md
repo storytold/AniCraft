@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Timeline polish** (ADR 0061, M1).
+  * A **per-layer onion skin toggle** in each layer row (Alt-click: this layer only, again:
+    every layer). Layers left out show only their playhead frame; Edit Multiple Frames still
+    edits them.
+  * **View as Outlines** draws a layer's artwork as hairlines in its colour **on the stage
+    only**. Exports, Test Movie and the player draw it as it is (before, an outlined layer
+    exported as outlines). The **colour chip** on the row's edge opens the layer colour.
+  * **Onion skin inside a symbol edited in place** now also shows the parent timeline's frames
+    around it, dimmed.
+  * **Layer Height** 100 / 200 / 300 % (right-click menu), **Layer Properties** (double-click a
+    layer's icon, Properties… or Modify › Timeline), and a **Frame View** menu with frame widths
+    Tiny to Large and **Short** rows.
+  * Headless: `layer.set_onion`, `layer.set_color`, `layer.set_height`, `layer.set_properties`,
+    `layer.properties`. Saved in the document with defaults left out, so older files open as
+    before. XFL import reads a layer's height.
 * **Files from the desktop, recent files and a start screen** (ADR 0059, M8).
   * **Drop files onto the window**: `.anicraft`, `.fla` and `.xfl` open (asking first over
     unsaved work); SVG drawings, PNG and JPEG images and WAV, Ogg and MP3 sounds dropped on the
