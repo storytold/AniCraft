@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+* **Find and Replace, and the Movie Explorer** (ADR 0058, M8).
+  * **Edit › Find and Replace** (Ctrl+F) is a window that stays open while you work. It finds
+    text in text fields, frame labels, layer names, instance names and frame scripts, with
+    match case, whole word and regular expressions. It also finds fonts, colours (fills,
+    gradient stops, strokes, text), symbols, sounds and bitmaps. It searches this scene and
+    the symbols in it, or the whole document. Results show as you type.
+  * Click a result, or press **Find Next** (F3) or Find Previous (Shift+F3), to go there: the
+    scene, the frame and the item selected. A symbol opens in place through the instances
+    that lead to it.
+  * **Replace** replaces the current result and goes on to the next. **Replace All** is one
+    undo step and asks first above 100 places. Replaced text is laid out again, colours keep
+    their transparency, and a symbol is never put inside itself.
+  * **Window › Movie Explorer** (Alt+F3) is a tab next to the Library. It shows scenes ›
+    layers › keyframes › instances, text, sounds, bitmaps and scripts, each instance opening
+    into its symbol, plus the Library's symbol definitions. A Show menu filters it by kind
+    and a search keeps matching rows. Double-click a row to go there.
+  * Both lists draw only the rows in view, so movies with 100,000 rows stay smooth.
+  * Headless: `find.search`, `find.replace`, `find.goto` and `explorer.tree` (paged).
+    Patterns use a linear-time engine with size limits.
 * **9-slice scaling for symbols** (ADR 0055, M2).
   * **Enable guides for 9-slice scaling** on a symbol, in the Library's item properties or in
     Properties. A scaled instance then keeps its corners unscaled, stretches its edges one way
