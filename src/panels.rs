@@ -277,11 +277,11 @@ pub(crate) fn live(app: &mut App, label: &str, id: &str, p: Value) {
 
 /// A symbol's 9-slice guides (ADR 0055): Animate's "Enable guides for 9-slice scaling" and,
 /// when on, where the four guides are (in the symbol's space; also dragged on the stage while
-/// the symbol is open). `salt` keeps two copies of the controls apart (Library, Properties).
-pub(crate) fn scale_grid_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::SymbolId, salt: &str) {
+/// the symbol is open). `place` keeps two copies of the controls apart (Library, Properties).
+pub(crate) fn scale_grid_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::SymbolId, place: &str) {
     let Some(grid) = app.s.doc.symbol(id).map(|s| s.scale_grid) else { return };
     let mut on = grid.is_some();
-    ui.push_id(salt, |ui| {
+    ui.push_id(place, |ui| {
         let tip = tr!("Scaled instances keep the corners outside the guides unscaled, stretch the edges one way and the centre both ways (for buttons and panels). Edit the symbol to drag the guides");
         if crate::theme::checkbox(ui, &mut on, tr!("Enable guides for 9-slice scaling")).on_hover_text(tip).changed() {
             app.run("symbol.set_scale_grid", json!({"symbol": id.0, "on": on}));
