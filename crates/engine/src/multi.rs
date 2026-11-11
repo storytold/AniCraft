@@ -180,7 +180,8 @@ fn apply_each(s: &mut Session, moves: &[(FrameItem, Affine)]) -> Result<usize> {
 /// touch, cutting and joining it (`draw.drop` on each keyframe). The items afterwards: objects as
 /// they were, each raw shape's pieces with their new ids.
 fn remerge(s: &mut Session, items: &[FrameItem]) -> Result<Vec<FrameItem>> {
-    let mut out: Vec<FrameItem> = Vec::with_capacity(items.len());
+    // Each keyframe's raw shapes merged: (layer, start) → the pieces (ids gone, ids new).
+    let mut merged: BTreeMap<(LayerId, u32), (Vec<ElementId>, Vec<ElementId>)> = BTreeMap::new();
     for ((layer, start), ids) in by_keyframe(items) {
         let l = s.layer_mut(Some(layer))?;
         let Some(ki) = l.keyframe_starting_at(start) else { continue };
@@ -193,13 +194,21 @@ fn remerge(s: &mut Session, items: &[FrameItem]) -> Result<Vec<FrameItem>> {
             }
             !take
         });
-        let item = |element| FrameItem { layer, frame: start, element };
-        out.extend(ids.iter().filter(|id| !moving.iter().any(|e| e.id == **id)).map(|&id| item(id)));
         if moving.is_empty() {
             continue;
         }
+        let gone: Vec<ElementId> = moving.iter().map(|e| e.id).collect();
         let fresh = at_keyframe(s, layer, start, |s| crate::merge::merge_in(s, moving))?;
-        out.extend(fresh.into_iter().map(item));
+        merged.insert((layer, start), (gone, fresh));
+    }
+    // In the order given: objects as they were, each keyframe's pieces where its first raw
+    // shape was.
+    let mut out: Vec<FrameItem> = Vec::with_capacity(items.len());
+    for it in items {
+        match merged.get_mut(&(it.layer, it.frame)) {
+            Some((gone, fresh)) if gone.contains(&it.element) => out.extend(std::mem::take(fresh).into_iter().map(|element| FrameItem { element, ..*it })),
+            _ => out.push(*it),
+        }
     }
     Ok(out)
 }

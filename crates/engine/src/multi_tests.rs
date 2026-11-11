@@ -288,7 +288,7 @@ fn onion_skin_inside_a_symbol_composes_its_own_frames_where_it_stands() {
     assert!(ghost.color.alpha < 1.0 && ghost.color.tint_amount > 0.0 && now.color.alpha == 1.0);
     // The job does the same, keyed apart from the plain picture.
     let view = anicraft_render::View { transform: Affine::IDENTITY, width: 64, height: 64, background: None };
-    let plain_job = crate::render_service::make_job(pic.state, &pic.doc, pic.frame, view.clone(), Some(&ghosts));
+    let plain_job = crate::render_service::make_job(pic.state, &pic.doc, pic.frame, view, Some(&ghosts));
     let job = plain_job.clone().inside(pic.front.clone());
     assert_ne!(job.key, plain_job.key);
     assert_eq!(job.display_list().items.len(), dl.items.len());

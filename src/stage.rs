@@ -274,10 +274,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.status_ok(tr!("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit."));
     }
     // Selection box in screen space (free transform handles live on it).
-    let sel_bounds = bounds_arr(app.s.selection_bounds());
-    let sel_rect = sel_bounds.map(|b| Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))));
-    // Edit Multiple Frames takes the Selection and Free Transform tools' input (ADR 0047).
+    // Edit Multiple Frames takes the Selection and Free Transform tools' input (ADR 0047); Free
+    // Transform's box then holds the selection on every keyframe (ADR 0051).
     let multi = crate::onion::editing(app) && !preview;
+    let sel_bounds = if multi { crate::onion::selection_bounds(app) } else { bounds_arr(app.s.selection_bounds()) };
+    let sel_rect = sel_bounds.map(|b| Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))));
     // Shape hint markers take the pointer first with the selection tools (ADR 0023).
     let hint_tools = matches!(app.tool, Tool::Select | Tool::Transform | Tool::Subselect) && !panning && !preview;
     let hint_marks = if hint_tools { crate::shape_hints::markers(app) } else { Vec::new() };
@@ -317,7 +318,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
-                    Drag::Transform { kind, .. } => Some(kind),
+                    Drag::Transform { kind, .. } | Drag::MultiTransform { kind, .. } => Some(kind),
                     _ => sel_rect.zip(pointer).and_then(|(r, p)| xf_zone(r, p)),
                 };
                 match zone {
@@ -370,7 +371,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else {
             let tool = app.tool;
             match tool {
-                // Edit Multiple Frames (ADR 0047): artwork on every keyframe between the markers.
+                // Edit Multiple Frames (ADR 0047): artwork on every keyframe between the markers;
+                // Free Transform's handles transform it all about one pivot (ADR 0051).
+                Tool::Transform if multi && let (Some(kind), Some(bounds)) = (sel_rect.and_then(|r| xf_zone(r, press)), sel_bounds) => {
+                    app.s.begin_gesture(tr_noop!("Free Transform"));
+                    Drag::MultiTransform { kind, start: sp, bounds, applied: Affine::IDENTITY }
+                }
                 Tool::Select | Tool::Transform if multi => crate::onion::drag_start(app, sp, shift, zoom),
                 // On an armature, a drag poses it (ADR 0043).
                 Tool::Select if let Some(d) = crate::bone_tool::select_drag_start(app, xf, press) => d,
@@ -491,6 +497,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.drag = Drag::MultiMove { last: l };
             }
             (Drag::MultiMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (Drag::MultiTransform { kind, start, bounds, applied }, Some(c)) => {
+                let (kind, start, bounds, applied) = (*kind, *start, *bounds, *applied);
+                let total = xf_total(kind, bounds, start, c, shift, alt);
+                // Only the change since the last frame; the gesture makes it one undo step.
+                if let Some(inv) = applied.inverse() {
+                    let delta = total.mul(&inv);
+                    if delta.m.iter().zip(Affine::IDENTITY.m).any(|(a, b)| (a - b).abs() > 1e-6) && crate::onion::transform_by(app, &delta) {
+                        app.drag = Drag::MultiTransform { kind, start, bounds, applied: total };
+                    }
+                }
+            }
             (Drag::Bend { id, cmd, t, last }, Some(c)) => {
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
@@ -586,7 +603,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Brush => crate::brushtool::commit(app, xf),
             Drag::Eraser => crate::erasertool::commit(app, xf),
-            Drag::MultiMove { .. } => app.s.end_gesture(),
+            // Raw shapes merge where they landed, in the drag's step (ADR 0051).
+            Drag::MultiMove { .. } | Drag::MultiTransform { .. } => crate::onion::drag_end(app),
             Drag::MultiMarquee { start, cur } => crate::onion::marquee(app, start, cur, shift),
             Drag::Marquee { start, cur } => {
                 // The parts of raw fills and strokes under it, cut at its edges, and the objects
@@ -720,6 +738,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if crate::shape_hints::menu(app, ui) || crate::motion_path::menu(app, ui) || crate::pathtools::point_menu(app, ui) {
             return;
         }
+        if multi {
+            crate::onion::context_menu(app, ui);
+            return;
+        }
         if app.s.selection.is_empty() {
             for id in ["edit.paste", "edit.paste_in_place", "edit.select_all", "timeline.insert_keyframe", "timeline.insert_blank_keyframe"] {
                 crate::menus::cmd_item(app, ui, id);
@@ -790,7 +812,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Render jobs take movie frames: the current scene starts at `start`.
         let start = app.s.doc.scene_start(app.s.scene);
         let frame = app.s.frame;
-        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview); (t, j) }).collect();
+        // Inside a symbol open in place, onion skin composes the symbol's own frames (ADR 0051).
+        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview).inside(pic.front.clone()); (t, j) }).collect();
         let keys: Vec<u64> = jobs.iter().map(|(_, j)| j.key).collect();
         let missing: Vec<usize> = (0..jobs.len()).filter(|&i| !app.stage_cache.has(keys[i])).collect();
 
@@ -989,7 +1012,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         painter.circle(o, 3.5, Color32::WHITE, Stroke::new(1.0, Color32::BLACK));
     }
     // Free transform box: recomputed every frame so it follows the artwork while you drag.
-    if transforming && let Some(b) = bounds_arr(app.s.selection_bounds()) {
+    let xf_box = if multi { crate::onion::selection_bounds(app) } else { bounds_arr(app.s.selection_bounds()) };
+    if transforming && let Some(b) = xf_box {
         let r = Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))).expand(1.0);
         painter.rect_stroke(r, 0.0, Stroke::new(1.5, T.selection), StrokeKind::Middle);
         for (h, _, _) in handles(r) {

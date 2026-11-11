@@ -194,6 +194,9 @@ pub enum Drag {
     /// pointer at `last` last frame; or a marquee over them.
     MultiMove { last: egui::Pos2 },
     MultiMarquee { start: egui::Pos2, cur: egui::Pos2 },
+    /// Free Transform on Edit Multiple Frames' selection (ADR 0051): as `Transform`, on every
+    /// keyframe the selection is on, about one shared pivot.
+    MultiTransform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     Shape { start: egui::Pos2, cur: egui::Pos2 },
     /// Subselection: dragging the selected points (stage position of the last frame).
     Points { last: egui::Pos2 },
@@ -801,6 +804,30 @@ impl App {
                 crate::onion::toggle_edit_multiple(self);
                 self.run("timeline.goto", json!({"frame": 12}));
                 crate::onion::select_all(self);
+            }
+            Some("edittransform") => {
+                // Free Transform on Edit Multiple Frames' selection (ADR 0051): one box, one
+                // pivot, over the artwork on every keyframe between the markers.
+                self.onion.preset(5);
+                crate::onion::toggle_edit_multiple(self);
+                self.run("timeline.goto", json!({"frame": 12}));
+                self.tool = Tool::Transform;
+                crate::onion::select_all(self);
+                // The bouncing ball on its keyframes.
+                let top = self.s.timeline().layers.first().map(|l| l.id);
+                self.onion_ui.sel.retain(|it| Some(it.layer) == top);
+            }
+            Some("onionsymbol") => {
+                // Onion skin inside a symbol open in place (ADR 0051): the sample's spinning star,
+                // its own frames before and after its playhead around it.
+                let star = self.s.timeline().layers.iter().flat_map(|l| l.keyframes.iter().flat_map(|k| k.elements.iter())).find(|e| e.name == "star").map(|e| e.id.0);
+                if let Some(id) = star {
+                    self.run("element.select", json!({"ids": [id]}));
+                    self.run("symbol.edit", json!({}));
+                    self.run("timeline.goto", json!({"frame": 12}));
+                }
+                self.onion.ghosts = true;
+                self.onion.preset(5);
             }
             Some("selection") => {
                 // A selection across layers (ADR 0044): Select All takes every unlocked layer's
@@ -1505,21 +1532,10 @@ impl App {
             self.status_err(crate::i18n::t(why));
             return;
         }
-        // Edit Multiple Frames (ADR 0047) selects on every keyframe between the markers.
-        if crate::onion::editing(self) {
-            match id {
-                "edit.select_all" => return crate::onion::select_all(self),
-                "edit.deselect" => {
-                    self.onion_ui.sel.clear();
-                    return;
-                }
-                // This slice moves artwork across keyframes; other edits stay on one frame.
-                "edit.delete" | "edit.cut" | "edit.copy" | "edit.duplicate" if !self.onion_ui.sel.is_empty() => {
-                    self.status_err(tr!("Edit Multiple Frames moves artwork on several keyframes; to delete, copy or duplicate it, turn Edit Multiple Frames off and work frame by frame."));
-                    return;
-                }
-                _ => {}
-            }
+        // Edit Multiple Frames (ADR 0047, 0051) selects and edits on every keyframe between the
+        // markers: the Edit menu, Align and Transform act there.
+        if crate::onion::editing(self) && crate::onion::invoke(self, id) {
+            return;
         }
         if id == "timeline.paste_frames"
             && let Some(p) = timeline::paste_params(self)
