@@ -504,10 +504,7 @@ fn what_does_not_carry_across_is_reported() {
     }
     Arc::make_mut(&mut tl.layers[0]).keyframe_mut(1).unwrap().script = Some(FrameScript::Plugin(PluginScript { id: "org.example.menu".into(), entry: "main".into() }));
     // A 9-slice symbol, scaled: the page scales it as a whole (ADR 0055).
-    let sym = match &doc.timeline(0).layers[2].keyframes[0].elements[0].kind {
-        ElementKind::Symbol { symbol, .. } => *symbol,
-        _ => unreachable!(),
-    };
+    let ElementKind::Symbol { symbol: sym, .. } = doc.timeline(0).layers[2].keyframes[0].elements[0].kind else { panic!("the fixture's third layer holds an instance") };
     if let Some(x) = doc.library.iter_mut().find(|x| x.id == sym) {
         Arc::make_mut(x).scale_grid = Some(anicraft_doc::ScaleGrid { left: 1.0, right: 2.0, top: 1.0, bottom: 2.0 });
     }

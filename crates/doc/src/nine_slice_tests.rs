@@ -138,10 +138,8 @@ fn unscaled_instances_and_nested_symbols_draw_as_they_are() {
     // At scale 1 nothing is cut: the symbol's own path is drawn, shared.
     let d = doc(Affine::translate(5.0, 5.0), Some(GRID), Vec::new());
     let dl = evaluate(&d, 0);
-    let sym_path = match &d.symbol(SYM).unwrap().timeline.layers[0].keyframes[0].elements[0].kind {
-        ElementKind::Shape(s) => s.path.clone(),
-        _ => unreachable!(),
-    };
+    let ElementKind::Shape(s) = &d.symbol(SYM).unwrap().timeline.layers[0].keyframes[0].elements[0].kind else { panic!("the panel is a shape") };
+    let sym_path = s.path.clone();
     assert!(Arc::ptr_eq(&dl.items[0].path, &sym_path));
     // A nested symbol inside scales normally: its item carries the whole 3× scale.
     let mut d = doc(Affine::scale(3.0, 3.0), Some(GRID), vec![instance(SymbolId(950), Affine::translate(50.0, 20.0))]);
