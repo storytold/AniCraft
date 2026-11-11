@@ -39,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
             true,
             bucket as crate::RunFn,
         ),
-        c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?, profile?}", true, ink),
+        c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?, profile?, cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing?} (the tool's line style unless given; see stroke.set_style)", true, ink),
         c("paint.pick", "Eyedropper", "", None, "{x, y, other?: bool (into the other swatch only: a fill's colour into the stroke, a line's into the fill), slop?} picks the style under the point on any visible layer into the tool settings: a fill's paint (solid, gradient or bitmap, kept where it is on the stage) into the fill swatch, a line's colour, width and profile into the stroke settings", false, pick_style),
         c("paint.apply_style", "Apply Style", "", None, "{fill?: bool, stroke?: bool} (default both) gives the selected shapes the fill swatch's paint (shapes with a fill) and the stroke settings (shapes with a line, and drawing objects without one)", true, |s, p| s.each_layer(false, |s| apply_style(s, p))),
     ]
@@ -314,7 +314,9 @@ fn ink(s: &mut Session, p: &Value) -> Result<Value> {
         Some(pr) => pr,
         None => s.style.profile(),
     };
-    element_shape_mut(s, id)?.stroke = Some(Stroke::new(color, width).with_profile(profile));
+    // The Ink Bottle carries the whole line: caps, joins and dashes too.
+    let line = opt_stroke_style(p, &s.style.line, width)?.unwrap_or_else(|| s.style.line.clone());
+    element_shape_mut(s, id)?.stroke = Some(Stroke::new(color, width).with_profile(profile).with_style(line));
     Ok(json!({"element": id.0}))
 }
 
@@ -385,6 +387,8 @@ fn pick_style(s: &mut Session, p: &Value) -> Result<Value> {
             st.stroke = stroke.color;
             st.stroke_width = (stroke.width * scale).clamp(0.1, 1000.0);
             st.use_stroke = true;
+            // Caps, joins and dashes as drawn (dashes scale with the shape, like the width).
+            st.line = stroke.style.scaled(scale).sanitized();
             let preset = anicraft_doc::ProfilePreset::ALL.into_iter().find(|pr| pr.profile() == stroke.profile);
             let profile = match preset {
                 Some(pr) => {
@@ -396,7 +400,7 @@ fn pick_style(s: &mut Session, p: &Value) -> Result<Value> {
                     "custom"
                 }
             };
-            Ok(json!({"picked": "line", "into": "stroke", "color": stroke.color.to_hex(), "width": st.stroke_width, "profile": profile}))
+            Ok(json!({"picked": "line", "into": "stroke", "color": stroke.color.to_hex(), "width": st.stroke_width, "profile": profile, "cap": st.line.cap.key(), "join": st.line.join.key(), "style": st.line.dash_kind().key()}))
         }
         None => Err(EngineError::State("click a fill or a line to pick its colour".into())),
     }
@@ -412,7 +416,7 @@ fn apply_style(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let style = s.style.clone();
     let paint = style.fill_paint();
-    let line = Stroke::new(style.stroke, style.stroke_width).with_profile(style.profile());
+    let line = style.new_stroke(style.stroke, style.stroke_width);
     let mut changed = 0;
     for e in s.selected_elements_mut()? {
         let to_local = e.transform.inverse();

@@ -28,6 +28,7 @@ pub mod cmds_sound;
 pub mod cmds_text;
 mod cmds_timeline;
 mod cmds_width;
+mod cmds_stroke;
 pub mod confirm;
 pub mod format;
 pub mod history;
@@ -121,6 +122,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
     v.extend(cmds_width::specs());
+    v.extend(cmds_stroke::specs());
     v.extend(cmds_plugin::specs());
     v.extend(cmds_sound::specs());
     v.extend(cmds_actions::specs());
@@ -161,6 +163,8 @@ pub struct ToolStyle {
     pub stroke_profile: anicraft_doc::ProfilePreset,
     /// A picked width profile that is none of the presets (it wins over `stroke_profile`).
     pub custom_profile: Option<anicraft_doc::WidthProfile>,
+    /// The caps, joins and dashes new strokes get (ADR 0046).
+    pub line: anicraft_doc::StrokeStyle,
     /// Object Drawing: new shapes are drawing objects. Off, they merge with the raw shapes they
     /// touch (ADR 0031). On by default, so a script's draw command makes one element; the editor
     /// starts with it off, as Animate does.
@@ -172,7 +176,7 @@ pub struct ToolStyle {
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, object_drawing: true, snap_objects: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, line: anicraft_doc::StrokeStyle::default(), object_drawing: true, snap_objects: true }
     }
 }
 
@@ -189,6 +193,10 @@ impl ToolStyle {
     /// The width profile new strokes get.
     pub fn profile(&self) -> Option<anicraft_doc::WidthProfile> {
         self.custom_profile.clone().or_else(|| self.stroke_profile.profile())
+    }
+    /// A new stroke of `color` and `width` with the current profile and line style.
+    pub fn new_stroke(&self, color: anicraft_doc::Rgba, width: f32) -> anicraft_doc::Stroke {
+        anicraft_doc::Stroke::new(color, width).with_profile(self.profile()).with_style(self.line.clone())
     }
     /// The snapping radius a command asked for (`snap`), or none when Snap to Objects is off.
     pub fn snap_radius(&self, asked: f32) -> f32 {
