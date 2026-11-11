@@ -368,7 +368,8 @@ pub fn embedded_fonts() -> Vec<std::sync::Arc<[u8]>> {
     [craft_fonts::UI_FONT, craft_fonts::MONO_FONT].into_iter().flatten().map(std::sync::Arc::from).collect()
 }
 
-/// Noto Sans Georgian (craft-fonts `Geor`) when this build embedded a face that parses. The
+/// Noto Sans Georgian (craft-fonts `Geor`) when this build embedded a face that parses and covers
+/// the Georgian letters. The
 /// interface offers Georgian only then (`i18n::ready_codes`), and `install_fonts` loads the same
 /// face: epaint panics on bytes it cannot parse, so a damaged file must never reach it.
 pub fn georgian_font() -> Option<&'static [u8]> {
@@ -376,9 +377,11 @@ pub fn georgian_font() -> Option<&'static [u8]> {
     *FACE.get_or_init(|| craft_fonts::GEORGIAN_FONT.filter(|b| parses_as_font(b)))
 }
 
-/// Whether `bytes` is a font file (any face in it parses).
+/// Whether `bytes` is a font file that draws every Georgian letter (U+10D0..U+10FA).
 fn parses_as_font(bytes: &[u8]) -> bool {
-    !anicraft_engine::text::Fonts::from_faces([bytes.to_vec()]).families().is_empty()
+    let letters: String = ('\u{10D0}'..='\u{10FA}').collect();
+    let fonts = anicraft_engine::text::Fonts::from_faces([bytes.to_vec()]);
+    fonts.layout(&letters, &anicraft_engine::text::Style::default()).is_ok_and(|laid| laid.missing == 0)
 }
 
 #[cfg(test)]
