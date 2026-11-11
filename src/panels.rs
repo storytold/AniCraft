@@ -1,11 +1,11 @@
 //! Tools bar, edit bar, status bar, Properties and Library panels.
 
-use crate::app::{App, LibraryItem, Tool};
+use crate::app::{App, Tool};
 use crate::icons::{self, Icon};
-use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, font, section, text, to_color32, with_type};
-use anicraft_engine::doc::{ElementKind, Paint, Rgba, SymbolKind, evaluate_layer_elements};
+use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, section, text, to_color32, with_type};
+use anicraft_engine::doc::{ElementKind, LibraryItem, Paint, Rgba, SymbolKind, evaluate_layer_elements};
 use crate::a11y::{self, Named};
-use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
 
 // ----- tools --------------------------------------------------------------------------------
@@ -302,7 +302,12 @@ pub fn right(app: &mut App, ui: &mut egui::Ui) {
     // next one (Align goes with Properties, History with the Library).
     let split = ui.cursor().top();
     let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, tr!("Library"), None, |ui| {
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
+        // The Library scrolls on its own, so a short window still reaches every row (History's
+        // header stays below it).
+        let room = (ui.available_height() - 48.0).max(120.0);
+        egui::ScrollArea::vertical().id_salt("library_dock").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
+        });
     });
     section(ui, "dock_history", Section::Band, tr!("History"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| history(app, ui));
@@ -439,7 +444,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// A symbol type's name, as the Properties panel shows it.
-fn symbol_kind_label(kind: SymbolKind) -> &'static str {
+pub(crate) fn symbol_kind_label(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Graphic => tr!("Graphic"),
         SymbolKind::MovieClip => tr!("Movie clip"),
@@ -578,6 +583,30 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 })
                 .response
                 .set_name(tr!("Symbol type"));
+            });
+            // Swap Symbol (ADR 0050): another symbol in this instance's place, keeping its
+            // transform, colour effect, filters and name.
+            let current = *symbol;
+            let mut choices: Vec<(anicraft_engine::doc::SymbolId, String)> = app.s.doc.library.iter().map(|x| (x.id, app.s.doc.entry_path(anicraft_engine::doc::LibraryEntry::Item(LibraryItem::Symbol(x.id))))).collect();
+            choices.sort_by_key(|(_, p)| p.to_lowercase());
+            let name = app.s.doc.symbol(current).map(|x| x.name.clone()).unwrap_or_default();
+            row_prose(ui, tr!("Symbol"), |ui| {
+                ui.label(text(Type::Body, name));
+                ui.menu_button(tr!("Swap…"), |ui| {
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        for (id, path) in &choices {
+                            if ui.selectable_label(*id == current, path.as_str()).clicked() {
+                                ui.close();
+                                if *id != current {
+                                    app.run("element.swap_symbol", json!({"symbol": id.0}));
+                                }
+                            }
+                        }
+                    });
+                })
+                .response
+                .on_hover_text(tr!("Show another symbol here, keeping position, colour effect, filters and name"))
+                .set_name(tr!("Swap Symbol"));
             });
             // The class scripts know the symbol by (kept, not run; ADR 0013), in documents
             // that use scripts.
@@ -1926,124 +1955,5 @@ fn ease_curve(ui: &mut egui::Ui, e: anicraft_engine::doc::Easing) {
 }
 
 fn library(app: &mut App, ui: &mut egui::Ui) {
-    let doc = &app.s.doc;
-    let rows: Vec<LibraryRow> = doc
-        .library
-        .iter()
-        .map(|sym| LibraryRow {
-            item: LibraryItem::Symbol(sym.id),
-            name: sym.name.clone(),
-            detail: tr!("{kind} · {frames}f", kind = symbol_kind_label(sym.kind), frames = sym.timeline.frame_count()),
-            kind: Some(sym.kind),
-        })
-        .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: tr!("Bitmap · {width}×{height}", width = b.width, height = b.height), kind: None }))
-        .chain(doc.sounds.iter().map(|x| LibraryRow { item: LibraryItem::Sound(x.id), name: x.name.clone(), detail: tr!("Sound · {seconds} s", seconds = format!("{:.1}", x.seconds())), kind: None }))
-        .collect();
-    if rows.is_empty() {
-        let key = |id: &str| app.keymap.primary(id).map(crate::platform::shortcut_label).unwrap_or_default();
-        ui.label(text(Type::Caption, tr!("No symbols, images or sounds yet. Select artwork and press {convert} to make a symbol, or import an image or a sound with {import}.", convert = key("modify.convert_to_symbol"), import = key("file.import"))));
-        return;
-    }
-    ui.label(text(Type::Caption, trn!("{n} item", "{n} items", rows.len())));
-    // Sounds go on the active layer's keyframe at the playhead, their span grown to fit.
-    let place = |app: &mut App, item: LibraryItem| match item {
-        LibraryItem::Symbol(id) => app.run("library.place", json!({"symbol": id.0})),
-        LibraryItem::Bitmap(id) => app.run("library.place", json!({"bitmap": id.0})),
-        LibraryItem::Sound(id) => app.run("sound.place", json!({"sound": id.0, "extend": true})),
-    };
-    egui::ScrollArea::vertical().id_salt("lib").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
-        for row in &rows {
-            let selected = app.library_sel == Some(row.item);
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), TARGET), Sense::click());
-            if selected || resp.hovered() {
-                ui.painter().rect_filled(r, T.rc(), if selected { T.accent_dim } else { T.hover });
-            }
-            if selected {
-                ui.painter().rect_filled(Rect::from_min_size(r.left_top(), vec2(3.0, r.height())), 0.0, T.accent);
-            }
-            let icon = Rect::from_center_size(r.left_center() + vec2(14.0, 0.0), vec2(14.0, 14.0));
-            match (row.kind, row.item) {
-                (Some(kind), _) => {
-                    let kind_color = match kind {
-                        SymbolKind::Graphic => T.kind_graphic,
-                        SymbolKind::MovieClip => T.kind_movie_clip,
-                        SymbolKind::Button => T.kind_button,
-                    };
-                    ui.painter().rect_stroke(icon, 2.0, Stroke::new(1.5, kind_color), StrokeKind::Inside);
-                    ui.painter().circle_filled(icon.center(), 2.5, kind_color);
-                }
-                (None, LibraryItem::Sound(_)) => icons::paint(ui.painter(), icon.expand(1.0), Icon::Sound, color(Type::Body)),
-                (None, _) => icons::paint(ui.painter(), icon.expand(1.0), Icon::Image, color(Type::Body)),
-            }
-            ui.painter().text(r.left_center() + vec2(30.0, 0.0), Align2::LEFT_CENTER, &row.name, font(Type::Body), color(Type::Body));
-            ui.painter().text(r.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &row.detail, font(Type::Caption), color(Type::Caption));
-            a11y::control(ui, &resp, WidgetType::SelectableLabel, &format!("{} · {}", row.name, row.detail), Some(selected));
-            if resp.clicked() {
-                app.library_sel = Some(row.item);
-            }
-            // A symbol opens for editing, as in Animate (ADR 0045); images and sounds go on the
-            // stage. Place on stage (below) places a symbol.
-            if resp.double_clicked() {
-                match row.item {
-                    LibraryItem::Symbol(id) => {
-                        app.run("symbol.edit", json!({"symbol": id.0}));
-                    }
-                    other => {
-                        place(app, other);
-                    }
-                }
-            }
-            // Opens it alone, its registration point at the stage's centre (ADR 0045).
-            if let LibraryItem::Symbol(id) = row.item {
-                resp.context_menu(|ui| {
-                    if ui.button(tr!("Edit Symbol")).clicked() {
-                        ui.close();
-                        app.run("symbol.edit", json!({"symbol": id.0}));
-                    }
-                });
-            }
-            if let LibraryItem::Sound(id) = row.item {
-                resp.context_menu(|ui| {
-                    if ui.button(tr!("Delete Sound")).clicked() {
-                        ui.close();
-                        app.request("sound.delete", json!({"sound": id.0}));
-                    }
-                });
-            }
-        }
-    });
-    ui.add_space(4.0);
-    let can_place = app.library_sel.filter(|sel| rows.iter().any(|r| r.item == *sel));
-    match can_place {
-        Some(LibraryItem::Sound(id)) => {
-            ui.horizontal(|ui| {
-                if ui.button(tr!("Preview")).on_hover_text(tr!("Plays the sound on its own")).clicked()
-                    && let Some(dec) = app.s.doc.sound(id).and_then(|x| x.decoded())
-                {
-                    app.playing = false;
-                    app.sound.preview(dec.pcm.clone());
-                    if let Some(e) = app.sound.error.take() {
-                        app.status_err(tr!("No sound: {error}", error = crate::i18n::t_dyn(&e.to_string())));
-                    }
-                }
-                if ui.button(tr!("Place on timeline")).on_hover_text(tr!("Puts it on the active layer's keyframe at the playhead (or double-click it)")).clicked() {
-                    place(app, LibraryItem::Sound(id));
-                }
-            });
-        }
-        _ => {
-            if ui.add_enabled(can_place.is_some(), egui::Button::new(tr!("Place on stage"))).on_hover_text(tr!("Adds it at the stage centre (or double-click an item)")).clicked()
-                && let Some(item) = can_place {
-                    place(app, item);
-                }
-        }
-    }
-}
-
-/// One Library row: a symbol (with its kind), a bitmap or a sound.
-struct LibraryRow {
-    item: LibraryItem,
-    name: String,
-    detail: String,
-    kind: Option<SymbolKind>,
+    crate::library::panel(app, ui);
 }

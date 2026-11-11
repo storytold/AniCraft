@@ -18,8 +18,9 @@ pub enum Shader {
     Solid(Premul),
     Linear { inv: Affine, start: Vec2, dir: Vec2, lut: Box<[Premul; LUT]> },
     Radial { inv: Affine, center: Vec2, inv_radius: f32, lut: Box<[Premul; LUT]> },
-    /// Bilinear samples of a bitmap: `inv` maps pixels back to the bitmap's own pixel grid.
-    Bitmap { inv: Affine, pixels: Arc<Pixels>, repeat: bool, fx: ColorEffect },
+    /// Samples of a bitmap: `inv` maps pixels back to the bitmap's own pixel grid. Bilinear
+    /// when `smooth` (Allow Smoothing, ADR 0050), else the nearest pixel.
+    Bitmap { inv: Affine, pixels: Arc<Pixels>, repeat: bool, fx: ColorEffect, smooth: bool },
     /// Premultiplied pixels already in surface space (a filtered group): `w` wide, its top-left
     /// at `(x0, y0)`; transparent outside.
     Image { data: Arc<Vec<Premul>>, x0: i32, y0: i32, w: usize },
@@ -75,13 +76,21 @@ impl Shader {
             }
             (Paint::Bitmap { repeat, matrix, .. }, Some(inv)) => match (image, matrix.inverse()) {
                 // Pixel → shape space → image pixels.
-                (Some(px), Some(to_image)) => Shader::Bitmap { inv: to_image.mul(&inv), pixels: px.clone(), repeat: *repeat, fx: *fx },
+                (Some(px), Some(to_image)) => Shader::Bitmap { inv: to_image.mul(&inv), pixels: px.clone(), repeat: *repeat, fx: *fx, smooth: true },
                 // A collapsed image matrix shows nothing.
                 (Some(_), None) => Shader::Solid([0.0; 4]),
                 (None, _) => Shader::Solid(premultiply(fx.apply(paint.primary_color()))),
             },
             (p, None) => Shader::Solid(premultiply(fx.apply(p.primary_color()))),
         }
+    }
+
+    /// This shader with a bitmap's Allow Smoothing (other shaders are unchanged).
+    pub fn smoothed(mut self, on: bool) -> Shader {
+        if let Shader::Bitmap { smooth, .. } = &mut self {
+            *smooth = on;
+        }
+        self
     }
 
     #[inline]
@@ -104,7 +113,7 @@ impl Shader {
             Shader::Solid(c) => *c,
             Shader::Linear { inv, start, dir, lut } => lookup(lut, (inv.apply(p) - *start).dot(*dir)),
             Shader::Radial { inv, center, inv_radius, lut } => lookup(lut, (inv.apply(p) - *center).length() * inv_radius),
-            Shader::Bitmap { inv, pixels, repeat, fx } => sample(pixels, inv.apply(p), *repeat, fx),
+            Shader::Bitmap { inv, pixels, repeat, fx, smooth } => sample(pixels, inv.apply(p), *repeat, *smooth, fx),
             Shader::Image { data, x0, y0, w } => {
                 let (dx, dy) = (x - x0, y - y0);
                 if dx < 0 || dy < 0 || dx as usize >= *w {
@@ -116,9 +125,10 @@ impl Shader {
     }
 }
 
-/// A bilinear sample at bitmap position `q` (pixel (i, j) covers [i, i+1) × [j, j+1)), with the
-/// colour effect applied and premultiplied. Outside a non-repeating bitmap: transparent.
-fn sample(px: &Pixels, q: Vec2, repeat: bool, fx: &ColorEffect) -> Premul {
+/// A sample at bitmap position `q` (pixel (i, j) covers [i, i+1) × [j, j+1)), bilinear when
+/// `smooth`, else the pixel `q` is in, with the colour effect applied and premultiplied.
+/// Outside a non-repeating bitmap: transparent.
+fn sample(px: &Pixels, q: Vec2, repeat: bool, smooth: bool, fx: &ColorEffect) -> Premul {
     let (w, h) = (px.width as f32, px.height as f32);
     if !(q.x.is_finite() && q.y.is_finite()) || w < 1.0 || h < 1.0 {
         return [0.0; 4];
@@ -129,6 +139,10 @@ fn sample(px: &Pixels, q: Vec2, repeat: bool, fx: &ColorEffect) -> Premul {
         v = v.rem_euclid(h);
     } else if u < 0.0 || v < 0.0 || u >= w || v >= h {
         return [0.0; 4];
+    }
+    if !smooth {
+        let c = px.at(u.floor() as i64, v.floor() as i64);
+        return premultiply(fx.apply(Rgba::new(c[0], c[1], c[2], c[3])));
     }
     let (fx_, fy_) = (u - 0.5, v - 0.5);
     let (x0, y0) = (fx_.floor(), fy_.floor());
@@ -166,6 +180,24 @@ mod tests {
         // gradient follows the transform
         let s2 = Shader::new(&paint, &Affine::scale(2.0, 1.0), &ColorEffect::default(), None);
         assert!((s2.at(99, 0)[0] - 0.5).abs() < 0.02);
+    }
+
+    #[test]
+    fn bitmaps_without_smoothing_keep_hard_pixel_edges() {
+        // A 2×1 image, black then white, drawn 10× larger: smoothed, the middle is a ramp;
+        // without smoothing, each half is one flat colour up to the edge between them.
+        let px = Arc::new(Pixels { width: 2, height: 1, rgba: vec![0, 0, 0, 255, 255, 255, 255, 255] });
+        let paint = Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: false, matrix: Affine::IDENTITY };
+        let smooth = Shader::new(&paint, &Affine::scale(10.0, 10.0), &ColorEffect::default(), Some(&px));
+        let hard = Shader::new(&paint, &Affine::scale(10.0, 10.0), &ColorEffect::default(), Some(&px)).smoothed(false);
+        assert!(smooth.at(9, 5)[0] > 0.3 && smooth.at(9, 5)[0] < 0.7, "{:?}", smooth.at(9, 5));
+        assert_eq!(hard.at(9, 5), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(hard.at(10, 5), [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(hard.at(0, 0), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(hard.at(19, 9), [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(hard.at(20, 5), [0.0; 4], "outside stays transparent");
+        // Solid shaders ignore it.
+        assert!(Shader::new(&Paint::Solid(Rgba::WHITE), &Affine::IDENTITY, &ColorEffect::default(), None).smoothed(false).is_solid().is_some());
     }
 
     #[test]

@@ -272,19 +272,7 @@ pub struct Shot {
 pub const SHOT_FRAMES: u32 = 120;
 
 /// The item picked in the Library panel (view state).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LibraryItem {
-    Symbol(anicraft_engine::doc::SymbolId),
-    Bitmap(anicraft_engine::doc::BitmapId),
-    Sound(anicraft_engine::doc::SoundId),
-}
-
-impl LibraryItem {
-    /// The first item in the Library: its first symbol, else its first bitmap, else sound.
-    pub fn first(doc: &anicraft_engine::doc::Document) -> Option<LibraryItem> {
-        doc.library.first().map(|s| LibraryItem::Symbol(s.id)).or_else(|| doc.bitmaps.first().map(|b| LibraryItem::Bitmap(b.id))).or_else(|| doc.sounds.first().map(|s| LibraryItem::Sound(s.id)))
-    }
-}
+pub use anicraft_engine::doc::LibraryItem;
 
 pub struct App {
     pub s: Session,
@@ -320,6 +308,8 @@ pub struct App {
     /// Folders shown closed on the timeline (view state: not saved, not undoable).
     pub tl_collapsed: HashSet<anicraft_engine::doc::LayerId>,
     pub library_sel: Option<LibraryItem>,
+    /// The Library panel's folders, selection, sorting, search and preview (ADR 0050).
+    pub library: crate::library::LibraryView,
     /// Text being typed on the stage.
     pub text_edit: Option<TextEditing>,
     /// Font families on this computer, listed once on first need.
@@ -463,7 +453,7 @@ impl App {
         let prefs = if shot_mode { prefs::Prefs::default() } else { prefs::Prefs::load() };
         let keymap = keymap::Keymap::new(&prefs.shortcuts);
         let shortcuts = keymap.table();
-        let library_sel = LibraryItem::first(&session.doc);
+        let library_sel = crate::library::first_item(&session.doc);
         let (recovery, recovery_err) = autosave::Recovery::start(shot_mode);
         // Text lays out with the fonts on this computer plus the embedded interface font (so new
         // text has the same default everywhere). Scan them now, off the UI thread.
@@ -503,6 +493,7 @@ impl App {
             tl_last_layer: None,
             tl_collapsed: HashSet::new(),
             library_sel,
+            library: Default::default(),
             text_edit: None,
             font_families: None,
             star_points: 5,
@@ -787,6 +778,22 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some(which @ ("library" | "librarymenu")) => {
+                // Library folders with an item inside, a copy, the item previewed (ADR 0050).
+                let ball = self.s.doc.library.first().map(|s| s.id);
+                let folder = self.run("library.new_folder", json!({"name": "Characters"})).and_then(|v| v["folder"].as_u64());
+                self.run("library.new_folder", json!({"name": "Props"}));
+                if let (Some(ball), Some(f)) = (ball, folder) {
+                    self.run("library.duplicate", json!({"symbol": ball.0}));
+                    self.run("library.move", json!({"items": [{"symbol": ball.0}], "to": f}));
+                    self.library.expanded.insert(anicraft_engine::doc::FolderId(f));
+                    self.library_sel = Some(LibraryItem::Symbol(ball));
+                    self.library.sel = vec![anicraft_engine::doc::LibraryEntry::Item(LibraryItem::Symbol(ball))];
+                }
+                if which == "librarymenu" {
+                    crate::library::select_unused(self);
+                }
+            }
             Some(which @ ("onion" | "onionmenu")) => {
                 // Onion skin ±5 on a frame with frames before and after it, the markers on the
                 // ruler; with its menu open, in outlines (ADR 0047).
@@ -1368,7 +1375,7 @@ impl App {
         if let Some(session) = restored {
             self.view.fit = true;
             self.frame_sel = None;
-            self.library_sel = LibraryItem::first(&self.s.doc);
+            self.library_sel = crate::library::first_item(&self.s.doc);
             self.decode_sounds();
             self.recovery.restored(&session);
             let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| tr!("Untitled").to_string(), |n| n.to_string_lossy().into_owned());
@@ -1385,7 +1392,7 @@ impl App {
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
-                self.library_sel = LibraryItem::first(&self.s.doc);
+                self.library_sel = crate::library::first_item(&self.s.doc);
                 self.decode_sounds();
                 match v.get("report").and_then(Value::as_str) {
                     // An imported file: say what came across and what didn't, and that saving
@@ -1397,7 +1404,7 @@ impl App {
             "file.recover" => {
                 self.view.fit = true;
                 self.frame_sel = None;
-                self.library_sel = LibraryItem::first(&self.s.doc);
+                self.library_sel = crate::library::first_item(&self.s.doc);
                 self.recovery.restored(v["recovered"].as_str().unwrap_or(""));
                 let name = v["name"].as_str().unwrap_or(tr!("Untitled"));
                 self.status_ok(if v["original_newer"].as_bool() == Some(true) {
@@ -1820,6 +1827,7 @@ impl App {
             crate::widthtool::consume_keys(self, ctx);
             crate::bone_tool::consume_keys(self, ctx);
         }
+        crate::library::consume_keys(self, ctx);
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
         let mut play = false;

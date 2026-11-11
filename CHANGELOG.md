@@ -17,6 +17,48 @@
   * Headless: `frames.transform`, `frames.align`, `frames.delete`, `frames.copy`, `frames.cut`,
     `frames.paste`, `frames.merge`.
 
+* **Library management** (ADR 0050, M2).
+  * **Folders**: New Folder (the folder icon under the list, or right-click), nested as deep as
+    you like (32 levels). Drag items and folders onto a folder to move them in, onto an item to
+    join its folder, or below the list for the top level; right-click › Move to does the same.
+    Deleting a folder that holds items asks first, and its items go with it.
+  * **Rename in place** with F2 or a double-click on the name; Enter keeps it, Esc cancels.
+    Names are unique within a folder (case aside), as in Animate. Convert to Symbol picks the next
+    free “Symbol n”.
+  * **Duplicate Symbol** (right-click): “Ball copy” in the same folder, ready to rename.
+  * **Swap Symbol** in Properties › Symbol: pick another symbol for the selected instances.
+    Position, colour effect, blending, filters, looping and instance name stay.
+  * A **use count** for every item, **Select Unused Items** and **Delete Unused Items…** (in
+    More). Unused means nothing in any scene reaches it, so one pass clears a whole unused
+    branch; symbols with a linkage class count as used. Deleting an item the movie uses asks,
+    and its instances go with it.
+  * **Sort** by name, type, use count or date added, ascending or descending, and **search**
+    by name; folders that hold a match open.
+  * A **preview** of the current item (a symbol's first frame, the bitmap, or a sound's
+    waveform with a play button) and its **properties**: a symbol's type and linkage class, a
+    bitmap's **Allow Smoothing**. Smoothing off keeps hard pixel edges on the stage, in
+    renders, in SVG and in the HTML page.
+  * Animate files keep their library folders and Allow Smoothing.
+  * Headless: `library.items`, `library.new_folder`, `library.rename`, `library.move`,
+    `library.duplicate`, `library.delete`, `library.unused`, `library.delete_unused`,
+    `library.set_smoothing`, `element.swap_symbol`.
+* **The GPU stage sorts heavy frames into tiles on the graphics card, and outlines are cheap**
+  (ADR 0048, M3).
+  * Frames with many shapes are binned on the GPU (count, prefix sum, scatter and tile-list
+    compute passes) instead of on the CPU: the CPU only lays out the shapes' points, and every
+    buffer is sized up front, so nothing is read back. On Vulkan, a 10,000-shape 4K frame
+    drawn as one texture takes about 5 ms instead of 22, a 50,000-shape one about 23 ms
+    instead of 122, and the 50,000-shape 4K stage about 37 ms instead of 75. Frames with few
+    shapes, shapes inside masks or faded symbols, and Direct3D 12 (where the passes cost more
+    per stage tile) are still binned on the CPU, which stays the reference
+    (`ANICRAFT_GPU_BINNING=cpu|gpu|auto` to compare).
+  * **Outline mode** (an outlined layer, and onion skin's Outlines) draws true one-pixel
+    hairlines, one edge per segment where the old half-pixel strokes had four and a disc at
+    every bend, in the CPU renderer and on the GPU alike. On a 2,000-shape scene with ±5 onion
+    frames, outlines are now as fast as tinted onion frames: 10 ms on the GPU stage at 1080p
+    (was 73) and 17 ms on the CPU stage (was 34–39). Lines look the same, with smoother joins.
+  * Parity with the CPU renderer is unchanged (at most 1/255 on every test scene), and a test
+    checks that the GPU's tile lists are the CPU's, entry by entry and pixel by pixel.
 * **Raw points, snapping while drawing, and symbols edited in place** (ADR 0045, issue #42, M1).
   * **Add a point** on a merged drawing's line or fill edge with the Pen's Alt-click or a
     Subselection double-click: every shape on that edge gets it, and the curve keeps its shape.

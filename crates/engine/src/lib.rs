@@ -16,6 +16,7 @@ mod cmds_frames;
 mod cmds_modify;
 mod cmds_motion;
 mod cmds_hints;
+pub mod cmds_library;
 mod cmds_paint;
 mod cmds_path;
 pub mod cmds_raw;
@@ -118,6 +119,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(onion::specs());
     v.extend(multi::specs());
     v.extend(cmds_draw::specs());
+    v.extend(cmds_library::specs());
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());

@@ -153,7 +153,11 @@
             g.globalAlpha = bitmap ? Math.min(Math.max(it.c[0], 0), 1) : 1;
             set(g, it.m);
             g.fillStyle = style;
+            // A bitmap without Allow Smoothing keeps hard pixel edges (ADR 0050).
+            const hard = bitmap && movie.paints[it.f].px === true;
+            if (hard) g.imageSmoothingEnabled = false;
             g.fill(path, it.eo ? "evenodd" : "nonzero");
+            if (hard) g.imageSmoothingEnabled = true;
             g.globalAlpha = 1;
           }
         }
