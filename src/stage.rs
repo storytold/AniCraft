@@ -334,6 +334,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     Some(XfKind::Scale { hx, hy }) if hx * hy < 0 => CursorIcon::ResizeNeSw,
                     Some(XfKind::Scale { hx: 0, .. }) => CursorIcon::ResizeVertical,
                     Some(XfKind::Scale { .. }) => CursorIcon::ResizeHorizontal,
+                    Some(XfKind::Skew { hy: 0, .. }) => CursorIcon::ResizeVertical,
+                    Some(XfKind::Skew { .. }) => CursorIcon::ResizeHorizontal,
                     Some(XfKind::Rotate) => CursorIcon::Alias,
                     Some(XfKind::Move) => CursorIcon::Move,
                     None => CursorIcon::Default,
@@ -1398,6 +1400,8 @@ fn text_editor(app: &mut App, ui: &mut egui::Ui, stage_origin: Pos2, zoom: f32) 
 /// Screen-space handle size and the rotation zone just outside each corner.
 const HANDLE: f32 = 8.0;
 const ROTATE_ZONE: f32 = 22.0;
+/// How far from a box edge line (screen space) a press still grabs it to skew.
+const SKEW_ZONE: f32 = 5.0;
 
 fn bounds_arr(b: anicraft_engine::geom::Rect) -> Option<[f32; 4]> {
     (!b.is_empty()).then_some([b.min.x, b.min.y, b.max.x, b.max.y])
@@ -1414,6 +1418,19 @@ fn xf_zone(r: Rect, p: Pos2) -> Option<XfKind> {
     for (h, hx, hy) in handles(r) {
         if (p.x - h.x).abs() <= HANDLE && (p.y - h.y).abs() <= HANDLE {
             return Some(XfKind::Scale { hx, hy });
+        }
+    }
+    // The line between two handles skews (Animate parity, #174); the handles above win at the ends.
+    let near = |a: f32, b: f32| (a - b).abs() <= SKEW_ZONE;
+    if (r.left() - SKEW_ZONE..=r.right() + SKEW_ZONE).contains(&p.x) && (r.top() - SKEW_ZONE..=r.bottom() + SKEW_ZONE).contains(&p.y) {
+        if near(p.y, r.top()) {
+            return Some(XfKind::Skew { hx: 0, hy: -1 });
+        } else if near(p.y, r.bottom()) {
+            return Some(XfKind::Skew { hx: 0, hy: 1 });
+        } else if near(p.x, r.left()) {
+            return Some(XfKind::Skew { hx: -1, hy: 0 });
+        } else if near(p.x, r.right()) {
+            return Some(XfKind::Skew { hx: 1, hy: 0 });
         }
     }
     if !r.contains(p) && [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()].iter().any(|c| c.distance(p) <= ROTATE_ZONE) {
@@ -1462,6 +1479,20 @@ pub(crate) fn xf_total(kind: XfKind, b: [f32; 4], start: Pos2, cur: Pos2, shift:
             }
             let clamp = |s: f32| if s.abs() < 0.01 { 0.01f32.copysign(if s == 0.0 { 1.0 } else { s }) } else { s };
             about(px, py, Affine::scale(clamp(sx), clamp(sy)))
+        }
+        XfKind::Skew { hx, hy } => {
+            // Top and bottom edges slide sideways, left and right edges slide up and down; the
+            // opposite edge stays put (Alt: the centre does), so the grabbed edge follows the pointer.
+            let k = |moved: f32, arm: f32| if arm.abs() < 1e-3 { 0.0 } else { (moved / arm).clamp(-8.0, 8.0) };
+            if hy != 0 {
+                let py = if alt { cy } else { [y1, cy, y0][(hy + 1) as usize] };
+                let shear = k(cur.x - start.x, start.y - py);
+                about(cx, py, Affine { m: [1.0, 0.0, shear, 1.0, 0.0, 0.0] })
+            } else {
+                let px = if alt { cx } else { [x1, cx, x0][(hx + 1) as usize] };
+                let shear = k(cur.y - start.y, start.x - px);
+                about(px, cy, Affine { m: [1.0, shear, 0.0, 1.0, 0.0, 0.0] })
+            }
         }
         XfKind::Rotate => {
             let a0 = (start.y - cy).atan2(start.x - cx);
@@ -1602,10 +1633,33 @@ mod xf_tests {
     }
 
     #[test]
+    fn dragging_the_top_edge_shears_sideways_about_the_bottom_edge() {
+        // B is 100 x 50: dragging the top edge 10 right moves the top edge 10 right.
+        let m = xf_total(XfKind::Skew { hx: 0, hy: -1 }, B, pos2(50.0, 0.0), pos2(60.0, 0.0), false, false);
+        assert_eq!(apply(&m, 0.0, 0.0), Vec2::new(10.0, 0.0));
+        assert_eq!(apply(&m, 0.0, 50.0), Vec2::new(0.0, 50.0), "the opposite edge stays put");
+        assert!((m.determinant() - 1.0).abs() < 1e-5, "a shear keeps the area");
+    }
+
+    #[test]
+    fn dragging_the_right_edge_shears_vertically_and_alt_pivots_on_the_centre() {
+        let m = xf_total(XfKind::Skew { hx: 1, hy: 0 }, B, pos2(100.0, 25.0), pos2(100.0, 35.0), false, false);
+        assert_eq!(apply(&m, 100.0, 0.0), Vec2::new(100.0, 10.0));
+        assert_eq!(apply(&m, 0.0, 0.0), Vec2::new(0.0, 0.0));
+        let m = xf_total(XfKind::Skew { hx: 1, hy: 0 }, B, pos2(100.0, 25.0), pos2(100.0, 35.0), false, true);
+        assert_eq!(apply(&m, 50.0, 25.0), Vec2::new(50.0, 25.0), "centre stays put");
+        assert_eq!(apply(&m, 100.0, 25.0), Vec2::new(100.0, 35.0));
+    }
+
+    #[test]
     fn zones() {
         let r = Rect::from_min_max(pos2(100.0, 100.0), pos2(300.0, 200.0));
         assert_eq!(xf_zone(r, pos2(300.0, 200.0)), Some(XfKind::Scale { hx: 1, hy: 1 }));
         assert_eq!(xf_zone(r, pos2(200.0, 100.0)), Some(XfKind::Scale { hx: 0, hy: -1 }));
+        assert_eq!(xf_zone(r, pos2(150.0, 101.0)), Some(XfKind::Skew { hx: 0, hy: -1 }));
+        assert_eq!(xf_zone(r, pos2(150.0, 199.0)), Some(XfKind::Skew { hx: 0, hy: 1 }));
+        assert_eq!(xf_zone(r, pos2(99.0, 130.0)), Some(XfKind::Skew { hx: -1, hy: 0 }));
+        assert_eq!(xf_zone(r, pos2(301.0, 130.0)), Some(XfKind::Skew { hx: 1, hy: 0 }));
         assert_eq!(xf_zone(r, pos2(312.0, 212.0)), Some(XfKind::Rotate));
         assert_eq!(xf_zone(r, pos2(200.0, 150.0)), Some(XfKind::Move));
         assert_eq!(xf_zone(r, pos2(500.0, 500.0)), None);

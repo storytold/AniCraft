@@ -20,6 +20,9 @@
     `prefs.recent_pin`, `prefs.recent_remove`, `prefs.recent_clear`; `file.import` takes
     `cx`/`cy` and `layer: "active"`.
 
+* **Free Transform: skew and shear** (#174). Dragging the line between two handles of the
+  selection box shears the artwork along that edge, as in Adobe Animate: the opposite edge stays
+  put and Alt skews about the centre. The cursor shows the direction.
 * **Buttons, complete: sounds on button frames and hit-area editing** (ADR 0057, M5).
   * A sound on a button's **Over** or **Down** frame plays when the pointer goes over or
     presses the button, in Test Movie and in the HTML canvas page (Web Audio). As the SWF format
