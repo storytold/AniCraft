@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 /// The scene's camera layer id.
 pub(crate) fn camera_layer(s: &Session) -> Option<LayerId> {
-    s.doc.timeline(s.scene).camera_layer().map(|l| l.id)
+    s.timeline().camera_layer().map(|l| l.id)
 }
 
 fn no_camera() -> EngineError {
@@ -47,7 +47,7 @@ fn add(s: &mut Session, _: &Value) -> Result<Value> {
         s.selection.clear();
         return Ok(json!({"layer": id.0, "added": false}));
     }
-    if s.doc.timeline(s.scene).layers.len() >= 1000 {
+    if s.timeline().layers.len() >= 1000 {
         return Err(EngineError::State("too many layers (limit 1000)".into()));
     }
     let id = LayerId(s.doc.alloc_id());
@@ -61,7 +61,7 @@ fn add(s: &mut Session, _: &Value) -> Result<Value> {
     let mut k = Keyframe::new(0, frames);
     k.elements.push(Arc::new(Camera::rest(&s.doc.stage).to_element(el)));
     layer.keyframes = vec![Arc::new(k)];
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     tl.layers.insert(0, Arc::new(layer));
     tl.repair_masks();
     s.layer = id;
@@ -71,11 +71,11 @@ fn add(s: &mut Session, _: &Value) -> Result<Value> {
 
 fn remove(s: &mut Session, _: &Value) -> Result<Value> {
     let id = camera_layer(s).ok_or_else(no_camera)?;
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     tl.layers.retain(|l| l.id != id);
     tl.repair_masks();
     if s.layer == id {
-        s.layer = s.doc.timeline(s.scene).layers.first().map_or(LayerId(0), |l| l.id);
+        s.layer = s.timeline().layers.first().map_or(LayerId(0), |l| l.id);
         s.selection.clear();
     }
     Ok(json!({"removed": id.0}))
@@ -187,9 +187,9 @@ fn camera_json(c: &Camera, stage: &anicraft_doc::Stage) -> Value {
 fn info(s: &mut Session, p: &Value) -> Result<Value> {
     let frame = opt_u32(p, "frame")?.unwrap_or(s.frame).min(MAX_FRAME);
     let Some(id) = camera_layer(s) else { return Ok(json!({"camera": false})) };
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let on = tl.camera_layer().is_some_and(|l| l.visible);
-    let mut v = s.doc.timeline(s.scene).camera_state_at(frame, &s.doc.stage).map_or_else(|| json!({}), |c| camera_json(&c, &s.doc.stage));
+    let mut v = s.timeline().camera_state_at(frame, &s.doc.stage).map_or_else(|| json!({}), |c| camera_json(&c, &s.doc.stage));
     v["camera"] = json!(true);
     v["layer"] = json!(id.0);
     v["on"] = json!(on);

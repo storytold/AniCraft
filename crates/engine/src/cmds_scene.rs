@@ -32,9 +32,11 @@ pub(crate) fn target_scene(s: &Session, p: &Value) -> Result<usize> {
 
 /// Opens scene `i` at its first frame, on its top layer.
 fn open_scene(s: &mut Session, i: usize) {
+    // A scene is edited from its own timeline: open symbols close first (ADR 0045).
+    s.exit_all();
     s.scene = i.min(s.doc.scenes.len().saturating_sub(1));
     s.frame = 0;
-    s.layer = s.doc.timeline(s.scene).layers.first().map_or(LayerId(0), |l| l.id);
+    s.layer = s.timeline().layers.first().map_or(LayerId(0), |l| l.id);
     s.selection.clear();
 }
 

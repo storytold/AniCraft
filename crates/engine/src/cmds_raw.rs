@@ -612,7 +612,7 @@ fn select_rect(s: &mut Session, p: &Value) -> Result<Value> {
     // What each layer has under the marquee, from one display list: wholly inside, or (raw
     // shapes) partly.
     let mut found: Vec<(LayerId, Vec<ElementId>, Vec<ElementId>)> = Vec::new();
-    let layers: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).filter(|l| s.gathers(*l)).collect();
+    let layers: Vec<LayerId> = s.timeline().layers.iter().map(|l| l.id).filter(|l| s.gathers(*l)).collect();
     for l in layers {
         let (mut picked, mut partial) = (Vec::new(), Vec::new());
         for e in s.elements_on(l) {

@@ -101,7 +101,7 @@ fn copy(s: &mut Session, _: &Value) -> Result<Value> {
     let mut copied = Vec::with_capacity(layers.len());
     for l in layers {
         let elements: Vec<Element> = s.elements_on(l).iter().filter(|e| s.selection.contains(l, e.id)).map(|e| (**e).clone()).collect();
-        let name = s.doc.timeline(s.scene).layer(l).map(|x| x.name.clone()).unwrap_or_default();
+        let name = s.timeline().layer(l).map(|x| x.name.clone()).unwrap_or_default();
         if !elements.is_empty() {
             copied.push(ClipLayer { layer: l, name, elements });
         }
@@ -145,7 +145,7 @@ fn paste_targets(s: &mut Session) -> Result<Vec<LayerId>> {
     if n <= 1 {
         return Ok(vec![s.layer]);
     }
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let drawable = |s: &Session, l: &Layer| s.selectable(l.id) && !matches!(l.kind, LayerKind::Folder | LayerKind::Camera | LayerKind::Armature);
     let home: Vec<LayerId> = s.clipboard.layers.iter().filter_map(|c| tl.layer(c.layer).filter(|l| l.name == c.name && drawable(s, l)).map(|l| l.id)).collect();
     if home.len() == n {
@@ -156,17 +156,17 @@ fn paste_targets(s: &mut Session) -> Result<Vec<LayerId>> {
     out.extend(tl.layers.iter().skip(at + 1).filter(|l| drawable(s, l)).map(|l| l.id).take(n - 1));
     let names: Vec<String> = s.clipboard.layers.iter().skip(out.len()).map(|c| c.name.clone()).collect();
     for name in names {
-        if s.doc.timeline(s.scene).layers.len() >= 1000 {
+        if s.timeline().layers.len() >= 1000 {
             return Err(EngineError::State("too many layers (limit 1000)".into()));
         }
         let id = LayerId(s.doc.alloc_id());
-        let count = s.doc.timeline(s.scene).layers.len();
+        let count = s.timeline().layers.len();
         let mut layer = Layer::new(id, name);
         if let Some(k) = layer.keyframe_mut(0) {
             k.duration = s.frame_count().max(1);
         }
         layer.color = crate::cmds_timeline::layer_color(count + 1);
-        let tl = s.doc.timeline_mut(s.scene);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
         tl.layers.push(Arc::new(layer));
         tl.repair_masks();
         out.push(id);
@@ -177,6 +177,11 @@ fn paste_targets(s: &mut Session) -> Result<Vec<LayerId>> {
 fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
     if s.clipboard.is_empty() {
         return Err(EngineError::State("the clipboard is empty".into()));
+    }
+    // Inside an open symbol, an instance of it (or of one using it) would nest it in itself.
+    let nests = s.clipboard.layers.iter().flat_map(|c| &c.elements).any(|e| matches!(e.kind, anicraft_doc::ElementKind::Symbol { symbol, .. } if crate::editing::would_nest(s, symbol)));
+    if nests {
+        return Err(EngineError::State("a symbol can't be pasted inside itself".into()));
     }
     import_symbols(s, &s.clipboard.symbols.clone());
     let targets = paste_targets(s)?;

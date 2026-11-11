@@ -239,7 +239,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     // shaped over, which Custom starts from.
     let (lid, frame) = target(s, p)?;
     let fps = s.doc.stage.fps;
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let place = tl.layer(lid.unwrap_or(s.layer)).and_then(|l| l.keyframe_at(frame)).map(|k| (k.duration, s.doc.frame_count().saturating_sub(s.doc.scene_start(s.scene).saturating_add(k.start))));
     let sounds = s.doc.sounds.clone();
     let heard = move |fs: &FrameSound| match (sounds.iter().find(|x| x.id == fs.sound), place) {

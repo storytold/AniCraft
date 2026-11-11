@@ -665,7 +665,21 @@ fn panic_hunt_every_command() {
         layered.execute(id, &p).unwrap();
     }
     assert_eq!(layered.selected_layers().len(), 2, "the fuzz starts with a selection on two layers");
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered] {
+    // Raw drawings inside a symbol open for editing in place (ADR 0045), with a point added.
+    let mut in_symbol = Session::default();
+    in_symbol.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("modify.convert_to_symbol", json!({"name": "Inner"})),
+        ("element.translate", json!({"dx": 30, "dy": 15})),
+        ("symbol.edit", json!({})),
+        ("draw.rect", json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("raw.add_point", json!({"x": 45, "y": 90})),
+    ] {
+        in_symbol.execute(id, &p).unwrap();
+    }
+    assert_eq!(in_symbol.editing.len(), 1, "the fuzz starts inside a symbol");
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -677,10 +691,12 @@ fn panic_hunt_every_command() {
                 let _ = s.execute(spec.id, p);
             }
         }
-        // The document must still evaluate and render.
+        // The document must still evaluate and render, and so must what the stage shows.
         for f in [0, 1, 5, 47, 1000] {
             let _ = anicraft_render::render_frame(&s.doc, f, 0.1);
         }
+        let pic = s.stage_picture();
+        let _ = anicraft_render::render_frame(&pic.doc, pic.frame, 0.1);
         // ...and its sounds lay out and mix.
         let voices = anicraft_doc::sound::voices(&s.doc, 8000);
         let mut out = vec![0.0; 2 * 4096];

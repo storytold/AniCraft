@@ -378,7 +378,7 @@ fn subselect_rect(s: &mut Session, p: &Value) -> Result<Value> {
     if !add {
         s.selection.clear();
     }
-    let usable = s.active_layer().is_some_and(|l| l.visible && !l.locked) && !s.doc.timeline(s.scene).locked_by_folder(s.layer);
+    let usable = s.active_layer().is_some_and(|l| l.visible && !l.locked) && !s.timeline().locked_by_folder(s.layer);
     let empty = json!({"selected": s.selection.id_list(), "anchors": []});
     if !usable || !(r.width() > 0.0 || r.height() > 0.0) {
         return Ok(empty);
