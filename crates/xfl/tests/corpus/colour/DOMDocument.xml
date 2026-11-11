@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: colour effects (ADR 0056). Every style of Properties' Style menu on a
+     chip (None, Brightness, Tint, Advanced with a negative multiplier and offsets, Alpha), a
+     brightness inside a tint (nested effects compose exactly), a classic tween from a tint to
+     Advanced (a style change: it travels in the advanced space) and one from brightness -100 %
+     to +60 % (within one style: brightness itself travels). Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <symbols>
+    <Include href="Chip.xml" loadImmediate="false"/>
+    <Include href="Pair.xml" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Styles" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="13" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="30" ty="40"/></matrix></DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="90" ty="40"/></matrix><color><Color brightness="0.5"/></color></DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="150" ty="40"/></matrix><color><Color tintMultiplier="0.6" tintColor="#E9C46A"/></color></DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="210" ty="40"/></matrix><color><Color redMultiplier="-1" redOffset="255" greenMultiplier="0.5" blueOffset="-60"/></color></DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="270" ty="40"/></matrix><color><Color alphaMultiplier="0.25"/></color></DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Pair" symbolType="graphic" loop="loop"><matrix><Matrix tx="60" ty="110"/></matrix><color><Color brightness="-0.4"/></color></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Style change" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" keyMode="22017">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="160" ty="105"/></matrix><color><Color tintMultiplier="1" tintColor="#264653"/></color></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="280" ty="105"/></matrix><color><Color redMultiplier="0.5" redOffset="100" greenMultiplier="0.2" blueMultiplier="-1" blueOffset="255" alphaMultiplier="0.8"/></color></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Brightness" color="#4FFF4F">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" keyMode="22017">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="160" ty="152"/></matrix><color><Color brightness="-1"/></color></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop"><matrix><Matrix tx="280" ty="152"/></matrix><color><Color brightness="0.6"/></color></DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

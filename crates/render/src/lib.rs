@@ -13,7 +13,7 @@ pub mod html;
 pub mod lottie;
 pub mod svg;
 
-use anicraft_doc::{BlendMode, ColorEffect, DisplayItem, DisplayList, Document, Paint, Rgba, evaluate};
+use anicraft_doc::{BlendMode, ColorTransform, DisplayItem, DisplayList, Document, Paint, Rgba, evaluate};
 use anicraft_geom::{Affine, FillRule, Rect, Vec2};
 use paint::{Premul, Shader, premultiply};
 use raster::{Coverage, IRect};
@@ -836,7 +836,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
         // Caps, joins, dashes (ADR 0046) and width profiles (ADR 0018); thin strokes and
         // sub-pixel dash patterns fade instead of dropping out.
         let (polys, alpha) = stroke::stroke_geometry(&lines, st, &m, true)?;
-        let fx = ColorEffect { alpha: item.color.alpha * alpha, ..item.color };
+        let fx = ColorTransform::alpha(alpha).concat(&item.color);
         Some((polys, Shader::new(&Paint::Solid(st.color), &m, &fx, None)))
     });
     if let Some(fill) = &item.fill {
@@ -917,7 +917,7 @@ mod tests {
             fill: Some(fill),
             stroke: None,
             fill_rule: FillRule::NonZero,
-            color: ColorEffect::default(),
+            color: ColorTransform::IDENTITY,
             layer: LayerId(0),
             element: ElementId(0),
             outline: None,
@@ -980,8 +980,8 @@ mod tests {
         // Fading each square on its own would let the red show through the blue.
         let (mut r2, mut b2) = (red, blue);
         (r2.group, b2.group) = (None, None);
-        r2.color.alpha = 0.5;
-        b2.color.alpha = 0.5;
+        r2.color = ColorTransform::alpha(0.5);
+        b2.color = ColorTransform::alpha(0.5);
         let (each, _) = render(&list(vec![r2, b2]), &white).unwrap();
         assert!(each.pixel(6, 1).unwrap()[0] > 0.2, "per-shape fading mixes in red");
         // Nested groups multiply; a group with a bad parent link is a top-level group.

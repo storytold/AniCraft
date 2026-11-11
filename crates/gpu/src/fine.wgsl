@@ -158,19 +158,15 @@ fn finite(v: f32) -> bool {
 
 // One bitmap tap at integer (x, y) (wrapped when repeating, then clamped to the edges as
 // `Pixels::at` does), through the colour effect, premultiplied.
-fn tap(slot: u32, x: i32, y: i32, size: vec2<i32>, repeat: bool, fx: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
+// The colour transform (ColorTransform::apply): each straight channel `c·mul + add`, clamped.
+fn tap(slot: u32, x: i32, y: i32, size: vec2<i32>, repeat: bool, mul: vec4<f32>, add: vec4<f32>) -> vec4<f32> {
     var q = vec2<i32>(x, y);
     if repeat {
         q = ((q % size) + size) % size;
     }
     q = clamp(q, vec2<i32>(0), size - vec2<i32>(1));
-    let c = texel(slot, q);
-    let keep = bitcast<u32>(tint.w);
-    let k = fx.z;
-    var rgb = clamp(c.rgb + (tint.rgb - c.rgb) * k, vec3<f32>(0.0), vec3<f32>(1.0));
-    rgb = select(vec3<f32>(0.0), rgb, vec3<bool>((keep & 1u) != 0u, (keep & 2u) != 0u, (keep & 4u) != 0u));
-    let a = clamp(c.a * fx.w, 0.0, 1.0);
-    return vec4<f32>(rgb * a, a);
+    let c = clamp(texel(slot, q) * mul + add, vec4<f32>(0.0), vec4<f32>(1.0));
+    return vec4<f32>(c.rgb * c.a, c.a);
 }
 
 // Rust's `rem_euclid` for f32.
@@ -181,11 +177,12 @@ fn rem_euclid(u: f32, n: f32) -> f32 {
 
 // The oracle's sample of a bitmap at pixel centre `p` (paint.rs › sample): bilinear, or the
 // pixel `p` falls in when the bitmap doesn't allow smoothing (flag bit 1).
-fn bitmap(base: u32, p: vec2<f32>) -> vec4<f32> {
+fn bitmap(base: u32, ramp: u32, p: vec2<f32>) -> vec4<f32> {
     let h0 = paints[base];
     let m = paints[base + 1u];
     let n = paints[base + 2u];
-    let tint = paints[base + 3u];
+    let mul = paints[ramp];
+    let add = paints[ramp + 1u];
     let slot = bitcast<u32>(h0.x);
     let flags = bitcast<u32>(h0.y);
     let repeat = (flags & 1u) != 0u;
@@ -205,7 +202,7 @@ fn bitmap(base: u32, p: vec2<f32>) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     if nearest {
-        return tap(slot, i32(floor(u)), i32(floor(v)), size, repeat, n, tint);
+        return tap(slot, i32(floor(u)), i32(floor(v)), size, repeat, mul, add);
     }
     let fx_ = u - 0.5;
     let fy_ = v - 0.5;
@@ -215,10 +212,10 @@ fn bitmap(base: u32, p: vec2<f32>) -> vec4<f32> {
     let ty = fy_ - y0;
     let xi = i32(x0);
     let yi = i32(y0);
-    let a = tap(slot, xi, yi, size, repeat, n, tint);
-    let b = tap(slot, xi + 1, yi, size, repeat, n, tint);
-    let c = tap(slot, xi, yi + 1, size, repeat, n, tint);
-    let d = tap(slot, xi + 1, yi + 1, size, repeat, n, tint);
+    let a = tap(slot, xi, yi, size, repeat, mul, add);
+    let b = tap(slot, xi + 1, yi, size, repeat, mul, add);
+    let c = tap(slot, xi, yi + 1, size, repeat, mul, add);
+    let d = tap(slot, xi + 1, yi + 1, size, repeat, mul, add);
     let top = a + (b - a) * tx;
     let bottom = c + (d - c) * tx;
     return top + (bottom - top) * ty;
@@ -245,7 +242,7 @@ fn shade(op: u32, kind: u32, ramp: u32, p: vec2<f32>, x: u32, y: u32) -> vec4<f3
         return paints[base];
     }
     if kind == 3u {
-        return bitmap(base, p);
+        return bitmap(base, ramp, p);
     }
     if kind == 4u {
         return layer(base, x, y);

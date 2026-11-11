@@ -221,7 +221,7 @@ fn placed(doc: &mut Document, timeline: Timeline, transform: Affine, frame: u32,
         id: ElementId(doc.alloc_id()),
         name: String::new(),
         transform,
-        color: ColorEffect { alpha, ..ColorEffect::default() },
+        color: ColorEffect::opacity(alpha),
         kind: ElementKind::Symbol { symbol, loop_mode: LoopMode::SingleFrame, first_frame: frame, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
     }));
     let mut layer = Layer::new(LayerId(doc.alloc_id()), "");

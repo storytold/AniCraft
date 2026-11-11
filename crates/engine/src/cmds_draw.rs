@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Selection, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Layer, LayerId, LibraryEntry, LibraryItem, LoopMode, Paint, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
+use anicraft_doc::{ColorEffect, ColorStyle, Element, ElementId, ElementKind, Layer, LayerId, LibraryEntry, LibraryItem, LoopMode, Paint, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Decomposed, Path, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -29,7 +29,8 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, |s, p| s.each_layer(true, |s| set_transform(s, p))),
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, |s, p| s.each_layer(false, |s| set_fill(s, p))),
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..], cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (as stroke.set_style)}", true, |s, p| s.each_layer(false, |s| set_stroke(s, p))),
-        c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
+        c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1} sets the alpha multiplier and keeps the rest of the colour effect (None becomes Alpha; Brightness and Tint become Advanced below 1)", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
+        c("element.set_color_effect", "Colour Effect", "", None, "{style?: none|brightness|tint|advanced|alpha (default: the style the values belong to, else each element's own), alpha? (%, 0..100), brightness? (%, -100..100), tint? (#rrggbb), tint_amount? (%, 0..100), red_multiplier?, green_multiplier?, blue_multiplier?, alpha_multiplier? (%, -100..100), red_offset?, green_offset?, blue_offset?, alpha_offset? (-255..255)} on every selected element (ADR 0056); values not given keep each element's own. A new style starts from the look it can keep: Advanced is exactly the effect before, Alpha keeps the opacity, Brightness and Tint start at 0 %. The camera's effect is a tint", true, |s, p| s.each_layer(true, |s| set_color_effect(s, p))),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
@@ -401,9 +402,84 @@ fn set_alpha(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("param 'alpha' must be between 0 and 1".into()));
     }
     for e in s.selected_elements_mut()? {
-        e.color.alpha = a;
+        e.color = e.color.with_alpha(a);
     }
     Ok(json!({"alpha": a}))
+}
+
+/// Each colour effect value `element.set_color_effect` takes: its key, style, range and scale
+/// (the model's value is the param's divided by it).
+const EFFECT_VALUES: [(&str, ColorStyle, f32, f32, f32); 11] = [
+    ("alpha", ColorStyle::Alpha, 0.0, 100.0, 100.0),
+    ("brightness", ColorStyle::Brightness, -100.0, 100.0, 100.0),
+    ("tint_amount", ColorStyle::Tint, 0.0, 100.0, 100.0),
+    ("red_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("green_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("blue_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("alpha_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("red_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+    ("green_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+    ("blue_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+    ("alpha_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+];
+
+fn set_color_effect(s: &mut Session, p: &Value) -> Result<Value> {
+    let style = match opt_str(p, "style")? {
+        Some(k) => Some(ColorStyle::from_key(k).ok_or_else(|| EngineError::Param(format!("unknown style '{k}' (none, brightness, tint, advanced or alpha)")))?),
+        None => None,
+    };
+    let tint = opt_color(p, "tint")?;
+    let mut values: Vec<(usize, f32)> = Vec::new();
+    let mut families: Vec<ColorStyle> = tint.map(|_| ColorStyle::Tint).into_iter().collect();
+    for (i, (key, fam, lo, hi, scale)) in EFFECT_VALUES.iter().enumerate() {
+        if let Some(v) = opt_f32(p, key)? {
+            if !(*lo..=*hi).contains(&v) {
+                return Err(EngineError::Param(format!("param '{key}' must be between {lo} and {hi}")));
+            }
+            values.push((i, v / scale));
+            if !families.contains(fam) {
+                families.push(*fam);
+            }
+        }
+    }
+    let style = match (style, families.as_slice()) {
+        (Some(st), f) if f.iter().any(|x| *x != st) => return Err(EngineError::Param(format!("the {} style has none of these values: give only its own", st.key()))),
+        (Some(st), _) => Some(st),
+        (None, []) => return Err(EngineError::Param("give a style, or a value to set".into())),
+        (None, [one]) => Some(*one),
+        (None, _) => return Err(EngineError::Param("these values belong to different styles: give one style's values".into())),
+    };
+    let mut first = None;
+    for e in s.selected_elements_mut()? {
+        let target = style.unwrap_or(e.color.style());
+        if matches!(e.kind, ElementKind::Camera) && !matches!(target, ColorStyle::Tint | ColorStyle::None) {
+            return Err(EngineError::State("the camera's colour effect is a tint".into()));
+        }
+        let mut fx = e.color.to_style(target);
+        if let ColorEffect::Tint { color, .. } = &mut fx
+            && let Some(t) = tint
+        {
+            *color = t.with_alpha(1.0);
+        }
+        for &(i, v) in &values {
+            match &mut fx {
+                ColorEffect::Alpha(a) if i == 0 => *a = v,
+                ColorEffect::Brightness(b) if i == 1 => *b = v,
+                ColorEffect::Tint { amount, .. } if i == 2 => *amount = v,
+                ColorEffect::Advanced(t) => {
+                    if let Some(m) = i.checked_sub(3).and_then(|j| t.mul.get_mut(j)) {
+                        *m = v;
+                    } else if let Some(o) = i.checked_sub(7).and_then(|j| t.add.get_mut(j)) {
+                        *o = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+        e.color = fx.sanitized();
+        first.get_or_insert(e.color);
+    }
+    Ok(first.map_or(Value::Null, |fx| crate::color_effect_json(&fx)))
 }
 
 /// Most filters on one instance.
@@ -750,7 +826,7 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
                 let mut c = (**child).clone();
                 c.id = ElementId(s.doc.alloc_id());
                 c.transform = e.transform.mul(&child.transform);
-                c.color = e.color.concat(&child.color);
+                c.color = e.color.nested(&child.color);
                 fresh_ids.push(c.id);
                 out.push(Arc::new(c));
             }

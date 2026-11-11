@@ -9,6 +9,7 @@ pub use anicraft_actions as actions;
 
 pub mod armature;
 mod bitmap;
+mod color_effect;
 pub mod camera;
 mod filter;
 mod easing;
@@ -26,9 +27,10 @@ pub mod sound;
 pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
+pub use color_effect::{ADVANCED_ADD, ADVANCED_MUL, ColorEffect, ColorStyle, ColorTransform};
 pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
 pub use library::{FolderId, LibraryEntry, LibraryFolder, LibraryItem, LibraryTree, NameError};
-pub use motion::{MotionTween, OnPath, Pin, PinError, Property, PropertyKey, Props, Track, motion_path};
+pub use motion::{MotionTween, OnPath, PROPERTIES, Pin, PinError, Property, PropertyKey, Props, Track, motion_path};
 pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
@@ -461,44 +463,6 @@ pub struct TextBlock {
     /// The layout box.
     pub box_width: f32,
     pub box_height: f32,
-}
-
-/// Colour effect applied to an element and everything inside it.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ColorEffect {
-    /// Alpha multiplier `0..=1`.
-    pub alpha: f32,
-    /// Tint colour mixed in by `tint_amount`.
-    pub tint: Rgba,
-    pub tint_amount: f32,
-}
-
-impl Default for ColorEffect {
-    fn default() -> Self {
-        ColorEffect { alpha: 1.0, tint: Rgba::WHITE, tint_amount: 0.0 }
-    }
-}
-
-impl ColorEffect {
-    /// Effect of `inner` nested inside `self`.
-    pub fn concat(&self, inner: &ColorEffect) -> ColorEffect {
-        // Tints compose by keeping the stronger one; alpha multiplies.
-        let (tint, amount) = if inner.tint_amount >= self.tint_amount { (inner.tint, inner.tint_amount) } else { (self.tint, self.tint_amount) };
-        ColorEffect { alpha: self.alpha * inner.alpha, tint, tint_amount: amount }
-    }
-    pub fn lerp(&self, o: &ColorEffect, t: f32) -> ColorEffect {
-        ColorEffect {
-            alpha: anicraft_geom::lerp(self.alpha, o.alpha, t),
-            tint: self.tint.lerp(o.tint, t),
-            tint_amount: anicraft_geom::lerp(self.tint_amount, o.tint_amount, t),
-        }
-    }
-    pub fn apply(&self, c: Rgba) -> Rgba {
-        let k = self.tint_amount.clamp(0.0, 1.0);
-        let mut out = c.lerp(self.tint.with_alpha(c.a), k);
-        out.a = c.a * self.alpha.clamp(0.0, 1.0);
-        out
-    }
 }
 
 /// An instance on a keyframe.

@@ -102,7 +102,7 @@ impl Overrides {
             }
         }
         if let Some(a) = self.alpha {
-            e.color.alpha = a;
+            e.color = e.color.with_alpha(a);
         }
         e
     }

@@ -106,11 +106,12 @@ fn onion_frames_fade_by_distance_in_their_colours() {
     assert!((1..=5).all(|d| flat.alpha(d, 5) == NEAR_ALPHA));
 
     let (past, line) = o.look(true, 1, 2);
-    assert_eq!((past.tint, past.tint_amount, past.alpha, line), (o.past, TINT_AMOUNT, NEAR_ALPHA, None));
+    let look = |c, a| anicraft_doc::ColorTransform::alpha(a).concat(&anicraft_doc::ColorTransform::tint(c, TINT_AMOUNT));
+    assert_eq!((past, line), (look(o.past, NEAR_ALPHA), None));
     let (future, _) = o.look(false, 2, 2);
-    assert_eq!((future.tint, future.alpha), (o.future, FAR_ALPHA));
+    assert_eq!(future, look(o.future, FAR_ALPHA));
     let (own, _) = OnionSkin { tint: false, ..o }.look(true, 1, 2);
-    assert_eq!(own.tint_amount, 0.0, "untinted frames keep their own colours");
+    assert!(!own.changes_colour(), "untinted frames keep their own colours");
     let (_, line) = OnionSkin { outlines: true, ..o }.look(false, 2, 2);
     assert_eq!(line, Some(o.future.with_alpha(FAR_ALPHA)));
 }
@@ -182,10 +183,11 @@ fn composed_onion_frames_are_tinted_faded_and_under_the_playhead() {
     let skin = OnionSkin::default();
     let dl = compose(&s.doc, 0, 4, Some(&skin), |sc, f| evaluate_scene(&s.doc, sc, f));
     // Frames 2, 6, 3, 5 under frame 4: the keyframes there hold the rectangle at 10, 50, 10, 50.
-    let got: Vec<(f32, f32, f32)> = dl.items.iter().map(|i| (left(i), i.color.alpha, i.color.tint_amount)).collect();
+    let got: Vec<(f32, f32, f32)> = dl.items.iter().map(|i| (left(i), i.color.mul[3], 1.0 - i.color.mul[0])).collect();
     assert_eq!(got, vec![(10.0, FAR_ALPHA, TINT_AMOUNT), (50.0, FAR_ALPHA, TINT_AMOUNT), (10.0, NEAR_ALPHA, TINT_AMOUNT), (50.0, NEAR_ALPHA, TINT_AMOUNT), (50.0, 1.0, 0.0)]);
-    assert_eq!(dl.items.first().map(|i| i.color.tint), Some(skin.past));
-    assert_eq!(dl.items.get(1).map(|i| i.color.tint), Some(skin.future));
+    let tint = |c| anicraft_doc::ColorTransform::tint(c, TINT_AMOUNT).add;
+    assert_eq!(dl.items.first().map(|i| i.color.add), Some(tint(skin.past)));
+    assert_eq!(dl.items.get(1).map(|i| i.color.add), Some(tint(skin.future)));
     // Off, or None: the frame alone.
     let off = OnionSkin { ghosts: false, ..skin };
     assert_eq!(compose(&s.doc, 0, 4, Some(&off), |sc, f| evaluate_scene(&s.doc, sc, f)).items.len(), 1);
@@ -230,7 +232,7 @@ fn edit_multiple_frames_shows_keyframes_within_the_markers_at_full_strength() {
     // doesn't; the one on 4 is the playhead's.
     assert_eq!(multi_frames(tl, 4, 2, 6).iter().map(|e| e.frame).collect::<Vec<_>>(), vec![0]);
     let dl = compose(&s.doc, 0, 4, Some(&near), |sc, f| evaluate_scene(&s.doc, sc, f));
-    assert_eq!(dl.items.iter().map(|i| (left(i), i.color.alpha, i.color.tint_amount)).collect::<Vec<_>>(), vec![(10.0, 1.0, 0.0), (50.0, 1.0, 0.0)]);
+    assert_eq!(dl.items.iter().map(|i| (left(i), i.color.mul[3], 1.0 - i.color.mul[0])).collect::<Vec<_>>(), vec![(10.0, 1.0, 0.0), (50.0, 1.0, 0.0)]);
     let wide = OnionSkin { markers: Markers::Relative { before: 5, after: 5 }, ..near };
     let dl = compose(&s.doc, 0, 4, Some(&wide), |sc, f| evaluate_scene(&s.doc, sc, f));
     assert_eq!(dl.items.iter().map(left).collect::<Vec<_>>(), vec![10.0, 90.0, 50.0], "other keyframes in frame order, the playhead's on top");
@@ -420,7 +422,7 @@ fn extra_frames_sit_on_their_own_layer_over_an_opaque_background() {
         let ball = plain.items.last().unwrap().layer;
         let on_ball: Vec<&DisplayItem> = dl.items.iter().filter(|i| i.layer == ball).collect();
         assert!(on_ball.len() > 1);
-        assert_eq!(on_ball.last().map(|i| (i.color.alpha, i.color.tint_amount)), Some((1.0, 0.0)), "the playhead's ball is on top");
+        assert_eq!(on_ball.last().map(|i| i.color.is_identity()), Some(true), "the playhead's ball is on top");
     }
     // Rendered: the ball on frame 1 (top left of its path) shows over the sky, in Edit Multiple
     // Frames at full strength.

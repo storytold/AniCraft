@@ -120,6 +120,7 @@ fn all_keys() -> BTreeSet<Key> {
     }
     add(&doc::Easing::Linear.label());
     doc::Property::ALL.iter().for_each(|p| add(p.label()));
+    doc::ColorStyle::ALL.iter().for_each(|s| add(s.label()));
     doc::ProfilePreset::ALL.iter().for_each(|p| add(p.label()));
     doc::Cap::ALL.iter().for_each(|c| add(c.label()));
     doc::Join::ALL.iter().for_each(|j| add(j.label()));
@@ -578,6 +579,14 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
         a.run("symbol.set_kind", serde_json::json!({"symbol": symbol, "kind": "movie_clip"}));
         a.run("element.set_filters", serde_json::json!({"filters": [{"type": "drop_shadow"}, {"type": "gradient_glow"}]}));
     }));
+    // Every colour effect style's controls in Properties (ADR 0056).
+    for style in ["brightness", "tint", "advanced", "alpha"] {
+        found.extend(click_everything(&format!("colour effect {style}"), |a, _| {
+            a.run("layer.select", serde_json::json!({"index": 0}));
+            a.run("edit.select_all", serde_json::json!({}));
+            a.run("element.set_color_effect", serde_json::json!({"style": style}));
+        }));
+    }
     for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
@@ -754,6 +763,13 @@ fn screen_reader_names_are_translated_too() {
         }
         crate::actions_panel::open(a, crate::actions_panel::Tab::Instance);
     }));
+    for style in ["brightness", "tint", "advanced", "alpha"] {
+        found.extend(untranslated_names(&format!("colour effect {style}"), |a, _| {
+            a.run("layer.select", serde_json::json!({"index": 0}));
+            a.run("edit.select_all", serde_json::json!({}));
+            a.run("element.set_color_effect", serde_json::json!({"style": style}));
+        }));
+    }
     found.extend(untranslated_names("close guard", |a, _| {
         a.run("layer.new", serde_json::json!({}));
         a.close_dialog = true;

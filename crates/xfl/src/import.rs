@@ -5,7 +5,7 @@
 //! and keyframes with durations, labels and classic tweens with their ease; shapes (solid,
 //! linear and radial fills, solid, dashed and dotted strokes with their caps, joints and
 //! miter limit), groups (flattened), rectangle and oval
-//! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
+//! primitives; symbol instances with their matrix, colour effect (every style, ADR 0056), loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
 //! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014);
@@ -15,13 +15,13 @@
 //! Everything else (sound, motion tweens with property curves, unknown filters,
 //! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
 //! and so is whatever is drawn the nearest way AniCraft can (ragged, stipple and hatched
-//! strokes, reflecting gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
+//! strokes, reflecting gradients, …). The self-authored corpus in `tests/corpus/` covers
 //! every feature listed here, with golden renders (ADR 0035).
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, SourceScript,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
@@ -408,25 +408,34 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// An instance's `Color`: alpha, tint, or brightness (a tint towards white or black by that
-    /// amount, which is the same colour change). Other channel multipliers and offsets
-    /// (Animate's Advanced style) keep only their alpha, and are reported.
+    /// An instance's `Color` (ADR 0056): Animate's style comes from which attributes it has: a
+    /// tint (`tintMultiplier`, `tintColor`), a brightness (`brightness`, −1..1), Advanced (any
+    /// channel's multiplier other than 1 or an offset, −255..255), or alpha alone. Values are
+    /// clamped into Animate's ranges.
     fn color_effect(&mut self, c: &X) -> ColorEffect {
-        let mut fx = ColorEffect { alpha: c.f32("alphaMultiplier").unwrap_or(1.0).clamp(0.0, 1.0), ..ColorEffect::default() };
-        if let Some(t) = c.f32("tintMultiplier") {
-            fx.tint = color(c, "tintColor", "__none");
-            fx.tint_amount = t.clamp(0.0, 1.0);
+        let mul = |k: &str| c.f32(k).filter(|v| v.is_finite()).unwrap_or(1.0);
+        let off = |k: &str| c.f32(k).filter(|v| v.is_finite()).unwrap_or(0.0) / 255.0;
+        let alpha = mul("alphaMultiplier");
+        let fx = if let Some(t) = c.f32("tintMultiplier") {
+            let tint = ColorEffect::Tint { color: color(c, "tintColor", "__none").with_alpha(1.0), amount: t };
+            if alpha != 1.0 { tint.with_alpha(alpha) } else { tint }
         } else if let Some(b) = c.f32("brightness").filter(|b| *b != 0.0) {
-            fx.tint = if b > 0.0 { Rgba::WHITE } else { Rgba::BLACK };
-            fx.tint_amount = b.abs().min(1.0);
+            let bright = ColorEffect::Brightness(b);
+            if alpha != 1.0 { bright.with_alpha(alpha) } else { bright }
         } else {
-            let multiplied = ["redMultiplier", "greenMultiplier", "blueMultiplier"].iter().any(|k| c.f32(k).is_some_and(|v| v != 1.0));
-            let offset = ["redOffset", "greenOffset", "blueOffset", "alphaOffset"].iter().any(|k| c.f32(k).is_some_and(|v| v != 0.0));
-            if multiplied || offset {
-                self.report.skip("advanced colour effects (only alpha kept)");
+            let t = ColorTransform {
+                mul: [mul("redMultiplier"), mul("greenMultiplier"), mul("blueMultiplier"), alpha],
+                add: [off("redOffset"), off("greenOffset"), off("blueOffset"), off("alphaOffset")],
+            };
+            if t.changes_colour() || t.add[3] != 0.0 {
+                ColorEffect::Advanced(t)
+            } else if alpha != 1.0 {
+                ColorEffect::Alpha(alpha)
+            } else {
+                ColorEffect::None
             }
-        }
-        fx
+        };
+        fx.sanitized()
     }
 
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {

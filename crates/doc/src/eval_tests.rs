@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
+use crate::{ColorEffect, Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
 
 fn shape_el(id: u64, x: f32) -> Element {
     Element {
@@ -93,7 +93,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
             id: ElementId(60),
             name: String::new(),
             transform: Affine::translate(100.0, 0.0),
-            color: ColorEffect { alpha: 0.5, ..Default::default() },
+            color: ColorEffect::Alpha(0.5),
             kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
         },
     );
@@ -101,7 +101,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
     assert_eq!(dl.items.len(), MAX_SYMBOL_DEPTH);
     assert_eq!(dl.items[0].transform.translation().x, 100.0);
     // The instance's opacity is its group's: it fades as one.
-    assert_eq!((dl.items[0].color.alpha, dl.effective_alpha(&dl.items[0])), (1.0, 0.5));
+    assert_eq!((dl.items[0].color.mul[3], dl.effective_alpha(&dl.items[0])), (1.0, 0.5));
     assert_eq!(dl.groups.len(), 1);
     assert!(dl.items.iter().all(|i| i.element == ElementId(60)));
 }
@@ -352,7 +352,7 @@ fn a_motion_tween_drives_each_property_on_its_own_curve() {
     let d = motion_doc();
     let at = |f| {
         let dl = evaluate(&d, f);
-        (dl.items[0].transform.translation().x, dl.items[0].color.alpha)
+        (dl.items[0].transform.translation().x, dl.items[0].color.mul[3])
     };
     assert_eq!(at(0), (0.0, 1.0));
     // X eases in over 0..12 (a quarter of the way at half time); alpha runs linearly over 0..23.
