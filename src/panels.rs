@@ -166,8 +166,8 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
             })
             .response
             .set_name(tr!("Zoom"));
-            if ui.selectable_label(app.onion, tr!("Onion skin")).clicked() {
-                app.onion = !app.onion;
+            if ui.selectable_label(app.onion.ghosts, tr!("Onion skin")).clicked() {
+                crate::onion::toggle_ghosts(app);
             }
             let st = app.s.doc.stage;
             ui.label(text(Type::Data, format!("{} × {} px", st.width, st.height)).color(T.text_faint)); // i18n-exempt: stage size, numbers and a unit

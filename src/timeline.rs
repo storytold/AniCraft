@@ -151,10 +151,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
     if icon_button(ui, tr!("Loop playback"), Some(looping), Icon::Loop).clicked() {
         app.looping = !app.looping;
     }
-    let onion = app.onion;
-    if icon_button(ui, tr!("Onion skin"), Some(onion), Icon::Onion).clicked() {
-        app.onion = !app.onion;
-    }
+    crate::onion::buttons(app, ui);
     // Add Camera, as Animate has it on the timeline: on while the scene has a camera; a click
     // then takes it away (asking first when the camera moves; undoable).
     let has = app.s.doc.timeline(app.s.scene).camera_layer().is_some();
@@ -309,10 +306,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let playhead = f64::from(app.s.frame + 1);
     ruler_resp.widget_info(|| egui::WidgetInfo::slider(true, playhead, tr!("Playhead (frame ruler)")));
     if (ruler_resp.clicked() || ruler_resp.dragged())
+        && app.onion_ui.drag.is_none()
         && let Some(p) = ruler_resp.interact_pointer_pos() {
             app.playing = false;
             app.run("timeline.goto", json!({"frame": frame_at(p.x)}));
         }
+    // The onion menu on a right-click, as the markers live here (ADR 0047).
+    ruler_resp.context_menu(|ui| crate::onion::menu(app, ui));
+    // Onion markers over the ruler (they take the pointer before it).
+    crate::onion::ruler(app, ui, ruler, cell_w, x_of, frame_at);
 
     // rows
     let layers = app.s.doc.timeline(app.s.scene).layers.clone();

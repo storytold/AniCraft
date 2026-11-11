@@ -76,6 +76,10 @@ pub struct Tokens {
     pub hint_unplaced: Color32,
     pub hint_start: Color32,
     pub hint_end: Color32,
+    /// Onion skin (ADR 0047): frames before the playhead (blue, as Animate users know it) and
+    /// after it (green); the defaults the onion menu can change. Also the ruler's markers.
+    pub onion_past: Color32,
+    pub onion_future: Color32,
     /// Library symbol kinds.
     pub kind_graphic: Color32,
     pub kind_movie_clip: Color32,
@@ -142,6 +146,8 @@ pub const GRAPHITE: Tokens = Tokens {
     hint_unplaced: Color32::from_rgb(0xff, 0x5c, 0x8a),
     hint_start: Color32::from_rgb(0xff, 0xc2, 0x3d),
     hint_end: Color32::from_rgb(0x4f, 0xe3, 0xa8),
+    onion_past: Color32::from_rgb(0x4f, 0x8d, 0xff),
+    onion_future: Color32::from_rgb(0x4c, 0xd0, 0x7d),
     kind_graphic: Color32::from_rgb(0x22, 0xc7, 0xa9),
     kind_movie_clip: Color32::from_rgb(0x5a, 0x8f, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xb5, 0x3d),
@@ -196,6 +202,8 @@ pub const HIGH_CONTRAST: Tokens = Tokens {
     hint_unplaced: Color32::from_rgb(0xff, 0x7a, 0xa3),
     hint_start: Color32::from_rgb(0xff, 0xd8, 0x1a),
     hint_end: Color32::from_rgb(0x74, 0xff, 0xb0),
+    onion_past: Color32::from_rgb(0x6f, 0xa8, 0xff),
+    onion_future: Color32::from_rgb(0x5c, 0xf0, 0x9a),
     kind_graphic: Color32::from_rgb(0x3d, 0xf0, 0xcf),
     kind_movie_clip: Color32::from_rgb(0x85, 0xad, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xc8, 0x5c),
@@ -605,6 +613,12 @@ pub fn with_type<R>(ui: &mut egui::Ui, role: Type, add: impl FnOnce(&mut egui::U
         add(ui)
     })
     .inner
+}
+
+/// The document colour of an interface colour (the onion skin's theme colours, ADR 0047).
+pub fn to_rgba(c: Color32) -> anicraft_engine::doc::Rgba {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    anicraft_engine::doc::Rgba::new(f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, f32::from(a) / 255.0)
 }
 
 pub fn to_color32(c: anicraft_engine::doc::Rgba) -> Color32 {

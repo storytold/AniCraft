@@ -213,7 +213,7 @@ fn entries() -> Vec<Entry> {
     v.extend(Tool::ALL.iter().map(|t| Entry::Tool(*t)));
     // English keys, translated where they are drawn (`Entry::title`).
     v.push(Entry::View(tr_noop!("Play / Stop"), "Enter", App::toggle_play));
-    v.push(Entry::View(tr_noop!("Onion Skin"), "", |a| a.onion = !a.onion));
+    v.push(Entry::View(tr_noop!("Onion Skin"), "", crate::onion::toggle_ghosts));
     v.push(Entry::View(tr_noop!("Preview Through Camera"), "", App::toggle_camera_preview));
     v.push(Entry::View(tr_noop!("Fit Stage in Window"), "Ctrl+0", |a| a.view.fit = true));
     v.push(Entry::View(tr_noop!("Keyboard Shortcuts"), "F1", |a| a.show_shortcuts = true));

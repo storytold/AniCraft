@@ -611,6 +611,12 @@ fn panic_hunt_every_command() {
         json!({"from": 10, "to": 12, "head": [0, 0], "tail": [1e30, 0], "name": "x".repeat(300)}),
         json!({"from": 12, "to": 10, "head": [5], "tail": "x", "bone": u64::MAX}),
         json!({"from": 11, "to": 13, "head": [-1e6, 1e6], "layer": 101}),
+        // Edit Multiple Frames (ADR 0047): ranges past the end or reversed, items that aren't
+        // there or aren't triples, moves at the limits.
+        json!({"first": 0, "last": 99_999, "dx": 1e7, "dy": -1e7, "items": [[0, 0, 1], "x", [u64::MAX, u64::MAX, u64::MAX]]}),
+        json!({"first": u64::MAX, "last": 0, "dx": 5, "dy": 5, "items": []}),
+        json!({"first": 40, "last": 0, "dx": 3, "dy": -2}),
+        json!({"first": 0, "last": 100_001, "dx": f64::NAN, "dy": 0, "items": [[1, 2]]}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");

@@ -47,7 +47,7 @@ fn the_stage_renders_without_a_thread() {
     let svc = RenderService::new(64 << 20, None);
     let view = anicraft_engine::render::View::stage(&s.doc, 0.5);
     // No worker thread can start, so a request renders right away.
-    let img = svc.request(svc.job(s.state, &s.doc, 3, view, false)).expect("rendered on this thread");
+    let img = svc.request(svc.job(s.state, &s.doc, 3, view, None)).expect("rendered on this thread");
     assert!(img.error.is_none() && img.width > 0 && img.rgba_premul.iter().any(|&b| b != 0));
 }
 
