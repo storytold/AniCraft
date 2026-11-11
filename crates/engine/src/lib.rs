@@ -33,6 +33,8 @@ mod cmds_width;
 mod cmds_stroke;
 pub mod confirm;
 pub mod editing;
+pub mod explorer;
+pub mod find;
 pub mod format;
 pub mod history;
 mod merge;
@@ -127,6 +129,8 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_rawsub::specs());
     v.extend(cmds_rawpoints::specs());
     v.extend(editing::specs());
+    v.extend(find::specs());
+    v.extend(explorer::specs());
     v.extend(cmds_brush::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());

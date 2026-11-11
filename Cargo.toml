@@ -56,6 +56,9 @@ egui = "0.36"
 # `Instant` and `SystemTime` that work in the browser too (std's panic on wasm32-unknown-unknown);
 # on other targets a re-export of std::time (MIT OR Apache-2.0; already in the tree via winit).
 web-time = "1"
+# Find and Replace's pattern matching (ADR 0058): linear time, with size limits on what a
+# pattern compiles to (MIT OR Apache-2.0). Unicode case folding and word boundaries only.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
