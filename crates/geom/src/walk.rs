@@ -108,6 +108,19 @@ impl CurveWalk {
         (b.seg as usize, ta + (b.t - ta) * f)
     }
 
+    /// The distance along the path to the anchor that ends path command `cmd`, or 0 for the
+    /// start (a command before the first segment). `None` when `cmd` ends no segment the walk
+    /// measured.
+    pub fn anchor_distance(&self, cmd: usize) -> Option<f32> {
+        if self.segs.first().is_some_and(|(c, _)| cmd < *c) {
+            return Some(0.0);
+        }
+        let k = self.segs.binary_search_by_key(&cmd, |(c, _)| *c).ok()?;
+        // Segment k's samples end with its anchor (t = 1).
+        let j = self.samples.partition_point(|x| x.seg as usize <= k);
+        self.samples.get(j.checked_sub(1)?).map(|x| x.s)
+    }
+
     /// The path command and curve parameter at distance `s`: where to split or bend the path.
     pub fn locate(&self, s: f32) -> (usize, f32) {
         let (k, t) = self.find(s);
@@ -298,6 +311,12 @@ mod tests {
         assert!(w.at(125.0).distance(Vec2::new(110.0, 45.0)) < 1e-3);
         assert!(w.tangent(125.0).distance(Vec2::new(0.0, 1.0)) < 1e-5);
         assert_eq!(w.locate(125.0).0, 2, "the second line is command 2");
+        // Anchors by distance: the start, the corner, the end; the walk lands on them exactly.
+        assert_eq!(w.anchor_distance(0), Some(0.0));
+        let corner = w.anchor_distance(1).unwrap();
+        assert!((corner - 100.0).abs() < 1e-3 && w.at(corner) == Vec2::new(110.0, 20.0), "{corner}");
+        assert_eq!(w.anchor_distance(2), Some(w.length()));
+        assert_eq!(w.anchor_distance(3), None);
         assert!((w.project(Vec2::new(130.0, 60.0)) - 140.0).abs() < 1e-2);
         let tail = w.tail(50.0).unwrap();
         let tw = CurveWalk::new(&tail).unwrap();
