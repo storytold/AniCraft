@@ -377,13 +377,26 @@ fn lay_out(faces: &[(&[u8], u32)], text: &str, style: &Style) -> Option<Layout> 
         let bidi = unicode_bidi::ParagraphBidiInfo::new(para, None);
         // The face drawing each byte: the chosen one where it has the character, else the first
         // fallback that does. Spaces and marks stay with what comes before them, so a letter and
-        // its harakat are shaped together.
+        // its harakat are shaped together; a mark its letter's face lacks takes the letter to a
+        // face that has both, if there is one.
         let mut face_of = vec![0usize; para.len()];
         let mut current = 0;
+        let mut base = (0, '\0'); // the last letter: its byte offset and character
         for (i, c) in para.char_indices() {
             let joins = !needs_glyph(c) || matches!(unicode_bidi::bidi_class(c), unicode_bidi::BidiClass::NSM | unicode_bidi::BidiClass::BN);
-            if !joins || !has(current, c) {
-                current = (0..fonts.len()).find(|f| has(*f, c)).unwrap_or(if joins { current } else { 0 });
+            if !joins {
+                current = (0..fonts.len()).find(|f| has(*f, c)).unwrap_or(0);
+                base = (i, c);
+            } else if !has(current, c) {
+                let mark = unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM;
+                if let Some(both) = (0..fonts.len()).find(|f| mark && has(*f, base.1) && has(*f, c)) {
+                    current = both;
+                    if let Some(bytes) = face_of.get_mut(base.0..i) {
+                        bytes.fill(both);
+                    }
+                } else if let Some(f) = (0..fonts.len()).find(|f| has(*f, c)) {
+                    current = f;
+                }
             }
             if let Some(bytes) = face_of.get_mut(i..i + c.len_utf8()) {
                 bytes.fill(current);
@@ -661,6 +674,21 @@ mod tests {
         assert_eq!(lay("a\u{10FFFD}").missing, 1);
         // Invisible format characters aren't boxes, so they aren't missing either.
         assert_eq!(lay("a\u{200C}b\u{200D}\u{200F}\u{FE0F}").missing, 0);
+        // A combining mark the chosen face lacks takes its letter along to a face with both, so
+        // the two are shaped together (the mark attaches) instead of in two faces.
+        let mark = '\u{0301}';
+        if let (Some(latin), Some(both)) = (
+            fonts.families().iter().find(|f| has(f, 'e') && !has(f, mark)),
+            FALLBACK_FAMILIES.iter().find(|f| has(f, mark)).filter(|f| has(f, 'e')),
+        ) {
+            let lay_in = |family: &str| fonts.layout("e\u{0301}", &Style { family: family.to_string(), ..style(40.0) }).unwrap();
+            let (mixed, direct) = (lay_in(latin), lay_in(both));
+            assert_eq!(mixed.missing, 0);
+            assert!((mixed.width - direct.width).abs() < 0.01, "{} vs {} in {both}", mixed.width, direct.width);
+            assert_eq!(mixed.outline.cmds.len(), direct.outline.cmds.len());
+        } else {
+            eprintln!("no family with e and without U+0301 here: combining mark check skipped");
+        }
     }
 
     #[test]
