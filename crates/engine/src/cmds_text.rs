@@ -124,7 +124,7 @@ pub(crate) fn lay_out(text: &str, style: &TextStyle, width: Option<f32>) -> Resu
     Ok((block, note))
 }
 
-fn style_of(t: &TextBlock) -> TextStyle {
+pub(crate) fn style_of(t: &TextBlock) -> TextStyle {
     TextStyle { font: t.font.clone(), size: t.size, bold: t.bold, italic: t.italic, color: t.color, align: t.align, letter_spacing: t.letter_spacing, line_spacing: t.line_spacing }
 }
 

@@ -261,11 +261,18 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             if ui_item(ui, tr!("Actions"), app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
                 app.show_actions = !app.show_actions;
             }
+            use crate::movie_explorer::DockTab;
+            if ui_item(ui, tr!("Library"), "", Some(app.explorer.tab == DockTab::Library)) {
+                app.explorer.tab = DockTab::Library;
+            }
+            if ui_item(ui, tr!("Movie Explorer"), app.keymap.primary("view.movie_explorer").unwrap_or(""), Some(app.explorer.tab == DockTab::Explorer)) {
+                crate::movie_explorer::open(app);
+            }
             ui.separator();
             if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion.ghosts)) {
                 crate::onion::toggle_ghosts(app);
             }
-            ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library")));
+            ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library and Movie Explorer")));
         }
         "Help" => {
             if ui_item(ui, tr!("Command Palette…"), "Ctrl+K", None) {
