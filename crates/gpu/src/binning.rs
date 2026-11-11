@@ -659,7 +659,7 @@ impl Range {
 /// Splits edge `a → b` at tile rows and columns inside the fill's range, row by row, each row's
 /// pieces in the edge's direction of travel. Parts right of the fill's tiles come as column
 /// `ncols` (they draw nothing, but the steps on the tiles' left edges need to see them).
-pub(crate) fn split_edge(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(u32, i32, [f32; 4])) {
+fn split_edge(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(u32, i32, [f32; 4])) {
     if !(a.is_finite() && b.is_finite()) || a.y == b.y {
         return;
     }
@@ -755,16 +755,16 @@ fn split_row(row: u32, s: Vec2, e: Vec2, r: &Range, out: &mut impl FnMut(u32, i3
 
 /// A piece as the left-edge steps see it: its column and the height where it ends.
 #[derive(Clone, Copy)]
-pub(crate) struct Seen {
-    pub(crate) col: i32,
-    pub(crate) end_y: f32,
+struct Seen {
+    col: i32,
+    end_y: f32,
 }
 
 /// Per tile row of a fill, the last piece of the polygon walked so far there and its first:
 /// consecutive pieces of a row in different columns are where the outline crosses tiles' left
 /// edges.
 #[derive(Default)]
-pub(crate) struct Track {
+struct Track {
     last: Vec<Option<Seen>>,
     first: Vec<Option<Seen>>,
     touched: Vec<u32>,
@@ -818,7 +818,7 @@ impl Track {
 /// edge from there to the row's bottom: upwards when the outline runs right (the winding left
 /// of the tile drops by one), downwards when it runs left. On the row's top edge the backdrop
 /// has the step already, on its bottom edge it changes nothing.
-pub(crate) fn steps(a: Seen, b: Seen, row: u32, r: &Range, out: &mut impl FnMut(Piece)) {
+fn steps(a: Seen, b: Seen, row: u32, r: &Range, out: &mut impl FnMut(Piece)) {
     if a.col == b.col {
         return;
     }
