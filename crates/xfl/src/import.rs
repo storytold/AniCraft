@@ -885,21 +885,48 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
 /// Largest `.fla` archive read.
 pub const MAX_FLA_BYTES: u64 = crate::zip::MAX_ENTRY as u64 * 4;
 
-/// Imports a `.fla` archive from its bytes (a file the browser handed over, say).
+/// The first bytes of a compound (OLE) file: a `.fla` saved by Flash CS4 or earlier.
+const OLE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+/// Imports a `.fla` archive from its bytes (a file the browser handed over, say). Text is laid
+/// out with the fonts on this computer.
 pub fn import_fla(data: &[u8]) -> Result<(Document, Report), XflError> {
+    fla_from(data, None)
+}
+
+/// Imports a `.fla` archive, laying text out with `fonts` (tests, and hosts with their own
+/// font library).
+pub fn import_fla_with_fonts(data: &[u8], fonts: &Fonts) -> Result<(Document, Report), XflError> {
+    fla_from(data, Some(fonts))
+}
+
+fn fla_from(data: &[u8], fonts: Option<&Fonts>) -> Result<(Document, Report), XflError> {
     if data.len() as u64 > MAX_FLA_BYTES {
         return Err(XflError::NotXfl("the file is too large".into()));
     }
+    if data.starts_with(&OLE_MAGIC) {
+        return Err(XflError::NotXfl("this .fla was saved by Flash CS4 or earlier, in a format AniCraft can't read: open it in Animate and save it again".into()));
+    }
     let archive = crate::zip::Archive::open(data)?;
     let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(p)?) };
-    import_with(&read)
+    import_from(&read, fonts)
 }
 
-/// Imports from disk: an XFL folder, its `.xfl` file, or a `.fla` archive.
+/// Whether the file at `path` starts as a zip archive or an old binary `.fla` does.
+fn looks_like_fla(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    head.get(..n).is_some_and(|h| h.starts_with(b"PK\x03\x04") || h.starts_with(b"PK\x05\x06") || h.starts_with(&OLE_MAGIC))
+}
+
+/// Imports from disk: an XFL folder, its `.xfl` file (or any file in the folder, such as its
+/// `DOMDocument.xml`), or a `.fla` archive (recognised by its contents too, so a renamed one
+/// opens).
 pub fn import_path(path: &std::path::Path) -> Result<(Document, Report), XflError> {
     let meta = std::fs::metadata(path)?;
     let is_fla = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fla"));
-    if meta.is_file() && is_fla {
+    if meta.is_file() && (is_fla || looks_like_fla(path)) {
         if meta.len() > MAX_FLA_BYTES {
             return Err(XflError::NotXfl("the file is too large".into()));
         }
