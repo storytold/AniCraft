@@ -283,3 +283,37 @@ fn inside_an_open_symbol_swap_never_nests_and_deleting_it_closes_it() {
     run(&mut s, "library.delete", json!({"items": [{"symbol": outer}], "confirm": true}));
     assert!(s.editing.is_empty() && s.doc.symbol(SymbolId(outer)).is_none());
 }
+
+#[test]
+fn library_counts_stay_quick_on_a_large_document() {
+    // 100 layers × 100 shapes keyed every 12 frames over 240 frames (200,000 element keys),
+    // plus 1,000 symbols in 50 folders, each placed once. Measured, loosely bounded (CI varies);
+    // the shell works these out once per document change, not per frame.
+    let mut s = Session::new(anicraft_doc::sample::stress(100, 100, 240));
+    // A new layer, so the symbol holds only the new rectangle (drawing selects it).
+    run(&mut s, "layer.new", json!({}));
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 5, "h": 5}));
+    let sym = run(&mut s, "modify.convert_to_symbol", json!({}))["symbol"].as_u64().unwrap();
+    for i in 0..50 {
+        run(&mut s, "library.new_folder", json!({"name": format!("F{i}")}));
+    }
+    let folders: Vec<u64> = s.doc.library_tree.folders.iter().map(|f| f.id.0).collect();
+    for i in 0..999 {
+        let c = run(&mut s, "library.duplicate", json!({"symbol": sym, "name": format!("S{i}")}))["symbol"].as_u64().unwrap();
+        run(&mut s, "library.move", json!({"items": [{"symbol": c}], "to": folders[i % folders.len()]}));
+    }
+    let t = std::time::Instant::now();
+    let uses = s.doc.library_uses();
+    let counted = t.elapsed();
+    let t = std::time::Instant::now();
+    let unused = s.doc.unused_items();
+    let reach = t.elapsed();
+    let t = std::time::Instant::now();
+    let listed = run(&mut s, "library.items", json!({}));
+    let listing = t.elapsed();
+    println!("library of {} items, {} folders: use counts {counted:?}, unused {reach:?} ({} unused), library.items {listing:?}", s.doc.library.len(), folders.len(), unused.len());
+    assert_eq!(listed["items"].as_array().map(Vec::len), Some(1000));
+    assert_eq!(unused.len(), 999);
+    assert!(uses.values().sum::<usize>() >= 1);
+    assert!(counted.as_millis() < 500 && reach.as_millis() < 500, "counted {counted:?}, unused {reach:?}");
+}
