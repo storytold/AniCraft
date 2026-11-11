@@ -410,6 +410,48 @@ pub fn bench(a: &Args) -> Result<String, String> {
     }
 }
 
+/// Longest request line `serve` and `mcp` read (64 MiB: far above any real command, base64 images included).
+pub(crate) const MAX_LINE: usize = 64 << 20;
+
+/// One input line, read with a bound.
+pub(crate) enum Line {
+    Eof,
+    Text(String),
+    TooLong,
+}
+
+/// Reads the next line, never holding more than `max` bytes of it; an overlong line is skipped to its end.
+pub(crate) fn read_line<R: BufRead>(input: &mut R, max: usize) -> std::io::Result<Line> {
+    let mut buf = Vec::new();
+    let n = input.by_ref().take(max as u64 + 1).read_until(b'\n', &mut buf)?;
+    if n == 0 {
+        return Ok(Line::Eof);
+    }
+    if buf.len() > max && buf.last() != Some(&b'\n') {
+        loop {
+            let mut skip = Vec::new();
+            let k = input.by_ref().take(1 << 20).read_until(b'\n', &mut skip)?;
+            if k == 0 || skip.last() == Some(&b'\n') {
+                return Ok(Line::TooLong);
+            }
+        }
+    }
+    while matches!(buf.last(), Some(b'\n' | b'\r')) {
+        buf.pop();
+    }
+    String::from_utf8(buf).map(Line::Text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Over `serve` and `mcp` a caller may not name the program Export Video runs (ADR 0004 spirit:
+/// an assistant must not start arbitrary executables); the person sets `ANICRAFT_FFMPEG` instead.
+/// Direct CLI use (`exec`, `run`) keeps the `ffmpeg` parameter.
+pub(crate) fn refuse_remote_ffmpeg(cmd: &str, params: &Value) -> Result<(), String> {
+    if cmd == "file.export_video" && params.get("ffmpeg").is_some_and(|v| !v.is_null()) {
+        return Err("the ffmpeg parameter is not accepted here: set the ANICRAFT_FFMPEG environment variable to choose the program".into());
+    }
+    Ok(())
+}
+
 /// Answers one JSON request.
 pub fn handle_request(s: &mut Session, line: &str) -> Value {
     // Windows shells often prefix piped UTF-8 with a byte-order mark.
@@ -425,7 +467,7 @@ pub fn handle_request(s: &mut Session, line: &str) -> Value {
     let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
     let result = match cmd {
         "commands" => Ok(Value::Array(commands().iter().map(|c| c.to_json()).collect())),
-        _ => s.execute(cmd, &params).map_err(|e| e.to_string()),
+        _ => refuse_remote_ffmpeg(cmd, &params).and_then(|()| s.execute(cmd, &params).map_err(|e| e.to_string())),
     };
     match result {
         Ok(v) => json!({"id": id, "ok": true, "result": v, "revision": s.revision, "frame": s.frame}),
@@ -437,8 +479,17 @@ pub fn handle_request(s: &mut Session, line: &str) -> Value {
 pub fn serve<R: BufRead, W: Write>(s: &mut Session, input: R, out: &mut W) -> std::io::Result<()> {
     writeln!(out, "{}", json!({"ready": true, "app": "AniCraft", "version": env!("CARGO_PKG_VERSION")}))?;
     out.flush()?;
-    for line in input.lines() {
-        let line = line?;
+    let mut input = input;
+    loop {
+        let line = match read_line(&mut input, MAX_LINE)? {
+            Line::Eof => break,
+            Line::TooLong => {
+                writeln!(out, "{}", json!({"id": null, "ok": false, "error": "request line too long"}))?;
+                out.flush()?;
+                continue;
+            }
+            Line::Text(l) => l,
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -456,6 +507,26 @@ pub fn serve<R: BufRead, W: Write>(s: &mut Session, input: R, out: &mut W) -> st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serve_refuses_ffmpeg_path_but_exec_keeps_it() {
+        let mut s = Session::default();
+        let r = handle_request(&mut s, r#"{"cmd":"file.export_video","params":{"path":"a.mp4","ffmpeg":"/bin/sh"}}"#);
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("ANICRAFT_FFMPEG"));
+        // Direct CLI use is not filtered: the command runs and fails on the missing program, not on the parameter.
+        let e = exec(&mut s, "file.export_video", &json!({"path": "a.mp4", "ffmpeg": "/nonexistent/anicraft-ffmpeg"})).unwrap_err();
+        assert!(!e.contains("ANICRAFT_FFMPEG environment variable"), "{e}");
+    }
+
+    #[test]
+    fn long_lines_are_bounded() {
+        let mut input = &b"abcdefghij\nok\r\nxy"[..];
+        assert!(matches!(read_line(&mut input, 4).unwrap(), Line::TooLong));
+        assert!(matches!(read_line(&mut input, 4).unwrap(), Line::Text(t) if t == "ok"));
+        assert!(matches!(read_line(&mut input, 4).unwrap(), Line::Text(t) if t == "xy"));
+        assert!(matches!(read_line(&mut input, 4).unwrap(), Line::Eof));
+    }
 
     #[test]
     fn serve_round_trip() {

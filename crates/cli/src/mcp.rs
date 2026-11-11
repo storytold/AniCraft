@@ -109,6 +109,7 @@ fn call_tool(s: &mut Session, name: &str, args: &Value) -> Result<Value, String>
         if !params.is_object() {
             return Err(format!("{id}: \"params\" must be an object"));
         }
+        crate::refuse_remote_ffmpeg(id, &params).map_err(|e| format!("{id}: {e}"))?;
         s.execute(id, &params).map_err(|e| format!("{id}: {e}"))
     };
     Ok(match name {
@@ -219,8 +220,17 @@ pub fn handle(s: &mut Session, line: &str) -> Option<Value> {
 /// The stdio loop: one message per line in, one reply per line out, until stdin closes.
 /// Nothing but protocol messages is written to `out` (logs would corrupt the stream).
 pub fn serve<R: BufRead, W: Write>(s: &mut Session, input: R, out: &mut W) -> std::io::Result<()> {
-    for line in input.lines() {
-        let line = line?;
+    let mut input = input;
+    loop {
+        let line = match crate::read_line(&mut input, crate::MAX_LINE)? {
+            crate::Line::Eof => break,
+            crate::Line::TooLong => {
+                writeln!(out, "{}", json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "request line too long"}}))?;
+                out.flush()?;
+                continue;
+            }
+            crate::Line::Text(l) => l,
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -264,6 +274,18 @@ mod tests {
         assert_eq!(call(&mut s, 5, "nope", json!({}))["error"]["code"], -32601);
         assert_eq!(handle(&mut s, "{oops").unwrap()["error"]["code"], -32700);
         assert_eq!(call(&mut s, 6, "tools/call", json!({"name": "nope"}))["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn mcp_refuses_a_caller_supplied_ffmpeg() {
+        let mut s = Session::default();
+        for r in [
+            tool(&mut s, "anicraft_run", json!({"command": "file.export_video", "params": {"path": "a.mp4", "ffmpeg": "/bin/sh"}})),
+            tool(&mut s, "anicraft_run_script", json!({"steps": [{"command": "file.export_video", "params": {"path": "a.mp4", "ffmpeg": "/bin/sh"}}]})),
+        ] {
+            assert_eq!(r["isError"], true);
+            assert!(r["content"][0]["text"].as_str().unwrap().contains("ANICRAFT_FFMPEG"), "{r}");
+        }
     }
 
     #[test]
