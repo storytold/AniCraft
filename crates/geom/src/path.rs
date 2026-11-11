@@ -40,7 +40,9 @@ impl Path {
         use std::fmt::Write;
         let mut s = String::with_capacity(self.cmds.len() * 16);
         let pt = |s: &mut String, p: Vec2| {
-            let _ = write!(s, "{} {}", p.x, p.y);
+            // Non-finite values would be rejected by `from_svg`; write 0 so a save always reloads.
+            let f = |v: f32| if v.is_finite() { v } else { 0.0 };
+            let _ = write!(s, "{} {}", f(p.x), f(p.y));
         };
         for c in &self.cmds {
             match *c {
@@ -498,6 +500,24 @@ pub fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_finite_coordinates_round_trip_as_zero() {
+        let mut p = Path::default();
+        p.cmds.push(PathCmd::MoveTo(Vec2::new(0.0, 0.0)));
+        p.cmds.push(PathCmd::LineTo(Vec2::new(f32::INFINITY, 1.0)));
+        p.cmds.push(PathCmd::LineTo(Vec2::new(f32::NAN, f32::NEG_INFINITY)));
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Path = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.cmds,
+            vec![
+                PathCmd::MoveTo(Vec2::new(0.0, 0.0)),
+                PathCmd::LineTo(Vec2::new(0.0, 1.0)),
+                PathCmd::LineTo(Vec2::new(0.0, 0.0)),
+            ]
+        );
+    }
 
     #[test]
     fn flatten_rect_is_closed_polygon() {
