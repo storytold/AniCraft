@@ -13,7 +13,8 @@
 use std::path::{Path, PathBuf};
 
 /// Files we look for, and the generated constant each fills.
-const FONTS: [(&str, &str); 3] = [("Inter-Regular.ttf", "UI_FONT"), ("JetBrainsMono-Regular.ttf", "MONO_FONT"), ("NotoSansGeorgian.ttf", "GEORGIAN_FONT")];
+const FONTS: [(&str, &str); 3] =
+    [("Inter-Regular.ttf", "UI_FONT"), ("JetBrainsMono-Regular.ttf", "MONO_FONT"), ("NotoSansGeorgian.ttf", "GEORGIAN_FONT")];
 
 fn find(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
