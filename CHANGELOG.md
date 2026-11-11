@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Motion path points pinned to frames** (ADR 0049, M2). As in Animate, a motion tween's
+  position keyframes are now points on its path: move the object at a frame and the path gets a
+  point there that the object passes exactly on that frame, whatever else you do to the path.
+  * Moving the object between the ends adds a pinned point where you put it; after the last
+    position keyframe the path carries on to the new place. The eases on X and Y time the
+    object between pinned points as they did between the ends.
+  * Pinned points are diamonds with their frame number on the stage, and Selection can drag
+    them. With Subselection, right-click any point to **Pin to Frame** (the playhead's frame)
+    or **Unpin**. Properties › Frame has **Pin Here** / **Unpin**, and F6 inside a path tween
+    pins where the object is.
+  * The Motion Editor draws a pinned frame's X and Y keys in blue; dragging one moves its
+    point. The timeline marks pinned frames with a larger diamond.
+  * Adding and deleting points keeps the pins on their points; deleting a pinned point, or
+    unpinning it, removes its frame's X and Y keys and the motion flows as before.
+  * Older files open and play exactly as they did (only the ends are pinned).
+  * Headless: new `motion.pin_point` and `motion.unpin_point`; `motion.info` and the path
+    commands report `pins`.
+
 * **Stroke caps, joins, miter limit, and dashed and dotted lines** (ADR 0046, M7). Properties ›
   Stroke has Animate's rows: **Style** (Solid, Dashed with a dash and gap editor, Dotted with
   dot spacing), **Cap** (None, Round, Square), **Join** (Miter, Round, Bevel) and **Miter**
