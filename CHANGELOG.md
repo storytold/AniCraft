@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+* **Stroke caps, joins, miter limit, and dashed and dotted lines** (ADR 0046, M7). Properties ›
+  Stroke has Animate's rows: **Style** (Solid, Dashed with a dash and gap editor, Dotted with
+  dot spacing), **Cap** (None, Round, Square), **Join** (Miter, Round, Bevel) and **Miter**
+  (the limit past which corners are bevelled). The drawing tools' options set them for new
+  strokes, the Ink Bottle gives them and the Eyedropper picks them.
+  * Drawn exactly by the CPU renderer and the GPU stage: butt and square caps, miter joins with
+    their limit, dashes by arc length along curves (restarting on each subpath, an offset into
+    the pattern), round dots one width across, and dashes that keep a width profile's widths.
+    Patterns finer than a pixel draw solid and lighter. No slower than round strokes.
+  * SVG, HTML canvas and Lottie export write caps, joins, miter limit and dashes; SVG import
+    reads `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `stroke-dasharray` and
+    `stroke-dashoffset`; Animate documents bring their caps, joins, miter limit, dashed and
+    dotted strokes (ragged, stipple and hatched strokes are drawn solid and reported).
+  * Merge drawing keeps a dashed line's style on every piece it is cut into; shape tweens blend
+    miter limits and dash lengths. Older files open unchanged.
+  * Headless: new `stroke.set_style`; `cap`, `join`, `miter`, `style`, `dash`, `dash_offset`
+    and `dot_spacing` on `element.set_stroke`, the drawing commands and `paint.ink`.
 * **ActionScript that controls the timeline now runs** (ADR 0013 tier 2). Frame scripts in
   Animate documents, and ones you type in the Actions panel, play in Test Movie and in the
   HTML canvas export when they use the ActionScript 3.0 most animation and e-learning files
