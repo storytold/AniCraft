@@ -54,6 +54,10 @@ pub fn previewing(app: &App) -> bool {
 pub fn on_tool_change(app: &mut App) {
     if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.timeline().camera_layer().is_none() {
         crate::stage::commit_text(app);
+        if app.text_edit.is_some() {
+            app.tool = app.last_tool;
+            return;
+        }
         if app.run("camera.add", json!({})).is_some() {
             app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
         }
@@ -278,5 +282,70 @@ mod tests {
         let elements = app.s.elements_on(artwork_layer);
         assert!(elements.iter().any(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Text(t) if t.text == "Pre-Camera Text")));
         assert!(app.s.timeline().camera_layer().is_some(), "camera layer was added");
+    }
+
+    #[test]
+    fn toggling_camera_preview_aborts_when_text_commit_fails() {
+        let mut app = test_app();
+        // Lock the active layer so text creation fails.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+        assert!(app.s.active_layer().expect("active layer").locked);
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(10.0, 20.0),
+            element: None,
+            text: "Failed Text".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+
+        app.toggle_camera_preview();
+        assert!(!app.camera_preview, "camera preview must not toggle on when text commit fails");
+        assert!(app.text_edit.is_some(), "draft must be retained when commit fails");
+    }
+
+    #[test]
+    fn picking_camera_tool_aborts_when_text_commit_fails() {
+        let mut app = test_app();
+        // Lock the active layer so text creation fails.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+        assert!(app.s.active_layer().expect("active layer").locked);
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(15.0, 25.0),
+            element: None,
+            text: "Uncommittable Draft".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+
+        app.tool = Tool::Camera;
+        on_tool_change(&mut app);
+        assert_eq!(app.tool, Tool::Select, "tool must revert to previous tool when text commit fails");
+        assert!(app.text_edit.is_some(), "draft must be retained");
+        assert!(app.s.timeline().camera_layer().is_none(), "camera layer must not be added when commit fails");
+    }
+
+    #[test]
+    fn commit_text_restores_draft_when_element_select_fails() {
+        let mut app = test_app();
+        // Create an existing text element on the layer.
+        assert!(app.run("text.create", json!({"text": "Original", "x": 0.0, "y": 0.0})).is_some());
+        let active_layer = app.s.active_layer().expect("active layer").id;
+        let elem_id = app.s.elements_on(active_layer)[0].id;
+
+        // Lock the layer so element.select returns None.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(0.0, 0.0),
+            element: Some(elem_id),
+            text: "Modified Text".to_string(),
+            original: "Original".to_string(),
+            focus: false,
+        });
+
+        crate::stage::commit_text(&mut app);
+        assert!(app.text_edit.is_some(), "draft must be restored when element selection fails");
     }
 }

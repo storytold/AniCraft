@@ -814,6 +814,9 @@ impl App {
     /// through, so it says how to add one; when the camera layer is hidden, it reminds to show it.
     pub fn toggle_camera_preview(&mut self) {
         crate::stage::commit_text(self);
+        if self.text_edit.is_some() {
+            return;
+        }
         self.camera_preview = !self.camera_preview;
         if self.camera_preview {
             if self.s.timeline().camera_layer().is_none() {
