@@ -129,3 +129,11 @@ editor playhead during preview.
   default); files without effects or volumes are byte-identical to before.
 * The fuzz over every command runs with fades, custom envelopes and streams inside every
   symbol, and lays out and mixes the result after each run.
+
+## Update (2026-11-11, ADR 0057)
+
+Sounds on button frames now play in Test Movie and the HTML page as the pointer changes a
+button's state (Over's going over it, Down's pressing it, Up's leaving, Hit's letting go over
+it), and the soundtrack still leaves buttons out. XFL import brings sounds whose file is in the
+package (WAV, Ogg Vorbis, MP3), with the sounds on frames that use them; sounds kept only in
+Animate's own data format are still reported, as this ADR decided.

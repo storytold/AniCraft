@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Buttons, complete: sounds on button frames and hit-area editing** (ADR 0057, M5).
+  * A sound on a button's **Over** or **Down** frame plays when the pointer goes over or
+    presses the button, in Test Movie and in the HTML canvas page (Web Audio). As the SWF format
+    keeps them, the Up frame's plays on leaving and the Hit frame's on letting go over it. A
+    stream on a button frame plays as an event. Buttons stay out of the soundtrack: Export Audio
+    and video are unchanged.
+  * Editing a button in place, the timeline names its four frames **Up, Over, Down, Hit** (and
+    widens them to fit while the button is open), and the stage draws the **Hit area**
+    translucent over the other states.
+  * Test Movie has a **Show hit areas** checkbox.
+  * XFL and `.fla` import bring sounds whose file is in the package (WAV, Ogg Vorbis, MP3), with
+    the sounds on frames that use them, buttons' states included; sounds kept only in Animate's
+    own format are reported.
+  * Headless: `control.test_movie` lists the sounds it started.
+  * 9-slice guides switched off are now kept, and come back where they were when switched on.
 * **9-slice scaling for symbols** (ADR 0055, M2).
   * **Enable guides for 9-slice scaling** on a symbol, in the Library's item properties or in
     Properties. A scaled instance then keeps its corners unscaled, stretches its edges one way
