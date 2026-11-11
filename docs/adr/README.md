@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0059 | m8/files-and-start | Files from the desktop, recent files and a start screen |
