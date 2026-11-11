@@ -18,7 +18,7 @@
 //! outside the ActionScript subset. Scripts in the subset (ADR 0013 tier 2) come across as the
 //! same actions and listeners the Rust player runs.
 
-use crate::stroke::variable_outline;
+use crate::stroke::stroke_outline;
 use anicraft_doc::actions::as3::ScriptOp;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::{BlendMode, ColorEffect, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
@@ -397,7 +397,7 @@ impl<'a> Bake<'a> {
                         if let Some(p) = &s.fill {
                             out.push(self.shape(&s.path, &el.transform, &el.color, Some((p, el)), None, s.fill_rule));
                         }
-                        let outline = variable_outline(&s.path, &el.transform, st.width, profile, crate::TOLERANCE);
+                        let outline = stroke_outline(&s.path, &el.transform, st, crate::TOLERANCE);
                         if !outline.is_empty() {
                             let fill = Paint::Solid(st.color);
                             out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color, Some((&fill, el)), None, FillRule::NonZero));
