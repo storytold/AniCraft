@@ -631,6 +631,62 @@ fn sounds_carry_their_envelopes_and_volumes_and_start_in_graphics_and_clips_as_i
 }
 
 #[test]
+fn button_sounds_start_in_the_page_as_in_the_player() {
+    use anicraft_doc::{FrameSound, Sound, SoundId, SoundSync};
+    // A button at (100, 100), 10 × 10 art, a 100 × 100 Hit frame; a sound on each of its frames
+    // (Over's a stream) on a layer at half volume; the button's own layer at half volume too.
+    let mut d = Document::default();
+    for (i, name) in ["up", "over", "down", "hit"].iter().enumerate() {
+        let wav = anicraft_doc::audio::wav::encode(8000, 1, &[0.25; 800], anicraft_doc::audio::wav::Bits::Int16);
+        d.sounds.push(Arc::new(Sound::from_data(SoundId(60 + i as u64), *name, wav).unwrap()));
+    }
+    let with = |k: Arc<Keyframe>, i: u64, sync| {
+        let mut k = (*k).clone();
+        k.sound = Some(FrameSound { sync, ..FrameSound::new(SoundId(60 + i)) });
+        Arc::new(k)
+    };
+    let mut sounds = (*layer(34, vec![with(kf(0, 1, vec![], vec![], ""), 0, SoundSync::Event), with(kf(1, 1, vec![], vec![], ""), 1, SoundSync::Stream), with(kf(2, 1, vec![], vec![], ""), 2, SoundSync::Event), with(kf(3, 1, vec![], vec![], ""), 3, SoundSync::Event)])).clone();
+    sounds.volume = 0.5;
+    let art = || vec![rect(32, 0.0, 0.0, 10.0, 10.0, 0x336699)];
+    let states = layer(31, vec![kf(0, 1, art(), vec![], ""), kf(1, 1, art(), vec![], ""), kf(2, 1, art(), vec![], ""), kf(3, 1, vec![rect(33, 0.0, 0.0, 100.0, 100.0, 0)], vec![], "")]);
+    d.library.push(symbol(300, SymbolKind::Button, vec![Arc::new(sounds), states]));
+    let mut holder = (*layer(2, vec![kf(0, 4, vec![inst(3, 300, "go", Affine::translate(100.0, 100.0), vec![])], vec![], "")])).clone();
+    holder.volume = 0.5;
+    d.timeline_mut(0).layers = vec![Arc::new(holder)];
+    let m = movie(&d, &HtmlOptions::default());
+    let names: Vec<String> = m.json["sounds"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names.len(), 4, "every button sound is embedded");
+    assert!(m.report.keys().all(|n| !n.contains("button")), "nothing reported: {:?}", m.report);
+    let mut js = Js::new(&m);
+    let mut r = start(&d, &mut NoScripts);
+    js.eval("P.start()");
+    let at = |x, y| Vec2::new(x, y);
+    // Over, about, Down, Hit (released), Up (left), Over and Down at once, dragged off and back.
+    let batches: Vec<Vec<Event>> = vec![
+        vec![Event::Move(at(150.0, 150.0))],
+        vec![Event::Move(at(160.0, 150.0))],
+        vec![Event::Down(at(160.0, 150.0))],
+        vec![Event::Up(at(160.0, 150.0))],
+        vec![Event::Leave],
+        vec![Event::Down(at(150.0, 150.0))],
+        vec![Event::Move(at(400.0, 300.0)), Event::Move(at(150.0, 150.0)), Event::Up(at(150.0, 150.0))],
+    ];
+    let mut heard = Vec::new();
+    for (i, events) in batches.iter().enumerate() {
+        // Between frames and with a frame, alike.
+        let (rs, page) = if i % 2 == 0 { (anicraft_doc::player::input(&d, &r.state, events, &mut NoScripts), js.eval(&format!("P.input({}).sounds", js_events(events)))) } else { (step(&d, &r.state, events, &mut NoScripts), js.eval(&format!("P.step({}).sounds", js_events(events)))) };
+        let theirs: Vec<Value> = rs.sounds.iter().map(|s| json!([d.sound(s.sound.sound).unwrap().name, s.sound.sync.key(), f64::from(s.gain)])).collect();
+        let ours: Vec<Value> = page.as_array().unwrap().iter().map(|s| json!([names[s[0].as_u64().unwrap() as usize], s[1], s[5].as_f64()])).collect();
+        assert_eq!(ours, theirs, "batch {i}");
+        heard.extend(theirs);
+        r = rs;
+    }
+    let order: Vec<&str> = heard.iter().map(|h| h[0].as_str().unwrap()).collect();
+    assert_eq!(order, ["over", "down", "hit", "up", "over", "down", "hit"]);
+    assert!(heard.iter().all(|h| h[1] == "event" && h[2] == 0.25), "{heard:?}");
+}
+
+#[test]
 fn hostile_documents_export_without_panicking() {
     let mut doc = Document::default();
     let bad = Element { id: ElementId(5), name: "x".into(), transform: Affine { m: [f32::NAN, 0.0, 0.0, 1.0, f32::INFINITY, 0.0] }, color: ColorEffect { alpha: f32::NAN, tint: Rgba::new(f32::NAN, 2.0, -1.0, 1.0), tint_amount: f32::INFINITY }, kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, f32::NAN, 1.0), Paint::Radial { center: Vec2::ZERO, radius: -5.0, stops: vec![GradientStop { offset: f32::NAN, color: Rgba::BLACK }] })) };
