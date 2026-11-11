@@ -424,7 +424,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 // With the Faucet on, the eraser deletes on a click instead.
                 Tool::Eraser if !app.eraser.faucet => crate::erasertool::start(app, to_v(sp)),
                 Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Eraser => Drag::None,
-                Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => Drag::Shape { start: sp, cur: sp },
+                // The press snaps to points, lines and fill edges (ADR 0045).
+                Tool::Rect | Tool::Oval | Tool::Star | Tool::Line => {
+                    let start = snap_draw(app, sp, zoom);
+                    Drag::Shape { start, cur: start }
+                }
                 Tool::Camera => crate::camera_tool::drag_start(app, &cam_geo, press),
                 Tool::Hand => Drag::Pan,
                 Tool::Zoom => Drag::None,
@@ -449,7 +453,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.drag = d;
     }
     if resp.dragged() {
-        let cur = resp.interact_pointer_pos().map(to_stage);
+        let mut cur = resp.interact_pointer_pos().map(to_stage);
+        // A shape's other end snaps too, unless Shift constrains it (ADR 0045).
+        if let (Drag::Shape { .. }, Some(c)) = (app.drag, cur) {
+            cur = Some(if shift {
+                app.snap_ring = None;
+                c
+            } else {
+                snap_draw(app, c, zoom)
+            });
+        }
         match (&mut app.drag, cur) {
             (Drag::Pan, _) => app.view.pan += resp.drag_delta(),
             (Drag::Move { last }, Some(c)) => {
@@ -475,7 +488,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 // Subselection (ADR 0042): the curve changes in every raw shape that has it.
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
-                    let p = json!({"id": id.0, "cmd": *cmd, "slot": *slot, "dx": d.x, "dy": d.y, "merge": false});
+                    // A smooth anchor's other handle turns with it; Alt breaks the pair (ADR 0045).
+                    let p = json!({"id": id.0, "cmd": *cmd, "slot": *slot, "dx": d.x, "dy": d.y, "smooth": !alt, "merge": false});
                     *last = c;
                     if let Some(v) = app.run("raw.move_handle", p) {
                         touched(app, &v["changed"]);
@@ -514,7 +528,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
                     *last = c;
-                    crate::pathtools::move_points(app, Vec2::new(d.x, d.y));
+                    crate::pathtools::move_points(app, Vec2::new(d.x, d.y), !alt);
                 }
             }
             (Drag::PointMarquee { cur: m, .. }, Some(c)) => *m = c,
@@ -970,8 +984,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         Drag::Shape { start, cur } => draw_preview(app, &painter, to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)), zoom),
         _ => {}
     }
-    // The snap ring where a dragged point or selection snapped (ADR 0041).
-    if let Some(at) = app.snap_ring.filter(|_| matches!(app.drag, Drag::SnapMove { .. } | Drag::RawPoint { .. })) {
+    // The drawing tools show where a press would start, snapped (ADR 0045).
+    let draws = matches!(app.tool, Tool::Line | Tool::Rect | Tool::Oval | Tool::Star | Tool::Pen) && !panning && !paused && app.pen.as_ref().is_none_or(|p| !p.dragging);
+    if draws && app.drag == Drag::None {
+        match pointer.filter(|p| canvas.contains(*p) && resp.hovered()) {
+            Some(p) => {
+                snap_draw(app, to_stage(p), zoom);
+            }
+            None => app.snap_ring = None,
+        }
+    }
+    // The snap ring where a dragged point, selection or drawn point snapped (ADR 0041, 0045).
+    if let Some(at) = app.snap_ring.filter(|_| matches!(app.drag, Drag::SnapMove { .. } | Drag::RawPoint { .. } | Drag::Shape { .. }) || (draws && app.drag == Drag::None)) {
         let c = to_screen(at);
         painter.circle_stroke(c, SNAP_RING + 1.0, Stroke::new(3.0, Color32::WHITE));
         painter.circle_stroke(c, SNAP_RING, Stroke::new(2.0, T.selection));
@@ -1032,6 +1056,15 @@ const GRAB_POINT: f32 = 6.0;
 const SNAP_PX: f32 = 10.0;
 /// The snap ring's radius (screen pixels).
 const SNAP_RING: f32 = 6.0;
+
+/// Where a point drawn at stage point `p` goes (the Line, Rectangle, Oval, PolyStar and Pen tools,
+/// ADR 0045): snapped within 10 screen pixels to an anchor, else a line or fill edge, while Snap
+/// to Objects is on. The snap ring shows where it snapped.
+pub fn snap_draw(app: &mut App, p: Pos2, zoom: f32) -> Pos2 {
+    let v = app.s.execute("draw.snap", &json!({"x": p.x, "y": p.y, "snap": SNAP_PX / zoom.max(1e-3)}));
+    app.snap_ring = v.as_ref().ok().and_then(snapped_at);
+    app.snap_ring.map_or(p, |q| pos2(q.x, q.y))
+}
 
 /// A Selection-tool move, this frame: one of the selection's corners (the one nearest the
 /// pointer) snaps within 10 screen pixels.

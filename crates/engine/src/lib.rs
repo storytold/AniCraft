@@ -136,6 +136,9 @@ pub const SHORTCUT_ALIASES: &[(&str, &str)] = &[
     ("Backspace", "edit.delete"),
     ("Shift+,", "timeline.first_frame"),
     ("Shift+.", "timeline.last_frame"),
+    // Snap to Objects is Animate's Ctrl+Shift+/ (ADR 0045). Where / and ? share a key (US, UK),
+    // the key arrives as ?, so that spelling is bound too.
+    ("Ctrl+Shift+?", "draw.snap_to_objects"),
 ];
 
 pub fn find_command(id: &str) -> Option<CommandSpec> {
