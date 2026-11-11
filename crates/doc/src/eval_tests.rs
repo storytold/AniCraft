@@ -85,7 +85,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
         },
     );
     tl.layers.push(Arc::new(layer));
-    d.library.push(Arc::new(Symbol { id: sid, name: "loop".into(), kind: SymbolKind::Graphic, linkage: None, timeline: tl }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "loop".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline: tl }));
     push(
         layer0(&mut d),
         0,
@@ -140,7 +140,7 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
     // The main timeline's masked layer holds an instance of a symbol that has its own mask.
     let mut d = mask_doc();
     let sid = SymbolId(99);
-    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, linkage: None, timeline: mask_doc().timeline(0).clone() }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline: mask_doc().timeline(0).clone() }));
     let inst = Element {
         id: ElementId(60),
         name: String::new(),
@@ -295,7 +295,7 @@ fn movie_clips_play_their_own_timeline_graphics_keep_step_buttons_hold_up() {
         })
         .collect();
     let mut d = Document::default();
-    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, timeline: Timeline { layers: vec![Arc::new(st)] } }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(st)] } }));
     // The same instance on two keyframes back to back (frames 0–4 and 5–11), moved on the second.
     let inst = |x: f32| Element {
         id: ElementId(60),

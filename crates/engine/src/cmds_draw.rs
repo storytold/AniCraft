@@ -703,7 +703,7 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         }
         inner.push(Arc::new(layer));
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, timeline: Timeline { layers: inner } }));
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, scale_grid: None, timeline: Timeline { layers: inner } }));
     if folder.is_some() {
         s.doc.place_entry(LibraryEntry::Item(LibraryItem::Symbol(sym_id)), folder);
     }

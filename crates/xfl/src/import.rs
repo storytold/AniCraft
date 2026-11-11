@@ -22,7 +22,7 @@ use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
     Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, SourceScript,
+    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, ScaleGrid, SourceScript,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
@@ -769,6 +769,31 @@ impl<'a> Builder<'a> {
         Some(l)
     }
 
+    /// A symbol's 9-slice guides (ADR 0055): `scaleGridLeft`, `scaleGridRight`, `scaleGridTop`
+    /// and `scaleGridBottom` on the `DOMSymbolItem`, in the symbol's space, written when its
+    /// guides are on. All four or none; guides given the wrong way round are put in order.
+    fn scale_grid(&mut self, item: &X) -> Option<ScaleGrid> {
+        let keys = ["scaleGridLeft", "scaleGridRight", "scaleGridTop", "scaleGridBottom"];
+        if keys.iter().all(|k| item.attr(k).is_none()) {
+            return None;
+        }
+        let v: Vec<f32> = keys.iter().filter_map(|k| item.f32(k)).collect();
+        let grid = match v[..] {
+            [l, r, t, b] => Some(ScaleGrid { left: l.min(r), right: l.max(r), top: t.min(b), bottom: t.max(b) }),
+            _ => None,
+        };
+        match grid.filter(|g| g.check().is_ok()) {
+            Some(g) => {
+                self.report.keep("9-slice scaling guides");
+                Some(g)
+            }
+            None => {
+                self.report.skip("9-slice guides that aren't numbers (left out)");
+                None
+            }
+        }
+    }
+
     /// The script settings of the package's publish profile (`PublishSettings.xml`): the
     /// language its frame scripts are written in (`ActionScriptVersion`; 3 when the file
     /// doesn't say) and the document class (`DocumentClass`). The profile marked current is
@@ -803,7 +828,8 @@ impl<'a> Builder<'a> {
                 None => Timeline { layers: vec![Arc::new(Layer::new(LayerId(self.doc.alloc_id()), "Layer 1"))] },
             };
             let short = name.rsplit('/').next().unwrap_or(&name).to_string();
-            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, timeline }));
+            let scale_grid = self.scale_grid(&item);
+            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, scale_grid, timeline }));
             self.place_in_folder(&name, anicraft_doc::LibraryItem::Symbol(id));
         }
     }

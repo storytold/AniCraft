@@ -1,6 +1,7 @@
 //! Timeline evaluation: `(document, frame) -> DisplayList`. Pure, deterministic, no caching.
 
 use crate::camera::Camera;
+use crate::nine_slice::Slicing;
 use crate::player::PlayerState;
 use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
 use anicraft_geom::walk::PathWalk;
@@ -309,11 +310,14 @@ struct Ctx {
     /// The camera the scene's layers are seen through (main timeline only; each layer's
     /// transform comes from it and the layer's depth, and `xf` is ignored).
     camera: Option<Camera>,
+    /// The 9-slice scaling of the instance whose timeline this is (ADR 0055): its own shapes go
+    /// through it, in place of the scale in `xf`. Not passed on to nested symbols.
+    slice: Option<Slicing>,
 }
 
 impl Ctx {
     fn top(xf: Affine) -> Ctx {
-        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None }
+        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None, slice: None }
     }
 
     /// A main timeline seen through `camera`: its tint colours everything.
@@ -435,29 +439,38 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
             let xf = layer_xf.mul(&el.transform);
             let color = cx.color.concat(&el.color);
             match &el.kind {
-                ElementKind::Shape(s) => out.items.push(DisplayItem {
-                    path: s.path.clone(),
-                    transform: xf,
-                    fill: s.fill.clone(),
-                    stroke: s.stroke.clone(),
-                    fill_rule: s.fill_rule,
-                    color,
-                    layer: root_layer,
-                    element: root_el,
-                    outline: layer_outline,
-                    clip,
-                    masks,
-                    guide,
-                    group: cx.group,
-                    image: match &s.fill {
-                        Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).and_then(crate::Bitmap::pixels),
-                        _ => None,
-                    },
-                    smooth: match &s.fill {
-                        Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).is_none_or(|b| b.smoothing),
-                        _ => true,
-                    },
-                }),
+                ElementKind::Shape(s) => {
+                    // Inside a 9-slice instance, the shape's outline is cut and mapped (bitmap
+                    // fills scale normally, as in Animate).
+                    let sliced = cx.slice.filter(|_| !matches!(s.fill, Some(Paint::Bitmap { .. }))).map(|sl| sliced_shape(s, &el.transform, &sl));
+                    let (path, transform, fill, stroke) = match sliced {
+                        Some(x) => x,
+                        None => (s.path.clone(), xf, s.fill.clone(), s.stroke.clone()),
+                    };
+                    out.items.push(DisplayItem {
+                        path,
+                        transform,
+                        fill,
+                        stroke,
+                        fill_rule: s.fill_rule,
+                        color,
+                        layer: root_layer,
+                        element: root_el,
+                        outline: layer_outline,
+                        clip,
+                        masks,
+                        guide,
+                        group: cx.group,
+                        image: match &s.fill {
+                            Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).and_then(crate::Bitmap::pixels),
+                            _ => None,
+                        },
+                        smooth: match &s.fill {
+                            Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).is_none_or(|b| b.smoothing),
+                            _ => true,
+                        },
+                    });
+                }
                 ElementKind::Text(t) => out.items.push(DisplayItem {
                     path: t.outline.clone(),
                     transform: xf,
@@ -503,12 +516,32 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     } else {
                         (color, cx.group)
                     };
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group, camera: None };
+                    // A symbol with 9-slice guides, scaled: its shapes are sliced (ADR 0055).
+                    let slice = crate::nine_slice::slicing(doc, sym, &el.transform).map(|s| Slicing { post: layer_xf.mul(&s.post), ..s });
+                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group, camera: None, slice };
                     eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
                 }
             }
         }
     }
+}
+
+/// A shape inside a 9-slice instance (ADR 0055): its outline placed by its own transform, then
+/// cut at the guides and mapped piecewise; drawn by the instance's transform without its scale.
+/// The stroke keeps its width (times the shape's own scale inside the symbol); gradients follow
+/// the map, their size the shape's own scale times the instance's.
+fn sliced_shape(s: &Shape, own: &Affine, sl: &Slicing) -> (Arc<Path>, Affine, Option<Paint>, Option<Stroke>) {
+    let path = Arc::new(anicraft_geom::slice::slice_path(&s.path, own, &sl.map));
+    let k = own.mean_scale();
+    let stroke = s.stroke.as_ref().map(|st| if (k - 1.0).abs() > 1e-6 { st.scaled(k) } else { st.clone() });
+    let at = |p: anicraft_geom::Vec2| sl.map.map(own.apply(p));
+    let size = k * sl.scale.mean_scale();
+    let fill = s.fill.as_ref().map(|f| match f {
+        Paint::Linear { start, end, stops } => Paint::Linear { start: at(*start), end: at(*end), stops: stops.clone() },
+        Paint::Radial { center, radius, stops } => Paint::Radial { center: at(*center), radius: radius * size, stops: stops.clone() },
+        Paint::Solid(_) | Paint::Bitmap { .. } => f.clone(),
+    });
+    (path, sl.post, fill, stroke)
 }
 
 #[cfg(test)]
