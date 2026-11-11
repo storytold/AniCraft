@@ -227,7 +227,7 @@ fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Largest file Import to Stage reads.
-const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Import to Stage: the drawing's shapes and text become editable elements on a new layer
 /// named after the file, in a keyframe at the playhead, selected, as one undo step. A drawing

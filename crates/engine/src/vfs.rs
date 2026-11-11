@@ -208,6 +208,22 @@ pub fn write(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
     }
 }
 
+/// Like [`write`], but the file must not exist yet (`O_EXCL`: a planted file or symlink makes it
+/// fail instead of being written through). For temporary files.
+pub fn write_new(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
+    match mem(|m| m.write(path, data.as_ref().to_vec())) {
+        Some(r) => r,
+        None => std::fs::OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| io::Write::write_all(&mut f, data.as_ref())),
+    }
+}
+
+/// 16 hex digits an outsider can't guess (the standard library's randomly seeded hasher), for
+/// temporary file names.
+pub fn random_suffix() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    format!("{:016x}", std::collections::hash_map::RandomState::new().build_hasher().finish())
+}
+
 /// The file's size in bytes (`std::fs::metadata(path)?.len()`).
 pub fn len(path: &Path) -> io::Result<u64> {
     mem(|m| m.len(path)).unwrap_or_else(|| std::fs::metadata(path).map(|m| m.len()))
@@ -265,6 +281,14 @@ impl Writer {
         Ok(Writer::Disk(io::BufWriter::new(std::fs::File::create(path)?)))
     }
 
+    /// Like [`Writer::create`], but the file must not exist yet.
+    pub fn create_new(path: &Path) -> io::Result<Writer> {
+        if in_memory() {
+            return Writer::create(path);
+        }
+        Ok(Writer::Disk(io::BufWriter::new(std::fs::OpenOptions::new().write(true).create_new(true).open(path)?)))
+    }
+
     pub fn finish(self) -> io::Result<()> {
         match self {
             Writer::Disk(mut f) => io::Write::flush(&mut f),
@@ -298,6 +322,19 @@ impl io::Write for Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temp_files_are_created_exclusively() {
+        let dir = std::env::temp_dir().join(format!("anicraft-vfs-{}-{}", std::process::id(), random_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("t.tmp");
+        write_new(&f, b"a").unwrap();
+        assert_eq!(write_new(&f, b"b").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(Writer::create_new(&f).err().map(|e| e.kind()), Some(io::ErrorKind::AlreadyExists));
+        assert_eq!(std::fs::read(&f).unwrap(), b"a");
+        assert_ne!(random_suffix(), random_suffix());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn paths_have_one_spelling_and_stay_inside() {

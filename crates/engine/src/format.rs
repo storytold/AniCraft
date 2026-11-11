@@ -104,9 +104,13 @@ pub fn load(path: &std::path::Path) -> Result<Document, EngineError> {
 pub fn save(doc: &Document, path: &std::path::Path) -> Result<(), EngineError> {
     let json = to_json(doc)?;
     // Write next to the target, then rename: a crash mid-write never corrupts the old file.
-    let tmp = path.with_extension("anicraft.tmp");
-    crate::vfs::write(&tmp, json)?;
-    crate::vfs::rename(&tmp, path)?;
+    // The temp name is unguessable and created exclusively, so a planted file or symlink can't redirect the write.
+    let tmp = path.with_extension(format!("anicraft.{}.tmp", crate::vfs::random_suffix()));
+    crate::vfs::write_new(&tmp, json)?;
+    if let Err(e) = crate::vfs::rename(&tmp, path) {
+        let _ = crate::vfs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
