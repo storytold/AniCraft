@@ -131,8 +131,8 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     };
     base.color = match (base_color, e.offset == 0 && !tracks_color) {
         (true, true) => base.color,
-        // The base's style and the edit's, from the new values (ADR 0056).
-        (true, false) => new_base.color_effect(&[e.base.color.style(), base.color.style()]),
+        // The edit's style, from the new values (ADR 0056).
+        (true, false) => new_base.color_effect(&[base.color.style()]),
         (false, _) => e.base.color,
     };
     if let Some(slot) = kf.elements.get_mut(idx) {

@@ -1034,11 +1034,15 @@ impl MotionTween {
         el
     }
 
-    /// The colour effect styles the target shows over the span: those with keyed properties,
-    /// and its own style (unless None).
+    /// The colour effect styles the target shows over the span. As in Animate, a motion tween
+    /// has one colour effect: the style its colour properties are keyed in, replacing the
+    /// target's own (which shows while none are keyed). Keys in several styles (older files
+    /// keyed alpha and tint together) compose into Advanced.
     pub fn colour_styles(&self, own: &ColorEffect) -> Vec<ColorStyle> {
         let mut out: Vec<ColorStyle> = Vec::new();
-        for s in self.tracks.iter().filter_map(|t| t.property.style()).chain((own.style() != ColorStyle::None).then_some(own.style())) {
+        let keyed = self.tracks.iter().filter_map(|t| t.property.style());
+        let own = (own.style() != ColorStyle::None && !self.tracks.iter().any(|t| t.property.style().is_some())).then_some(own.style());
+        for s in keyed.chain(own) {
             if !out.contains(&s) {
                 out.push(s);
             }

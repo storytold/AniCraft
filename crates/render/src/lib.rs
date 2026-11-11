@@ -964,6 +964,46 @@ mod tests {
     }
 
     #[test]
+    fn colour_transforms_apply_to_solids_gradients_and_bitmaps_alike() {
+        // ADR 0056: each straight channel c·mul + add, clamped, on every kind of paint.
+        let fx = ColorTransform { mul: [-1.0, 0.5, 1.0, 0.8], add: [1.0, 0.25, -0.5, 0.0] };
+        let want = |c: Rgba| {
+            let o = fx.apply(c);
+            [o.r * o.a, o.g * o.a, o.b * o.a, o.a]
+        };
+        let near = |p: [f32; 4], q: [f32; 4]| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 2e-3);
+        let c = Rgba::new(0.2, 0.6, 0.9, 1.0);
+        // Solid.
+        let mut solid = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Solid(c));
+        solid.color = fx;
+        let (pm, _) = render(&list(vec![solid]), &view(4, 4)).unwrap();
+        assert!(near(pm.pixel(2, 2).unwrap(), want(c)), "{:?} vs {:?}", pm.pixel(2, 2), want(c));
+        // A two-stop gradient of one colour is that colour, through the transform.
+        let stops = vec![anicraft_doc::GradientStop { offset: 0.0, color: c }, anicraft_doc::GradientStop { offset: 1.0, color: c }];
+        let mut grad = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(4.0, 0.0), stops });
+        grad.color = fx;
+        let (pm, _) = render(&list(vec![grad]), &view(4, 4)).unwrap();
+        assert!(near(pm.pixel(1, 2).unwrap(), want(c)));
+        // A bitmap of one colour, sampled anywhere.
+        let px = Arc::new(anicraft_doc::Pixels { width: 2, height: 2, rgba: [51u8, 153, 230, 255].repeat(4) });
+        let b = Rgba::new(51.0 / 255.0, 153.0 / 255.0, 230.0 / 255.0, 1.0);
+        let mut bmp = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::IDENTITY });
+        bmp.image = Some(px);
+        bmp.color = fx;
+        let (pm, _) = render(&list(vec![bmp]), &view(4, 4)).unwrap();
+        assert!(near(pm.pixel(1, 1).unwrap(), want(b)), "{:?} vs {:?}", pm.pixel(1, 1), want(b));
+        // Nested transforms compose exactly: drawing through the composition is drawing through
+        // one then the other.
+        let inner = ColorTransform::tint(Rgba::new(1.0, 0.0, 0.0, 1.0), 0.5);
+        let outer = ColorTransform::brightness(-0.4);
+        let mut nested = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Solid(c));
+        nested.color = outer.concat(&inner);
+        let (pm, _) = render(&list(vec![nested]), &view(4, 4)).unwrap();
+        let o = outer.apply(inner.apply(c));
+        assert!(near(pm.pixel(2, 2).unwrap(), [o.r, o.g, o.b, 1.0]));
+    }
+
+    #[test]
     fn groups_fade_as_one() {
         // A red square under a blue one, overlapping, in a group at 50% over white.
         let white = View { background: Some(Rgba::WHITE), ..view(12, 4) };

@@ -945,6 +945,8 @@ mod tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod color_tests;
+#[cfg(test)]
 mod motion_path_tests;
 #[cfg(test)]
 mod motion_pin_tests;

@@ -547,7 +547,7 @@ fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: cra
                     if ui.add(egui::DragValue::new(&mut mv).suffix(" %").speed(0.5).range(-100.0..=100.0).max_decimals(0)).named(mul_name).changed() {
                         set(app, json!({format!("{key}_multiplier"): mv}));
                     }
-                    if ui.add(egui::DragValue::new(&mut ov).prefix("+ ").speed(1.0).range(-255.0..=255.0).max_decimals(0)).named(off_name).changed() {
+                    if ui.add(egui::DragValue::new(&mut ov).custom_formatter(|v, _| format!("{v:+.0}")).speed(1.0).range(-255.0..=255.0).max_decimals(0)).named(off_name).changed() {
                         set(app, json!({format!("{key}_offset"): ov}));
                     }
                     mixed(ui, m.advanced.get(i).copied().unwrap_or(false) || m.advanced.get(i + 4).copied().unwrap_or(false));

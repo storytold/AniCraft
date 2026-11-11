@@ -471,6 +471,21 @@ mod tests {
     }
 
     #[test]
+    fn bitmaps_take_colour_effects_as_a_colour_matrix() {
+        // ADR 0056: alpha alone is fill-opacity; anything more is an feColorMatrix on the image.
+        let px = Arc::new(anicraft_doc::Pixels { width: 1, height: 1, rgba: vec![10, 20, 30, 255] });
+        let mut b = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::IDENTITY }));
+        b.image = Some(px);
+        b.color = ColorTransform::alpha(0.5);
+        let svg = to_svg(&DisplayList { items: vec![b.clone()], ..Default::default() }, &stage());
+        assert!(svg.contains("fill-opacity=\"0.5\"") && !svg.contains("feColorMatrix"), "{svg}");
+        b.color = ColorTransform { mul: [-1.0, 0.5, 1.0, 0.8], add: [1.0, 0.25, 0.0, 0.1] };
+        let svg = to_svg(&DisplayList { items: vec![b], ..Default::default() }, &stage());
+        assert!(svg.contains("<feColorMatrix type=\"matrix\" values=\"-1 0 0 0 1 0 0.5 0 0 0.25 0 0 1 0 0 0 0 0 0.8 0.1\"/>"), "{svg}");
+        assert!(svg.contains("filter=\"url(#cm") && !svg.contains("fill-opacity"), "{svg}");
+    }
+
+    #[test]
     fn shapes_strokes_and_effects_come_out_in_stage_space() {
         let mut a = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Solid(Rgba::hex(0xff0000))));
         a.transform = Affine::translate(5.0, 7.0).mul(&Affine::scale(2.0, 2.0));

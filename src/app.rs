@@ -825,6 +825,20 @@ impl App {
                     self.run("element.select", json!({"ids": [a, b]}));
                 }
             }
+            Some("colour") => {
+                // A row of instances in each colour effect style (ADR 0056), the Advanced one
+                // selected: Properties shows the Style menu and its channel rows.
+                if let Some(ball) = self.s.doc.library.first().map(|s| s.id.0) {
+                    self.run("edit.deselect", json!({}));
+                    let id = |v: Option<Value>| v.and_then(|v| v["element"].as_u64()).unwrap_or(0);
+                    let styles = [json!({"brightness": 45}), json!({"tint": "#2a9d8f", "tint_amount": 70}), json!({"alpha": 40}), json!({"style": "advanced", "red_multiplier": -100, "red_offset": 255, "green_multiplier": 60, "blue_offset": -40})];
+                    for (i, fx) in styles.into_iter().enumerate() {
+                        let e = id(self.run("library.place", json!({"symbol": ball, "x": 640 + 130 * i, "y": 470})));
+                        self.run("element.select", json!({"ids": [e]}));
+                        self.run("element.set_color_effect", fx);
+                    }
+                }
+            }
             Some("bitmap") => {
                 // Two placed bitmaps of different images, selected: the Bitmap row with Swap…
                 // says "mixed" (ADR 0053).
