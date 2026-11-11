@@ -311,6 +311,25 @@ mod tests {
             assert!(updates.release.is_none());
             assert!(!updates.installable);
             assert!(finish_helper().is_none());
+            #[cfg(target_os = "linux")]
+            {
+                // This child has an isolated XDG data folder; never consume a user's update record.
+                let paths = Paths::for_app(&APP).expect("isolated app folders");
+                std::fs::create_dir_all(paths.logs()).expect("test logs");
+                let failure = paths.logs().join("self-update-error.txt");
+                std::fs::write(&failure, "test installer failure").expect("test failure record");
+                let mut restarted = Updates::default();
+                restarted.startup();
+                draw(&mut restarted, true, false);
+                assert!(restarted.open);
+                assert!(restarted.message.contains("test installer failure"));
+                assert!(!failure.exists(), "the helper result is consumed exactly once");
+                restarted.open = false;
+                restarted.startup();
+                draw(&mut restarted, true, false);
+                assert!(!restarted.open, "the old failure must not reappear on the next start");
+            }
+
             return;
         }
         // Keep the process environment and the user's actual version choices untouched.
@@ -322,6 +341,7 @@ mod tests {
             .args(["--exact", "updates::tests::a_launcher_pin_stops_the_real_check_before_network_access"])
             .env(CHILD, "1")
             .env(craft_update::pins::PATH_ENV, &path)
+            .env("XDG_DATA_HOME", dir.join("data"))
             .status()
             .expect("isolated pin test");
         std::fs::remove_dir_all(dir).expect("remove test folder");
