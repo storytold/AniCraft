@@ -5,7 +5,9 @@
 //! and `polygon`, read in document order. Styling comes from presentation attributes and
 //! `style=""` declarations, with inheritance. Colours can be hex, `rgb()`/`rgba()`, CSS names,
 //! `none`, `transparent` or `currentColor`. Also supported: `opacity`, `fill-opacity` and
-//! `stroke-opacity`, `fill-rule`, `stroke-width` with units, the transform list (`matrix`,
+//! `stroke-opacity`, `fill-rule`, `stroke-width` with units, `stroke-linecap`,
+//! `stroke-linejoin`, `stroke-miterlimit`, `stroke-dasharray` and `stroke-dashoffset` (ADR 0046;
+//! SVG's defaults: butt caps, miter joins, limit 4), the transform list (`matrix`,
 //! `translate`, `scale`, `rotate`, `skewX`, `skewY`), `viewBox` with `preserveAspectRatio`, and
 //! linear and radial gradients (both unit systems, `gradientTransform`, stops inherited through
 //! `href`).
@@ -20,11 +22,11 @@
 //! (ADR 0014).
 //!
 //! What AniCraft cannot represent yet is reported, never guessed silently: images, filters,
-//! soft masks, patterns, dashes, style sheets, text on a path, reflected/repeated gradients and
+//! soft masks, patterns, style sheets, text on a path, reflected/repeated gradients and
 //! skewed gradient transforms (approximated).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use anicraft_doc::{ElementKind, GradientStop, Paint, Rgba, Shape, Stroke};
+use anicraft_doc::{Cap, Dash, ElementKind, GradientStop, Join, Paint, Rgba, Shape, Stroke, StrokeStyle};
 use anicraft_geom::svg::parse_path_data;
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
@@ -467,6 +469,12 @@ struct Style {
     stroke: PaintSpec,
     stroke_opacity: f32,
     stroke_width: f32,
+    cap: Cap,
+    join: Join,
+    miter_limit: f32,
+    /// `stroke-dasharray` lengths (user units); `None`: solid.
+    dash: Option<Vec<f32>>,
+    dash_offset: f32,
     current: Rgba,
     /// The CSS `font-family` list, as written.
     font_family: String,
@@ -489,6 +497,12 @@ impl Default for Style {
             stroke: PaintSpec::None,
             stroke_opacity: 1.0,
             stroke_width: 1.0,
+            // SVG's initial values, not AniCraft's (round) defaults.
+            cap: Cap::Butt,
+            join: Join::Miter,
+            miter_limit: 4.0,
+            dash: None,
+            dash_offset: 0.0,
             current: Rgba::BLACK,
             font_family: String::new(),
             font_size: 16.0,
@@ -511,7 +525,11 @@ fn declarations(el: &X) -> Vec<(String, String)> {
         "stroke",
         "stroke-opacity",
         "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
         "stroke-dasharray",
+        "stroke-dashoffset",
         "color",
         "opacity",
         "display",
@@ -542,6 +560,23 @@ fn declarations(el: &X) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// A `stroke-dasharray`: lengths separated by commas or spaces. `none`, an empty list, a
+/// negative or unreadable length all draw solid (SVG renders an invalid array as none).
+fn dash_array(v: &str) -> Option<Vec<f32>> {
+    if v.trim() == "none" {
+        return None;
+    }
+    let mut out = Vec::new();
+    for part in v.split(|c: char| c == ',' || c.is_whitespace()).filter(|p| !p.trim().is_empty()).take(1024) {
+        let x = length(part, 100.0)?;
+        if x < 0.0 {
+            return None;
+        }
+        out.push(x);
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn get<'a>(d: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -649,8 +684,29 @@ impl Style {
             Some("default") => s.preserve = false,
             _ => {}
         }
-        if get(&d, "stroke-dasharray").is_some_and(|v| v != "none") {
-            report.skip("dashed strokes (drawn solid)");
+        match get(&d, "stroke-linecap") {
+            Some("butt") => s.cap = Cap::Butt,
+            Some("round") => s.cap = Cap::Round,
+            Some("square") => s.cap = Cap::Square,
+            _ => {}
+        }
+        match get(&d, "stroke-linejoin") {
+            Some("miter" | "miter-clip") => s.join = Join::Miter,
+            Some("round" | "arcs") => s.join = Join::Round,
+            Some("bevel") => s.join = Join::Bevel,
+            _ => {}
+        }
+        if let Some(m) = get(&d, "stroke-miterlimit").and_then(|v| v.trim().parse::<f32>().ok()).filter(|m| m.is_finite() && *m >= 1.0) {
+            s.miter_limit = m;
+        }
+        if let Some(v) = get(&d, "stroke-dasharray").filter(|v| *v != "inherit") {
+            s.dash = dash_array(v);
+            if s.dash.as_ref().is_some_and(|l| l.len() > anicraft_doc::stroke_style::MAX_DASH_ENTRIES) {
+                report.skip("dash patterns of more than 16 lengths (shortened)");
+            }
+        }
+        if let Some(o) = get(&d, "stroke-dashoffset").and_then(|v| length(v, 100.0)) {
+            s.dash_offset = o;
         }
         if get(&d, "filter").is_some_and(|v| v != "none") {
             report.skip("filters");
@@ -879,7 +935,8 @@ impl<'a> Builder<'a> {
                 other.primary_color()
             }
         };
-        Some(Stroke::new(color, style.stroke_width))
+        let dash = style.dash.as_ref().and_then(|l| Dash::Dashed { lengths: l.iter().copied().collect(), offset: style.dash_offset }.sanitized());
+        Some(Stroke::new(color, style.stroke_width).with_style(StrokeStyle { cap: style.cap, join: style.join, miter_limit: style.miter_limit, dash }))
     }
 
     /// A fill or stroke paint, with `opacity` folded in; `None` draws nothing.

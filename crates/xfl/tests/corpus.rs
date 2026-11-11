@@ -72,7 +72,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("primitives", &[]),
     ("scenes", &[("frame comments", 1)]),
     ("scripts", &[]),
-    ("shapes", &[("stroke caps and joins other than round (drawn round)", 2)]),
+    ("shapes", &[]),
     (
         "symbols",
         &[("advanced colour effects (only alpha kept)", 1), ("instances of missing symbols", 1), ("missing library files", 1), ("reverse loop modes (played forward)", 1)],
@@ -145,11 +145,22 @@ fn shapes_rebuild_every_fill_and_stroke() {
     assert!(shapes[4].stroke.is_some() && shapes[4].fill.is_none());
     // The strokes layer: the zigzag split over two edges is one run.
     let strokes = &doc.timeline(0).layers[0].keyframes[0].elements;
-    assert_eq!(strokes.len(), 4);
+    assert_eq!(strokes.len(), 6);
     let ElementKind::Shape(zig) = &strokes[0].kind else { panic!() };
     assert_eq!(zig.path.flatten(&anicraft_geom::Affine::IDENTITY, 0.1).len(), 1, "an edge starting where the last ended continues it");
     let ElementKind::Shape(gap) = &strokes[3].kind else { panic!() };
     assert_eq!(gap.path.flatten(&anicraft_geom::Affine::IDENTITY, 0.1).len(), 2, "a move away leaves a gap");
+    // Caps, joints, the miter limit, dashes and dots come across (ADR 0046).
+    use anicraft_doc::{Cap, Dash, Join, StrokeStyle};
+    let style = |i: usize| match &strokes[i].kind {
+        ElementKind::Shape(s) => s.stroke.as_ref().map(|st| st.style.clone()).unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(style(0), StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 4.0, dash: None });
+    assert_eq!(style(1), StrokeStyle { cap: Cap::Square, join: Join::Bevel, miter_limit: 3.0, dash: None });
+    assert_eq!(style(2), StrokeStyle::default());
+    assert_eq!(style(4), StrokeStyle { cap: Cap::Butt, dash: Dash::dashed(10.0, 5.0), ..StrokeStyle::default() });
+    assert_eq!(style(5), StrokeStyle { dash: Dash::dotted(4.0), ..StrokeStyle::default() });
 }
 
 #[test]

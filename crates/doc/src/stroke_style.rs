@@ -187,7 +187,7 @@ impl Dash {
                 }
                 let period: f32 = v.iter().sum();
                 let gaps: f32 = v.iter().skip(1).step_by(2).sum();
-                if !(period > MIN_PERIOD) || gaps <= 0.0 {
+                if period.is_nan() || period <= MIN_PERIOD || gaps <= 0.0 {
                     return None;
                 }
                 let offset = if offset.is_finite() { offset.rem_euclid(period) } else { 0.0 };
