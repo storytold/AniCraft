@@ -586,11 +586,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             let kc = pos2(x0 + cell_w * 0.5, y + ROW_H * 0.5);
             if let Some(m) = motion {
-                // Property keyframes: small diamonds where any property has a key.
+                // Property keyframes: small diamonds where any property has a key. A frame a
+                // motion path point is pinned to (ADR 0049) has a larger one with a hole, as the
+                // stage marks that point.
+                let pins = m.live_pins();
                 for f in m.key_frames().into_iter().filter(|f| *f > 0 && *f < k.duration) {
                     let c = pos2(x_of(k.start + f) + cell_w * 0.5, kc.y);
-                    let r = (cell_w * 0.35).clamp(2.5, 4.5);
+                    let pinned = pins.iter().any(|p| p.frame == f);
+                    let r = (cell_w * 0.35).clamp(2.5, 4.5) + if pinned { 1.0 } else { 0.0 };
                     cp.add(egui::Shape::convex_polygon(vec![c + vec2(0.0, -r), c + vec2(r, 0.0), c + vec2(0.0, r), c + vec2(-r, 0.0)], T.ink, Stroke::NONE));
+                    if pinned {
+                        cp.circle_filled(c, r * 0.4, T.tween_motion);
+                    }
                 }
             } else if tweened && k.duration > 1 {
                 let end = pos2(x1 - cell_w * 0.5 - 4.0, kc.y);

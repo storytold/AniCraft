@@ -436,7 +436,7 @@ pub fn draw(app: &mut App, painter: &egui::Painter, to_screen: impl Fn(Vec2) -> 
         let r = box_of(b);
         // The playhead's keyframe in the selection colour; the others a step lighter, so it is
         // clear which artwork is on this frame.
-        let here = app.s.doc.timeline(app.s.scene).layer(it.layer).and_then(|l| l.keyframe_at(app.s.frame)).is_some_and(|k| k.start == it.frame);
+        let here = app.s.timeline().layer(it.layer).and_then(|l| l.keyframe_at(app.s.frame)).is_some_and(|k| k.start == it.frame);
         let c = if here { T.selection } else { T.selection.gamma_multiply(0.7) };
         painter.rect_stroke(r, 0.0, Stroke::new(if here { 1.5 } else { 1.0 }, c), StrokeKind::Middle);
     }
