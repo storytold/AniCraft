@@ -551,3 +551,10 @@ fn scripts_set_append_and_read_text_fields() {
     assert!(err("a_txt.appendText();").2.contains("one argument"));
     assert!(err("a_txt.length = 3;").2.contains("can only be read"));
 }
+
+#[test]
+fn surrogate_pair_escapes() {
+    assert_eq!(lines(r#"trace("\uD83D\uDE00");"#), vec!["😀".to_string()]);
+    assert_eq!(lines(r#"trace("é\uD83D\uDE00");"#), vec!["é😀".to_string()]);
+    assert_eq!(lines(r#"trace("\uD83Dx\uDE00");"#), vec!["\u{FFFD}x\u{FFFD}".to_string()]);
+}
