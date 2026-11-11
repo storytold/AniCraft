@@ -317,7 +317,7 @@ fn georgian_is_offered_only_when_its_face_is_embedded() {
     // ... and through the families the app really builds (Proportional and Monospace).
     let ctx = egui::Context::default();
     crate::theme::install_fonts(&ctx, None, None);
-    let _ = ctx.run(egui::RawInput::default(), |_| {}); // fonts apply at the start of a frame
+    let _ = ctx.run_ui(egui::RawInput::default(), |_| {}); // fonts apply at the start of a frame
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         let id = egui::FontId::new(14.0, family.clone());
         assert!(ctx.fonts_mut(|f| f.has_glyphs(&id, &letters)), "{family:?} lacks Georgian letters");
