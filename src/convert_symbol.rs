@@ -131,20 +131,26 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
             }
         });
     });
-    if submit && let Some(d) = app.convert.take() {
-        let name = d.name.trim();
-        let mut params = json!({"kind": kind_key(d.kind), "folder": d.folder.map(|f| f.0)});
-        if !name.is_empty() {
-            params["name"] = json!(name);
-        }
-        app.convert_last = Last { folder: d.folder, kind: d.kind };
-        if let Some(f) = d.folder {
-            app.library.expanded.extend(app.s.doc.folder_chain(f));
-        }
-        app.request("modify.convert_to_symbol", params);
+    if submit {
+        accept(app);
     } else if cancel {
         app.convert = None;
     }
+}
+
+/// OK: converts with the dialog's choices and remembers the folder and type for next time.
+fn accept(app: &mut App) {
+    let Some(d) = app.convert.take() else { return };
+    let name = d.name.trim();
+    let mut params = json!({"kind": kind_key(d.kind), "folder": d.folder.map(|f| f.0)});
+    if !name.is_empty() {
+        params["name"] = json!(name);
+    }
+    app.convert_last = Last { folder: d.folder, kind: d.kind };
+    if let Some(f) = d.folder {
+        app.library.expanded.extend(app.s.doc.folder_chain(f));
+    }
+    app.request("modify.convert_to_symbol", params);
 }
 
 #[cfg(test)]
@@ -162,5 +168,49 @@ mod tests {
         s.execute("library.delete", &json!({"items": [{"folder": f.0}]})).unwrap();
         assert_eq!(remembered(&s.doc, last), None, "a deleted folder falls back to the top level");
         assert_eq!(remembered(&s.doc, Last::default()), None);
+    }
+
+    #[test]
+    fn ok_converts_into_the_folder_and_the_next_dialog_offers_it_again() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, Session::new(sample::demo()), Some(std::path::PathBuf::from("unused.png")));
+        // Nothing selected: no dialog, the engine says why.
+        app.run("edit.deselect", json!({}));
+        open(&mut app);
+        assert!(app.convert.is_none());
+        let f = FolderId(app.run("library.new_folder", json!({"name": "Props"})).unwrap()["folder"].as_u64().unwrap());
+        app.run("draw.rect", json!({"x": 10, "y": 10, "w": 20, "h": 20, "object": true}));
+        open(&mut app);
+        let d = app.convert.as_mut().expect("the dialog opens");
+        assert_eq!(d.folder, None, "the top level the first time");
+        assert!(d.name.starts_with("Symbol "));
+        d.folder = Some(f);
+        d.kind = SymbolKind::Button;
+        d.name = "  Lamp ".into();
+        accept(&mut app);
+        assert!(app.convert.is_none());
+        let sym = app.s.doc.library.iter().find(|s| s.name == "Lamp").expect("converted, the name trimmed");
+        assert_eq!(sym.kind, SymbolKind::Button);
+        assert_eq!(app.s.doc.parent_of(LibraryEntry::Item(anicraft_engine::doc::LibraryItem::Symbol(sym.id))), Some(f));
+        assert!(app.library.expanded.contains(&f), "the folder opens in the Library");
+        // The next conversion offers Props and Button again; an empty name takes the default.
+        app.run("draw.rect", json!({"x": 60, "y": 10, "w": 20, "h": 20, "object": true}));
+        open(&mut app);
+        let d = app.convert.as_mut().expect("the dialog opens");
+        assert_eq!((d.folder, d.kind), (Some(f), SymbolKind::Button));
+        d.name = String::new();
+        accept(&mut app);
+        assert_eq!(app.s.doc.library_children(Some(f)).len(), 2);
+        // The dialog draws (the clash note too) without the document changing.
+        app.run("draw.rect", json!({"x": 90, "y": 10, "w": 20, "h": 20, "object": true}));
+        open(&mut app);
+        if let Some(d) = app.convert.as_mut() {
+            d.name = "Lamp".into();
+        }
+        let before = app.s.doc.clone();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| window(&mut app, ui.ctx()));
+        out.textures_delta.clear();
+        assert!(app.convert.is_some());
+        assert_eq!(app.s.doc, before);
     }
 }

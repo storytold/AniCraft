@@ -969,6 +969,86 @@ mod tests {
         assert_eq!(names(&s, &mut v)[2..], [n(0, "Star"), n(0, "Ball copy")]);
     }
 
+    fn pointer(pos: egui::Pos2, pressed: Option<bool>) -> egui::RawInput {
+        let mut events = vec![egui::Event::PointerMoved(pos)];
+        if let Some(pressed) = pressed {
+            events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 940.0))), events, ..Default::default() }
+    }
+
+    fn app() -> (egui::Context, App) {
+        let ctx = egui::Context::default();
+        let app = App::with_context(&ctx, anicraft_engine::Session::new(anicraft_engine::doc::sample::demo()), Some(std::path::PathBuf::from("unused.png")));
+        (ctx, app)
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App, input: egui::RawInput) {
+        let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+        out.textures_delta.clear();
+    }
+
+    fn instances(app: &App, symbol: u64) -> Vec<anicraft_engine::geom::Vec2> {
+        app.s.timeline().layers.iter().filter_map(|l| l.keyframe_at(app.s.frame)).flat_map(|k| &k.elements).filter(|e| matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { symbol: x, .. } if x.0 == symbol)).map(|e| e.transform.apply(anicraft_engine::geom::Vec2::ZERO)).collect()
+    }
+
+    #[test]
+    fn dropping_rows_on_the_stage_places_them_at_the_pointer_in_one_step() {
+        let (ctx, mut app) = app();
+        for _ in 0..3 {
+            frame(&ctx, &mut app, pointer(pos2(5.0, 935.0), None));
+        }
+        let star = app.s.doc.library.iter().find(|x| x.name == "Star").unwrap().id;
+        let before = instances(&app, star.0).len();
+        let steps = app.s.history().undo_len();
+        let canvas = app.stage_cache.canvas;
+        assert!(canvas.width() > 100.0, "the stage was laid out");
+        // The press starts outside the stage (as on a Library row), the rows ride along.
+        frame(&ctx, &mut app, pointer(pos2(5.0, 935.0), Some(true)));
+        egui::DragAndDrop::set_payload(&ctx, vec![LibraryEntry::Item(LibraryItem::Symbol(star)), LibraryEntry::Folder(FolderId(424_242))]);
+        let at = canvas.center();
+        for _ in 0..2 {
+            frame(&ctx, &mut app, pointer(at, None));
+        }
+        assert_eq!(instances(&app, star.0).len(), before, "hovering places nothing");
+        frame(&ctx, &mut app, pointer(at, Some(false)));
+        let now = instances(&app, star.0);
+        assert_eq!(now.len(), before + 1, "letting go places the symbol (folders are left out)");
+        assert_eq!(app.s.history().undo_len(), steps + 1, "one undo step");
+        assert!(!app.library.keys, "the stage has the keyboard again");
+        // Where the pointer was, in stage space.
+        let size = vec2(app.s.doc.stage.width as f32, app.s.doc.stage.height as f32);
+        let origin = canvas.center() + app.view.pan - size * app.view.zoom * 0.5;
+        let want = (at - origin) / app.view.zoom;
+        let got = now.iter().find(|p| (p.x - want.x).abs() < 1.5 && (p.y - want.y).abs() < 1.5);
+        assert!(got.is_some(), "{now:?} near {want:?}");
+    }
+
+    #[test]
+    fn enter_places_the_selected_rows_at_the_centre_of_the_view() {
+        let (ctx, mut app) = app();
+        for _ in 0..3 {
+            frame(&ctx, &mut app, pointer(pos2(5.0, 935.0), None));
+        }
+        let star = app.s.doc.library.iter().find(|x| x.name == "Star").unwrap().id;
+        let before = instances(&app, star.0).len();
+        app.library.sel = vec![LibraryEntry::Item(LibraryItem::Symbol(star)), LibraryEntry::Folder(FolderId(424_242))];
+        app.library.keys = true;
+        let mut input = pointer(pos2(5.0, 935.0), None);
+        input.events.push(egui::Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        frame(&ctx, &mut app, input);
+        let now = instances(&app, star.0);
+        assert_eq!(now.len(), before + 1);
+        let c = app.view_center_stage();
+        assert!(now.iter().any(|p| (p.x - c.x).abs() < 0.01 && (p.y - c.y).abs() < 0.01), "{now:?} at {c:?}");
+        // Inside a symbol open for editing, the centre of the view in its space.
+        app.run("symbol.edit", json!({"symbol": star.0}));
+        let ball = app.s.doc.library.iter().find(|x| x.name == "Ball").unwrap().id;
+        place_items(&mut app, &[LibraryItem::Symbol(ball)], None);
+        let (x, y) = view_centre(&app);
+        assert!(instances(&app, ball.0).iter().any(|p| (p.x - x).abs() < 0.01 && (p.y - y).abs() < 0.01));
+    }
+
     #[test]
     fn a_search_shows_matches_inside_closed_folders() {
         let (s, _, _) = session();
