@@ -193,7 +193,7 @@ fn shapes_become_fills_and_strokes() {
 
 #[test]
 fn a_fla_archive_imports_the_same() {
-    let z = crate::zip::tests::make_zip(&[("DOMDocument.xml", DOC.as_bytes(), true), ("LIBRARY/Characters/Ball.xml", BALL.as_bytes(), true)]);
+    let z = crate::zip::pack::write(&[crate::zip::pack::Raw::new("DOMDocument.xml", DOC.as_bytes(), true), crate::zip::pack::Raw::new("LIBRARY/Characters/Ball.xml", BALL.as_bytes(), true)], false);
     let dir = std::env::temp_dir().join(format!("anicraft-xfl-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fla = dir.join("scene.fla");
