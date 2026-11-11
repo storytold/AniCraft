@@ -98,6 +98,23 @@ the program; nothing was copied.
    * Arrow keys move the selection 1 screen pixel (Shift: 10), so they move less the further
      you zoom in.
 
+6. **Reshaping with the Selection tool** (second slice). A drag that starts on an unselected
+   raw shape reshapes it; inside a fill, or on anything selected, it still selects and moves.
+   * `draw.grab` says what a drag from a point would take. Within the pick radius of a corner
+     or a line end, it is that point on every raw shape there (the fill corner and the two
+     sides). Otherwise, on a segment, it is that segment and the same edge on the other raw
+     shapes (a fill's border under a line), matched by their ends, either way round.
+   * `draw.reshape` moves the point (`Path::move_anchor`, handles with it) or bends the
+     segments (`Path::bend_segment`, the least-squares handle move that carries the grabbed
+     point). Both are linear in the move, so the stage sends one small step per frame inside
+     one gesture with the parts `draw.grab` named. Holding the parts keeps a point from picking
+     up another one it passes over.
+   * A dragged point snaps onto the nearest raw point within 10 screen pixels, else onto the
+     nearest raw edge that does not move with it; a ring marks it. Segments do not snap.
+   * On release, `draw.drop` merges the reshaped shapes, in the same undo step, so a bent line
+     cuts what it now crosses and a point dropped on another becomes one. A script calling
+     `draw.reshape` without `parts` gets the same in one call (`drop` defaults to true).
+
 ## Consequences
 
 * Drawing with the shape tools now behaves as Animate users expect. Scripts keep their
@@ -108,9 +125,8 @@ the program; nothing was copied.
 * Adjacent fills of different colours are separate paths, so antialiasing can show a faint seam
   where they meet, as in Animate.
 * Remaining parts of issue #42 (later slices, on this model):
-  * bending a segment by dragging it with the Selection tool;
-  * snapping dragged points to points and strokes within 10 screen pixels;
-  * moving a point to move every shape that shares it (Subselection and arrows);
+  * snapping whole shapes while they are dragged;
+  * moving a point to move every shape that shares it with the Subselection tool and arrows;
   * a marquee that selects parts of fills and strokes;
   * Subselection anchors and handles of connected raw shapes;
   * merging the Paint Bucket's fills and pasted raw shapes;

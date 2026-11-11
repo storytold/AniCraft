@@ -107,7 +107,7 @@ impl Tool {
     }
     pub fn hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection.",
+            Tool::Select => "Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection. On shapes drawn without Object Drawing, drag a line to bend it or a corner to move it.",
             Tool::Subselect => "Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner.",
             Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point.",
             Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
@@ -181,6 +181,10 @@ pub enum Drag {
     /// Editing the motion path (ADR 0030) from stage point `start`; the path as it was when the
     /// drag began is `App::motion_drag`.
     MotionPath { grab: crate::motion_path::Grab, start: egui::Pos2 },
+    /// Selection tool on raw shapes (ADR 0031): moving a point or bending a segment, now at
+    /// stage point `at`, which keeps `offset` from the pointer; `snapped` when it sits on another
+    /// raw point or edge. The parts are `App::reshape`.
+    Reshape { at: egui::Pos2, offset: egui::Vec2, snapped: bool },
     /// Camera tool (ADR 0027): panning from screen point `last`, turning from pointer angle
     /// `last` (radians about the camera centre), or zooming with the wheel until `until`
     /// (seconds; the turns of one burst are one undo step).
@@ -291,6 +295,8 @@ pub struct App {
     pub motion_anchor: Option<usize>,
     /// The motion path as it was when the drag on it began.
     pub motion_drag: Option<anicraft_engine::geom::Path>,
+    /// Selection tool: the raw points or segments a reshape drag holds (`draw.grab`'s parts).
+    pub reshape: Option<Value>,
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
@@ -432,6 +438,7 @@ impl App {
             width_sel: None,
             motion_anchor: None,
             motion_drag: None,
+            reshape: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
             bottom: BottomTab::Timeline,

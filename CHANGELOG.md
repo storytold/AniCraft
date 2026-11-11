@@ -18,13 +18,19 @@
   **Object Drawing** (J, or the tool's options) switches back to shapes that keep to themselves.
   Arrow keys now move the selection one screen pixel (Shift: ten) at any zoom.
 
-  Headless: the drawing commands take `object` (scripts and AI assistants still draw objects
-  unless they pass `"object": false`), plus `draw.object_drawing`, `draw.drop` and
-  `element.select_connected`.
+  With the Selection tool, drag a line or a fill's edge to bend it, or drag a corner or a line
+  end to move it. Every shape that shares the point moves with it, a fill's edge follows the
+  line along it, and a dragged point snaps onto a point or line within 10 screen pixels (a ring
+  shows where). When you let go, the shape cuts and joins what it now touches. Each drag is one
+  undo.
 
-  Not yet: bending segments by dragging them, snapping to points and strokes, moving shared
-  points together, partial marquee selection, and merging Paint Bucket fills, pastes and raw
-  shapes from Animate files.
+  Headless: the drawing commands take `object` (scripts and AI assistants still draw objects
+  unless they pass `"object": false`), plus `draw.object_drawing`, `draw.drop` (on the
+  selection or given `ids`), `element.select_connected`, `draw.grab` and `draw.reshape`.
+
+  Not yet: partial marquee selection, the Subselection tool on connected raw shapes, snapping
+  while moving whole shapes, and merging Paint Bucket fills, pastes and raw shapes from
+  Animate files.
 
 ## 0.1.0 (2026-11-09)
 

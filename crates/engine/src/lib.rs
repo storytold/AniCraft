@@ -26,6 +26,7 @@ pub mod confirm;
 pub mod format;
 pub mod history;
 mod merge;
+mod reshape;
 pub mod recovery;
 pub mod render_service;
 pub mod params;
@@ -103,6 +104,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_frames::specs());
     v.extend(cmds_draw::specs());
     v.extend(merge::specs());
+    v.extend(reshape::specs());
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
     v.extend(cmds_paint::specs());
@@ -702,3 +704,5 @@ mod tests_actions;
 mod tests_camera;
 #[cfg(test)]
 mod merge_tests;
+#[cfg(test)]
+mod reshape_tests;

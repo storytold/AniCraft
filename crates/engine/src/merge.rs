@@ -8,18 +8,19 @@ use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Paint, Shape, S
 use anicraft_geom::planar::{self, Item, SNAP};
 use anicraft_geom::{Affine, Path, PathCmd, Rect, Vec2};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.drop", "Drop", "", None, "{} the selected raw shapes cut and join the raw shapes they touch (after a move)", true, drop as crate::RunFn),
+        c("draw.drop", "Drop", "", None, "{ids?} the raw shapes (default: the selected ones) cut and join the raw shapes they touch (after a move or a reshape)", true, drop as crate::RunFn),
         c("element.select_connected", "Select Connected", "", None, "{x, y, add?, slop?} a raw stroke and the strokes joined to it, or a raw fill and the strokes on and in it", false, select_connected),
     ]
 }
 
 /// A raw shape the merge can take: a solid fill (or none) and a stroke of one width (or none).
-fn mergeable(e: &Element) -> Option<&Shape> {
+pub(crate) fn mergeable(e: &Element) -> Option<&Shape> {
     match &e.kind {
         ElementKind::Shape(s) if s.merge && matches!(s.fill, None | Some(Paint::Solid(_))) && s.stroke.as_ref().is_none_or(|st| st.profile.is_none()) => Some(s),
         _ => None,
@@ -130,14 +131,24 @@ fn index_of<T: PartialEq>(table: &mut Vec<T>, v: T) -> u32 {
     }
 }
 
-/// `draw.drop`: the selected raw shapes go back into the drawing, on top (Animate merges a moved
-/// shape when it is let go).
-fn drop(s: &mut Session, _: &Value) -> Result<Value> {
-    let sel = s.selection.clone();
+/// `draw.drop`: raw shapes go back into the drawing, on top (Animate merges a moved shape when
+/// it is let go).
+fn drop(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids = match opt_u64_list(p, "ids")? {
+        Some(ids) => ids.into_iter().map(ElementId).collect(),
+        None => s.selection.clone(),
+    };
+    drop_ids(s, &ids)
+}
+
+/// Merges the raw shapes `ids` into the drawing again. What comes of them is selected if any of
+/// them was.
+pub(crate) fn drop_ids(s: &mut Session, ids: &[ElementId]) -> Result<Value> {
+    let ids: HashSet<ElementId> = ids.iter().copied().collect();
     let kf = s.editable_keyframe()?;
     let mut moving = Vec::new();
     kf.elements.retain(|e| {
-        let take = sel.contains(&e.id) && mergeable(e).is_some();
+        let take = ids.contains(&e.id) && mergeable(e).is_some();
         if take {
             moving.push((**e).clone());
         }
@@ -147,8 +158,12 @@ fn drop(s: &mut Session, _: &Value) -> Result<Value> {
     if n == 0 {
         return Ok(json!({"dropped": 0}));
     }
-    let mut keep: Vec<ElementId> = sel.into_iter().filter(|id| !moving.iter().any(|e| e.id == *id)).collect();
-    keep.extend(merge_in(s, moving)?);
+    let selected = moving.iter().any(|e| s.selection.contains(&e.id));
+    let mut keep: Vec<ElementId> = s.selection.iter().copied().filter(|id| !moving.iter().any(|e| e.id == *id)).collect();
+    let pieces = merge_in(s, moving)?;
+    if selected {
+        keep.extend(pieces);
+    }
     s.selection = keep;
     Ok(json!({"dropped": n, "selected": s.selection.iter().map(|e| e.0).collect::<Vec<_>>()}))
 }

@@ -69,14 +69,24 @@ impl Path {
 
     /// Point on segment `cmd` at parameter `t ∈ [0, 1]`.
     pub fn segment_point(&self, cmd: usize, t: f32) -> Option<Vec2> {
-        let s = self.segment_start(cmd)?;
-        let mt = 1.0 - t;
-        Some(match *self.cmds.get(cmd)? {
-            PathCmd::LineTo(p) => s.lerp(p, t),
-            PathCmd::QuadTo(c, p) => s * (mt * mt) + c * (2.0 * mt * t) + p * (t * t),
-            PathCmd::CubicTo(c1, c2, p) => s * (mt * mt * mt) + c1 * (3.0 * mt * mt * t) + c2 * (3.0 * mt * t * t) + p * (t * t * t),
-            _ => return None,
-        })
+        point_on(self.segment_start(cmd)?, *self.cmds.get(cmd)?, t)
+    }
+
+    /// Every segment with the points it runs between: `(cmd, start, end)`, in one pass.
+    pub fn segment_ends(&self) -> Vec<(usize, Vec2, Vec2)> {
+        let (mut cur, mut start) = (Vec2::ZERO, Vec2::ZERO);
+        let mut out = Vec::new();
+        for (i, c) in self.cmds.iter().enumerate() {
+            match *c {
+                PathCmd::MoveTo(p) => (cur, start) = (p, p),
+                PathCmd::LineTo(p) | PathCmd::QuadTo(_, p) | PathCmd::CubicTo(_, _, p) => {
+                    out.push((i, cur, p));
+                    cur = p;
+                }
+                PathCmd::Close => cur = start,
+            }
+        }
+        out
     }
 
     /// Splits segment `cmd` at `t` (de Casteljau), adding an anchor without changing the shape.
@@ -320,39 +330,54 @@ impl Path {
 
     /// The segment nearest to `p` (in the space `m` maps to): `(cmd, t, distance)`.
     pub fn nearest_segment(&self, p: Vec2, m: &Affine) -> Option<(usize, f32, f32)> {
-        let mut best: Option<(usize, f32, f32)> = None;
-        for cmd in 0..self.cmds.len().min(100_000) {
-            if self.segment_start(cmd).is_none() {
-                continue;
-            }
-            let steps = 32;
-            for i in 0..=steps {
-                let t = i as f32 / steps as f32;
-                let Some(q) = self.segment_point(cmd, t) else { continue };
-                let d = m.apply(q).distance(p);
-                if best.is_none_or(|b| d < b.2) {
-                    best = Some((cmd, t, d));
+        self.nearest_segment_where(p, m, |_| true)
+    }
+
+    /// [`Path::nearest_segment`] among the segments `keep` accepts.
+    pub fn nearest_segment_where(&self, p: Vec2, m: &Affine, keep: impl Fn(usize) -> bool) -> Option<(usize, f32, f32)> {
+        const STEPS: usize = 32;
+        // (cmd, segment, its start, t, distance)
+        let mut best: Option<(usize, PathCmd, Vec2, f32, f32)> = None;
+        let dist = |from: Vec2, seg: PathCmd, t: f32| point_on(from, seg, t).map(|q| m.apply(q).distance(p));
+        for (cmd, from, _) in self.segment_ends().into_iter().take(100_000) {
+            let Some(&seg) = self.cmds.get(cmd).filter(|_| keep(cmd)) else { continue };
+            for i in 0..=STEPS {
+                let t = i as f32 / STEPS as f32;
+                if let Some(d) = dist(from, seg, t)
+                    && best.is_none_or(|b| d < b.4)
+                {
+                    best = Some((cmd, seg, from, t, d));
                 }
             }
         }
         // refine t around the best sample
-        let (cmd, mut t, mut d) = best?;
+        let (cmd, seg, from, mut t, mut d) = best?;
         let mut step = 1.0 / 64.0;
         for _ in 0..12 {
             for cand in [t - step, t + step] {
                 let c = cand.clamp(0.0, 1.0);
-                if let Some(q) = self.segment_point(cmd, c) {
-                    let dc = m.apply(q).distance(p);
-                    if dc < d {
-                        d = dc;
-                        t = c;
-                    }
+                if let Some(dc) = dist(from, seg, c)
+                    && dc < d
+                {
+                    d = dc;
+                    t = c;
                 }
             }
             step *= 0.5;
         }
         Some((cmd, t, d))
     }
+}
+
+/// Point at `t ∈ [0, 1]` on segment command `seg` drawn from `start` (`None` for `MoveTo`/`Close`).
+pub fn point_on(start: Vec2, seg: PathCmd, t: f32) -> Option<Vec2> {
+    let (s, mt) = (start, 1.0 - t);
+    Some(match seg {
+        PathCmd::LineTo(p) => s.lerp(p, t),
+        PathCmd::QuadTo(c, p) => s * (mt * mt) + c * (2.0 * mt * t) + p * (t * t),
+        PathCmd::CubicTo(c1, c2, p) => s * (mt * mt * mt) + c1 * (3.0 * mt * mt * t) + c2 * (3.0 * mt * t * t) + p * (t * t * t),
+        PathCmd::MoveTo(_) | PathCmd::Close => return None,
+    })
 }
 
 /// Ramer–Douglas–Peucker simplification (iterative; bounded memory).

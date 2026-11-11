@@ -40,7 +40,7 @@ impl Xf {
 }
 
 /// Pick radius for points and knots, in screen points.
-const PICK: f32 = 6.0;
+pub(crate) const PICK: f32 = 6.0;
 
 // ----- Pen ---------------------------------------------------------------------------------
 

@@ -282,6 +282,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         crate::motion_path::hit(app, &shown, p, xf, open).map(|g| (shown, g))
     };
     let mp_hot = if mp_tools && app.drag == Drag::None { pointer.and_then(|p| mp_grab(app, p)).map(|(_, g)| g) } else { None };
+    let raw_hot = resp.hovered() && app.tool == Tool::Select && app.drag == Drag::None && !panning && !preview && mp_hot.is_none() && hint_hot.is_none() && pointer.is_some_and(|p| raw_grab(app, to_stage(p), zoom).is_some());
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
@@ -291,7 +292,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Tool::Camera => CursorIcon::Grab,
             _ if hint_hot.is_some() && app.drag == Drag::None => CursorIcon::Grab,
             _ if matches!(app.drag, Drag::MotionPath { .. }) => CursorIcon::Grabbing,
-            _ if mp_hot.is_some() => CursorIcon::Grab,
+            _ if mp_hot.is_some() || raw_hot => CursorIcon::Grab,
+            _ if matches!(app.drag, Drag::Reshape { .. }) => CursorIcon::Grabbing,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
@@ -344,15 +346,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             crate::motion_path::drag_start(app, shown, grab, to_v(sp))
         } else {
             match app.tool {
-                Tool::Select => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
-                    Some((_, el)) => {
-                        if !app.s.selection.contains(&el) {
-                            app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
+                Tool::Select => match raw_grab(app, sp, zoom) {
+                    Some(g) => start_reshape(app, g, sp),
+                    None => match app.s.hit_test(to_v(sp), 3.0 / zoom) {
+                        Some((_, el)) => {
+                            if !app.s.selection.contains(&el) {
+                                app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
+                            }
+                            app.s.begin_gesture("Move");
+                            Drag::Move { last: sp }
                         }
-                        app.s.begin_gesture("Move");
-                        Drag::Move { last: sp }
-                    }
-                    None => Drag::Marquee { start: sp, cur: sp },
+                        None => Drag::Marquee { start: sp, cur: sp },
+                    },
                 },
                 Tool::Transform => {
                     let zone = sel_rect.and_then(|r| xf_zone(r, press));
@@ -434,6 +439,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let (index, side) = (*index, *side);
                 app.run("tween.move_hint", json!({"hint": index, "side": side.key(), "x": c.x, "y": c.y}));
             }
+            (Drag::Reshape { at, offset, .. }, Some(c)) => {
+                let (at, to) = (*at, c + *offset);
+                if to != at {
+                    reshape_to(app, at, to, zoom);
+                }
+            }
             (Drag::Points { last }, Some(c)) => {
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
@@ -457,6 +468,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         match app.drag {
             Drag::Move { .. } => {
                 app.drop_raw();
+                app.s.end_gesture();
+            }
+            Drag::Reshape { .. } => {
+                // The reshaped shapes cut and join what they now touch, in the same undo step.
+                if let Some(parts) = app.reshape.take() {
+                    let ids: Vec<u64> = parts.as_array().into_iter().flatten().filter_map(|p| p.get(0).and_then(serde_json::Value::as_u64)).collect();
+                    app.run("draw.drop", json!({"ids": ids}));
+                }
                 app.s.end_gesture();
             }
             Drag::Transform { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } => app.s.end_gesture(),
@@ -860,6 +879,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let r = Rect::from_two_pos(to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)));
             painter.rect_stroke(r, 0.0, sel_stroke, StrokeKind::Middle);
         }
+        // A ring where a dragged point snapped onto another point or edge.
+        Drag::Reshape { at, snapped: true, .. } => {
+            painter.circle_stroke(to_screen(Vec2::new(at.x, at.y)), 6.0, Stroke::new(1.5, T.selection));
+        }
         Drag::Shape { start, cur } => draw_preview(app, &painter, to_screen(Vec2::new(start.x, start.y)), to_screen(Vec2::new(cur.x, cur.y)), zoom),
         _ => {}
     }
@@ -890,6 +913,46 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 // ----- raw shapes (ADR 0031) ---------------------------------------------------------------------
+
+/// How close a dragged raw point comes to another raw point or edge before it snaps onto it, in
+/// screen points.
+const SNAP_PX: f32 = 10.0;
+
+/// What a Selection-tool drag from stage point `sp` reshapes (ADR 0031): a point or a segment of
+/// the unselected raw shape under the pointer on the active layer, as `draw.grab` reports it.
+fn raw_grab(app: &mut App, sp: Pos2, zoom: f32) -> Option<serde_json::Value> {
+    let (layer, el) = app.s.hit_test(Vec2::new(sp.x, sp.y), 3.0 / zoom)?;
+    if layer != app.s.layer || app.s.selection.contains(&el) {
+        return None;
+    }
+    let g = app.s.execute("draw.grab", &json!({"x": sp.x, "y": sp.y, "slop": crate::pathtools::PICK / zoom})).ok()?;
+    // Only what was pressed on: not raw shapes under an object.
+    let held = g.get("parts")?.as_array()?.iter().any(|p| p.get(0).and_then(serde_json::Value::as_u64) == Some(el.0));
+    held.then_some(g)
+}
+
+fn xy(v: &serde_json::Value) -> Option<Pos2> {
+    Some(pos2(v.get("x")?.as_f64()? as f32, v.get("y")?.as_f64()? as f32))
+}
+
+/// Starts a reshape drag on what `draw.grab` returned: one undo step until the drag ends.
+fn start_reshape(app: &mut App, g: serde_json::Value, sp: Pos2) -> Drag {
+    let at = xy(&g).unwrap_or(sp);
+    app.reshape = g.get("parts").cloned();
+    app.s.begin_gesture("Reshape");
+    Drag::Reshape { at, offset: at - sp, snapped: false }
+}
+
+/// Follows the pointer: the held point or segment goes to `to` (a point snaps on the way).
+fn reshape_to(app: &mut App, at: Pos2, to: Pos2, zoom: f32) {
+    let p = json!({"x": at.x, "y": at.y, "to_x": to.x, "to_y": to.y, "parts": app.reshape, "snap": SNAP_PX / zoom, "drop": false});
+    if let Some(r) = app.run("draw.reshape", p)
+        && let (Some(now), Drag::Reshape { at, snapped, .. }) = (xy(&r), &mut app.drag)
+    {
+        *at = now;
+        *snapped = r.get("snapped").and_then(serde_json::Value::as_bool) == Some(true);
+    }
+}
 
 /// The raw shapes (parts of the layer's merged drawing) on the active layer.
 fn raw_ids(app: &App) -> std::collections::HashSet<anicraft_engine::doc::ElementId> {
@@ -1257,5 +1320,96 @@ mod xf_tests {
         assert_eq!(xf_zone(r, pos2(312.0, 212.0)), Some(XfKind::Rotate));
         assert_eq!(xf_zone(r, pos2(200.0, 150.0)), Some(XfKind::Move));
         assert_eq!(xf_zone(r, pos2(500.0, 500.0)), None);
+    }
+}
+
+#[cfg(test)]
+mod reshape_drag_tests {
+    use super::*;
+    use anicraft_engine::doc::ElementKind;
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 940.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+        out.textures_delta.clear();
+    }
+
+    fn button(at: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
+    }
+
+    /// The headless app with a raw rectangle (100..300 × 100..260, outlined, nothing selected),
+    /// and a map from stage to screen points read off the pointer.
+    fn setup() -> (egui::Context, App, impl Fn(f32, f32) -> Pos2) {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::Document::default());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        app.run("draw.rect", json!({"x": 100, "y": 100, "w": 200, "h": 160, "fill": "#e05a47", "stroke": "#202020"}));
+        app.run("element.select", json!({"ids": []}));
+        app.tool = Tool::Select;
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let probe = |app: &mut App, p: Pos2| {
+            frame(&ctx, app, vec![egui::Event::PointerMoved(p)]);
+            app.cursor_stage.unwrap_or_default()
+        };
+        let (p1, p2) = (pos2(700.0, 400.0), pos2(900.0, 500.0));
+        let (s1, s2) = (probe(&mut app, p1), probe(&mut app, p2));
+        let zoom = (p2.x - p1.x) / (s2.x - s1.x);
+        (ctx, app, move |x: f32, y: f32| p1 + (pos2(x, y) - s1) * zoom)
+    }
+
+    fn drag(ctx: &egui::Context, app: &mut App, from: Pos2, to: Pos2, during: impl Fn(&App)) {
+        frame(ctx, app, vec![egui::Event::PointerMoved(from), button(from, true)]);
+        for i in 1..=10 {
+            frame(ctx, app, vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 10.0))]);
+            during(app);
+        }
+        frame(ctx, app, vec![button(to, false)]);
+        frame(ctx, app, Vec::new());
+    }
+
+    fn raw_counts(app: &App) -> (usize, usize) {
+        let els = app.s.visible_elements();
+        let raw = |fill: bool| els.iter().filter(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.merge && sh.fill.is_some() == fill)).count();
+        (raw(true), raw(false))
+    }
+
+    fn passes(app: &App, x: f32, y: f32) -> usize {
+        app.s.visible_elements().iter().filter(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.path.distance_to_edge(Vec2::new(x, y), &e.transform) < 1.0)).count()
+    }
+
+    #[test]
+    fn dragging_an_unselected_side_bends_it_in_one_undo_step() {
+        let (ctx, mut app, at) = setup();
+        assert_eq!(raw_counts(&app), (1, 4));
+        drag(&ctx, &mut app, at(200.0, 100.0), at(200.0, 40.0), |a| assert!(matches!(a.drag, Drag::Reshape { .. } | Drag::None)));
+        assert_eq!(app.drag, Drag::None);
+        assert!(app.reshape.is_none());
+        assert_eq!(passes(&app, 200.0, 40.0), 2, "the side and the fill's edge follow the pointer");
+        assert_eq!(raw_counts(&app), (1, 4));
+        assert!(app.s.selection.is_empty(), "a bend selects nothing");
+        app.run("edit.undo", json!({}));
+        assert_eq!(passes(&app, 200.0, 100.0), 2, "one undo puts the side back");
+    }
+
+    #[test]
+    fn dragging_a_corner_moves_it_and_it_snaps_onto_a_nearby_point() {
+        let (ctx, mut app, at) = setup();
+        app.run("draw.line", json!({"x0": 400, "y0": 300, "x1": 500, "y1": 300, "stroke": "#202020"}));
+        app.run("element.select", json!({"ids": []}));
+        // Let go 4 stage units from the line's end, within the snap distance at this zoom.
+        let snapped = std::cell::Cell::new(false);
+        drag(&ctx, &mut app, at(300.0, 260.0), at(396.0, 296.0), |a| snapped.set(snapped.get() || matches!(a.drag, Drag::Reshape { snapped: true, .. })));
+        assert!(snapped.get(), "the ring showed");
+        assert_eq!(passes(&app, 400.0, 300.0), 4, "the fill, its two sides and the line meet at the line's end");
+    }
+
+    #[test]
+    fn dragging_inside_a_fill_still_selects_and_moves_it() {
+        let (ctx, mut app, at) = setup();
+        drag(&ctx, &mut app, at(200.0, 180.0), at(260.0, 180.0), |_| {});
+        assert_eq!(app.s.selection.len(), 1, "the fill alone");
     }
 }
