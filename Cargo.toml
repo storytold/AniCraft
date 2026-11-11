@@ -104,7 +104,9 @@ web-time.workspace = true
 sys-locale = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe.workspace = true
+craft-update = { git = "https://github.com/storytold/craft-libs", rev = "6ac2a6a34ae83fc0f0bfb25a569ba6388b72266a" }
+
+eframe = { workspace = true, features = ["links"] }
 rfd.workspace = true
 # Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
 cpal = { version = "0.18", optional = true }

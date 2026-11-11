@@ -37,6 +37,8 @@ mod icons;
 mod keymap;
 mod library;
 mod menus;
+#[cfg(not(target_arch = "wasm32"))]
+mod updates;
 mod mixed;
 mod motion_editor;
 mod panels;
@@ -132,6 +134,7 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    updates::finish_helper();
     let mut shot: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
     let mut open: Option<String> = None;

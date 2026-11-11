@@ -275,6 +275,8 @@ pub const SHOT_FRAMES: u32 = 120;
 pub use anicraft_engine::doc::LibraryItem;
 
 pub struct App {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) updates: crate::updates::Updates,
     pub s: Session,
     pub tool: Tool,
     pub view: StageView,
@@ -470,6 +472,8 @@ impl App {
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
+            #[cfg(not(target_arch = "wasm32"))]
+            updates: Default::default(),
             s: session,
             tool: Tool::Select,
             view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
@@ -761,6 +765,8 @@ impl App {
                 let last = self.s.doc.scenes.len().saturating_sub(1);
                 self.run("scene.select", json!({"scene": last}));
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Some("updates") => self.updates.request(),
             Some("files") => self.show_files = true,
             Some("recovery") => {
                 // Work left behind by a session that didn't close cleanly (sample entries
@@ -2143,6 +2149,8 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let clean = !self.s.is_dirty() || self.allow_close || self.shot.is_some();
         self.recovery.finish(&self.s, clean);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.updates.finish();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2154,6 +2162,10 @@ impl App {
     /// One frame of the whole interface. Needs no window, so tests run it headless.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.updates.show(&ctx, !self.s.is_dirty() && !self.playing) {
+            return;
+        }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
         if let Some(p) = platform::picked_file() {
