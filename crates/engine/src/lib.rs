@@ -10,6 +10,7 @@ mod cmds_bone;
 pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
+pub mod cmds_drop;
 pub mod cmds_erase;
 mod cmds_file;
 mod cmds_frames;
@@ -22,6 +23,7 @@ mod cmds_path;
 pub mod cmds_raw;
 pub mod cmds_rawsub;
 mod cmds_rawpoints;
+pub mod cmds_recent;
 mod cmds_recovery;
 mod cmds_script;
 pub mod cmds_plugin;
@@ -108,6 +110,8 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(cmds_recent::specs());
+    v.extend(cmds_drop::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
     v.extend(cmds_camera::specs());
@@ -296,6 +300,10 @@ pub struct Session {
     gesture_cut: Option<Document>,
     /// The last picture of an open symbol in place, by its key (ADR 0045).
     picture_cache: RefCell<Option<(u64, Arc<editing::StagePicture>)>>,
+    /// The files opened and saved last, and pinned favourites (ADR 0059). They belong to the
+    /// session, not the document: they survive New and Open. The desktop app keeps them in its
+    /// preferences.
+    pub recent: cmds_recent::RecentFiles,
 }
 
 /// Each piece of a marquee's cut, with the shape it was cut from.
@@ -361,6 +369,7 @@ impl Session {
             pending_cut: None,
             gesture_cut: None,
             picture_cache: RefCell::new(None),
+            recent: cmds_recent::RecentFiles::default(),
         }
     }
 
@@ -442,7 +451,9 @@ impl Session {
         let budget = self.history.budget_bytes;
         let clipboard = std::mem::take(&mut self.clipboard);
         let plugins = std::mem::take(&mut self.plugins);
+        let recent = std::mem::take(&mut self.recent);
         *self = Session::new(doc);
+        self.recent = recent;
         // The clipboard survives New/Open, so artwork can move between documents.
         self.clipboard = clipboard;
         self.plugins = plugins;
@@ -986,3 +997,5 @@ mod eyedropper_tests;
 mod selection_tests;
 #[cfg(test)]
 mod scale_grid_tests;
+#[cfg(test)]
+mod drop_tests;

@@ -911,7 +911,7 @@ const MAX_PLACE: usize = 1_000;
 /// does (ADR 0053): an instance of each symbol, a rectangle of each bitmap's size showing it,
 /// in the active layer's keyframe at the playhead, all selected; a sound goes onto that
 /// keyframe. One command, so one undo step however many items.
-fn place(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<LibraryItem> = match p.get("items") {
         Some(list) => {
             let list = list.as_array().ok_or_else(|| EngineError::Param("param 'items' must be a list of {\"symbol\" | \"bitmap\" | \"sound\": id}".into()))?;

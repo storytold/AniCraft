@@ -182,7 +182,7 @@ fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"folder": id.0, "name": name}))
 }
 
-fn rename(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     let e = entry_of(p)?;
     if !s.doc.has_entry(e) {
         return Err(EngineError::State(format!("the Library has no {}", describe(e))));

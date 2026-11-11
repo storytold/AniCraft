@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Import to Stage…",
             menu: "File/Import",
             shortcut: Some("Ctrl+R"),
-            params: "{path (.svg, .png, .jpg; or a .wav, .ogg or .mp3 sound: onto a new layer at the playhead), x?, y? (top-left on the stage; default: centred)}",
+            params: "{path (.svg, .png, .jpg; or a .wav, .ogg or .mp3 sound: onto a new layer at the playhead), x?, y? (top-left on the stage; default: centred), cx?, cy? (centred on that point instead), layer? (new (default) | active: a one-layer drawing goes into the active layer's keyframe at the playhead)}",
             mutates: true,
             run: import_to_stage,
         },
@@ -149,7 +149,7 @@ pub fn is_animate(path: &std::path::Path) -> bool {
     matches!(ext.as_deref(), Some("fla" | "xfl")) || (crate::vfs::is_dir(path) && crate::vfs::is_file(&path.join("DOMDocument.xml")))
 }
 
-fn open(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     let unsaved = opt_bool(p, "unsaved")?.unwrap_or(false);
     let untitled = opt_bool(p, "untitled")?.unwrap_or(false);
@@ -173,6 +173,8 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         // as it was in Animate (ADR 0042).
         let merged = crate::merge::merge_document(&mut doc);
         s.replace_document(doc, None);
+        // Open Recent reopens the Animate file (ADR 0059).
+        s.recent.add(&path);
         let mut info = s.info();
         info["imported"] = json!(path.display().to_string());
         info["report"] = json!(report.summary());
@@ -184,9 +186,11 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(info);
     }
     let doc = format::load(&path)?;
-    s.replace_document(doc, (!untitled).then_some(path));
+    s.replace_document(doc, (!untitled).then(|| path.clone()));
     if unsaved {
         s.mark_unsaved();
+    } else if !untitled {
+        s.recent.add(&path);
     }
     Ok(s.info())
 }
@@ -199,6 +203,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     format::save(&s.doc, &path)?;
     s.path = Some(path.clone());
     s.mark_saved();
+    s.recent.add(&path);
     Ok(json!({"saved": path.display().to_string()}))
 }
 
@@ -233,7 +238,7 @@ const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
 /// named after the file, in a keyframe at the playhead, selected, as one undo step. A drawing
 /// with clip paths or masks becomes a folder named after the file, with mask layers over the
 /// artwork they clip (ADR 0021). Centred on the stage unless `x`/`y` give its top-left corner.
-fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     if crate::cmds_sound::is_sound(&path) {
         return crate::cmds_sound::import_to_stage(s, &path);
@@ -257,8 +262,20 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::State(format!("{} has no shapes AniCraft can import yet. {}", path.display(), drawing.report.summary())));
     }
     let stage = s.doc.stage;
-    let x = opt_f32(p, "x")?.unwrap_or((stage.width as f32 - drawing.width) * 0.5);
-    let y = opt_f32(p, "y")?.unwrap_or((stage.height as f32 - drawing.height) * 0.5);
+    // `cx`/`cy` centre it on a point (a drop, ADR 0059); `x`/`y` give its top-left corner.
+    let x = match opt_f32(p, "cx")? {
+        Some(cx) => cx - drawing.width * 0.5,
+        None => opt_f32(p, "x")?.unwrap_or((stage.width as f32 - drawing.width) * 0.5),
+    };
+    let y = match opt_f32(p, "cy")? {
+        Some(cy) => cy - drawing.height * 0.5,
+        None => opt_f32(p, "y")?.unwrap_or((stage.height as f32 - drawing.height) * 0.5),
+    };
+    let onto_active = match opt_str(p, "layer")? {
+        None | Some("new") => false,
+        Some("active") => true,
+        Some(other) => return Err(EngineError::Param(format!("param 'layer' must be new or active, not '{other}'"))),
+    };
     if !(x.is_finite() && y.is_finite()) {
         return Err(EngineError::Param("'x' and 'y' must be numbers".into()));
     }
@@ -285,7 +302,13 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     let masks = drawing.layers.iter().filter(|l| l.mask.is_some()).count();
     let (width, height, report) = (drawing.width, drawing.height, drawing.report);
     let mut layers = drawing.layers;
-    let (layer_id, ids, made, folder) = if layers.len() == 1 && masks == 0 {
+    let (layer_id, ids, made, folder) = if onto_active && layers.len() == 1 && masks == 0 {
+        // Onto the active layer's keyframe at the playhead, as a drop on the stage puts it.
+        let els = elements(s, layers.pop().map(|l| l.elements).unwrap_or_default());
+        let ids: Vec<anicraft_doc::ElementId> = els.iter().map(|e| e.id).collect();
+        s.editable_keyframe()?.elements.extend(els);
+        (s.layer, ids, 0, None)
+    } else if layers.len() == 1 && masks == 0 {
         // One layer, named after the file, as Import to Stage always made.
         crate::cmds_timeline::new_layer(s, &json!({"name": name}))?;
         let els = elements(s, layers.pop().map(|l| l.elements).unwrap_or_default());

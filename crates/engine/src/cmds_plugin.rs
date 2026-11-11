@@ -39,6 +39,7 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
         }
         _ => match id.split('.').next().unwrap_or("") {
             "file" => Err("plug-ins can't open, save, import or export files"),
+            "prefs" => Err("plug-ins can't read or change your preferences"),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
             "control" => Err("plug-ins can't play the movie"),
             ns if DOCUMENT.contains(&ns) => Ok(()),
