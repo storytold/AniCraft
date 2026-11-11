@@ -262,6 +262,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // tools pause meanwhile (what they'd edit is in stage space, not where it shows).
     let preview = crate::camera_tool::previewing(app);
     let cam_geo = crate::camera_tool::Geo { origin: st_origin, zoom: st_zoom, stage_rect, preview };
+    // Library items dragged onto the stage land at the pointer (ADR 0053).
+    crate::library::stage_drop(app, ui, &resp, to_stage, preview);
 
 
     // ---- tools ----------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 //! The Library panel (ADR 0050): folders, sorting and search, inline rename, drag into and out
 //! of folders, multiple selection, an item preview (a symbol's first frame, a bitmap, a
-//! sound's waveform with play) and the item's properties. Every change is a `library.*`
+//! sound's waveform with play) and the item's properties. Items drag onto the stage, or Place on
+//! Stage (Enter) puts them at the centre of the view (ADR 0053). Every change is a `library.*`
 //! command; what is sorted, filtered, expanded or selected is view state, kept here.
 
 use crate::a11y::{self, Named};
@@ -11,7 +12,7 @@ use anicraft_engine::StateId;
 use anicraft_engine::cmds_library::entry_json;
 use anicraft_engine::doc::library::MAX_FOLDER_DEPTH;
 use anicraft_engine::doc::{Document, FolderId, LibraryEntry, LibraryItem, SymbolKind};
-use egui::{Align2, Key, Modifiers, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
+use egui::{Align2, Key, Modifiers, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
@@ -214,7 +215,7 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
     if !app.library.keys || app.library.renaming.is_some() {
         return;
     }
-    let (rename, delete) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::F2), i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace)));
+    let (rename, delete, place) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::F2), i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace), i.consume_key(Modifiers::NONE, Key::Enter)));
     if rename && let [one] = app.library.sel.as_slice() {
         let e = *one;
         start_rename(app, e);
@@ -222,6 +223,21 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
     if delete {
         delete_selection(app);
     }
+    // Enter: the keyboard's way to do what dragging onto the stage does (ADR 0053).
+    if place {
+        let items = selected_items(app);
+        if !items.is_empty() {
+            place_items(app, &items, None);
+        }
+    }
+}
+
+/// The selected rows' items (folders left out), in selection order.
+fn selected_items(app: &App) -> Vec<LibraryItem> {
+    app.library.sel.iter().filter_map(|e| match e {
+        LibraryEntry::Item(i) if app.s.doc.has_item(*i) => Some(*i),
+        _ => None,
+    }).collect()
 }
 
 fn start_rename(app: &mut App, e: LibraryEntry) {
@@ -236,14 +252,90 @@ fn delete_selection(app: &mut App) {
     }
 }
 
-/// Places an item: a symbol or bitmap at the stage centre, a sound on the active layer's
-/// keyframe at the playhead (its span grown to fit).
+/// The centre of what the stage shows, in the space being edited (inside an open symbol, its
+/// own, ADR 0045): where Place on Stage puts things.
+fn view_centre(app: &App) -> (f32, f32) {
+    let c = app.view_center_stage();
+    match app.s.edit_view() {
+        Some(v) if v.scale.abs() > 1e-6 => ((c.x - v.origin.x) / v.scale, (c.y - v.origin.y) / v.scale),
+        _ => (c.x, c.y),
+    }
+}
+
+/// Places items at `at` (in the edited space; default: the centre of the view): symbols and
+/// bitmaps on the active layer at the playhead, a sound on its keyframe there. One undo step
+/// (`library.place`, ADR 0053). The stage then has the keyboard again.
+pub fn place_items(app: &mut App, items: &[LibraryItem], at: Option<(f32, f32)>) {
+    let (x, y) = at.unwrap_or_else(|| view_centre(app));
+    let list: Vec<serde_json::Value> = items.iter().map(|i| entry_json(LibraryEntry::Item(*i))).collect();
+    app.run("library.place", json!({"items": list, "x": x, "y": y}));
+    app.library.keys = false;
+}
+
 fn place(app: &mut App, item: LibraryItem) {
-    match item {
-        LibraryItem::Symbol(id) => app.run("library.place", json!({"symbol": id.0})),
-        LibraryItem::Bitmap(id) => app.run("library.place", json!({"bitmap": id.0})),
-        LibraryItem::Sound(id) => app.run("sound.place", json!({"sound": id.0, "extend": true})),
-    };
+    place_items(app, &[item], None);
+}
+
+/// What the Library rows being dragged hold that can be placed (folders left out).
+fn dragged_items(app: &App, ctx: &egui::Context) -> Vec<LibraryItem> {
+    egui::DragAndDrop::payload::<Vec<LibraryEntry>>(ctx).map_or_else(Vec::new, |p| {
+        p.iter().filter_map(|e| match e {
+            LibraryEntry::Item(i) if app.s.doc.has_item(*i) => Some(*i),
+            _ => None,
+        }).collect()
+    })
+}
+
+/// Library rows dragged over the stage (ADR 0053): a mark shows where they land and on which
+/// layer; letting go places them there, sounds onto the active layer's keyframe at the playhead,
+/// in one undo step. `to_stage` maps a screen point into the edited space.
+pub fn stage_drop(app: &mut App, ui: &egui::Ui, resp: &egui::Response, to_stage: impl Fn(Pos2) -> Pos2, paused: bool) {
+    if resp.dnd_hover_payload::<Vec<LibraryEntry>>().is_none() {
+        return;
+    }
+    let items = dragged_items(app, ui.ctx());
+    let Some(p) = ui.input(|i| i.pointer.latest_pos()) else { return };
+    if items.is_empty() {
+        return;
+    }
+    if let Some(_payload) = resp.dnd_release_payload::<Vec<LibraryEntry>>() {
+        if paused {
+            app.status_ok(tr!("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit."));
+            return;
+        }
+        let at = to_stage(p);
+        place_items(app, &items, Some((at.x, at.y)));
+        return;
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("library_drop")));
+    let only_sounds = items.iter().all(|i| matches!(i, LibraryItem::Sound(_)));
+    if !only_sounds {
+        let r = 7.0;
+        painter.line_segment([p - vec2(r, 0.0), p + vec2(r, 0.0)], Stroke::new(1.5, T.accent));
+        painter.line_segment([p - vec2(0.0, r), p + vec2(0.0, r)], Stroke::new(1.5, T.accent));
+    }
+    let layer = app.s.active_layer().map(|l| l.name.clone()).unwrap_or_default();
+    let frame = app.s.frame + 1;
+    let hint = if only_sounds { tr!("Put on {layer} at frame {frame}", layer = layer, frame = frame) } else { tr!("Place on {layer}", layer = layer) };
+    let galley = painter.layout_no_wrap(hint, font(Type::Caption), color(Type::Body));
+    let at = p + vec2(14.0, 10.0);
+    painter.rect_filled(Rect::from_min_size(at, galley.size()).expand(4.0), T.rc(), T.panel);
+    painter.galley(at, galley, color(Type::Body));
+}
+
+/// While Library rows are dragged, their names follow the pointer, so it is clear what is being
+/// carried.
+fn drag_ghost(app: &App, ctx: &egui::Context) {
+    let items = dragged_items(app, ctx);
+    let (Some(first), Some(p)) = (items.first(), ctx.input(|i| i.pointer.latest_pos())) else { return };
+    let name = app.s.doc.item_name(*first).unwrap_or("").to_string();
+    let label = if items.len() > 1 { trn!("{name} and {n} more", "{name} and {n} more", items.len() - 1, name = name) } else { name };
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("library_ghost")));
+    let galley = painter.layout_no_wrap(label, font(Type::Body), color(Type::Body));
+    let at = p + vec2(14.0, -galley.size().y - 8.0);
+    painter.rect_filled(Rect::from_min_size(at, galley.size()).expand(4.0), T.rc(), T.accent_dim);
+    painter.galley(at, galley, color(Type::Body));
 }
 
 /// A new folder in the selected row's folder (or the selected folder), opened, selected and
@@ -295,6 +387,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     toolbar(app, ui);
+    drag_ghost(app, ui.ctx());
     ui.add_space(4.0);
     let (uses, unused) = app.library.counts(&app.s);
     let list = rows(&app.s.doc, &app.library, &uses);
@@ -593,13 +686,12 @@ fn row_menu(app: &mut App, ui: &mut egui::Ui, e: LibraryEntry) {
             }
         }
     }
-    if let LibraryEntry::Item(i) = e
-        && !many
-    {
-        let label = if matches!(i, LibraryItem::Sound(_)) { tr!("Place on Timeline") } else { tr!("Place on Stage") };
-        if ui.button(label).clicked() {
+    let items = selected_items(app);
+    if !items.is_empty() {
+        let label = if items.iter().all(|i| matches!(i, LibraryItem::Sound(_))) { tr!("Place on Timeline") } else { tr!("Place on Stage") };
+        if ui.button(label).on_hover_text(tr!("At the centre of the view, on the active layer (Enter; or drag onto the stage)")).clicked() {
             ui.close();
-            place(app, i);
+            place_items(app, &items, None);
         }
     }
     if !many && ui.button(tr!("Rename")).clicked() {
@@ -645,20 +737,19 @@ fn actions_row(app: &mut App, ui: &mut egui::Ui) {
         if del.clicked() {
             delete_selection(app);
         }
-        let current = app.library_sel.filter(|i| app.s.doc.has_item(*i));
-        match current {
-            Some(LibraryItem::Sound(id)) => {
-                if ui.button(tr!("Place on timeline")).on_hover_text(tr!("Puts it on the active layer's keyframe at the playhead (or double-click its icon)")).clicked() {
-                    place(app, LibraryItem::Sound(id));
-                }
+        // The selected rows, else the item previewed.
+        let mut items = selected_items(app);
+        if items.is_empty()
+            && let Some(i) = app.library_sel.filter(|i| app.s.doc.has_item(*i))
+        {
+            items.push(i);
+        }
+        if !items.is_empty() && items.iter().all(|i| matches!(i, LibraryItem::Sound(_))) {
+            if ui.button(tr!("Place on timeline")).on_hover_text(tr!("Puts it on the active layer's keyframe at the playhead (Enter, or drag it onto the stage)")).clicked() {
+                place_items(app, &items, None);
             }
-            other => {
-                if ui.add_enabled(other.is_some(), egui::Button::new(tr!("Place on stage"))).on_hover_text(tr!("Adds it at the stage centre")).clicked()
-                    && let Some(item) = other
-                {
-                    place(app, item);
-                }
-            }
+        } else if ui.add_enabled(!items.is_empty(), egui::Button::new(tr!("Place on stage"))).on_hover_text(tr!("Adds it at the centre of the view, on the active layer (Enter, or drag it onto the stage)")).clicked() {
+            place_items(app, &items, None);
         }
     });
 }

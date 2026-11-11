@@ -294,6 +294,9 @@ pub struct App {
     pub last_tool: Tool,
     pub status: Option<Status>,
     pub prompt: Option<Prompt>,
+    /// The Convert to Symbol dialog, and what it chose last (ADR 0053).
+    pub convert: Option<crate::convert_symbol::ConvertDialog>,
+    pub convert_last: crate::convert_symbol::Last,
     pub show_about: bool,
     pub show_files: bool,
     pub show_licenses: bool,
@@ -482,6 +485,8 @@ impl App {
             last_tool: Tool::Select,
             status: None,
             prompt: None,
+            convert: None,
+            convert_last: Default::default(),
             show_about: false,
             show_files: false,
             show_licenses: false,
@@ -1350,7 +1355,7 @@ impl App {
 
     /// Any modal (prompt, confirmation, close guard) is open: global shortcuts pause.
     pub fn modal_open(&self) -> bool {
-        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
+        self.prompt.is_some() || self.convert.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
     }
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
@@ -1575,6 +1580,11 @@ impl App {
             self.show_plugins = true;
             return;
         }
+        if id == "modify.convert_to_symbol" {
+            // Name, type and Library folder (ADR 0053).
+            crate::convert_symbol::open(self);
+            return;
+        }
         if id == "edit.paste" {
             // Paste in the centre of what you are looking at.
             let c = self.view_center_stage();
@@ -1599,7 +1609,6 @@ impl App {
             "file.import_to_library" => Some((tr_noop!("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)"), "path", "sound.wav".to_string())),
             "file.import" => Some((tr_noop!("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)"), "path", "drawing.svg".to_string())),
             "plugin.install" => Some((tr_noop!("Install plug-in (.wasm file)"), "path", "plugin.wasm".to_string())),
-            "modify.convert_to_symbol" => Some((tr_noop!("Convert to symbol — name"), "name", format!("Symbol {}", self.s.doc.library.len() + 1))), // i18n-exempt: a new symbol's default name is document text
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
@@ -2152,6 +2161,7 @@ impl App {
         crate::a11y::name_splitter(&ctx, "timeline", tr!("Resize the timeline"));
 
         self.prompt_window(&ctx);
+        crate::convert_symbol::window(self, &ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);

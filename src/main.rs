@@ -30,6 +30,7 @@ mod envelope;
 mod erasertool;
 mod bone_tool;
 mod camera_tool;
+mod convert_symbol;
 mod dialogs;
 mod gpu_stage;
 mod icons;
