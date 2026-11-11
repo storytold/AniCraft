@@ -109,6 +109,10 @@ rfd.workspace = true
 # Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
 cpal = { version = "0.18", optional = true }
 
+# Waits for the answer of a file dialog shown as a sheet (`platform::start_file_dialog`).
+[target.'cfg(target_os = "macos")'.dependencies]
+pollster.workspace = true
+
 # The web build (ADR 0036, docs/web.md). The window draws with WebGL2 (glow): every current
 # browser has it, the stage is drawn on the CPU there, and leaving wgpu out keeps the download
 # smaller. The browser glue is wasm-bindgen's (MIT OR Apache-2.0), already under eframe's web

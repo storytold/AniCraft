@@ -391,6 +391,12 @@ pub struct App {
     pub allow_close: bool,
     /// Close the window once the pending Save As succeeds.
     pub close_after_save: bool,
+    /// The file dialog a command asked for (command, parameter, title, file name), shown at the
+    /// end of the frame, and the open dialog's answer to come.
+    #[cfg(not(target_arch = "wasm32"))]
+    file_request: Option<(&'static str, &'static str, String, String)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    file_dialog: Option<(&'static str, &'static str, platform::FileAnswer)>,
     pub prefs: prefs::Prefs,
     pub show_prefs: bool,
     /// Installed fonts, scanned off the UI thread on first need.
@@ -544,6 +550,10 @@ impl App {
             close_dialog: false,
             allow_close: false,
             close_after_save: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            file_request: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            file_dialog: None,
             prefs,
             show_prefs: false,
             system_fonts: None,
@@ -1665,12 +1675,12 @@ impl App {
                 return;
             }
             if is_file && self.prefs.native_dialogs && self.shot.is_none() && !platform::WEB {
-                // The platform's own dialog (it blocks, as native dialogs do). Cancel = no-op.
+                // The platform's own dialog, shown at the end of the frame (it needs the
+                // window); the answer runs the command in a later frame. One at a time.
                 self.playing = false;
                 #[cfg(not(target_arch = "wasm32"))]
-                match platform::file_dialog(id, crate::i18n::t(title), &text) {
-                    Some(path) => self.request(id, json!({ key: path.display().to_string() })),
-                    None => self.close_after_save = false,
+                if self.file_dialog.is_none() {
+                    self.file_request = Some((id, key, crate::i18n::t(title).to_string(), text));
                 }
                 return;
             }
@@ -2145,8 +2155,36 @@ impl eframe::App for App {
         self.recovery.finish(&self.s, clean);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((id, key, answer)) = &self.file_dialog {
+            match answer.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Ok(Some(path)) => {
+                    let (id, key) = (*id, *key);
+                    self.file_dialog = None;
+                    self.request(id, json!({ key: path.display().to_string() }));
+                }
+                Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.file_dialog = None;
+                    self.close_after_save = false;
+                }
+            }
+        }
         self.frame(ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((id, key, title, name)) = self.file_request.take() {
+            match platform::start_file_dialog(id, &title, &name, frame, ui.ctx().clone()) {
+                Some(answer) => self.file_dialog = Some((id, key, answer)),
+                // No blocking fallback: on macOS that is what crashed.
+                None => {
+                    self.close_after_save = false;
+                    self.status_err(crate::i18n::t(tr_noop!("The file dialog could not be shown")));
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = frame;
     }
 }
 
