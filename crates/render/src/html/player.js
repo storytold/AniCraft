@@ -415,7 +415,7 @@ var AniCraft = (function () {
 
   // A literal of the IR's JSON: "u", "null", "nan", {b}, {n}, {s}, {inf}.
   function lit(v) {
-    if (typeof v === "string") return v === "null" ? null : v === "nan" ? NaN : undefined;
+    if (typeof v === "string") return v === "null" ? null : v === "nan" ? Number.NaN : undefined;
     if ("b" in v) return v.b;
     if ("n" in v) return v.n;
     if ("s" in v) return v.s;
@@ -425,7 +425,7 @@ var AniCraft = (function () {
   function defaultOf(t) {
     switch (t) {
       case "number":
-        return NaN;
+        return Number.NaN;
       case "int":
       case "uint":
         return 0;
@@ -442,7 +442,7 @@ var AniCraft = (function () {
       case "number":
         return +v;
       case "int":
-        return +v | 0;
+        return +v >> 0;
       case "uint":
         return +v >>> 0;
       case "boolean":
@@ -462,7 +462,7 @@ var AniCraft = (function () {
   function minMax(vals, max) {
     let out = max ? -Infinity : Infinity;
     for (const v of vals) {
-      if (Number.isNaN(v)) return NaN;
+      if (Number.isNaN(v)) return Number.NaN;
       if ((max && v > out) || (!max && v < out)) out = v;
     }
     return out;
@@ -498,7 +498,7 @@ var AniCraft = (function () {
     const [m, e] = v.toExponential().split("e");
     const neg = m[0] === "-";
     const digits = m.replace("-", "").replace(".", "");
-    const exp = parseInt(e, 10);
+    const exp = Number.parseInt(e, 10);
     let out;
     if (exp < 0) out = "0." + "0".repeat(-exp - 1) + digits;
     else out = digits + "0".repeat(Math.max(exp - (digits.length - 1), 0));
@@ -792,7 +792,7 @@ var AniCraft = (function () {
       case "math": {
         const v = [];
         for (const a of e.args) v.push(+this.expr(a, fr));
-        const x = v.length > 0 ? v[0] : NaN;
+        const x = v.length > 0 ? v[0] : Number.NaN;
         switch (e.f) {
           case "min":
             return minMax(v, false);
@@ -809,7 +809,7 @@ var AniCraft = (function () {
           case "random":
             return this.w.random();
         }
-        return NaN;
+        return Number.NaN;
       }
       case "call": {
         const f = this.w.fn(e.f);
@@ -1034,7 +1034,7 @@ var AniCraft = (function () {
     });
     const listeners = Array.from(st.listeners.values()).filter((l) => l.length > 0).sort((a, b) => comparePaths(a[0].path, b[0].path)).map((l) => [l[0].path, l.map((x) => [x.ev, x.owner, x.k])]);
     const kind = (v) => (v === undefined ? "u" : v === null ? "null" : typeof v === "boolean" ? "b" : typeof v === "number" ? "n" : "s");
-    const vars = Array.from(st.vars.values()).sort((a, b) => comparePaths(a.path, b.path)).map((x) => [x.path, Object.keys(x.v).sort().map((k) => [k, kind(x.v[k]) + ":" + String(x.v[k])])]);
+    const vars = Array.from(st.vars.values()).sort((a, b) => comparePaths(a.path, b.path)).map((x) => [x.path, Object.keys(x.v).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((k) => [k, kind(x.v[k]) + ":" + String(x.v[k])])]);
     const stage = st.stage.map((x) => [x.ev, x.owner, x.k]);
     return { scene: st.scene, frame: st.root.frame, playing: st.root.playing, clips: clips, props: props, listeners: listeners, stage: stage, vars: vars, hover: st.hover, pressed: st.pressed, down: st.down };
   };

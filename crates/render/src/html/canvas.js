@@ -40,8 +40,9 @@
       return scratch.isPointInStroke(stagePath(path, m), x, y);
     },
   };
-  // Each page load gets its own Math.random() sequence; the player itself is deterministic.
-  const seed = window.crypto && window.crypto.getRandomValues ? window.crypto.getRandomValues(new Uint32Array(1))[0] : Math.floor(Math.random() * 4294967296);
+  // Each page load gets its own Math.random() sequence (a movie's, not for security); the
+  // player itself is deterministic.
+  const seed = Date.now() % 4294967296;
   const player = new AniCraft.Player(movie, host, seed);
 
   function stagePath(path, m) {
