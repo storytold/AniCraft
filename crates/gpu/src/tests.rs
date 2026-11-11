@@ -623,6 +623,39 @@ fn degenerate_geometry_bins_without_trouble() {
 
 // ----- the real GPU ----------------------------------------------------------------------------
 
+/// The shaders, as `pipelines` and the stage build them.
+const SHADERS: [(&str, &str); 4] = [
+    ("fine.wgsl", include_str!("fine.wgsl")),
+    ("bin.wgsl", include_str!("bin.wgsl")),
+    ("scan.wgsl", include_str!("scan.wgsl")),
+    ("filters.wgsl", include_str!("filters.wgsl")),
+];
+
+#[test]
+fn shaders_take_no_signed_remainder() {
+    // naga writes WGSL's `%` on integers as GLSL's, which is undefined when an operand is
+    // negative: on the GL backend (llvmpipe in the FreeBSD VM) a repeating bitmap's wrap,
+    // `((q % size) + size) % size` at q = -1, picked the wrong texel at its edges (bitmap
+    // repeated: max 79). Unsigned remainders and float ones (written as `a - b * trunc(a / b)`)
+    // are defined on every backend.
+    for (name, src) in SHADERS {
+        let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let functions = module.functions.iter().map(|(h, f)| (f, &info[h]));
+        let entries = module.entry_points.iter().enumerate().map(|(i, e)| (&e.function, info.get_entry_point(i)));
+        for (f, fi) in functions.chain(entries) {
+            for (h, e) in f.expressions.iter() {
+                if let naga::Expression::Binary { op: naga::BinaryOperator::Modulo, left, .. } = *e {
+                    let kind = fi[left].ty.inner_with(&module.types).scalar_kind();
+                    assert_ne!(kind, Some(naga::ScalarKind::Sint), "{name}: `%` on a signed integer in {:?} ({h:?})", f.name);
+                }
+            }
+        }
+    }
+}
+
 /// One device for all tests: the graphics card, or else the software adapter (CI runners have
 /// lavapipe or WARP); `None` (with the reasons printed) when there is neither.
 /// `ANICRAFT_TEST_GPU=software` tests on the software adapter even where there is a card.

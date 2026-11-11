@@ -310,6 +310,7 @@ dependencies = [
  "anicraft-geom",
  "anicraft-render",
  "bytemuck",
+ "naga",
  "pollster 1.0.1",
  "rayon",
  "thiserror 2.0.21",

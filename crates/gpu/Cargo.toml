@@ -21,5 +21,9 @@ rayon.workspace = true
 web-time.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+# The shaders' types, to keep them free of what a backend leaves undefined (wgpu's own naga).
+naga.workspace = true
+
 [lints]
 workspace = true

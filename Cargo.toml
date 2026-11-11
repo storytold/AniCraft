@@ -29,6 +29,8 @@ anicraft-gpu = { path = "crates/gpu" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
+# The WGSL front end wgpu already builds, for checking the shaders in tests.
+naga = { version = "30", features = ["wgsl-in"] }
 pollster = "1"
 bytemuck = "1"
 anicraft-actions = { path = "crates/actions" }
