@@ -90,7 +90,13 @@ pub struct Prefs {
     pub autosave_edits: u32,
     /// Onion skin options (ADR 0047), kept from session to session.
     pub onion: OnionPrefs,
+    /// Publish Settings presets, by name (ADR 0060): yours on this computer, for any document.
+    pub publish_presets: std::collections::BTreeMap<String, anicraft_engine::doc::publish::PublishProfile>,
 }
+
+/// Most publish presets kept, and the longest name one has.
+pub const MAX_PUBLISH_PRESETS: usize = 100;
+pub const MAX_PRESET_NAME: usize = 64;
 
 /// Onion skin options that carry over between sessions (ADR 0047). Whether onion skin and Edit
 /// Multiple Frames are on, and anchored markers, last for the session only, as in Animate.
@@ -140,6 +146,7 @@ impl Default for Prefs {
             autosave_secs: 60,
             autosave_edits: 25,
             onion: OnionPrefs::default(),
+            publish_presets: Default::default(),
         }
     }
 }
@@ -171,6 +178,15 @@ impl Prefs {
         self.autosave_edits = self.autosave_edits.min(*AUTOSAVE_EDITS_RANGE.end());
         self.onion.before = self.onion.before.min(ONION_REACH_MAX);
         self.onion.after = self.onion.after.min(ONION_REACH_MAX);
+        self.publish_presets = std::mem::take(&mut self.publish_presets)
+            .into_iter()
+            .filter(|(name, _)| !name.trim().is_empty() && name.chars().count() <= MAX_PRESET_NAME)
+            .take(MAX_PUBLISH_PRESETS)
+            .map(|(name, mut p)| {
+                p.sanitize();
+                (name, p)
+            })
+            .collect();
         self
     }
 
@@ -241,6 +257,24 @@ mod tests {
             assert!(fonts.regular(first).is_some_and(|(bytes, _)| !bytes.is_empty()), "{first}");
         }
         assert!(fonts.regular("No Such Font Family 12345").is_none());
+    }
+
+    #[test]
+    fn publish_presets_round_trip_and_hostile_ones_are_dropped() {
+        let mut gif = anicraft_engine::doc::publish::PublishProfile::default();
+        gif.gif.enabled = true;
+        gif.gif.scale = 0.5;
+        let mut p = Prefs::default();
+        p.publish_presets.insert("Web small".into(), gif.clone());
+        let back = Prefs::from_json(&serde_json::to_string(&p).unwrap());
+        assert_eq!(back.publish_presets.get("Web small"), Some(&gif));
+        let hostile = format!(r#"{{"publish_presets": {{"": {{}}, "{}": {{}}, "ok": {{"gif": {{"scale": 1e30}}, "audio": {{"bits": 3}}}}, "junk": 5}}}}"#, "n".repeat(100));
+        let p = Prefs::from_json(&hostile);
+        assert!(p.publish_presets.is_empty() || p.publish_presets.len() == 1, "{:?}", p.publish_presets.keys());
+        if let Some(ok) = p.publish_presets.get("ok") {
+            assert_eq!((ok.gif.scale, ok.audio.bits), (anicraft_engine::doc::publish::MAX_PUBLISH_SCALE, 16));
+        }
+        assert_eq!(Prefs::from_json(r#"{"publish_presets": {"": {}, "a": {"gif": {"enabled": true}}}}"#).publish_presets.len(), 1);
     }
 
     #[test]

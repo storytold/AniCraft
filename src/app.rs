@@ -386,6 +386,8 @@ pub struct App {
     pub show_actions: bool,
     /// Edit › Find and Replace (Ctrl+F) and its results (ADR 0058).
     pub find: crate::find_panel::FindState,
+    /// File › Publish Settings and the publish running or last run (ADR 0060).
+    pub publish: crate::publish_panel::PublishState,
     /// Window › Movie Explorer, the Library dock's other tab (ADR 0058).
     pub explorer: crate::movie_explorer::ExplorerView,
     pub actions: crate::actions_panel::State,
@@ -551,6 +553,7 @@ impl App {
             show_plugins: false,
             show_actions: false,
             find: Default::default(),
+            publish: Default::default(),
             explorer: Default::default(),
             actions: crate::actions_panel::State::default(),
             test_movie: None,
@@ -795,6 +798,23 @@ impl App {
                 self.find.text = "ball".into();
                 self.find.with = "planet".into();
                 crate::find_panel::step(self, true);
+            }
+            Some("publish") | Some("publishreport") => {
+                // Publish Settings (ADR 0060) on the sample, saved in a temporary folder: the GIF
+                // on and its options showing; or the report of publishing it (the HTML page and
+                // a small GIF, the soundtrack skipped: the sample has no sounds).
+                let dir = std::env::temp_dir().join("anicraft-publish-shot");
+                let _ = std::fs::create_dir_all(&dir);
+                self.s.path = Some(dir.join("walk.anicraft"));
+                self.run("publish.settings_set", json!({"format": "gif", "enabled": true, "scale": 0.5, "from": 0, "to": 23}));
+                self.run("publish.settings_set", json!({"format": "audio", "enabled": true}));
+                self.prefs.publish_presets.insert("Web banner".into(), (*self.s.doc.publish).clone()); // i18n-exempt: a sample preset name the user typed
+                self.publish.selected = anicraft_engine::doc::publish::PublishFormat::Gif;
+                if which == Some("publish") {
+                    crate::publish_panel::open(self);
+                } else {
+                    crate::publish_panel::publish_now(self);
+                }
             }
             Some("explorer") => {
                 // The Movie Explorer tab (ADR 0058), its first rows open: scene, layers, keyframes
@@ -1483,6 +1503,11 @@ impl App {
 
     /// Runs a command and reports the outcome; routine destructive edits say how to undo.
     pub fn perform(&mut self, id: &str, params: Value) -> Option<Value> {
+        if id == "file.publish" {
+            // File › Publish runs in the background, with its own progress view (ADR 0060).
+            crate::publish_panel::start(self, &params);
+            return None;
+        }
         let selected = self.s.selection.len();
         // A browser's autosaved copy opens as a file (ADR 0036): it is a restore all the same.
         let restored = autosave::restored_session(id, &params);
@@ -1691,6 +1716,12 @@ impl App {
         if id == "find.search" {
             // Edit › Find and Replace (Ctrl+F): its window (headless, the command searches).
             crate::find_panel::open(self);
+            return;
+        }
+        if id == "publish.settings_get" {
+            // File › Publish Settings (Ctrl+Shift+F12): its window (headless, the command
+            // returns the settings).
+            crate::publish_panel::open(self);
             return;
         }
         if id == "control.test_movie" {
@@ -2304,6 +2335,7 @@ impl App {
         crate::plugins_ui::show(self, &ctx);
         crate::actions_panel::show(self, &ctx);
         crate::find_panel::show(self, &ctx);
+        crate::publish_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
 
