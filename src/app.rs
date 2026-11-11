@@ -129,7 +129,7 @@ impl Tool {
             Tool::Eraser => tr_noop!("Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage."),
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
-            Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
+            Tool::Transform => tr_noop!("Drag a handle to scale (Shift keeps proportions, Alt scales from the centre), a line between handles to skew (Alt skews about the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
             Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
             Tool::Star => tr_noop!("Drag from the centre to draw a star."),
@@ -247,6 +247,9 @@ pub enum XfKind {
     /// Handle position: -1/0/1 on each axis (corner, edge or centre).
     Scale { hx: i8, hy: i8 },
     Rotate,
+    /// Dragging the line between two handles shears along that edge (the sign is which edge:
+    /// `hx` is -1/1 on the left/right edge, `hy` is -1/1 on the top/bottom, the other is 0).
+    Skew { hx: i8, hy: i8 },
 }
 
 /// A small text prompt standing in for native file dialogs (M0).
