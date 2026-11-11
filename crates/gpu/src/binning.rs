@@ -1,13 +1,26 @@
 //! Tile binning: the CPU half of the GPU stage (ADR 0019, ADR 0029).
 //!
 //! The surface is cut into 16 × 16 pixel tiles. Every fill's edges are split at tile rows and
-//! columns; each piece lands in the one tile it crosses. What a piece contributes to the tiles
-//! to its right is a plain winding change per pixel row (it lies wholly to their left), so it
-//! is summed into a **backdrop** of 16 values, one per pixel row, carried across the tile row
-//! as in the public sparse-strips and Vello designs. A tile of a fill then needs only its own
-//! pieces and its backdrop: the fine shader computes each pixel's exact area coverage from
-//! those, the same integral the CPU oracle's accumulation buffer computes (ADR 0002). Tiles
-//! with neither (outside the fill) get no entry; interior tiles get a backdrop and no pieces.
+//! columns; each piece lands in the one tile it crosses. Everything left of a tile reaches it
+//! as the fill's winding number along the tile's left edge (ADR 0048), which is
+//!
+//! * its **backdrop**, the winding number just below the tile's top-left corner: an integer,
+//!   the sum of the directions of the pieces further left that start on the tile row's top
+//!   edge (they are the edges crossing it), plus
+//! * a step wherever the outline crosses the tile's left edge, kept as one more piece: a
+//!   vertical line on that edge from the crossing down to the tile's bottom, upwards where the
+//!   outline crosses rightwards (the winding there drops by one), downwards where it crosses
+//!   leftwards.
+//!
+//! These are the backdrops and "y-edges" of Vello's tiles (its public design notes). A tile of
+//! a fill then needs only its own pieces and its backdrop: the fine shader computes each
+//! pixel's exact area coverage from those, the same integral the CPU oracle's accumulation
+//! buffer computes (ADR 0002). Tiles with neither (outside the fill) get no entry; interior
+//! tiles get a backdrop and no pieces. Backdrops are integers, so they add up the same in any
+//! order, and the GPU computes the same lists ([`crate::gpu_binning`]).
+//!
+//! A **hairline** (outline mode, ADR 0048) is binned by distance instead: each segment, whole,
+//! into every tile with a pixel centre within its reach; the shader takes the nearest.
 //!
 //! Each tile then lists its entries in drawing order, so the shader composites every pixel in
 //! one pass, front to back in the display list's order. Masks and groups (ADR 0029) are more
@@ -34,8 +47,10 @@ type Vec4 = [f32; 4];
 /// Tile side in pixels (the shader's workgroup is one tile, one invocation per pixel).
 pub const TILE: u32 = 16;
 const T: f32 = TILE as f32;
-/// "No backdrop" in an entry; "no clip" or "no group" in the tables.
+/// "No clip" or "no group" in the tables.
 pub const NONE: u32 = u32::MAX;
+/// Fill rule code of a hairline in an op header (`0` non-zero, `1` even-odd).
+pub const HAIRLINE: u32 = 2;
 /// `vec4`s of paint data per fill.
 pub const PAINT_VEC4S: usize = 4;
 /// Gradient table entries (the oracle's LUT size).
@@ -97,11 +112,10 @@ pub fn blend_code(m: BlendMode) -> u32 {
 /// A scene ready for the fine shader.
 ///
 /// * `index` (u32): `[start, count]` per tile into the entry list; then each entry as
-///   `[op, first piece, pieces, backdrop]` (the backdrop's first `vec4` in `geo`, or [`NONE`]),
-///   or a control entry ([`CTRL`] set); then each op's header `[kind, fill rule, ramp start in
-///   paints, flags]`.
+///   `[op, first piece, pieces, backdrop]` (the backdrop an `i32`), or a control entry ([`CTRL`]
+///   set); then each op's header `[kind, fill rule (or HAIRLINE), ramp start in paints, flags]`.
 /// * `geo` (`vec4<f32>`): pieces `(x0, y0, x1, y1)` relative to their tile's top-left, in the
-///   edge's direction; then backdrops, four `vec4`s (16 rows) each.
+///   edge's direction (left-edge steps included); a hairline's are its segments, whole.
 /// * `paints` (`vec4<f32>`): per op its colour, then the inverse paint transform and gradient,
 ///   bitmap or layer parameters; then the gradient tables (256 premultiplied colours each);
 ///   then (filled in on the GPU, [`Binned::layer_at`]) the filtered layers' pixels.
@@ -133,11 +147,9 @@ pub struct Binned {
 /// A chunk of fills' share of the scene (binned in parallel; chunking keeps allocations few).
 #[derive(Default)]
 struct Local {
-    /// `[op, tile, first piece, pieces, backdrop or NONE]`, piece and backdrop indices local.
+    /// `[op, tile, first piece, pieces, backdrop]`, piece indices local.
     entries: Vec<[u32; 5]>,
     pieces: Vec<[f32; 4]>,
-    /// Backdrops, four `vec4`s (16 pixel rows) each.
-    backdrops: Vec<[f32; 4]>,
 }
 
 /// An edge piece inside one tile row, in absolute pixels; `col` is the tile column relative to
@@ -204,6 +216,7 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
     let op_group: Vec<u32> = scene.fills.iter().map(|f| f.group.filter(|&g| (g as usize) < scene.groups.len()).unwrap_or(NONE)).collect();
     let tables = Tables { fills: nf as u32, op_clip, op_group, clip_chain, art_ops, scene };
 
+    let __t=std::time::Instant::now();
     let tiles_x = width.div_ceil(TILE);
     let tiles_y = height.div_ceil(TILE);
     let (tx, ty) = (tiles_x as usize, tiles_y as usize);
@@ -232,20 +245,19 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         })
         .collect();
 
-    // Where each chunk's pieces and backdrops go in `geo`.
+    let __a=__t.elapsed().as_secs_f32()*1000.0;
+    // Where each chunk's pieces go in `geo`.
     let pieces: usize = locals.iter().map(|(l, _)| l.pieces.len()).sum();
     let mut piece_at = Vec::with_capacity(locals.len());
-    let mut bd_at = Vec::with_capacity(locals.len());
-    let (mut p, mut b) = (0usize, pieces);
+    let mut p = 0usize;
     for (l, _) in &locals {
         piece_at.push(p as u32);
-        bd_at.push(b as u32);
         p += l.pieces.len();
-        b += l.backdrops.len();
     }
 
     // Phase 2, parallel over tile rows: each tile's stream of entries.
-    let rows: Vec<RowOut> = (0..ty).into_par_iter().map(|r| row_streams(r, tx, &locals, &piece_at, &bd_at, &tables)).collect();
+    let rows: Vec<RowOut> = (0..ty).into_par_iter().map(|r| row_streams(r, tx, &locals, &piece_at, &tables)).collect();
+    let __b=__t.elapsed().as_secs_f32()*1000.0;
     let mut row_at = vec![0usize; ty + 1];
     for (r, out) in rows.iter().enumerate() {
         row_at[r + 1] = row_at[r] + out.stream.len();
@@ -274,24 +286,24 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
             }
         });
     }
-    // Pieces, then backdrops, copied in parallel into their places.
-    let mut geo: Vec<[f32; 4]> = vec![[0.0; 4]; b];
+    let __c=__t.elapsed().as_secs_f32()*1000.0;
+    // Pieces copied in parallel into their places.
+    let mut geo: Vec<[f32; 4]> = vec![[0.0; 4]; pieces];
     {
-        let (mut piece_dst, mut bd_dst) = geo.split_at_mut(pieces);
-        let mut jobs: Vec<(&mut [Vec4], &[Vec4])> = Vec::with_capacity(2 * locals.len());
+        let mut piece_dst = &mut geo[..];
+        let mut jobs: Vec<(&mut [Vec4], &[Vec4])> = Vec::with_capacity(locals.len());
         for (l, _) in &locals {
             let (a, rest) = std::mem::take(&mut piece_dst).split_at_mut(l.pieces.len());
             jobs.push((a, &l.pieces));
             piece_dst = rest;
-            let (a, rest) = std::mem::take(&mut bd_dst).split_at_mut(l.backdrops.len());
-            jobs.push((a, &l.backdrops));
-            bd_dst = rest;
         }
         jobs.into_par_iter().for_each(|(d, s)| d.copy_from_slice(s));
     }
     // Tens of thousands of small buffers: free them on the pool, off the frame's path.
     anicraft_render::drop_in_background((locals, rows));
 
+    let __d=__t.elapsed().as_secs_f32()*1000.0;
+    if width>1000 {eprintln!("bin {width}: fills {__a:.2} rows {:.2} index {:.2} geo {:.2}", __b-__a, __c-__b, __d-__c);}
     // Paints: a fixed record per op, then the gradient tables, then the layers' pixels.
     let mut paints: Vec<[f32; 4]> = Vec::with_capacity(PAINT_VEC4S * ops.len());
     let mut ramps: Vec<[f32; 4]> = Vec::new();
@@ -316,6 +328,7 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
     let u = f32::from_bits;
     for (op, f) in ops.iter().enumerate() {
         let rule = match f.rule {
+            _ if f.hairline => HAIRLINE,
             FillRule::NonZero => 0,
             FillRule::EvenOdd => 1,
         };
@@ -403,7 +416,7 @@ fn colour_effect(fx: &anicraft_doc::ColorEffect) -> (f32, f32, [f32; 3], u32) {
 
 /// Tile row `r`'s streams: per tile, its fills in drawing order with the clip and group
 /// entries they need.
-fn row_streams(r: usize, tx: usize, locals: &[(Local, Vec<u32>)], piece_at: &[u32], bd_at: &[u32], t: &Tables) -> RowOut {
+fn row_streams(r: usize, tx: usize, locals: &[(Local, Vec<u32>)], piece_at: &[u32], t: &Tables) -> RowOut {
     let first_tile = (r * tx) as u32;
     let slices = || {
         locals.iter().enumerate().map(move |(c, (l, rows))| {
@@ -430,13 +443,12 @@ fn row_streams(r: usize, tx: usize, locals: &[(Local, Vec<u32>)], piece_at: &[u3
     let mut ae = vec![[0u32; 4]; nart];
     let mut cursor: Vec<[u32; 2]> = count[..tx].to_vec();
     for (c, es) in slices() {
-        let (p0, b0) = (piece_at.get(c).copied().unwrap_or(0), bd_at.get(c).copied().unwrap_or(0));
+        let p0 = piece_at.get(c).copied().unwrap_or(0);
         for &[op, tile, s0, n, bd] in es {
             let Some(cur) = cursor.get_mut(tile.wrapping_sub(first_tile) as usize) else { continue };
             let art = usize::from(op >= t.fills);
             let at = cur[art] as usize;
             cur[art] += 1;
-            let bd = if bd == NONE { NONE } else { b0 + bd };
             let slot = if art == 1 { ae.get_mut(at) } else { fe.get_mut(at) };
             if let Some(slot) = slot {
                 *slot = [op, p0 + s0, n, bd];
@@ -514,30 +526,26 @@ fn tile_stream(fills: &[[u32; 4]], arts: &[[u32; 4]], t: &Tables, out: &mut Vec<
     }
 }
 
-/// Splits one fill's edges into tile pieces and walks each tile row for backdrops.
+/// Splits one fill's edges into tile pieces (with the steps where its outline crosses a tile's
+/// left edge) and walks each tile row for the backdrops.
 fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, pieces: &mut Vec<Piece>) {
-    let b = f.bounds;
-    if b.is_empty() {
-        return;
-    }
-    let tx0 = b.x0.max(0) as u32 / TILE;
-    let tx1 = (b.x1.max(0) as u32).div_ceil(TILE).min(tiles_x);
-    let ty0 = b.y0.max(0) as u32 / TILE;
-    let ty1 = (b.y1.max(0) as u32).div_ceil(TILE).min(tiles_y);
-    if tx1 <= tx0 || ty1 <= ty0 {
-        return;
-    }
-    let ncols = (tx1 - tx0) as i32;
-    let range = Range { ylo: (ty0 * TILE) as f32, yhi: (ty1 * TILE) as f32, xlo: (tx0 * TILE) as f32, xhi: (tx1 * TILE) as f32, ncols };
+    let Some(range) = Range::of(f, tiles_x, tiles_y) else { return };
     pieces.clear();
-    for poly in &f.polys {
-        let n = poly.len();
-        if n < 2 {
-            continue;
+    if f.hairline {
+        for poly in &f.polys {
+            for_segments(poly, |a, b| hairline_tiles(a, b, &range, |row, col| pieces.push(Piece { row, col, seg: [a.x, a.y, b.x, b.y] })));
         }
-        for i in 0..n {
-            let (Some(&a), Some(&c)) = (poly.get(i), poly.get((i + 1) % n)) else { continue };
-            split_edge(a, c, &range, pieces);
+    } else {
+        for poly in &f.polys {
+            let n = poly.len();
+            if n < 2 {
+                continue;
+            }
+            for i in 0..n {
+                let (Some(&a), Some(&c)) = (poly.get(i), poly.get((i + 1) % n)) else { continue };
+                split_edge(a, c, &range, |p| pieces.push(p));
+                crossings(a, c, &range, |p| pieces.push(p));
+            }
         }
     }
     if pieces.is_empty() {
@@ -549,53 +557,37 @@ fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, piec
     let mut i = 0usize;
     while let Some(first) = pieces.get(i) {
         let row = first.row;
-        let row_y0 = ((ty0 + row) * TILE) as f32;
-        let mut wind = [0.0f32; 16];
-        // Parts left of the fill's tiles only shift the winding.
+        let row_y0 = range.row_y0(row);
+        // Pieces left of the fill's tiles only count where they start on the row's top edge.
+        let mut backdrop = 0i32;
         while let Some(p) = pieces.get(i).filter(|p| p.row == row && p.col < 0) {
-            add_rows(&mut wind, &p.seg, row_y0);
+            backdrop += top_crossing(&p.seg, row_y0);
             i += 1;
         }
-        let mut last_bd: Option<(u32, [f32; 16])> = None;
-        for col in 0..ncols {
+        for col in 0..range.ncols {
             let start = i;
             while pieces.get(i).is_some_and(|p| p.row == row && p.col == col) {
                 i += 1;
             }
             let here = pieces.get(start..i).unwrap_or(&[]);
-            let empty_wind = wind.iter().all(|w| w.abs() < 1e-6);
-            if empty_wind {
-                wind = [0.0; 16];
-            }
-            if here.is_empty() && empty_wind {
+            if here.is_empty() && backdrop == 0 {
                 // Nothing here; and nothing further right either once the row's pieces are used.
                 if !pieces.get(i).is_some_and(|p| p.row == row) {
                     break;
                 }
                 continue;
             }
-            let tile_x = tx0 + col as u32;
-            let tile = (ty0 + row) * tiles_x + tile_x;
-            let bd = if empty_wind {
-                NONE
-            } else {
-                match last_bd {
-                    Some((k, w)) if w == wind => k,
-                    _ => {
-                        let k = out.backdrops.len() as u32;
-                        out.backdrops.extend_from_slice(wind.as_chunks::<4>().0);
-                        last_bd = Some((k, wind));
-                        k
-                    }
-                }
-            };
+            let tile_x = range.tx0 + col as u32;
+            let tile = (range.ty0 + row) * tiles_x + tile_x;
             let (ox, oy) = ((tile_x * TILE) as f32, row_y0);
             let s0 = out.pieces.len() as u32;
             for p in here {
                 out.pieces.push([p.seg[0] - ox, p.seg[1] - oy, p.seg[2] - ox, p.seg[3] - oy]);
-                add_rows(&mut wind, &p.seg, row_y0);
             }
-            out.entries.push([op, tile, s0, here.len() as u32, bd]);
+            out.entries.push([op, tile, s0, here.len() as u32, backdrop as u32]);
+            if !f.hairline {
+                backdrop += here.iter().map(|p| top_crossing(&p.seg, row_y0)).sum::<i32>();
+            }
         }
         // Skip whatever is left of this row (pieces right of the range never get here).
         while pieces.get(i).is_some_and(|p| p.row == row) {
@@ -604,33 +596,67 @@ fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, piec
     }
 }
 
-/// The fill's tile range, in pixels and tiles.
-struct Range {
-    ylo: f32,
-    yhi: f32,
-    xlo: f32,
-    xhi: f32,
-    ncols: i32,
-}
-
-/// Adds the winding a piece gives everything to its right, per pixel row of its tile row.
-fn add_rows(wind: &mut [f32; 16], seg: &[f32; 4], row_y0: f32) {
-    let (ya, yb, dir) = if seg[1] < seg[3] { (seg[1], seg[3], 1.0) } else { (seg[3], seg[1], -1.0) };
-    let r0 = ((ya - row_y0).floor().max(0.0)) as usize;
-    let r1 = ((yb - row_y0).ceil().min(T)) as usize;
-    for r in r0..r1 {
-        let lo = row_y0 + r as f32;
-        let d = yb.min(lo + 1.0) - ya.max(lo);
-        if d > 0.0
-            && let Some(w) = wind.get_mut(r)
-        {
-            *w += dir * d;
+/// The edges of a closed polygon (fills) or the segments of an open polyline (hairlines; a
+/// single point is a dot).
+fn for_segments(poly: &[Vec2], mut f: impl FnMut(Vec2, Vec2)) {
+    match poly {
+        [] => {}
+        [p] => f(*p, *p),
+        _ => {
+            for w in poly.windows(2) {
+                f(w[0], w[1]);
+            }
         }
     }
 }
 
+/// The direction (`1` down, `−1` up) of a piece that starts on its tile row's top edge at
+/// `row_y0`, which means its edge crosses that edge; `0` for any other piece.
+pub(crate) fn top_crossing(seg: &[f32; 4], row_y0: f32) -> i32 {
+    if seg[1] == seg[3] || seg[1].min(seg[3]) != row_y0 {
+        return 0;
+    }
+    if seg[3] > seg[1] { 1 } else { -1 }
+}
+
+/// A fill's tile range, in pixels and tiles.
+#[derive(Clone, Copy)]
+pub(crate) struct Range {
+    pub(crate) tx0: u32,
+    pub(crate) ty0: u32,
+    pub(crate) ylo: f32,
+    pub(crate) yhi: f32,
+    pub(crate) xlo: f32,
+    pub(crate) xhi: f32,
+    pub(crate) ncols: i32,
+    pub(crate) nrows: i32,
+}
+
+impl Range {
+    /// The tiles `f`'s bounds cover, within the surface's; `None` when there are none.
+    pub(crate) fn of(f: &Fill, tiles_x: u32, tiles_y: u32) -> Option<Range> {
+        let b = f.bounds;
+        if b.is_empty() {
+            return None;
+        }
+        let tx0 = b.x0.max(0) as u32 / TILE;
+        let tx1 = (b.x1.max(0) as u32).div_ceil(TILE).min(tiles_x);
+        let ty0 = b.y0.max(0) as u32 / TILE;
+        let ty1 = (b.y1.max(0) as u32).div_ceil(TILE).min(tiles_y);
+        if tx1 <= tx0 || ty1 <= ty0 {
+            return None;
+        }
+        let (ncols, nrows) = ((tx1 - tx0) as i32, (ty1 - ty0) as i32);
+        Some(Range { tx0, ty0, ylo: (ty0 * TILE) as f32, yhi: (ty1 * TILE) as f32, xlo: (tx0 * TILE) as f32, xhi: (tx1 * TILE) as f32, ncols, nrows })
+    }
+
+    fn row_y0(&self, row: u32) -> f32 {
+        ((self.ty0 + row) * TILE) as f32
+    }
+}
+
 /// Splits edge `a → b` at tile rows and columns inside the fill's range.
-fn split_edge(a: Vec2, b: Vec2, r: &Range, out: &mut Vec<Piece>) {
+fn split_edge(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(Piece)) {
     if !(a.is_finite() && b.is_finite()) || a.y == b.y {
         return;
     }
@@ -653,18 +679,18 @@ fn split_edge(a: Vec2, b: Vec2, r: &Range, out: &mut Vec<Piece>) {
             continue;
         }
         let (xs, xe) = (x_at(ys), x_at(ye));
-        split_row(row, Vec2::new(xs, ys), Vec2::new(xe, ye), down, r, out);
+        split_row(row, Vec2::new(xs, ys), Vec2::new(xe, ye), down, r, &mut out);
     }
 }
 
 /// Splits a piece inside one tile row at the fill's left and right edges and at tile columns.
-fn split_row(row: u32, s: Vec2, e: Vec2, down: bool, r: &Range, out: &mut Vec<Piece>) {
+fn split_row(row: u32, s: Vec2, e: Vec2, down: bool, r: &Range, out: &mut impl FnMut(Piece)) {
     let mut push = |col: i32, u: Vec2, v: Vec2| {
         if v.y <= u.y {
             return;
         }
         let seg = if down { [u.x, u.y, v.x, v.y] } else { [v.x, v.y, u.x, u.y] };
-        out.push(Piece { row, col, seg });
+        out(Piece { row, col, seg });
     };
     // Points where the piece crosses a column boundary (or the range's edges), top to bottom.
     let dx = e.x - s.x;
@@ -674,7 +700,9 @@ fn split_row(row: u32, s: Vec2, e: Vec2, down: bool, r: &Range, out: &mut Vec<Pi
     };
     let col_of = |x: f32| ((x - r.xlo) / T).floor() as i32;
     let (lo, hi) = (s.x.min(e.x), s.x.max(e.x));
-    if hi <= r.xlo {
+    // Left of the fill's tiles (a vertical piece on their left edge is in the first column:
+    // the backdrop and the left-edge steps count only what lies strictly left of a tile).
+    if hi <= r.xlo && lo < r.xlo {
         push(-1, s, e);
         return;
     }
@@ -711,6 +739,82 @@ fn split_row(row: u32, s: Vec2, e: Vec2, down: bool, r: &Range, out: &mut Vec<Pi
             push(col_of(mid).clamp(0, r.ncols - 1), prev, next);
         }
         prev = next;
+    }
+}
+
+/// The steps edge `a → b` makes in the winding along the left edges of the range's tiles: where
+/// it crosses column boundary `x` (`lo < x ≤ hi`, horizontal edges too) strictly inside a tile
+/// row, a vertical piece on that tile's left edge from the crossing to the row's bottom, upwards
+/// when the edge runs right (the winding to the left drops by one) and downwards when it runs
+/// left.
+fn crossings(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(Piece)) {
+    if !(a.is_finite() && b.is_finite()) || a.x == b.x {
+        return;
+    }
+    let (lo, hi) = (a.x.min(b.x), a.x.max(b.x));
+    let kmin = (((lo - r.xlo) / T).floor() + 1.0).max(0.0);
+    let kmax = ((hi - r.xlo) / T).floor().min((r.ncols - 1) as f32);
+    if kmax < kmin {
+        return;
+    }
+    let slope = (b.y - a.y) / (b.x - a.x);
+    for k in kmin as i32..=kmax as i32 {
+        let x = r.xlo + k as f32 * T;
+        if x <= lo || x > hi {
+            continue;
+        }
+        let y = if a.y == b.y { a.y } else { a.y + (x - a.x) * slope };
+        if !y.is_finite() || y <= r.ylo || y >= r.yhi {
+            continue;
+        }
+        let row = ((y - r.ylo) / T).floor();
+        if row < 0.0 || row >= r.nrows as f32 {
+            continue;
+        }
+        let ry0 = r.ylo + row * T;
+        if y <= ry0 {
+            continue; // on the row's top edge: the backdrop has it
+        }
+        let bottom = ry0 + T;
+        let seg = if b.x > a.x { [x, bottom, x, y] } else { [x, y, x, bottom] };
+        out(Piece { row: row as u32, col: k, seg });
+    }
+}
+
+/// Every tile of the range with a pixel centre within a hairline's reach of segment `a → b`
+/// (conservatively: a little more), as `(row, col)` relative to the range.
+fn hairline_tiles(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(u32, i32)) {
+    if !(a.is_finite() && b.is_finite()) {
+        return;
+    }
+    // Pixel centres within reach of the segment lie within these margins of it.
+    const M: f32 = anicraft_render::hairline::REACH + 1.0;
+    let (ymin, ymax) = (a.y.min(b.y), a.y.max(b.y));
+    let r0 = (((ymin - M - r.ylo) / T).floor()).max(0.0);
+    let r1 = (((ymax + M - r.ylo) / T).floor()).min((r.nrows - 1) as f32);
+    if r1 < r0 {
+        return;
+    }
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    for row in r0 as i32..=r1 as i32 {
+        let top = r.ylo + row as f32 * T;
+        // The segment's part within the row's band, then the columns within reach of it.
+        let (xa, xb) = if dy == 0.0 {
+            (a.x.min(b.x), a.x.max(b.x))
+        } else {
+            let t0 = ((top - M - a.y) / dy).clamp(0.0, 1.0);
+            let t1 = ((top + T + M - a.y) / dy).clamp(0.0, 1.0);
+            let (u, v) = (a.x + dx * t0, a.x + dx * t1);
+            (u.min(v), u.max(v))
+        };
+        let c0 = (((xa - M - r.xlo) / T).floor()).max(0.0);
+        let c1 = (((xb + M - r.xlo) / T).floor()).min((r.ncols - 1) as f32);
+        if c1 < c0 {
+            continue;
+        }
+        for col in c0 as i32..=c1 as i32 {
+            out(row as u32, col);
+        }
     }
 }
 

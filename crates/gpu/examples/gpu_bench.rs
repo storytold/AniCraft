@@ -11,7 +11,7 @@
 //! stage's way (512 px tiles drawn in parallel, as the render service does, until finished);
 //! the work the fine pass did; and how far the GPU's picture is from the oracle's.
 
-use anicraft_doc::{Bitmap, BitmapId, ColorEffect, Document, Element, ElementId, ElementKind, Filter, FilterSide, Keyframe, Layer, LayerId, LayerKind, Paint, Pixels, Rgba, Shape, evaluate, sample};
+use anicraft_doc::{Bitmap, BitmapId, ColorEffect, DisplayList, Document, Element, ElementId, ElementKind, Filter, FilterSide, Keyframe, Layer, LayerId, LayerKind, Paint, Pixels, Rgba, Shape, evaluate, sample};
 use anicraft_geom::{FillRule, Path};
 use anicraft_gpu::{GpuRenderer, Output, compare_premul8};
 use anicraft_geom::Affine;
@@ -139,6 +139,57 @@ fn filtered() -> Document {
     doc
 }
 
+/// Onion skin as the stage composes it (ADR 0047), for the bench: no onion skin, ±5 frames
+/// tinted and fading, or ±5 frames as outlines.
+#[derive(Clone, Copy, PartialEq)]
+enum Onion {
+    Off,
+    Tinted,
+    Outlines,
+}
+
+/// Frame `frame` with ±5 onion frames, as `anicraft_engine::onion::compose` draws them with
+/// the default colours, tint and fade: each frame's items under the playhead's on their own
+/// layer (nearest on top), at its alpha and tint, or as hairline outlines in its colour. (The
+/// engine sits beside this crate, so the bench builds the same list itself.)
+fn onion_list(doc: &Document, frame: u32, mode: Onion) -> DisplayList {
+    let now = evaluate(doc, frame);
+    if mode == Onion::Off {
+        return now;
+    }
+    let frames = doc.frame_count().max(1);
+    let (past, future) = (Rgba::hex(0x4f8dff), Rgba::hex(0x4cd07d));
+    let rank: std::collections::HashMap<LayerId, usize> = doc.timeline(0).layers.iter().enumerate().map(|(i, l)| (l.id, i)).collect();
+    let mut dl = DisplayList::default();
+    let mut part_of: Vec<usize> = Vec::new();
+    for d in (1..=5u32).rev() {
+        for (is_past, f) in [(true, frame.checked_sub(d)), (false, Some(frame + d).filter(|f| *f < frames))] {
+            let Some(f) = f else { continue };
+            // Fading from 0.5 next to the playhead to 0.12 at the marker; tinted at 0.8.
+            let alpha = 0.5 + (0.12 - 0.5) * (d - 1) as f32 / 4.0;
+            let color = if is_past { past } else { future };
+            let mut part = evaluate(doc, f);
+            for item in &mut part.items {
+                item.color = item.color.concat(&ColorEffect { alpha, tint: color, tint_amount: 0.8 });
+                if mode == Onion::Outlines && item.masks.is_none() {
+                    item.outline = Some(color.with_alpha(alpha));
+                }
+            }
+            part_of.extend(std::iter::repeat_n(part_of.last().map_or(0, |p| p + 1), part.items.len()));
+            dl.append(part);
+        }
+    }
+    let k = part_of.last().map_or(0, |p| p + 1);
+    part_of.extend(std::iter::repeat_n(k, now.items.len()));
+    dl.append(now);
+    // Layer by layer, bottom first; within a layer, the parts in order (a stable sort).
+    let mut order: Vec<usize> = (0..dl.items.len()).collect();
+    order.sort_by_key(|&i| (std::cmp::Reverse(dl.items.get(i).and_then(|it| rank.get(&it.layer)).copied().unwrap_or(0)), part_of.get(i).copied().unwrap_or(0)));
+    let mut items: Vec<Option<anicraft_doc::DisplayItem>> = std::mem::take(&mut dl.items).into_iter().map(Some).collect();
+    dl.items = order.into_iter().filter_map(|i| items.get_mut(i).and_then(Option::take)).collect();
+    dl
+}
+
 fn main() {
     let gpu = match GpuRenderer::new() {
         Ok(g) => g,
@@ -150,24 +201,32 @@ fn main() {
     println!("adapter: {}", gpu.adapter);
     let (layers, shapes) = (arg("--layers", 50), arg("--shapes", 200));
     let runs = arg("--runs", 12);
-    let scenes: Vec<(String, Document)> = vec![
-        (format!("stress {layers}×{shapes}"), sample::stress(layers, shapes, 240)),
-        ("1,000 shapes".into(), sample::stress(5, 200, 240)),
-        (format!("masked {layers}×{shapes}"), masked(sample::stress(layers, shapes, 240))),
-        ("sample".into(), sample::demo()),
-        ("composited sample".into(), composited()),
-        ("filtered sample".into(), filtered()),
-        ("200 bitmaps".into(), bitmaps()),
+    let only: Option<String> = std::env::args().skip_while(|a| a != "--only").nth(1);
+    let onion_doc = sample::stress(20, 100, 48);
+    let plain = |name: String, doc: Document| (name, doc, Onion::Off);
+    let scenes: Vec<(String, Document, Onion)> = vec![
+        plain(format!("stress {layers}×{shapes}"), sample::stress(layers, shapes, 240)),
+        plain("1,000 shapes".into(), sample::stress(5, 200, 240)),
+        plain("50,000 shapes".into(), sample::stress(250, 200, 240)),
+        plain(format!("masked {layers}×{shapes}"), masked(sample::stress(layers, shapes, 240))),
+        plain("sample".into(), sample::demo()),
+        plain("composited sample".into(), composited()),
+        plain("filtered sample".into(), filtered()),
+        plain("200 bitmaps".into(), bitmaps()),
+        ("onion off 20×100".into(), onion_doc.clone(), Onion::Off),
+        ("onion ±5 tinted".into(), onion_doc.clone(), Onion::Tinted),
+        ("onion ±5 outlines".into(), onion_doc, Onion::Outlines),
     ];
     println!(
         "{:<20} {:>10} {:>8} {:>9} {:>9} {:>9} {:>7} {:>22} {:>8} {:>8}  parity (mean / max / differing px)",
         "scene", "size", "CPU ms", "readback", "direct", "direct+", "tiled", "prepare + bin + submit", "entries", "pieces"
     );
-    for (name, doc) in &scenes {
+    for (name, doc, onion) in scenes.iter().filter(|(n, ..)| only.as_ref().is_none_or(|o| n.contains(o.as_str()))) {
         for scale in [1.0f32, 2.0] {
             let v = View::stage(doc, scale * 1920.0 / doc.stage.width as f32);
             let frames = doc.frame_count().max(1);
-            let dl0 = evaluate(doc, 0);
+            let evaluate = |doc: &Document, f: u32| onion_list(doc, f, *onion);
+            let dl0 = evaluate(doc, if *onion == Onion::Off { 0 } else { 30 });
             // Warm-up (pipeline caches, allocations).
             let _ = gpu.render(&dl0, &v, Output::Premul8);
             let _ = gpu.render_texture(&dl0, &v);

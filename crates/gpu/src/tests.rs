@@ -126,8 +126,38 @@ fn scenes() -> Vec<(&'static str, DisplayList, View)> {
     let mut huge = item(Path::ellipse(50.0, 40.0, 300.0, 200.0), Paint::Solid(red));
     huge.color = ColorEffect { alpha: 0.5, tint: Rgba::hex(0x4cd07d), tint_amount: 0.7 };
     out.push(("off-surface", list(vec![huge]), view(100, 80, Some(Rgba::WHITE))));
+    out.push(("outlines", outlined(), view(150, 110, Some(Rgba::WHITE))));
     out.extend(composited_scenes());
     out
+}
+
+/// Outline mode (ADR 0048): hairlines along closed and open paths, crossing tiles in every
+/// direction, overlapping, faded, past the surface, over a fill, and a point.
+fn outlined() -> DisplayList {
+    let outline = |path: Path, c: Rgba, t: Affine| {
+        let mut i = item(path, Paint::Solid(Rgba::BLACK));
+        i.outline = Some(c);
+        i.transform = t;
+        i
+    };
+    let blue = Rgba::hex(0x4f8dff).with_alpha(0.5);
+    let green = Rgba::hex(0x4cd07d).with_alpha(0.8);
+    let mut wave = Path::default();
+    wave.move_to(Vec2::new(-20.0, 90.0));
+    for k in 0..12 {
+        wave.line_to(Vec2::new(k as f32 * 15.3, 90.0 + if k % 2 == 0 { 9.7 } else { -7.1 }));
+    }
+    list(vec![
+        item(Path::rect(20.0, 20.0, 50.0, 40.0), Paint::Solid(Rgba::new(0.9, 0.8, 0.2, 1.0))),
+        outline(Path::ellipse(50.0, 45.0, 37.3, 29.1), blue, Affine::IDENTITY),
+        outline(Path::star(95.0, 50.0, 40.0, 16.0, 5), green, Affine::rotate(0.05)),
+        outline(Path::star(95.0, 50.0, 40.0, 16.0, 5), green, Affine::translate(0.25, 0.5)),
+        outline(Path::rect(16.0, 32.0, 112.0, 0.0), Rgba::BLACK, Affine::IDENTITY),
+        outline(Path::rect(8.5, 4.25, 133.0, 100.0), Rgba::new(0.8, 0.1, 0.1, 1.0), Affine::IDENTITY),
+        outline(wave, Rgba::new(0.2, 0.2, 0.2, 0.9), Affine::IDENTITY),
+        outline(Path::ellipse(140.0, 100.0, 60.0, 50.0), blue, Affine::IDENTITY),
+        outline(Path::line(Vec2::new(60.5, 70.5), Vec2::new(60.5, 70.5)), Rgba::BLACK, Affine::IDENTITY),
+    ])
 }
 
 /// Masks and groups (ADR 0029): each stresses one part of the oracle's band compositor.
@@ -264,13 +294,8 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                     }
                     k => assert_eq!(k & bn::CTRL, 0, "unknown control entry {k:x}"),
                 }
-                let mut wnd = if bd == binning::NONE { 0.0 } else { b.geo[bd as usize + ly / 4][ly % 4] };
-                for k in 0..n {
-                    let s = b.geo[first + k];
-                    wnd += piece_cover(s, lx as f32, ly as f32);
-                }
                 let hd = b.ops_at as usize + op * 4;
-                let mut cov = if b.index[hd + 1] == 0 { wnd.abs().min(1.0) } else { let t = wnd.abs() % 2.0; if t > 1.0 { 2.0 - t } else { t } };
+                let mut cov = entry_cover(&b.geo[first..first + n], bd, b.index[hd + 1], lx, ly);
                 let flags = b.index[hd + 3];
                 if flags & bn::ART != 0 {
                     let k = cov.clamp(0.0, 1.0);
@@ -306,6 +331,26 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
         }
     }
     out
+}
+
+/// An entry's coverage of pixel `(lx, ly)` of its tile, as `fine.wgsl` computes it: the
+/// backdrop and its pieces under fill rule `rule`, or a hairline's distance.
+fn entry_cover(pieces: &[[f32; 4]], backdrop: u32, rule: u32, lx: usize, ly: usize) -> f32 {
+    if rule == bn::HAIRLINE {
+        let p = Vec2::new(lx as f32 + 0.5, ly as f32 + 0.5);
+        let d = pieces.iter().fold(2.0f32, |d, s| d.min(anicraft_render::hairline::seg_dist(p, Vec2::new(s[0], s[1]), Vec2::new(s[2], s[3]))));
+        return (1.0 - d).clamp(0.0, 1.0);
+    }
+    let mut wnd = backdrop as i32 as f32;
+    for s in pieces {
+        wnd += piece_cover(*s, lx as f32, ly as f32);
+    }
+    if rule == 0 {
+        wnd.abs().min(1.0)
+    } else {
+        let t = wnd.abs() % 2.0;
+        if t > 1.0 { 2.0 - t } else { t }
+    }
 }
 
 /// `fine.wgsl` › `close_group` and `blend`, on the CPU (the oracle's formulas, written again
@@ -549,6 +594,7 @@ fn degenerate_geometry_bins_without_trouble() {
         clip,
         group,
         layer: None,
+        hairline: false,
     };
     // A fill naming a layer that isn't there draws nothing.
     let mut lost = fill(None, None);
