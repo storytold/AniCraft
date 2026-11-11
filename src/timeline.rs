@@ -34,6 +34,71 @@ fn frame_center(cell_left: f32, cell_w: f32) -> f32 {
     (cell_left + cell_w * 0.5).round() + 0.5
 }
 const FOOTER_H: f32 = 38.0;
+/// Frame View › Short (ADR 0061): row height (points). Layers 200 % and 300 % tall are that
+/// many short rows.
+const SHORT_ROW_H: f32 = 20.0;
+/// Frame View's frame widths, Tiny to Large, as frame cell widths (the zoom slider sets any
+/// width in between).
+pub const FRAME_WIDTHS: [(&str, f32); 5] = [(tr_noop!("Tiny"), 4.0), (tr_noop!("Small"), 8.0), (tr_noop!("Normal"), CELL_DEFAULT), (tr_noop!("Medium"), 18.0), (tr_noop!("Large"), 28.0)];
+
+/// A normal row's height: full, or Frame View › Short.
+pub fn base_row_h(short: bool) -> f32 {
+    if short { SHORT_ROW_H } else { ROW_H }
+}
+
+/// How many whole rows of heights `h` fit in `avail` points from row `first`: at least one
+/// while any are left (a tall row in a small dock is cut off rather than hidden).
+fn rows_fitting(h: &[f32], first: usize, avail: f32) -> usize {
+    let (mut used, mut n) = (0.0, 0);
+    for x in h.iter().skip(first) {
+        if n > 0 && used + x > avail + 0.5 {
+            break;
+        }
+        used += x;
+        n += 1;
+    }
+    n
+}
+
+/// The scroll limit: the first row from which every row to the end fits.
+fn max_first_row(h: &[f32], avail: f32) -> usize {
+    first_showing(h, h.len().saturating_sub(1), avail)
+}
+
+/// The first row to show so that row `r` is the last one that fits (the least scroll that
+/// brings it into view from above).
+fn first_showing(h: &[f32], r: usize, avail: f32) -> usize {
+    let mut used = 0.0;
+    for i in (0..=r.min(h.len().saturating_sub(1))).rev() {
+        used += h.get(i).copied().unwrap_or(0.0);
+        if used > avail + 0.5 {
+            return (i + 1).min(r);
+        }
+    }
+    0
+}
+
+/// The row `dy` points below the top of row `first` (negative: above it), within the rows.
+fn row_at(h: &[f32], first: usize, dy: f32) -> usize {
+    if dy < 0.0 {
+        let mut y = 0.0;
+        for i in (0..first.min(h.len())).rev() {
+            y -= h.get(i).copied().unwrap_or(0.0);
+            if dy >= y {
+                return i;
+            }
+        }
+        return 0;
+    }
+    let mut y = 0.0;
+    for (i, x) in h.iter().enumerate().skip(first) {
+        y += x;
+        if dy < y {
+            return i;
+        }
+    }
+    h.len().saturating_sub(1)
+}
 /// Eye / lock / outline toggles: square targets in each layer row.
 const TOGGLE: f32 = 24.0;
 /// Indent per folder or mask level in the layer list.
@@ -171,13 +236,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- header ---------------------------------------------------------------------------
     egui::Frame::NONE.fill(T.panel_alt).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            // Room kept at the right end for the frame zoom: the 56 pt slider, its field, spacing.
-            const ZOOM_W: f32 = 122.0;
+            // Room kept at the right end for the frame zoom (the 56 pt slider, its field,
+            // spacing) and the Frame View menu.
+            const ZOOM_W: f32 = 122.0 + 30.0;
             // The rest scrolls sideways (Shift+wheel) when the dock is narrow (a small window, a
             // large interface scale) instead of being cut off.
             let w = (ui.available_width() - ZOOM_W).max(0.0);
             egui::ScrollArea::horizontal().id_salt("tl_header").max_width(w).show(ui, |ui| ui.horizontal(|ui| header(app, ui, dock)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                frame_view_button(app, ui);
                 let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
                 let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
                 ui.spacing_mut().slider_width = 56.0;
@@ -261,29 +328,37 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         (0..tl.layers.len()).filter(|&i| !app.tl_collapsed.iter().any(|f| tl.is_inside(i, *f))).collect()
     };
     let n_layers = rows.len();
-    let rows_visible = ((body.height() - RULER_H - FOOTER_H) / ROW_H).floor().max(1.0) as usize;
+    // Each row is its layer's height (100, 200 or 300 % of a normal or short row, ADR 0061).
+    let base_h = base_row_h(app.prefs.timeline_short_rows);
+    let heights: Vec<f32> = {
+        let tl = app.s.timeline();
+        rows.iter().map(|&i| f32::from(tl.layers.get(i).map_or(1, |l| l.height())) * base_h).collect()
+    };
+    let avail = (body.height() - RULER_H - FOOTER_H).max(0.0);
     if ui.rect_contains_pointer(body) {
         let d = ui.input(|i| i.smooth_scroll_delta);
         if d.x != 0.0 {
             app.tl_scroll = (app.tl_scroll - d.x / cell_w).max(0.0);
         }
         if d.y != 0.0 {
-            app.tl_vscroll = (app.tl_vscroll - d.y / ROW_H).max(0.0);
+            app.tl_vscroll = (app.tl_vscroll - d.y / base_h).max(0.0);
         }
     }
-    app.tl_vscroll = app.tl_vscroll.min(n_layers.saturating_sub(rows_visible) as f32);
+    app.tl_vscroll = app.tl_vscroll.min(max_first_row(&heights, avail) as f32);
     if app.tl_last_layer != Some(app.s.layer)
         && let Some(ai) = app.s.active_layer_index().and_then(|li| rows.iter().position(|&r| r == li))
     {
         // the active layer changed (e.g. picked on the stage): bring its row into view
-        if (ai as f32) < app.tl_vscroll {
+        let first = app.tl_vscroll.floor() as usize;
+        if ai < first {
             app.tl_vscroll = ai as f32;
-        } else if ai >= app.tl_vscroll as usize + rows_visible {
-            app.tl_vscroll = (ai + 1 - rows_visible) as f32;
+        } else if ai >= first + rows_fitting(&heights, first, avail) {
+            app.tl_vscroll = first_showing(&heights, ai, avail) as f32;
         }
         app.tl_last_layer = Some(app.s.layer);
     }
     let first_row = app.tl_vscroll.floor() as usize;
+    let rows_visible = rows_fitting(&heights, first_row, avail);
     let max_scroll = (frames_total + 30).saturating_sub(visible_cols) as f32;
     app.tl_scroll = app.tl_scroll.min(max_scroll.max(0.0));
     // keep the playhead visible while playing
@@ -361,19 +436,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let rows_top = ruler.bottom();
     let rows_bottom = body.bottom() - FOOTER_H;
     let tl_now = app.s.timeline().clone();
+    let mut next_y = rows_top;
     for (r, &i) in rows.iter().enumerate().skip(first_row) {
         let Some(layer) = layers.get(i) else { continue };
-        let y = rows_top + (r - first_row) as f32 * ROW_H;
-        // Whole rows only: a cut-off row would sit under the footer (scroll for the rest).
-        if y + ROW_H > rows_bottom + 0.5 {
+        let y = next_y;
+        let rh = heights.get(r).copied().unwrap_or(base_h);
+        // Whole rows only: a cut-off row would sit under the footer (scroll for the rest). The
+        // first row always shows, however tall.
+        if r > first_row && y + rh > rows_bottom + 0.5 {
             break;
         }
-        let row = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), ROW_H));
+        next_y += rh;
+        let row = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), rh));
         let left = Rect::from_min_max(row.left_top(), pos2(grid.left(), row.bottom()));
         let is_active = layer.id == active;
         painter.rect_filled(left, 0.0, if is_active { T.accent_dim } else if r % 2 == 0 { T.panel } else { T.panel_alt });
         // The layer's colour as a full-height edge bar.
-        painter.rect_filled(Rect::from_min_size(left.left_top(), vec2(4.0, ROW_H)), 0.0, to_color32(layer.color));
+        painter.rect_filled(Rect::from_min_size(left.left_top(), vec2(4.0, rh)), 0.0, to_color32(layer.color));
         // Layers are indented under the folders and masks that hold them. Folders carry a
         // disclosure chevron and a folder glyph; masks a stencil; masked layers its inside.
         let is_folder = layer.kind == LayerKind::Folder;
@@ -384,35 +463,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let type_icon = |x: f32, icon: Icon| icons::paint(&painter, Rect::from_center_size(pos2(x, left.center().y), vec2(14.0, 14.0)), icon, name_color);
         let x0 = left.left() + 12.0 + tl_now.depth(i) as f32 * INDENT;
         let open = !app.tl_collapsed.contains(&layer.id);
-        let chevron = Rect::from_center_size(pos2(x0 + 6.0, left.center().y), vec2(TOGGLE, TOGGLE));
-        let name_x = match layer.kind {
-            LayerKind::Folder => {
-                icons::paint(&painter, Rect::from_center_size(chevron.center(), vec2(12.0, 12.0)), if open { Icon::ChevronDown } else { Icon::ChevronRight }, T.text_dim);
-                type_icon(x0 + 24.0, if open { Icon::FolderOpen } else { Icon::Folder });
-                x0 + 37.0
-            }
-            LayerKind::Mask => {
-                type_icon(x0 + 7.0, Icon::Mask);
-                x0 + 20.0
-            }
-            LayerKind::Normal if masked => {
-                type_icon(x0 + 7.0, Icon::Masked);
-                x0 + 20.0
-            }
-            LayerKind::Guide => {
-                type_icon(x0 + 7.0, Icon::Guide);
-                x0 + 20.0
-            }
-            LayerKind::Camera => {
-                type_icon(x0 + 7.0, Icon::Camera);
-                x0 + 20.0
-            }
-            LayerKind::Armature => {
-                type_icon(x0 + 7.0, Icon::Bone);
-                x0 + 20.0
-            }
-            _ => x0 + 4.0,
+        // Toggles and targets fit a short row.
+        let tg = TOGGLE.min(base_h - 2.0);
+        let chevron = Rect::from_center_size(pos2(x0 + 6.0, left.center().y), vec2(tg, tg));
+        // Every layer has its type's icon; double-click it for Layer Properties (ADR 0061).
+        let (icon_x, name_x, icon) = match layer.kind {
+            LayerKind::Folder => (x0 + 24.0, x0 + 37.0, if open { Icon::FolderOpen } else { Icon::Folder }),
+            LayerKind::Mask => (x0 + 7.0, x0 + 20.0, Icon::Mask),
+            LayerKind::Normal if masked => (x0 + 7.0, x0 + 20.0, Icon::Masked),
+            LayerKind::Guide => (x0 + 7.0, x0 + 20.0, Icon::Guide),
+            LayerKind::Camera => (x0 + 7.0, x0 + 20.0, Icon::Camera),
+            LayerKind::Armature => (x0 + 7.0, x0 + 20.0, Icon::Bone),
+            LayerKind::Normal => (x0 + 7.0, x0 + 20.0, Icon::Layer),
         };
+        if is_folder {
+            icons::paint(&painter, Rect::from_center_size(chevron.center(), vec2(12.0, 12.0)), if open { Icon::ChevronDown } else { Icon::ChevronRight }, T.text_dim);
+        }
+        type_icon(icon_x, icon);
+        let icon_rect = Rect::from_center_size(pos2(icon_x, left.center().y), vec2(16.0, tg));
         let name_at = painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
         let has_selection = holding.contains(&layer.id);
         if has_selection {
@@ -421,15 +489,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_stroke(sq, 0.0, Stroke::new(1.0, T.text), StrokeKind::Outside);
         }
 
-        // eye / lock / outline toggles: 24 × 24 targets with a hover fill
-        let toggle = |k: f32| Rect::from_center_size(pos2(left.right() - 16.0 - k * (TOGGLE + 2.0), left.center().y), vec2(TOGGLE, TOGGLE));
+        // Onion / eye / lock / outline toggles, right to left from the outline square: square
+        // targets with a hover fill (smaller on short rows).
+        let toggle = |k: f32| Rect::from_center_size(pos2(left.right() - 16.0 - k * (TOGGLE + 2.0), left.center().y), vec2(tg, tg));
         let (eye, lock, outl) = (toggle(2.0), toggle(1.0), toggle(0.0));
-        // A layer with sounds has a speaker before the eye: Mute (ADR 0039).
-        let speaker = layer.has_sounds().then(|| toggle(3.0));
-        let hover = ui.input(|inp| inp.pointer.hover_pos());
-        // The camera has no artwork to outline: its row has the eye (camera on or off) and lock.
+        // The camera has no artwork to outline or onion-skin: its row has the eye (camera on or
+        // off) and lock. A folder has no frames to onion-skin.
         let is_camera = layer.kind == LayerKind::Camera;
-        for r in [eye, lock, outl].into_iter().take(if is_camera { 2 } else { 3 }).chain(speaker) {
+        let onion_t = (!is_camera && !is_folder).then(|| toggle(3.0));
+        // A layer with sounds has a speaker before the others: Mute (ADR 0039).
+        let speaker = layer.has_sounds().then(|| toggle(if onion_t.is_some() { 4.0 } else { 3.0 }));
+        let hover = ui.input(|inp| inp.pointer.hover_pos());
+        for r in [eye, lock, outl].into_iter().take(if is_camera { 2 } else { 3 }).chain(onion_t).chain(speaker) {
             if hover.is_some_and(|h| r.contains(h)) {
                 painter.rect_filled(r, T.rc(), T.hover);
             }
@@ -437,11 +508,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let c_on = T.text;
         let c_off = T.text_faint;
         // eye and lock (state shows in the glyph and its brightness)
-        let glyph = |r: Rect| Rect::from_center_size(r.center(), vec2(15.0, 15.0));
+        let glyph = |r: Rect| {
+            let s = r.height().min(15.0);
+            Rect::from_center_size(r.center(), vec2(s, s))
+        };
         icons::paint(&painter, glyph(eye), if layer.visible { Icon::Eye } else { Icon::EyeOff }, if layer.visible { c_on } else { c_off });
         icons::paint(&painter, glyph(lock), if layer.locked { Icon::Lock } else { Icon::Unlock }, if layer.locked { c_on } else { c_off });
         if let Some(sp) = speaker {
             icons::paint(&painter, glyph(sp), if layer.muted { Icon::SoundOff } else { Icon::Sound }, if layer.muted { T.accent_text } else { c_off });
+        }
+        // Onion skin for this layer (ADR 0061): bright while onion skin is on and draws it,
+        // faint while onion skin is off, struck through when the layer is left out.
+        if let Some(ot) = onion_t {
+            let g = glyph(ot);
+            icons::paint(&painter, g, Icon::Onion, if layer.onion && app.onion.ghosts { c_on } else { c_off });
+            if !layer.onion {
+                painter.line_segment([g.left_bottom(), g.right_top()], Stroke::new(1.5, c_off));
+            }
         }
         // outline swatch
         let sw = Rect::from_center_size(outl.center(), vec2(10.0, 10.0));
@@ -453,7 +536,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else {
             painter.rect_filled(sw, 0.0, to_color32(layer.color));
         }
-        let name_rect = Rect::from_min_max(left.left_top(), pos2(speaker.unwrap_or(eye).left() - 4.0, left.bottom()));
+        let name_rect = Rect::from_min_max(left.left_top(), pos2(speaker.or(onion_t).unwrap_or(eye).left() - 4.0, left.bottom()));
         let nr = ui.interact(name_rect, ui.id().with(("lname", layer.id.0)), Sense::click());
         // Screen readers hear the row as a selectable item, "Ball · layer", then its toggles.
         let name = &layer.name;
@@ -476,9 +559,45 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         for (r, id, salt, label, on) in [(eye, "layer.toggle_visible", "eye", tr!("Show {name}", name = name), layer.visible), (lock, "layer.toggle_lock", "lock", tr!("Lock {name}", name = name), layer.locked), (outl, "layer.toggle_outline", "outline", tr!("Outline {name}", name = name), layer.outline)].into_iter().take(if is_camera { 2 } else { 3 }) {
             let rr = ui.interact(r, ui.id().with((salt, layer.id.0)), Sense::click());
             a11y::control(ui, &rr, WidgetType::Checkbox, &label, Some(on));
+            let rr = if salt == "outline" { rr.on_hover_text(tr!("View as outlines in the layer's colour (on the stage only)")) } else { rr };
             if rr.clicked() {
                 app.run(id, json!({"layer": layer.id.0}));
             }
+        }
+        if let Some(ot) = onion_t {
+            let rr = ui.interact(ot, ui.id().with(("onion", layer.id.0)), Sense::click());
+            a11y::control(ui, &rr, WidgetType::Checkbox, &tr!("Onion skin {name}", name = name), Some(layer.onion));
+            if rr.on_hover_text(tr!("Onion skin this layer (Alt-click: this layer only, again: every layer)")).clicked() {
+                let solo = ui.input(|inp| inp.modifiers.alt);
+                if let Some(v) = app.run("layer.set_onion", json!({"layer": layer.id.0, "solo": solo})) {
+                    if !app.onion.ghosts {
+                        app.status_ok(tr!("Onion skin is off: turn it on in the timeline header to see the frames around the playhead"));
+                    } else if solo {
+                        let all = v["onion_layers"].as_array().map_or(0, Vec::len) > 1;
+                        app.status_ok(if all { tr!("Onion skin on every layer again").to_string() } else { tr!("Onion skin on {name} only (Alt-click it again for every layer)", name = name) });
+                    }
+                }
+            }
+        }
+        // The colour chip on the row's edge: a click opens the layer's colour (ADR 0061).
+        let chip = Rect::from_min_size(left.left_top(), vec2(8.0, rh));
+        let chip_r = ui.interact(chip, ui.id().with(("lcolor", layer.id.0)), Sense::click());
+        a11y::control(ui, &chip_r, WidgetType::Button, &tr!("Colour of {name}", name = name), None);
+        if chip_r.hovered() {
+            painter.rect_filled(Rect::from_min_size(left.left_top(), vec2(7.0, rh)), 0.0, to_color32(layer.color));
+        }
+        let chip_r = chip_r.on_hover_text(tr!("Layer colour: its outlines and its bar on the timeline"));
+        let menu_id = egui::Id::new(("layer_colour", layer.id.0));
+        if app.tl_color_open == Some(layer.id) {
+            app.tl_color_open = None;
+            egui::Popup::open_id(ui.ctx(), menu_id);
+        }
+        let shown = egui::Popup::menu(&chip_r).id(menu_id).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| color_menu(app, ui, layer.id, layer.color));
+        if let Some(r) = shown {
+            ui.ctx().accesskit_node_builder(r.response.id, |node| {
+                node.set_role(egui::accesskit::Role::Menu);
+                node.set_label(tr!("Layer colour"));
+            });
         }
         if let Some(sp) = speaker {
             let rr = ui.interact(sp, ui.id().with(("mute", layer.id.0)), Sense::click());
@@ -496,7 +615,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.run("layer.select", json!({"layer": layer.id.0}));
         }
         if nr.double_clicked() {
-            app.invoke("layer.rename");
+            // On the layer's icon: Layer Properties, as in Animate; on its name: rename.
+            if nr.interact_pointer_pos().is_some_and(|p| icon_rect.contains(p)) {
+                crate::layer_props::open(app, Some(layer.id));
+            } else {
+                app.invoke("layer.rename");
+            }
         }
         // The folder chevron opens and closes the folder (on top of the name's click target).
         if is_folder {
@@ -512,6 +636,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 // The camera layer: on or off, locked or not, or gone.
                 for id in ["layer.rename", "layer.toggle_visible", "layer.toggle_lock"] {
                     menus::cmd_item(app, ui, id);
+                }
+                if ui.button(tr!("Properties…")).clicked() {
+                    crate::layer_props::open(app, Some(layer.id));
+                    ui.close();
                 }
                 ui.separator();
                 if ui.button(tr!("Preview Through Camera")).clicked() {
@@ -533,6 +661,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             if layer.has_sounds() && menus::check_item(ui, tr!("Mute"), layer.muted, true) {
                 app.run("layer.toggle_mute", json!({"layer": layer.id.0}));
+            }
+            if !is_folder && menus::check_item(ui, tr!("Onion Skin"), layer.onion, true) {
+                app.run("layer.set_onion", json!({"layer": layer.id.0}));
+            }
+            ui.menu_button(tr!("Layer Height"), |ui| {
+                for h in 1..=anicraft_engine::doc::MAX_LAYER_HEIGHT {
+                    if menus::check_item(ui, &format!("{} %", u32::from(h) * 100), layer.height() == h, true) {
+                        app.run("layer.set_height", json!({"layer": layer.id.0, "height": u32::from(h) * 100}));
+                    }
+                }
+            });
+            if ui.button(tr!("Properties…")).clicked() {
+                crate::layer_props::open(app, Some(layer.id));
+                ui.close();
             }
             ui.separator();
             // Layer type, as check items: Mask (masks the layer below) and Masked.
@@ -564,7 +706,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
 
         // frame cells
-        let cells = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + ROW_H));
+        let cells = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + rh));
         let cp = painter.with_clip_rect(cells);
         if is_folder {
             // A folder has no frames: its row is a plain band across the timeline.
@@ -581,11 +723,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         for f in first..first + visible_cols + 1 {
             let x = x_of(f);
             if (f + 1) % 5 == 0 && cell_w >= 6.0 {
-                cp.rect_filled(Rect::from_min_size(pos2(x, y), vec2(cell_w, ROW_H)), 0.0, Color32::from_white_alpha(6));
+                cp.rect_filled(Rect::from_min_size(pos2(x, y), vec2(cell_w, rh)), 0.0, Color32::from_white_alpha(6));
             }
             // Cell lines thin out with the ruler when zoomed out, so rows never turn to hatching.
             if (f + 1) % minor == 0 {
-                cp.line_segment([pos2(x + cell_w - 0.5, y), pos2(x + cell_w - 0.5, y + ROW_H)], Stroke::new(1.0, T.separator));
+                cp.line_segment([pos2(x + cell_w - 0.5, y), pos2(x + cell_w - 0.5, y + rh)], Stroke::new(1.0, T.separator));
             }
         }
         // Spans are solid square blocks, separated by a one-pixel gap rather than outlines:
@@ -596,7 +738,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             let x0 = x_of(k.start);
             let x1 = x_of(k.end());
-            let span = Rect::from_min_max(pos2(x0, y + 3.0), pos2(x1 - 1.0, y + ROW_H - 3.0));
+            let span = Rect::from_min_max(pos2(x0, y + 3.0), pos2(x1 - 1.0, y + rh - 3.0));
             let next_adjacent = layer.keyframes.get(ki + 1).is_some_and(|n| n.start == k.end());
             let motion = k.motion.as_ref();
             let tweened = k.tween.is_some() && next_adjacent && motion.is_none();
@@ -620,7 +762,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 // Still decoding (just opened): draw it when it's ready.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
             }
-            let kc = pos2(x0 + cell_w * 0.5, y + ROW_H * 0.5);
+            let kc = pos2(x0 + cell_w * 0.5, y + rh * 0.5);
             if let Some(m) = motion {
                 // Property keyframes: small diamonds where any property has a key. A frame a
                 // motion path point is pinned to (ADR 0049) has a larger one with a hole, as the
@@ -671,7 +813,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             && sel.rows(&layers).is_some_and(|(a, b)| i >= a && i <= b)
         {
             let (f0, f1) = sel.frames();
-            let r = Rect::from_min_max(pos2(x_of(f0), y + 1.0), pos2(x_of(f1 + 1) - 1.0, y + ROW_H - 1.0));
+            let r = Rect::from_min_max(pos2(x_of(f0), y + 1.0), pos2(x_of(f1 + 1) - 1.0, y + rh - 1.0));
             cp.rect_filled(r, SQUARE, T.selection.gamma_multiply(0.28));
             cp.rect_stroke(r, SQUARE, Stroke::new(2.0, T.selection), StrokeKind::Inside);
         }
@@ -684,7 +826,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             && src <= b as i64
         {
             let (f0, f1) = sel.frames();
-            let g = Rect::from_min_max(pos2(x_of(f0), y + 1.0), pos2(x_of(f1 + 1) - 1.0, y + ROW_H - 1.0)).translate(vec2(by as f32 * cell_w, 0.0));
+            let g = Rect::from_min_max(pos2(x_of(f0), y + 1.0), pos2(x_of(f1 + 1) - 1.0, y + rh - 1.0)).translate(vec2(by as f32 * cell_w, 0.0));
             cp.rect_stroke(g, SQUARE, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
         }
         // Span length being dragged on this row: the new end line and its length readout.
@@ -693,14 +835,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         {
             // The frames gained (or given up), so the change reads as part of the span.
             let (a, b) = (x_of(end.min(to)), x_of(end.max(to)));
-            let changed = Rect::from_min_max(pos2(a, y + 2.0), pos2(b - 1.0, y + ROW_H - 2.0));
+            let changed = Rect::from_min_max(pos2(a, y + 2.0), pos2(b - 1.0, y + rh - 2.0));
             cp.rect_filled(changed, SQUARE, if to > end { T.selection.gamma_multiply(0.35) } else { Color32::from_black_alpha(120) });
             let x = x_of(to);
-            cp.line_segment([pos2(x, y + 1.0), pos2(x, y + ROW_H - 1.0)], Stroke::new(2.0, Color32::WHITE));
+            cp.line_segment([pos2(x, y + 1.0), pos2(x, y + rh - 1.0)], Stroke::new(2.0, Color32::WHITE));
             let n = to - start;
             let secs = n as f32 / app.s.doc.stage.fps.max(1.0);
             let label = trn!("{n} frame · {secs} s", "{n} frames · {secs} s", n, secs = format!("{secs:.2}"));
-            let at = pos2(x + 6.0, y + ROW_H * 0.5);
+            let at = pos2(x + 6.0, y + rh * 0.5);
             let galley = painter.layout_no_wrap(label, font(Type::DataSmall), T.text);
             let (w, h) = (galley.rect.width(), galley.rect.height());
             let bg = Rect::from_min_size(at - vec2(3.0, h * 0.5 + 2.0), vec2(w + 6.0, h + 4.0));
@@ -765,7 +907,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let f = frame_at(p.x);
             match (app.tl_drag, app.frame_sel.as_mut()) {
                 (TlDrag::Select, Some(sel)) => {
-                    let r = ((p.y - rows_top) / ROW_H).floor().max(0.0) as usize + first_row;
+                    let r = row_at(&heights, first_row, p.y - rows_top).max(first_row);
                     let row = rows.get(r.min(rows.len().saturating_sub(1))).copied().unwrap_or(0);
                     if let Some(l) = layers.get(row) {
                         sel.head = (l.id, f);
@@ -775,7 +917,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     // Never before frame 1, and only onto layers that exist.
                     let by = (i64::from(f) - i64::from(grab)).max(-i64::from(sel.frames().0));
                     // The row under the pointer, as a layer index (rows skip closed folders).
-                    let vis = (((p.y - rows_top) / ROW_H).floor() as i64 + first_row as i64).clamp(0, rows.len() as i64 - 1).max(0) as usize;
+                    let vis = row_at(&heights, first_row, p.y - rows_top);
                     let row = rows.get(vis).map_or(grab_row as i64, |&li| li as i64);
                     let rows_by = match sel.rows(&layers) {
                         Some((a, b)) => (row - grab_row as i64).clamp(-(a as i64), layers.len() as i64 - 1 - b as i64),
@@ -993,6 +1135,90 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     sr.on_hover_text(tr!("Scroll the timeline (or Shift+wheel anywhere over it)"));
 }
 
+/// The layer colour popup (a click on a layer's colour chip, ADR 0061): the layer colours as
+/// swatches, and a picker for any other (a drag in it is one undo step).
+fn color_menu(app: &mut App, ui: &mut egui::Ui, layer: LayerId, color: anicraft_engine::doc::Rgba) {
+    use anicraft_engine::doc::Rgba;
+    ui.set_min_width(200.0);
+    ui.label(text(Type::Caption, tr!("Layer colour")));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        ui.set_max_width(6.0 * 24.0);
+        for hex in anicraft_engine::LAYER_COLORS {
+            let c = Rgba::hex(hex);
+            let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+            ui.painter().rect_filled(r, T.rc(), to_color32(c));
+            if c.to_hex() == color.to_hex() {
+                ui.painter().rect_stroke(r, T.rc(), Stroke::new(2.0, T.text), StrokeKind::Outside);
+            } else if resp.hovered() {
+                ui.painter().rect_stroke(r, T.rc(), Stroke::new(1.0, T.text_dim), StrokeKind::Outside);
+            }
+            a11y::control(ui, &resp, WidgetType::Button, &tr!("Layer colour {hex}", hex = c.to_hex()), Some(c.to_hex() == color.to_hex()));
+            if resp.clicked() {
+                app.run("layer.set_color", json!({"layer": layer.0, "color": c.to_hex()}));
+            }
+        }
+    });
+    ui.separator();
+    // Any other colour: typed as hex, or picked in Layer Properties.
+    ui.horizontal(|ui| {
+        let id = ui.id().with(("layer_hex", layer.0));
+        let mut hex = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| color.to_hex());
+        let r = with_type(ui, Type::Data, |ui| ui.add(egui::TextEdit::singleline(&mut hex).desired_width(72.0).char_limit(9))).named(tr!("Layer colour as hex"));
+        if r.changed() {
+            ui.data_mut(|d| d.insert_temp(id, hex.clone()));
+        }
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            ui.data_mut(|d| d.remove::<String>(id));
+            let typed = if hex.starts_with('#') { hex.trim().to_string() } else { format!("#{}", hex.trim()) };
+            app.run("layer.set_color", json!({"layer": layer.0, "color": typed}));
+        }
+        if ui.button(tr!("More…")).on_hover_text(tr!("Pick any colour in Layer Properties")).clicked() {
+            crate::layer_props::open(app, Some(layer));
+            ui.close();
+        }
+    });
+}
+
+const FRAME_VIEW_MENU: &str = "tl_frame_view";
+
+/// The timeline's Frame View menu (ADR 0061), as in Animate: frame widths Tiny to Large (the
+/// zoom slider beside it sets any width between) and Short rows. View state.
+fn frame_view_button(app: &mut App, ui: &mut egui::Ui) {
+    let id = egui::Id::new(FRAME_VIEW_MENU);
+    let (rect, resp) = ui.allocate_exact_size(vec2(TARGET, TARGET), Sense::click());
+    let hot = resp.hovered() || egui::Popup::is_id_open(ui.ctx(), id);
+    ui.painter().rect_filled(rect, T.rc(), if hot { T.header } else { Color32::TRANSPARENT });
+    icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), Icon::Layer, if hot { T.icon_hot } else { T.icon });
+    a11y::control(ui, &resp, WidgetType::Button, tr!("Frame view"), None);
+    let resp = resp.on_hover_text(tr!("Frame view: frame width and row height"));
+    if std::mem::take(&mut app.tl_frame_view_open) {
+        egui::Popup::open_id(ui.ctx(), id);
+    }
+    let shown = egui::Popup::menu(&resp).id(id).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(160.0);
+        for (name, w) in FRAME_WIDTHS {
+            if menus::check_item(ui, crate::i18n::t(name), (app.tl_cell_w - w).abs() < 0.01, true) {
+                app.tl_cell_w = w;
+            }
+        }
+        ui.separator();
+        if menus::check_item(ui, tr!("Short"), app.prefs.timeline_short_rows, true) {
+            let mut p = app.prefs.clone();
+            p.timeline_short_rows = !p.timeline_short_rows;
+            let ctx = ui.ctx().clone();
+            app.set_prefs(&ctx, p);
+        }
+    });
+    // egui leaves the popup's own surface without a role or name.
+    if let Some(r) = shown {
+        ui.ctx().accesskit_node_builder(r.response.id, |node| {
+            node.set_role(egui::accesskit::Role::Menu);
+            node.set_label(tr!("Frame view"));
+        });
+    }
+}
+
 /// Engine param for an easing preset.
 /// A keyframe's sound over its span: the waveform from the keyframe on, repeated as the sound
 /// repeats, as far as the span reaches (all a stream sound plays; an event sound plays on past
@@ -1192,6 +1418,41 @@ mod tests {
 
     fn layers(n: u64) -> Vec<Arc<Layer>> {
         (1..=n).map(|i| Arc::new(Layer::new(LayerId(i), format!("L{i}")))).collect()
+    }
+
+    #[test]
+    fn rows_take_their_layer_height_and_scroll_by_whole_rows() {
+        // A normal row, a 300 % row, two normal rows; 100 points to show them in.
+        let h = [28.0, 84.0, 28.0, 28.0];
+        assert_eq!(rows_fitting(&h, 0, 100.0), 1, "the tall row doesn't fit after the first");
+        assert_eq!(rows_fitting(&h, 1, 100.0), 1);
+        assert_eq!(rows_fitting(&h, 2, 100.0), 2);
+        assert_eq!(rows_fitting(&h, 1, 10.0), 1, "a row taller than the space still shows");
+        assert_eq!(rows_fitting(&h, 4, 100.0), 0);
+        // Scrolled to the end, the last rows fill the space; a row is brought into view from above.
+        assert_eq!(max_first_row(&h, 100.0), 2);
+        assert_eq!(max_first_row(&h, 1000.0), 0, "everything fits: no scrolling");
+        assert_eq!(first_showing(&h, 1, 100.0), 1);
+        assert_eq!(first_showing(&h, 3, 60.0), 2);
+        assert_eq!(first_showing(&h, 0, 5.0), 0);
+        // The pointer: rows by their own heights, from the first row shown, and above it.
+        assert_eq!(row_at(&h, 0, 10.0), 0);
+        assert_eq!(row_at(&h, 0, 28.0), 1);
+        assert_eq!(row_at(&h, 0, 111.0), 1);
+        assert_eq!(row_at(&h, 0, 112.0), 2);
+        assert_eq!(row_at(&h, 2, 30.0), 3);
+        assert_eq!(row_at(&h, 0, 9999.0), 3, "below the last row: the last row");
+        assert_eq!(row_at(&h, 2, -1.0), 1, "just above the first row shown: the tall row");
+        assert_eq!(row_at(&h, 2, -90.0), 0);
+        assert_eq!(row_at(&h, 2, -9999.0), 0);
+        assert_eq!(row_at(&[], 0, 5.0), 0);
+        assert_eq!(max_first_row(&[], 50.0), 0);
+        // Short rows, and a 200 % short row is two of them.
+        assert!(base_row_h(true) < base_row_h(false));
+        // The frame widths run Tiny to Large inside the zoom range, Normal at 100 %.
+        assert!(FRAME_WIDTHS.windows(2).all(|w| w[0].1 < w[1].1));
+        assert!(FRAME_WIDTHS.iter().all(|(_, w)| CELL_RANGE.contains(w)));
+        assert_eq!(FRAME_WIDTHS[2].1, CELL_DEFAULT);
     }
 
     #[test]

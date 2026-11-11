@@ -656,8 +656,9 @@ fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The colour the `n`th layer gets (its outline and timeline bar).
 pub(crate) fn layer_color(n: usize) -> anicraft_doc::Rgba {
-    const PALETTE: [u32; 7] = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
-    anicraft_doc::Rgba::hex(PALETTE.get(n % PALETTE.len()).copied().unwrap_or(0x4fa3ff))
+    // The first seven of the layer colours, in turn.
+    const TURN: usize = 7;
+    anicraft_doc::Rgba::hex(crate::LAYER_COLORS.get(n % TURN).copied().unwrap_or(0x4fa3ff))
 }
 
 fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {

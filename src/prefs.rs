@@ -79,6 +79,8 @@ pub struct Prefs {
     /// Extra space before frame 1 on the timeline, in points, on top of the room the playhead
     /// needs (the playhead can't go there). Fixed on screen, whatever the zoom.
     pub timeline_start_gap: f32,
+    /// Frame view › Short (ADR 0061): timeline rows at their short height.
+    pub timeline_short_rows: bool,
     /// Keyboard shortcuts the user changed: action id → its full list of keys (empty =
     /// unbound). Actions not listed keep their defaults (`keymap`).
     pub shortcuts: std::collections::BTreeMap<String, Vec<String>>,
@@ -141,6 +143,7 @@ impl Default for Prefs {
             stage_renderer: StageRenderer::Gpu,
             native_dialogs: true,
             timeline_start_gap: 0.0,
+            timeline_short_rows: false,
             shortcuts: Default::default(),
             autosave: true,
             autosave_secs: 60,

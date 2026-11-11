@@ -167,6 +167,7 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
 
 pub use history::{Snapshot, StateId};
 pub use selection::Selection;
+pub use cmds_layer::LAYER_COLORS;
 
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
 pub const MAX_FRAME: u32 = 100_000;
