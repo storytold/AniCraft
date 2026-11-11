@@ -306,3 +306,44 @@ fn make_off(pic: &crate::editing::StagePicture) -> crate::render_service::FrameJ
     crate::render_service::make_job(pic.state, &pic.doc, pic.frame, view, None).inside(pic.front.clone())
 }
 
+
+/// Measured numbers for ADR 0051: `cargo test -p anicraft-engine --lib multi_timings -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn multi_timings() {
+    use std::time::Instant;
+    // 24 keyframes, each with 12 × 12 raw squares and 50 objects.
+    let mut s = Session::default();
+    s.style.object_drawing = false;
+    for i in 0..144 {
+        let (x, y) = ((i % 12) as f32 * 50.0, (i / 12) as f32 * 50.0);
+        run(&mut s, "draw.rect", json!({"x": x, "y": y, "w": 30, "h": 30, "fill": "#3366ff", "stroke": null}));
+    }
+    for i in 0..50 {
+        run(&mut s, "draw.rect", json!({"x": 700 + i, "y": i * 10, "w": 20, "h": 20, "object": true}));
+    }
+    for f in 1..24 {
+        run(&mut s, "timeline.goto", json!({"frame": f * 2}));
+        run(&mut s, "timeline.insert_keyframe", json!({}));
+    }
+    let last = 47;
+    let t = |label: &str, f: &mut dyn FnMut(&mut Session)| {
+        let mut s2 = Session::new(s.doc.clone());
+        let t0 = Instant::now();
+        f(&mut s2);
+        eprintln!("{label}: {:.2} ms", t0.elapsed().as_secs_f64() * 1000.0);
+    };
+    let objects = |s: &Session| -> Vec<Value> { s.multi_frame_items(0, last).into_iter().filter(|(it, _)| key(s, it.layer, it.frame).elements.iter().any(|e| e.id == it.element && !matches!(&e.kind, ElementKind::Shape(sh) if sh.merge))).map(|(it, _)| it.to_json()).collect() };
+    let raws = |s: &Session| -> Vec<Value> { s.multi_frame_items(0, last).into_iter().filter(|(it, _)| key(s, it.layer, it.frame).elements.iter().any(|e| e.id == it.element && matches!(&e.kind, ElementKind::Shape(sh) if sh.merge))).map(|(it, _)| it.to_json()).take(24 * 12).collect() };
+    let (objects, raws) = (objects(&s), raws(&s));
+    eprintln!("items shown: {}, objects: {}, raw: {}", s.multi_frame_items(0, last).len(), objects.len(), raws.len());
+    t("list what is shown (24 keyframes)", &mut |s| drop(s.multi_frame_items(0, last)));
+    t("move 1,200 objects, a drag step", &mut |s| drop(run(s, "frames.edit_multiple", json!({"first": 0, "last": last, "dx": 1, "dy": 0, "items": objects, "merge": false}))));
+    t("rotate 1,200 objects", &mut |s| drop(run(s, "frames.transform", json!({"first": 0, "last": last, "rotate": 15, "items": objects}))));
+    t("move and merge 288 raw squares (24 keyframes)", &mut |s| drop(run(s, "frames.edit_multiple", json!({"first": 0, "last": last, "dx": 25, "dy": 0, "items": raws}))));
+    t("copy 1,200 objects, paste in place", &mut |s| {
+        run(s, "frames.copy", json!({"first": 0, "last": last, "items": objects}));
+        run(s, "frames.paste", json!({"first": 0, "last": last}));
+    });
+    t("delete everything shown", &mut |s| drop(run(s, "frames.delete", json!({"first": 0, "last": last}))));
+}

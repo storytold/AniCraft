@@ -81,10 +81,11 @@ fn items_param(p: &Value) -> Result<Option<Vec<FrameItem>>> {
 fn chosen(s: &Session, p: &Value, first: u32, last: u32) -> Result<Vec<(FrameItem, Rect)>> {
     let shown = s.multi_frame_items(first, last);
     let Some(list) = items_param(p)? else { return Ok(shown) };
+    let index: std::collections::HashMap<FrameItem, Rect> = shown.into_iter().collect();
     let mut out = Vec::with_capacity(list.len());
     let mut seen = HashSet::new();
     for it in list {
-        let Some(&(_, b)) = shown.iter().find(|(s, _)| *s == it) else {
+        let Some(&b) = index.get(&it) else {
             return Err(EngineError::State(format!(
                 "element {} on layer {} at frame {} is not on a keyframe Edit Multiple Frames shows in frames {first}..={last} (on a visible, unlocked layer)",
                 it.element.0, it.layer.0, it.frame
