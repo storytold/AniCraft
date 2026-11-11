@@ -8,7 +8,7 @@
 //! Never panics; non-finite numbers and oversized paths are errors.
 
 use crate::path::MAX_PATH_CMDS;
-use crate::{Path, Vec2};
+use crate::{Path, PathCmd, Vec2};
 
 struct Cursor<'a> {
     s: &'a [u8],
@@ -186,6 +186,17 @@ pub fn parse_path_data(d: &str) -> Result<Path, String> {
             return Err(format!("path has more than {MAX_PATH_CMDS} commands"));
         }
     }
+    // Coordinates are stored as f32: a finite f64 can still overflow to infinity there.
+    let finite = |v: &Vec2| v.x.is_finite() && v.y.is_finite();
+    let ok = path.cmds.iter().all(|cmd| match cmd {
+        PathCmd::MoveTo(a) | PathCmd::LineTo(a) => finite(a),
+        PathCmd::QuadTo(a, b) => finite(a) && finite(b),
+        PathCmd::CubicTo(a, b, e) => finite(a) && finite(b) && finite(e),
+        PathCmd::Close => true,
+    });
+    if !ok {
+        return Err("path coordinate is not finite as f32".into());
+    }
     Ok(path)
 }
 
@@ -287,6 +298,13 @@ mod tests {
         // A real icon outline (rounded square corner arcs).
         let lock = parse_path_data("M7 11V7a5 5 0 0 1 10 0v4").unwrap();
         assert_eq!(ends(&lock).last().copied(), Some(Vec2::new(17.0, 11.0)));
+    }
+
+    #[test]
+    fn numbers_overflowing_f32_are_errors() {
+        for bad in ["M0 0 L1e39 0", "M0 0 v , 3.4028236692e38 z", "M0 0 l3e38 0 3e38 0"] {
+            assert!(parse_path_data(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
