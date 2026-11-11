@@ -80,6 +80,9 @@ pub struct Tokens {
     /// after it (green); the defaults the onion menu can change. Also the ruler's markers.
     pub onion_past: Color32,
     pub onion_future: Color32,
+    /// A symbol's 9-slice guides while it is open for editing (ADR 0055), dashed over a light
+    /// underlay so they read on any artwork.
+    pub slice_guide: Color32,
     /// Library symbol kinds.
     pub kind_graphic: Color32,
     pub kind_movie_clip: Color32,
@@ -148,6 +151,7 @@ pub const GRAPHITE: Tokens = Tokens {
     hint_end: Color32::from_rgb(0x4f, 0xe3, 0xa8),
     onion_past: Color32::from_rgb(0x4f, 0x8d, 0xff),
     onion_future: Color32::from_rgb(0x4c, 0xd0, 0x7d),
+    slice_guide: Color32::from_rgb(0xd9, 0x3c, 0xc4),
     kind_graphic: Color32::from_rgb(0x22, 0xc7, 0xa9),
     kind_movie_clip: Color32::from_rgb(0x5a, 0x8f, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xb5, 0x3d),
@@ -204,6 +208,7 @@ pub const HIGH_CONTRAST: Tokens = Tokens {
     hint_end: Color32::from_rgb(0x74, 0xff, 0xb0),
     onion_past: Color32::from_rgb(0x6f, 0xa8, 0xff),
     onion_future: Color32::from_rgb(0x5c, 0xf0, 0x9a),
+    slice_guide: Color32::from_rgb(0xff, 0x6e, 0xe6),
     kind_graphic: Color32::from_rgb(0x3d, 0xf0, 0xcf),
     kind_movie_clip: Color32::from_rgb(0x85, 0xad, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xc8, 0x5c),

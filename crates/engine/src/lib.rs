@@ -958,3 +958,5 @@ mod erase_tests;
 mod eyedropper_tests;
 #[cfg(test)]
 mod selection_tests;
+#[cfg(test)]
+mod scale_grid_tests;

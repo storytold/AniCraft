@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+* **9-slice scaling for symbols** (ADR 0055, M2).
+  * **Enable guides for 9-slice scaling** on a symbol, in the Library's item properties or in
+    Properties. A scaled instance then keeps its corners unscaled, stretches its edges one way
+    and its centre both ways. Rounded buttons and panels resize without distorting, strokes
+    keep their width, and rotation and skew apply after. Nested symbols, text and bitmaps
+    inside scale normally, as in Animate. When there isn't room for the corners, they shrink
+    together in proportion.
+  * While the symbol is open for editing, its four guides are **dashed lines across the
+    stage**. Drag them with the Selection tool (one undo step per drag), or type their
+    positions in Properties.
+  * Every export draws it from the same frames. SVG and Lottie get baked outlines. HTML canvas
+    export scales such instances as a whole for now and says so in its report.
+  * XFL and `.fla` import read `scaleGridLeft/Right/Top/Bottom`. Headless:
+    `symbol.set_scale_grid {symbol?, on?, left?, right?, top?, bottom?}`.
 * **Frame scripts in ActionScript 3.0 run small logic** (ADR 0052, M6).
   * Typed variables (`var score:int = 0;` as Number, int, uint, Boolean, String or untyped),
     kept per timeline instance across its frame scripts as Animate timelines keep them;

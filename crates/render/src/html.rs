@@ -13,7 +13,8 @@
 //! clips have their own playheads, buttons their pointer states). Identical paths, paints and
 //! frames are stored once, so a still keyframe over many frames costs one entry.
 //!
-//! What doesn't carry across is counted in the report: filters, Subtract and Invert blending,
+//! What doesn't carry across is counted in the report: filters, 9-slice scaling (instances
+//! scale as a whole), Subtract and Invert blending,
 //! tints on bitmaps, plug-in frame scripts (they need the plug-in host) and kept scripts
 //! outside the ActionScript subset. Scripts in the subset (ADR 0013 tiers 2 and 2.5) come
 //! across as the same script IR the Rust player runs (as JSON), with each timeline's functions
@@ -96,6 +97,7 @@ const BITMAP_TINT: &str = "tints on bitmap fills (drawn untinted)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
 const BUTTON_SOUNDS: &str = "sounds on button frames (not played yet)";
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
+const NINE_SLICE: &str = "9-slice scaling (scaled as a whole)";
 const OUTSIDE_CALLS: &str = "script calls that reach outside the movie (ignored)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
@@ -418,6 +420,10 @@ impl<'a> Bake<'a> {
             ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events } => {
                 let (Some(&y), Some(sym)) = (self.symbols.get(symbol), self.doc.symbol(*symbol)) else { return };
                 let len = sym.timeline.frame_count();
+                // The page's player places symbols itself and doesn't slice them yet (ADR 0055).
+                if anicraft_doc::nine_slice::slices(self.doc, sym, &el.transform) {
+                    self.notes.entry(NINE_SLICE).or_default().insert(el.id.0);
+                }
                 let mut o = Map::new();
                 o.insert("y".into(), json!(y));
                 o.insert("id".into(), json!(el.id.0));

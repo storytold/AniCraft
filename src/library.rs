@@ -783,6 +783,8 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     app.run("script.set_class", json!({"symbol": id.0, "class": v, "base": base}));
                 }
             });
+            // 9-slice scaling (ADR 0055), as in Animate's Symbol Properties.
+            crate::panels::scale_grid_props(app, ui, id, "library");
         }
         LibraryItem::Bitmap(id) => {
             let Some(mut on) = app.s.doc.bitmap(id).map(|b| b.smoothing) else { return };

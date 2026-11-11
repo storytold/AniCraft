@@ -632,6 +632,12 @@ fn panic_hunt_every_command() {
         json!({"first": 0, "last": 50, "scale_x": -1, "pivot": [0, 0], "edge": "vcenter", "to_stage": true, "merge": false}),
         json!({"first": 3, "last": 1, "edge": "right", "layer": u64::MAX, "items": [[0, 0, 0]]}),
         json!({"first": 0, "last": 99_999, "layer": 0, "items": (0..200).map(|i| json!([i, i, i])).collect::<Vec<_>>()}),
+        // 9-slice guides (ADR 0055): crossed, huge, not numbers, moved while turned off.
+        json!({"on": true, "left": 90, "right": 10, "top": 1e30, "bottom": -1e30, "symbol": 1}),
+        json!({"on": false, "left": 5}),
+        json!({"on": "x", "left": f64::NAN, "right": "y", "top": null}),
+        json!({"left": -1e7, "right": 1e7, "top": -1e7, "bottom": 1e7}),
+        json!({"on": true, "symbol": u64::MAX}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");

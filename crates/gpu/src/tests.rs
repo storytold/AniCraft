@@ -465,6 +465,27 @@ fn composited_sample() -> anicraft_doc::Document {
     doc
 }
 
+/// A rounded panel with 9-slice guides, placed stretched, scaled up and turned.
+fn nine_slice_sample() -> anicraft_doc::Document {
+    use anicraft_doc::{Element, ElementId, ElementKind, Keyframe, Layer, LayerId, ScaleGrid, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
+    let mut d = anicraft_doc::Document { stage: anicraft_doc::Stage { width: 320, height: 200, ..Default::default() }, ..Default::default() };
+    let mut shape = Shape::filled(Path::rounded_rect(0.0, 0.0, 60.0, 30.0, 8.0), Paint::Solid(Rgba::hex(0x2a9d8f)));
+    shape.stroke = Some(Stroke::new(Rgba::hex(0x264653), 2.0));
+    let el = |id, transform, kind| std::sync::Arc::new(Element { id: ElementId(id), name: String::new(), transform, color: ColorEffect::default(), kind });
+    let mut k = Keyframe::new(0, 1);
+    k.elements.push(el(2, Affine::IDENTITY, ElementKind::Shape(shape)));
+    let mut l = Layer::new(LayerId(3), "art");
+    l.keyframes = vec![std::sync::Arc::new(k)];
+    d.library.push(std::sync::Arc::new(Symbol { id: SymbolId(4), name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid: Some(ScaleGrid { left: 8.0, right: 52.0, top: 8.0, bottom: 22.0 }), timeline: Timeline { layers: vec![std::sync::Arc::new(l)] } }));
+    let inst = |id, xf| el(id, xf, ElementKind::Symbol { symbol: SymbolId(4), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() });
+    let mut k = Keyframe::new(0, 1);
+    k.elements.push(inst(5, Affine::translate(10.0, 10.0).mul(&Affine::scale(4.5, 1.2))));
+    k.elements.push(inst(6, Affine::translate(30.0, 70.0).mul(&Affine::scale(2.0, 3.5))));
+    k.elements.push(inst(7, Affine::translate(220.0, 90.0).mul(&Affine::rotate(0.5)).mul(&Affine::scale(1.5, 2.5))));
+    std::sync::Arc::make_mut(&mut d.timeline_mut(0).layers[0]).keyframes = vec![std::sync::Arc::new(k)];
+    d
+}
+
 #[test]
 fn binned_coverage_matches_the_oracle_on_the_cpu() {
     let mut all = scenes();
@@ -480,6 +501,10 @@ fn binned_coverage_matches_the_oracle_on_the_cpu() {
     for (f, s) in [(0u32, 0.4f32), (30, 0.6)] {
         all.push(("composited sample", anicraft_doc::evaluate(&comp, f), View::stage(&comp, s)));
     }
+    // A 9-sliced instance (ADR 0055) reaches the stage through evaluation: cut outlines, strokes
+    // at their own width.
+    let nine = nine_slice_sample();
+    all.push(("9-slice", anicraft_doc::evaluate(&nine, 0), View::stage(&nine, 0.7)));
     for (name, dl, v) in all {
         let (scene, _) = prepare_scene(&dl, &v).unwrap();
         let b = binning::bin(&scene, v.width, v.height).unwrap();

@@ -36,7 +36,7 @@ fn layer(id: u64, keys: Vec<Arc<Keyframe>>) -> Arc<Layer> {
 }
 
 fn symbol(id: u64, kind: SymbolKind, layers: Vec<Arc<Layer>>) -> Arc<Symbol> {
-    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, timeline: Timeline { layers } })
+    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, scale_grid: None, timeline: Timeline { layers } })
 }
 
 fn this() -> Target {
@@ -463,7 +463,7 @@ fn frames_are_baked_and_stored_once() {
     assert!(m.stats.paths < 40, "{:?}", m.stats);
     // Unused library symbols stay out.
     let mut d = doc.clone();
-    d.library.push(Arc::new(Symbol { id: SymbolId(999_999), name: "unused".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline::default() }));
+    d.library.push(Arc::new(Symbol { id: SymbolId(999_999), name: "unused".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline: Timeline::default() }));
     assert_eq!(movie(&d, &HtmlOptions::default()).json["symbols"], m.json["symbols"]);
 }
 
@@ -519,8 +519,18 @@ fn what_does_not_carry_across_is_reported() {
         *blend = BlendMode::Subtract;
     }
     Arc::make_mut(&mut tl.layers[0]).keyframe_mut(1).unwrap().script = Some(FrameScript::Plugin(PluginScript { id: "org.example.menu".into(), entry: "main".into() }));
+    // A 9-slice symbol, scaled: the page scales it as a whole (ADR 0055).
+    let ElementKind::Symbol { symbol: sym, .. } = doc.timeline(0).layers[2].keyframes[0].elements[0].kind else { panic!("the fixture's third layer holds an instance") };
+    if let Some(x) = doc.library.iter_mut().find(|x| x.id == sym) {
+        Arc::make_mut(x).scale_grid = Some(anicraft_doc::ScaleGrid { left: 1.0, right: 2.0, top: 1.0, bottom: 2.0 });
+    }
+    let m = movie(&doc, &HtmlOptions::default());
+    assert_eq!(m.report.get(NINE_SLICE), None, "unscaled instances draw the same either way");
+    let tl = doc.timeline_mut(0);
+    Arc::make_mut(&mut Arc::make_mut(&mut tl.layers[2]).keyframe_mut(0).unwrap().elements[0]).transform = Affine::scale(2.0, 1.0);
     let m = movie(&doc, &HtmlOptions::default());
     assert_eq!(m.report.get(FILTERS), Some(&1));
+    assert_eq!(m.report.get(NINE_SLICE), Some(&1));
     assert_eq!(m.report.get(BLENDS), Some(&1));
     assert_eq!(m.report.get(PLUGIN_SCRIPTS), Some(&1));
     // The player says so when the frame script's keyframe is entered.
@@ -598,8 +608,8 @@ fn sounds_carry_their_envelopes_and_volumes_and_start_in_graphics_and_clips_as_i
     let inst = |id, symbol| Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: Default::default(), kind: ElementKind::Symbol { symbol: SymbolId(symbol), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() } });
     // A graphic with a fading sound on its frame 1 (of 2), a clip with a left-channel one on its
     // frame 0 (of 3), both on a layer at half volume; a sound of the main timeline's own.
-    doc.library.push(Arc::new(Symbol { linkage: None, id: SymbolId(20), name: "g".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![layer(21, vec![key(0, 1, None, vec![]), key(1, 1, snd(SoundSync::Event, SoundEffect::FadeOut), vec![])], 1.0)] } }));
-    doc.library.push(Arc::new(Symbol { linkage: None, id: SymbolId(30), name: "c".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![layer(31, vec![key(0, 3, snd(SoundSync::Stream, SoundEffect::LeftChannel), vec![])], 0.5)] } }));
+    doc.library.push(Arc::new(Symbol { linkage: None, scale_grid: None, id: SymbolId(20), name: "g".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![layer(21, vec![key(0, 1, None, vec![]), key(1, 1, snd(SoundSync::Event, SoundEffect::FadeOut), vec![])], 1.0)] } }));
+    doc.library.push(Arc::new(Symbol { linkage: None, scale_grid: None, id: SymbolId(30), name: "c".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![layer(31, vec![key(0, 3, snd(SoundSync::Stream, SoundEffect::LeftChannel), vec![])], 0.5)] } }));
     doc.timeline_mut(0).layers = vec![layer(1, vec![key(0, 6, snd(SoundSync::Event, SoundEffect::None), vec![])], 1.0), layer(2, vec![key(0, 6, None, vec![inst(40, 20), inst(41, 30)])], 0.5)];
     let m = movie(&doc, &HtmlOptions::default());
     // The fade's points span one play (half a second); the clip's span its 3 frames.

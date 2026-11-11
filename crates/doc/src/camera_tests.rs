@@ -141,7 +141,7 @@ fn the_camera_stays_on_top_alone_and_old_files_read_without_one() {
     // A symbol's camera layer is a normal layer.
     let mut sl = Layer::new(LayerId(80), "in symbol");
     sl.kind = LayerKind::Camera;
-    d.library.push(Arc::new(Symbol { id: SymbolId(81), name: "S".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(sl)] } }));
+    d.library.push(Arc::new(Symbol { id: SymbolId(81), name: "S".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(sl)] } }));
     d.sanitize();
     assert_eq!(d.library[0].timeline.layers[0].kind, LayerKind::Normal);
     // Depth round-trips, is left out when 0, and an old file reads at 0; hostile depths clamp.
