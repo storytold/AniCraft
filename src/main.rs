@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open <panel>]
-//!          [--theme graphite|high-contrast] [--scale <percent>]
+//!          [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo]
 //! anicraft --version
 //! ```
 //! `--screenshot` starts normally, draws ~120 frames, saves the window as PNG and exits.
@@ -18,6 +18,9 @@
 // window chrome, `--open` panels); that code stays compiled for it but unused (ADR 0036).
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
+// First, so its `tr!` macros are in scope in every module after it.
+#[macro_use]
+mod i18n;
 mod a11y;
 mod actions_panel;
 mod app;
@@ -25,6 +28,7 @@ mod autosave;
 mod brushtool;
 mod envelope;
 mod erasertool;
+mod bone_tool;
 mod camera_tool;
 mod dialogs;
 mod gpu_stage;
@@ -34,6 +38,7 @@ mod menus;
 mod motion_editor;
 mod panels;
 mod motion_path;
+mod onion;
 mod pathtools;
 mod platform;
 mod plugins_ui;
@@ -78,10 +83,12 @@ fn open_session(file: Option<&Path>) -> (Session, Option<String>) {
 /// `--theme` / `--scale`: the look for this run only (screenshots of high contrast or 200 %),
 /// over the saved preferences, without saving them.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Look {
     theme: Option<theme::Palette>,
     scale: Option<f32>,
+    /// `--lang`: a locale code, `auto` or `pseudo` (ADR 0040).
+    lang: Option<String>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -94,6 +101,8 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
     // The embedded interface font joins the text library before anything lays text out:
     // opening an Animate document from the command line lays its text out right here.
     anicraft_engine::text::Fonts::register(theme::embedded_fonts());
+    // `--lang` before the window exists, so its first status line is in that language too.
+    i18n::force(look.lang.as_deref());
     let (session, report) = open_session(file);
     eframe::run_native(
         "AniCraft",
@@ -104,7 +113,7 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
             a.open_panel(open.as_deref());
             // An imported document says what came across, as opening it from the menu does.
             if let Some(r) = report {
-                a.status_ok(format!("{r} Save to keep it as an AniCraft document."));
+                a.status_ok(tr!("{report} Save to keep it as an AniCraft document.", report = r));
             }
             Ok(Box::new(a))
         }),
@@ -152,19 +161,28 @@ fn main() -> eframe::Result {
                     std::process::exit(2);
                 }
             },
+            "--lang" => match args.next() {
+                Some(code) if i18n::known(&code) => look.lang = Some(code),
+                other => {
+                    let offered: Vec<&str> = i18n::offered().into_iter().map(|(c, _)| c).collect();
+                    eprintln!("--lang takes auto, pseudo or a language this build has ({}), not {}", offered.join(", "), other.as_deref().unwrap_or("nothing"));
+                    std::process::exit(2);
+                }
+            },
             // Printed by the release packaging checks and for bug reports.
             "--version" | "-V" => {
                 println!("AniCraft {} ({})", env!("CARGO_PKG_VERSION"), app::RELEASE_STAGE);
                 return Ok(());
             }
             "--help" | "-h" => {
-                println!(
-                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|merge|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|hints|hintsend|camera|cameraview|filters|prefs|licenses|zoom|recovery|plugins|actions|script|testmovie|exporthtml|sound|envelope]\n\
+                println!( // i18n-exempt: the --help console text
+                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testscript|exporthtml|sound|envelope]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\
                      --theme      the interface palette for this run (not saved)\n\
                      --scale      the interface scale for this run, 75 to 200 (not saved)\n\
+                     --lang       the interface language for this run (not saved); pseudo tests the layout\n\
                      Headless use: anicraft-cli --help"
                 );
                 return Ok(());
@@ -177,7 +195,7 @@ fn main() -> eframe::Result {
     // on some Linux setups) retry once with OpenGL, unless the user forced a backend.
     let forced = platform::forced_renderer(renderer_arg.as_deref());
     let first = forced.unwrap_or(eframe::Renderer::Wgpu);
-    match run(first, file.as_deref(), shot.clone(), open.clone(), look) {
+    match run(first, file.as_deref(), shot.clone(), open.clone(), look.clone()) {
         Err(e) if forced.is_none() && first == eframe::Renderer::Wgpu => {
             eprintln!("GPU backend (wgpu) failed to start: {e}. Retrying with OpenGL.");
             run(eframe::Renderer::Glow, file.as_deref(), shot, open, look)

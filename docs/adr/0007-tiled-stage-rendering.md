@@ -22,7 +22,7 @@ renderer that draws only the viewport shows this.
 
 * The stage is cut into **512 × 512 device-pixel tiles** on a grid anchored at stage (0, 0) for
   the current zoom. Each tile is a `FrameJob` keyed by (state, frame, tile transform, size,
-  onion).
+  onion settings; ADR 0047).
 * **Batching.** Each UI frame asks for all missing visible tiles in one `request_batch`.
   The worker takes up to 32 jobs, **evaluates the scene once per (state, frame, onion)** and
   renders the tiles in parallel. Newer batches replace pending ones (latest wins). Edits made

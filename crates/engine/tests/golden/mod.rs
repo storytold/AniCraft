@@ -62,8 +62,9 @@ pub fn check(golden: &Path, name: &str, width: u32, height: u32, rgba: &[u8], to
     compare(golden, name, width, height, rgba, tol)
 }
 
-/// The comparison [`check`] makes when it isn't updating.
-fn compare(golden: &Path, name: &str, width: u32, height: u32, rgba: &[u8], tol: Tolerance) -> Result<(), String> {
+/// The comparison [`check`] makes when it isn't updating (a test whose renders must match
+/// another test's goldens compares only, never writing them).
+pub fn compare(golden: &Path, name: &str, width: u32, height: u32, rgba: &[u8], tol: Tolerance) -> Result<(), String> {
     assert_eq!(rgba.len(), (width * height * 4) as usize);
     let keep = |why: String| -> String {
         let actual = out_dir().join(format!("{name}.actual.png"));

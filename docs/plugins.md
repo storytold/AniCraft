@@ -114,7 +114,7 @@ first). A refused or failed request is an answer, not a trap: the plug-in decide
 | Request | Result |
 |---|---|
 | `{"op":"command","id":"draw.star","params":{…}}` | The command's result (see `anicraft-cli commands` for ids and params). |
-| `{"op":"document"}` | `{abi, stage: {width, height, fps, background}, scene, scenes, frame, frames, layer, layers: [{id, name, kind, visible, locked, parent}], selection: [ids]}` |
+| `{"op":"document"}` | `{abi, stage: {width, height, fps, background}, scene, scenes, frame, frames, layer, layers: [{id, name, kind, visible, locked, parent}], selection: [ids]}` (the selection on every layer, ADR 0044) |
 | `{"op":"elements","selected"?:bool,"paths"?:bool}` | The elements on the active layer at the playhead (tweens applied): `{layer, frame, elements: [{id, kind: shape\|symbol\|text, name, selected, transform: [a,b,c,d,e,f], bounds: [x,y,w,h] (stage), alpha, fill, stroke, path (SVG path data, local space, with "paths")}]}` (at most 10,000). |
 | `{"op":"log","message":"…"}` | `null`; the line goes into the run's report, and the last one explains a failure. |
 

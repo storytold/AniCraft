@@ -98,14 +98,15 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(report.skipped.get("instances of missing bitmaps"), Some(&1));
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
     assert_eq!(report.skipped.get("unknown filters"), Some(&1));
-    // Frame scripts, on the scene's frames and inside symbols, are kept verbatim, not run
-    // (ADR 0013 tier 1).
-    assert_eq!(report.kept.get("frame scripts in ActionScript 3.0"), Some(&2));
+    // Frame scripts, on the scene's frames and inside symbols, are kept verbatim (ADR 0013
+    // tier 1); these are in the subset that runs (tier 2).
+    assert_eq!(report.runs.get("frame scripts in ActionScript 3.0"), Some(&2));
+    assert!(report.kept.is_empty(), "{report:?}");
     assert!(report.skipped.keys().all(|k| !k.contains("script")), "{report:?}");
     assert_eq!(ball.keyframes[1].script.as_ref().and_then(|s| s.source()).map(|s| s.text.as_str()), Some("stop();"));
     let inner = &doc.library[0].timeline.layers[0].keyframes[0];
     assert!(matches!(inner.script.as_ref().and_then(|s| s.source()), Some(s) if s.text == "gotoAndPlay(2);" && s.language == anicraft_doc::Language::ActionScript3));
-    assert!(report.summary().contains("Kept, not run: 2 frame scripts in ActionScript 3.0."), "{}", report.summary());
+    assert!(report.summary().contains("Runs in Test Movie: 2 frame scripts in ActionScript 3.0."), "{}", report.summary());
     // Every scene comes across, in order.
     assert_eq!(doc.scenes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Scene 1", "Scene 2"]);
     assert_eq!(doc.timeline(1).layers.len(), 1, "an empty scene gets a layer to draw on");
@@ -434,4 +435,57 @@ trace(n);]]></script></Actionscript><elements><DOMSymbolInstance libraryItemName
     let (d, report) = import(&files).unwrap();
     assert!(d.document_class.is_empty() && !report.kept.contains_key("document class"));
     assert!(report.kept.contains_key("frame scripts in ActionScript 3.0"));
+}
+
+#[test]
+fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
+    // Animate's raw shapes (merge drawing) are loose `DOMShape`s; a drawing object says so, and
+    // a group is an object whatever it holds (ADR 0042).
+    let square = |attrs: &str, x: u32| {
+        format!(
+            r##"<DOMShape {attrs}><fills><FillStyle index="1"><SolidColor color="#FF0000"/></FillStyle></fills><strokes><StrokeStyle index="1"><SolidStroke weight="2"><fill><SolidColor/></fill></SolidStroke></StrokeStyle></strokes>
+            <edges><Edge fillStyle1="1" strokeStyle="1" edges="!{x} 0|{} 0|{} 2000|{x} 2000|{x} 0"/></edges></DOMShape>"##,
+            x + 2000,
+            x + 2000
+        )
+    };
+    let doc = format!(
+        r#"<DOMDocument width="400" height="100"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Art"><frames><DOMFrame index="0"><elements>{}{}<DOMGroup><members>{}</members></DOMGroup></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#,
+        square("", 0),
+        square(r#"isDrawingObject="true""#, 4000),
+        square("", 8000),
+    );
+    let doc: &'static str = Box::leak(doc.into_boxed_str());
+    let (d, _) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
+    let merge: Vec<bool> = d.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    // Each square is a fill and a stroke.
+    assert_eq!(merge, [true, true, false, false, false, false]);
+}
+
+#[test]
+fn stroke_caps_joints_dashes_and_dots_come_across() {
+    use anicraft_doc::{Cap, Dash, Join, StrokeStyle};
+    let read = |xml: &str| {
+        let el = crate::xml::parse(xml.as_bytes()).unwrap();
+        let mut report = crate::Report::default();
+        let st = crate::import::stroke(&el, &HashMap::new(), &mut report).unwrap();
+        (st, report)
+    };
+    let (st, report) = read(r##"<SolidStroke weight="4" caps="none" joints="miter" miterLimit="7"><fill><SolidColor color="#112233"/></fill></SolidStroke>"##);
+    assert_eq!((st.width, st.color), (4.0, Rgba::hex(0x112233)));
+    assert_eq!(st.style, StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 7.0, dash: None });
+    assert!(report.skipped.is_empty());
+    // Round caps and joints and a miter limit of 3 are the format's defaults.
+    assert_eq!(read(r#"<SolidStroke weight="1"/>"#).0.style, StrokeStyle::default());
+    assert_eq!(read(r#"<SolidStroke caps="square" joints="bevel" miterLimit="1e9"/>"#).0.style, StrokeStyle { cap: Cap::Square, join: Join::Bevel, miter_limit: 100.0, dash: None });
+    let (dashed, _) = read(r#"<DashedStroke weight="2" dash1="8" dash2="2.5" caps="square"/>"#);
+    assert_eq!(dashed.style, StrokeStyle { cap: Cap::Square, dash: Dash::dashed(8.0, 2.5), ..StrokeStyle::default() });
+    // No gap draws solid.
+    assert_eq!(read(r#"<DashedStroke dash1="8" dash2="0"/>"#).0.style.dash, None);
+    assert_eq!(read(r#"<DottedStroke weight="3" dotSpace="5"/>"#).0.style.dash, Dash::dotted(5.0));
+    for kind in ["RaggedStroke", "StippleStroke", "HatchedStroke"] {
+        let (st, report) = read(&format!("<{kind} weight=\"2\"/>"));
+        assert_eq!(st.style.dash, None);
+        assert_eq!(report.skipped.get("ragged, stipple and hatched strokes (drawn solid)"), Some(&1));
+    }
 }

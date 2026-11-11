@@ -6,11 +6,15 @@
 //! the span. Drag a key up or down to change its value, drag the two handles of the selected
 //! segment to shape its ease (a cubic Bézier), click to move the playhead, double-click to add
 //! a key. Every drag is one undo step (a session gesture); every change is a command.
+//!
+//! On X and Y, the keys of frames pinned to a motion path point (ADR 0049) are drawn in the
+//! motion colour: they are the point's place and its timing, so dragging one moves the point on
+//! the stage, and removing one unpins it.
 
 use crate::a11y::{self, Named};
 use crate::app::App;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, with_type};
-use anicraft_engine::doc::{Easing, MotionTween, Property, Props, Track};
+use anicraft_engine::doc::{Easing, MotionTween, Pin, Property, Props, Track};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, WidgetType, pos2, vec2};
 use serde_json::json;
 
@@ -114,9 +118,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- property list ---------------------------------------------------------------------
     painter.rect_filled(Rect::from_min_max(list.left_top(), pos2(list.right(), list.top() + RULER_H)), 0.0, T.panel_alt);
-    painter.text(pos2(list.left() + 10.0, list.top() + RULER_H * 0.5), Align2::LEFT_CENTER, "Property", font(Type::Heading), color(Type::Heading));
-    painter.text(pos2(list.right() - 44.0, list.top() + RULER_H * 0.5), Align2::RIGHT_CENTER, format!("Frame {}", app.s.frame + 1), font(Type::DataSmall), color(Type::DataSmall));
+    painter.text(pos2(list.left() + 10.0, list.top() + RULER_H * 0.5), Align2::LEFT_CENTER, tr!("Property"), font(Type::Heading), color(Type::Heading));
+    painter.text(pos2(list.right() - 44.0, list.top() + RULER_H * 0.5), Align2::RIGHT_CENTER, tr!("Frame {frame}", frame = app.s.frame + 1), font(Type::DataSmall), color(Type::DataSmall));
     let now = m.props_at(&base, offset as f32);
+    // Frames pinned to path points: their X and Y keys are the points' places (ADR 0049).
+    let pins = m.pinned_anchors(&base);
+    let pin_at = |p: Property, f: u32| pins.iter().find(|q| q.frame == f).copied().filter(|_| matches!(p, Property::X | Property::Y));
     let rows_top = list.top() + RULER_H;
     // Rows that don't fit scroll with the wheel over the list.
     let fit = (((list.bottom() - rows_top) / ROW_H).floor() as usize).max(1);
@@ -134,6 +141,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let selected = app.me_prop == p;
         painter.rect_filled(row, 0.0, if selected { T.accent_dim } else if r % 2 == 0 { T.panel } else { T.panel_alt });
         let track = m.track(p);
+        let label = crate::i18n::t(p.label());
         // Groups (Position, Transform, Colour effect) are set apart by a rule.
         if p.group() != last_group {
             if !last_group.is_empty() {
@@ -141,12 +149,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             last_group = p.group();
         }
-        painter.text(pos2(row.left() + 12.0, row.center().y), Align2::LEFT_CENTER, p.label(), font(Type::Body), if track.is_some() { T.text } else { T.text_dim });
+        painter.text(pos2(row.left() + 12.0, row.center().y), Align2::LEFT_CENTER, label, font(Type::Body), if track.is_some() { T.text } else { T.text_dim });
         if track.is_some() {
-            painter.text(pos2(row.left() + 84.0, row.center().y), Align2::LEFT_CENTER, "keyed", font(Type::Caption), T.tween_motion);
+            painter.text(pos2(row.left() + 84.0, row.center().y), Align2::LEFT_CENTER, tr!("keyed"), font(Type::Caption), T.tween_motion);
         }
         let rr = ui.interact(row, ui.id().with(("me_row", p.key())), Sense::click());
-        a11y::control(ui, &rr, WidgetType::SelectableLabel, &format!("{}{}", p.label(), if track.is_some() { " · keyed" } else { "" }), Some(selected));
+        a11y::control(ui, &rr, WidgetType::SelectableLabel, &if track.is_some() { tr!("{property} · keyed", property = label) } else { label.to_string() }, Some(selected));
         if rr.clicked() {
             app.me_prop = p;
             app.me_key = None;
@@ -159,10 +167,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let suffix = if p.unit() == "px" { " px" } else { p.unit() };
         // In a child placed on the row, so the field never grows the dock.
         let mut cell = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let r = with_type(&mut cell, Type::Data, |ui| ui.add_sized(vec2(field.width(), field.height()), egui::DragValue::new(&mut v).speed(speed).range(range).max_decimals(1).suffix(suffix)).named(p.label()));
+        let r = with_type(&mut cell, Type::Data, |ui| ui.add_sized(vec2(field.width(), field.height()), egui::DragValue::new(&mut v).speed(speed).range(range).max_decimals(1).suffix(suffix)).named(label));
         if r.changed() {
             app.me_prop = p;
-            app.s.begin_gesture("Property keyframe");
+            app.s.begin_gesture(tr_noop!("Property keyframe"));
             app.run("motion.set_key", json!({"property": p.key(), "frame": app.s.frame, "value": v}));
         }
         // Key toggle: a filled diamond where this property has a key at the playhead.
@@ -173,8 +181,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_filled(toggle, T.rc(), T.hover);
         }
         diamond(&painter, toggle.center(), 5.0, if keyed { T.text } else { Color32::TRANSPARENT }, Stroke::new(1.5, if keyed { T.text } else { T.text_faint }));
-        let tip = if keyed { format!("Remove the {} keyframe at frame {}", p.label(), app.s.frame + 1) } else { format!("Add a {} keyframe at frame {}", p.label(), app.s.frame + 1) };
-        a11y::control(ui, &tr, WidgetType::Checkbox, &format!("{} keyframe at frame {}", p.label(), app.s.frame + 1), Some(keyed));
+        let tip = match (keyed, pin_at(p, offset)) {
+            (true, Some(q)) if m.path.is_some() && interior(&pins, q) => tr!("Unpin point {anchor} of the motion path from frame {frame}: its X and Y keyframes go", anchor = q.anchor, frame = app.s.frame + 1),
+            (true, _) => tr!("Remove the {property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1),
+            (false, _) => tr!("Add a {property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1),
+        };
+        a11y::control(ui, &tr, WidgetType::Checkbox, &tr!("{property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1), Some(keyed));
         if tr.on_hover_text(tip).clicked() {
             app.me_prop = p;
             if keyed {
@@ -190,6 +202,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- graph -----------------------------------------------------------------------------
     let p = app.me_prop;
     let track = m.track(p);
+    let label = crate::i18n::t(p.label());
     let (lo, hi) = match app.me_drag {
         Some(MeDrag::Key { lo, hi, .. } | MeDrag::Handle { lo, hi, .. }) => (lo, hi),
         _ => value_range(track, base.get(p), frames, p),
@@ -246,9 +259,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         x += 2.0;
     }
     gp.add(egui::Shape::line(pts, Stroke::new(2.0, if track.is_some() { T.tween_motion } else { T.text_faint })));
-    gp.text(pos2(graph.right() - 8.0, graph.top() + 6.0), Align2::RIGHT_TOP, format!("{} · {}", p.label(), fmt(p, now.get(p))), font(Type::Data), color(Type::Data));
+    gp.text(pos2(graph.right() - 8.0, graph.top() + 6.0), Align2::RIGHT_TOP, format!("{label} · {}", fmt(p, now.get(p))), font(Type::Data), color(Type::Data));
     if track.is_none() {
-        gp.text(graph.center(), Align2::CENTER_CENTER, format!("{} has no keyframes: it stays {}. Click ◇ or drag its value to key it here.", p.label(), fmt(p, base.get(p))), font(Type::Caption), color(Type::Caption));
+        gp.text(graph.center(), Align2::CENTER_CENTER, tr!("{property} has no keyframes: it stays {value}. Click ◇ or drag its value to key it here.", property = label, value = fmt(p, base.get(p))), font(Type::Caption), color(Type::Caption));
     }
 
     // Keys and the selected segment's handles.
@@ -275,13 +288,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     for &(f, v, _) in &keys {
         let c = pos2(x_of(f as f32), y_of(v));
         let picked = sel_key == Some(f);
-        diamond(&gp, c, if picked { 6.5 } else { 5.5 }, if picked { T.accent } else { T.text }, Stroke::new(1.0, T.ink));
+        if pin_at(p, f).is_some() {
+            // A path point's place: the motion colour, ringed like the stage's pinned points.
+            diamond(&gp, c, if picked { 7.5 } else { 6.5 }, if picked { T.accent } else { T.tween_motion }, Stroke::new(1.5, T.ink));
+        } else {
+            diamond(&gp, c, if picked { 6.5 } else { 5.5 }, if picked { T.accent } else { T.text }, Stroke::new(1.0, T.ink));
+        }
+    }
+    if matches!(p, Property::X | Property::Y) && pins.len() > 2 {
+        gp.text(pos2(graph.right() - 8.0, graph.bottom() - 6.0), Align2::RIGHT_BOTTOM, tr!("Blue keys are pinned motion path points: drag one to move its point"), font(Type::Caption), T.tween_motion);
     }
 
     // ---- graph interaction -------------------------------------------------------------------
     // Pointer work; the keyboard route to the same values is the property list and its fields.
     let gr = ui.interact(graph_full, ui.id().with("me_graph"), a11y::pointer_only());
-    a11y::surface(ui, &gr, &format!("{} curve", app.me_prop.label()));
+    a11y::surface(ui, &gr, &tr!("{property} curve", property = crate::i18n::t(app.me_prop.label())));
     let hover = gr.hover_pos();
     let near_key = |pt: Pos2| keys.iter().find(|k| pos2(x_of(k.0 as f32), y_of(k.1)).distance(pt) <= GRAB).map(|k| k.0);
     let near_handle = |pt: Pos2| handles.and_then(|h| [(1u8, h[1]), (2u8, h[2])].into_iter().find(|(_, q)| q.distance(pt) <= GRAB).map(|(w, _)| w));
@@ -301,12 +322,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.playing = false;
         app.me_drag = Some(match (near_handle(pt), sel_key, near_key(pt)) {
             (Some(which), Some(frame), _) => {
-                app.s.begin_gesture("Property ease");
+                app.s.begin_gesture(tr_noop!("Property ease"));
                 MeDrag::Handle { frame, which, lo, hi }
             }
             (_, _, Some(frame)) => {
                 app.me_key = Some(frame);
-                app.s.begin_gesture("Property keyframe");
+                app.s.begin_gesture(tr_noop!("Property keyframe"));
                 app.run("timeline.goto", json!({"frame": start + frame}));
                 MeDrag::Key { frame, lo, hi }
             }
@@ -378,9 +399,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.me_key = Some(f - start);
         }
     }
-    gr.on_hover_text_at_pointer("Drag a key up or down to change it, or a handle to shape the ease. Double-click to add a key.");
+    match hover.and_then(near_key).and_then(|f| pin_at(p, f)) {
+        Some(q) => gr.on_hover_text_at_pointer(tr!("Frame {frame} · point {anchor} of the motion path: drag to move the point", frame = start + q.frame + 1, anchor = q.anchor)),
+        None => gr.on_hover_text_at_pointer(tr!("Drag a key up or down to change it, or a handle to shape the ease. Double-click to add a key.")),
+    };
 
     footer(app, ui, body, track, sel_key, start);
+}
+
+/// Whether `q` is a pin between the ends (which can be let go).
+fn interior(pins: &[Pin], q: Pin) -> bool {
+    pins.first() != Some(&q) && pins.last() != Some(&q)
 }
 
 /// The value distance a segment's handles are measured against: the segment's own rise, or a
@@ -404,32 +433,32 @@ fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, s
     let ui = &mut child;
     let p = app.me_prop;
     let seg = sel_key.zip(track).and_then(|(f, t)| t.key_at(f).filter(|i| *i + 1 < t.keys.len()).and_then(|i| t.keys.get(i)).map(|k| (f, k.ease)));
-    ui.label(text(Type::Label, format!("{} ease", p.label())));
+    ui.label(text(Type::Label, tr!("{property} ease", property = crate::i18n::t(p.label()))));
     match seg {
         Some((f, ease)) => {
-            egui::ComboBox::from_id_salt("me_ease").width(160.0).selected_text(ease.label()).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("me_ease").width(160.0).selected_text(crate::timeline::easing_label(&ease)).show_ui(ui, |ui| {
                 for (name, e) in Easing::PRESETS {
-                    if ui.selectable_label(ease == e, name).clicked() {
+                    if ui.selectable_label(ease == e, crate::i18n::t(name)).clicked() {
                         app.run("motion.set_ease", json!({"property": p.key(), "frame": start + f, "easing": crate::timeline::easing_param(e)}));
                     }
                 }
             })
             .response
-            .set_name("Ease");
-            if ui.button("Same for all").on_hover_text("Give every property's segment at this frame this ease").clicked() {
+            .set_name(tr!("Ease"));
+            if ui.button(tr!("Same for all")).on_hover_text(tr!("Give every property's segment at this frame this ease")).clicked() {
                 app.run("motion.set_ease", json!({"frame": start + f, "easing": crate::timeline::easing_param(ease)}));
             }
         }
         None => {
-            ui.label(text(Type::Caption, "Pick a key that has another key after it"));
+            ui.label(text(Type::Caption, tr!("Pick a key that has another key after it")));
         }
     }
     ui.separator();
-    if ui.button("Remove Tween").on_hover_text("The object stays as it is on the span's first frame (Ctrl+Z to undo)").clicked() {
+    if ui.button(tr!("Remove Tween")).on_hover_text(tr!("The object stays as it is on the span's first frame ({undo} to undo)", undo = app.undo_key())).clicked() {
         app.run("timeline.remove_tween", json!({}));
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.label(text(Type::Caption, "Moving the object on the stage inside the span adds keys here"));
+        ui.label(text(Type::Caption, tr!("Moving the object on the stage inside the span adds keys here")));
     });
 }
 
@@ -437,17 +466,17 @@ fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, s
 fn empty_state(app: &mut App, ui: &mut egui::Ui, body: Rect) {
     let k = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame).map(|k| (!k.elements.is_empty(), k.motion.is_some())));
     let msg = match k {
-        Some((true, _)) => "This span has no motion tween. Create one to animate its object property by property.",
-        Some((false, _)) => "This span is empty. Draw or place an object, then create a motion tween.",
-        None => "The playhead is on an empty frame of this layer.",
+        Some((true, _)) => tr!("This span has no motion tween. Create one to animate its object property by property."),
+        Some((false, _)) => tr!("This span is empty. Draw or place an object, then create a motion tween."),
+        None => tr!("The playhead is on an empty frame of this layer."),
     };
     let r = Rect::from_center_size(body.center(), vec2(body.width().min(520.0), 90.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Center)));
-    child.label(text(Type::Heading, "Motion Editor"));
+    child.label(text(Type::Heading, tr!("Motion Editor")));
     child.add_space(4.0);
     child.label(text(Type::Caption, msg));
     child.add_space(6.0);
-    if k.is_some_and(|(has, _)| has) && child.button("Create Motion Tween").clicked() {
+    if k.is_some_and(|(has, _)| has) && child.button(tr!("Create Motion Tween")).clicked() {
         app.run("timeline.create_motion_tween", json!({}));
     }
 }

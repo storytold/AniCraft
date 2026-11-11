@@ -131,10 +131,11 @@ fn hit(app: &App, at: Pos2, xf: Xf) -> Option<Hit> {
 /// Returns the drag (the gesture is open: one undo step).
 pub fn drag_start(app: &mut App, press: Pos2, xf: Xf) -> Drag {
     let Some(h) = hit(app, press, xf) else { return Drag::None };
-    if !app.s.selection.contains(&h.id) {
+    if !app.s.selection.contains(app.s.layer, h.id) {
         app.run("element.select", json!({"ids": [h.id.0]}));
     }
-    app.s.begin_gesture("Width");
+    // Undo labels stay English in the history and are translated where they show.
+    app.s.begin_gesture(tr_noop!("Width"));
     let (index, grip) = match h.point {
         Some(p) => p,
         None => {
@@ -201,7 +202,7 @@ pub fn drag_to(app: &mut App, d: Drag, at: Vec2, alt: bool, zoom: f32) {
 
 pub fn drag_end(app: &mut App) {
     app.s.end_gesture();
-    app.status_ok("Changed the stroke's width. Ctrl+Z to undo.");
+    app.status_ok(tr!("Changed the stroke's width. {undo} to undo.", undo = app.undo_key()));
 }
 
 /// Click: select the width point under the pointer, or the stroked shape.
@@ -228,7 +229,7 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
     if take(Key::Delete) || take(Key::Backspace) {
         app.width_sel = None;
         if app.run("stroke.delete_width_point", json!({"id": id.0, "index": index})).is_some() {
-            app.status_ok("Removed the width point. Ctrl+Z to undo.");
+            app.status_ok(tr!("Removed the width point. {undo} to undo.", undo = app.undo_key()));
         }
     } else if take(Key::Escape) {
         app.width_sel = None;

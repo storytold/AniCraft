@@ -40,11 +40,15 @@ pub struct TestMovie {
     /// Where the pointer was over the picture last frame, and whether it was down.
     pointer: Option<Vec2>,
     down: bool,
-    title: String,
+    /// The document's file name, `None` while untitled (the title is made when drawn, in the
+    /// interface language).
+    name: Option<String>,
     pub ms: f32,
     /// What it plays (with each voice's sound id), and whether the device plays it.
     voices: Vec<(SoundId, Voice)>,
     audio: bool,
+    /// Kept scripts that don't run (ADR 0013), counted when it opened.
+    skipped: usize,
 }
 
 impl TestMovie {
@@ -81,8 +85,9 @@ pub fn open(app: &mut App) {
     let doc = app.s.doc.clone();
     let mut runner = ScriptRunner::new(&app.s.plugins);
     let movie = Movie::start(&doc, &mut runner);
-    let name = app.s.path.as_ref().and_then(|p| p.file_stem()).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
-    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, title: format!("Test Movie — {name}"), ms: 0.0, voices: Vec::new(), audio: false };
+    let name = app.s.path.as_ref().and_then(|p| p.file_stem()).map(|n| n.to_string_lossy().into_owned());
+    let skipped = anicraft_engine::player::kept_scripts(&doc).iter().filter(|k| !k.runs()).count();
+    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, name, ms: 0.0, voices: Vec::new(), audio: false, skipped };
     // Sound only when there is some, and never in screenshot runs or tests.
     if sound::has_sounds(&tm.doc) && app.shot.is_none() {
         tm.resume(&mut app.sound);
@@ -101,8 +106,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let (sw, sh) = (tm.doc.stage.width as f32, tm.doc.stage.height as f32);
     let default_w = 760.0f32;
     let default_h = default_w * sh / sw.max(1.0) + 190.0;
-    let title = tm.title.clone();
-    let win = egui::Window::new(tm.title.clone())
+    let title = tr!("Test Movie — {name}", name = tm.name.as_deref().unwrap_or(tr!("Untitled")));
+    let win = egui::Window::new(title.clone())
         .id(egui::Id::new("test_movie"))
         .open(&mut shown)
         .collapsible(false)
@@ -113,10 +118,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .show(ctx, |ui| {
             // ---- controls ----
             ui.horizontal(|ui| {
-                if crate::timeline::icon_button(ui, &format!("Restart from frame 1 with the document as it is now ({})", crate::platform::shortcut_label("Ctrl+Enter")), None, Icon::First).clicked() {
+                if crate::timeline::icon_button(ui, &tr!("Restart from frame 1 with the document as it is now ({key})", key = crate::platform::shortcut_label("Ctrl+Enter")), None, Icon::First).clicked() {
                     restart = true;
                 }
-                let (icon, tip) = if tm.paused { (Icon::Play, "Play") } else { (Icon::Pause, "Pause") };
+                let (icon, tip) = if tm.paused { (Icon::Play, tr!("Play")) } else { (Icon::Pause, tr!("Pause")) };
                 if crate::timeline::icon_button(ui, tip, None, icon).clicked() {
                     tm.paused = !tm.paused;
                     tm.acc = 0.0;
@@ -126,7 +131,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         tm.resume(out);
                     }
                 }
-                if tm.paused && crate::timeline::icon_button(ui, "Step one frame", None, Icon::Next).clicked() {
+                if tm.paused && crate::timeline::icon_button(ui, tr!("Step one frame"), None, Icon::Next).clicked() {
                     let mut runner = ScriptRunner::new(plugins);
                     tm.movie.step(&tm.doc, &[], &mut runner);
                     tm.feed(out);
@@ -136,11 +141,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 let scene = tm.doc.scenes.get(st.scene).map_or("", |s| s.name.as_str());
                 let frames = tm.doc.timeline(st.scene).frame_count();
                 ui.label(text(Type::Body, scene).color(T.text_dim));
-                ui.label(text(Type::Data, format!("{:>4} / {frames}", st.root.frame + 1))).on_hover_text("Main timeline frame");
-                let what = if tm.paused { "paused" } else if st.root.playing { "playing" } else { "stopped" };
+                ui.label(text(Type::Data, format!("{:>4} / {frames}", st.root.frame + 1))).on_hover_text(tr!("Main timeline frame"));
+                let what = if tm.paused { tr!("paused") } else if st.root.playing { tr!("playing") } else { tr!("stopped") };
                 ui.label(text(Type::Caption, what));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(text(Type::Data, format!("{:.0} fps · {:.1} ms", tm.doc.stage.fps, tm.ms)).color(T.text_faint)).on_hover_text("Frame rate, and the time the last picture took to draw");
+                    // i18n-exempt: numbers and units (data)
+                    ui.label(text(Type::Data, format!("{:.0} fps · {:.1} ms", tm.doc.stage.fps, tm.ms)).color(T.text_faint)).on_hover_text(tr!("Frame rate, and the time the last picture took to draw"));
                 });
             });
             ui.add_space(4.0);
@@ -150,7 +156,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let k = (avail.x / sw.max(1.0)).min(avail.y / sh.max(1.0)).max(0.01);
             let size = egui::vec2(sw * k, sh * k);
             let (outer, resp) = ui.allocate_exact_size(egui::vec2(avail.x, size.y), egui::Sense::click_and_drag());
-            crate::a11y::surface(ui, &resp, "The movie: point and click its buttons");
+            crate::a11y::surface(ui, &resp, tr!("The movie: point and click its buttons"));
             let rect = egui::Rect::from_center_size(outer.center(), size);
             // The pointer, in stage coordinates, to the player.
             let mut events = Vec::new();
@@ -233,17 +239,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             // ---- output ----
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(text(Type::Heading, "Output"));
+                ui.label(text(Type::Heading, tr!("Output")));
                 let n = tm.movie.output.len();
-                ui.label(text(Type::Data, format!("{n}")).color(T.text_faint)).on_hover_text("Lines written");
-                // Kept scripts (ADR 0013 tier 1) are said once here, not every time they pass.
-                let kept = crate::actions_panel::kept_scripts(&tm.doc);
-                if kept > 0 {
-                    let what = if kept == 1 { "1 kept frame script doesn't run yet".to_string() } else { format!("{kept} kept frame scripts don't run yet") };
-                    ui.label(text(Type::Caption, what)).on_hover_text("Scripts from other tools are kept with the document as written; use actions for what should happen while the movie plays");
+                ui.label(text(Type::Data, format!("{n}")).color(T.text_faint)).on_hover_text(tr!("Lines written"));
+                // Kept scripts that don't run (ADR 0013) are counted once here, not every
+                // time they pass; the Output's first lines say which and why.
+                if tm.skipped > 0 {
+                    let what = trn!("{n} frame script doesn't run", "{n} frame scripts don't run", tm.skipped);
+                    ui.label(text(Type::Caption, what).color(T.error)).on_hover_text(tr!("Kept with the document, but outside the ActionScript 3.0 subset AniCraft runs (or on a timeline that doesn't run scripts). The first Output lines say why; the Actions panel shows each problem in place."));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(n > 0, egui::Button::new("Clear")).clicked() {
+                    if ui.add_enabled(n > 0, egui::Button::new(tr!("Clear"))).clicked() {
                         tm.movie.output.clear();
                     }
                 });
@@ -252,7 +258,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 egui::ScrollArea::vertical().id_salt("test_movie_output").max_height(output_h).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     if tm.movie.output.is_empty() {
-                        ui.label(text(Type::Caption, "Trace actions, frame-script logs and anything that couldn't run appear here."));
+                        ui.label(text(Type::Caption, tr!("Trace actions, frame-script logs and anything that couldn't run appear here.")));
                     }
                     for (tick, line) in &tm.movie.output {
                         ui.horizontal(|ui| {

@@ -148,13 +148,14 @@ pub enum Region {
 impl Region {
     pub const CYCLE: [Region; 5] = [Region::Stage, Region::Timeline, Region::Properties, Region::Library, Region::Tools];
 
+    /// English (a key): translate where it is shown with `crate::i18n::t`.
     pub fn label(self) -> &'static str {
         match self {
-            Region::Stage => "Stage",
-            Region::Timeline => "Timeline",
-            Region::Properties => "Properties",
-            Region::Library => "Library",
-            Region::Tools => "Tools",
+            Region::Stage => tr_noop!("Stage"),
+            Region::Timeline => tr_noop!("Timeline"),
+            Region::Properties => tr_noop!("Properties"),
+            Region::Library => tr_noop!("Library"),
+            Region::Tools => tr_noop!("Tools"),
         }
     }
 
@@ -348,10 +349,10 @@ mod tests {
     fn every_interactive_node_has_a_name_and_a_role() {
         let mut found = Vec::new();
         found.extend(check("default", |_, _| {}));
-        for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Pen] {
+        for tool in [Tool::Bone, Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
-        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "camera", "cameraview", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script"] {
+        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
         // The layer depth row shows on artwork layers once the scene has a camera.

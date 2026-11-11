@@ -30,10 +30,18 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("paint.bucket", "Paint Bucket", "", None, "{x, y, color?, gap? (stage units: how wide an opening still counts as closed)}", true, bucket as crate::RunFn),
-        c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?, profile?}", true, ink),
+        c(
+            "paint.bucket",
+            "Paint Bucket",
+            "",
+            None,
+            "{x, y, color?, gap? (stage units: how wide an opening still counts as closed), object?: bool} fills the closed area under the point, or recolours the fill there; unless `object` (default: the Object Drawing setting), the fill is raw and merges with the drawing (an area closed by raw lines and fills is filled exactly up to them)",
+            true,
+            bucket as crate::RunFn,
+        ),
+        c("paint.ink", "Ink Bottle", "", None, "{x, y, color?, width?, profile?, cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing?} (the tool's line style unless given; see stroke.set_style)", true, ink),
         c("paint.pick", "Eyedropper", "", None, "{x, y, other?: bool (into the other swatch only: a fill's colour into the stroke, a line's into the fill), slop?} picks the style under the point on any visible layer into the tool settings: a fill's paint (solid, gradient or bitmap, kept where it is on the stage) into the fill swatch, a line's colour, width and profile into the stroke settings", false, pick_style),
-        c("paint.apply_style", "Apply Style", "", None, "{fill?: bool, stroke?: bool} (default both) gives the selected shapes the fill swatch's paint (shapes with a fill) and the stroke settings (shapes with a line, and drawing objects without one)", true, apply_style),
+        c("paint.apply_style", "Apply Style", "", None, "{fill?: bool, stroke?: bool} (default both) gives the selected shapes the fill swatch's paint (shapes with a fill) and the stroke settings (shapes with a line, and drawing objects without one)", true, |s, p| s.each_layer(false, |s| apply_style(s, p))),
     ]
 }
 
@@ -76,16 +84,26 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
     if !(0.0..=1000.0).contains(&gap) {
         return Err(EngineError::Param("param 'gap' must be between 0 and 1000".into()));
     }
+    let object = crate::cmds_draw::object_param(s, p)?;
     let items = layer_items(s);
-    // 1. On a fill: recolour it.
+    // 1. On a fill: recolour it. A raw fill then joins the fills of its new colour it touches.
     if let Some((id, true)) = pick(&items, at, 0.0) {
         let to_local = items.iter().find(|i| i.element == id).and_then(|i| i.transform.inverse()).unwrap_or(Affine::IDENTITY);
-        element_shape_mut(s, id)?.fill = Some(paint.transformed(&to_local));
+        let sh = element_shape_mut(s, id)?;
+        sh.fill = Some(paint.transformed(&to_local));
+        if sh.merge {
+            crate::cmds_raw::remerge_in_place(s, &[id])?;
+            return Ok(json!({"recolored": id.0, "merged": true}));
+        }
         return Ok(json!({"recolored": id.0}));
     }
-    // 2. Find the enclosed area.
-    let Some(path) = enclosed_region(&items, at, gap)? else {
-        return Err(EngineError::State("this area isn't closed. Close the outline, or choose a larger gap size".into()));
+    // 2. Find the enclosed area: exactly, when raw lines and fills close it off (ADR 0042),
+    //    else from the rasterized layer.
+    let exact = if object { None } else { crate::merge::enclosed_area(&s.visible_elements(), at) };
+    let was_exact = exact.is_some();
+    let path = match exact {
+        Some(p) => p,
+        None => enclosed_region(&items, at, gap)?.ok_or_else(|| EngineError::State("this area isn't closed. Close the outline, or choose a larger gap size".into()))?,
     };
     let c = path.bounds().center();
     let local = path.transformed(&Affine::translate(-c.x, -c.y));
@@ -95,8 +113,15 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(paint.transformed(&Affine::translate(-c.x, -c.y))), stroke: None, fill_rule: FillRule::EvenOdd, merge: false }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(paint.transformed(&Affine::translate(-c.x, -c.y))), stroke: None, fill_rule: FillRule::EvenOdd, merge: !object }),
     };
+    if !object {
+        // Raw: behind the drawing, so it takes only what is empty and joins the fills of its
+        // colour it meets; the lines that bound it stay on top.
+        let ids = crate::merge::merge_in_order(s, vec![el], crate::merge::Order::Behind)?;
+        s.selection.clear();
+        return Ok(json!({"element": ids.first().map(|e| e.0), "elements": ids.iter().map(|e| e.0).collect::<Vec<_>>(), "merged": true, "exact": was_exact}));
+    }
     let kf = s.editable_keyframe()?;
     if kf.elements.len() >= 100_000 {
         return Err(EngineError::State("too many elements on this keyframe".into()));
@@ -289,7 +314,9 @@ fn ink(s: &mut Session, p: &Value) -> Result<Value> {
         Some(pr) => pr,
         None => s.style.profile(),
     };
-    element_shape_mut(s, id)?.stroke = Some(Stroke::new(color, width).with_profile(profile));
+    // The Ink Bottle carries the whole line: caps, joins and dashes too.
+    let line = opt_stroke_style(p, &s.style.line, width)?.unwrap_or_else(|| s.style.line.clone());
+    element_shape_mut(s, id)?.stroke = Some(Stroke::new(color, width).with_profile(profile).with_style(line));
     Ok(json!({"element": id.0}))
 }
 
@@ -360,6 +387,8 @@ fn pick_style(s: &mut Session, p: &Value) -> Result<Value> {
             st.stroke = stroke.color;
             st.stroke_width = (stroke.width * scale).clamp(0.1, 1000.0);
             st.use_stroke = true;
+            // Caps, joins and dashes as drawn (dashes scale with the shape, like the width).
+            st.line = stroke.style.scaled(scale).sanitized();
             let preset = anicraft_doc::ProfilePreset::ALL.into_iter().find(|pr| pr.profile() == stroke.profile);
             let profile = match preset {
                 Some(pr) => {
@@ -371,7 +400,7 @@ fn pick_style(s: &mut Session, p: &Value) -> Result<Value> {
                     "custom"
                 }
             };
-            Ok(json!({"picked": "line", "into": "stroke", "color": stroke.color.to_hex(), "width": st.stroke_width, "profile": profile}))
+            Ok(json!({"picked": "line", "into": "stroke", "color": stroke.color.to_hex(), "width": st.stroke_width, "profile": profile, "cap": st.line.cap.key(), "join": st.line.join.key(), "style": st.line.dash_kind().key()}))
         }
         None => Err(EngineError::State("click a fill or a line to pick its colour".into())),
     }
@@ -387,7 +416,7 @@ fn apply_style(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let style = s.style.clone();
     let paint = style.fill_paint();
-    let line = Stroke::new(style.stroke, style.stroke_width).with_profile(style.profile());
+    let line = style.new_stroke(style.stroke, style.stroke_width);
     let mut changed = 0;
     for e in s.selected_elements_mut()? {
         let to_local = e.transform.inverse();

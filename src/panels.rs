@@ -4,7 +4,6 @@ use crate::app::{App, LibraryItem, Tool};
 use crate::icons::{self, Icon};
 use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, font, section, text, to_color32, with_type};
 use anicraft_engine::doc::{ElementKind, Paint, Rgba, SymbolKind, evaluate_layer_elements};
-use anicraft_engine::element_label;
 use crate::a11y::{self, Named};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
@@ -31,6 +30,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::InkBottle => Icon::Ink,
         Tool::Eyedropper => Icon::Eyedropper,
         Tool::Camera => Icon::Camera,
+        Tool::Bone => Icon::Bone,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
     }
@@ -63,12 +63,12 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             let tint = if active { T.on_active } else if resp.hovered() { T.icon_hot } else { T.icon };
             icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), tool_icon(tool), tint);
             // "Pen tool (P)": what the tooltip says first, and what a screen reader says.
-            let name = a11y::with_key(&format!("{} tool", tool.label()), app.keymap.primary(crate::keymap::tool_id(tool)));
+            let name = a11y::with_key(&tr!("{tool} tool", tool = crate::i18n::t(tool.label())), app.keymap.primary(crate::keymap::tool_id(tool)));
             a11y::control(ui, &resp, WidgetType::Button, &name, Some(active));
             if active {
                 a11y::anchor(ui, a11y::Region::Tools, area, &resp);
             }
-            let resp = resp.on_hover_text(format!("{name}\n{}", tool.hint()));
+            let resp = resp.on_hover_text(format!("{name}\n{}", crate::i18n::t(tool.hint())));
             if resp.clicked() {
                 app.tool = tool;
             }
@@ -83,6 +83,26 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                 ui.painter().line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(1.0, T.border));
                 ui.add_space(4.0);
             }
+        }
+        // Snap to Objects (Animate's magnet, ADR 0042): on, dragged points and selections snap
+        // to points, lines and fill edges.
+        let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::click());
+        let on = app.s.style.snap_objects;
+        let bg = if on {
+            T.active
+        } else if resp.hovered() {
+            T.header
+        } else {
+            Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, T.rc(), bg);
+        let tint = if on { T.on_active } else if resp.hovered() { T.icon_hot } else { T.icon };
+        icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), Icon::Magnet, tint);
+        let name = a11y::with_key(tr!("Snap to Objects"), app.keymap.primary("draw.snap_to_objects"));
+        a11y::control(ui, &resp, WidgetType::Checkbox, &name, Some(on));
+        let resp = resp.on_hover_text(if on { tr!("{name}: on\nDragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) } else { tr!("{name}: off\nDragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) });
+        if resp.clicked() {
+            app.run("draw.snap_to_objects", json!({}));
         }
         ui.add_space(10.0);
         // fill / stroke swatches
@@ -103,7 +123,7 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
 pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
         // The scene being edited; the menu switches scenes and manages them.
-        let name = app.s.doc.scenes.get(app.s.scene).map_or_else(|| "Scene".to_string(), |s| s.name.clone());
+        let name = app.s.doc.scenes.get(app.s.scene).map_or_else(|| tr!("Scene").to_string(), |s| s.name.clone());
         egui::ComboBox::from_id_salt("scene").selected_text(text(Type::Body, name).strong()).height(480.0).show_ui(ui, |ui| {
             ui.set_min_width(240.0);
             let scenes: Vec<(String, u32)> = app.s.doc.scenes.iter().map(|s| (s.name.clone(), s.timeline.frame_count())).collect();
@@ -127,7 +147,7 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
             }
         })
         .response
-        .set_name("Scene");
+        .set_name(tr!("Scene"));
         ui.label(text(Type::Caption, "›"));
         let layer = app.s.active_layer().map_or("—".to_string(), |l| l.name.clone());
         ui.label(text(Type::Body, layer).color(T.text_dim));
@@ -135,7 +155,7 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
             let z = app.view.zoom;
             let canvas = app.stage_cache.canvas;
             egui::ComboBox::from_id_salt("zoom").width(84.0).selected_text(text(Type::Data, format!("{:>4.0}%", z * 100.0))).show_ui(ui, |ui| {
-                if ui.selectable_label(false, "Fit in window").clicked() {
+                if ui.selectable_label(false, tr!("Fit in window")).clicked() {
                     app.view.fit = true;
                 }
                 for pct in [25.0f32, 50.0, 100.0, 200.0, 400.0, 800.0] {
@@ -145,12 +165,12 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
                 }
             })
             .response
-            .set_name("Zoom");
-            if ui.selectable_label(app.onion, "Onion skin").clicked() {
-                app.onion = !app.onion;
+            .set_name(tr!("Zoom"));
+            if ui.selectable_label(app.onion.ghosts, tr!("Onion skin")).clicked() {
+                crate::onion::toggle_ghosts(app);
             }
             let st = app.s.doc.stage;
-            ui.label(text(Type::Data, format!("{} × {} px", st.width, st.height)).color(T.text_faint));
+            ui.label(text(Type::Data, format!("{} × {} px", st.width, st.height)).color(T.text_faint)); // i18n-exempt: stage size, numbers and a unit
         });
     });
 }
@@ -164,19 +184,24 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let wide = ui.available_width() >= 1000.0;
             let small = |t: String| text(Type::Data, t).color(T.text_faint);
-            ui.label(small(format!("undo {} · {:.1} MB", app.s.history().undo_len(), app.s.history().bytes() as f32 / (1024.0 * 1024.0))));
+            ui.label(small(tr!("undo {steps} · {size} MB", steps = app.s.history().undo_len(), size = format!("{:.1}", app.s.history().bytes() as f32 / (1024.0 * 1024.0)))));
             ui.add_space(12.0);
             if let Some(a) = crate::autosave::status(app, now) {
-                ui.label(small(a)).on_hover_text("A recovery copy of your unsaved work. If AniCraft closes unexpectedly, the next start offers it back.");
+                ui.label(small(a)).on_hover_text(tr!("A recovery copy of your unsaved work. If AniCraft closes unexpectedly, the next start offers it back."));
                 ui.add_space(12.0);
             }
             if wide {
                 if let Some((n, mb, hit)) = app.stage_cache.stats() {
-                    ui.label(small(format!("cache {n} fr · {mb:.0} MB · {hit:.0}% hit")));
+                    ui.label(small(tr!("cache {frames} fr · {size} MB · {hit}% hit", frames = n, size = format!("{mb:.0}"), hit = format!("{hit:.0}"))));
                     ui.add_space(12.0);
                 }
                 let (ready, needed) = app.stage_cache.ready;
-                ui.label(small(format!("render {:.1} ms{} · tiles {ready}/{needed}", app.stage_cache.ms, renderer_tag(app))));
+                let ms = format!("{:.1}", app.stage_cache.ms);
+                let line = match renderer_tag(app) {
+                    Some(renderer) => tr!("render {ms} ms · {renderer} · tiles {ready}/{needed}", ms = ms, renderer = renderer, ready = ready, needed = needed),
+                    None => tr!("render {ms} ms · tiles {ready}/{needed}", ms = ms, ready = ready, needed = needed),
+                };
+                ui.label(small(line));
             }
             if let Some(p) = app.cursor_stage {
                 ui.label(small(format!("x {:.0}  y {:.0}", p.x, p.y)));
@@ -185,7 +210,7 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                 let msg = app.status.as_ref().filter(|s| s.error || now - s.at < 8.0 || s.at == 0.0);
                 let (line, colour) = match msg {
                     Some(s) => (s.text.as_str(), if s.error { T.error } else { T.ok }),
-                    None => (app.tool.hint(), color(Type::Label)),
+                    None => (crate::i18n::t(app.tool.hint()), color(Type::Label)),
                 };
                 let r = ui.add(egui::Label::new(text(Type::Label, line).color(colour)).truncate());
                 // Screen readers announce what an action did ("Deleted layer — Ctrl+Z to undo")
@@ -196,20 +221,20 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-/// Who draws the stage, when this build can draw it on the GPU (ADR 0019): " GPU", or " CPU"
+/// Who draws the stage, when this build can draw it on the GPU (ADR 0019): "GPU", or "CPU"
 /// with what kept the GPU out.
-fn renderer_tag(app: &App) -> String {
+fn renderer_tag(app: &App) -> Option<String> {
     use crate::gpu_stage::State;
     if !crate::gpu_stage::AVAILABLE {
-        return String::new();
+        return None;
     }
-    match (app.stage_cache.gpu.state(), &app.stage_cache.drawn_by) {
-        (State::Starting, _) => " · GPU starting".into(),
-        (State::Failed(_), _) => " · CPU (GPU unavailable)".into(),
-        (State::Running { .. }, Some((true, _))) => " · GPU".into(),
-        (State::Running { .. }, Some((false, Some(why)))) => format!(" · CPU for {why}"),
-        _ => " · CPU".into(),
-    }
+    Some(match (app.stage_cache.gpu.state(), &app.stage_cache.drawn_by) {
+        (State::Starting, _) => tr!("GPU starting").into(),
+        (State::Failed(_), _) => tr!("CPU (GPU unavailable)").into(),
+        (State::Running { .. }, Some((true, _))) => "GPU".into(), // i18n-exempt: renderer name
+        (State::Running { .. }, Some((false, Some(why)))) => tr!("CPU for {reason}", reason = crate::i18n::t_dyn(why)),
+        _ => "CPU".into(), // i18n-exempt: renderer name
+    })
 }
 
 // ----- right dock ---------------------------------------------------------------------------
@@ -244,21 +269,21 @@ pub fn right(app: &mut App, ui: &mut egui::Ui) {
     let dock = ui.max_rect();
     // Dock sections are layout bands; each folds away to give the others room.
     let props = egui::ScrollArea::vertical().id_salt("props").max_height(h * 0.56).auto_shrink([false, true]).show(ui, |ui| {
-        crate::theme::section_with_header(ui, "dock_properties", Section::Band, "Properties", None, |ui| {
+        crate::theme::section_with_header(ui, "dock_properties", Section::Band, tr!("Properties"), None, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| properties(app, ui));
         })
         .0
     });
-    section(ui, "dock_align", Section::Band, "Align", None, |ui| {
+    section(ui, "dock_align", Section::Band, tr!("Align"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| align_panel(app, ui));
     });
     // Ctrl+F6 lands on the Properties and Library headers; each panel owns the dock down to the
     // next one (Align goes with Properties, History with the Library).
     let split = ui.cursor().top();
-    let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, "Library", None, |ui| {
+    let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, tr!("Library"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
     });
-    section(ui, "dock_history", Section::Band, "History", None, |ui| {
+    section(ui, "dock_history", Section::Band, tr!("History"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| history(app, ui));
     });
     a11y::anchor(ui, a11y::Region::Properties, Rect::from_min_max(dock.min, pos2(dock.right(), split)), &props.inner);
@@ -276,11 +301,11 @@ fn align_panel(app: &mut App, ui: &mut egui::Ui) {
         icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(18.0, 18.0)), icon, if !has_sel { T.text_faint } else if resp.hovered() { T.icon_hot } else { T.icon });
         let spec = anicraft_engine::find_command(id);
         let tip = spec.map_or_else(String::new, |c| match app.keymap.primary(c.id) {
-            Some(k) => format!("{} ({})", c.label, crate::platform::shortcut_label(k)),
-            None => c.label.to_string(),
+            Some(k) => format!("{} ({})", crate::i18n::t_cmd(c.id, c.label), crate::platform::shortcut_label(k)),
+            None => crate::i18n::t_cmd(c.id, c.label).to_string(),
         });
         a11y::control(ui, &resp, WidgetType::Button, &tip, None);
-        let tip = if has_sel { tip } else { format!("{tip}\nSelect something to align") };
+        let tip = if has_sel { tip } else { tr!("{command}\nSelect something to align", command = tip) };
         if resp.on_hover_text(tip).clicked() {
             // Leave it unset when off, so a single shape still aligns to the stage.
             app.run(id, if app.align_to_stage { json!({"to_stage": true}) } else { json!({}) });
@@ -301,7 +326,7 @@ fn align_panel(app: &mut App, ui: &mut egui::Ui) {
         button(app, ui, Icon::DistributeH, "align.distribute_h");
         button(app, ui, Icon::DistributeV, "align.distribute_v");
         ui.add_space(12.0);
-        crate::theme::checkbox(ui, &mut app.align_to_stage, text(Type::Body, "To stage")).on_hover_text("Align to the stage instead of the selection's bounds (a single shape always aligns to the stage)");
+        crate::theme::checkbox(ui, &mut app.align_to_stage, text(Type::Body, tr!("To stage"))).on_hover_text(tr!("Align to the stage instead of the selection's bounds (a single shape always aligns to the stage)"));
     });
 }
 
@@ -313,18 +338,18 @@ fn history(app: &mut App, ui: &mut egui::Ui) {
     let evicted = hist.evicted;
     let mut target = None;
     egui::ScrollArea::vertical().id_salt("history").max_height(ui.available_height().max(60.0)).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-        let base = if evicted > 0 { "… older steps freed (memory budget)" } else { "Opened document" };
+        let base = if evicted > 0 { tr!("… older steps freed (memory budget)") } else { tr!("Opened document") };
         if ui.selectable_label(past.is_empty(), text(Type::Body, base).color(if evicted > 0 { T.text_faint } else { T.text_dim })).clicked() {
             target = Some(0);
         }
         for (i, label) in past.iter().enumerate() {
             let current = i + 1 == past.len();
-            if ui.selectable_label(current, label.as_str()).clicked() {
+            if ui.selectable_label(current, crate::i18n::t_dyn(label).into_owned()).clicked() {
                 target = Some(i + 1);
             }
         }
         for (i, label) in future.iter().enumerate() {
-            if ui.selectable_label(false, text(Type::Body, label.as_str()).color(T.text_faint).italics()).clicked() {
+            if ui.selectable_label(false, text(Type::Body, crate::i18n::t_dyn(label)).color(T.text_faint).italics()).clicked() {
                 target = Some(past.len() + i + 1);
             }
         }
@@ -337,35 +362,104 @@ fn history(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn properties(app: &mut App, ui: &mut egui::Ui) {
-    let elements = app.s.visible_elements();
-    let sel: Vec<_> = elements.iter().filter(|e| app.s.selection.contains(&e.id)).cloned().collect();
+    // The selection on every layer (ADR 0044).
+    let sel: Vec<_> = app.s.selected_elements().into_iter().map(|(_, e)| e).collect();
 
     // ---- tool options first while a drawing tool is in hand: they're what you reach for ----
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Text | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper) {
-        let title = format!("{} tool", app.tool.label());
+        let title = tr!("{tool} tool", tool = crate::i18n::t(app.tool.label()));
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
+    }
+    // ---- Snap to Objects for the tools that drag points and selections (ADR 0042) ----
+    if matches!(app.tool, Tool::Select | Tool::Subselect | Tool::Transform) {
+        let title = tr!("{tool} tool", tool = crate::i18n::t(app.tool.label()));
+        section(ui, "prop_tool", Section::Rule, &title, None, |ui| {
+            let mut on = app.s.style.snap_objects;
+            row_prose(ui, tr!("Snapping"), |ui| {
+                crate::theme::checkbox(ui, &mut on, tr!("Snap to objects")).on_hover_text(tr!("Dragged points and selections snap to points, lines and fill edges within 10 pixels (the magnet under the tools)"));
+            });
+            if on != app.s.style.snap_objects {
+                app.run("draw.snap_to_objects", json!({"on": on}));
+            }
+        });
     }
     // ---- the camera, with the Camera tool or its layer active (ADR 0027) ----
     let camera_layer = app.s.doc.timeline(app.s.scene).camera_layer().map(|l| l.id);
     if camera_layer.is_some() && (app.tool == Tool::Camera || camera_layer == Some(app.s.layer)) {
-        section(ui, "prop_camera", Section::Rule, "Camera", None, |ui| camera_props(app, ui));
+        section(ui, "prop_camera", Section::Rule, tr!("Camera"), None, |ui| camera_props(app, ui));
+    }
+    // ---- the bone picked on the stage (ADR 0043) ----
+    if let Some(id) = app.bone_sel {
+        let name = app.s.doc.timeline(app.s.scene).layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| b.name.clone()));
+        if let Some(name) = name {
+            let title = if name.is_empty() { tr!("Bone").to_string() } else { tr!("Bone: {name}", name = name) };
+            section(ui, "prop_bone", Section::Rule, &title, None, |ui| bone_props(app, ui, id));
+        }
     }
     if let Some(e) = sel.first() {
-        let title = if sel.len() > 1 { format!("{} elements", sel.len()) } else { element_label(&app.s.doc, e) };
-        section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, sel.len()));
+        // One count per template: the layers' phrase is its own plural, with its preposition, so
+        // its grammar travels with it, and the outer sentence places it.
+        let title = match (sel.len(), app.s.selected_layers().len()) {
+            (1, _) => element_title(&app.s.doc, e),
+            (n, 0 | 1) => trn!("{n} element", "{n} elements", n),
+            (n, l) => trn!("{n} element {on_layers}", "{n} elements {on_layers}", n, on_layers = trn!("on {n} layer", "on {n} layers", l)),
+        };
+        section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, &sel));
     } else {
-        section(ui, "prop_document", Section::Rule, "Document", None, |ui| document_props(app, ui));
+        section(ui, "prop_document", Section::Rule, tr!("Document"), None, |ui| document_props(app, ui));
     }
     // ---- frame ----
     let frame = app.s.frame;
     if let Some(layer) = app.s.active_layer().cloned() {
         // Mixed title: prose label, data value.
         let detail = format!("{} · {}", frame + 1, layer.name);
-        section(ui, "prop_frame", Section::Rule, "Frame", Some(&detail), |ui| frame_props(app, ui, &layer, frame));
+        section(ui, "prop_frame", Section::Rule, tr!("Frame"), Some(&detail), |ui| frame_props(app, ui, &layer, frame));
     }
 }
 
-fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, _count: usize) {
+/// A symbol type's name, as the Properties panel shows it.
+fn symbol_kind_label(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Graphic => tr!("Graphic"),
+        SymbolKind::MovieClip => tr!("Movie clip"),
+        SymbolKind::Button => tr!("Button"),
+    }
+}
+
+/// [`anicraft_engine::element_label`] in the interface language: the selection's title (the
+/// same English; `i18n::tests` compares them).
+pub(crate) fn element_title(doc: &anicraft_engine::doc::Document, e: &anicraft_engine::doc::Element) -> String {
+    let kind = match &e.kind {
+        ElementKind::Shape(_) => tr!("Shape").to_string(),
+        ElementKind::Symbol { symbol, .. } => match doc.symbol(*symbol) {
+            Some(s) => match s.kind {
+                SymbolKind::Graphic => tr!("Graphic: {name}", name = s.name),
+                SymbolKind::MovieClip => tr!("Movie clip: {name}", name = s.name),
+                SymbolKind::Button => tr!("Button: {name}", name = s.name),
+            },
+            None => tr!("Graphic: missing").to_string(),
+        },
+        ElementKind::Camera => tr!("Camera").to_string(),
+        ElementKind::Text(t) => {
+            let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
+            let more = if t.text.chars().count() > first.chars().count() { "…" } else { "" };
+            tr!("Text: {text}", text = format!("{first}{more}"))
+        }
+    };
+    if e.name.is_empty() { kind } else { tr!("{name} ({kind})", name = e.name, kind = kind) }
+}
+
+/// "mixed" after a value that differs across the selection (the field shows the first one's).
+fn mixed(ui: &mut egui::Ui, differs: bool) {
+    if differs {
+        ui.label(text(Type::Caption, tr!("mixed")).color(T.text_faint)).on_hover_text(tr!("The selected elements differ here; it shows the first one's. A change applies to all of them"));
+    }
+}
+
+/// The selection's properties: `e` is the first selected element, `all` the whole selection.
+fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, all: &[std::sync::Arc<anicraft_engine::doc::Element>]) {
+    let many = all.len() > 1;
+    let differs = |f: &dyn Fn(&anicraft_engine::doc::Element) -> f32| all.iter().any(|x| (f(x) - f(e)).abs() > 1e-4);
     if let ElementKind::Symbol { symbol, events, .. } = &e.kind
         && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
     {
@@ -374,30 +468,51 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
     {
         let d = e.transform.decompose();
         let (mut x, mut y, mut sx, mut sy, mut rot) = (d.tx, d.ty, d.sx * 100.0, d.sy * 100.0, d.rotation.to_degrees());
-        row(ui, "Position", |ui| {
-            let a = ui.add(egui::DragValue::new(&mut x).prefix("X ").speed(1.0).max_decimals(1)).named("Position X");
-            let b = ui.add(egui::DragValue::new(&mut y).prefix("Y ").speed(1.0).max_decimals(1)).named("Position Y");
+        if many {
+            // Several elements: where their combined box is, as in Animate; a change moves them
+            // all together.
+            let b = app.s.selection_bounds();
+            let (ox, oy) = (b.min.x, b.min.y);
+            let (mut bx, mut by) = (ox, oy);
+            row(ui, tr!("Position"), |ui| {
+                let a = ui.add(egui::DragValue::new(&mut bx).prefix("X ").speed(1.0).max_decimals(1)).named(tr!("Position X"));
+                let c = ui.add(egui::DragValue::new(&mut by).prefix("Y ").speed(1.0).max_decimals(1)).named(tr!("Position Y"));
+                if (a.changed() || c.changed()) && !b.is_empty() {
+                    live(app, tr_noop!("Move"), "element.translate", json!({"dx": bx - ox, "dy": by - oy}));
+                }
+            });
+        } else {
+            row(ui, tr!("Position"), |ui| {
+                let a = ui.add(egui::DragValue::new(&mut x).prefix("X ").speed(1.0).max_decimals(1)).named(tr!("Position X"));
+                let b = ui.add(egui::DragValue::new(&mut y).prefix("Y ").speed(1.0).max_decimals(1)).named(tr!("Position Y"));
+                if a.changed() || b.changed() {
+                    live(app, tr_noop!("Move"), "element.set_transform", json!({"x": x, "y": y}));
+                }
+            });
+        }
+        let scale_mixed = many && (differs(&|x| x.transform.decompose().sx) || differs(&|x| x.transform.decompose().sy));
+        row(ui, tr!("Scale"), |ui| {
+            let a = ui.add(egui::DragValue::new(&mut sx).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named(tr!("Scale width"));
+            let b = ui.add(egui::DragValue::new(&mut sy).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named(tr!("Scale height"));
             if a.changed() || b.changed() {
-                live(app, "Move", "element.set_transform", json!({"x": x, "y": y}));
+                live(app, tr_noop!("Scale"), "element.set_transform", json!({"sx": sx / 100.0, "sy": sy / 100.0}));
             }
+            mixed(ui, scale_mixed);
         });
-        row(ui, "Scale", |ui| {
-            let a = ui.add(egui::DragValue::new(&mut sx).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named("Scale width");
-            let b = ui.add(egui::DragValue::new(&mut sy).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named("Scale height");
-            if a.changed() || b.changed() {
-                live(app, "Scale", "element.set_transform", json!({"sx": sx / 100.0, "sy": sy / 100.0}));
+        let rot_mixed = many && differs(&|x| x.transform.decompose().rotation);
+        row(ui, tr!("Rotation"), |ui| {
+            if ui.add(egui::DragValue::new(&mut rot).suffix("°").speed(0.5).range(-360.0..=360.0).max_decimals(1)).named(tr!("Rotation")).changed() {
+                live(app, tr_noop!("Rotate"), "element.set_transform", json!({"rotation": rot}));
             }
-        });
-        row(ui, "Rotation", |ui| {
-            if ui.add(egui::DragValue::new(&mut rot).suffix("°").speed(0.5).range(-360.0..=360.0).max_decimals(1)).named("Rotation").changed() {
-                live(app, "Rotate", "element.set_transform", json!({"rotation": rot}));
-            }
+            mixed(ui, rot_mixed);
         });
         let mut alpha = e.color.alpha * 100.0;
-        row(ui, "Alpha", |ui| {
-            if a11y::slider(ui, &mut alpha, 0.0..=100.0, "Alpha", a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() }).changed() {
-                live(app, "Alpha", "element.set_alpha", json!({"alpha": alpha / 100.0}));
+        let alpha_mixed = many && differs(&|x| x.color.alpha);
+        row(ui, tr!("Alpha"), |ui| {
+            if a11y::slider(ui, &mut alpha, 0.0..=100.0, tr!("Alpha"), a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() }).changed() {
+                live(app, tr_noop!("Alpha"), "element.set_alpha", json!({"alpha": alpha / 100.0}));
             }
+            mixed(ui, alpha_mixed);
         });
         // Blending and filters, on movie clips and buttons as in Animate.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
@@ -409,16 +524,16 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
         {
             let current = *blend;
-            row_prose(ui, "Blending", |ui| {
-                egui::ComboBox::from_id_salt("prop_blend").selected_text(current.label()).show_ui(ui, |ui| {
+            row_prose(ui, tr!("Blending"), |ui| {
+                egui::ComboBox::from_id_salt("prop_blend").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
                     for m in anicraft_engine::doc::BlendMode::ALL {
-                        if ui.selectable_label(m == current, m.label()).clicked() && m != current {
+                        if ui.selectable_label(m == current, crate::i18n::t(m.label())).clicked() && m != current {
                             app.run("element.set_blend", json!({"mode": m.key()}));
                         }
                     }
                 })
                 .response
-                .set_name("Blending");
+                .set_name(tr!("Blending"));
             });
         }
         if let ElementKind::Symbol { symbol, loop_mode, first_frame, .. } = &e.kind
@@ -428,43 +543,38 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             let (kind, frames) = sym;
             ui.add_space(4.0);
             // How the instance plays: the symbol's type, and a graphic's looping.
-            row_prose(ui, "Type", |ui| {
-                let label = |k: SymbolKind| match k {
-                    SymbolKind::Graphic => "Graphic",
-                    SymbolKind::MovieClip => "Movie clip",
-                    SymbolKind::Button => "Button",
-                };
-                egui::ComboBox::from_id_salt("prop_symkind").width(150.0).selected_text(label(kind)).show_ui(ui, |ui| {
+            row_prose(ui, tr!("Type"), |ui| {
+                egui::ComboBox::from_id_salt("prop_symkind").width(150.0).selected_text(symbol_kind_label(kind)).show_ui(ui, |ui| {
                     for (k, id, tip) in [
-                        (SymbolKind::Graphic, "graphic", "Keeps step with the timeline it is on (looping options below)"),
-                        (SymbolKind::MovieClip, "movie_clip", "Plays its own timeline on a loop, from when it appears"),
-                        (SymbolKind::Button, "button", "Shows its Up frame"),
+                        (SymbolKind::Graphic, "graphic", tr!("Keeps step with the timeline it is on (looping options below)")),
+                        (SymbolKind::MovieClip, "movie_clip", tr!("Plays its own timeline on a loop, from when it appears")),
+                        (SymbolKind::Button, "button", tr!("Shows its Up frame")),
                     ] {
-                        if ui.selectable_label(kind == k, label(k)).on_hover_text(tip).clicked() && kind != k {
+                        if ui.selectable_label(kind == k, symbol_kind_label(k)).on_hover_text(tip).clicked() && kind != k {
                             app.run("symbol.set_kind", json!({"symbol": symbol.0, "kind": id}));
                         }
                     }
                 })
                 .response
-                .set_name("Symbol type");
+                .set_name(tr!("Symbol type"));
             });
             // The class scripts know the symbol by (kept, not run; ADR 0013), in documents
             // that use scripts.
             let linkage = app.s.doc.symbol(*symbol).and_then(|s| s.linkage.clone());
             if linkage.is_some() || crate::actions_panel::scripted(&app.s.doc) {
                 let (class, base) = linkage.map_or((String::new(), String::new()), |l| (l.class, l.base));
-                let hint = if base.is_empty() { "The class scripts create this symbol by (its linkage). Kept with the document; scripts don't run yet".to_string() } else { format!("The class scripts create this symbol by (its linkage), extending {base}. Kept with the document; scripts don't run yet") };
-                row_prose(ui, "Class", |ui| {
-                    if let Some(v) = crate::actions_panel::class_field(ui, "prop_symclass", &class, "Linkage class", &hint) {
+                let hint = if base.is_empty() { tr!("The class scripts create this symbol by (its linkage). Kept with the document; scripts don't run yet").to_string() } else { tr!("The class scripts create this symbol by (its linkage), extending {base}. Kept with the document; scripts don't run yet", base = base) };
+                row_prose(ui, tr!("Class"), |ui| {
+                    if let Some(v) = crate::actions_panel::class_field(ui, "prop_symclass", &class, tr!("Linkage class"), &hint) {
                         let base = if v.is_empty() { String::new() } else { base.clone() };
                         app.run("script.set_class", json!({"symbol": symbol.0, "class": v, "base": base}));
                     }
                 });
             }
             if kind == SymbolKind::Graphic {
-                let names = [(LoopMode::Loop, "loop", "Loop"), (LoopMode::PlayOnce, "play_once", "Play once"), (LoopMode::SingleFrame, "single_frame", "Single frame")];
-                let current = names.iter().find(|(m, _, _)| m == loop_mode).map_or("Loop", |(_, _, l)| l);
-                row_prose(ui, "Looping", |ui| {
+                let names = [(LoopMode::Loop, "loop", tr!("Loop")), (LoopMode::PlayOnce, "play_once", tr!("Play once")), (LoopMode::SingleFrame, "single_frame", tr!("Single frame"))];
+                let current = names.iter().find(|(m, _, _)| m == loop_mode).map_or(tr!("Loop"), |(_, _, l)| l);
+                row_prose(ui, tr!("Looping"), |ui| {
                     egui::ComboBox::from_id_salt("prop_loop").width(150.0).selected_text(current).show_ui(ui, |ui| {
                         for (m, id, l) in names {
                             if ui.selectable_label(m == *loop_mode, l).clicked() && m != *loop_mode {
@@ -473,18 +583,18 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                         }
                     })
                     .response
-                    .set_name("Looping");
+                    .set_name(tr!("Looping"));
                 });
                 let mut first = first_frame + 1;
-                row(ui, "First frame", |ui| {
-                    let r = ui.add(egui::DragValue::new(&mut first).range(1..=frames.max(1)).speed(0.2)).named("First frame");
+                row(ui, tr!("First frame"), |ui| {
+                    let r = ui.add(egui::DragValue::new(&mut first).range(1..=frames.max(1)).speed(0.2)).named(tr!("First frame"));
                     if r.changed() {
-                        live(app, "First frame", "element.set_loop", json!({"first_frame": first.saturating_sub(1)}));
+                        live(app, tr_noop!("First frame"), "element.set_loop", json!({"first_frame": first.saturating_sub(1)}));
                     }
-                    ui.label(text(Type::Caption, format!("of {frames}")));
+                    ui.label(text(Type::Caption, tr!("of {frames}", frames = frames)));
                 });
             } else if kind == SymbolKind::MovieClip {
-                ui.label(text(Type::Caption, format!("Plays its {frames}-frame timeline on a loop from when it appears.")));
+                ui.label(text(Type::Caption, trn!("Plays its {n}-frame timeline on a loop from when it appears.", "Plays its {n}-frame timeline on a loop from when it appears.", frames)));
             }
         }
         if let ElementKind::Text(t) = &e.kind {
@@ -494,8 +604,8 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             if let Some((label, p)) = text_style_rows(app, ui, &mut st, Some(&mut width)) {
                 live(app, label, "text.edit", p);
             }
-            row_prose(ui, "Text", |ui| {
-                if ui.button("Edit Text").on_hover_text("Type on the stage (or double-click the text)").clicked() {
+            row_prose(ui, tr!("Text"), |ui| {
+                if ui.button(tr!("Edit Text")).on_hover_text(tr!("Type on the stage (or double-click the text)")).clicked() {
                     let at = e.transform.apply(anicraft_engine::geom::Vec2::ZERO);
                     app.text_edit = Some(crate::app::TextEditing { at: pos2(at.x, at.y), element: Some(e.id), text: t.text.clone(), original: t.text.clone(), focus: true });
                 }
@@ -504,32 +614,42 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         if let ElementKind::Shape(sh) = &e.kind {
             ui.add_space(4.0);
             let fill = sh.fill.as_ref().map(Paint::primary_color);
-            row(ui, "Fill", |ui| {
+            // Mixed: the selected shapes' fills, or lines, are not all alike.
+            let shapes: Vec<&anicraft_engine::doc::Shape> = all.iter().filter_map(|x| match &x.kind {
+                ElementKind::Shape(s) => Some(s),
+                _ => None,
+            }).collect();
+            let fill_mixed = shapes.iter().any(|s| s.fill.as_ref().map(Paint::primary_color) != fill);
+            let line = |s: &anicraft_engine::doc::Shape| s.stroke.as_ref().map(|st| (st.color, st.width.to_bits()));
+            let stroke_mixed = shapes.iter().any(|s| line(s) != line(sh));
+            row(ui, tr!("Fill"), |ui| {
                 let is_grad = matches!(sh.fill, Some(Paint::Linear { .. } | Paint::Radial { .. }));
                 let mut c = rgb(fill.unwrap_or(Rgba::WHITE));
-                if ui.color_edit_button_srgb(&mut c).named("Fill colour").changed() {
-                    live(app, "Fill colour", "element.set_fill", json!({"color": hex(c)}));
+                if ui.color_edit_button_srgb(&mut c).named(tr!("Fill colour")).changed() {
+                    live(app, tr_noop!("Fill colour"), "element.set_fill", json!({"color": hex(c)}));
                 }
                 let mut on = fill.is_some();
-                if crate::theme::checkbox(ui, &mut on, "").named("Fill").on_hover_text("Fill on/off").changed() {
+                if crate::theme::checkbox(ui, &mut on, "").named(tr!("Fill")).on_hover_text(tr!("Fill on/off")).changed() {
                     app.run("element.set_fill", if on { json!({"color": hex(c)}) } else { json!({"color": null}) });
                 }
                 if let Some(Paint::Bitmap { bitmap, .. }) = &sh.fill {
-                    let name = app.s.doc.bitmap(*bitmap).map_or_else(|| "missing bitmap".to_string(), |b| format!("{} · {}×{}", b.name, b.width, b.height));
+                    let name = app.s.doc.bitmap(*bitmap).map_or_else(|| tr!("missing bitmap").to_string(), |b| format!("{} · {}×{}", b.name, b.width, b.height));
                     ui.label(text(Type::Caption, name));
                 } else if is_grad {
-                    ui.label(text(Type::Caption, "gradient"));
+                    ui.label(text(Type::Caption, tr!("gradient")));
                 }
+                mixed(ui, fill_mixed);
             });
             let mut sc = rgb(sh.stroke.as_ref().map_or(app.s.style.stroke, |s| s.color));
             let mut sw = sh.stroke.as_ref().map_or(0.0, |s| s.width);
-            row(ui, "Stroke", |ui| {
-                if ui.color_edit_button_srgb(&mut sc).named("Stroke colour").changed() {
-                    live(app, "Stroke colour", "element.set_stroke", json!({"color": hex(sc)}));
+            row(ui, tr!("Stroke"), |ui| {
+                if ui.color_edit_button_srgb(&mut sc).named(tr!("Stroke colour")).changed() {
+                    live(app, tr_noop!("Stroke colour"), "element.set_stroke", json!({"color": hex(sc)}));
                 }
-                if ui.add(egui::DragValue::new(&mut sw).suffix(" px").speed(0.1).range(0.0..=200.0).max_decimals(1)).named("Stroke width").changed() {
-                    live(app, "Stroke width", "element.set_stroke", json!({"width": sw}));
+                if ui.add(egui::DragValue::new(&mut sw).suffix(" px").speed(0.1).range(0.0..=200.0).max_decimals(1)).named(tr!("Stroke width")).changed() {
+                    live(app, tr_noop!("Stroke width"), "element.set_stroke", json!({"width": sw}));
                 }
+                mixed(ui, stroke_mixed);
             });
             if let Some(st) = &sh.stroke {
                 // The width profile, as Animate's Width menu: built-ins with a picture of each.
@@ -537,11 +657,20 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 if let Some(pick) = profile_picker(ui, ProfileRow::Selection, current.as_ref()) {
                     app.run("stroke.set_profile", json!({"profile": pick.key()}));
                 }
+                // Style, caps and joins (ADR 0046).
+                let style_mixed = shapes.iter().any(|s| s.stroke.as_ref().map(|x| &x.style) != Some(&st.style));
+                if let Some(edit) = line_style_rows(ui, ProfileRow::Selection, &st.style, style_mixed) {
+                    if edit.drag {
+                        live(app, edit.label, "stroke.set_style", edit.params);
+                    } else {
+                        app.run("stroke.set_style", edit.params);
+                    }
+                }
             }
         }
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            for (label, id) in [("Convert to Symbol", "modify.convert_to_symbol"), ("Break Apart", "modify.break_apart"), ("Duplicate", "edit.duplicate"), ("Delete", "edit.delete")] {
+            for (label, id) in [(tr!("Convert to Symbol"), "modify.convert_to_symbol"), (tr!("Break Apart"), "modify.break_apart"), (tr!("Duplicate"), "edit.duplicate"), (tr!("Delete"), "edit.delete")] {
                 if ui.button(label).clicked() {
                     app.invoke(id);
                 }
@@ -554,17 +683,17 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
 /// the top of Animate's Properties.
 fn instance_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, events: &[anicraft_engine::doc::EventHandler]) {
     let mut name = e.name.clone();
-    row_prose(ui, "Instance", |ui| {
-        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0).hint_text("instance name")).named("Instance name");
-        if r.on_hover_text("The name actions use to address it (letters, digits and _)").changed() {
-            live(app, "Instance name", "instance.set_name", json!({"element": e.id.0, "name": name}));
+    row_prose(ui, tr!("Instance"), |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0).hint_text(tr!("instance name"))).named(tr!("Instance name"));
+        if r.on_hover_text(tr!("The name actions use to address it (letters, digits and _)")).changed() {
+            live(app, tr_noop!("Instance name"), "instance.set_name", json!({"element": e.id.0, "name": name}));
         }
     });
     let key = app.keymap.primary("view.actions").map(crate::platform::shortcut_label).unwrap_or_default();
-    row_prose(ui, "Events", |ui| {
-        let what = if events.is_empty() { "None".to_string() } else { events.iter().map(|h| h.event.label()).collect::<Vec<_>>().join(", ") };
+    row_prose(ui, tr!("Events"), |ui| {
+        let what = if events.is_empty() { tr!("None").to_string() } else { events.iter().map(|h| crate::i18n::t(h.event.label())).collect::<Vec<_>>().join(", ") };
         ui.label(text(Type::Body, what).color(if events.is_empty() { T.text_faint } else { T.text }));
-        if ui.small_button("Actions…").on_hover_text(format!("Edit what it does on clicks and the pointer ({key})")).clicked() {
+        if ui.small_button(tr!("Actions…")).on_hover_text(tr!("Edit what it does on clicks and the pointer ({key})", key = key)).clicked() {
             crate::actions_panel::open(app, crate::actions_panel::Tab::Instance);
         }
     });
@@ -579,44 +708,44 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
     // As the renderer sees them (a file may hold values or ramps a command would refuse).
     let mut list: Vec<Filter> = current.iter().map(Filter::sanitized).collect();
     let mut changed: Option<&'static str> = None;
-    row_prose(ui, "Filters", |ui| {
-        egui::ComboBox::from_id_salt("add_filter").selected_text(if list.is_empty() { "None" } else { "Add filter" }).show_ui(ui, |ui| {
+    row_prose(ui, tr!("Filters"), |ui| {
+        egui::ComboBox::from_id_salt("add_filter").selected_text(if list.is_empty() { tr!("None") } else { tr!("Add filter") }).show_ui(ui, |ui| {
             for (kind, label) in Filter::KINDS {
-                if ui.selectable_label(false, label).clicked()
+                if ui.selectable_label(false, crate::i18n::t(label)).clicked()
                     && let Some(f) = Filter::new(kind)
                 {
                     list.push(f);
-                    changed = Some("Add filter");
+                    changed = Some(tr_noop!("Add filter"));
                 }
             }
         })
         .response
-        .set_name("Add filter");
+        .set_name(tr!("Add filter"));
     });
-    let quality_names = ["Low", "Medium", "High"];
+    let quality_names = [tr!("Low"), tr!("Medium"), tr!("High")];
     let mut remove = None;
     for (i, f) in list.iter_mut().enumerate() {
         // Screen readers hear which filter a value belongs to: "Drop Shadow blur X".
-        let fname = f.label();
+        let fname = crate::i18n::t(f.label());
         ui.push_id(("filter", i), |ui| {
             row_prose(ui, fname, |ui| {
-                if ui.small_button("Remove").named(&format!("Remove {fname}")).on_hover_text("Remove this filter").clicked() {
+                if ui.small_button(tr!("Remove")).named(&tr!("Remove {filter}", filter = fname)).on_hover_text(tr!("Remove this filter")).clicked() {
                     remove = Some(i);
                 }
             });
             let blur_rows = |ui: &mut egui::Ui, bx: &mut f32, by: &mut f32, quality: &mut u8, changed: &mut Option<&'static str>| {
-                row(ui, "Blur", |ui| {
-                    let a = ui.add(egui::DragValue::new(bx).prefix("X ").suffix(" px").speed(0.25).range(0.0..=255.0).max_decimals(1)).named(&format!("{fname} blur X"));
-                    let b = ui.add(egui::DragValue::new(by).prefix("Y ").suffix(" px").speed(0.25).range(0.0..=255.0).max_decimals(1)).named(&format!("{fname} blur Y"));
+                row(ui, tr!("Blur"), |ui| {
+                    let a = ui.add(egui::DragValue::new(bx).prefix("X ").suffix(" px").speed(0.25).range(0.0..=255.0).max_decimals(1)).named(&tr!("{filter} blur X", filter = fname));
+                    let b = ui.add(egui::DragValue::new(by).prefix("Y ").suffix(" px").speed(0.25).range(0.0..=255.0).max_decimals(1)).named(&tr!("{filter} blur Y", filter = fname));
                     if a.changed() || b.changed() {
-                        *changed = Some("Filter blur");
+                        *changed = Some(tr_noop!("Filter blur"));
                     }
                 });
-                row_prose(ui, "Quality", |ui| {
+                row_prose(ui, tr!("Quality"), |ui| {
                     for (q, name) in quality_names.iter().enumerate() {
-                        if ui.selectable_label(usize::from(*quality) == q + 1, *name).named(&format!("{fname} quality {name}")).clicked() {
+                        if ui.selectable_label(usize::from(*quality) == q + 1, *name).named(&tr!("{filter} quality {quality}", filter = fname, quality = name)).clicked() {
                             *quality = q as u8 + 1;
-                            *changed = Some("Filter quality");
+                            *changed = Some(tr_noop!("Filter quality"));
                         }
                     }
                 });
@@ -627,11 +756,11 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
                 Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner, knockout, hide_object } => {
                     blur_rows(ui, blur_x, blur_y, quality, &mut changed);
                     shadow_rows(ui, fname, strength, color, &mut changed);
-                    offset_row(ui, fname, angle, distance, "Shadow offset", &mut changed);
-                    row_prose(ui, "Options", |ui| {
-                        for (v, label) in [(inner, "Inner"), (knockout, "Knockout"), (hide_object, "Hide object")] {
+                    offset_row(ui, fname, angle, distance, tr_noop!("Shadow offset"), &mut changed);
+                    row_prose(ui, tr!("Options"), |ui| {
+                        for (v, label) in [(inner, tr!("Inner")), (knockout, tr!("Knockout")), (hide_object, tr!("Hide object"))] {
                             if crate::theme::checkbox(ui, v, label).changed() {
-                                changed = Some("Shadow options");
+                                changed = Some(tr_noop!("Shadow options"));
                             }
                         }
                     });
@@ -639,10 +768,10 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
                 Filter::Glow { blur_x, blur_y, strength, quality, color, inner, knockout } => {
                     blur_rows(ui, blur_x, blur_y, quality, &mut changed);
                     shadow_rows(ui, fname, strength, color, &mut changed);
-                    row_prose(ui, "Options", |ui| {
-                        for (v, label) in [(inner, "Inner"), (knockout, "Knockout")] {
+                    row_prose(ui, tr!("Options"), |ui| {
+                        for (v, label) in [(inner, tr!("Inner")), (knockout, tr!("Knockout"))] {
                             if crate::theme::checkbox(ui, v, label).changed() {
-                                changed = Some("Glow options");
+                                changed = Some(tr_noop!("Glow options"));
                             }
                         }
                     });
@@ -650,15 +779,19 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
                 Filter::Bevel { blur_x, blur_y, strength, quality, angle, distance, shadow_color, highlight_color, side, knockout } => {
                     blur_rows(ui, blur_x, blur_y, quality, &mut changed);
                     strength_row(ui, fname, strength, &mut changed);
-                    row_prose(ui, "Colours", |ui| {
-                        for (c, label, undo) in [(shadow_color, "Shadow", "Bevel shadow colour"), (highlight_color, "Highlight", "Bevel highlight colour")] {
+                    row_prose(ui, tr!("Colours"), |ui| {
+                        let colours = [
+                            (shadow_color, tr!("Shadow"), tr!("{filter} shadow colour", filter = fname), tr_noop!("Bevel shadow colour")),
+                            (highlight_color, tr!("Highlight"), tr!("{filter} highlight colour", filter = fname), tr_noop!("Bevel highlight colour")),
+                        ];
+                        for (c, label, name, undo) in colours {
                             ui.label(label);
-                            if alpha_swatch(ui, c, &format!("{fname} {} colour", label.to_lowercase())) {
+                            if alpha_swatch(ui, c, &name) {
                                 changed = Some(undo);
                             }
                         }
                     });
-                    offset_row(ui, fname, angle, distance, "Bevel offset", &mut changed);
+                    offset_row(ui, fname, angle, distance, tr_noop!("Bevel offset"), &mut changed);
                     side_rows(ui, fname, side, knockout, &mut changed);
                 }
                 Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout } | Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout } => {
@@ -666,14 +799,14 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
                     ramp_editor(ui, fname, stops, pin, &mut changed);
                     blur_rows(ui, blur_x, blur_y, quality, &mut changed);
                     strength_row(ui, fname, strength, &mut changed);
-                    offset_row(ui, fname, angle, distance, "Filter offset", &mut changed);
+                    offset_row(ui, fname, angle, distance, tr_noop!("Filter offset"), &mut changed);
                     side_rows(ui, fname, side, knockout, &mut changed);
                 }
                 Filter::AdjustColor { brightness, contrast, saturation, hue } => {
-                    for (v, label, range) in [(brightness, "Brightness", 100.0), (contrast, "Contrast", 100.0), (saturation, "Saturation", 100.0), (hue, "Hue", 180.0)] {
+                    for (v, label, range) in [(brightness, tr!("Brightness"), 100.0), (contrast, tr!("Contrast"), 100.0), (saturation, tr!("Saturation"), 100.0), (hue, tr!("Hue"), 180.0)] {
                         row(ui, label, |ui| {
                             if a11y::slider(ui, v, -range..=range, label, a11y::SliderLook { max_decimals: Some(0), ..Default::default() }).changed() {
-                                changed = Some("Adjust colour");
+                                changed = Some(tr_noop!("Adjust colour"));
                             }
                         });
                     }
@@ -683,7 +816,7 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
     }
     if let Some(i) = remove {
         list.remove(i);
-        changed = Some("Remove filter");
+        changed = Some(tr_noop!("Remove filter"));
     }
     if let Some(label) = changed
         && let Ok(v) = serde_json::to_value(&list)
@@ -694,39 +827,39 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
 
 /// Strength and colour rows of a drop shadow or glow.
 fn shadow_rows(ui: &mut egui::Ui, fname: &str, strength: &mut f32, color: &mut Rgba, changed: &mut Option<&'static str>) {
-    row(ui, "Strength", |ui| {
+    row(ui, tr!("Strength"), |ui| {
         let mut pct = *strength * 100.0;
-        if ui.add(egui::DragValue::new(&mut pct).suffix(" %").speed(1.0).range(0.0..=1000.0).max_decimals(0)).named(&format!("{fname} strength")).changed() {
+        if ui.add(egui::DragValue::new(&mut pct).suffix(" %").speed(1.0).range(0.0..=1000.0).max_decimals(0)).named(&tr!("{filter} strength", filter = fname)).changed() {
             *strength = pct / 100.0;
-            *changed = Some("Filter strength");
+            *changed = Some(tr_noop!("Filter strength"));
         }
         let mut c = rgb(*color);
-        if ui.color_edit_button_srgb(&mut c).named(&format!("{fname} colour")).on_hover_text("Colour").changed() {
+        if ui.color_edit_button_srgb(&mut c).named(&tr!("{filter} colour", filter = fname)).on_hover_text(tr!("Colour")).changed() {
             *color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, color.a);
-            *changed = Some("Filter colour");
+            *changed = Some(tr_noop!("Filter colour"));
         }
     });
 }
 
 /// The Strength row of a bevel or gradient filter.
 fn strength_row(ui: &mut egui::Ui, fname: &str, strength: &mut f32, changed: &mut Option<&'static str>) {
-    row(ui, "Strength", |ui| {
+    row(ui, tr!("Strength"), |ui| {
         let mut pct = *strength * 100.0;
-        if ui.add(egui::DragValue::new(&mut pct).suffix(" %").speed(1.0).range(0.0..=1000.0).max_decimals(0)).named(&format!("{fname} strength")).changed() {
+        if ui.add(egui::DragValue::new(&mut pct).suffix(" %").speed(1.0).range(0.0..=1000.0).max_decimals(0)).named(&tr!("{filter} strength", filter = fname)).changed() {
             *strength = pct / 100.0;
-            *changed = Some("Filter strength");
+            *changed = Some(tr_noop!("Filter strength"));
         }
     });
 }
 
 /// Angle and distance of a shadow, bevel or gradient filter.
 fn offset_row(ui: &mut egui::Ui, fname: &str, angle: &mut f32, distance: &mut f32, undo: &'static str, changed: &mut Option<&'static str>) {
-    row(ui, "Offset", |ui| {
+    row(ui, tr!("Offset"), |ui| {
         let a = ui
-            .add(egui::DragValue::new(angle).prefix("Angle ").suffix("°").speed(1.0).range(0.0..=360.0).max_decimals(0))
-            .named(&format!("{fname} angle"))
-            .on_hover_text("The direction the shadow falls (the light comes from the opposite side)");
-        let b = ui.add(egui::DragValue::new(distance).prefix("Distance ").suffix(" px").speed(0.25).range(-1000.0..=1000.0).max_decimals(1)).named(&format!("{fname} distance"));
+            .add(egui::DragValue::new(angle).prefix(format!("{} ", tr!("Angle"))).suffix("°").speed(1.0).range(0.0..=360.0).max_decimals(0))
+            .named(&tr!("{filter} angle", filter = fname))
+            .on_hover_text(tr!("The direction the shadow falls (the light comes from the opposite side)"));
+        let b = ui.add(egui::DragValue::new(distance).prefix(format!("{} ", tr!("Distance"))).suffix(" px").speed(0.25).range(-1000.0..=1000.0).max_decimals(1)).named(&tr!("{filter} distance", filter = fname));
         if a.changed() || b.changed() {
             *changed = Some(undo);
         }
@@ -736,17 +869,18 @@ fn offset_row(ui: &mut egui::Ui, fname: &str, angle: &mut f32, distance: &mut f3
 /// The Type (inner, outer, full) and Knockout rows of a bevel or gradient filter.
 fn side_rows(ui: &mut egui::Ui, fname: &str, side: &mut anicraft_engine::doc::FilterSide, knockout: &mut bool, changed: &mut Option<&'static str>) {
     use anicraft_engine::doc::FilterSide;
-    row_prose(ui, "Type", |ui| {
-        for (v, tip) in [(FilterSide::Inner, "Inside the artwork's edge"), (FilterSide::Outer, "Outside the artwork's edge"), (FilterSide::Full, "Inside and outside the edge")] {
-            if ui.selectable_label(*side == v, v.label()).named(&format!("{fname} type {}", v.label())).on_hover_text(tip).clicked() && *side != v {
+    row_prose(ui, tr!("Type"), |ui| {
+        for (v, tip) in [(FilterSide::Inner, tr!("Inside the artwork's edge")), (FilterSide::Outer, tr!("Outside the artwork's edge")), (FilterSide::Full, tr!("Inside and outside the edge"))] {
+            let label = crate::i18n::t(v.label());
+            if ui.selectable_label(*side == v, label).named(&tr!("{filter} type {kind}", filter = fname, kind = label)).on_hover_text(tip).clicked() && *side != v {
                 *side = v;
-                *changed = Some("Filter type");
+                *changed = Some(tr_noop!("Filter type"));
             }
         }
     });
-    row_prose(ui, "Options", |ui| {
-        if crate::theme::checkbox(ui, knockout, "Knockout").named(&format!("{fname} knockout")).on_hover_text("Show only the effect, not the artwork").changed() {
-            *changed = Some("Filter options");
+    row_prose(ui, tr!("Options"), |ui| {
+        if crate::theme::checkbox(ui, knockout, tr!("Knockout")).named(&tr!("{filter} knockout", filter = fname)).on_hover_text(tr!("Show only the effect, not the artwork")).changed() {
+            *changed = Some(tr_noop!("Filter options"));
         }
     });
 }
@@ -786,12 +920,12 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
             if lo <= hi { (lo, hi) } else { (here, here) }
         })
         .collect();
-    row_prose(ui, "Gradient", |ui| {
+    row_prose(ui, tr!("Gradient"), |ui| {
         ui.vertical(|ui| {
             let w = ui.available_width().clamp(80.0, 200.0);
             let (strip, resp) = ui.allocate_exact_size(vec2(w, 16.0), Sense::click());
-            a11y::control(ui, &resp, WidgetType::Button, &format!("{fname} gradient: add a colour stop"), None);
-            let resp = resp.on_hover_text("Click to add a colour stop");
+            a11y::control(ui, &resp, WidgetType::Button, &tr!("{filter} gradient: add a colour stop", filter = fname), None);
+            let resp = resp.on_hover_text(tr!("Click to add a colour stop"));
             let p = ui.painter();
             // A checkerboard under the ramp shows its opacity.
             let cell = 4.0;
@@ -824,7 +958,8 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
                 let hit = Rect::from_center_size(pos2(x, track.center().y), vec2(10.0, 12.0));
                 let pinned = is_pinned(st);
                 let r = ui.interact(hit, ui.id().with(("ramp_marker", i)), if pinned { Sense::click() } else { Sense::click_and_drag() });
-                let label = format!("{fname} colour stop {} at {:.0}%{}", i + 1, st.offset * 100.0, if pinned { " (fixed)" } else { "" });
+                let at = format!("{:.0}", st.offset * 100.0);
+                let label = if pinned { tr!("{filter} colour stop {stop} at {at}% (fixed)", filter = fname, stop = i + 1, at = at) } else { tr!("{filter} colour stop {stop} at {at}%", filter = fname, stop = i + 1, at = at) };
                 a11y::control(ui, &r, WidgetType::Button, &label, Some(i == sel));
                 if r.clicked() || r.drag_started() {
                     sel = i;
@@ -836,7 +971,7 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
                     let (lo, hi) = room.get(i).copied().unwrap_or((st.offset, st.offset));
                     st.offset = ((at.x - strip.left()) / strip.width()).clamp(lo, hi);
                     sel = i;
-                    *changed = Some("Move colour stop");
+                    *changed = Some(tr_noop!("Move colour stop"));
                 }
                 let tip = pos2(x, track.top());
                 let body = [tip, pos2(x + 5.0, track.top() + 5.0), pos2(x + 5.0, track.bottom()), pos2(x - 5.0, track.bottom()), pos2(x - 5.0, track.top() + 5.0)];
@@ -857,7 +992,7 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
                 let i = stops.iter().position(|s| s.offset > t).unwrap_or(stops.len());
                 stops.insert(i, new);
                 sel = i;
-                *changed = Some("Add colour stop");
+                *changed = Some(tr_noop!("Add colour stop"));
             }
         });
     });
@@ -866,25 +1001,25 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
     let count = stops.len();
     if let Some(st) = stops.get_mut(sel) {
         let pinned = is_pinned(st);
-        row(ui, "Stop", |ui| {
+        row(ui, tr!("Stop"), |ui| {
             if pinned {
                 // Colour only: this stop stays transparent.
                 let mut c = rgb(st.color);
-                if ui.color_edit_button_srgb(&mut c).named(&format!("{fname} stop colour")).on_hover_text("Stop colour (this stop stays transparent)").changed() {
+                if ui.color_edit_button_srgb(&mut c).named(&tr!("{filter} stop colour", filter = fname)).on_hover_text(tr!("Stop colour (this stop stays transparent)")).changed() {
                     st.color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 0.0);
-                    *changed = Some("Colour stop");
+                    *changed = Some(tr_noop!("Colour stop"));
                 }
-            } else if alpha_swatch(ui, &mut st.color, &format!("{fname} stop colour")) {
-                *changed = Some("Colour stop");
+            } else if alpha_swatch(ui, &mut st.color, &tr!("{filter} stop colour", filter = fname)) {
+                *changed = Some(tr_noop!("Colour stop"));
             }
             let mut pct = st.offset * 100.0;
-            let r = ui.add_enabled(!pinned, egui::DragValue::new(&mut pct).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(&format!("{fname} stop position"));
+            let r = ui.add_enabled(!pinned, egui::DragValue::new(&mut pct).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(&tr!("{filter} stop position", filter = fname));
             if r.changed() {
                 let (lo, hi) = room.get(sel).copied().unwrap_or((st.offset, st.offset));
                 st.offset = (pct / 100.0).clamp(lo, hi);
-                *changed = Some("Move colour stop");
+                *changed = Some(tr_noop!("Move colour stop"));
             }
-            if ui.add_enabled(!pinned && count > 2, egui::Button::new("Remove").small()).named(&format!("Remove {fname} colour stop")).on_hover_text("Remove this colour stop").clicked() {
+            if ui.add_enabled(!pinned && count > 2, egui::Button::new(tr!("Remove")).small()).named(&tr!("Remove {filter} colour stop", filter = fname)).on_hover_text(tr!("Remove this colour stop")).clicked() {
                 remove = true;
             }
         });
@@ -892,7 +1027,7 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
     if remove && sel < stops.len() {
         stops.remove(sel);
         sel = sel.saturating_sub(1);
-        *changed = Some("Remove colour stop");
+        *changed = Some(tr_noop!("Remove colour stop"));
     }
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
 }
@@ -903,69 +1038,69 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
     use anicraft_engine::doc::TextAlign;
     let families = app.font_families.get_or_insert_with(|| anicraft_engine::text::Fonts::get().families().to_vec()).clone();
     let mut out: Option<(&'static str, Value)> = None;
-    row_prose(ui, "Font", |ui| {
+    row_prose(ui, tr!("Font"), |ui| {
         let shown = if st.font.is_empty() { anicraft_engine::text::Fonts::get().resolve("").unwrap_or_default() } else { st.font.clone() };
         egui::ComboBox::from_id_salt("text_font").selected_text(shown.clone()).width(ui.available_width().min(220.0)).height(320.0).show_ui(ui, |ui| {
             if families.is_empty() {
-                ui.label(text(Type::Caption, "No fonts found on this computer"));
+                ui.label(text(Type::Caption, tr!("No fonts found on this computer")));
             }
             for f in &families {
                 if ui.selectable_label(*f == shown, f).clicked() {
                     st.font = f.clone();
-                    out = Some(("Font", json!({"font": f})));
+                    out = Some((tr_noop!("Font"), json!({"font": f})));
                 }
             }
         })
         .response
-        .set_name("Font");
+        .set_name(tr!("Font"));
     });
-    row(ui, "Size", |ui| {
-        if ui.add(egui::DragValue::new(&mut st.size).suffix(" px").speed(0.25).range(1.0..=2000.0).max_decimals(1)).named("Font size").changed() {
-            out = Some(("Font size", json!({"size": st.size})));
+    row(ui, tr!("Size"), |ui| {
+        if ui.add(egui::DragValue::new(&mut st.size).suffix(" px").speed(0.25).range(1.0..=2000.0).max_decimals(1)).named(tr!("Font size")).changed() {
+            out = Some((tr_noop!("Font size"), json!({"size": st.size})));
         }
         let mut c = rgb(st.color);
-        if ui.color_edit_button_srgb(&mut c).named("Text colour").on_hover_text("Text colour").changed() {
+        if ui.color_edit_button_srgb(&mut c).named(tr!("Text colour")).on_hover_text(tr!("Text colour")).changed() {
             st.color = Rgba::hex(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]));
-            out = Some(("Text colour", json!({"color": hex(c)})));
+            out = Some((tr_noop!("Text colour"), json!({"color": hex(c)})));
         }
     });
-    row_prose(ui, "Style", |ui| {
-        if ui.selectable_label(st.bold, text(Type::Body, "B").strong()).named("Bold").on_hover_text("Bold").clicked() {
+    row_prose(ui, tr!("Style"), |ui| {
+        // The letters on the two buttons are the usual bold and italic marks.
+        if ui.selectable_label(st.bold, text(Type::Body, "B").strong()).named(tr!("Bold")).on_hover_text(tr!("Bold")).clicked() {
             st.bold = !st.bold;
-            out = Some(("Bold", json!({"bold": st.bold})));
+            out = Some((tr_noop!("Bold"), json!({"bold": st.bold})));
         }
-        if ui.selectable_label(st.italic, text(Type::Body, "I").italics()).named("Italic").on_hover_text("Italic").clicked() {
+        if ui.selectable_label(st.italic, text(Type::Body, "I").italics()).named(tr!("Italic")).on_hover_text(tr!("Italic")).clicked() {
             st.italic = !st.italic;
-            out = Some(("Italic", json!({"italic": st.italic})));
+            out = Some((tr_noop!("Italic"), json!({"italic": st.italic})));
         }
         ui.separator();
-        for (a, label, key) in [(TextAlign::Left, "Left", "left"), (TextAlign::Center, "Centre", "center"), (TextAlign::Right, "Right", "right")] {
-            let name = format!("Align {}", label.to_lowercase());
-            if ui.selectable_label(st.align == a, label).named(&name).on_hover_text(name.as_str()).clicked() {
+        for (a, label, name, key) in [(TextAlign::Left, tr!("Left"), tr!("Align left"), "left"), (TextAlign::Center, tr!("Centre"), tr!("Align centre"), "center"), (TextAlign::Right, tr!("Right"), tr!("Align right"), "right")] {
+            if ui.selectable_label(st.align == a, label).named(name).on_hover_text(name).clicked() {
                 st.align = a;
-                out = Some(("Text alignment", json!({"align": key})));
+                out = Some((tr_noop!("Text alignment"), json!({"align": key})));
             }
         }
     });
-    row(ui, "Spacing", |ui| {
-        if ui.add(egui::DragValue::new(&mut st.letter_spacing).prefix("Letters ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).named("Letter spacing").changed() {
-            out = Some(("Letter spacing", json!({"letter_spacing": st.letter_spacing})));
+    row(ui, tr!("Spacing"), |ui| {
+        if ui.add(egui::DragValue::new(&mut st.letter_spacing).prefix(format!("{} ", tr!("Letters"))).suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).named(tr!("Letter spacing")).changed() {
+            out = Some((tr_noop!("Letter spacing"), json!({"letter_spacing": st.letter_spacing})));
         }
-        if ui.add(egui::DragValue::new(&mut st.line_spacing).prefix("Lines ").suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).named("Line spacing").changed() {
-            out = Some(("Line spacing", json!({"line_spacing": st.line_spacing})));
+        if ui.add(egui::DragValue::new(&mut st.line_spacing).prefix(format!("{} ", tr!("Lines"))).suffix(" px").speed(0.1).range(-1000.0..=1000.0).max_decimals(1)).named(tr!("Line spacing")).changed() {
+            out = Some((tr_noop!("Line spacing"), json!({"line_spacing": st.line_spacing})));
         }
     });
     if let Some(width) = width {
-        row(ui, "Width", |ui| {
+        row(ui, tr!("Width"), |ui| {
             let mut wrap = width.is_some();
-            if crate::theme::checkbox(ui, &mut wrap, "Wrap").on_hover_text("Wrap lines at a fixed width; off, each paragraph stays on one line").changed() {
+            if crate::theme::checkbox(ui, &mut wrap, tr!("Wrap")).on_hover_text(tr!("Wrap lines at a fixed width; off, each paragraph stays on one line")).changed() {
                 *width = wrap.then_some(300.0);
-                out = Some(("Text width", json!({"width": *width})));
+                out = Some((tr_noop!("Text width"), json!({"width": *width})));
             }
             if let Some(w) = width.as_mut()
-                && ui.add(egui::DragValue::new(w).suffix(" px").speed(1.0).range(1.0..=100_000.0).max_decimals(0)).named("Text width").changed()
+                && ui.add(egui::DragValue::new(w).suffix(" px").speed(1.0).range(1.0..=100_000.0).max_decimals(0)).named(tr!("Text width")).changed()
             {
-                out = Some(("Text width", json!({"width": *w})));
+                out = Some((tr_noop!("Text width"), json!({"width": *w})));
             }
         });
     }
@@ -977,77 +1112,117 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
 fn camera_props(app: &mut App, ui: &mut egui::Ui) {
     let Some(cam) = crate::camera_tool::camera(app) else { return };
     let (mut x, mut y) = (cam.center.x, cam.center.y);
-    row(ui, "Position", |ui| {
-        let a = ui.add(egui::DragValue::new(&mut x).prefix("x ").suffix(" px").speed(1.0).max_decimals(1)).named("Camera X");
-        let b = ui.add(egui::DragValue::new(&mut y).prefix("y ").suffix(" px").speed(1.0).max_decimals(1)).named("Camera Y");
+    row(ui, tr!("Position"), |ui| {
+        let a = ui.add(egui::DragValue::new(&mut x).prefix("x ").suffix(" px").speed(1.0).max_decimals(1)).named(tr!("Camera X"));
+        let b = ui.add(egui::DragValue::new(&mut y).prefix("y ").suffix(" px").speed(1.0).max_decimals(1)).named(tr!("Camera Y"));
         if a.changed() || b.changed() {
-            live(app, "Move Camera", "camera.set", json!({"x": x, "y": y}));
+            live(app, tr_noop!("Move Camera"), "camera.set", json!({"x": x, "y": y}));
         }
     });
     let mut zoom = cam.zoom * 100.0;
     let (lo, hi) = (anicraft_engine::doc::camera::MIN_ZOOM * 100.0, anicraft_engine::doc::camera::MAX_ZOOM * 100.0);
-    row(ui, "Zoom", |ui| {
+    row(ui, tr!("Zoom"), |ui| {
         ui.spacing_mut().slider_width = 96.0;
-        if a11y::slider(ui, &mut zoom, lo..=hi, "Camera zoom", a11y::SliderLook { suffix: " %", max_decimals: Some(0), logarithmic: true, ..Default::default() }).changed() {
-            live(app, "Zoom Camera", "camera.set", json!({"zoom": zoom}));
+        if a11y::slider(ui, &mut zoom, lo..=hi, tr!("Camera zoom"), a11y::SliderLook { suffix: " %", max_decimals: Some(0), logarithmic: true, ..Default::default() }).changed() {
+            live(app, tr_noop!("Zoom Camera"), "camera.set", json!({"zoom": zoom}));
         }
     });
     let mut rot = cam.rotation.to_degrees();
-    row(ui, "Rotation", |ui| {
-        if ui.add(egui::DragValue::new(&mut rot).suffix("°").speed(0.5).max_decimals(1)).named("Camera rotation").changed() {
-            live(app, "Rotate Camera", "camera.set", json!({"rotation": rot}));
+    row(ui, tr!("Rotation"), |ui| {
+        if ui.add(egui::DragValue::new(&mut rot).suffix("°").speed(0.5).max_decimals(1)).named(tr!("Camera rotation")).changed() {
+            live(app, tr_noop!("Rotate Camera"), "camera.set", json!({"rotation": rot}));
         }
     });
     let mut tint = rgb(cam.tint);
     let mut amount = cam.tint_amount * 100.0;
-    row(ui, "Tint", |ui| {
-        let a = ui.color_edit_button_srgb(&mut tint).named("Camera tint colour");
-        let b = ui.add(egui::DragValue::new(&mut amount).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named("Camera tint amount");
+    row(ui, tr!("Tint"), |ui| {
+        let a = ui.color_edit_button_srgb(&mut tint).named(tr!("Camera tint colour"));
+        let b = ui.add(egui::DragValue::new(&mut amount).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Camera tint amount"));
         if a.changed() || b.changed() {
-            live(app, "Camera Tint", "camera.set", json!({"tint": hex(tint), "tint_amount": amount}));
+            live(app, tr_noop!("Camera Tint"), "camera.set", json!({"tint": hex(tint), "tint_amount": amount}));
         }
     });
     ui.horizontal_wrapped(|ui| {
         let mut on = app.camera_preview;
-        if crate::theme::checkbox(ui, &mut on, "Preview through camera").on_hover_text("Show the stage as the movie shows it (View › Preview Through Camera)").changed() {
+        if crate::theme::checkbox(ui, &mut on, tr!("Preview through camera")).on_hover_text(tr!("Show the stage as the movie shows it (View › Preview Through Camera)")).changed() {
             app.toggle_camera_preview();
         }
-        if ui.button("Reset").named("Reset camera").on_hover_text("Back to the stage as it is: centred, 100 %, no turn, no tint").clicked() {
+        if ui.button(tr!("Reset")).named(tr!("Reset camera")).on_hover_text(tr!("Back to the stage as it is: centred, 100 %, no turn, no tint")).clicked() {
             app.run("camera.set", json!({"reset": true}));
         }
     });
     let hidden = app.s.doc.timeline(app.s.scene).camera_layer().is_some_and(|l| !l.visible);
-    ui.label(text(Type::Caption, if hidden { "The camera layer is hidden: the movie shows the stage as it is." } else { "The movie shows what the frame on the stage shows. Layer depth (in Frame, per layer) moves far layers less." }));
+    ui.label(text(Type::Caption, if hidden { tr!("The camera layer is hidden: the movie shows the stage as it is.") } else { tr!("The movie shows what the frame on the stage shows. Layer depth (in Frame, per layer) moves far layers less.") }));
+}
+
+/// The selected bone: its joint angle at the playhead (editing it keys the pose), the joint's
+/// limits, the pin, and removal.
+fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId) {
+    let tl = app.s.doc.timeline(app.s.scene);
+    let Some((layer, bone)) = tl.layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| (l.clone(), b.clone()))) else { return };
+    let pose = anicraft_engine::doc::armature::pose_at(&layer, app.s.frame).unwrap_or_default();
+    let mut angle = bone.allow(pose.angle(id)).to_degrees();
+    row(ui, tr!("Angle"), |ui| {
+        if ui.add(egui::DragValue::new(&mut angle).suffix("°").speed(0.5).max_decimals(1)).named(tr!("Bone angle")).on_hover_text(tr!("The joint's turn from where the bone was drawn, measured from the bone it hangs from")).changed() {
+            live(app, tr_noop!("Pose Bone"), "bone.pose", json!({"bone": id.0, "angle": angle}));
+        }
+    });
+    let mut constrain = bone.limits.is_some();
+    let mut pinned = bone.pinned;
+    ui.horizontal_wrapped(|ui| {
+        if crate::theme::checkbox(ui, &mut constrain, tr!("Constrain rotation")).on_hover_text(tr!("Limit how far the joint turns, in every pose")).changed() {
+            app.run("bone.set_limits", json!({"bone": id.0, "constrain": constrain}));
+        }
+        if crate::theme::checkbox(ui, &mut pinned, tr!("Pin")).on_hover_text(tr!("A pinned bone, and the bones it hangs from, stay put while you drag the bones below it")).changed() {
+            app.run("bone.pin", json!({"bone": id.0, "pinned": pinned}));
+        }
+    });
+    if let Some(l) = bone.limits {
+        let (mut min, mut max) = (l.min.to_degrees(), l.max.to_degrees());
+        row(ui, tr!("Limits"), |ui| {
+            let a = ui.add(egui::DragValue::new(&mut min).prefix("min ").suffix("°").speed(0.5).range(-360.0..=max).max_decimals(0)).named(tr!("Joint minimum angle"));
+            let b = ui.add(egui::DragValue::new(&mut max).prefix("max ").suffix("°").speed(0.5).range(min..=360.0).max_decimals(0)).named(tr!("Joint maximum angle"));
+            if a.changed() || b.changed() {
+                live(app, tr_noop!("Joint Limits"), "bone.set_limits", json!({"bone": id.0, "min": min, "max": max}));
+            }
+        });
+    }
+    ui.horizontal_wrapped(|ui| {
+        if ui.button(tr!("Remove Bone")).named(tr!("Remove bone")).on_hover_text(tr!("Removes the bone and the bones below it; their instances stay where they are, on a layer of their own")).clicked() {
+            app.request("bone.remove", json!({"bone": id.0}));
+        }
+    });
+    ui.label(text(Type::Caption, tr!("Drag bones or instances with the Selection tool to pose; a pose at another frame keys it, and poses tween.")));
 }
 
 fn document_props(app: &mut App, ui: &mut egui::Ui) {
     {
         let st = app.s.doc.stage;
         let (mut w, mut h, mut fps) = (st.width, st.height, st.fps);
-        row(ui, "Size", |ui| {
-            let a = ui.add(egui::DragValue::new(&mut w).suffix(" px").range(1..=8192)).named("Stage width");
-            let b = ui.add(egui::DragValue::new(&mut h).suffix(" px").range(1..=8192)).named("Stage height");
+        row(ui, tr!("Size"), |ui| {
+            let a = ui.add(egui::DragValue::new(&mut w).suffix(" px").range(1..=8192)).named(tr!("Stage width"));
+            let b = ui.add(egui::DragValue::new(&mut h).suffix(" px").range(1..=8192)).named(tr!("Stage height"));
             if a.changed() || b.changed() {
-                live(app, "Stage size", "doc.set_stage", json!({"width": w, "height": h}));
+                live(app, tr_noop!("Stage size"), "doc.set_stage", json!({"width": w, "height": h}));
             }
         });
-        row(ui, "Frame rate", |ui| {
-            if ui.add(egui::DragValue::new(&mut fps).suffix(" fps").speed(0.1).range(1.0..=120.0).max_decimals(2)).named("Frame rate").changed() {
-                live(app, "Frame rate", "doc.set_stage", json!({"fps": fps}));
+        row(ui, tr!("Frame rate"), |ui| {
+            if ui.add(egui::DragValue::new(&mut fps).suffix(" fps").speed(0.1).range(1.0..=120.0).max_decimals(2)).named(tr!("Frame rate")).changed() {
+                live(app, tr_noop!("Frame rate"), "doc.set_stage", json!({"fps": fps}));
             }
         });
         let mut bg = rgb(st.background);
-        row(ui, "Stage", |ui| {
-            if ui.color_edit_button_srgb(&mut bg).named("Stage colour").changed() {
-                live(app, "Stage colour", "doc.set_stage", json!({"background": hex(bg)}));
+        row(ui, tr!("Stage"), |ui| {
+            if ui.color_edit_button_srgb(&mut bg).named(tr!("Stage colour")).changed() {
+                live(app, tr_noop!("Stage colour"), "doc.set_stage", json!({"background": hex(bg)}));
             }
-            ui.label(text(Type::Data, format!("{} frames", app.s.frame_count())).color(T.text_faint));
+            ui.label(text(Type::Data, trn!("{n} frame", "{n} frames", app.s.frame_count())).color(T.text_faint));
         });
         // The document class, in documents that use scripts (kept, not run; ADR 0013).
         if crate::actions_panel::scripted(&app.s.doc) {
             let current = app.s.doc.document_class.clone();
-            row_prose(ui, "Class", |ui| {
-                if let Some(v) = crate::actions_panel::class_field(ui, "prop_docclass", &current, "Document class", "The class scripts run the main timeline as (the document class). Kept with the document; scripts don't run yet") {
+            row_prose(ui, tr!("Class"), |ui| {
+                if let Some(v) = crate::actions_panel::class_field(ui, "prop_docclass", &current, tr!("Document class"), tr!("The class scripts run the main timeline as (the document class). Kept with the document; scripts don't run yet")) {
                     app.run("script.set_class", json!({"class": v}));
                 }
             });
@@ -1059,19 +1234,18 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
     if layer.kind == anicraft_engine::doc::LayerKind::Folder {
         let tl = app.s.doc.timeline(app.s.scene);
         let n = tl.layers.iter().position(|l| l.id == layer.id).map_or(0, |i| tl.group_range(i).len().saturating_sub(1));
-        let what = if n == 1 { "1 layer".to_string() } else { format!("{n} layers") };
-        ui.label(text(Type::Label, format!("Folder · {what}")));
-        ui.label(text(Type::Caption, "Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down."));
+        ui.label(text(Type::Label, trn!("Folder · {n} layer", "Folder · {n} layers", n)));
+        ui.label(text(Type::Caption, tr!("Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down.")));
         return;
     }
     // Layer depth matters once the scene has a camera: deeper layers move less as it pans.
     if layer.kind != anicraft_engine::doc::LayerKind::Camera && app.s.doc.timeline(app.s.scene).camera_layer().is_some() {
         let mut depth = layer.depth;
         let (lo, hi) = (anicraft_engine::doc::camera::MIN_DEPTH, anicraft_engine::doc::camera::MAX_DEPTH);
-        row(ui, "Depth", |ui| {
-            let r = ui.add(egui::DragValue::new(&mut depth).suffix(" px").speed(2.0).range(lo..=hi).max_decimals(0)).named("Layer depth");
-            if r.on_hover_text("How far behind the stage this layer is: when the camera pans, a deeper layer moves less (parallax). Negative is in front.").changed() {
-                live(app, "Layer Depth", "layer.set_depth", json!({"depth": depth}));
+        row(ui, tr!("Depth"), |ui| {
+            let r = ui.add(egui::DragValue::new(&mut depth).suffix(" px").speed(2.0).range(lo..=hi).max_decimals(0)).named(tr!("Layer depth"));
+            if r.on_hover_text(tr!("How far behind the stage this layer is: when the camera pans, a deeper layer moves less (parallax). Negative is in front.")).changed() {
+                live(app, tr_noop!("Layer Depth"), "layer.set_depth", json!({"depth": depth}));
             }
         });
     }
@@ -1079,15 +1253,17 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
         match layer.keyframe_at(frame) {
             Some(k) => {
                 let n = evaluate_layer_elements(layer, frame).map_or(0, |(_, e)| e.len());
-                let (frames, els) = (if k.duration == 1 { "frame" } else { "frames" }, if n == 1 { "element" } else { "elements" });
-                ui.label(text(Type::Label, format!("Keyframe at {} · {} {frames} · {n} {els}", k.start + 1, k.duration)));
+                // One sentence per count: the frames, then the elements, each with its plural.
+                let frames = trn!("{n} frame", "{n} frames", k.duration);
+                let elements = trn!("{n} element", "{n} elements", n);
+                ui.label(text(Type::Label, tr!("Keyframe at {frame} · {frames} · {elements}", frame = k.start + 1, frames = frames, elements = elements)));
                 if layer.kind == anicraft_engine::doc::LayerKind::Mask {
-                    ui.label(text(Type::Caption, "Mask layer: its fills reveal the masked layers below. Lock it to hide its outline."));
+                    ui.label(text(Type::Caption, tr!("Mask layer: its fills reveal the masked layers below. Lock it to hide its outline.")));
                 }
                 let mut label = k.label.clone();
-                row_prose(ui, "Label", |ui| {
-                    if ui.add(egui::TextEdit::singleline(&mut label).desired_width(150.0)).named("Frame label").changed() {
-                        live(app, "Frame label", "timeline.set_label", json!({"label": label}));
+                row_prose(ui, tr!("Label"), |ui| {
+                    if ui.add(egui::TextEdit::singleline(&mut label).desired_width(150.0)).named(tr!("Frame label")).changed() {
+                        live(app, tr_noop!("Frame label"), "timeline.set_label", json!({"label": label}));
                     }
                 });
                 sound_rows(app, ui, k.sound.clone());
@@ -1095,38 +1271,37 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     volume_row(app, ui, layer);
                 }
                 let key = app.keymap.primary("view.actions").map(crate::platform::shortcut_label).unwrap_or_default();
-                row_prose(ui, "Actions", |ui| {
-                    let what = k.script.as_ref().map_or_else(|| "None".to_string(), anicraft_engine::doc::FrameScript::describe);
+                row_prose(ui, tr!("Actions"), |ui| {
+                    let what = k.script.as_ref().map_or_else(|| tr!("None").to_string(), |s| crate::i18n::t_dyn(&s.describe()).into_owned());
                     let short: String = what.chars().take(36).collect();
                     let short = if short.len() < what.len() { format!("{short}…") } else { short };
                     ui.label(text(Type::Body, short).color(if k.script.is_none() { T.text_faint } else { T.text })).on_hover_text(what);
-                    if ui.small_button("Edit…").on_hover_text(format!("What runs when the playhead enters this keyframe ({key})")).clicked() {
+                    if ui.small_button(tr!("Edit…")).on_hover_text(tr!("What runs when the playhead enters this keyframe ({key})", key = key)).clicked() {
                         app.actions.symbol = None;
                         crate::actions_panel::open(app, crate::actions_panel::Tab::Frame);
                     }
                 });
                 if let Some(m) = &k.motion {
                     // A motion tween: what is keyed, and the way to its curves.
-                    row_prose(ui, "Tween", |ui| {
-                        ui.label(text(Type::Body, "Motion"));
+                    row_prose(ui, tr!("Tween"), |ui| {
+                        ui.label(text(Type::Body, tr!("Motion")));
                     });
-                    let keyed: Vec<&str> = m.tracks.iter().map(|t| t.property.label()).collect();
+                    let keyed: Vec<&str> = m.tracks.iter().map(|t| crate::i18n::t(t.property.label())).collect();
                     let n = m.key_frames().len();
-                    ui.label(text(Type::Caption, if keyed.is_empty() { "No property keyframes yet: move or change the object at a later frame to add some.".to_string() } else { format!("{} · {n} {}", keyed.join(", "), if n == 1 { "key frame" } else { "key frames" }) }));
+                    ui.label(text(Type::Caption, if keyed.is_empty() { tr!("No property keyframes yet: move or change the object at a later frame to add some.").to_string() } else { trn!("{properties} · {n} key frame", "{properties} · {n} key frames", n, properties = keyed.join(", ")) }));
                     // The motion path (ADR 0030): bent on the stage, straightened here.
                     let segments = m.path.as_ref().map(|p| p.cmds.len().saturating_sub(1));
-                    row_prose(ui, "Path", |ui| {
+                    row_prose(ui, tr!("Path"), |ui| {
                         let what = match segments {
-                            Some(1) => "Curved · 1 segment".to_string(),
-                            Some(n) => format!("Curved · {n} segments"),
-                            None => "Straight".to_string(),
+                            Some(n) => trn!("Curved · {n} segment", "Curved · {n} segments", n),
+                            None => tr!("Straight").to_string(),
                         };
-                        let how = format!(
-                            "Select the object to see its path on the stage. Drag the path to bend it and its ends to move them; {} the path or the object to move the whole path. With the Subselection tool (A), drag points and handles, double-click the path to add a point (or Alt-click it with the Pen), Delete removes points, and right-click makes them smooth or corners.",
-                            crate::platform::shortcut_label("Ctrl+Drag")
+                        let how = tr!(
+                            "Select the object to see its path on the stage. Drag the path to bend it and its ends to move them; {drag} the path or the object to move the whole path. With the Subselection tool (A), drag points and handles, double-click the path to add a point (or Alt-click it with the Pen), Delete removes points, and right-click makes them smooth or corners.",
+                            drag = crate::platform::shortcut_label("Ctrl+Drag")
                         );
                         ui.label(text(Type::Body, what)).on_hover_text(how);
-                        if segments.is_some() && ui.small_button("Straighten").on_hover_text("Back to the straight path the X and Y curves trace").named("Straighten motion path").clicked() {
+                        if segments.is_some() && ui.small_button(tr!("Straighten")).on_hover_text(tr!("Back to the straight path the X and Y curves trace")).named(tr!("Straighten motion path")).clicked() {
                             app.run("motion.clear_path", json!({}));
                         }
                     });
@@ -1135,24 +1310,51 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     let start = m.path.clone().or_else(|| base.and_then(|b| m.path_from_tracks(&b))).and_then(|p| anicraft_engine::doc::motion::path_ends(&p)).map(|(a, _)| a);
                     if let Some(a) = start {
                         let (mut x, mut y) = (a.x, a.y);
-                        row(ui, "Path start", |ui| {
-                            let hint = "Where the motion starts. Changing it moves the whole path, and the object with it; the timing stays.";
-                            let rx = ui.add(egui::DragValue::new(&mut x).prefix("X ").speed(1.0).max_decimals(1)).named("Motion path start X").on_hover_text(hint);
-                            let ry = ui.add(egui::DragValue::new(&mut y).prefix("Y ").speed(1.0).max_decimals(1)).named("Motion path start Y").on_hover_text(hint);
+                        row(ui, tr!("Path start"), |ui| {
+                            let hint = tr!("Where the motion starts. Changing it moves the whole path, and the object with it; the timing stays.");
+                            let rx = ui.add(egui::DragValue::new(&mut x).prefix("X ").speed(1.0).max_decimals(1)).named(tr!("Motion path start X")).on_hover_text(hint);
+                            let ry = ui.add(egui::DragValue::new(&mut y).prefix("Y ").speed(1.0).max_decimals(1)).named(tr!("Motion path start Y")).on_hover_text(hint);
                             if rx.changed() || ry.changed() {
-                                live(app, "Move Motion Path", "motion.move_path", json!({"dx": x - a.x, "dy": y - a.y}));
+                                live(app, tr_noop!("Move Motion Path"), "motion.move_path", json!({"dx": x - a.x, "dy": y - a.y}));
+                            }
+                        });
+                    }
+                    // Points pinned to frames (ADR 0049), and the keyboard route to pinning at the
+                    // playhead.
+                    let pins = base.map(|b| m.pinned_anchors(&b)).unwrap_or_default();
+                    if let (Some(&first), Some(&last)) = (pins.first(), pins.last()) {
+                        let offset = frame.saturating_sub(k.start);
+                        let n = pins.len().saturating_sub(2);
+                        row_prose(ui, tr!("Pinned"), |ui| {
+                            let how = tr!("Points of the motion path pinned to frames: the object passes each one exactly then, and the X and Y keyframes there are its place. The ends are always pinned. Moving the object on the stage at a frame pins a point there; with the Subselection tool (A), right-click a point to pin or unpin it.");
+                            ui.label(text(Type::Body, trn!("{n} point", "{n} points", n))).on_hover_text(how);
+                            match pins.iter().find(|q| q.frame == offset) {
+                                Some(&q) if q != first && q != last => {
+                                    let tip = tr!("Point {anchor} shapes the path only again; the X and Y keyframes of frame {frame} go", anchor = q.anchor, frame = frame + 1);
+                                    if ui.small_button(tr!("Unpin")).on_hover_text(tip).named(tr!("Unpin the motion path point at this frame")).clicked() {
+                                        app.run("motion.unpin_point", json!({"frame": frame}));
+                                    }
+                                }
+                                Some(_) => {}
+                                None if first.frame < offset && offset < last.frame => {
+                                    let tip = tr!("Add a point where the object is on frame {frame}, pinned to it: nothing moves now, and the object passes the point then however the path is edited", frame = frame + 1);
+                                    if ui.small_button(tr!("Pin Here")).on_hover_text(tip).named(tr!("Pin the motion path at this frame")).clicked() {
+                                        app.run("motion.pin_point", json!({"frame": frame}));
+                                    }
+                                }
+                                None => {}
                             }
                         });
                     }
                     let mut orient = m.orient;
-                    if crate::theme::checkbox(ui, &mut orient, "Orient to path").on_hover_text("Turn the object as its motion path turns").named("Orient to path").changed() {
+                    if crate::theme::checkbox(ui, &mut orient, tr!("Orient to path")).on_hover_text(tr!("Turn the object as its motion path turns")).named(tr!("Orient to path")).changed() {
                         app.run("motion.orient", json!({"orient": orient}));
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Motion Editor").on_hover_text("Edit the property curves and eases").clicked() {
+                        if ui.button(tr!("Motion Editor")).on_hover_text(tr!("Edit the property curves and eases")).clicked() {
                             app.bottom = crate::app::BottomTab::MotionEditor;
                         }
-                        if ui.button("Remove Tween").on_hover_text("The object stays as it is on the span's first frame").clicked() {
+                        if ui.button(tr!("Remove Tween")).on_hover_text(tr!("The object stays as it is on the span's first frame")).clicked() {
                             app.run("timeline.remove_tween", json!({}));
                         }
                     });
@@ -1160,35 +1362,35 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                 }
                 match k.tween {
                     Some(t) => {
-                        row_prose(ui, "Tween", |ui| {
-                            egui::ComboBox::from_id_salt("prop_ease").width(150.0).selected_text(t.easing.label()).show_ui(ui, |ui| {
+                        row_prose(ui, tr!("Tween"), |ui| {
+                            egui::ComboBox::from_id_salt("prop_ease").width(150.0).selected_text(crate::i18n::t_dyn(&t.easing.label()).into_owned()).show_ui(ui, |ui| {
                                 for (name, e) in anicraft_engine::doc::Easing::PRESETS {
-                                    if ui.selectable_label(t.easing == e, name).clicked() {
+                                    if ui.selectable_label(t.easing == e, crate::i18n::t(name)).clicked() {
                                         app.run("timeline.set_easing", json!({"easing": crate::timeline::easing_param(e)}));
                                     }
                                 }
                             })
                             .response
-                            .set_name("Easing");
+                            .set_name(tr!("Easing"));
                         });
                         let shape = t.kind == anicraft_engine::doc::TweenKind::Shape;
-                        row_prose(ui, "Kind", |ui| {
-                            egui::ComboBox::from_id_salt("prop_kind").width(150.0).selected_text(if shape { "Shape" } else { "Classic" }).show_ui(ui, |ui| {
-                                if ui.selectable_label(!shape, "Classic").clicked() && shape {
+                        row_prose(ui, tr!("Kind"), |ui| {
+                            egui::ComboBox::from_id_salt("prop_kind").width(150.0).selected_text(if shape { tr!("Shape") } else { tr!("Classic") }).show_ui(ui, |ui| {
+                                if ui.selectable_label(!shape, tr!("Classic")).clicked() && shape {
                                     app.run("timeline.create_tween", json!({}));
                                 }
-                                if ui.selectable_label(shape, "Shape").on_hover_text("Morphs one shape into another").clicked() && !shape {
+                                if ui.selectable_label(shape, tr!("Shape")).on_hover_text(tr!("Morphs one shape into another")).clicked() && !shape {
                                     app.run("timeline.create_shape_tween", json!({}));
                                 }
                             })
                             .response
-                            .set_name("Tween kind");
+                            .set_name(tr!("Tween kind"));
                         });
                         // On a layer a motion guide steers: turn with the path.
                         let guided = layer.parent.is_some_and(|p| app.s.doc.timeline(app.s.scene).layer(p).is_some_and(|g| g.kind == anicraft_engine::doc::LayerKind::Guide));
                         if guided {
                             let mut orient = t.orient;
-                            if crate::theme::checkbox(ui, &mut orient, "Orient to path").on_hover_text("Turn with the motion guide as it bends").changed() {
+                            if crate::theme::checkbox(ui, &mut orient, tr!("Orient to path")).on_hover_text(tr!("Turn with the motion guide as it bends")).changed() {
                                 app.run("timeline.set_orient", json!({"orient": orient}));
                             }
                         }
@@ -1196,13 +1398,13 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     }
                     None => {
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Create Motion Tween").on_hover_text("Animate this span's object property by property").clicked() {
+                            if ui.button(tr!("Create Motion Tween")).on_hover_text(tr!("Animate this span's object property by property")).clicked() {
                                 app.run("timeline.create_motion_tween", json!({}));
                             }
-                            if ui.button("Create Classic Tween").clicked() {
+                            if ui.button(tr!("Create Classic Tween")).clicked() {
                                 app.run("timeline.create_tween", json!({}));
                             }
-                            if ui.button("Create Shape Tween").on_hover_text("Morph this keyframe's shapes into the next keyframe's").clicked() {
+                            if ui.button(tr!("Create Shape Tween")).on_hover_text(tr!("Morph this keyframe's shapes into the next keyframe's")).clicked() {
                                 app.run("timeline.create_shape_tween", json!({}));
                             }
                         });
@@ -1210,7 +1412,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                 }
             }
             None => {
-                ui.label(text(Type::Caption, "Empty frame — press F7 for a blank keyframe"));
+                ui.label(text(Type::Caption, tr!("Empty frame — press F7 for a blank keyframe")));
             }
         }
     }
@@ -1220,12 +1422,12 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
 fn volume_row(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::Layer) {
     let (mut pct, mut muted) = (f64::from(layer.volume) * 100.0, layer.muted);
     let id = layer.id.0;
-    row_prose(ui, "Volume", |ui| {
+    row_prose(ui, tr!("Volume"), |ui| {
         let r = with_type(ui, Type::Data, |ui| ui.add_enabled(!muted, egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(0.5).max_decimals(0).suffix(" %")));
-        if r.named("Layer volume").on_hover_text("The volume of this layer's sounds, and of the sounds in the symbols on it").changed() {
-            live(app, "Layer Volume", "layer.set_volume", json!({"layer": id, "volume": (pct / 100.0).clamp(0.0, 1.0)}));
+        if r.named(tr!("Layer volume")).on_hover_text(tr!("The volume of this layer's sounds, and of the sounds in the symbols on it")).changed() {
+            live(app, tr_noop!("Layer Volume"), "layer.set_volume", json!({"layer": id, "volume": (pct / 100.0).clamp(0.0, 1.0)}));
         }
-        if crate::theme::checkbox(ui, &mut muted, "Mute").on_hover_text("Silence this layer's sounds while you work and in every export").named("Mute layer").changed() {
+        if crate::theme::checkbox(ui, &mut muted, tr!("Mute")).on_hover_text(tr!("Silence this layer's sounds while you work and in every export")).named(tr!("Mute layer")).changed() {
             app.run("layer.set_volume", json!({"layer": id, "muted": muted}));
         }
     });
@@ -1239,10 +1441,10 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
     if sounds.is_empty() && current.is_none() {
         return;
     }
-    let name = current.as_ref().and_then(|f| app.s.doc.sound(f.sound)).map_or_else(|| "None".to_string(), |x| x.name.clone());
-    row_prose(ui, "Sound", |ui| {
+    let name = current.as_ref().and_then(|f| app.s.doc.sound(f.sound)).map_or_else(|| tr!("None").to_string(), |x| x.name.clone());
+    row_prose(ui, tr!("Sound"), |ui| {
         egui::ComboBox::from_id_salt("prop_sound").width(150.0).selected_text(name).show_ui(ui, |ui| {
-            if ui.selectable_label(current.is_none(), "None").clicked() && current.is_some() {
+            if ui.selectable_label(current.is_none(), tr!("None")).clicked() && current.is_some() {
                 app.run("sound.remove", json!({}));
             }
             for (id, n) in &sounds {
@@ -1252,52 +1454,52 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
             }
         })
         .response
-        .set_name("Sound");
+        .set_name(tr!("Sound"));
     });
     let Some(f) = current else { return };
-    row_prose(ui, "Sync", |ui| {
-        egui::ComboBox::from_id_salt("prop_sync").width(150.0).selected_text(f.sync.label()).show_ui(ui, |ui| {
+    row_prose(ui, tr!("Sync"), |ui| {
+        egui::ComboBox::from_id_salt("prop_sync").width(150.0).selected_text(crate::i18n::t(f.sync.label())).show_ui(ui, |ui| {
             for m in SoundSync::ALL {
-                if ui.selectable_label(f.sync == m, m.label()).on_hover_text(m.hint()).clicked() {
+                if ui.selectable_label(f.sync == m, crate::i18n::t(m.label())).on_hover_text(crate::i18n::t(m.hint())).clicked() {
                     app.run("sound.set", json!({"sync": m.key()}));
                 }
             }
         })
         .response
-        .set_name("Sound sync");
+        .set_name(tr!("Sound sync"));
     });
     if f.sync == SoundSync::Stop {
         return;
     }
-    row_prose(ui, "Repeat", |ui| {
-        egui::ComboBox::from_id_salt("prop_repeat").width(90.0).selected_text(if f.looping { "Loop" } else { "Repeat" }).show_ui(ui, |ui| {
-            if ui.selectable_label(!f.looping, "Repeat").clicked() && f.looping {
+    row_prose(ui, tr!("Repeat"), |ui| {
+        egui::ComboBox::from_id_salt("prop_repeat").width(90.0).selected_text(if f.looping { tr!("Loop") } else { tr!("Repeat") }).show_ui(ui, |ui| {
+            if ui.selectable_label(!f.looping, tr!("Repeat")).clicked() && f.looping {
                 app.run("sound.set", json!({"loop": false}));
             }
-            if ui.selectable_label(f.looping, "Loop").on_hover_text("Plays again and again: to the end of the movie (event) or of this span (stream)").clicked() && !f.looping {
+            if ui.selectable_label(f.looping, tr!("Loop")).on_hover_text(tr!("Plays again and again: to the end of the movie (event) or of this span (stream)")).clicked() && !f.looping {
                 app.run("sound.set", json!({"loop": true}));
             }
         })
         .response
-        .set_name("Repeat or loop");
+        .set_name(tr!("Repeat or loop"));
         if !f.looping {
             let mut n = f.repeat;
             let r = with_type(ui, Type::Data, |ui| ui.add(egui::DragValue::new(&mut n).range(1..=anicraft_engine::doc::sound::MAX_REPEAT).suffix(" ×")));
-            if r.named("Times it plays").on_hover_text("Times it plays in a row").changed() {
-                live(app, "Sound repeat", "sound.set", json!({"repeat": n}));
+            if r.named(tr!("Times it plays")).on_hover_text(tr!("Times it plays in a row")).changed() {
+                live(app, tr_noop!("Sound repeat"), "sound.set", json!({"repeat": n}));
             }
         }
     });
     // The effect, as Animate's Effect menu, with the envelope editor beside it (ADR 0039).
-    row_prose(ui, "Effect", |ui| {
-        egui::ComboBox::from_id_salt("prop_effect").width(150.0).selected_text(f.effect.label()).show_ui(ui, |ui| {
+    row_prose(ui, tr!("Effect"), |ui| {
+        egui::ComboBox::from_id_salt("prop_effect").width(150.0).selected_text(crate::i18n::t(f.effect.label())).show_ui(ui, |ui| {
             for e in SoundEffect::PRESETS {
-                if ui.selectable_label(f.effect == e, e.label()).on_hover_text(e.hint()).clicked() && f.effect != e {
+                if ui.selectable_label(f.effect == e, crate::i18n::t(e.label())).on_hover_text(crate::i18n::t(e.hint())).clicked() && f.effect != e {
                     app.run("sound.set", json!({"effect": e.key()}));
                 }
             }
             let custom = matches!(f.effect, SoundEffect::Custom(_));
-            if ui.selectable_label(custom, "Custom").on_hover_text(SoundEffect::Custom(Vec::new()).hint()).clicked() {
+            if ui.selectable_label(custom, tr!("Custom")).on_hover_text(crate::i18n::t(SoundEffect::Custom(Vec::new()).hint())).clicked() {
                 if !custom {
                     app.run("sound.set", json!({"effect": "custom"}));
                 }
@@ -1305,14 +1507,15 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
             }
         })
         .response
-        .set_name("Sound effect");
-        if ui.small_button("Edit…").on_hover_text("Edit Envelope: the volume of each channel over the sound's time").named("Edit sound envelope").clicked() {
+        .set_name(tr!("Sound effect"));
+        if ui.small_button(tr!("Edit…")).on_hover_text(tr!("Edit Envelope: the volume of each channel over the sound's time")).named(tr!("Edit sound envelope")).clicked() {
             crate::envelope::open(app);
         }
     });
     if let Some(x) = app.s.doc.sound(f.sound) {
-        let ch = if x.channels == 2 { "stereo" } else { "mono" };
-        ui.label(text(Type::Data, format!("{:.2} s · {:.1} kHz {ch} · {}", x.seconds(), f64::from(x.rate) / 1000.0, x.format.label())).color(T.text_faint));
+        let (seconds, khz, format) = (format!("{:.2}", x.seconds()), format!("{:.1}", f64::from(x.rate) / 1000.0), crate::i18n::t(x.format.label()));
+        let line = if x.channels == 2 { tr!("{seconds} s · {khz} kHz stereo · {format}", seconds = seconds, khz = khz, format = format) } else { tr!("{seconds} s · {khz} kHz mono · {format}", seconds = seconds, khz = khz, format = format) };
+        ui.label(text(Type::Data, line).color(T.text_faint));
     }
 }
 
@@ -1334,73 +1537,79 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     // always strokes.
     let (fills, ink) = (matches!(app.tool, Tool::PaintBucket | Tool::Brush), app.tool == Tool::InkBottle);
     if !ink {
-        row(ui, "Fill", |ui| {
+        row(ui, tr!("Fill"), |ui| {
             let mut c = rgb(st.fill);
-            if ui.color_edit_button_srgb(&mut c).named("Fill colour").changed() {
+            if ui.color_edit_button_srgb(&mut c).named(tr!("Fill colour")).changed() {
                 st.set_fill_color(Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0));
             }
             // A gradient or bitmap picked with the Eyedropper (ADR 0034): the swatch shows its
             // first colour, and says what it holds.
             if let Some(p) = &st.fill_paint {
                 let what = match p {
-                    Paint::Linear { .. } => "Linear gradient",
-                    Paint::Radial { .. } => "Radial gradient",
-                    Paint::Bitmap { .. } => "Bitmap fill",
-                    Paint::Solid(_) => "Solid",
+                    Paint::Linear { .. } => tr!("Linear gradient"),
+                    Paint::Radial { .. } => tr!("Radial gradient"),
+                    Paint::Bitmap { .. } => tr!("Bitmap fill"),
+                    Paint::Solid(_) => tr!("Solid"),
                 };
-                ui.label(text(Type::Caption, what)).on_hover_text("Picked with the Eyedropper. It stays where it was on the stage (lock fill). Pick a colour to fill with a solid colour again.");
+                ui.label(text(Type::Caption, what)).on_hover_text(tr!("Picked with the Eyedropper. It stays where it was on the stage (lock fill). Pick a colour to fill with a solid colour again."));
             }
             if !fills {
-                crate::theme::checkbox(ui, &mut st.use_fill, "").named("Fill").on_hover_text("Fill on/off");
+                crate::theme::checkbox(ui, &mut st.use_fill, "").named(tr!("Fill")).on_hover_text(tr!("Fill on/off"));
             }
         });
     }
     if !fills {
-        row(ui, "Stroke", |ui| {
+        row(ui, tr!("Stroke"), |ui| {
             let mut c = rgb(st.stroke);
-            if ui.color_edit_button_srgb(&mut c).named("Stroke colour").changed() {
+            if ui.color_edit_button_srgb(&mut c).named(tr!("Stroke colour")).changed() {
                 st.stroke = Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0);
             }
             if !ink {
-                crate::theme::checkbox(ui, &mut st.use_stroke, "").named("Stroke").on_hover_text("Stroke on/off");
+                crate::theme::checkbox(ui, &mut st.use_stroke, "").named(tr!("Stroke")).on_hover_text(tr!("Stroke on/off"));
             }
-            ui.add(egui::DragValue::new(&mut st.stroke_width).suffix(" px").speed(0.1).range(0.0..=100.0).max_decimals(1)).set_name("Stroke width");
+            ui.add(egui::DragValue::new(&mut st.stroke_width).suffix(" px").speed(0.1).range(0.0..=100.0).max_decimals(1)).set_name(tr!("Stroke width"));
         });
         // The width profile new strokes get.
         let current = st.profile();
         if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref()) {
             st.set_profile(pick);
         }
+        // And their style, caps and joins (with the params the commands take).
+        if let Some(edit) = line_style_rows(ui, ProfileRow::Tool, &st.line, false)
+            && let Ok(Some(line)) = anicraft_engine::params::opt_stroke_style(&edit.params, &st.line, st.stroke_width)
+        {
+            st.line = line;
+        }
     }
     // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush) {
         let key = anicraft_engine::find_command("draw.object_drawing").and_then(|c| c.shortcut).map(crate::platform::shortcut_label).unwrap_or_default();
-        row_prose(ui, "Drawing", |ui| {
-            crate::theme::checkbox(ui, &mut st.object_drawing, "Object drawing")
-                .on_hover_text(format!("On: each shape is an object of its own. Off: shapes cut and merge with the shapes they touch ({key})"));
+        row_prose(ui, tr!("Drawing"), |ui| {
+            crate::theme::checkbox(ui, &mut st.object_drawing, tr!("Object drawing"))
+                .on_hover_text(tr!("On: each shape is an object of its own. Off: shapes cut and merge with the shapes they touch ({key})", key = key));
         });
     }
     app.s.style = st;
     match app.tool {
-        Tool::Rect => row(ui, "Corners", |ui| {
-            ui.add(egui::DragValue::new(&mut app.rect_radius).suffix(" px").range(0.0..=500.0)).set_name("Corner radius");
+        Tool::Rect => row(ui, tr!("Corners"), |ui| {
+            ui.add(egui::DragValue::new(&mut app.rect_radius).suffix(" px").range(0.0..=500.0)).set_name(tr!("Corner radius"));
         }),
-        Tool::Star => row(ui, "Points", |ui| {
-            ui.add(egui::DragValue::new(&mut app.star_points).range(3..=32)).set_name("Star points");
+        Tool::Star => row(ui, tr!("Points"), |ui| {
+            ui.add(egui::DragValue::new(&mut app.star_points).range(3..=32)).set_name(tr!("Star points"));
         }),
-        Tool::PaintBucket => row_prose(ui, "Gap size", |ui| {
-            egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(app.bucket_gap.label()).show_ui(ui, |ui| {
+        Tool::PaintBucket => row_prose(ui, tr!("Gap size"), |ui| {
+            egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(crate::i18n::t(app.bucket_gap.label())).show_ui(ui, |ui| {
                 for g in crate::app::GapSize::ALL {
-                    ui.selectable_value(&mut app.bucket_gap, g, g.label());
+                    ui.selectable_value(&mut app.bucket_gap, g, crate::i18n::t(g.label()));
                 }
             })
             .response
-            .set_name("Gap size");
+            .set_name(tr!("Gap size"));
         }),
-        Tool::Pencil => row(ui, "Mode", |ui| {
+        Tool::Pencil => row(ui, tr!("Mode"), |ui| {
             use crate::pathtools::PencilMode;
             for m in [PencilMode::Smooth, PencilMode::Straighten, PencilMode::Ink] {
-                ui.selectable_value(&mut app.pencil_mode, m, m.label()).on_hover_text(m.hint());
+                ui.selectable_value(&mut app.pencil_mode, m, crate::i18n::t(m.label())).on_hover_text(crate::i18n::t(m.hint()));
             }
         }),
         Tool::Brush => brush_props(app, ui),
@@ -1415,33 +1624,33 @@ fn eraser_props(app: &mut App, ui: &mut egui::Ui) {
     use anicraft_engine::geom::brush::TipShape;
     let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
     let o = &mut app.eraser;
-    row_prose(ui, "Faucet", |ui| {
-        crate::theme::checkbox(ui, &mut o.faucet, "Delete whole fills and lines").on_hover_text("On: a click deletes the whole fill or line under it. Off: drag to erase");
+    row_prose(ui, tr!("Faucet"), |ui| {
+        crate::theme::checkbox(ui, &mut o.faucet, tr!("Delete whole fills and lines")).on_hover_text(tr!("On: a click deletes the whole fill or line under it. Off: drag to erase"));
     });
     ui.add_enabled_ui(!o.faucet, |ui| {
-        row(ui, "Size", |ui| {
-            let r = ui.add(egui::DragValue::new(&mut o.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named("Eraser size");
+        row(ui, tr!("Size"), |ui| {
+            let r = ui.add(egui::DragValue::new(&mut o.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named(tr!("Eraser size"));
             if !keys.is_empty() {
-                r.on_hover_text(format!("Eraser size ({keys})"));
+                r.on_hover_text(tr!("Eraser size ({keys})", keys = keys));
             }
         });
-        row(ui, "Shape", |ui| {
-            for (shape, label, hint) in [(TipShape::Round, "Round", "A round eraser"), (TipShape::Square, "Square", "A square eraser")] {
+        row(ui, tr!("Shape"), |ui| {
+            for (shape, label, hint) in [(TipShape::Round, tr!("Round"), tr!("A round eraser")), (TipShape::Square, tr!("Square"), tr!("A square eraser"))] {
                 ui.selectable_value(&mut o.shape, shape, label).on_hover_text(hint);
             }
         });
-        row_prose(ui, "Mode", |ui| {
-            egui::ComboBox::from_id_salt("erase_mode").width(170.0).selected_text(o.mode.label()).show_ui(ui, |ui| {
+        row_prose(ui, tr!("Mode"), |ui| {
+            egui::ComboBox::from_id_salt("erase_mode").width(170.0).selected_text(crate::i18n::t(o.mode.label())).show_ui(ui, |ui| {
                 for m in EraseMode::ALL {
-                    ui.selectable_value(&mut o.mode, m, m.label()).on_hover_text(m.hint());
+                    ui.selectable_value(&mut o.mode, m, crate::i18n::t(m.label())).on_hover_text(crate::i18n::t(m.hint()));
                 }
             })
             .response
-            .set_name("Erase mode");
+            .set_name(tr!("Erase mode"));
         });
     });
-    row_prose(ui, "Stage", |ui| {
-        if ui.button("Erase Everything…").on_hover_text("Clears every visible, unlocked layer at this frame, as double-clicking the Eraser tool does. You can undo it").clicked() {
+    row_prose(ui, tr!("Stage"), |ui| {
+        if ui.button(tr!("Erase Everything…")).on_hover_text(tr!("Clears every visible, unlocked layer at this frame, as double-clicking the Eraser tool does. You can undo it")).clicked() {
             crate::erasertool::erase_everything(app);
         }
     });
@@ -1454,34 +1663,34 @@ fn brush_props(app: &mut App, ui: &mut egui::Ui) {
     use anicraft_engine::geom::brush::TipShape;
     let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
     let b = &mut app.brush;
-    row(ui, "Size", |ui| {
-        let r = ui.add(egui::DragValue::new(&mut b.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named("Brush size");
+    row(ui, tr!("Size"), |ui| {
+        let r = ui.add(egui::DragValue::new(&mut b.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named(tr!("Brush size"));
         if !keys.is_empty() {
-            r.on_hover_text(format!("Brush size ({keys})"));
+            r.on_hover_text(tr!("Brush size ({keys})", keys = keys));
         }
     });
-    row(ui, "Shape", |ui| {
-        for (shape, label, hint) in [(TipShape::Round, "Round", "A round or oval tip"), (TipShape::Square, "Square", "A square or flat tip")] {
+    row(ui, tr!("Shape"), |ui| {
+        for (shape, label, hint) in [(TipShape::Round, tr!("Round"), tr!("A round or oval tip")), (TipShape::Square, tr!("Square"), tr!("A square or flat tip"))] {
             ui.selectable_value(&mut b.shape, shape, label).on_hover_text(hint);
         }
     });
-    row(ui, "Angle", |ui| {
-        ui.add(egui::DragValue::new(&mut b.angle).suffix("°").speed(1.0).range(0.0..=180.0).max_decimals(0)).named("Brush angle").on_hover_text("Turns a flattened tip (clockwise)");
+    row(ui, tr!("Angle"), |ui| {
+        ui.add(egui::DragValue::new(&mut b.angle).suffix("°").speed(1.0).range(0.0..=180.0).max_decimals(0)).named(tr!("Brush angle")).on_hover_text(tr!("Turns a flattened tip (clockwise)"));
     });
-    row(ui, "Roundness", |ui| {
-        ui.add(egui::DragValue::new(&mut b.roundness).suffix(" %").speed(0.5).range(5.0..=100.0).max_decimals(0)).named("Brush roundness").on_hover_text("100 %: as wide as it is tall. Less flattens the tip, for calligraphic strokes");
+    row(ui, tr!("Roundness"), |ui| {
+        ui.add(egui::DragValue::new(&mut b.roundness).suffix(" %").speed(0.5).range(5.0..=100.0).max_decimals(0)).named(tr!("Brush roundness")).on_hover_text(tr!("100 %: as wide as it is tall. Less flattens the tip, for calligraphic strokes"));
     });
-    row(ui, "Smoothing", |ui| {
-        ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named("Brush smoothing").on_hover_text("How much the stroke is smoothed: 0 follows the hand closely");
+    row(ui, tr!("Smoothing"), |ui| {
+        ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Brush smoothing")).on_hover_text(tr!("How much the stroke is smoothed: 0 follows the hand closely"));
     });
-    row_prose(ui, "Mode", |ui| {
-        egui::ComboBox::from_id_salt("brush_mode").width(170.0).selected_text(b.mode.label()).show_ui(ui, |ui| {
+    row_prose(ui, tr!("Mode"), |ui| {
+        egui::ComboBox::from_id_salt("brush_mode").width(170.0).selected_text(crate::i18n::t(b.mode.label())).show_ui(ui, |ui| {
             for m in PaintMode::ALL {
-                ui.selectable_value(&mut b.mode, m, m.label()).on_hover_text(m.hint());
+                ui.selectable_value(&mut b.mode, m, crate::i18n::t(m.label())).on_hover_text(crate::i18n::t(m.hint()));
             }
         })
         .response
-        .set_name("Paint mode");
+        .set_name(tr!("Paint mode"));
     });
 }
 
@@ -1510,7 +1719,7 @@ fn profile_preview(ui: &mut egui::Ui, profile: Option<&anicraft_engine::doc::Wid
     resp
 }
 
-/// Which Width row a profile menu is (each needs its own popup).
+/// Which place a profile or line style menu is in (each needs its own popup).
 #[derive(Clone, Copy, Debug, Hash)]
 enum ProfileRow {
     Selection,
@@ -1524,17 +1733,18 @@ fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraf
         None => Some(ProfilePreset::Uniform),
         Some(p) => p.preset(),
     };
-    let label = preset.map_or_else(|| format!("Custom ({} points)", current.map_or(0, |p| p.points().len())), |p| p.label().to_string());
+    let label = preset.map_or_else(|| trn!("Custom ({n} point)", "Custom ({n} points)", current.map_or(0, |p| p.points().len())), |p| crate::i18n::t(p.label()).to_string());
     let mut picked = None;
-    row_prose(ui, "Width", |ui| {
+    row_prose(ui, tr!("Width"), |ui| {
         profile_preview(ui, current, vec2(44.0, 12.0), T.text_dim, None);
         let menu = ui.id().with(which);
         egui::ComboBox::from_id_salt(menu).width(150.0).selected_text(label).show_ui(ui, |ui| {
             for pr in ProfilePreset::ALL {
                 let on = preset == Some(pr);
                 let r = ui.horizontal(|ui| {
-                    let pic = profile_preview(ui, pr.profile().as_ref(), vec2(44.0, 12.0), if on { T.text } else { T.text_dim }, Some(pr.label()));
-                    let lab = ui.selectable_label(on, pr.label());
+                    let name = crate::i18n::t(pr.label());
+                    let pic = profile_preview(ui, pr.profile().as_ref(), vec2(44.0, 12.0), if on { T.text } else { T.text_dim }, Some(name));
+                    let lab = ui.selectable_label(on, name);
                     pic.clicked() || lab.clicked()
                 });
                 if r.inner && !on {
@@ -1543,10 +1753,139 @@ fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraf
             }
         })
         .response
-        .on_hover_text("How the stroke's width varies along it. Shape it by hand with the Width tool (U).")
-        .set_name("Stroke width profile");
+        .on_hover_text(tr!("How the stroke's width varies along it. Shape it by hand with the Width tool (U)."))
+        .set_name(tr!("Stroke width profile"));
     });
     picked
+}
+
+/// A picture of a line style: solid, dashed or dotted, as the Style menu shows them.
+fn line_preview(ui: &mut egui::Ui, kind: anicraft_engine::doc::DashKind, size: egui::Vec2, color: Color32) {
+    use anicraft_engine::doc::DashKind;
+    let (r, _) = ui.allocate_exact_size(size, Sense::hover());
+    let p = ui.painter();
+    let y = r.center().y;
+    let line = Stroke::new(2.0, color);
+    match kind {
+        DashKind::Solid => {
+            p.line_segment([pos2(r.left(), y), pos2(r.right(), y)], line);
+        }
+        DashKind::Dashed => {
+            p.extend(egui::Shape::dashed_line(&[pos2(r.left(), y), pos2(r.right(), y)], line, 6.0, 3.0));
+        }
+        DashKind::Dotted => {
+            let mut x = r.left() + 1.5;
+            while x < r.right() {
+                p.circle_filled(pos2(x, y), 1.5, color);
+                x += 5.0;
+            }
+        }
+    }
+}
+
+/// A change made in the line style rows: its undo label, the `stroke.set_style` params, and
+/// whether it is a drag (coalesced into one undo step) rather than a pick.
+struct LineEdit {
+    label: &'static str,
+    params: Value,
+    drag: bool,
+}
+
+/// The rows under Stroke that shape the line, as in Animate's Properties: Style (solid, dashed,
+/// dotted) with its lengths, Cap, Join and, for miter joins, the miter limit. `which` keeps each
+/// place's menus apart. Returns the change, if any.
+fn line_style_rows(ui: &mut egui::Ui, which: ProfileRow, st: &anicraft_engine::doc::StrokeStyle, differs: bool) -> Option<LineEdit> {
+    use anicraft_engine::doc::{Cap, Dash, DashKind, Join};
+    let mut edit = None;
+    let kind = st.dash_kind();
+    row_prose(ui, tr!("Style"), |ui| {
+        line_preview(ui, kind, vec2(44.0, 12.0), T.text_dim);
+        egui::ComboBox::from_id_salt((which, "line_style")).width(110.0).selected_text(crate::i18n::t(kind.label())).show_ui(ui, |ui| {
+            for k in DashKind::ALL {
+                let on = k == kind;
+                let r = ui.horizontal(|ui| {
+                    line_preview(ui, k, vec2(44.0, 12.0), if on { T.text } else { T.text_dim });
+                    ui.selectable_label(on, crate::i18n::t(k.label())).clicked()
+                });
+                if r.inner && !on {
+                    edit = Some(LineEdit { label: tr_noop!("Stroke style"), params: json!({"style": k.key()}), drag: false });
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("Solid, dashed or dotted"))
+        .set_name(tr!("Stroke style"));
+        mixed(ui, differs);
+    });
+    // The small dash editor: the first dash and gap (an imported pattern keeps the rest).
+    match &st.dash {
+        Some(Dash::Dashed { lengths, .. }) => {
+            let mut v = lengths.to_vec();
+            row(ui, tr!("Dash"), |ui| {
+                let mut changed = false;
+                for (i, name, hint) in [(0usize, tr!("Dash length"), tr!("Length of each dash")), (1, tr!("Gap length"), tr!("Length of each gap"))] {
+                    if let Some(x) = v.get_mut(i) {
+                        let r = ui.add(egui::DragValue::new(x).suffix(" px").speed(0.1).range(0.0..=1000.0).max_decimals(1)).named(name);
+                        changed |= r.on_hover_text(hint).changed();
+                    }
+                }
+                if lengths.len() > 2 {
+                    ui.label(text(Type::Caption, trn!("+{n} more", "+{n} more", lengths.len() - 2))).on_hover_text(tr!("This pattern has more dashes and gaps than these two; they stay as they are"));
+                }
+                // Without any gap the line would be solid: that is the Style menu's job.
+                if changed && v.iter().skip(1).step_by(2).sum::<f32>() > 0.0 {
+                    edit = Some(LineEdit { label: tr_noop!("Dash length"), params: json!({"dash": v}), drag: true });
+                }
+            });
+        }
+        Some(Dash::Dotted { spacing }) => {
+            let mut sp = *spacing;
+            row(ui, tr!("Spacing"), |ui| {
+                let r = ui.add(egui::DragValue::new(&mut sp).suffix(" px").speed(0.1).range(0.0..=1000.0).max_decimals(1)).named(tr!("Dot spacing"));
+                if r.on_hover_text(tr!("Space between the dots")).changed() {
+                    edit = Some(LineEdit { label: tr_noop!("Dot spacing"), params: json!({"dot_spacing": sp}), drag: true });
+                }
+            });
+        }
+        None => {}
+    }
+    row_prose(ui, tr!("Cap"), |ui| {
+        egui::ComboBox::from_id_salt((which, "line_cap")).width(110.0).selected_text(crate::i18n::t(st.cap.label())).show_ui(ui, |ui| {
+            for c in Cap::ALL {
+                if ui.selectable_label(c == st.cap, crate::i18n::t(c.label())).clicked() && c != st.cap {
+                    edit = Some(LineEdit { label: tr_noop!("Stroke cap"), params: json!({"cap": c.key()}), drag: false });
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("How open ends finish: flat at the end (None), rounded, or squared off past it"))
+        .set_name(tr!("Stroke cap"));
+        if kind == DashKind::Dotted {
+            ui.label(text(Type::Caption, tr!("dots are round")));
+        }
+    });
+    row_prose(ui, tr!("Join"), |ui| {
+        egui::ComboBox::from_id_salt((which, "line_join")).width(110.0).selected_text(crate::i18n::t(st.join.label())).show_ui(ui, |ui| {
+            for j in Join::ALL {
+                if ui.selectable_label(j == st.join, crate::i18n::t(j.label())).clicked() && j != st.join {
+                    edit = Some(LineEdit { label: tr_noop!("Stroke join"), params: json!({"join": j.key()}), drag: false });
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("How corners turn: sharp (Miter), rounded, or cut across (Bevel)"))
+        .set_name(tr!("Stroke join"));
+    });
+    if st.join == Join::Miter {
+        let mut m = st.miter_limit;
+        row(ui, tr!("Miter"), |ui| {
+            let r = ui.add(egui::DragValue::new(&mut m).speed(0.05).range(1.0..=100.0).max_decimals(1)).named(tr!("Miter limit"));
+            if r.on_hover_text(tr!("Corners sharper than this are bevelled: how far a point may reach, in stroke widths")).changed() {
+                edit = Some(LineEdit { label: tr_noop!("Miter limit"), params: json!({"miter": m}), drag: true });
+            }
+        });
+    }
+    edit
 }
 
 /// Plots the easing curve (output against time).
@@ -1573,18 +1912,18 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         .map(|sym| LibraryRow {
             item: LibraryItem::Symbol(sym.id),
             name: sym.name.clone(),
-            detail: format!("{:?} · {}f", sym.kind, sym.timeline.frame_count()),
+            detail: tr!("{kind} · {frames}f", kind = symbol_kind_label(sym.kind), frames = sym.timeline.frame_count()),
             kind: Some(sym.kind),
         })
-        .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: format!("Bitmap · {}×{}", b.width, b.height), kind: None }))
-        .chain(doc.sounds.iter().map(|x| LibraryRow { item: LibraryItem::Sound(x.id), name: x.name.clone(), detail: format!("Sound · {:.1} s", x.seconds()), kind: None }))
+        .chain(doc.bitmaps.iter().map(|b| LibraryRow { item: LibraryItem::Bitmap(b.id), name: b.name.clone(), detail: tr!("Bitmap · {width}×{height}", width = b.width, height = b.height), kind: None }))
+        .chain(doc.sounds.iter().map(|x| LibraryRow { item: LibraryItem::Sound(x.id), name: x.name.clone(), detail: tr!("Sound · {seconds} s", seconds = format!("{:.1}", x.seconds())), kind: None }))
         .collect();
     if rows.is_empty() {
         let key = |id: &str| app.keymap.primary(id).map(crate::platform::shortcut_label).unwrap_or_default();
-        ui.label(text(Type::Caption, format!("No symbols, images or sounds yet. Select artwork and press {} to make a symbol, or import an image or a sound with {}.", key("modify.convert_to_symbol"), key("file.import"))));
+        ui.label(text(Type::Caption, tr!("No symbols, images or sounds yet. Select artwork and press {convert} to make a symbol, or import an image or a sound with {import}.", convert = key("modify.convert_to_symbol"), import = key("file.import"))));
         return;
     }
-    ui.label(text(Type::Caption, format!("{} {}", rows.len(), if rows.len() == 1 { "item" } else { "items" })));
+    ui.label(text(Type::Caption, trn!("{n} item", "{n} items", rows.len())));
     // Sounds go on the active layer's keyframe at the playhead, their span grown to fit.
     let place = |app: &mut App, item: LibraryItem| match item {
         LibraryItem::Symbol(id) => app.run("library.place", json!({"symbol": id.0})),
@@ -1626,7 +1965,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             }
             if let LibraryItem::Sound(id) = row.item {
                 resp.context_menu(|ui| {
-                    if ui.button("Delete Sound").clicked() {
+                    if ui.button(tr!("Delete Sound")).clicked() {
                         ui.close();
                         app.request("sound.delete", json!({"sound": id.0}));
                     }
@@ -1639,22 +1978,22 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     match can_place {
         Some(LibraryItem::Sound(id)) => {
             ui.horizontal(|ui| {
-                if ui.button("Preview").on_hover_text("Plays the sound on its own").clicked()
+                if ui.button(tr!("Preview")).on_hover_text(tr!("Plays the sound on its own")).clicked()
                     && let Some(dec) = app.s.doc.sound(id).and_then(|x| x.decoded())
                 {
                     app.playing = false;
                     app.sound.preview(dec.pcm.clone());
                     if let Some(e) = app.sound.error.take() {
-                        app.status_err(format!("No sound: {e}"));
+                        app.status_err(tr!("No sound: {error}", error = crate::i18n::t_dyn(&e.to_string())));
                     }
                 }
-                if ui.button("Place on timeline").on_hover_text("Puts it on the active layer's keyframe at the playhead (or double-click it)").clicked() {
+                if ui.button(tr!("Place on timeline")).on_hover_text(tr!("Puts it on the active layer's keyframe at the playhead (or double-click it)")).clicked() {
                     place(app, LibraryItem::Sound(id));
                 }
             });
         }
         _ => {
-            if ui.add_enabled(can_place.is_some(), egui::Button::new("Place on stage")).on_hover_text("Adds it at the stage centre (or double-click an item)").clicked()
+            if ui.add_enabled(can_place.is_some(), egui::Button::new(tr!("Place on stage"))).on_hover_text(tr!("Adds it at the stage centre (or double-click an item)")).clicked()
                 && let Some(item) = can_place {
                     place(app, item);
                 }

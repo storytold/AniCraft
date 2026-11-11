@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
-use anicraft_doc::{Keyframe, Layer, LayerId, LayerKind, Tween, TweenKind, evaluate_layer_elements};
+use anicraft_doc::{ElementId, Keyframe, Layer, LayerId, LayerKind, Tween, TweenKind, evaluate_layer_elements};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("layer.toggle_visible", "Show/Hide Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.visible = !l.visible)),
         c("layer.toggle_lock", "Lock/Unlock Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.locked = !l.locked)),
         c("layer.toggle_outline", "Outline Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.outline = !l.outline)),
-        c("layer.select", "Select Layer", "", None, "{layer: id} or {index}", false, select_layer),
+        c("layer.select", "Select Layer", "", None, "{layer: id} or {index}, select?: bool (also select all of its artwork at the playhead, as a click on the layer's name does; nothing on a locked or hidden layer)", false, select_layer),
         c("layer.move_up", "Move Layer Up", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, -1)),
         c("layer.move_down", "Move Layer Down", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, 1)),
         c("layer.toggle_mask", "Mask", "Modify/Timeline", None, "{layer?}", true, toggle_mask),
@@ -135,6 +135,9 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Camera) {
         return Err(EngineError::State("the camera layer holds the camera; it can't become another kind of layer (Remove Camera takes it away)".into()));
     }
+    if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Armature) {
+        return Err(EngineError::State("an armature layer holds its armature; it can't become another kind of layer (removing its bones frees the instances)".into()));
+    }
     // Whatever the type, the layer stays in the folder it is in.
     let folder = tl.folder_of(i);
     let (kind, parent) = match ty {
@@ -169,6 +172,7 @@ fn layer_type_json(s: &Session, id: LayerId) -> Value {
         LayerKind::Guide => "guide",
         LayerKind::Folder => "folder",
         LayerKind::Camera => "camera",
+        LayerKind::Armature => "armature",
         LayerKind::Normal if masked_by.is_some() => "masked",
         LayerKind::Normal if guided_by.is_some() => "guided",
         LayerKind::Normal => "normal",
@@ -326,11 +330,14 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
                 k.elements.clear();
                 k.tween = None;
                 k.motion = None;
+                k.pose = anicraft_doc::Pose::default();
             }
         }
         return Ok(());
     }
     let elements = if copy { evaluate_layer_elements(layer, frame).map(|(_, e)| e.into_owned()) } else { None };
+    // On an armature layer a copy keeps the pose the frame shows (tweened between keys).
+    let pose = if copy { anicraft_doc::armature::pose_at(layer, frame) } else { None };
     // Past the end of a motion tween, a copy starts from how its object looks at the end.
     let last_state = match layer.keyframes.iter().rposition(|k| k.start < frame) {
         Some(i) if copy && layer.keyframe_index_at(frame).is_none() => {
@@ -357,6 +364,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
             nk.elements = elements.unwrap_or_default();
             nk.tween = tween;
             nk.motion = motion;
+            nk.pose = pose.unwrap_or_default();
             layer.keyframes.insert(i + 1, Arc::new(nk));
         }
         None => {
@@ -368,6 +376,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
                 if let Some(k) = layer.keyframe_mut(i) {
                     if copy {
                         nk.elements = last_state.unwrap_or_else(|| k.elements.clone());
+                        nk.pose = k.pose.clone();
                     }
                     k.duration = frame - k.start;
                 }
@@ -645,6 +654,12 @@ fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
     add_layer(s, p, LayerKind::Folder)
 }
 
+/// The colour the `n`th layer gets (its outline and timeline bar).
+pub(crate) fn layer_color(n: usize) -> anicraft_doc::Rgba {
+    const PALETTE: [u32; 7] = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
+    anicraft_doc::Rgba::hex(PALETTE.get(n % PALETTE.len()).copied().unwrap_or(0x4fa3ff))
+}
+
 fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
     let tl = s.doc.timeline(s.scene);
     if tl.layers.len() >= 1000 {
@@ -672,8 +687,7 @@ fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
         // Match the timeline length so the new layer spans the existing frames.
         k.duration = s.frame_count().max(1);
     }
-    let palette = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
-    layer.color = anicraft_doc::Rgba::hex(palette[n % palette.len()]);
+    layer.color = layer_color(n);
     let tl = s.doc.timeline_mut(s.scene);
     tl.layers.insert(at, Arc::new(layer));
     tl.repair_masks();
@@ -739,6 +753,14 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if s.doc.timeline(s.scene).layer(id).is_none() {
         return Err(EngineError::State(format!("no layer with id {}", id.0)));
+    }
+    // A click on a layer's name in Animate: the layer becomes active with all of its artwork at
+    // the playhead selected (ADR 0044).
+    if opt_bool(p, "select")? == Some(true) {
+        s.layer = id;
+        let ids: Vec<ElementId> = if s.selectable(id) { s.elements_on(id).iter().map(|e| e.id).collect() } else { Vec::new() };
+        s.selection = crate::Selection::only(id, ids);
+        return Ok(json!({"layer": id.0, "selected": s.selection.id_list()}));
     }
     if s.layer != id {
         s.layer = id;

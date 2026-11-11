@@ -76,6 +76,10 @@ pub struct Tokens {
     pub hint_unplaced: Color32,
     pub hint_start: Color32,
     pub hint_end: Color32,
+    /// Onion skin (ADR 0047): frames before the playhead (blue, as Animate users know it) and
+    /// after it (green); the defaults the onion menu can change. Also the ruler's markers.
+    pub onion_past: Color32,
+    pub onion_future: Color32,
     /// Library symbol kinds.
     pub kind_graphic: Color32,
     pub kind_movie_clip: Color32,
@@ -142,6 +146,8 @@ pub const GRAPHITE: Tokens = Tokens {
     hint_unplaced: Color32::from_rgb(0xff, 0x5c, 0x8a),
     hint_start: Color32::from_rgb(0xff, 0xc2, 0x3d),
     hint_end: Color32::from_rgb(0x4f, 0xe3, 0xa8),
+    onion_past: Color32::from_rgb(0x4f, 0x8d, 0xff),
+    onion_future: Color32::from_rgb(0x4c, 0xd0, 0x7d),
     kind_graphic: Color32::from_rgb(0x22, 0xc7, 0xa9),
     kind_movie_clip: Color32::from_rgb(0x5a, 0x8f, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xb5, 0x3d),
@@ -196,6 +202,8 @@ pub const HIGH_CONTRAST: Tokens = Tokens {
     hint_unplaced: Color32::from_rgb(0xff, 0x7a, 0xa3),
     hint_start: Color32::from_rgb(0xff, 0xd8, 0x1a),
     hint_end: Color32::from_rgb(0x74, 0xff, 0xb0),
+    onion_past: Color32::from_rgb(0x6f, 0xa8, 0xff),
+    onion_future: Color32::from_rgb(0x5c, 0xf0, 0x9a),
     kind_graphic: Color32::from_rgb(0x3d, 0xf0, 0xcf),
     kind_movie_clip: Color32::from_rgb(0x85, 0xad, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xc8, 0x5c),
@@ -215,8 +223,8 @@ pub enum Palette {
 
 impl Palette {
     pub const ALL: [(Palette, &'static str, &'static str); 2] = [
-        (Palette::Graphite, "Graphite", "The standard dark look: graphite panels, colour where it means something."),
-        (Palette::HighContrast, "High contrast", "White text on black, a yellow focus and selection colour, outlined controls."),
+        (Palette::Graphite, tr_noop!("Graphite"), tr_noop!("The standard dark look: graphite panels, colour where it means something.")),
+        (Palette::HighContrast, tr_noop!("High contrast"), tr_noop!("White text on black, a yellow focus and selection colour, outlined controls.")),
     ];
 
     pub fn tokens(self) -> &'static Tokens {
@@ -360,13 +368,13 @@ pub fn embedded_fonts() -> Vec<std::sync::Arc<[u8]>> {
     [craft_fonts::UI_FONT, craft_fonts::MONO_FONT].into_iter().flatten().map(std::sync::Arc::from).collect()
 }
 
-/// Which typefaces are active (for About and diagnostics).
+/// Which typefaces are active (for About and diagnostics), in the interface language.
 pub fn font_summary() -> String {
     match (craft_fonts::UI_FONT, craft_fonts::MONO_FONT) {
-        (Some(_), Some(_)) => format!("Inter + JetBrains Mono (craft-fonts, {} KB)", craft_fonts::CRAFT_FONT_BYTES / 1024),
-        (Some(_), None) => "Inter + Hack (fallback)".into(),
-        (None, Some(_)) => "Ubuntu (fallback) + JetBrains Mono".into(),
-        (None, None) => "Ubuntu + Hack (built-in defaults; build with CRAFT_FONTS_DIR for Inter + JetBrains Mono)".into(),
+        (Some(_), Some(_)) => tr!("Inter + JetBrains Mono (craft-fonts, {size} KB)", size = craft_fonts::CRAFT_FONT_BYTES / 1024),
+        (Some(_), None) => tr!("Inter + Hack (fallback)").into(),
+        (None, Some(_)) => tr!("Ubuntu (fallback) + JetBrains Mono").into(),
+        (None, None) => tr!("Ubuntu + Hack (built-in defaults; build with CRAFT_FONTS_DIR for Inter + JetBrains Mono)").into(),
     }
 }
 
@@ -400,6 +408,7 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&UserFont>, data_font:
 
 /// Names of the bundled typefaces actually embedded in this build.
 pub fn bundled_names() -> (&'static str, &'static str) {
+    // i18n-exempt: font family names
     (if craft_fonts::UI_FONT.is_some() { "Inter" } else { "Ubuntu" }, if craft_fonts::MONO_FONT.is_some() { "JetBrains Mono" } else { "Hack" })
 }
 
@@ -604,6 +613,12 @@ pub fn with_type<R>(ui: &mut egui::Ui, role: Type, add: impl FnOnce(&mut egui::U
         add(ui)
     })
     .inner
+}
+
+/// The document colour of an interface colour (the onion skin's theme colours, ADR 0047).
+pub fn to_rgba(c: Color32) -> anicraft_engine::doc::Rgba {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    anicraft_engine::doc::Rgba::new(f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, f32::from(a) / 255.0)
 }
 
 pub fn to_color32(c: anicraft_engine::doc::Rgba) -> Color32 {

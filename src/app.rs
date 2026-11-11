@@ -16,6 +16,7 @@ pub enum Tool {
     Subselect,
     Transform,
     Width,
+    Bone,
     Pen,
     Text,
     Pencil,
@@ -48,10 +49,10 @@ impl GapSize {
     pub const ALL: [GapSize; 4] = [GapSize::None, GapSize::Small, GapSize::Medium, GapSize::Large];
     pub fn label(self) -> &'static str {
         match self {
-            GapSize::None => "Don't close gaps",
-            GapSize::Small => "Close small gaps",
-            GapSize::Medium => "Close medium gaps",
-            GapSize::Large => "Close large gaps",
+            GapSize::None => tr_noop!("Don't close gaps"),
+            GapSize::Small => tr_noop!("Close small gaps"),
+            GapSize::Medium => tr_noop!("Close medium gaps"),
+            GapSize::Large => tr_noop!("Close large gaps"),
         }
     }
     pub fn screen_px(self) -> f32 {
@@ -65,29 +66,30 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 19] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 20] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
-            Tool::Select => "Selection",
-            Tool::Subselect => "Subselection",
-            Tool::Transform => "Free Transform",
-            Tool::Width => "Width",
-            Tool::Pen => "Pen",
-            Tool::Text => "Text",
-            Tool::Pencil => "Pencil",
-            Tool::Brush => "Brush",
-            Tool::Eraser => "Eraser",
-            Tool::Rect => "Rectangle",
-            Tool::Oval => "Oval",
-            Tool::Star => "PolyStar",
-            Tool::Line => "Line",
-            Tool::PaintBucket => "Paint Bucket",
-            Tool::InkBottle => "Ink Bottle",
-            Tool::Eyedropper => "Eyedropper",
-            Tool::Camera => "Camera",
-            Tool::Hand => "Hand",
-            Tool::Zoom => "Zoom",
+            Tool::Select => tr_noop!("Selection"),
+            Tool::Subselect => tr_noop!("Subselection"),
+            Tool::Transform => tr_noop!("Free Transform"),
+            Tool::Width => tr_noop!("Width"),
+            Tool::Bone => tr_noop!("Bone"),
+            Tool::Pen => tr_noop!("Pen"),
+            Tool::Text => tr_noop!("Text"),
+            Tool::Pencil => tr_noop!("Pencil"),
+            Tool::Brush => tr_noop!("Brush"),
+            Tool::Eraser => tr_noop!("Eraser"),
+            Tool::Rect => tr_noop!("Rectangle"),
+            Tool::Oval => tr_noop!("Oval"),
+            Tool::Star => tr_noop!("PolyStar"),
+            Tool::Line => tr_noop!("Line"),
+            Tool::PaintBucket => tr_noop!("Paint Bucket"),
+            Tool::InkBottle => tr_noop!("Ink Bottle"),
+            Tool::Eyedropper => tr_noop!("Eyedropper"),
+            Tool::Camera => tr_noop!("Camera"),
+            Tool::Hand => tr_noop!("Hand"),
+            Tool::Zoom => tr_noop!("Zoom"),
         }
     }
     /// Default shortcut in the command-registry notation; the live key is in `App::keymap`.
@@ -97,6 +99,7 @@ impl Tool {
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
             Tool::Width => Some("U"),
+            Tool::Bone => Some("M"),
             Tool::Pen => Some("P"),
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
@@ -114,27 +117,29 @@ impl Tool {
             Tool::Zoom => Some("Z"),
         }
     }
+    /// English (a key): translate where it is drawn with `crate::i18n::t`.
     pub fn hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection.",
-            Tool::Subselect => "Click a shape to show its points. Drag points or handles to reshape (Shift adds to the point selection, drag on empty space to marquee points). Double-click an edge to add a point; Delete removes points. Right-click to make a point smooth or a corner. A motion path's points edit the same way (its ends stay).",
-            Tool::Pen => "Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape or a motion path to add a point to it.",
-            Tool::Text => "Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too.",
-            Tool::Pencil => "Drag to draw freehand. The options bar sets Smooth, Straighten or Ink.",
-            Tool::Brush => "Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode.",
-            Tool::Eraser => "Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage.",
-            Tool::Width => "Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it.",
-            Tool::Transform => "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move.",
-            Tool::Rect => "Drag to draw a rectangle. Shift draws a square.",
-            Tool::Oval => "Drag to draw an oval. Shift draws a circle.",
-            Tool::Star => "Drag from the centre to draw a star.",
-            Tool::Line => "Drag to draw a line. Shift snaps to 45°.",
-            Tool::PaintBucket => "Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings.",
-            Tool::InkBottle => "Click a shape to give it the current stroke colour and width.",
-            Tool::Eyedropper => "Click a fill to pick its colour, gradient or bitmap (then pour it with the Paint Bucket), or a line to pick its colour, width and profile (then apply it with the Ink Bottle). With shapes selected, the picked style goes onto them. Shift-click picks into the other swatch only.",
-            Tool::Camera => "Drag on the stage to pan the camera, drag the round handle to turn it, and use the wheel to zoom (each drag is one undo step). Picking the tool adds a camera if the scene has none.",
-            Tool::Hand => "Drag to pan the stage. Space works with any tool.",
-            Tool::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere.",
+            Tool::Select => tr_noop!("Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection."),
+            Tool::Subselect => tr_noop!("Click a shape to show its points; on a merged drawing, the points of everything connected to it. Drag points or handles to reshape (a shared point moves every shape that has it); drag a line or fill to move everything connected. Shift adds to the point selection, drag on empty space to marquee points, arrow keys nudge them. On drawing objects, double-click an edge to add a point, Delete removes points, and right-click makes a point smooth or a corner. A motion path's points edit the same way (its ends stay)."),
+            Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape or a motion path to add a point to it."),
+            Tool::Text => tr_noop!("Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too."),
+            Tool::Pencil => tr_noop!("Drag to draw freehand. The options bar sets Smooth, Straighten or Ink."),
+            Tool::Brush => tr_noop!("Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode."),
+            Tool::Eraser => tr_noop!("Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage."),
+            Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
+            Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
+            Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
+            Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
+            Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
+            Tool::Star => tr_noop!("Drag from the centre to draw a star."),
+            Tool::Line => tr_noop!("Drag to draw a line. Shift snaps to 45°."),
+            Tool::PaintBucket => tr_noop!("Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings."),
+            Tool::InkBottle => tr_noop!("Click a shape to give it the current stroke colour and width."),
+            Tool::Eyedropper => tr_noop!("Click a fill to pick its colour, gradient or bitmap (then pour it with the Paint Bucket), or a line to pick its colour, width and profile (then apply it with the Ink Bottle). With shapes selected, the picked style goes onto them. Shift-click picks into the other swatch only."),
+            Tool::Camera => tr_noop!("Drag on the stage to pan the camera, drag the round handle to turn it, and use the wheel to zoom (each drag is one undo step). Picking the tool adds a camera if the scene has none."),
+            Tool::Hand => tr_noop!("Drag to pan the stage. Space works with any tool."),
+            Tool::Zoom => tr_noop!("Click to zoom in, Alt-click to zoom out. Ctrl+wheel zooms anywhere."),
         }
     }
 }
@@ -175,10 +180,26 @@ pub struct StageView {
 pub enum Drag {
     None,
     Move { last: egui::Pos2 },
+    /// Selection tool: moving the selection, snapping as it goes (ADR 0041): from stage point
+    /// `start`, `applied` moved so far.
+    SnapMove { start: egui::Pos2, applied: egui::Vec2 },
+    /// Selection tool: bending segment `cmd` of raw shape `id` at `t` (ADR 0041); the pointer
+    /// was at `last` last frame.
+    Bend { id: anicraft_engine::doc::ElementId, cmd: usize, t: f32, last: egui::Pos2 },
+    /// Selection tool: moving a shared corner or end (ADR 0041), now at `at`; `off` is from the
+    /// pointer to the point. The points that move are `App::raw_points`.
+    RawPoint { at: egui::Pos2, off: egui::Vec2 },
     Marquee { start: egui::Pos2, cur: egui::Pos2 },
+    /// Edit Multiple Frames (ADR 0047): moving the selection on every keyframe it is on, the
+    /// pointer at `last` last frame; or a marquee over them.
+    MultiMove { last: egui::Pos2 },
+    MultiMarquee { start: egui::Pos2, cur: egui::Pos2 },
     Shape { start: egui::Pos2, cur: egui::Pos2 },
     /// Subselection: dragging the selected points (stage position of the last frame).
     Points { last: egui::Pos2 },
+    /// Subselection: dragging handle `slot` of segment `cmd` of raw shape `id` (ADR 0042); the
+    /// pointer was at `last` last frame.
+    RawHandle { id: anicraft_engine::doc::ElementId, cmd: usize, slot: u8, last: egui::Pos2 },
     /// Subselection: marquee over the selected shapes' anchors.
     PointMarquee { start: egui::Pos2, cur: egui::Pos2 },
     /// Pencil stroke; the samples are in `App::pencil`.
@@ -205,6 +226,12 @@ pub enum Drag {
     CameraPan { last: egui::Pos2 },
     CameraRotate { last: f32 },
     CameraWheel { until: f64 },
+    /// Bone tool (ADR 0043): drawing a bone from instance `from`, joint `head` to `cur` (stage).
+    Bone { from: anicraft_engine::doc::ElementId, head: egui::Pos2, cur: egui::Pos2 },
+    /// Posing by inverse kinematics: point `local` of the bone's instance follows the pointer.
+    BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
+    /// Moving a whole armature by its root, from stage point `last` last frame.
+    ArmatureMove { layer: anicraft_engine::doc::LayerId, last: egui::Pos2 },
     Pan,
 }
 
@@ -219,6 +246,7 @@ pub enum XfKind {
 
 /// A small text prompt standing in for native file dialogs (M0).
 pub struct Prompt {
+    /// English (a key): translated where it is drawn.
     pub title: &'static str,
     pub cmd: &'static str,
     pub key: &'static str,
@@ -266,7 +294,9 @@ pub struct App {
     pub playing: bool,
     pub looping: bool,
     play_acc: f64,
-    pub onion: bool,
+    /// Onion skin and Edit Multiple Frames (ADR 0047): view state, passed with each render.
+    pub onion: anicraft_engine::onion::OnionSkin,
+    pub onion_ui: crate::onion::OnionUi,
     /// View › Preview Through Camera: the stage shows what the movie shows (ADR 0027).
     pub camera_preview: bool,
     /// The tool in hand last frame (picking the Camera tool adds a camera).
@@ -297,6 +327,19 @@ pub struct App {
     pub pen: Option<pathtools::PenPath>,
     /// Pencil samples of the stroke in progress (stage space).
     pub pencil: Vec<anicraft_engine::geom::Vec2>,
+    /// A Selection-tool point drag's points (`raw.move_point`'s `points`), and the raw shapes a
+    /// bend or point drag changed (merged again when it ends; ADR 0041).
+    pub raw_points: serde_json::Value,
+    pub raw_touched: Vec<u64>,
+    /// A Subselection point drag: the other selected anchors that move with the one dragged
+    /// (`raw.move_point`'s `with`, ADR 0042).
+    pub raw_with: Vec<anicraft_engine::geom::Vec2>,
+    /// Subselection on raw shapes (ADR 0042): the selected anchors (stage positions, shared by
+    /// every shape that has them), and the ends of the edge last clicked, whose handles show.
+    pub raw_anchors: Vec<anicraft_engine::geom::Vec2>,
+    pub raw_ends: Vec<anicraft_engine::geom::Vec2>,
+    /// Where what is being dragged snapped this frame (stage space): the snap ring.
+    pub snap_ring: Option<anicraft_engine::geom::Vec2>,
     pub pencil_mode: pathtools::PencilMode,
     /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
     /// when there is one) and the pen's last pressure (ADR 0033).
@@ -312,6 +355,8 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
+    /// The bone picked on the stage (ADR 0043; view state).
+    pub bone_sel: Option<anicraft_engine::doc::BoneId>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
     pub motion_anchors: Vec<usize>,
     /// The motion path as it was when the drag on it began.
@@ -377,8 +422,9 @@ pub struct App {
     pub last_panel: Option<crate::a11y::Region>,
 }
 
-/// How finished this version is, shown next to the version number (docs/release.md).
-pub const RELEASE_STAGE: &str = "early alpha";
+/// How finished this version is, shown next to the version number (docs/release.md). English:
+/// translated where the interface shows it (`--version` prints it as is).
+pub const RELEASE_STAGE: &str = tr_noop!("early alpha");
 
 /// View-state keys, as Animate users know them: `(keys, action)`.
 pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
@@ -437,7 +483,8 @@ impl App {
             playing: false,
             looping: true,
             play_acc: 0.0,
-            onion: false,
+            onion: crate::onion::from_prefs(&prefs.onion),
+            onion_ui: crate::onion::OnionUi::default(),
             camera_preview: false,
             last_tool: Tool::Select,
             status: None,
@@ -459,6 +506,12 @@ impl App {
             rect_radius: 0.0,
             pen: None,
             pencil: Vec::new(),
+            raw_points: serde_json::Value::Null,
+            raw_touched: Vec::new(),
+            raw_with: Vec::new(),
+            raw_anchors: Vec::new(),
+            raw_ends: Vec::new(),
+            snap_ring: None,
             pencil_mode: pathtools::PencilMode::default(),
             brush: crate::brushtool::BrushOptions::default(),
             brush_samples: Vec::new(),
@@ -468,6 +521,7 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
+            bone_sel: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
             frame_sel: None,
@@ -509,7 +563,7 @@ impl App {
         };
         app.apply_prefs(ctx);
         app.decode_sounds();
-        app.status_ok("Welcome to AniCraft. Press Enter to play the sample animation.");
+        app.status_ok(tr!("Welcome to AniCraft. Press Enter to play the sample animation."));
         if let Some(e) = recovery_err {
             app.status_err(e);
         }
@@ -522,8 +576,14 @@ impl App {
     pub fn toggle_camera_preview(&mut self) {
         self.camera_preview = !self.camera_preview;
         if self.camera_preview && self.s.doc.timeline(self.s.scene).camera_layer().is_none() {
-            self.status_ok("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it.");
+            self.status_ok(tr!("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it."));
         }
+    }
+
+    /// The Undo key as this computer shows it (rebindable; ⌘Z on macOS), for messages that
+    /// say how to undo.
+    pub fn undo_key(&self) -> String {
+        platform::shortcut_label(self.keymap.primary("edit.undo").unwrap_or("Ctrl+Z"))
     }
 
     pub fn status_ok(&mut self, text: impl Into<String>) {
@@ -536,8 +596,7 @@ impl App {
     /// Runs an engine command, reporting failures in the status bar.
     /// After a move, selected raw shapes merge where they land (ADR 0031).
     pub fn drop_raw(&mut self) {
-        let sel = &self.s.selection;
-        let raw = self.s.visible_elements().iter().any(|e| sel.contains(&e.id) && matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge));
+        let raw = self.s.selected_elements().iter().any(|(_, e)| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge));
         if raw {
             self.run("draw.drop", json!({}));
         }
@@ -553,7 +612,8 @@ impl App {
         match result {
             Ok(v) => Some(v),
             Err(e) => {
-                self.status_err(e.to_string());
+                // The engine's English, translated when a catalog has that exact message.
+                self.status_err(crate::i18n::t_dyn(&e.to_string()).into_owned());
                 None
             }
         }
@@ -567,7 +627,7 @@ impl App {
         let path = std::path::PathBuf::from(&name);
         match p.data.and_then(|data| anicraft_engine::vfs::put(&path, data).map_err(|e| e.to_string())) {
             Ok(()) => self.request(p.cmd, json!({"path": name})),
-            Err(e) => self.status_err(format!("Could not open {name}: {e}")),
+            Err(e) => self.status_err(tr!("Could not open {name}: {e}", name = name, e = e)),
         }
     }
 
@@ -576,8 +636,13 @@ impl App {
     /// Applies scale and fonts from `self.prefs`. System fonts need the font scan; until it
     /// finishes the bundled fonts stay in place, and they are swapped in when it completes.
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        // The interface language first: everything drawn from here on is in it (ADR 0040).
+        // (`--lang` holds for the run, over the saved choice: `i18n::force`.)
+        crate::i18n::set_language(&self.prefs.language);
+        ctx.request_repaint();
         ctx.set_zoom_factor(self.prefs.ui_scale);
         theme::apply_palette(ctx, self.prefs.theme);
+        crate::onion::refresh_colors(self);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
         let wants_system = [&self.prefs.ui_font, &self.prefs.data_font].iter().any(|f| matches!(f, prefs::FontChoice::System(_)));
@@ -602,7 +667,7 @@ impl App {
                 })
                 .collect();
             for name in missing {
-                self.status_err(format!("Font “{name}” is not installed; using the bundled font"));
+                self.status_err(tr!("Font “{name}” is not installed; using the bundled font", name = name));
             }
         }
         theme::install_fonts(ctx, ui_font.as_ref(), data_font.as_ref());
@@ -638,7 +703,7 @@ impl App {
         if self.shot.is_none()
             && let Err(e) = self.prefs.save()
         {
-            self.status_err(format!("Could not save preferences: {e}"));
+            self.status_err(tr!("Could not save preferences: {e}", e = e));
         }
     }
 
@@ -719,6 +784,30 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some(which @ ("onion" | "onionmenu")) => {
+                // Onion skin ±5 on a frame with frames before and after it, the markers on the
+                // ruler; with its menu open, in outlines (ADR 0047).
+                self.onion.ghosts = true;
+                self.onion.preset(5);
+                self.run("timeline.goto", json!({"frame": 12}));
+                if which == "onionmenu" {
+                    self.onion.outlines = true;
+                    self.onion_ui.open_menu = true;
+                }
+            }
+            Some("editmultiple") => {
+                // Edit Multiple Frames over the sample's walk, everything selected (ADR 0047).
+                self.onion.preset(5);
+                crate::onion::toggle_edit_multiple(self);
+                self.run("timeline.goto", json!({"frame": 12}));
+                crate::onion::select_all(self);
+            }
+            Some("selection") => {
+                // A selection across layers (ADR 0044): Select All takes every unlocked layer's
+                // artwork; the timeline marks the layers, Properties says how many.
+                self.tool = Tool::Select;
+                self.run("edit.select_all", json!({}));
+            }
             Some("plugins") => {
                 // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
                 let first = self.s.plugins.list().find(|p| crate::plugins_ui::is_command(p) && !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
@@ -726,6 +815,15 @@ impl App {
                     Some(id) => crate::plugins_ui::open(self, &id),
                     None => self.show_plugins = true,
                 }
+            }
+            Some("strokes") => {
+                // Stroke styles (ADR 0046): a mitred zigzag with square caps, a dotted tapering
+                // line, and a dashed oval with bevelled corners, selected, so Properties shows
+                // Style with its dash editor, Cap, Join and Miter.
+                self.tool = Tool::Select;
+                self.run("draw.path", json!({"d": "M 80 640 L 200 520 L 320 640 L 440 520 L 560 640", "fill": null, "stroke": "#1b2a4a", "stroke_width": 14, "cap": "square", "join": "miter", "miter": 4, "object": true}));
+                self.run("draw.line", json!({"x0": 80, "y0": 690, "x1": 560, "y1": 690, "stroke": "#e8553b", "stroke_width": 8, "style": "dotted", "dot_spacing": 6, "profile": "taper_end", "object": true}));
+                self.run("draw.rect", json!({"x": 640, "y": 500, "w": 300, "h": 180, "fill": "#f3d36b", "stroke": "#3d8bfd", "stroke_width": 6, "cap": "none", "join": "miter", "dash": [18, 8], "object": true}));
             }
             Some("filters") => {
                 // A movie clip with a bevel and a gradient glow, selected: Properties › Filters
@@ -758,20 +856,30 @@ impl App {
                     crate::test_movie::demo_pointer(self);
                 }
             }
-            Some("script") => {
+            Some(which @ ("script" | "scriptproblems" | "testscript")) => {
                 // The interactive sample as an imported Animate document might bring it: a
                 // frame script kept on the Actions layer's first keyframe (in place of its
                 // Stop action), a linkage class and a document class; the Actions panel shows
-                // the Script view (ADR 0013 tier 1).
+                // the Script view (ADR 0013). `script` runs (tier 2); `scriptproblems` uses
+                // what the subset doesn't, and shows where; `testscript` plays the one that
+                // runs in Test Movie, its Play button clicked.
                 self.perform("file.new_sample", json!({"which": "interactive"}));
                 self.run("layer.select", json!({"index": 0}));
-                let code = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tgotoAndPlay(\"show\");\n}\n";
+                // i18n-exempt: script source, document content
+                let runs = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\ttrace(\"Play clicked\");\n\tgotoAndPlay(\"show\");\n}\n";
+                // i18n-exempt: script source, document content
+                let problems = "import flash.events.MouseEvent;\n\nstop();\nvar clicks:int = 0;\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tclicks++;\n\tif (clicks > 1) {\n\t\tgotoAndPlay(\"show\");\n\t}\n}\n";
+                let code = if which == "scriptproblems" { problems } else { runs };
                 self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
                 self.run("script.set_class", json!({"class": "com.example.Menu"}));
                 if let Some(button) = self.s.doc.library.iter().find(|s| s.kind == anicraft_engine::doc::SymbolKind::Button).map(|s| s.id.0) {
                     self.run("script.set_class", json!({"symbol": button, "class": "com.example.PlayButton", "base": "flash.display.SimpleButton"}));
                 }
                 crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
+                if which == "testscript" {
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_pointer(self);
+                }
             }
             Some("exporthtml") => {
                 // File › Export › Export HTML Canvas… on the interactive sample (the in-app
@@ -815,6 +923,66 @@ impl App {
                 }
                 self.run("element.select_connected", json!({"x": 520, "y": 400}));
                 self.tool = Tool::Select;
+            }
+            Some(which @ ("rawparts" | "rawedit")) => {
+                // The Selection tool on raw shapes (ADR 0041) on a new layer: a rectangle with its
+                // outline, an oval and a line that cut each other.
+                self.run("layer.new", json!({}));
+                for (id, p) in [
+                    ("draw.rect", json!({"x": 180, "y": 120, "w": 300, "h": 200, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.ellipse", json!({"x": 360, "y": 210, "w": 240, "h": 240, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.line", json!({"x0": 140, "y0": 420, "x1": 680, "y1": 140, "stroke": "#d6336c", "stroke_width": 3})),
+                ] {
+                    let mut p = p;
+                    p["object"] = json!(false);
+                    self.run(id, p);
+                }
+                self.run("edit.deselect", json!({}));
+                if which == "rawparts" {
+                    // A marquee over the middle: the parts under it are selected, cut at its edges.
+                    self.run("raw.select_rect", json!({"x0": 300, "y0": 170, "x1": 470, "y1": 330}));
+                } else {
+                    // The top edge bent upwards, the bottom-left corner pulled out, and the
+                    // rectangle's top-right corner being dragged onto the line (the snap ring).
+                    self.run("path.bend_segment", json!({"x": 260, "y": 120, "dx": 0, "dy": -60}));
+                    self.run("raw.move_point", json!({"x": 180, "y": 320, "to_x": 130, "to_y": 350}));
+                    self.s.begin_gesture(tr_noop!("Move Point"));
+                    let r = self.run("raw.move_point", json!({"x": 480, "y": 120, "to_x": 520, "to_y": 214, "snap": 10, "merge": false}));
+                    let f = |k: &str| r.as_ref().and_then(|v| v.get(k)).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    self.raw_points = r.as_ref().and_then(|v| v.get("points")).cloned().unwrap_or(Value::Null);
+                    self.snap_ring = r.as_ref().and_then(|v| v.get("snapped")).filter(|v| v.is_object()).map(|_| anicraft_engine::geom::Vec2::new(f("x"), f("y")));
+                    self.drag = Drag::RawPoint { at: egui::pos2(f("x"), f("y")), off: egui::Vec2::ZERO };
+                }
+                self.tool = Tool::Select;
+            }
+            Some("rawsub") => {
+                // Subselection on raw shapes (ADR 0042) on a new layer: an outlined square, an
+                // oval and a line that cut each other, merged. A click on the oval shows the
+                // points of everything connected; its right-hand point is selected, so its curve
+                // handles show, and one handle is being dragged (both shapes on that edge bend).
+                self.run("layer.new", json!({}));
+                for (id, p) in [
+                    ("draw.rect", json!({"x": 180, "y": 120, "w": 300, "h": 200, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.ellipse", json!({"x": 360, "y": 210, "w": 240, "h": 240, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3})),
+                    ("draw.line", json!({"x0": 140, "y0": 420, "x1": 680, "y1": 140, "stroke": "#d6336c", "stroke_width": 3})),
+                ] {
+                    let mut p = p;
+                    p["object"] = json!(false);
+                    self.run(id, p);
+                }
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Subselect;
+                let v = self.run("raw.subselect", json!({"x": 480, "y": 450, "slop": 4}));
+                self.raw_ends = Vec::new();
+                let anchor = anicraft_engine::geom::Vec2::new(600.0, 330.0);
+                self.raw_anchors = vec![anchor];
+                let pts = self.s.raw_points(&self.s.selection.on(self.s.layer));
+                if let (Some(_), Some(h)) = (v, pts.handles.iter().find(|h| h.anchor.distance(anchor) < 0.5 && h.at.y > anchor.y)) {
+                    self.s.begin_gesture(tr_noop!("Move Handle"));
+                    let r = self.run("raw.move_handle", json!({"id": h.id.0, "cmd": h.cmd, "slot": h.slot, "dx": 40, "dy": 10, "merge": false}));
+                    self.raw_touched = r.as_ref().map(|v| v["changed"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect()).unwrap_or_default();
+                    self.drag = Drag::RawHandle { id: h.id, cmd: h.cmd, slot: h.slot, last: egui::pos2(h.at.x + 40.0, h.at.y + 10.0) };
+                }
             }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
@@ -964,6 +1132,25 @@ impl App {
                 self.last_tool = Tool::Camera;
                 self.camera_preview = which == "cameraview";
             }
+            Some("bones") => {
+                // A three-limb arm on an armature (ADR 0043): bent by IK at frame 1, the elbow
+                // limited, a second pose at frame 24, the elbow's bone selected.
+                self.run("layer.new", json!({"name": "Puppet"}));
+                self.run("draw.rect", json!({"x": 315, "y": 400, "w": 170, "h": 40, "radius": 20, "fill": "#ff9f43", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                let made = self.run("modify.convert_to_symbol", json!({"name": "Limb"}));
+                let (symbol, root) = (id(made.clone(), "symbol"), id(made, "instance"));
+                let arm = id(self.run("library.place", json!({"symbol": symbol, "x": 560, "y": 420})), "element");
+                let hand = id(self.run("library.place", json!({"symbol": symbol, "x": 720, "y": 420})), "element");
+                let b1 = id(self.run("bone.add", json!({"from": root, "to": arm, "head": [480, 420], "tail": [640, 420]})), "bone");
+                let b2 = id(self.run("bone.add", json!({"from": arm, "to": hand, "tail": [790, 420]})), "bone");
+                self.run("bone.set_limits", json!({"bone": b2, "min": -30, "max": 120}));
+                self.run("bone.solve", json!({"bone": b2, "x": 700, "y": 560, "frame": 0}));
+                self.run("bone.pose", json!({"bone": b1, "angle": -35, "frame": 23}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.bone_sel = Some(anicraft_engine::doc::BoneId(b2));
+                self.tool = Tool::Select;
+            }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.
                 self.tl_cell_w = 48.0;
@@ -1047,8 +1234,29 @@ impl App {
                     self.run("motion.add_point", json!({"segment": 2, "t": 0.45}));
                     self.run("motion.convert_point", json!({"anchor": 1, "smooth": false}));
                     self.motion_anchors = vec![1, 2];
-                    self.status_ok(format!("Added a point to the motion path. {} to undo.", platform::shortcut_label("Ctrl+Z")));
+                    self.status_ok(tr!("Added a point to the motion path. {undo} to undo.", undo = self.undo_key()));
                 }
+            }
+            Some(which @ ("motionpins" | "motionpinsspan")) => {
+                // Anchors pinned to frames (ADR 0049): `motionpath`'s curve with its middle point
+                // pinned to frame 17, and the star moved up on frame 35, which pinned a new point
+                // there. Subselection on that point, the span selected, and the Motion Editor on
+                // Y (or the timeline, with its diamonds at the pinned frames).
+                self.open_panel(Some("motionpath"));
+                self.run("motion.pin_point", json!({"anchor": 1, "frame": 16}));
+                self.run("timeline.goto", json!({"frame": 34}));
+                self.run("element.translate", json!({"dx": 20, "dy": -110}));
+                self.s.mark_saved();
+                self.run("timeline.goto", json!({"frame": 24}));
+                self.run("element.select", json!({"ids": []}));
+                self.frame_sel = Some(timeline::FrameSel::cell(self.s.layer, 24));
+                self.tool = Tool::Subselect;
+                self.motion_anchors = vec![2];
+                if which == "motionpins" {
+                    self.bottom = BottomTab::MotionEditor;
+                }
+                self.me_prop = anicraft_engine::doc::Property::Y;
+                self.me_key = None;
             }
             Some("pen") => {
                 // A pen path still being drawn: a corner, a smooth point with handles, a corner.
@@ -1093,10 +1301,17 @@ impl App {
             self.library_sel = LibraryItem::first(&self.s.doc);
             self.decode_sounds();
             self.recovery.restored(&session);
-            let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
-            self.status_ok(format!("Restored “{name}”. It isn't saved yet: Save to keep it."));
+            let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| tr!("Untitled").to_string(), |n| n.to_string_lossy().into_owned());
+            self.status_ok(tr!("Restored “{name}”. It isn't saved yet: Save to keep it.", name = name));
             return Some(v);
         }
+        self.announce(id, &v, selected);
+        Some(v)
+    }
+
+    /// What a command's result means for the window: the status line, and the view state a
+    /// new document resets. `selected` is how many elements were selected before it ran.
+    pub(crate) fn announce(&mut self, id: &str, v: &Value, selected: usize) {
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
@@ -1105,8 +1320,8 @@ impl App {
                 match v.get("report").and_then(Value::as_str) {
                     // An imported file: say what came across and what didn't, and that saving
                     // makes a new .anicraft document.
-                    Some(r) => self.status_ok(format!("{r} Save to keep it as an AniCraft document.")),
-                    None => self.status_ok(if id == "file.open" { "Opened" } else { "New document" }),
+                    Some(r) => self.status_ok(tr!("{report} Save to keep it as an AniCraft document.", report = r)),
+                    None => self.status_ok(if id == "file.open" { tr!("Opened") } else { tr!("New document") }),
                 }
             }
             "file.recover" => {
@@ -1114,20 +1329,21 @@ impl App {
                 self.frame_sel = None;
                 self.library_sel = LibraryItem::first(&self.s.doc);
                 self.recovery.restored(v["recovered"].as_str().unwrap_or(""));
-                let name = v["name"].as_str().unwrap_or("Untitled");
+                let name = v["name"].as_str().unwrap_or(tr!("Untitled"));
                 self.status_ok(if v["original_newer"].as_bool() == Some(true) {
-                    format!("Restored “{name}” as a new document (the file on disk is newer). Save to keep it.")
+                    tr!("Restored “{name}” as a new document (the file on disk is newer). Save to keep it.", name = name)
                 } else {
-                    format!("Restored “{name}”. It isn't saved yet: Save to keep it.")
+                    tr!("Restored “{name}”. It isn't saved yet: Save to keep it.", name = name)
                 });
             }
             "file.discard_recovery" => {
                 self.recovery.discarded(v["discarded"].as_str().unwrap_or(""));
-                self.status_ok("Discarded the autosaved copy");
+                self.status_ok(tr!("Discarded the autosaved copy"));
             }
             "file.save" | "file.save_as" => {
                 // In a browser the file goes to the downloads (ADR 0036).
-                self.status_ok(format!("Saved {}{}", v["saved"].as_str().unwrap_or(""), if platform::WEB { " to your downloads" } else { "" }));
+                let path = v["saved"].as_str().unwrap_or("");
+                self.status_ok(if platform::WEB { tr!("Saved {path} to your downloads", path = path) } else { tr!("Saved {path}", path = path) });
                 if self.close_after_save {
                     self.allow_close = true;
                 }
@@ -1136,58 +1352,70 @@ impl App {
                 let id = anicraft_engine::doc::SoundId(v["sound"].as_u64().unwrap_or(0));
                 self.library_sel = Some(LibraryItem::Sound(id));
                 let name = v["name"].as_str().unwrap_or("");
-                let secs = v["seconds"].as_f64().unwrap_or(0.0);
+                let secs = format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0));
                 self.status_ok(if v.get("layer").is_some() {
-                    format!("{name} ({secs:.2} s) is on a new layer from frame {}. Set its sync in Properties. Ctrl+Z to undo.", self.s.frame + 1)
+                    tr!("{name} ({secs} s) is on a new layer from frame {frame}. Set its sync in Properties. {undo} to undo.", name = name, secs = secs, frame = self.s.frame + 1, undo = self.undo_key())
                 } else {
-                    format!("{name} ({secs:.2} s) is in the Library. Select a keyframe and pick it under Sound in Properties.")
+                    tr!("{name} ({secs} s) is in the Library. Select a keyframe and pick it under Sound in Properties.", name = name, secs = secs)
                 });
             }
-            "file.import_to_library" => self.status_ok("Image added to the Library"),
+            "file.import_to_library" => self.status_ok(tr!("Image added to the Library")),
             "file.export_audio" => {
                 let n = v["sounds"].as_u64().unwrap_or(0);
-                let note = if n == 0 { " No sounds play in that range, so the file is silent." } else { "" };
-                self.status_ok(format!("Exported {} ({:.2} s).{note}", v["written"].as_str().unwrap_or(""), v["seconds"].as_f64().unwrap_or(0.0)));
+                let (path, secs) = (v["written"].as_str().unwrap_or(""), format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0)));
+                self.status_ok(if n == 0 { tr!("Exported {path} ({secs} s). No sounds play in that range, so the file is silent.", path = path, secs = secs) } else { tr!("Exported {path} ({secs} s).", path = path, secs = secs) });
             }
-            "sound.delete" => self.status_ok("Deleted sound — Ctrl+Z to undo"),
+            "sound.delete" => self.status_ok(tr!("Deleted sound — {undo} to undo", undo = self.undo_key())),
             "file.import" => {
                 if let Some(b) = self.s.doc.bitmaps.last().filter(|b| v["bitmap"].as_u64() == Some(b.id.0)) {
                     self.library_sel = Some(LibraryItem::Bitmap(b.id));
                 }
                 let n = v["elements"].as_u64().unwrap_or(0);
                 let report = v["report"].as_str().unwrap_or("");
-                let what = if n == 1 { "element" } else { "elements" };
-                let undo = platform::shortcut_label("Ctrl+Z");
+                let undo = tr!("{undo} to undo.", undo = self.undo_key());
                 // A drawing with clip paths or masks comes in as a folder of layers (ADR 0021).
-                let place = match (v["layers"].as_u64().unwrap_or(1), v["masks"].as_u64().unwrap_or(0)) {
-                    (0 | 1, _) => "on a new layer".to_string(),
-                    (l, 1) => format!("in a new folder of {l} layers with a mask"),
-                    (l, m) => format!("in a new folder of {l} layers with {m} masks"),
+                let placed = match (v["layers"].as_u64().unwrap_or(1), v["masks"].as_u64().unwrap_or(0)) {
+                    (0 | 1, _) => trn!("{n} element on a new layer.", "{n} elements on a new layer.", n),
+                    (l, 1) => trn!("{n} element in a new folder of {layers} layers with a mask.", "{n} elements in a new folder of {layers} layers with a mask.", n, layers = l),
+                    (l, m) => trn!("{n} element in a new folder of {layers} layers with {masks} masks.", "{n} elements in a new folder of {layers} layers with {masks} masks.", n, layers = l, masks = m),
                 };
-                self.status_ok(format!("{n} {what} {place}. {report} {undo} to undo."));
+                // Three sentences: what came in, the importer's report, how to undo.
+                self.status_ok(format!("{placed} {report} {undo}"));
             }
-            "file.export_sprite_sheet" => self.status_ok(format!("Exported {} frames to {} ({}×{} grid) and its frame map {}", v["frames"], v["written"].as_str().unwrap_or(""), v["columns"], v["rows"], v["map"].as_str().unwrap_or(""))),
+            "file.export_sprite_sheet" => self.status_ok(trn!(
+                "Exported {n} frame to {path} ({columns}×{rows} grid) and its frame map {map}",
+                "Exported {n} frames to {path} ({columns}×{rows} grid) and its frame map {map}",
+                v["frames"].as_u64().unwrap_or(0),
+                path = v["written"].as_str().unwrap_or(""),
+                columns = v["columns"],
+                rows = v["rows"],
+                map = v["map"].as_str().unwrap_or("")
+            )),
             "file.export_html" => {
+                // The exporter's report, when there is one, is a sentence of its own after.
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let kb = v["bytes"].as_u64().unwrap_or(0).div_ceil(1024);
-                self.status_ok(format!("Exported {} ({} frames, {kb} KB): open it in a web browser.{report}", v["written"].as_str().unwrap_or(""), v["frames"]));
+                let done = trn!("Exported {path} ({n} frame, {kb} KB): open it in a web browser.", "Exported {path} ({n} frames, {kb} KB): open it in a web browser.", v["frames"].as_u64().unwrap_or(0), path = v["written"].as_str().unwrap_or(""), kb = kb);
+                self.status_ok(format!("{done}{report}"));
             }
             "file.export_lottie" => {
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
-                self.status_ok(format!("Exported {} ({} frames, {} layers).{report}", v["written"].as_str().unwrap_or(""), v["frames"], v["layers"]));
+                let done = trn!("Exported {path} ({n} frame, {layers} layers).", "Exported {path} ({n} frames, {layers} layers).", v["frames"].as_u64().unwrap_or(0), path = v["written"].as_str().unwrap_or(""), layers = v["layers"]);
+                self.status_ok(format!("{done}{report}"));
             }
-            "file.export_png" | "file.export_png_sequence" | "file.export_gif" | "file.export_svg" | "file.export_video" => self.status_ok(format!("Exported {}", v.get("written").or_else(|| v.get("dir")).and_then(Value::as_str).unwrap_or(""))),
-            "edit.undo" => self.status_ok(format!("Undid {}", v["undone"].as_str().unwrap_or(""))),
-            "edit.redo" => self.status_ok(format!("Redid {}", v["redone"].as_str().unwrap_or(""))),
-            "edit.delete" => self.status_ok(format!("Deleted {} {} — Ctrl+Z to undo", selected, if selected == 1 { "element" } else { "elements" })),
-            "layer.delete" => self.status_ok("Deleted layer — Ctrl+Z to undo"),
+            "file.export_png" | "file.export_png_sequence" | "file.export_gif" | "file.export_svg" | "file.export_video" => self.status_ok(tr!("Exported {path}", path = v.get("written").or_else(|| v.get("dir")).and_then(Value::as_str).unwrap_or(""))),
+            // Undo labels are the engine's English, translated when a catalog has them.
+            "edit.undo" => self.status_ok(tr!("Undid {action}", action = crate::i18n::t_dyn(v["undone"].as_str().unwrap_or("")))),
+            "edit.redo" => self.status_ok(tr!("Redid {action}", action = crate::i18n::t_dyn(v["redone"].as_str().unwrap_or("")))),
+            "edit.delete" => self.status_ok(trn!("Deleted {n} element — {undo} to undo", "Deleted {n} elements — {undo} to undo", selected, undo = self.undo_key())),
+            "layer.delete" => self.status_ok(tr!("Deleted layer — {undo} to undo", undo = self.undo_key())),
             "draw.erase_all" => {
                 let n = v["erased"].as_u64().unwrap_or(0);
-                self.status_ok(format!("Erased everything at frame {} ({n} {}). {} to undo.", self.s.frame + 1, if n == 1 { "element" } else { "elements" }, platform::shortcut_label("Ctrl+Z")));
+                self.status_ok(trn!("Erased everything at frame {frame} ({n} element). {undo} to undo.", "Erased everything at frame {frame} ({n} elements). {undo} to undo.", n, frame = self.s.frame + 1, undo = self.undo_key()));
             }
             "scene.delete" => {
                 self.frame_sel = None;
-                self.status_ok("Deleted scene — Ctrl+Z to undo");
+                self.status_ok(tr!("Deleted scene — {undo} to undo", undo = self.undo_key()));
             }
             "scene.new" | "scene.duplicate" | "scene.select" | "scene.next" | "scene.prev" => {
                 // Another scene's timeline: frame selections and scroll belong to the old one.
@@ -1195,29 +1423,28 @@ impl App {
                 self.tl_scroll = 0.0;
                 self.playing = false;
                 let (n, of) = (v["scene"].as_u64().unwrap_or(0) + 1, v["scenes"].as_u64().unwrap_or(1));
-                self.status_ok(format!("{} (scene {n} of {of})", v["name"].as_str().unwrap_or("")));
+                // The scene's name is document text, as written.
+                self.status_ok(tr!("{name} (scene {number} of {count})", name = v["name"].as_str().unwrap_or(""), number = n, count = of));
             }
             "timeline.clear_keyframe" => {
                 let n = v["cleared"].as_u64().unwrap_or(1);
-                self.status_ok(format!("Cleared {} — Ctrl+Z to undo", if n == 1 { "keyframe".to_string() } else { format!("{n} keyframes") }));
+                self.status_ok(if n == 1 { tr!("Cleared keyframe — {undo} to undo", undo = self.undo_key()).to_string() } else { trn!("Cleared {n} keyframe — {undo} to undo", "Cleared {n} keyframes — {undo} to undo", n, undo = self.undo_key()) });
             }
             "timeline.copy_frames" | "timeline.cut_frames" | "timeline.paste_frames" => {
                 let n = v["copied"].as_u64().or_else(|| v["cut"].as_u64()).or_else(|| v["pasted"].as_u64()).unwrap_or(0);
-                let what = format!("{n} {}", if n == 1 { "frame" } else { "frames" });
                 self.status_ok(match id {
-                    "timeline.copy_frames" => format!("Copied {what}"),
-                    "timeline.cut_frames" => format!("Cut {what} — Ctrl+Z to undo"),
-                    _ => format!("Pasted {what} — Ctrl+Z to undo"),
+                    "timeline.copy_frames" => trn!("Copied {n} frame", "Copied {n} frames", n),
+                    "timeline.cut_frames" => trn!("Cut {n} frame — {undo} to undo", "Cut {n} frames — {undo} to undo", n, undo = self.undo_key()),
+                    _ => trn!("Pasted {n} frame — {undo} to undo", "Pasted {n} frames — {undo} to undo", n, undo = self.undo_key()),
                 });
             }
-            "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, &v),
+            "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, v),
             "timeline.remove_frame" => {
                 let n = v["removed"].as_u64().unwrap_or(1);
-                self.status_ok(format!("Removed {} — Ctrl+Z to undo", if n == 1 { "frame".to_string() } else { format!("{n} frames") }));
+                self.status_ok(if n == 1 { tr!("Removed frame — {undo} to undo", undo = self.undo_key()).to_string() } else { trn!("Removed {n} frame — {undo} to undo", "Removed {n} frames — {undo} to undo", n, undo = self.undo_key()) });
             }
             _ => {}
         }
-        Some(v)
     }
 
     /// Invokes a command from a menu, shortcut, palette or context menu, asking for a path or
@@ -1232,8 +1459,24 @@ impl App {
             other => other,
         };
         if let Some(why) = platform::unavailable(id) {
-            self.status_err(why);
+            self.status_err(crate::i18n::t(why));
             return;
+        }
+        // Edit Multiple Frames (ADR 0047) selects on every keyframe between the markers.
+        if crate::onion::editing(self) {
+            match id {
+                "edit.select_all" => return crate::onion::select_all(self),
+                "edit.deselect" => {
+                    self.onion_ui.sel.clear();
+                    return;
+                }
+                // This slice moves artwork across keyframes; other edits stay on one frame.
+                "edit.delete" | "edit.cut" | "edit.copy" | "edit.duplicate" if !self.onion_ui.sel.is_empty() => {
+                    self.status_err(tr!("Edit Multiple Frames moves artwork on several keyframes; to delete, copy or duplicate it, turn Edit Multiple Frames off and work frame by frame."));
+                    return;
+                }
+                _ => {}
+            }
         }
         if id == "timeline.paste_frames"
             && let Some(p) = timeline::paste_params(self)
@@ -1247,7 +1490,7 @@ impl App {
             }
             self.recovery.show = !self.recovery.found.is_empty();
             if !self.recovery.show {
-                self.status_ok(if self.recovery.active() { "No autosaved work to recover" } else { "Autosave is off on this system, so there is nothing to recover" });
+                self.status_ok(if self.recovery.active() { tr!("No autosaved work to recover") } else { tr!("Autosave is off on this system, so there is nothing to recover") });
             }
             return;
         }
@@ -1273,24 +1516,24 @@ impl App {
             return;
         }
         let prompt = match id {
-            "file.open" => Some(("Open document", "path", "animation.anicraft".to_string())),
-            "file.save" if self.s.path.is_none() => Some(("Save document as", "path", "animation.anicraft".to_string())),
-            "file.save_as" => Some(("Save document as", "path", self.s.path.as_ref().map_or_else(|| "animation.anicraft".to_string(), |p| p.display().to_string()))),
-            "layer.rename" => Some(("Rename layer", "name", self.s.active_layer().map_or_else(String::new, |l| l.name.clone()))),
-            "scene.rename" => Some(("Rename scene", "name", self.s.doc.scenes.get(self.s.scene).map_or_else(String::new, |s| s.name.clone()))),
-            "file.export_png" => Some(("Export frame as PNG", "path", format!("frame_{:04}.png", self.s.frame + 1))),
-            "file.export_png_sequence" => Some(("Export PNG sequence to folder", "dir", "frames".to_string())),
-            "file.export_gif" => Some(("Export animated GIF", "path", "animation.gif".to_string())),
-            "file.export_svg" => Some(("Export frame as SVG", "path", format!("frame_{:04}.svg", self.s.frame + 1))),
-            "file.export_sprite_sheet" => Some(("Export sprite sheet (PNG + JSON frame map)", "path", "sprites.png".to_string())),
-            "file.export_video" => Some(("Export video (.webm or .mp4, made with your ffmpeg)", "path", "animation.webm".to_string())),
-            "file.export_lottie" => Some(("Export Lottie animation (JSON, for web and apps)", "path", "animation.json".to_string())),
-            "file.export_html" => Some(("Export HTML canvas (one web page)", "path", "movie.html".to_string())),
-            "file.export_audio" => Some(("Export audio (the movie's soundtrack as a WAV)", "path", "soundtrack.wav".to_string())),
-            "file.import_to_library" => Some(("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)", "path", "sound.wav".to_string())),
-            "file.import" => Some(("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)", "path", "drawing.svg".to_string())),
-            "plugin.install" => Some(("Install plug-in (.wasm file)", "path", "plugin.wasm".to_string())),
-            "modify.convert_to_symbol" => Some(("Convert to symbol — name", "name", format!("Symbol {}", self.s.doc.library.len() + 1))),
+            "file.open" => Some((tr_noop!("Open document"), "path", "animation.anicraft".to_string())),
+            "file.save" if self.s.path.is_none() => Some((tr_noop!("Save document as"), "path", "animation.anicraft".to_string())),
+            "file.save_as" => Some((tr_noop!("Save document as"), "path", self.s.path.as_ref().map_or_else(|| "animation.anicraft".to_string(), |p| p.display().to_string()))),
+            "layer.rename" => Some((tr_noop!("Rename layer"), "name", self.s.active_layer().map_or_else(String::new, |l| l.name.clone()))),
+            "scene.rename" => Some((tr_noop!("Rename scene"), "name", self.s.doc.scenes.get(self.s.scene).map_or_else(String::new, |s| s.name.clone()))),
+            "file.export_png" => Some((tr_noop!("Export frame as PNG"), "path", format!("frame_{:04}.png", self.s.frame + 1))),
+            "file.export_png_sequence" => Some((tr_noop!("Export PNG sequence to folder"), "dir", "frames".to_string())),
+            "file.export_gif" => Some((tr_noop!("Export animated GIF"), "path", "animation.gif".to_string())),
+            "file.export_svg" => Some((tr_noop!("Export frame as SVG"), "path", format!("frame_{:04}.svg", self.s.frame + 1))),
+            "file.export_sprite_sheet" => Some((tr_noop!("Export sprite sheet (PNG + JSON frame map)"), "path", "sprites.png".to_string())),
+            "file.export_video" => Some((tr_noop!("Export video (.webm or .mp4, made with your ffmpeg)"), "path", "animation.webm".to_string())),
+            "file.export_lottie" => Some((tr_noop!("Export Lottie animation (JSON, for web and apps)"), "path", "animation.json".to_string())),
+            "file.export_html" => Some((tr_noop!("Export HTML canvas (one web page)"), "path", "movie.html".to_string())),
+            "file.export_audio" => Some((tr_noop!("Export audio (the movie's soundtrack as a WAV)"), "path", "soundtrack.wav".to_string())),
+            "file.import_to_library" => Some((tr_noop!("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)"), "path", "sound.wav".to_string())),
+            "file.import" => Some((tr_noop!("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)"), "path", "drawing.svg".to_string())),
+            "plugin.install" => Some((tr_noop!("Install plug-in (.wasm file)"), "path", "plugin.wasm".to_string())),
+            "modify.convert_to_symbol" => Some((tr_noop!("Convert to symbol — name"), "name", format!("Symbol {}", self.s.doc.library.len() + 1))), // i18n-exempt: a new symbol's default name is document text
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
@@ -1306,7 +1549,7 @@ impl App {
                 // The platform's own dialog (it blocks, as native dialogs do). Cancel = no-op.
                 self.playing = false;
                 #[cfg(not(target_arch = "wasm32"))]
-                match platform::file_dialog(id, title, &text) {
+                match platform::file_dialog(id, crate::i18n::t(title), &text) {
                     Some(path) => self.request(id, json!({ key: path.display().to_string() })),
                     None => self.close_after_save = false,
                 }
@@ -1365,7 +1608,7 @@ impl App {
         }
         // Said once: the device could not be opened, so playback is silent.
         if let Some(e) = self.sound.error.take() {
-            self.status_err(format!("Playing without sound: {e}"));
+            self.status_err(tr!("Playing without sound: {e}", e = e));
         }
     }
 
@@ -1458,9 +1701,10 @@ impl App {
                     _ => {}
                 }
                 let next = self.keymap.primary("view.next_panel").map(platform::shortcut_label).unwrap_or_default();
-                self.status_ok(format!("{}{}", region.label(), if next.is_empty() { String::new() } else { format!(" · {next} for the next panel") }));
+                let panel = crate::i18n::t(region.label());
+                self.status_ok(if next.is_empty() { panel.to_string() } else { tr!("{panel} · {next} for the next panel", panel = panel, next = next) });
             }
-            None => self.status_err("No panel to move to yet"),
+            None => self.status_err(tr!("No panel to move to yet")),
         }
     }
 
@@ -1515,6 +1759,7 @@ impl App {
             crate::motion_path::consume_keys(self, ctx);
             pathtools::consume_keys(self, ctx);
             crate::widthtool::consume_keys(self, ctx);
+            crate::bone_tool::consume_keys(self, ctx);
         }
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
@@ -1549,10 +1794,10 @@ impl App {
             match id {
                 // View-state keys (Animate's), handled here rather than in the engine.
                 "view.fit" => self.view.fit = true,
-                "view.onion" => self.onion = !self.onion,
+                "view.onion" => crate::onion::toggle_ghosts(self),
                 "view.align_to_stage" => {
                     self.align_to_stage = !self.align_to_stage;
-                    self.status_ok(if self.align_to_stage { "Align: to stage" } else { "Align: to the selection" });
+                    self.status_ok(if self.align_to_stage { tr!("Align: to stage") } else { tr!("Align: to the selection") });
                 }
                 "view.select_all_frames" => {
                     let layers = &self.s.doc.timeline(self.s.scene).layers;
@@ -1576,11 +1821,13 @@ impl App {
         if play {
             self.toggle_play();
         }
-        if nudge != egui::Vec2::ZERO && !self.s.selection.is_empty() {
+        if nudge != egui::Vec2::ZERO && crate::onion::editing(self) {
+            crate::onion::nudge(self, anicraft_engine::geom::Vec2::new(nudge.x, nudge.y));
+        } else if nudge != egui::Vec2::ZERO && !self.s.selection.is_empty() {
             // One undo step: the move, and raw shapes merging where they land (ADR 0031).
             let own = !self.s.in_gesture();
             if own {
-                self.s.begin_gesture("Move");
+                self.s.begin_gesture(tr_noop!("Move")); // i18n-exempt: an undo label (the engine's English, translated where shown)
             }
             self.run("element.translate", json!({"dx": nudge.x, "dy": nudge.y}));
             self.drop_raw();
@@ -1628,8 +1875,8 @@ impl App {
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
-        let name = self.s.path.as_ref().and_then(|p| p.file_name()).map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
-        let title = format!("AniCraft — {name}{}", if self.s.is_dirty() { " •" } else { "" });
+        let name = self.s.path.as_ref().and_then(|p| p.file_name()).map_or_else(|| tr!("Untitled").to_string(), |n| n.to_string_lossy().into_owned());
+        let title = format!("AniCraft — {name}{}", if self.s.is_dirty() { " •" } else { "" }); // i18n-exempt: the product name and the file's
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -1640,18 +1887,19 @@ impl App {
         let Some(p) = &mut self.prompt else { return };
         let mut submit = false;
         let mut cancel = false;
-        egui::Window::new(p.title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| {
+        let title = crate::i18n::t(p.title);
+        egui::Window::new(title).id(egui::Id::new(("prompt", p.title))).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| {
             ui.set_min_width(360.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY)).named(p.title);
+            let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY)).named(title);
             r.request_focus();
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 submit = true;
             }
             ui.horizontal(|ui| {
-                if ui.button("OK").clicked() {
+                if ui.button(tr!("OK")).clicked() {
                     submit = true;
                 }
-                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                if ui.button(tr!("Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
                     cancel = true;
                 }
             });
@@ -1669,16 +1917,16 @@ impl App {
 
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
-        let shown = egui::Window::new("About AniCraft").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        let shown = egui::Window::new(tr!("About AniCraft")).id(egui::Id::new("about_window")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.add(egui::Image::new((app_mark(ctx).id(), egui::vec2(64.0, 64.0))));
             ui.heading("AniCraft");
-            ui.label(format!("Version {} · {RELEASE_STAGE}", env!("CARGO_PKG_VERSION")));
-            ui.label("Open-source 2D vector animation studio, written in Rust.");
-            ui.label(format!("{} engine commands — all available headless via anicraft-cli.", commands().len()));
-            ui.colored_label(T.text_dim, "MIT OR Apache-2.0");
-            ui.label(theme::text(theme::Type::Caption, format!("Typefaces: {}", theme::font_summary())));
+            ui.label(tr!("Version {version} · {stage}", version = env!("CARGO_PKG_VERSION"), stage = crate::i18n::t(RELEASE_STAGE)));
+            ui.label(tr!("Open-source 2D vector animation studio, written in Rust."));
+            ui.label(trn!("{n} engine command — all available headless via anicraft-cli.", "{n} engine commands — all available headless via anicraft-cli.", commands().len()));
+            ui.colored_label(T.text_dim, "MIT OR Apache-2.0"); // i18n-exempt: licence identifiers
+            ui.label(theme::text(theme::Type::Caption, tr!("Typefaces: {fonts}", fonts = theme::font_summary())));
         });
-        crate::a11y::name_title_bar(&shown, "About AniCraft");
+        crate::a11y::name_title_bar(&shown, tr!("About AniCraft"));
         self.show_about = open;
     }
 
@@ -1687,44 +1935,44 @@ impl App {
         let mut open = self.show_files;
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let entries: [(&str, PathBuf); 12] = [
-            ("Project folder", root.clone()),
-            ("Requirements & technology", root.join("docs").join("requirements.md")),
-            ("Architecture philosophy", root.join("docs").join("architecture.md")),
-            ("Roadmap", root.join("docs").join("roadmap.md")),
-            ("Performance & budgets", root.join("docs").join("performance.md")),
-            ("Decision records (ADRs)", root.join("docs").join("adr")),
-            ("Legal compliance", root.join("docs").join("legal").join("compliance.md")),
+            (tr!("Project folder"), root.clone()),
+            (tr!("Requirements & technology"), root.join("docs").join("requirements.md")),
+            (tr!("Architecture philosophy"), root.join("docs").join("architecture.md")),
+            (tr!("Roadmap"), root.join("docs").join("roadmap.md")),
+            (tr!("Performance & budgets"), root.join("docs").join("performance.md")),
+            (tr!("Decision records (ADRs)"), root.join("docs").join("adr")),
+            (tr!("Legal compliance"), root.join("docs").join("legal").join("compliance.md")),
             ("README", root.join("README.md")),
-            ("Agent / contributor guide", root.join("AGENTS.md")),
-            ("Engine crates (source)", root.join("crates")),
-            ("Desktop app (source)", root.join("src")),
-            ("Screenshots", root.join("shots")),
+            (tr!("Agent / contributor guide"), root.join("AGENTS.md")),
+            (tr!("Engine crates (source)"), root.join("crates")),
+            (tr!("Desktop app (source)"), root.join("src")),
+            (tr!("Screenshots"), root.join("shots")),
         ];
         let mut opened: Option<Result<(), String>> = None;
-        let shown = egui::Window::new("Project Files").open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| {
-            ui.label(theme::text(theme::Type::Label, "Where AniCraft's documents and files are on this computer"));
+        let shown = egui::Window::new(tr!("Project Files")).id(egui::Id::new("files_window")).open(&mut open).collapsible(false).resizable(false).default_width(620.0).show(ctx, |ui| {
+            ui.label(theme::text(theme::Type::Label, tr!("Where AniCraft's documents and files are on this computer")));
             ui.add_space(4.0);
             egui::Grid::new("files").num_columns(3).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
                 for (label, path) in &entries {
                     ui.label(theme::text(theme::Type::Body, *label).strong());
                     ui.label(theme::text(theme::Type::Path, path.display().to_string()).color(if path.exists() { T.text } else { T.text_faint }));
-                    if ui.add_enabled(path.exists(), egui::Button::new("Open")).named(&format!("Open {label}")).clicked() {
+                    if ui.add_enabled(path.exists(), egui::Button::new(tr!("Open"))).named(&tr!("Open {label}", label = label)).clicked() {
                         opened = Some(open_in_system(path));
                     }
                     ui.end_row();
                 }
-                let doc = self.s.path.as_ref().map_or_else(|| "not saved yet (File › Save)".to_string(), |p| p.display().to_string());
-                ui.label(theme::text(theme::Type::Body, "Current document").strong());
+                let doc = self.s.path.as_ref().map_or_else(|| tr!("not saved yet (File › Save)").to_string(), |p| p.display().to_string());
+                ui.label(theme::text(theme::Type::Body, tr!("Current document")).strong());
                 ui.label(theme::text(theme::Type::Path, doc));
                 ui.end_row();
             });
             ui.add_space(4.0);
-            ui.label(theme::text(theme::Type::Caption, "Saved documents and exports go where you type in the save box; a plain name lands in the folder AniCraft was started from."));
+            ui.label(theme::text(theme::Type::Caption, tr!("Saved documents and exports go where you type in the save box; a plain name lands in the folder AniCraft was started from.")));
         });
-        crate::a11y::name_title_bar(&shown, "Project Files");
+        crate::a11y::name_title_bar(&shown, tr!("Project Files"));
         match opened {
             Some(Err(e)) => self.status_err(e),
-            Some(Ok(())) => self.status_ok("Opened in your system's file viewer"),
+            Some(Ok(())) => self.status_ok(tr!("Opened in your system's file viewer")),
             None => {}
         }
         self.show_files = open;
@@ -1749,6 +1997,10 @@ fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
 
 /// Opens a file or folder with the operating system's default handler.
 pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
+    // Tests click every control (`i18n::tests`): they never start another program.
+    if cfg!(test) {
+        return Ok(());
+    }
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new("explorer");
         c.arg(path);
@@ -1762,7 +2014,7 @@ pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
         c.arg(path);
         c
     };
-    cmd.spawn().map(|_| ()).map_err(|e| format!("could not open {}: {e}", path.display()))
+    cmd.spawn().map(|_| ()).map_err(|e| tr!("could not open {path}: {e}", path = path.display(), e = e))
 }
 
 impl eframe::App for App {
@@ -1800,10 +2052,13 @@ impl App {
         }
         if self.tool != Tool::Subselect {
             self.points.clear();
+            self.raw_anchors.clear();
+            self.raw_ends.clear();
         }
         pathtools::upkeep(self);
         crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
+        crate::bone_tool::upkeep(self);
         self.tick_playback(&ctx);
         self.scrub_sound();
         self.update_title(&ctx);
@@ -1826,8 +2081,8 @@ impl App {
         egui::Panel::right("properties").resizable(true).default_size(dock_w).max_size((room.x * 0.5).max(220.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
         egui::Panel::bottom("timeline").resizable(true).default_size(timeline_h).max_size((room.y * 0.6).max(200.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
-        crate::a11y::name_splitter(&ctx, "properties", "Resize the right-hand panels");
-        crate::a11y::name_splitter(&ctx, "timeline", "Resize the timeline");
+        crate::a11y::name_splitter(&ctx, "properties", tr!("Resize the right-hand panels"));
+        crate::a11y::name_splitter(&ctx, "timeline", tr!("Resize the timeline"));
 
         self.prompt_window(&ctx);
         self.about_window(&ctx);

@@ -35,10 +35,10 @@ pub fn load_at_start(app: &mut App) {
         Ok(v) => {
             let failed: Vec<String> = v["failed"].as_array().into_iter().flatten().map(|f| format!("{} ({})", f["file"].as_str().unwrap_or(""), f["error"].as_str().unwrap_or(""))).collect();
             if !failed.is_empty() {
-                app.status_err(format!("Some plug-ins could not be loaded: {}", failed.join("; ")));
+                app.status_err(tr!("Some plug-ins could not be loaded: {list}", list = failed.join("; ")));
             }
         }
-        Err(e) => app.status_err(format!("Plug-ins: {e}")),
+        Err(e) => app.status_err(tr!("Plug-ins: {error}", error = e)),
     }
 }
 
@@ -49,9 +49,9 @@ fn plugin(app: &App, id: &str) -> Option<Arc<Plugin>> {
 /// Why `p` can't run now (it works on the selection and nothing is selected).
 fn blocked(s: &Session, p: &Plugin) -> Option<&'static str> {
     if p.manifest().kind == anicraft_engine::plugins::Kind::FrameScript {
-        return Some("A frame script: it runs while the movie plays. Pick it for a keyframe in the Actions panel (F9)");
+        return Some(tr!("A frame script: it runs while the movie plays. Pick it for a keyframe in the Actions panel (F9)"));
     }
-    (p.manifest().selection == SelectionNeed::Required && s.selection.is_empty()).then_some("Select some artwork first")
+    (p.manifest().selection == SelectionNeed::Required && s.selection.is_empty()).then(|| tr!("Select some artwork first"))
 }
 
 /// Plug-ins that run as commands (frame scripts run from keyframes instead).
@@ -69,11 +69,11 @@ pub fn label(p: &Plugin) -> String {
 /// otherwise through its dialog.
 pub fn run_or_ask(app: &mut App, id: &str) {
     let Some(p) = plugin(app, id) else {
-        app.status_err(format!("The plug-in “{id}” is no longer installed"));
+        app.status_err(tr!("The plug-in “{id}” is no longer installed", id = id));
         return;
     };
     if let Some(why) = blocked(&app.s, &p) {
-        app.status_err(format!("{}: {why}", p.manifest().name));
+        app.status_err(tr!("{plugin}: {reason}", plugin = p.manifest().name, reason = why));
         return;
     }
     if p.manifest().params.is_empty() {
@@ -114,11 +114,11 @@ fn preview(app: &mut App) {
 
 /// The Commands menu: the installed plug-ins, then the plug-in commands from the registry.
 pub fn menu(app: &mut App, ui: &mut egui::Ui, cmds: &[CommandSpec], item: impl Fn(&mut App, &mut egui::Ui, &CommandSpec)) {
-    ui.menu_button("Plug-ins", |ui| {
+    ui.menu_button(tr!("Plug-ins"), |ui| {
         ui.set_min_width(220.0);
         let list: Vec<Arc<Plugin>> = app.s.plugins.list().filter(|p| is_command(p)).cloned().collect();
         if list.is_empty() {
-            ui.label(text(Type::Caption, "No plug-ins installed yet"));
+            ui.label(text(Type::Caption, tr!("No plug-ins installed yet")));
         }
         for p in list {
             let why = blocked(&app.s, &p);
@@ -211,7 +211,7 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
         ui.label(text(Type::Title, m.name.clone()));
         let by = [m.author.as_str(), m.version.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · ");
         if !by.is_empty() {
-            ui.label(text(Type::Caption, format!("Plug-in · {by}")));
+            ui.label(text(Type::Caption, tr!("Plug-in · {by}", by = by)));
         }
         if !m.description.is_empty() {
             ui.add_space(2.0);
@@ -223,7 +223,7 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
             form_row(ui, FORM_LABEL_DOCK + 40.0, &spec.label, |ui| changed |= control(ui, &spec.label, &spec.kind, v));
         }
         ui.add_space(6.0);
-        if theme::checkbox(ui, &mut d.preview, "Preview on the stage").changed() {
+        if theme::checkbox(ui, &mut d.preview, tr!("Preview on the stage")).changed() {
             changed = true;
         }
         if let Some(e) = &d.error {
@@ -232,18 +232,18 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(96.0, TARGET + 4.0))).clicked() {
+            if ui.add(egui::Button::new(tr!("Cancel")).min_size(egui::vec2(96.0, TARGET + 4.0))).clicked() {
                 cancel = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let run = egui::Button::new(text(Type::Body, "OK").strong()).fill(T.accent_dim).min_size(egui::vec2(96.0, TARGET + 4.0));
+                let run = egui::Button::new(text(Type::Body, tr!("OK")).strong()).fill(T.accent_dim).min_size(egui::vec2(96.0, TARGET + 4.0));
                 if ui.add(run).clicked() {
                     ok = true;
                 }
             });
         });
         ui.add_space(2.0);
-        ui.label(text(Type::Caption, "Enter applies · Esc cancels · one undo step"));
+        ui.label(text(Type::Caption, tr!("Enter applies · Esc cancels · one undo step")));
     });
     let (esc, enter) = ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::Escape), i.consume_key(egui::Modifiers::NONE, Key::Enter)));
     cancel |= esc;
@@ -255,7 +255,7 @@ fn dialog(app: &mut App, ctx: &egui::Context) {
         app.s.revert_gesture();
         app.s.end_gesture();
         app.plugin_dialog = None;
-        app.status_ok("Cancelled");
+        app.status_ok(tr!("Cancelled"));
     } else if ok {
         finish(app);
     }
@@ -275,17 +275,18 @@ fn finish(app: &mut App) {
     let name = app.s.plugins.get(&d.id).map_or_else(String::new, |p| p.manifest().name.clone());
     app.s.end_gesture();
     app.plugin_dialog = None;
-    app.status_ok(format!("{name} — Ctrl+Z to undo"));
+    app.status_ok(tr!("{name} — {undo} to undo", name = name, undo = app.undo_key()));
 }
 
 /// Commands › Manage Plug-ins: what's installed, where it came from, and the folder.
 fn manager(app: &mut App, ctx: &egui::Context) {
     let mut open = app.show_plugins;
     let mut action: Option<(&'static str, String)> = None;
-    let shown = egui::Window::new("Plug-ins").open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
+    let title = tr!("Plug-ins");
+    let shown = egui::Window::new(title).id(egui::Id::new("plugins_window")).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
         let list: Vec<Arc<Plugin>> = app.s.plugins.list().cloned().collect();
         if list.is_empty() {
-            ui.label(text(Type::Label, "No plug-ins installed yet. Plug-ins are WebAssembly (.wasm) files that add commands, such as generators and selection effects."));
+            ui.label(text(Type::Label, tr!("No plug-ins installed yet. Plug-ins are WebAssembly (.wasm) files that add commands, such as generators and selection effects.")));
         }
         for p in &list {
             let m = p.manifest();
@@ -295,11 +296,11 @@ fn manager(app: &mut App, ctx: &egui::Context) {
                     ui.label(text(Type::Data, m.version.clone()));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Remove…").clicked() {
+                    if ui.button(tr!("Remove…")).clicked() {
                         action = Some(("plugin.remove", p.id().to_string()));
                     }
                     let why = blocked(&app.s, p);
-                    let r = ui.add_enabled(why.is_none(), egui::Button::new(if m.params.is_empty() { "Run" } else { "Run…" }));
+                    let r = ui.add_enabled(why.is_none(), egui::Button::new(if m.params.is_empty() { tr!("Run") } else { tr!("Run…") }));
                     if let Some(w) = why {
                         r.on_disabled_hover_text(w);
                     } else if r.clicked() {
@@ -310,8 +311,10 @@ fn manager(app: &mut App, ctx: &egui::Context) {
             if !m.description.is_empty() {
                 ui.label(text(Type::Label, m.description.clone()));
             }
-            let by = if m.author.is_empty() { String::new() } else { format!("by {} · ", m.author) };
-            ui.label(text(Type::Caption, format!("{by}{} · {} KB", m.id, Plugin::size(p).div_ceil(1024))));
+            let kb = Plugin::size(p).div_ceil(1024);
+            // i18n-exempt: an id and a size (data)
+            let line = if m.author.is_empty() { format!("{} · {kb} KB", m.id) } else { tr!("by {author} · {id} · {size} KB", author = m.author, id = m.id, size = kb) };
+            ui.label(text(Type::Caption, line));
             if let Some(src) = p.source() {
                 ui.label(text(Type::Path, src.display().to_string()).color(T.text_faint));
             }
@@ -319,26 +322,26 @@ fn manager(app: &mut App, ctx: &egui::Context) {
         }
         ui.add_space(4.0);
         let folder = app.s.plugins.folder().map(|f| f.to_path_buf());
-        form_row(ui, 96.0, "Folder", |ui| {
-            ui.label(text(Type::Path, folder.as_ref().map_or_else(|| "none".to_string(), |f| f.display().to_string())));
+        form_row(ui, 96.0, tr!("Folder"), |ui| {
+            ui.label(text(Type::Path, folder.as_ref().map_or_else(|| tr!("none").to_string(), |f| f.display().to_string())));
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("Install Plug-in…").clicked() {
+            if ui.button(tr!("Install Plug-in…")).clicked() {
                 action = Some(("plugin.install", String::new()));
             }
-            if ui.add_enabled(folder.is_some(), egui::Button::new("Reload")).clicked() {
+            if ui.add_enabled(folder.is_some(), egui::Button::new(tr!("Reload"))).clicked() {
                 action = Some(("plugin.reload", String::new()));
             }
             if let Some(f) = &folder
-                && ui.add_enabled(f.exists(), egui::Button::new("Show Folder")).clicked()
+                && ui.add_enabled(f.exists(), egui::Button::new(tr!("Show Folder"))).clicked()
             {
                 action = Some(("show", f.display().to_string()));
             }
         });
-        ui.label(text(Type::Caption, "Plug-ins run sandboxed: they can change the open document through AniCraft's commands, never your files."));
+        ui.label(text(Type::Caption, tr!("Plug-ins run sandboxed: they can change the open document through AniCraft's commands, never your files.")));
     });
-    a11y::name_title_bar(&shown, "Plug-ins");
+    a11y::name_title_bar(&shown, title);
     app.show_plugins = open;
     match action {
         Some(("plugin.run", id)) => run_or_ask(app, &id),
@@ -346,7 +349,7 @@ fn manager(app: &mut App, ctx: &egui::Context) {
         Some(("plugin.install", _)) => app.invoke("plugin.install"),
         Some(("plugin.reload", _)) => app.invoke("plugin.reload"),
         Some(("show", f)) => match crate::app::open_in_system(std::path::Path::new(&f)) {
-            Ok(()) => app.status_ok("Opened the plug-ins folder"),
+            Ok(()) => app.status_ok(tr!("Opened the plug-ins folder")),
             Err(e) => app.status_err(e),
         },
         _ => {}
@@ -362,20 +365,35 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 pub fn status(app: &mut App, id: &str, v: &Value) {
     match id {
         "plugin.run" => {
-            let last = v["log"].as_array().and_then(|l| l.last()).and_then(Value::as_str).map(|m| format!(": {m}")).unwrap_or_default();
-            app.status_ok(format!("{}{last} — Ctrl+Z to undo", v["name"].as_str().unwrap_or("Plug-in")));
+            // The plug-in's name and its last log line are its own text, shown as written.
+            let name = v["name"].as_str().unwrap_or(tr!("Plug-in"));
+            let msg = match v["log"].as_array().and_then(|l| l.last()).and_then(Value::as_str) {
+                Some(m) => tr!("{name}: {message} — {undo} to undo", name = name, message = m, undo = app.undo_key()),
+                None => tr!("{name} — {undo} to undo", name = name, undo = app.undo_key()),
+            };
+            app.status_ok(msg);
         }
         "plugin.install" => {
             let i = &v["installed"];
-            let verb = if v["replaced"].is_null() { "Installed" } else { "Updated" };
-            app.status_ok(format!("{verb} {} {} — find it in Commands › Plug-ins", i["name"].as_str().unwrap_or(""), i["version"].as_str().unwrap_or("")));
+            let (name, version) = (i["name"].as_str().unwrap_or(""), i["version"].as_str().unwrap_or(""));
+            if v["replaced"].is_null() {
+                app.status_ok(tr!("Installed {name} {version} — find it in Commands › Plug-ins", name = name, version = version));
+            } else {
+                app.status_ok(tr!("Updated {name} {version} — find it in Commands › Plug-ins", name = name, version = version));
+            }
         }
-        "plugin.remove" => app.status_ok(format!("Removed {}", v["name"].as_str().unwrap_or("the plug-in"))),
+        "plugin.remove" => match v["name"].as_str() {
+            Some(name) => app.status_ok(tr!("Removed {name}", name = name)),
+            None => app.status_ok(tr!("Removed the plug-in")),
+        },
         "plugin.reload" => {
             let n = v["installed"].as_u64().unwrap_or(0);
             let failed = v["failed"].as_array().map_or(0, Vec::len);
-            let msg = format!("{n} plug-in{} installed", if n == 1 { "" } else { "s" });
-            if failed > 0 { app.status_err(format!("{msg}; {failed} could not be loaded")) } else { app.status_ok(msg) }
+            if failed > 0 {
+                app.status_err(trn!("{n} plug-in installed; {failed} could not be loaded", "{n} plug-ins installed; {failed} could not be loaded", n, failed = failed));
+            } else {
+                app.status_ok(trn!("{n} plug-in installed", "{n} plug-ins installed", n));
+            }
         }
         _ => {}
     }

@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{profile: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..], id? (default: the selected shapes)}",
             true,
-            set_profile as crate::RunFn,
+            (|s, p| s.each_layer(false, |s| set_profile(s, p))) as crate::RunFn,
         ),
         c(
             "stroke.set_width_point",
@@ -41,12 +41,12 @@ pub fn specs() -> Vec<CommandSpec> {
 /// Flattening tolerance for finding places on a stroke, in stage units.
 const FIND_TOL: f32 = 0.2;
 
-fn id_param(p: &Value) -> Result<Option<ElementId>> {
+pub(crate) fn id_param(p: &Value) -> Result<Option<ElementId>> {
     Ok(opt_u64(p, "id")?.map(ElementId))
 }
 
 /// The shape element `id` as it shows at the playhead on the active layer.
-fn visible_shape(s: &Session, id: ElementId) -> Result<std::sync::Arc<Element>> {
+pub(crate) fn visible_shape(s: &Session, id: ElementId) -> Result<std::sync::Arc<Element>> {
     let el = s.visible_elements().into_iter().find(|e| e.id == id).ok_or_else(|| EngineError::State(format!("element {} is not on the active layer at this frame", id.0)))?;
     match &el.kind {
         ElementKind::Shape(sh) if sh.stroke.is_some() => Ok(el),
@@ -56,7 +56,7 @@ fn visible_shape(s: &Session, id: ElementId) -> Result<std::sync::Arc<Element>> 
 }
 
 /// The editable copy of shape `id` (copy-on-write; keys a tween's frame like any edit).
-fn shape_mut(s: &mut Session, id: ElementId) -> Result<&mut Shape> {
+pub(crate) fn shape_mut(s: &mut Session, id: ElementId) -> Result<&mut Shape> {
     visible_shape(s, id)?;
     let kf = s.editable_keyframe()?;
     let el = kf.elements_mut_where(|e| e == id).into_iter().next().ok_or_else(|| EngineError::State(format!("no element {}", id.0)))?;
@@ -90,7 +90,7 @@ fn set_profile(s: &mut Session, p: &Value) -> Result<Value> {
     let profile = opt_profile(p, "profile")?.ok_or_else(|| EngineError::Param("param 'profile' is required".into()))?;
     let ids: Vec<ElementId> = match id_param(p)? {
         Some(id) => vec![id],
-        None => s.selection.clone(),
+        None => s.selection.on(s.layer),
     };
     if ids.is_empty() {
         return Err(EngineError::State("nothing is selected".into()));

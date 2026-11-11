@@ -5,17 +5,20 @@
 //! instance by its instance-name path, react to button events, write `trace` output and set a
 //! few instance properties. Every front end speaks it: frame actions edited in the Actions
 //! panel, WebAssembly frame scripts (which emit actions through the plug-in ABI) and, later, the
-//! ActionScript subset and the HTML canvas exporter. The player in `anicraft-doc` runs it.
-//! Scripts in another language that AniCraft keeps but doesn't run yet ([`SourceScript`], ADR
-//! 0013 tier 1) sit beside the actions in [`FrameScript`].
+//! ActionScript subset ([`as3`], ADR 0013 tier 2) and the HTML canvas exporter. The player in
+//! `anicraft-doc` runs it. Scripts kept as written ([`SourceScript`], ADR 0013 tier 1) sit beside
+//! the actions in [`FrameScript`]; those in the ActionScript 3.0 subset compile to actions once
+//! and run.
 //!
 //! This crate knows nothing about documents: targets are name paths and frames are numbers or
 //! labels, resolved by the player when an action runs. Frames are 0-based, as everywhere in
 //! the engine (the app shows them 1-based).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod as3;
+
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Most actions in one list (a keyframe's, or one event handler's).
 pub const MAX_ACTIONS: usize = 256;
@@ -544,18 +547,67 @@ impl Language {
 }
 
 /// A script kept verbatim with the document (ADR 0013 tier 1): its text exactly as written,
-/// and its language. AniCraft shows and edits it; nothing runs it yet.
+/// and its language. AniCraft shows and edits it, and runs it when it is in the ActionScript 3.0
+/// subset ([`SourceScript::compiled`], tier 2).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceScript {
     #[serde(default)]
     pub language: Language,
     #[serde(default)]
     pub text: String,
+    /// The script compiled, made the first time it is asked for. A pure function of the
+    /// language and text, so it is never saved and never compared.
+    #[serde(skip)]
+    compiled: CompileCache,
+}
+
+/// What [`SourceScript::compiled`] gives: the script's steps, or why it doesn't run.
+pub type CompileResult = Result<as3::Compiled, Vec<as3::Problem>>;
+
+/// A lazily filled slot. Cloning gives an empty one, so a copy whose text is then changed
+/// compiles afresh; comparing ignores it.
+#[derive(Default)]
+struct CompileCache(OnceLock<CompileResult>);
+
+impl Clone for CompileCache {
+    fn clone(&self) -> Self {
+        CompileCache::default()
+    }
+}
+
+impl PartialEq for CompileCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for CompileCache {}
+
+impl std::fmt::Debug for CompileCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.get().is_some() { "compiled" } else { "not compiled" })
+    }
 }
 
 impl SourceScript {
     pub fn new(language: Language, text: impl Into<String>) -> SourceScript {
-        SourceScript { language, text: text.into() }
+        SourceScript { language, text: text.into(), compiled: CompileCache::default() }
+    }
+
+    /// The script compiled to actions (ADR 0013 tier 2), or the problems that keep it from
+    /// running. Compiled once per script: the document shares scripts by `Arc`, so undo
+    /// snapshots, the render thread and Test Movie all reuse it.
+    pub fn compiled(&self) -> &CompileResult {
+        self.compiled.0.get_or_init(|| match self.language {
+            Language::ActionScript3 => as3::compile(&self.text),
+            Language::ActionScript1or2 => Err(vec![as3::Problem::whole("ActionScript 1.0 and 2.0 don't run; AniCraft runs a subset of ActionScript 3.0")]),
+            Language::Other => Err(vec![as3::Problem::whole("scripts in other languages don't run; AniCraft runs a subset of ActionScript 3.0")]),
+        })
+    }
+
+    /// Whether it runs (it compiled).
+    pub fn runs(&self) -> bool {
+        self.compiled().is_ok()
     }
     pub fn check(&self) -> Result<(), String> {
         if self.text.trim().is_empty() {
@@ -573,8 +625,8 @@ impl SourceScript {
 }
 
 /// What runs when the playhead enters a keyframe: a list of actions, a plug-in's entry point
-/// (a frame script), or a script kept verbatim that doesn't run yet (ADR 0013 tier 1). One
-/// field keeps "one of these" true by construction.
+/// (a frame script), or a script kept verbatim (ADR 0013 tier 1), which runs when it is in the
+/// ActionScript 3.0 subset (tier 2). One field keeps "one of these" true by construction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrameScript {
@@ -626,7 +678,8 @@ impl FrameScript {
             FrameScript::Plugin(p) => format!("Frame script {} · {}", p.id, p.entry),
             FrameScript::Source(s) => {
                 let n = s.lines();
-                format!("Script in {} ({n} {}), kept, not run", s.language.label(), if n == 1 { "line" } else { "lines" })
+                let state = if s.runs() { "runs" } else { "kept, not run" };
+                format!("Script in {} ({n} {}), {state}", s.language.label(), if n == 1 { "line" } else { "lines" })
             }
         }
     }
@@ -754,7 +807,9 @@ mod tests {
         let back: FrameScript = serde_json::from_value(v).unwrap();
         assert_eq!(back, s);
         assert_eq!(back.source().unwrap().text, text, "byte for byte");
-        assert_eq!(s.describe(), "Script in ActionScript 3.0 (3 lines), kept, not run");
+        assert_eq!(s.describe(), "Script in ActionScript 3.0 (3 lines), runs");
+        let other = FrameScript::Source(Arc::new(SourceScript::new(Language::ActionScript1or2, "stop();")));
+        assert_eq!(other.describe(), "Script in ActionScript 1.0 & 2.0 (1 line), kept, not run");
         assert!(s.actions().is_empty() && !s.needs_repair());
         // The language defaults to ActionScript 3.0; unknown ones are refused.
         let d: SourceScript = serde_json::from_value(json!({"text": "x"})).unwrap();

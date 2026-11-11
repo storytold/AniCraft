@@ -14,10 +14,13 @@
 //! frames are stored once, so a still keyframe over many frames costs one entry.
 //!
 //! What doesn't carry across is counted in the report: filters, Subtract and Invert blending,
-//! tints on bitmaps, and plug-in frame scripts (they need the plug-in host).
+//! tints on bitmaps, plug-in frame scripts (they need the plug-in host) and kept scripts
+//! outside the ActionScript subset. Scripts in the subset (ADR 0013 tier 2) come across as the
+//! same actions and listeners the Rust player runs.
 
-use crate::stroke::variable_outline;
-use anicraft_doc::actions::{Action, FrameRef, Seg};
+use crate::stroke::stroke_outline;
+use anicraft_doc::actions::as3::ScriptOp;
+use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::{BlendMode, ColorEffect, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
@@ -90,7 +93,8 @@ const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
 const BITMAP_TINT: &str = "tints on bitmap fills (drawn untinted)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
 const BUTTON_SOUNDS: &str = "sounds on button frames (not played yet)";
-const KEPT_SCRIPTS: &str = "kept frame scripts (not run; kept in the document only)";
+const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
+const OUTSIDE_CALLS: &str = "script calls that reach outside the movie (ignored)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
 fn num(v: f32, scale: f64) -> Value {
@@ -102,6 +106,20 @@ fn num(v: f32, scale: f64) -> Value {
     } else {
         json!(r)
     }
+}
+
+/// A stroke's style for the page (ADR 0046): `c` cap, `j` join, `ml` miter limit, and for a
+/// broken line `d` its on/off lengths and `o` the offset into them (local units, scaled by
+/// the page like the width; dots are zero-length round-capped dashes).
+fn line_style(st: &anicraft_doc::Stroke) -> Value {
+    let style = &st.style;
+    let mut k = json!({"c": style.effective_cap().key(), "j": style.join.key(), "ml": num(style.miter_limit, 1e3)});
+    if let Some(d) = &style.dash {
+        let (lengths, offset) = d.pattern(st.width);
+        k["d"] = Value::Array(lengths.into_iter().map(|l| num(l, 1e3)).collect());
+        k["o"] = num(offset, 1e3);
+    }
+    k
 }
 
 fn coord(v: f32) -> Value {
@@ -176,13 +194,10 @@ fn path_data(p: &Path) -> String {
     if finite { s } else { String::new() }
 }
 
-/// An action as the player reads it: `op`, the target as steps (`^` the main timeline, `..` up
-/// a level, else an instance name; `e` when it isn't a valid path), and `d`, its description
-/// (for messages).
-fn action(a: &Action) -> Value {
-    let mut o = Map::new();
-    o.insert("op".into(), json!(a.op()));
-    if let Some(t) = a.target() {
+/// A target as the player reads it: `t`, its steps (`^` the main timeline, `..` up a level,
+/// else an instance name), or `e` when it isn't a valid path.
+fn target(o: &mut Map<String, Value>, t: &Target) {
+    {
         match t.segments() {
             Ok(segs) => {
                 if !segs.is_empty() {
@@ -201,6 +216,16 @@ fn action(a: &Action) -> Value {
                 o.insert("e".into(), json!(e));
             }
         }
+    }
+}
+
+/// An action as the player reads it: `op`, its target (see [`target`]), and `d`, its
+/// description (for messages).
+fn action(a: &Action) -> Value {
+    let mut o = Map::new();
+    o.insert("op".into(), json!(a.op()));
+    if let Some(t) = a.target() {
+        target(&mut o, t);
     }
     match a {
         Action::Trace { message } => {
@@ -230,6 +255,28 @@ fn action(a: &Action) -> Value {
 
 fn actions(list: &[Action]) -> Value {
     Value::Array(list.iter().map(action).collect())
+}
+
+/// A compiled script's steps (ADR 0013 tier 2): actions, and `listen` steps with the target,
+/// the event `ev`, the function `k` and the actions `h` it runs.
+fn script_ops(ops: &[ScriptOp]) -> Value {
+    Value::Array(
+        ops.iter()
+            .map(|op| match op {
+                ScriptOp::Action(a) => action(a),
+                ScriptOp::Listen(l) => {
+                    let mut o = Map::new();
+                    o.insert("op".into(), json!("listen"));
+                    target(&mut o, &l.target);
+                    o.insert("ev".into(), json!(l.event.key()));
+                    o.insert("k".into(), json!(l.function));
+                    o.insert("h".into(), actions(&l.actions));
+                    o.insert("d".into(), json!(format!("Listen for {} ({})", l.event.key(), l.target)));
+                    Value::Object(o)
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Whether timeline layer `index` takes part in playback (what the player walks and draws):
@@ -325,18 +372,22 @@ impl<'a> Bake<'a> {
         i
     }
 
-    /// A shape item: `p` path, `f` paint, `s` stroke `[r, g, b, a, width]`, `eo` even-odd,
-    /// `m` transform, `c` colour effect.
-    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorEffect, fill: Option<(&Paint, &Element)>, stroke: Option<(Rgba, f32)>, rule: FillRule) -> Value {
+    /// A shape item: `p` path, `f` paint, `s` stroke `[r, g, b, a, width]`, `k` its style when
+    /// not round and solid (`c` cap, `j` join, `ml` miter limit, `d` dash lengths and `o` their
+    /// offset, in local units like the width), `eo` even-odd, `m` transform, `c` colour effect.
+    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorEffect, fill: Option<(&Paint, &Element)>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
         let mut o = Map::new();
         o.insert("p".into(), json!(self.path(path)));
         if let Some((p, el)) = fill {
             o.insert("f".into(), json!(self.paint(p, el)));
         }
-        if let Some((c, w)) = stroke {
-            let mut s = color(c);
-            s.push(num(w, 1e3));
+        if let Some(st) = stroke {
+            let mut s = color(st.color);
+            s.push(num(st.width, 1e3));
             o.insert("s".into(), Value::Array(s));
+            if !st.style.is_default() {
+                o.insert("k".into(), line_style(st));
+            }
         }
         if rule == FillRule::EvenOdd {
             o.insert("eo".into(), json!(1));
@@ -358,19 +409,20 @@ impl<'a> Bake<'a> {
         match &el.kind {
             ElementKind::Shape(s) => {
                 let stroke = s.stroke.as_ref().filter(|st| st.width.is_finite() && st.width > 0.0);
-                match stroke.and_then(|st| st.profile.as_ref().map(|p| (st, p))) {
-                    // A variable-width stroke is the filled outline the renderer fills.
-                    Some((st, profile)) => {
+                match stroke.filter(|st| st.profile.is_some()) {
+                    // A variable-width stroke is the filled outline the renderer fills (its
+                    // caps, joins and dashes included).
+                    Some(st) => {
                         if let Some(p) = &s.fill {
                             out.push(self.shape(&s.path, &el.transform, &el.color, Some((p, el)), None, s.fill_rule));
                         }
-                        let outline = variable_outline(&s.path, &el.transform, st.width, profile, crate::TOLERANCE);
+                        let outline = stroke_outline(&s.path, &el.transform, st, crate::TOLERANCE);
                         if !outline.is_empty() {
                             let fill = Paint::Solid(st.color);
                             out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color, Some((&fill, el)), None, FillRule::NonZero));
                         }
                     }
-                    None => out.push(self.shape(&s.path, &el.transform, &el.color, s.fill.as_ref().map(|p| (p, el)), stroke.map(|st| (st.color, st.width)), s.fill_rule)),
+                    None => out.push(self.shape(&s.path, &el.transform, &el.color, s.fill.as_ref().map(|p| (p, el)), stroke, s.fill_rule)),
                 }
             }
             // The camera is the view, not artwork (ADR 0027): it is baked into the layers.
@@ -515,9 +567,21 @@ impl<'a> Bake<'a> {
                         self.notes.entry(PLUGIN_SCRIPTS).or_default().insert(u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0));
                         a.push(json!({"plugin": format!("{} · {}", p.id, p.entry)}));
                     }
-                    // Kept scripts don't run anywhere yet (ADR 0013 tier 1).
-                    Some(FrameScript::Source(_)) => {
-                        self.notes.entry(KEPT_SCRIPTS).or_default().insert(u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0));
+                    // ActionScript in the subset runs as the player runs it; the rest is only
+                    // kept (ADR 0013).
+                    Some(FrameScript::Source(src)) => {
+                        let key = u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0);
+                        match src.compiled() {
+                            Ok(c) => {
+                                a.push(json!({"as": script_ops(&c.ops)}));
+                                if !c.notes.is_empty() {
+                                    self.notes.entry(OUTSIDE_CALLS).or_default().insert(key);
+                                }
+                            }
+                            Err(_) => {
+                                self.notes.entry(KEPT_SCRIPTS).or_default().insert(key);
+                            }
+                        }
                     }
                     None => {}
                 }
