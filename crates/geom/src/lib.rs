@@ -44,7 +44,7 @@ impl Vec2 {
         self.x * o.y - self.y * o.x
     }
     pub fn length(self) -> f32 {
-        self.dot(self).sqrt()
+        self.x.hypot(self.y)
     }
     pub fn normalized(self) -> Vec2 {
         let l = self.length();
@@ -196,5 +196,13 @@ mod tests {
         assert_eq!(v.length(), 5.0);
         assert_eq!(v.perp().dot(v), 0.0);
         assert_eq!(Vec2::ZERO.normalized(), Vec2::ZERO);
+    }
+
+    #[test]
+    fn length_and_normalized_survive_huge_components() {
+        let v = Vec2::new(3e19, 4e19);
+        assert!((v.length() / 5e19 - 1.0).abs() < 1e-5, "len {}", v.length());
+        let n = v.normalized();
+        assert!((n.x - 0.6).abs() < 1e-5 && (n.y - 0.8).abs() < 1e-5, "{n:?}");
     }
 }
