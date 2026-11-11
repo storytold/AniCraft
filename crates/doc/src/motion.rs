@@ -920,12 +920,20 @@ impl MotionTween {
     /// Removes property `p`'s key at `frame`; a track left with no keys goes. Whether a key was
     /// there. Removing the X or Y key of a pinned frame lets the pin go (with both keys).
     pub fn remove_key(&mut self, p: Property, frame: u32) -> bool {
-        if matches!(p, Property::X | Property::Y) && self.pins.iter().any(|q| q.frame == frame) {
+        if !matches!(p, Property::X | Property::Y) {
+            return self.remove_track_key(p, frame);
+        }
+        // Only pins in force count (removing an end's keys can leave one outside the motion).
+        self.pins = self.live_pins();
+        if self.pins.iter().any(|q| q.frame == frame) {
             let had = self.track(p).is_some_and(|t| t.key_at(frame).is_some());
             self.unpin(frame);
             return had;
         }
-        self.remove_track_key(p, frame)
+        let had = self.remove_track_key(p, frame);
+        // An end's key gone may leave pins outside the motion: they go, never to come back.
+        self.pins = self.live_pins();
+        had
     }
 
     fn remove_track_key(&mut self, p: Property, frame: u32) -> bool {
@@ -1484,6 +1492,14 @@ mod tests {
         assert!(pinned.remove_key(Property::X, 8));
         assert!(pinned.pins.is_empty() && pinned.track(Property::Y).is_some_and(|t| t.key_at(8).is_none()));
         assert_eq!(pinned, m);
+        // Removing the end's keys lets a pin that is no longer between the ends go; its keys
+        // stay as plain keys, removed one by one.
+        assert_eq!(pinned.pin(1, 8, &props), Ok(()));
+        assert!(pinned.remove_key(Property::X, 20) && pinned.remove_key(Property::Y, 20));
+        assert!(pinned.pins.is_empty(), "frame 8 is the last position key now: an end");
+        assert!(pinned.remove_key(Property::X, 8));
+        assert!(pinned.track(Property::X).is_some_and(|t| t.key_at(8).is_none()) && pinned.track(Property::Y).is_some_and(|t| t.key_at(8).is_some()));
+        assert!(pinned.is_sane());
     }
 
     /// ADR 0030's timing as it was before pins: what files without pins must still give.
