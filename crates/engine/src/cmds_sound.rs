@@ -200,7 +200,7 @@ fn sound_param(s: &Session, p: &Value) -> Result<SoundId> {
 /// Place Sound: the sound goes on the keyframe covering the frame (a blank keyframe is made
 /// on an empty frame), Animate-style. With `extend`, the layer's last span grows to the sound's
 /// length so its waveform shows in full.
-fn place(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let id = sound_param(s, p)?;
     let fps = s.doc.stage.fps;
     let want = s.doc.sound(id).map_or(1, |x| x.movie_frames(fps));
