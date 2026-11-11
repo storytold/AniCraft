@@ -59,3 +59,10 @@ own timelines, nested to any depth.
   must never panic (`crates/xfl/tests/corpus.rs`), and golden renders of chosen frames by the
   CPU oracle with hand-worked colour probes (`crates/engine/tests/xfl_corpus.rs`, regenerated
   with `UPDATE_GOLDENS=1`). A feature the importer learns gets a corpus file in the same change.
+* **`.fla` archives** (ADR 0054): every corpus package, packed by an independent in-memory zip
+  writer in nine layouts (Animate's `mimetype` first, stored, mixed with folder entries,
+  Windows separators, CP437 and Unicode-path names, data descriptors, ZIP64, all at once),
+  imports identically to its folder and renders the same goldens; a fuzz of 9,664 hostile
+  archives built from the corpus never panics, and the zip reader refuses overlapping entries,
+  lying sizes and checksums, ratio bombs, unsafe and duplicate paths and deep nesting with a
+  readable error (`crates/xfl/src/zip_tests.rs`, `crates/xfl/tests/fla.rs`).

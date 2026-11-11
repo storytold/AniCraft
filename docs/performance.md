@@ -97,6 +97,24 @@ flushed to disk, renamed).
 With the default "every minute or 25 changes", even the 262 MB document keeps the worker busy
 for about 1% of the time, and the UI never waits for it.
 
+**Opening a 50 MB `.fla` (2026-11-11, ADR 0054; release, 32 threads, one used).** A generated
+archive (`measure_importing_a_50_mb_fla` in `crates/xfl/tests/fla.rs`: 400 symbols of 600
+edges each, deflated, and 24 noisy 1024 × 512 PNGs, stored; 54.6 MB, 425 files, 65.8 MB
+inflated), five runs each:
+
+```sh
+cargo test --release -p anicraft-xfl --test fla -- --ignored --nocapture
+```
+
+| Step | CRC-32 byte by byte | CRC-32 by slicing by 8 |
+|---|---|---|
+| Open (end record, central directory, every local header, overlap check) | 0.19–0.25 ms | 0.18–0.24 ms |
+| Read and check every entry (inflate, size, CRC) | 128–140 ms (471–516 MB/s) | 53–54 ms (1.22–1.24 GB/s) |
+| Whole import (read, XML, edges, library, timeline) | 388–458 ms | **311–328 ms** |
+
+The checks on every entry (exact size, checksum) now cost about 30 ms of the import; the rest
+is parsing and building the document.
+
 ### GPU stage (M3, ADR 0019)
 
 `cargo run --release -p anicraft-gpu --example gpu_bench` (2026-11-09, RTX 5090 over Vulkan,

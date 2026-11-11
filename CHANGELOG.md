@@ -20,6 +20,20 @@
   * Headless: `library.place {items: [..], x, y}` (and `{sound}`), `element.swap_bitmap`,
     `kind` and `folder` on `modify.convert_to_symbol`; `symbol.set_kind` without `symbol` sets
     every selected instance's symbol.
+* **`.fla` files open reliably, and hostile ones safely** (ADR 0054, M4).
+  * The `.fla` reader takes the layouts zip tools write: folder entries, Windows `\`
+    separators, CP437 and UTF-8 names (and Info-ZIP Unicode names), data descriptors and
+    ZIP64. Each entry's size and checksum are checked.
+  * Damaged or hostile archives fail with a sentence that names the problem: entries sharing
+    bytes, sizes or checksums that lie, compression bombs (a 1024 : 1 ratio cap, 256 MB per
+    entry, 1 GiB in all), paths with `..`, absolute or drive paths, duplicate names, more than
+    32 nested folders, a central directory cut short. Nothing is ever extracted to disk.
+  * A renamed `.fla` opens (it is recognised by its contents), and a `.fla` saved by Flash CS4
+    or earlier says to open it in Animate and save it again.
+  * Every corpus package, packed nine ways, imports identically to its folder and renders the
+    same golden frames; a fuzz throws 9,664 hostile archives at the reader. A 54.6 MB `.fla`
+    imports in 311–328 ms (checksums by slicing by 8: reading every entry 53 ms, was 130 ms).
+
 * **Edit Multiple Frames, complete; onion skin inside symbols** (ADR 0051, M1).
   * With Edit Multiple Frames on, **Cut, Copy, Paste, Paste in Place and Clear** act on the
     artwork selected on every keyframe between the markers. Paste in Place puts artwork copied
