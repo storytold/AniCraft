@@ -350,7 +350,9 @@ mod tests {
 
     #[test]
     fn thumbnails_fit_the_start_screen() {
+        let t = std::time::Instant::now();
         let png = thumbnail_png(&anicraft_doc::sample::demo()).unwrap();
+        eprintln!("thumbnail of the sample: {:.2} ms, {} bytes", t.elapsed().as_secs_f64() * 1000.0, png.len());
         let img = image_size(&png);
         assert!(img.0 <= THUMB_W && img.1 <= THUMB_H && img.0 > 0 && img.1 > 0, "{img:?}");
     }

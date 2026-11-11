@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Files from the desktop, recent files and a start screen** (ADR 0059, M8).
+  * **Drop files onto the window**: `.anicraft`, `.fla` and `.xfl` open (asking first over
+    unsaved work); SVG drawings, PNG and JPEG images and WAV, Ogg and MP3 sounds dropped on the
+    **stage** go onto the active layer at the playhead, centred where they were dropped, and
+    dropped on the **Library** go into the folder under the pointer. One undo step per drop.
+    A highlight shows where they will land; anything AniCraft can't take gets one clear
+    status line. In the web editor too.
+  * **File › Open Recent**: the last 10 documents opened or saved, with pinned favourites on
+    top, missing files greyed out with Remove, and Clear Recent Files. Kept in the
+    preferences (browser storage on the web).
+  * **Start screen** when AniCraft starts without a document: New with HD, Full HD, square
+    and vertical presets or a custom size and frame rate, Open, the sample animation, and the
+    recent files with a picture of their first frame (captured on save). Esc goes back to the
+    document; File › Start Screen brings it back; it can be switched off.
+  * New commands for the CLI and MCP: `file.drop`, `file.open_recent`, `file.recent_list`,
+    `prefs.recent_pin`, `prefs.recent_remove`, `prefs.recent_clear`; `file.import` takes
+    `cx`/`cy` and `layer: "active"`.
+
 * **Colour effects, complete** (ADR 0056, M2).
   * **Properties › Colour effect**: Animate's Style menu (None, Brightness, Tint, Advanced,
     Alpha) with each style's controls: brightness −100..100 %, tint colour and amount,
