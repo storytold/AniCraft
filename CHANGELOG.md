@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+* **The GPU stage sorts heavy frames into tiles on the graphics card, and outlines are cheap**
+  (ADR 0048, M3).
+  * Frames with many shapes are binned on the GPU (count, prefix sum, scatter and tile-list
+    compute passes) instead of on the CPU: the CPU only lays out the shapes' points, and every
+    buffer is sized up front, so nothing is read back. On Vulkan, a 10,000-shape 4K frame
+    drawn as one texture takes about 5 ms instead of 22, a 50,000-shape one about 23 ms
+    instead of 122, and the 50,000-shape 4K stage about 37 ms instead of 75. Frames with few
+    shapes, shapes inside masks or faded symbols, and Direct3D 12 (where the passes cost more
+    per stage tile) are still binned on the CPU, which stays the reference
+    (`ANICRAFT_GPU_BINNING=cpu|gpu|auto` to compare).
+  * **Outline mode** (an outlined layer, and onion skin's Outlines) draws true one-pixel
+    hairlines, one edge per segment where the old half-pixel strokes had four and a disc at
+    every bend, in the CPU renderer and on the GPU alike. On a 2,000-shape scene with ±5 onion
+    frames, outlines are now as fast as tinted onion frames: 10 ms on the GPU stage at 1080p
+    (was 73) and 17 ms on the CPU stage (was 34–39). Lines look the same, with smoother joins.
+  * Parity with the CPU renderer is unchanged (at most 1/255 on every test scene), and a test
+    checks that the GPU's tile lists are the CPU's, entry by entry and pixel by pixel.
 * **Raw points, snapping while drawing, and symbols edited in place** (ADR 0045, issue #42, M1).
   * **Add a point** on a merged drawing's line or fill edge with the Pen's Alt-click or a
     Subselection double-click: every shape on that edge gets it, and the curve keeps its shape.
