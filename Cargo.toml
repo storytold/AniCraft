@@ -6,7 +6,7 @@ default-members = [".", "crates/*"]
 [workspace.package]
 # 0.1.0 is the early alpha (release stage in src/app.rs, RELEASE_STAGE); see CHANGELOG.md
 # and docs/release.md.
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 # An application, not a library: not published to crates.io.
