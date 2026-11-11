@@ -154,7 +154,7 @@ nothing was copied.
   * the parent symbol's frame moving with the open one (a nested graphic shows the frame it
     was opened at), and onion skin and Edit Multiple Frames (ADR 0047) while a symbol is open in
     place: the stage then draws a picture of the symbol, so both switch off (`frames.*` commands
-    still work on the open timeline);
+    still work on the open timeline). ADR 0051 turns both on there;
   * deleting a point where three or more edges meet;
   * width profiles in the merge (ADR 0042);
   * a marquee across layers with the Subselection tool (Animate keeps it on one layer too).

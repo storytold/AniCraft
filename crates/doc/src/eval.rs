@@ -139,6 +139,16 @@ pub fn evaluate_timeline(doc: &Document, tl: &Timeline, frame: u32) -> DisplayLi
     out
 }
 
+/// [`evaluate_timeline`] placed by `xf` (symbol space to stage space): what an instance of the
+/// timeline at `xf` shows, but with the timeline's own layers as the top-level ones, so each item
+/// still says which of them it is on. The stage draws a symbol open in place this way when onion
+/// skin or Edit Multiple Frames composes its frames (ADR 0051).
+pub fn evaluate_timeline_at(doc: &Document, tl: &Timeline, frame: u32, xf: Affine) -> DisplayList {
+    let mut out = DisplayList::default();
+    eval_timeline(doc, tl, frame, &Ctx::top(xf), &mut out, None);
+    out
+}
+
 /// Scene `scene` at its own `frame` as the movie shows it: through the scene's camera, each
 /// layer shifted by its depth, the camera's tint over everything (ADR 0027). Without a camera
 /// this is [`evaluate_scene`].

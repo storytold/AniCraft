@@ -36,6 +36,7 @@ pub mod editing;
 pub mod format;
 pub mod history;
 mod merge;
+pub mod multi;
 pub mod onion;
 pub mod recovery;
 pub mod render_service;
@@ -116,6 +117,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(onion::specs());
+    v.extend(multi::specs());
     v.extend(cmds_draw::specs());
     v.extend(cmds_library::specs());
     v.extend(merge::specs());

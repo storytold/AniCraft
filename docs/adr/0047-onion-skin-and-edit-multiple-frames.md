@@ -112,6 +112,7 @@ and from watching the program; nothing was copied.
   * per-layer onion skin toggles, and onion skin inside a symbol being edited in place;
   * Edit Multiple Frames deleting, transforming (scale, rotate), copying or recolouring across
     keyframes; it moves only. Raw (merge) shapes moved there are not merged again with what
-    they land on;
+    they land on. (Done in ADR 0051, except recolouring; onion skin inside a symbol open in
+    place too.)
   * a marker drag that also scrolls the timeline;
   * onion skin in Test Movie and exports (never: it is an editing aid).

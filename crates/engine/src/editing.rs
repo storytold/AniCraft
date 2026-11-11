@@ -89,6 +89,20 @@ pub struct StagePicture {
     pub doc: Document,
     pub frame: u32,
     pub state: StateId,
+    /// The open symbol in front, when one is open: onion skin and Edit Multiple Frames compose
+    /// its own frames (ADR 0051).
+    pub front: Option<Arc<Front>>,
+}
+
+/// The open symbol in a [`StagePicture`]: the picture's top layer `layer` shows `timeline` at its
+/// `frame`, placed by `at`. With onion skin on, that layer is drawn instead as the timeline's
+/// frames composed by [`crate::onion::compose_timeline`], placed the same way.
+#[derive(Clone, Debug)]
+pub struct Front {
+    pub layer: LayerId,
+    pub timeline: Timeline,
+    pub frame: u32,
+    pub at: Affine,
 }
 
 impl Session {
@@ -156,7 +170,7 @@ impl Session {
     /// timeline at its playhead where its instance stands, over the timelines it sits in dimmed.
     pub fn stage_picture(&self) -> Arc<StagePicture> {
         let Some(view) = self.edit_view() else {
-            return Arc::new(StagePicture { doc: self.doc.clone(), frame: self.doc.scene_start(self.scene).saturating_add(self.frame), state: self.state });
+            return Arc::new(StagePicture { doc: self.doc.clone(), frame: self.doc.scene_start(self.scene).saturating_add(self.frame), state: self.state, front: None });
         };
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.state, self.scene, self.frame).hash(&mut h);
@@ -173,7 +187,10 @@ impl Session {
         let mut tl = Timeline::default();
         // The open symbol, in front.
         let at = Affine::translate(view.origin.x, view.origin.y).mul(&Affine::scale(view.scale, view.scale));
-        tl.layers.push(placed(&mut doc, self.timeline().clone(), at, self.frame, 1.0));
+        let open = self.timeline().clone();
+        let layer = placed(&mut doc, open.clone(), at, self.frame, 1.0);
+        let front = Arc::new(Front { layer: layer.id, timeline: open, frame: self.frame, at });
+        tl.layers.push(layer);
         // Around it, dimmed: each timeline below, without the instance opened from it.
         if view.in_place {
             for (i, l) in self.editing.iter().enumerate().rev() {
@@ -188,7 +205,7 @@ impl Session {
         }
         *doc.timeline_mut(self.scene) = tl;
         // Apart from document states (counted up from 1), and the same for the same picture.
-        let pic = Arc::new(StagePicture { frame: doc.scene_start(self.scene), doc, state: key | 1 << 63 });
+        let pic = Arc::new(StagePicture { frame: doc.scene_start(self.scene), doc, state: key | 1 << 63, front: Some(front) });
         self.picture_cache.replace(Some((key, pic.clone())));
         pic
     }

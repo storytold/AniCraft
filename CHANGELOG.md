@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Edit Multiple Frames, complete; onion skin inside symbols** (ADR 0051, M1).
+  * With Edit Multiple Frames on, **Cut, Copy, Paste, Paste in Place and Clear** act on the
+    artwork selected on every keyframe between the markers. Paste in Place puts artwork copied
+    from several keyframes back keyframe by keyframe, and artwork copied on one frame onto every
+    keyframe; Paste puts it on the current frame.
+  * **Free Transform** shows one box around the selection on every keyframe and scales, rotates
+    and moves it all about one pivot, one undo step per drag. **Align** (To Stage too),
+    **Rotate 90°** and **Flip** work across keyframes, and so do the arrow keys.
+  * Merge-drawing shapes moved, transformed or pasted there **merge again** on their own
+    keyframe, so drawings stay connected.
+  * **Onion skin and Edit Multiple Frames work inside a symbol** edited in place, on the
+    symbol's own timeline.
+  * Headless: `frames.transform`, `frames.align`, `frames.delete`, `frames.copy`, `frames.cut`,
+    `frames.paste`, `frames.merge`.
+
 * **Library management** (ADR 0050, M2).
   * **Folders**: New Folder (the folder icon under the list, or right-click), nested as deep as
     you like (32 levels). Drag items and folders onto a folder to move them in, onto an item to

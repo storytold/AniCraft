@@ -2,8 +2,10 @@
 //! onion menu, the markers on the frame ruler, and Edit Multiple Frames on the stage.
 //!
 //! The settings are view state ([`OnionSkin`], in `App::onion`); the options that carry over
-//! between sessions are also in the preferences. Only Edit Multiple Frames' moves change the
-//! document, through `frames.edit_multiple`.
+//! between sessions are also in the preferences. Only Edit Multiple Frames' edits change the
+//! document, through the `frames.*` commands (ADR 0051): moves, Free Transform, align, delete,
+//! copy, cut and paste, each on every keyframe the selection is on. Inside a symbol open in place
+//! both work on the symbol's own timeline.
 
 use crate::a11y::Named;
 use crate::app::{App, Drag};
@@ -19,8 +21,9 @@ use std::sync::Arc;
 /// The onion menu's popup (opened by its button, a right-click on the ruler, or `--open onion`).
 pub const MENU_ID: &str = "onion_menu";
 
-/// What the shown items depend on: document state, scene, playhead and the markers' frames.
-type ItemsKey = (u64, usize, u32, u32, u32);
+/// What the shown items depend on: document state, scene, the symbol open (and how deep),
+/// playhead and the markers' frames.
+type ItemsKey = (u64, usize, (usize, Option<u64>), u32, u32, u32);
 /// Every element Edit Multiple Frames shows, with its stage bounds.
 pub type Shown = Arc<Vec<(FrameItem, GRect)>>;
 
@@ -82,8 +85,8 @@ pub fn range(app: &App) -> (u32, u32) {
 
 /// What the stage composes now: `None` while playing or when nothing is on.
 pub fn stage_skin(app: &App) -> Option<&OnionSkin> {
-    // Not inside a symbol open in place: the stage then draws a picture of it (ADR 0045).
-    (!app.playing && app.onion.shows() && app.s.editing.is_empty()).then_some(&app.onion)
+    // Inside a symbol open in place too: the stage composes the symbol's own frames (ADR 0051).
+    (!app.playing && app.onion.shows()).then_some(&app.onion)
 }
 
 /// Onion skin on or off (the timeline button, View › Onion Skin, Alt+Shift+O).
@@ -104,7 +107,7 @@ pub fn toggle_edit_multiple(app: &mut App) {
 
 /// Edit Multiple Frames is taking the Selection tool's input.
 pub fn editing(app: &App) -> bool {
-    app.onion.edit_multiple && !app.playing && !crate::camera_tool::previewing(app) && app.s.editing.is_empty()
+    app.onion.edit_multiple && !app.playing && !crate::camera_tool::previewing(app)
 }
 
 // ----- the menu ------------------------------------------------------------------------------
@@ -305,7 +308,7 @@ pub fn ruler(app: &mut App, ui: &mut egui::Ui, ruler: Rect, cell_w: f32, x_of: i
 /// playhead and markers).
 pub fn items(app: &mut App) -> Shown {
     let (first, last) = range(app);
-    let key = (app.s.state, app.s.scene, app.s.frame, first, last);
+    let key = (app.s.state, app.s.scene, (app.s.editing.len(), app.s.editing_symbol().map(|s| s.0)), app.s.frame, first, last);
     if let Some((k, v)) = &app.onion_ui.cache
         && *k == key
     {
@@ -324,15 +327,190 @@ fn live_selection(app: &mut App) -> Vec<FrameItem> {
     sel
 }
 
-/// Moves the selection by `d` on every keyframe it is on (no-op when nothing is selected).
-fn move_by(app: &mut App, d: Vec2) -> bool {
-    let sel = live_selection(app);
-    if sel.is_empty() || d == Vec2::ZERO {
+/// The `items` a command answered with, as the selection.
+fn parse_items(v: &serde_json::Value) -> Option<Vec<FrameItem>> {
+    let list = v.get("items")?.as_array()?;
+    Some(
+        list.iter()
+            .filter_map(|t| {
+                let n = |i: usize| t.get(i).and_then(serde_json::Value::as_u64);
+                Some(FrameItem { layer: anicraft_engine::doc::LayerId(n(0)?), frame: u32::try_from(n(1)?).ok()?, element: anicraft_engine::doc::ElementId(n(2)?) })
+            })
+            .collect(),
+    )
+}
+
+/// Runs `id` (a `frames.*` command) on the markers' frames with `extra` params, on the selection
+/// when `on_sel` (nothing happens without one), and takes the items it answers as the new
+/// selection.
+fn run_on(app: &mut App, id: &str, extra: serde_json::Value, on_sel: bool) -> Option<serde_json::Value> {
+    let (first, last) = range(app);
+    let mut p = json!({"first": first, "last": last});
+    if on_sel {
+        let sel = live_selection(app);
+        if sel.is_empty() {
+            return None;
+        }
+        p["items"] = json!(sel.iter().map(FrameItem::to_json).collect::<Vec<_>>());
+    }
+    if let (Some(o), Some(e)) = (p.as_object_mut(), extra.as_object()) {
+        o.extend(e.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    let v = app.run(id, p)?;
+    if let Some(items) = parse_items(&v) {
+        app.onion_ui.sel = items;
+    }
+    Some(v)
+}
+
+/// Moves the selection by `d` on every keyframe it is on (no-op when nothing is selected). Raw
+/// shapes merge where they land when `merge` (a drag merges once, when it ends).
+fn move_by(app: &mut App, d: Vec2, merge: bool) -> bool {
+    if d == Vec2::ZERO {
         return false;
     }
-    let (first, last) = range(app);
-    let items: Vec<serde_json::Value> = sel.iter().map(FrameItem::to_json).collect();
-    app.run("frames.edit_multiple", json!({"first": first, "last": last, "dx": d.x, "dy": d.y, "items": items})).is_some()
+    run_on(app, "frames.edit_multiple", json!({"dx": d.x, "dy": d.y, "merge": merge}), true).is_some()
+}
+
+/// The end of a drag that moved or transformed the selection: raw shapes merge where they landed
+/// (in the drag's undo step), then the step closes.
+pub fn drag_end(app: &mut App) {
+    let raw = live_selection(app).iter().any(|it| is_raw(app, it));
+    if raw {
+        run_on(app, "frames.merge", json!({}), true);
+    }
+    app.s.end_gesture();
+}
+
+/// Whether `it` is a raw (merge-drawing) shape.
+fn is_raw(app: &App, it: &FrameItem) -> bool {
+    let k = app.s.timeline().layer(it.layer).and_then(|l| l.keyframe_starting_at(it.frame).and_then(|i| l.keyframes.get(i)));
+    k.and_then(|k| k.elements.iter().find(|e| e.id == it.element)).is_some_and(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge))
+}
+
+/// The selection's bounds on every keyframe together (the Free Transform box), in stage space.
+pub fn selection_bounds(app: &mut App) -> Option<[f32; 4]> {
+    let sel = live_selection(app);
+    let r = items(app).iter().filter(|(it, _)| sel.contains(it)).fold(GRect::EMPTY, |r, (_, b)| r.union(b));
+    (!r.is_empty()).then_some([r.min.x, r.min.y, r.max.x, r.max.y])
+}
+
+/// One step of a Free Transform drag: `delta` (stage space, about the shared pivot the drag
+/// chose) on every keyframe; merged when the drag ends.
+pub fn transform_by(app: &mut App, delta: &anicraft_engine::geom::Affine) -> bool {
+    let [a, b, c, d, e, f] = delta.m;
+    run_on(app, "frames.transform", json!({"a": a, "b": b, "c": c, "d": d, "e": e, "f": f, "merge": false}), true).is_some()
+}
+
+/// The Edit menu, the Align panel and their shortcuts with Edit Multiple Frames on: they act on
+/// the selection on every keyframe. True when handled here.
+pub fn invoke(app: &mut App, id: &str) -> bool {
+    let has_sel = !live_selection(app).is_empty();
+    let undo = app.undo_key();
+    match id {
+        "edit.select_all" => select_all(app),
+        "edit.deselect" => app.onion_ui.sel.clear(),
+        "edit.delete" if has_sel => {
+            if let Some(v) = run_on(app, "frames.delete", json!({}), true) {
+                let n = v["deleted"].as_u64().unwrap_or(0) as usize;
+                app.status_ok(trn!("Deleted {n} element on the frames between the markers. {undo} to undo.", "Deleted {n} elements on the frames between the markers. {undo} to undo.", n, undo = undo));
+            }
+        }
+        "edit.copy" if has_sel => {
+            if let Some(v) = run_on(app, "frames.copy", json!({}), true) {
+                let n = v["copied"].as_u64().unwrap_or(0) as usize;
+                let key = crate::platform::shortcut_label(app.keymap.primary("edit.paste_in_place").unwrap_or("Ctrl+Shift+V"));
+                app.status_ok(trn!("Copied {n} element. Paste in Place ({key}) puts it back on its keyframe.", "Copied {n} elements. Paste in Place ({key}) puts each back on its keyframe.", n, key = key));
+            }
+        }
+        "edit.cut" if has_sel => {
+            if let Some(v) = run_on(app, "frames.cut", json!({}), true) {
+                let n = v["cut"].as_u64().unwrap_or(0) as usize;
+                app.status_ok(trn!("Cut {n} element from the frames between the markers. {undo} to undo.", "Cut {n} elements from the frames between the markers. {undo} to undo.", n, undo = undo));
+            }
+        }
+        // Paste in Place: onto the keyframes between the markers.
+        "edit.paste_in_place" if !app.s.clipboard.is_empty() => {
+            if let Some(v) = run_on(app, "frames.paste", json!({}), false) {
+                let n = v["keyframes"].as_u64().unwrap_or(0) as usize;
+                app.status_ok(trn!("Pasted in place onto {n} keyframe. {undo} to undo.", "Pasted in place onto {n} keyframes. {undo} to undo.", n, undo = undo));
+            }
+        }
+        // Paste: onto the current frame, as without Edit Multiple Frames; what lands is selected.
+        "edit.paste" if !app.s.clipboard.is_empty() => {
+            if app.run("edit.paste", json!({})).is_some() {
+                adopt_selection(app);
+            }
+        }
+        "edit.duplicate" | "modify.convert_to_symbol" | "modify.break_apart" if has_sel => {
+            app.status_err(tr!("Edit Multiple Frames moves, transforms, aligns, deletes, copies and pastes artwork on several keyframes; for this, turn it off and work frame by frame."));
+        }
+        "align.left" | "align.hcenter" | "align.right" | "align.top" | "align.vcenter" | "align.bottom" if has_sel => {
+            let edge = id.trim_start_matches("align.");
+            // The Align panel's To Stage option.
+            let p = if app.align_to_stage { json!({"edge": edge, "to_stage": true}) } else { json!({"edge": edge}) };
+            run_on(app, "frames.align", p, true);
+        }
+        "modify.rotate_cw" | "modify.rotate_ccw" | "modify.flip_h" | "modify.flip_v" if has_sel => {
+            let p = match id {
+                "modify.rotate_cw" => json!({"rotate": 90}),
+                "modify.rotate_ccw" => json!({"rotate": -90}),
+                "modify.flip_h" => json!({"scale_x": -1}),
+                _ => json!({"scale_y": -1}),
+            };
+            run_on(app, "frames.transform", p, true);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Takes what a command selected at the playhead as the multi-frame selection (each element on
+/// its layer's keyframe there), and lets go of the playhead's selection.
+fn adopt_selection(app: &mut App) {
+    let frame = app.s.frame;
+    let picked: Vec<FrameItem> = app.s.selected_elements().iter().filter_map(|(l, e)| app.s.timeline().layer(*l).and_then(|x| x.keyframe_at(frame)).map(|k| FrameItem { layer: *l, frame: k.start, element: e.id })).collect();
+    app.s.selection.clear();
+    app.onion_ui.sel = picked;
+}
+
+/// Whether a menu command can act with Edit Multiple Frames on (`None`: decided as usual).
+pub fn enabled(app: &App, id: &str) -> Option<bool> {
+    if !editing(app) {
+        return None;
+    }
+    let sel = !app.onion_ui.sel.is_empty();
+    match id {
+        "edit.delete" | "edit.cut" | "edit.copy" => Some(sel),
+        "edit.duplicate" | "modify.convert_to_symbol" | "modify.break_apart" | "arrange.bring_to_front" | "arrange.send_to_back" | "align.distribute_h" | "align.distribute_v" => Some(false),
+        _ => None,
+    }
+}
+
+/// The stage's right-click menu with Edit Multiple Frames on.
+pub fn context_menu(app: &mut App, ui: &mut egui::Ui) {
+    let selected = !app.onion_ui.sel.is_empty();
+    let ids: &[&str] = if selected { &["edit.cut", "edit.copy", "edit.paste", "edit.paste_in_place", "edit.delete"] } else { &["edit.paste", "edit.paste_in_place", "edit.select_all"] };
+    for id in ids {
+        crate::menus::cmd_item(app, ui, id);
+    }
+    if selected {
+        ui.separator();
+        ui.menu_button(tr!("Transform"), |ui| {
+            for id in ["modify.rotate_cw", "modify.rotate_ccw", "modify.flip_h", "modify.flip_v"] {
+                crate::menus::cmd_item(app, ui, id);
+            }
+        });
+        ui.menu_button(tr!("Align"), |ui| {
+            for id in ["align.left", "align.hcenter", "align.right", "align.top", "align.vcenter", "align.bottom"] {
+                crate::menus::cmd_item(app, ui, id);
+            }
+        });
+    }
+    ui.separator();
+    for id in ["edit.undo", "edit.redo"] {
+        crate::menus::cmd_item(app, ui, id);
+    }
 }
 
 /// A press on the stage with Edit Multiple Frames on: on artwork, select it (unless it is) and
@@ -358,7 +536,7 @@ pub fn drag_start(app: &mut App, sp: Pos2, shift: bool, zoom: f32) -> Drag {
 /// The pointer moved to `c` during a move.
 pub fn drag_to(app: &mut App, last: &mut Pos2, c: Pos2) {
     let d = c - *last;
-    if d.length_sq() > 0.0 && move_by(app, Vec2::new(d.x, d.y)) {
+    if d.length_sq() > 0.0 && move_by(app, Vec2::new(d.x, d.y), false) {
         *last = c;
     }
 }
@@ -406,7 +584,7 @@ pub fn nudge(app: &mut App, d: Vec2) {
     if own {
         app.s.begin_gesture(tr_noop!("Move")); // i18n-exempt: an undo label (the engine's English, translated where shown)
     }
-    move_by(app, d);
+    move_by(app, d, true);
     if own {
         app.s.end_gesture();
     }
@@ -539,6 +717,80 @@ mod tests {
         let mut big = a.prefs.clone();
         big.onion.before = u32::MAX;
         assert_eq!(big.sanitized().onion.before, ONION_REACH_MAX);
+    }
+
+    /// How many elements each keyframe of the sample's top layer (the ball) holds.
+    fn ball_counts(a: &App) -> Vec<usize> {
+        a.s.timeline().layers.first().map(|l| l.keyframes.iter().map(|k| k.elements.len()).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn the_edit_menu_deletes_copies_and_pastes_on_every_keyframe() {
+        let mut a = app();
+        a.open_panel(Some("edittransform"));
+        let sel = a.onion_ui.sel.clone();
+        assert!(sel.len() >= 2, "the ball on two keyframes: {sel:?}");
+        let before = ball_counts(&a);
+        let steps = a.s.history_len();
+        assert!(invoke(&mut a, "edit.cut"));
+        assert_eq!(a.s.history_len(), steps + 1, "one undo step");
+        let after = ball_counts(&a);
+        assert_eq!(before.iter().sum::<usize>() - after.iter().sum::<usize>(), sel.len());
+        assert!(a.onion_ui.sel.is_empty(), "nothing left to select");
+        // Paste in Place puts each back on its keyframe, selected.
+        assert!(invoke(&mut a, "edit.paste_in_place"));
+        assert_eq!(ball_counts(&a), before);
+        assert_eq!(a.onion_ui.sel.len(), sel.len());
+        assert_eq!(a.onion_ui.sel.iter().map(|it| it.frame).collect::<Vec<_>>(), sel.iter().map(|it| it.frame).collect::<Vec<_>>());
+        // Menus follow the multi-frame selection; duplicate waits for a later slice.
+        assert_eq!(enabled(&a, "edit.delete"), Some(true));
+        assert_eq!(enabled(&a, "edit.duplicate"), Some(false));
+        assert!(invoke(&mut a, "edit.delete"));
+        assert_eq!(enabled(&a, "edit.delete"), Some(false));
+        // Without Edit Multiple Frames the menu is decided as usual.
+        toggle_edit_multiple(&mut a);
+        assert_eq!(enabled(&a, "edit.delete"), None);
+    }
+
+    #[test]
+    fn free_transform_scales_every_keyframe_about_one_pivot_in_one_step() {
+        let mut a = app();
+        a.open_panel(Some("edittransform"));
+        let b = selection_bounds(&mut a).expect("a box");
+        let (cx, cy) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+        let steps = a.s.history_len();
+        a.s.begin_gesture("Free Transform");
+        // A drag in two steps: twice as big about the box's centre, sent as changes.
+        let half = anicraft_engine::geom::Affine::translate(cx, cy).mul(&anicraft_engine::geom::Affine::scale(1.5, 1.5)).mul(&anicraft_engine::geom::Affine::translate(-cx, -cy));
+        let rest = anicraft_engine::geom::Affine::translate(cx, cy).mul(&anicraft_engine::geom::Affine::scale(2.0 / 1.5, 2.0 / 1.5)).mul(&anicraft_engine::geom::Affine::translate(-cx, -cy));
+        assert!(transform_by(&mut a, &half) && transform_by(&mut a, &rest));
+        drag_end(&mut a);
+        assert_eq!(a.s.history_len(), steps + 1, "one undo step");
+        let n = selection_bounds(&mut a).expect("a box");
+        for (got, want) in n.iter().zip([cx + 2.0 * (b[0] - cx), cy + 2.0 * (b[1] - cy), cx + 2.0 * (b[2] - cx), cy + 2.0 * (b[3] - cy)]) {
+            assert!((got - want).abs() < 0.05, "{n:?}");
+        }
+        // Rotate 90° from the menu, about the same centre.
+        assert!(invoke(&mut a, "modify.rotate_cw"));
+        assert_eq!(a.s.history_len(), steps + 2);
+    }
+
+    #[test]
+    fn onion_skin_and_edit_multiple_frames_work_inside_a_symbol() {
+        let mut a = app();
+        a.open_panel(Some("onionsymbol"));
+        assert_eq!(a.s.editing.len(), 1, "the star is open in place");
+        assert!(stage_skin(&a).is_some(), "onion skin draws inside it");
+        let pic = a.s.stage_picture();
+        assert!(pic.front.is_some());
+        toggle_edit_multiple(&mut a);
+        assert!(editing(&a));
+        select_all(&mut a);
+        // The star's own keyframes (ADR 0051).
+        let frames: Vec<u32> = a.onion_ui.sel.iter().map(|it| it.frame).collect();
+        assert!(frames.len() >= 2 && frames.iter().all(|f| a.s.timeline().layers.iter().any(|l| l.keyframe_starting_at(*f).is_some())), "{frames:?}");
+        nudge(&mut a, Vec2::new(5.0, 0.0));
+        assert_eq!(a.onion_ui.sel.len(), frames.len(), "the selection stays");
     }
 
     fn srgb_of(c: Rgba) -> [u8; 3] {

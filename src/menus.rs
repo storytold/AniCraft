@@ -42,6 +42,10 @@ pub fn bar(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn enabled(app: &App, id: &str) -> bool {
+    // With Edit Multiple Frames on, the selection is on several keyframes (ADR 0051).
+    if let Some(on) = crate::onion::enabled(app, id) {
+        return on;
+    }
     match id {
         "edit.undo" => app.s.can_undo(),
         "edit.redo" => app.s.can_redo(),
