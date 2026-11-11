@@ -1440,6 +1440,11 @@ impl App {
                     self.onion_ui.sel.clear();
                     return;
                 }
+                // This slice moves artwork across keyframes; other edits stay on one frame.
+                "edit.delete" | "edit.cut" | "edit.copy" | "edit.duplicate" if !self.onion_ui.sel.is_empty() => {
+                    self.status_err(tr!("Edit Multiple Frames moves artwork on several keyframes; to delete, copy or duplicate it, turn Edit Multiple Frames off and work frame by frame."));
+                    return;
+                }
                 _ => {}
             }
         }

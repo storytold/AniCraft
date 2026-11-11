@@ -380,7 +380,7 @@ pub fn click(app: &mut App, sp: Pos2, shift: bool, zoom: f32) {
 
 /// A marquee let go: what lies wholly inside it, on every keyframe shown.
 pub fn marquee(app: &mut App, a: Pos2, b: Pos2, shift: bool) {
-    let r = GRect::new(a.x.min(b.x), a.y.min(b.y), (a.x - b.x).abs(), (a.y - b.y).abs());
+    let r = GRect::from_points(Vec2::new(a.x, a.y), Vec2::new(b.x, b.y));
     let inside: Vec<FrameItem> = items(app).iter().filter(|(_, bb)| !bb.is_empty() && r.contains(bb.min) && r.contains(bb.max)).map(|(it, _)| *it).collect();
     if !shift {
         app.onion_ui.sel.clear();
@@ -458,4 +458,90 @@ pub fn stage_badge(app: &App, painter: &egui::Painter, canvas: Rect) {
     let r = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
     painter.rect_filled(r, T.rc(), T.panel_alt);
     painter.galley(at, galley, color(Type::Caption));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+        // Screenshot mode: default preferences, nothing saved.
+        App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")))
+    }
+
+    #[test]
+    fn edit_multiple_frames_selects_and_moves_across_keyframes_in_one_step() {
+        let mut a = app();
+        a.open_panel(Some("editmultiple"));
+        assert!(editing(&a) && a.s.selection.is_empty(), "the playhead's selection is let go");
+        let sel = a.onion_ui.sel.clone();
+        assert!(sel.iter().any(|it| it.frame != sel[0].frame), "artwork on more than one keyframe: {sel:?}");
+        // Where each selected element is on its own keyframe.
+        let at = |a: &App| -> Vec<f32> {
+            sel.iter()
+                .map(|it| {
+                    let l = a.s.doc.timeline(a.s.scene).layer(it.layer).expect("layer");
+                    let k = l.keyframes.iter().find(|k| k.start == it.frame).expect("keyframe");
+                    k.elements.iter().find(|e| e.id == it.element).expect("element").transform.translation().x
+                })
+                .collect()
+        };
+        let before = at(&a);
+        let steps = a.s.history_len();
+        nudge(&mut a, Vec2::new(10.0, 0.0));
+        assert_eq!(a.s.history_len(), steps + 1, "one undo step");
+        for (b, c) in before.iter().zip(at(&a)) {
+            assert!((c - b - 10.0).abs() < 1e-3, "{b} → {c}");
+        }
+        a.s.undo().expect("undo");
+        assert_eq!(at(&a), before, "one undo takes it all back");
+        assert_eq!(a.onion_ui.sel, sel, "the selection stays");
+        // Off: the selection goes with it, and arrow keys act on the playhead's selection again.
+        toggle_edit_multiple(&mut a);
+        assert!(!editing(&a) && a.onion_ui.sel.is_empty());
+    }
+
+    #[test]
+    fn a_marquee_takes_what_lies_wholly_inside_on_every_keyframe() {
+        let mut a = app();
+        a.open_panel(Some("editmultiple"));
+        let shown = items(&mut a);
+        let (first, _) = shown.iter().find(|(_, b)| b.max.x < 640.0 && b.max.y < 400.0 && !b.is_empty()).copied().expect("something in the top left");
+        marquee(&mut a, pos2(-5.0, -5.0), pos2(640.0, 400.0), false);
+        assert!(a.onion_ui.sel.contains(&first));
+        assert!(a.onion_ui.sel.iter().all(|it| shown.iter().any(|(s, b)| s == it && b.max.x <= 640.0 && b.max.y <= 400.0)));
+        marquee(&mut a, pos2(5000.0, 5000.0), pos2(5001.0, 5001.0), false);
+        assert!(a.onion_ui.sel.is_empty());
+    }
+
+    #[test]
+    fn options_are_saved_and_come_back() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        change(&mut a, &ctx, |o, p| {
+            o.preset(5);
+            o.outlines = true;
+            o.keyframes_only = true;
+            o.fade = false;
+            p.past = Some([1, 2, 3]);
+        });
+        let p = a.prefs.onion.clone();
+        assert_eq!((p.before, p.after, p.all, p.outlines, p.keyframes_only, p.fade, p.past), (5, 5, false, true, true, false, Some([1, 2, 3])));
+        let back = from_prefs(&p);
+        assert_eq!((back.markers, back.outlines, back.keyframes_only, back.fade, back.ghosts), (Markers::Relative { before: 5, after: 5 }, true, true, false, false));
+        assert_eq!(srgb_of(back.past), [1, 2, 3]);
+        change(&mut a, &ctx, |o, _| o.all());
+        assert!(a.prefs.onion.all && from_prefs(&a.prefs.onion).is_all());
+        // A broken file can't ask for more than the limit.
+        let mut big = a.prefs.clone();
+        big.onion.before = u32::MAX;
+        assert_eq!(big.sanitized().onion.before, ONION_REACH_MAX);
+    }
+
+    fn srgb_of(c: Rgba) -> [u8; 3] {
+        let [r, g, b, _] = to_color32(c).to_srgba_unmultiplied();
+        [r, g, b]
+    }
 }
