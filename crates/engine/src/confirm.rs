@@ -113,6 +113,24 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             crate::vfs::exists(path).then(|| overwrite(path, "Exporting"))
         }
+        "file.publish" => {
+            // Publishing replaces what is already there; what this session published itself
+            // it replaces without asking again (ADR 0060).
+            let found = crate::publish::existing(s, &crate::publish::planned(s, p)?);
+            let names: Vec<String> = found.iter().take(3).map(|f| f.display().to_string()).collect();
+            let more = found.len().saturating_sub(names.len());
+            (!found.is_empty()).then(|| Confirmation {
+                title: if found.len() == 1 { "Replace published file?".into() } else { "Replace published files?".into() },
+                message: format!(
+                    "Publishing replaces {} already there: {}{}. This cannot be undone.",
+                    if found.len() == 1 { "a file".to_string() } else { plural(found.len(), "file") },
+                    names.join(", "),
+                    if more > 0 { format!(" and {more} more") } else { String::new() }
+                ),
+                action: "Publish".into(),
+                irreversible: true,
+            })
+        }
         "file.export_sprite_sheet" => {
             // The sheet and its frame map: either one already there is replaced.
             let path = Path::new(p.get("path").and_then(Value::as_str)?);

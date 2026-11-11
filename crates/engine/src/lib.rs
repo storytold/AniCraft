@@ -45,6 +45,7 @@ pub mod render_service;
 pub mod selection;
 pub mod params;
 pub mod player;
+pub mod publish;
 pub mod vfs;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
@@ -77,6 +78,9 @@ pub enum EngineError {
     Render(#[from] anicraft_render::RenderError),
     #[error("{0}")]
     NeedsConfirmation(String),
+    /// A running publish was cancelled (ADR 0060).
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -110,6 +114,7 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(publish::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
     v.extend(cmds_camera::specs());
@@ -300,6 +305,10 @@ pub struct Session {
     gesture_cut: Option<Document>,
     /// The last picture of an open symbol in place, by its key (ADR 0045).
     picture_cache: RefCell<Option<(u64, Arc<editing::StagePicture>)>>,
+    /// A publish this session runs: its Cancel and frame count, which exports check (ADR 0060).
+    pub job: Option<Arc<publish::Control>>,
+    /// Files this session's publishes wrote: publishing again replaces them without asking.
+    pub published: std::collections::BTreeSet<PathBuf>,
 }
 
 /// Each piece of a marquee's cut, with the shape it was cut from.
@@ -365,6 +374,8 @@ impl Session {
             pending_cut: None,
             gesture_cut: None,
             picture_cache: RefCell::new(None),
+            job: None,
+            published: std::collections::BTreeSet::new(),
         }
     }
 

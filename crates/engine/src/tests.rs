@@ -638,6 +638,13 @@ fn panic_hunt_every_command() {
         json!({"on": "x", "left": f64::NAN, "right": "y", "top": null}),
         json!({"left": -1e7, "right": 1e7, "top": -1e7, "bottom": 1e7}),
         json!({"on": true, "symbol": u64::MAX}),
+        // Publish Settings (ADR 0060): ends past the movie, junk scales and names, whole
+        // profiles out of range.
+        json!({"format": "gif", "from": u64::MAX, "to": -1, "scale": f64::NAN, "output": "{name}\u{0}.gif"}),
+        json!({"format": "png", "frame": u64::MAX, "scale": 1e-30, "output": "a/b/c/../../{name}"}),
+        json!({"format": "sprite_sheet", "columns": u64::MAX, "padding": 256, "from": null, "to": null, "output": "{name}{name}{name}.png"}),
+        json!({"profile": {"gif": {"scale": 1e30, "range": {"from": 5, "to": 1}, "output": ""}, "audio": {"bits": 3, "rate": 0}, "html": {"title": "x"}}}),
+        json!({"profile": {"png": {"frame": 99_999, "enabled": true}}, "format": "svg", "enabled": true}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");

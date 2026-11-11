@@ -38,7 +38,10 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
             Err("plug-ins don't use your clipboard")
         }
         _ => match id.split('.').next().unwrap_or("") {
-            "file" => Err("plug-ins can't open, save, import or export files"),
+            "file" => Err("plug-ins can't open, save, import, export or publish files"),
+            // Reading the settings is harmless; changing them changes what Publish writes where.
+            "publish" if id == "publish.settings_get" => Ok(()),
+            "publish" => Err("plug-ins can't change what Publish writes"),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
             "control" => Err("plug-ins can't play the movie"),
             ns if DOCUMENT.contains(&ns) => Ok(()),
