@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* **Repeating bitmap fills on the GL backend** (M3): the GPU stage wrapped a repeating
+  bitmap with a signed remainder, which GLSL leaves undefined for negative values, so on
+  OpenGL (llvmpipe in the FreeBSD VM) the texels at the bitmap's left and top edges came out
+  wrong. It now wraps without one, and a test keeps every shader free of signed remainders.
 * **Library and Properties polish** (ADR 0053, M2).
   * **Drag Library items onto the stage**: symbols and bitmaps land at the pointer on the
     active layer at the playhead, a sound goes onto that layer's keyframe; drag several at once.
