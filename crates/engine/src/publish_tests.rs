@@ -283,6 +283,13 @@ fn in_a_browser_every_file_comes_back_and_several_make_one_zip() {
         assert_eq!(&z[end..end + 4], &[0x50, 0x4b, 0x05, 0x06]);
         assert_eq!(u16::from_le_bytes([z[end + 10], z[end + 11]]), 3);
         assert!(z.windows(16).any(|w| w == b"img/Untitled.svg"));
+        // AniCraft's hardened ZIP reader (the .fla one) opens it, checks every CRC, and gets
+        // each file back exactly.
+        let archive = anicraft_xfl::zip::Archive::open(&z).unwrap();
+        for (p, data) in &files {
+            let name = p.to_string_lossy().replace('\\', "/");
+            assert_eq!(archive.read(&name).unwrap().as_ref(), Some(data), "{name}");
+        }
         let total: usize = files.iter().map(|(_, d)| d.len()).sum();
         assert!(z.len() > total && z.len() < total + 400, "stored, not compressed: {} for {total}", z.len());
     })
@@ -290,11 +297,6 @@ fn in_a_browser_every_file_comes_back_and_several_make_one_zip() {
     .unwrap();
 }
 
-#[test]
-fn crc32_matches_the_standard_check_value() {
-    assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-    assert_eq!(crc32(b""), 0);
-}
 
 #[test]
 fn plugins_may_read_but_not_change_or_run_publishing() {

@@ -304,7 +304,7 @@ pub fn existing(s: &Session, steps: &[Step]) -> Vec<PathBuf> {
 }
 
 /// The formats `file.publish` params name, if they name any.
-fn only(p: &Value) -> Result<Option<Vec<PublishFormat>>> {
+pub fn formats_param(p: &Value) -> Result<Option<Vec<PublishFormat>>> {
     match p.get("formats") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Array(list)) => list
@@ -319,7 +319,7 @@ fn only(p: &Value) -> Result<Option<Vec<PublishFormat>>> {
 
 /// The plan `file.publish` with `p` would run, for the confirmation (ADR 0004).
 pub(crate) fn planned(s: &Session, p: &Value) -> Option<Vec<Step>> {
-    plan(&s.doc, s.path.as_deref(), only(p).ok()?.as_deref()).ok()
+    plan(&s.doc, s.path.as_deref(), formats_param(p).ok()?.as_deref()).ok()
 }
 
 // ----- running ---------------------------------------------------------------------------------
@@ -503,7 +503,7 @@ impl Publisher {
 }
 
 fn publish_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    let steps = plan(&s.doc, s.path.as_deref(), only(p)?.as_deref()).map_err(EngineError::State)?;
+    let steps = plan(&s.doc, s.path.as_deref(), formats_param(p)?.as_deref()).map_err(EngineError::State)?;
     if steps.is_empty() {
         return Err(EngineError::State("no format is on in Publish Settings: turn one on first".into()));
     }
@@ -718,7 +718,7 @@ fn settings_set(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(settings_json(&s.doc, s.path.as_deref()))
 }
 
-/// Writes `files` (path, bytes) as one uncompressed ZIP archive (what the browser downloads
+/// Writes `files` (path, bytes) as one uncompressed ZIP archive, per PKWARE's APPNOTE (what the browser downloads
 /// when Publish writes more than one file). Paths keep their folders, with `/` between them.
 pub fn zip(files: &[(PathBuf, Vec<u8>)]) -> std::result::Result<Vec<u8>, String> {
     let mut out: Vec<u8> = Vec::new();
@@ -731,7 +731,7 @@ pub fn zip(files: &[(PathBuf, Vec<u8>)]) -> std::result::Result<Vec<u8>, String>
         let name_len = u16::try_from(name.len()).map_err(|_| "a file name is too long".to_string())?;
         let size = u32::try_from(data.len()).map_err(|_| format!("{name} is too large for a ZIP archive (4 GB)"))?;
         let offset = u32::try_from(out.len()).map_err(|_| "the archive is too large (4 GB)".to_string())?;
-        let crc = crc32(data);
+        let crc = anicraft_xfl::zip::crc32(data);
         // Local file header: version 2.0, UTF-8 names (bit 11), stored.
         le32(&mut out, 0x0403_4b50);
         for x in [20u16, 0x0800, 0, 0, 0x21] {
@@ -770,30 +770,6 @@ pub fn zip(files: &[(PathBuf, Vec<u8>)]) -> std::result::Result<Vec<u8>, String>
     le32(&mut out, at);
     le16(&mut out, 0);
     Ok(out)
-}
-
-/// CRC-32 (IEEE 802.3, reflected, as ZIP uses), a byte at a time from a table.
-fn crc32(data: &[u8]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut t = [0u32; 256];
-        let mut i = 0;
-        while i < 256 {
-            let mut c = i as u32;
-            let mut k = 0;
-            while k < 8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-                k += 1;
-            }
-            t[i] = c;
-            i += 1;
-        }
-        t
-    };
-    let mut c = !0u32;
-    for &b in data {
-        c = TABLE[((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8);
-    }
-    !c
 }
 
 #[cfg(test)]
