@@ -488,3 +488,15 @@ fn trace_lines_are_cut_at_whole_characters() {
     let emoji = format!("{}{}", "a".repeat(crate::MAX_TRACE_CHARS - 1), "😀".repeat(5));
     assert_eq!(run::trace_line(emoji).encode_utf16().count(), crate::MAX_TRACE_CHARS);
 }
+
+#[test]
+fn a_full_budget_runs_quickly() {
+    let c = ok("var n:int = 0; var s:Number = 0; while (true) { n++; s += Math.abs(n % 7 - 3) * 0.5; }");
+    let mut m = Mock { decls: Decls::build([&c]), ..Mock::default() };
+    let t0 = std::time::Instant::now();
+    let (used, r) = run::run_script(&mut m, &c.body, &c.inner, run::FUEL_PER_RUN);
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("{used} fuel in {ms:.2} ms");
+    assert_eq!(r, Err(Stop::Fuel));
+    assert!(ms < 500.0, "{ms} ms");
+}
