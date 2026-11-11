@@ -441,6 +441,12 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 impl App {
+    /// Show the last update's result once the native window begins drawing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_update_outcome_on_start(&mut self) {
+        self.updates.startup();
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
         #[cfg_attr(not(gpu_stage), allow(unused_mut))]
         let mut app = App::with_context(&cc.egui_ctx, session, shot);
@@ -2163,8 +2169,11 @@ impl App {
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         #[cfg(not(target_arch = "wasm32"))]
-        if self.updates.show(&ctx, !self.s.is_dirty() && !self.playing) {
-            return;
+        {
+            let safe = crate::updates::safe_to_install(self);
+            if self.updates.show(&ctx, safe) {
+                return;
+            }
         }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);

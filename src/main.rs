@@ -114,6 +114,9 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         options,
         Box::new(move |cc| {
             let mut a = app::App::new(cc, session, shot);
+            if a.shot.is_none() {
+                a.show_update_outcome_on_start();
+            }
             a.preview_look(&cc.egui_ctx, look.theme, look.scale);
             a.open_panel(open.as_deref());
             // An imported document says what came across, as opening it from the menu does.
@@ -134,7 +137,13 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    updates::finish_helper();
+    if let Some(result) = updates::finish_helper() {
+        let failed = result.is_err();
+        if let Err(error) = result {
+            eprintln!("Update failed: {error}");
+        }
+        std::process::exit(i32::from(failed));
+    }
     let mut shot: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
     let mut open: Option<String> = None;
