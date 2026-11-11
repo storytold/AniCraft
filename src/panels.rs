@@ -1319,6 +1319,33 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                             }
                         });
                     }
+                    // Points pinned to frames (ADR 0049), and the keyboard route to pinning at the
+                    // playhead.
+                    let pins = base.map(|b| m.pinned_anchors(&b)).unwrap_or_default();
+                    if let (Some(&first), Some(&last)) = (pins.first(), pins.last()) {
+                        let offset = frame.saturating_sub(k.start);
+                        let n = pins.len().saturating_sub(2);
+                        row_prose(ui, tr!("Pinned"), |ui| {
+                            let how = tr!("Points of the motion path pinned to frames: the object passes each one exactly then, and the X and Y keyframes there are its place. The ends are always pinned. Moving the object on the stage at a frame pins a point there; with the Subselection tool (A), right-click a point to pin or unpin it.");
+                            ui.label(text(Type::Body, trn!("{n} point", "{n} points", n))).on_hover_text(how);
+                            match pins.iter().find(|q| q.frame == offset) {
+                                Some(&q) if q != first && q != last => {
+                                    let tip = tr!("Point {anchor} shapes the path only again; the X and Y keyframes of frame {frame} go", anchor = q.anchor, frame = frame + 1);
+                                    if ui.small_button(tr!("Unpin")).on_hover_text(tip).named(tr!("Unpin the motion path point at this frame")).clicked() {
+                                        app.run("motion.unpin_point", json!({"frame": frame}));
+                                    }
+                                }
+                                Some(_) => {}
+                                None if first.frame < offset && offset < last.frame => {
+                                    let tip = tr!("Add a point where the object is on frame {frame}, pinned to it: nothing moves now, and the object passes the point then however the path is edited", frame = frame + 1);
+                                    if ui.small_button(tr!("Pin Here")).on_hover_text(tip).named(tr!("Pin the motion path at this frame")).clicked() {
+                                        app.run("motion.pin_point", json!({"frame": frame}));
+                                    }
+                                }
+                                None => {}
+                            }
+                        });
+                    }
                     let mut orient = m.orient;
                     if crate::theme::checkbox(ui, &mut orient, tr!("Orient to path")).on_hover_text(tr!("Turn the object as its motion path turns")).named(tr!("Orient to path")).changed() {
                         app.run("motion.orient", json!({"orient": orient}));
