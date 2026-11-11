@@ -158,14 +158,28 @@
           }
         }
         if (it.s) {
-          const w = it.s[4] * AniCraft.meanScale(it.m) * k;
+          const scale = AniCraft.meanScale(it.m);
+          const w = it.s[4] * scale * k;
           if (w > 0 && Number.isFinite(w)) {
             g.setTransform(k, 0, 0, k, 0, 0);
             g.lineWidth = w / k;
-            g.lineJoin = "round";
-            g.lineCap = "round";
+            // Caps, joins and dashes (stage units: local lengths × the mean scale, like the width).
+            const st = it.k;
+            g.lineJoin = st ? st.j : "round";
+            g.lineCap = st ? st.c : "round";
+            if (st) g.miterLimit = st.ml;
+            const dashed = st && st.d && st.d.length > 0;
+            if (dashed) {
+              g.setLineDash(st.d.map((x) => x * scale));
+              g.lineDashOffset = (st.o || 0) * scale;
+            }
             g.strokeStyle = css(AniCraft.applyEffect(it.c, it.s));
             g.stroke(stagePath(path, it.m));
+            if (dashed) {
+              g.setLineDash([]);
+              g.lineDashOffset = 0;
+            }
+            if (st) g.miterLimit = 10;
           }
         }
       },

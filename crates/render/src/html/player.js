@@ -299,7 +299,7 @@ var AniCraft = (function () {
     }
     const xf = mul(cx.xf, m);
     if (e.y === undefined) {
-      const it = { p: e.p, m: xf, f: e.f === undefined ? -1 : e.f, s: e.s || null, eo: !!e.eo, c: concat(cx.c, fx), clip: clip, masks: masks, group: cx.group };
+      const it = { p: e.p, m: xf, f: e.f === undefined ? -1 : e.f, s: e.s || null, k: e.k || null, eo: !!e.eo, c: concat(cx.c, fx), clip: clip, masks: masks, group: cx.group };
       dl.items.push(it);
       if (v) v.item(it);
       return;

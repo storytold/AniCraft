@@ -5,9 +5,10 @@
 //! that persists from frame to frame (same layer, element and path structure) becomes one
 //! shape layer, its outline baked into stage space. Whatever changes (outline, colours,
 //! gradient points, stroke width, opacity, masks) is written as hold keyframes at the frames
-//! where it changes, so any Lottie player shows exactly AniCraft's frames. Strokes use round
-//! joins and caps, like the renderer; variable-width strokes are filled outlines (the
-//! polygons the renderer fills).
+//! where it changes, so any Lottie player shows exactly AniCraft's frames. Strokes keep their
+//! caps, joins, miter limit and dashes (dash lengths scaled like the width, dots as zero-length
+//! round dashes; ADR 0046); variable-width strokes are filled outlines (the polygons the
+//! renderer fills, dashes included).
 //!
 //! Not carried across (counted in the report): bitmap fills; nested masks keep only the
 //! innermost mask; a symbol fading as one group is faded shape by shape; stretched radial
@@ -135,11 +136,52 @@ enum Fill {
 struct Sample {
     paths: Vec<Bez>,
     fill: Option<Fill>,
-    stroke: Option<(Rgba, f32)>,
+    stroke: Option<Line>,
     /// Group opacity (a fading symbol), applied to the shape as a whole.
     opacity: f32,
     /// Mask outlines this artwork shows through (their union).
     masks: Vec<Bez>,
+}
+
+/// A stroke in one frame, in stage space.
+#[derive(Clone, PartialEq)]
+struct Line {
+    color: Rgba,
+    width: f32,
+    /// Lottie's line cap and join numbers (1 butt / miter, 2 round, 3 square / bevel).
+    cap: u8,
+    join: u8,
+    miter: f32,
+    /// On and off lengths (stage units), and the offset into them.
+    dash: Vec<f32>,
+    offset: f32,
+}
+
+impl Line {
+    /// A round, solid line (outline mode's hairline).
+    fn round(color: Rgba, width: f32) -> Line {
+        Line { color, width, cap: 2, join: 2, miter: 4.0, dash: Vec::new(), offset: 0.0 }
+    }
+
+    fn of(st: &anicraft_doc::Stroke, color: Rgba, k: f32) -> Line {
+        use anicraft_doc::{Cap, Join};
+        let style = &st.style;
+        let cap = match style.effective_cap() {
+            Cap::Butt => 1,
+            Cap::Round => 2,
+            Cap::Square => 3,
+        };
+        let join = match style.join {
+            Join::Miter => 1,
+            Join::Round => 2,
+            Join::Bevel => 3,
+        };
+        let (dash, offset) = style.dash.as_ref().map_or((Vec::new(), 0.0), |d| {
+            let (l, o) = d.pattern(st.width);
+            (l.into_iter().map(|x| x * k).collect(), o * k)
+        });
+        Line { color, width: st.width * k, cap, join, miter: style.miter_limit, dash, offset }
+    }
 }
 
 /// Subpaths as (closed, vertex count): what must match for values to be keyframed.
@@ -155,7 +197,8 @@ struct Key {
     shape: Structure,
     fill: u8,
     stops: usize,
-    stroke: bool,
+    /// The stroke's cap, join and dash entry count (its lengths may change from frame to frame).
+    stroke: Option<(u8, u8, usize)>,
     masks: Structure,
     /// Lottie layer blend mode (`bm`).
     blend: u8,
@@ -222,7 +265,7 @@ fn sample(item: &DisplayItem, opacity: f32, masks: Vec<Bez>, report: &mut HashSe
     let fx = &item.color;
     let (fill, stroke) = if let Some(c) = item.outline {
         // Outline mode: a 1 px hairline in the layer colour, as on the stage.
-        (None, Some((c, 1.0)))
+        (None, Some(Line::round(c, 1.0)))
     } else {
         let fill = match &item.fill {
             Some(Paint::Solid(c)) => Some(Fill::Solid { color: fx.apply(*c), rule: item.fill_rule }),
@@ -247,7 +290,7 @@ fn sample(item: &DisplayItem, opacity: f32, masks: Vec<Bez>, report: &mut HashSe
         };
         let stroke = item.stroke.as_ref().and_then(|s| {
             let w = s.width * m.mean_scale();
-            (w.is_finite() && w > 0.0).then(|| (fx.apply(s.color), w))
+            (w.is_finite() && w > 0.0).then(|| Line::of(s, fx.apply(s.color), m.mean_scale()))
         });
         (fill, stroke)
     };
@@ -354,7 +397,7 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
                     Some(Fill::Gradient { stops, .. }) => stops.len(),
                     _ => 0,
                 },
-                stroke: s.stroke.is_some(),
+                stroke: s.stroke.as_ref().map(|l| (l.cap, l.join, l.dash.len())),
                 masks: s.masks.iter().map(|b| (b.closed, b.v.len())).collect(),
                 blend,
             };
@@ -485,11 +528,28 @@ fn layer(tr: &Track, ind: usize) -> Value {
         let values: Vec<(u32, Value)> = f.iter().filter_map(|(t, s)| s.paths.get(k).map(|b| (*t, b.to_value()))).collect();
         items.push(json!({"ty": "sh", "nm": format!("Path {}", k + 1), "ks": shape_prop(&values)}));
     }
-    if tr.key.stroke {
-        let color: Vec<(u32, Value)> = f.iter().filter_map(|(t, s)| s.stroke.map(|(c, _)| (*t, rgb(c)))).collect();
-        let opacity: Vec<(u32, Value)> = f.iter().filter_map(|(t, s)| s.stroke.map(|(c, _)| (*t, n(c.sanitized().a * 100.0)))).collect();
-        let width: Vec<(u32, Value)> = f.iter().filter_map(|(t, s)| s.stroke.map(|(_, w)| (*t, n(w)))).collect();
-        items.push(json!({"ty": "st", "nm": "Stroke", "c": prop(&color), "o": prop(&opacity), "w": prop(&width), "lc": 2, "lj": 2, "ml": 4}));
+    if let Some((cap, join, dashes)) = tr.key.stroke {
+        let lines: Vec<(u32, &Line)> = f.iter().filter_map(|(t, s)| s.stroke.as_ref().map(|l| (*t, l))).collect();
+        let values = |g: &dyn Fn(&Line) -> Value| lines.iter().map(|(t, l)| (*t, g(l))).collect::<Vec<(u32, Value)>>();
+        let color = values(&|l| rgb(l.color));
+        let opacity = values(&|l| n(l.color.sanitized().a * 100.0));
+        let width = values(&|l| n(l.width));
+        // The miter limit is a plain number in Lottie: the first frame's.
+        // (Round and bevel joins don't use it: Lottie's usual 4, as before styles.)
+        let miter = if join == 1 { lines.first().map_or(json!(4), |(_, l)| n(l.miter)) } else { json!(4) };
+        let mut st = json!({"ty": "st", "nm": "Stroke", "c": prop(&color), "o": prop(&opacity), "w": prop(&width), "lc": cap, "lj": join, "ml": miter});
+        if dashes > 0 {
+            // Dash, gap, dash, gap…, then the offset; each animates like any value.
+            let mut d: Vec<Value> = (0..dashes)
+                .map(|k| {
+                    let (code, name) = if k % 2 == 0 { ("d", "dash") } else { ("g", "gap") };
+                    json!({"n": code, "nm": name, "v": prop(&values(&|l| n(l.dash.get(k).copied().unwrap_or(0.0))))})
+                })
+                .collect();
+            d.push(json!({"n": "o", "nm": "offset", "v": prop(&values(&|l| n(l.offset)))}));
+            st["d"] = Value::Array(d);
+        }
+        items.push(st);
     }
     match f.first().and_then(|(_, s)| s.fill.as_ref()) {
         Some(Fill::Solid { rule: r, .. }) => {
@@ -628,5 +688,33 @@ mod tests {
         assert!(it.iter().any(|i| i["ty"] == "fl"), "filled outline");
         assert!(!it.iter().any(|i| i["ty"] == "st"), "no Lottie stroke");
         assert!(e.report.is_empty(), "nothing lost: {:?}", e.report);
+    }
+
+    #[test]
+    fn stroke_caps_joins_and_dashes_carry_across() {
+        use anicraft_doc::{Cap, Dash, Document, Element, ElementId, ElementKind, Join, Shape, Stroke, StrokeStyle};
+        let export = |st: Stroke| {
+            let mut doc = Document::default();
+            let shape = Shape { path: std::sync::Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(st), fill_rule: FillRule::NonZero, merge: false };
+            let el = Element { id: ElementId(77), name: String::new(), transform: Affine::scale(2.0, 2.0), color: Default::default(), kind: ElementKind::Shape(shape) };
+            let layer = std::sync::Arc::make_mut(&mut doc.timeline_mut(0).layers[0]);
+            layer.keyframe_mut(0).unwrap().elements.push(std::sync::Arc::new(el));
+            let v = parse(&to_lottie(&doc, "s", 0, 0, false));
+            v["layers"][0]["shapes"][0]["it"].as_array().unwrap().iter().find(|i| i["ty"] == "st").cloned().unwrap()
+        };
+        // Round and solid as before.
+        let st = export(Stroke::new(Rgba::BLACK, 3.0));
+        assert_eq!((st["lc"].clone(), st["lj"].clone(), st["ml"].clone(), st.get("d").is_none()), (json!(2), json!(2), json!(4), true));
+        // Butt caps, miter joins with their limit, dashes scaled like the width.
+        let style = StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 6.0, dash: Some(Dash::Dashed { lengths: vec![4.0, 1.5].into(), offset: 1.0 }) };
+        let st = export(Stroke::new(Rgba::BLACK, 3.0).with_style(style));
+        assert_eq!((st["lc"].clone(), st["lj"].clone(), st["ml"].clone(), st["w"]["k"].clone()), (json!(1), json!(1), json!(6.0), json!(6.0)));
+        let d = st["d"].as_array().unwrap();
+        let got: Vec<(&str, f64)> = d.iter().map(|e| (e["n"].as_str().unwrap(), e["v"]["k"].as_f64().unwrap())).collect();
+        assert_eq!(got, [("d", 8.0), ("g", 3.0), ("o", 2.0)]);
+        // Dots: zero-length dashes with round caps, whatever the cap.
+        let st = export(Stroke::new(Rgba::BLACK, 3.0).with_style(StrokeStyle { cap: Cap::Square, join: Join::Bevel, dash: Dash::dotted(2.0), ..StrokeStyle::default() }));
+        assert_eq!((st["lc"].clone(), st["lj"].clone()), (json!(2), json!(3)));
+        assert_eq!((st["d"][0]["v"]["k"].as_f64(), st["d"][1]["v"]["k"].as_f64()), (Some(0.0), Some(10.0)));
     }
 }
