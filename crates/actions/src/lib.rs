@@ -396,7 +396,14 @@ pub fn check_actions(list: &[Action]) -> Result<(), String> {
 
 /// Repairs a loaded list: at most [`MAX_ACTIONS`], malformed actions dropped.
 pub fn sanitize_actions(list: &mut Vec<Action>) {
-    if list.len() > MAX_ACTIONS || list.iter().any(|a| a.check().is_err()) {
+    let out_of_range = |a: &Action| match a {
+        Action::SetProperty { property, value, .. } => {
+            let (lo, hi) = property.range();
+            *value < lo || *value > hi
+        }
+        _ => false,
+    };
+    if list.len() > MAX_ACTIONS || list.iter().any(|a| a.check().is_err() || out_of_range(a)) {
         let old = std::mem::take(list);
         *list = old.into_iter().take(MAX_ACTIONS).filter_map(Action::sanitized).collect();
     }
@@ -723,6 +730,14 @@ fn printable(s: &str, max: usize) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sanitize_clamps_set_property_even_when_the_list_is_otherwise_valid() {
+        let set = |property, value| Action::SetProperty { target: Target::this(), property, value };
+        let mut list = vec![set(Property::Alpha, 5.0), set(Property::X, 1e12)];
+        sanitize_actions(&mut list);
+        assert_eq!(list, vec![set(Property::Alpha, 1.0), set(Property::X, Property::X.range().1)]);
+    }
 
     #[test]
     fn actions_read_and_write_as_small_json_objects() {
