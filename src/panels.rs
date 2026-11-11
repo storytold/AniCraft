@@ -2105,5 +2105,7 @@ fn ease_curve(ui: &mut egui::Ui, e: anicraft_engine::doc::Easing) {
 }
 
 fn library(app: &mut App, ui: &mut egui::Ui) {
-    crate::library::panel(app, ui);
+    // Where the panel is, for files dropped on it (ADR 0059).
+    let r = ui.scope(|ui| crate::library::panel(app, ui)).response.rect;
+    app.library.drop_zone.panel = Some(r);
 }

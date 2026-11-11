@@ -140,6 +140,13 @@ fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>
 fn registry_items(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
     for spec in cmds.iter().filter(|c| c.menu == top) {
         item(app, ui, spec);
+        if spec.id == "file.open" {
+            // Below Open, as in Animate: the recent files, and the start screen (ADR 0059).
+            ui.menu_button(tr!("Open Recent"), |ui| crate::recent::menu(app, ui));
+            if ui_item(ui, tr!("Start Screen"), "", None) {
+                crate::start::open(app);
+            }
+        }
     }
     let mut subs: Vec<&str> = Vec::new();
     for c in cmds {

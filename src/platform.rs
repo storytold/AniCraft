@@ -167,6 +167,29 @@ pub fn save_settings(json: &str) -> Result<(), String> {
     }
 }
 
+/// A recent file's start-screen picture (ADR 0059): `Thumbnails/<key>.png` in the settings
+/// folder, or browser storage on the web. `None` when there is none yet.
+pub fn load_thumbnail(key: &str) -> Option<Vec<u8>> {
+    #[cfg(target_arch = "wasm32")]
+    return crate::web::storage_get(&format!("anicraft.thumb.{key}")).and_then(|t| anicraft_engine::doc::base64_decode(&t));
+    #[cfg(not(target_arch = "wasm32"))]
+    config_dir().and_then(|d| std::fs::read(d.join("Thumbnails").join(format!("{key}.png"))).ok()) // i18n-exempt: a folder name
+}
+
+/// Keeps a recent file's picture (a small PNG) for the start screen.
+pub fn save_thumbnail(key: &str, png: &[u8]) -> Result<(), String> {
+    #[cfg(target_arch = "wasm32")]
+    return crate::web::storage_set(&format!("anicraft.thumb.{key}"), &anicraft_engine::doc::base64_encode(png));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = config_dir().ok_or(tr!("no settings folder on this system"))?.join("Thumbnails"); // i18n-exempt: a folder name
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let (path, tmp) = (dir.join(format!("{key}.png")), dir.join(format!("{key}.png.tmp")));
+        std::fs::write(&tmp, png).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    }
+}
+
 /// Why this build can't run `cmd`, if it can't: a web page can't start ffmpeg or keep files in
 /// a folder of the computer (ADR 0036). The desktop app runs everything.
 pub fn unavailable(cmd: &str) -> Option<&'static str> {

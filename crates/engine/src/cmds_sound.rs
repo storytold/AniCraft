@@ -99,7 +99,7 @@ fn sound_json(s: &Sound) -> Value {
 }
 
 /// Import to Library: a sound (or an image) goes into the library without being placed.
-fn import_to_library(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn import_to_library(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     if is_sound(&path) {
         let id = add_sound(s, &path, opt_str(p, "name")?)?;
