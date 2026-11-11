@@ -9,7 +9,7 @@ use crate::cmds_draw::{MAX_EXTENT, add_shape, object_param, style};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
 use anicraft_doc::{Element, ElementId, ElementKind, Shape};
-use anicraft_geom::edit::{ANCHOR, polyline_path, simplify};
+use anicraft_geom::edit::{ANCHOR, C1, C2, polyline_path, simplify};
 use anicraft_geom::{Affine, Path, PathCmd, Vec2, fit_curve};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             true,
             draw_freehand,
         ),
-        c("path.move_points", "Move Points", "", None, "{id, points: [[cmd, slot], ..], dx, dy}", true, move_points),
+        c("path.move_points", "Move Points", "", None, "{id, points: [[cmd, slot], ..], dx, dy, smooth?: bool} (a handle moved alone at a smooth anchor turns the other one with it, keeping its length, unless smooth is false: Alt breaks the pair)", true, move_points),
         c("path.add_point", "Add Anchor Point", "", None, "{id, x, y, slop?}", true, add_point),
         c("path.delete_points", "Delete Anchor Points", "", None, "{id, cmds: [..]}", true, delete_points),
         c("path.convert_point", "Convert Anchor Point", "", None, "{id, cmd, smooth: bool}", true, convert_point),
@@ -149,6 +149,7 @@ fn move_points(s: &mut Session, p: &Value) -> Result<Value> {
         let slot = pair.get(1).and_then(Value::as_u64).filter(|s| *s <= 2).ok_or_else(bad)?;
         wanted.push((usize::try_from(cmd).unwrap_or(usize::MAX), slot as u8));
     }
+    let smooth = opt_bool(p, "smooth")?.unwrap_or(true);
     let (sh, m) = shape_mut(s, p)?;
     let inv = m.inverse().ok_or_else(|| EngineError::State("the shape is scaled to zero".into()))?;
     let local = inv.apply_vector(d);
@@ -168,13 +169,40 @@ fn move_points(s: &mut Session, p: &Value) -> Result<Value> {
             set.insert((cmd, slot));
         }
     }
+    // The other handle of a smooth anchor whose handle moves alone (ADR 0045), as it was.
+    let partners: Vec<(usize, u8, Vec2, Vec2)> = if smooth { set.iter().filter_map(|&(cmd, slot)| partner(path, &set, cmd, slot)).collect() } else { Vec::new() };
     for &(cmd, slot) in &set {
         if let Some(q) = path.point(cmd, slot) {
             path.set_point(cmd, slot, q + local);
         }
     }
+    for (cmd, slot, anchor, handle) in partners {
+        if let Some(k) = path.point(cmd, slot) {
+            path.set_point(cmd, slot, anicraft_geom::raw::turned_opposite(anchor, handle + local, k));
+        }
+    }
     check_path(path)?;
     Ok(json!({"moved": set.len()}))
+}
+
+/// For handle `(cmd, slot)` moving alone: the other handle of its anchor when the anchor is smooth
+/// and that handle stays (`(cmd, slot)`), with the anchor and this handle where they are now.
+fn partner(path: &Path, moving: &BTreeSet<(usize, u8)>, cmd: usize, slot: u8) -> Option<(usize, u8, Vec2, Vec2)> {
+    // Slot 2 is the in-handle of anchor `cmd`; slot 1 the out-handle of the anchor before.
+    let anchor = match slot {
+        C2 => path.canonical_anchor(cmd),
+        C1 => path.canonical_anchor(cmd.checked_sub(1)?),
+        _ => return None,
+    };
+    let (i, o) = path.anchor_segments(anchor);
+    let other = if slot == C2 { (o?, C1) } else { (i?, C2) };
+    if moving.contains(&other) || path.anchor_group(anchor).iter().any(|g| g.1 == ANCHOR && moving.contains(g)) {
+        return None;
+    }
+    let (a, h, k) = (path.point(anchor, ANCHOR)?, path.point(cmd, slot)?, path.point(other.0, other.1)?);
+    // A quadratic's control is both its ends' handle: turning it would bend the other end.
+    let cubic = |c: usize| matches!(path.cmds.get(c), Some(PathCmd::CubicTo(..)));
+    (cubic(other.0) && anicraft_geom::raw::smooth_at(a, h, k)).then_some((other.0, other.1, a, h))
 }
 
 fn add_point(s: &mut Session, p: &Value) -> Result<Value> {

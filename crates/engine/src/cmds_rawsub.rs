@@ -10,8 +10,8 @@
 //! Which anchors are selected is view state, kept by the editor (as for drawing objects): the
 //! commands here report anchors and handles by stage position, and take positions back.
 
-use crate::cmds_raw::{check_extent, edit_edge, remerge_in_place};
-use crate::merge::mergeable;
+use crate::cmds_raw::{check_extent, edit_edge, follow_edge, remerge_in_place};
+use crate::merge::{mergeable, reach};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
 use anicraft_doc::{Element, ElementId, ElementKind};
@@ -49,7 +49,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move Handle",
             "",
             None,
-            "{id, cmd, slot: 1|2, dx, dy, merge?: bool} moves a handle (control point `slot` of segment `cmd` of shape `id`, as `raw.points` lists it) by (dx, dy): the curve changes in every raw shape that has that edge, and they merge again (unless merge is false)",
+            "{id, cmd, slot: 1|2, dx, dy, smooth?: bool, merge?: bool} moves a handle (control point `slot` of segment `cmd` of shape `id`, as `raw.points` lists it) by (dx, dy): the curve changes in every raw shape that has that edge, and they merge again (unless merge is false); at a smooth anchor the other handle turns to stay opposite, keeping its length (unless smooth is false: Alt breaks the pair)",
             true,
             move_handle,
         ),
@@ -400,6 +400,32 @@ fn subselect_rect(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ----- handles -----------------------------------------------------------------------------------
 
+/// The other curve at the anchor of handle `slot` of `old` (stage space) when the anchor is smooth
+/// there: the one edge leaving it whose handle lies opposite this one ([`rawgeom::smooth_at`]), in
+/// any raw shape on the layer (or in `el` alone, a drawing object). Oriented from the anchor.
+fn opposite_handle(els: &[Arc<Element>], el: &Element, raw: bool, old: &Cubic, slot: usize) -> Option<rawgeom::Seg> {
+    let (a, h) = if slot == 1 { (old[0], old[1]) } else { (old[3], old[2]) };
+    let dragged = rawgeom::Seg { c: if slot == 1 { *old } else { [old[3], old[2], old[1], old[0]] }, line: false };
+    let tol = 1.5 * SNAP;
+    let mut subs = Vec::new();
+    let from = |e: &Element| match &e.kind {
+        ElementKind::Shape(sh) => rawgeom::subpaths(&sh.path.transformed(&e.transform)),
+        _ => Vec::new(),
+    };
+    if raw {
+        for e in els.iter().filter(|e| mergeable(e).is_some_and(|sh| reach(sh, &e.transform).contains(a))) {
+            subs.extend(from(e));
+        }
+    } else {
+        subs = from(el);
+    }
+    let edges = rawgeom::distinct_edges(rawgeom::edges_at(&subs, a, tol), tol);
+    let mut found = edges.into_iter().filter(|f| !rawgeom::same_edge(f, &dragged, tol) && !f.line && rawgeom::smooth_at(a, h, f.c[1]));
+    let f = found.next()?;
+    // Two candidates: a junction, not a smooth pair.
+    found.next().is_none().then_some(f)
+}
+
 fn move_handle(s: &mut Session, p: &Value) -> Result<Value> {
     let id = ElementId(opt_u64(p, "id")?.ok_or_else(|| EngineError::Param("param 'id' is required".into()))?);
     let cmd = opt_u64(p, "cmd")?.ok_or_else(|| EngineError::Param("param 'cmd' is required".into()))?;
@@ -426,7 +452,18 @@ fn move_handle(s: &mut Session, p: &Value) -> Result<Value> {
     bounds.move_to(new[0]).cubic_to(new[1], new[2], new[3]);
     check_extent(&bounds)?;
     let raw = mergeable(el).is_some();
-    let changed = edit_edge(s, id, cmd, &old, &new, raw)?;
+    // A smooth anchor's other handle turns with this one (ADR 0045).
+    let partner = if opt_bool(p, "smooth")?.unwrap_or(true) { opposite_handle(&els, el, raw, &old, slot).map(|f| (f, new[slot])) } else { None };
+    let mut changed = edit_edge(s, id, cmd, &old, &new, raw)?;
+    if let Some((f, h)) = partner {
+        let a = f.c[0];
+        let turned = rawgeom::Seg { c: [a, rawgeom::turned_opposite(a, h, f.c[1]), f.c[2], f.c[3]], line: false };
+        for e in follow_edge(s, (!raw).then_some(id), &f.c, &turned.c)? {
+            if !changed.contains(&e) {
+                changed.push(e);
+            }
+        }
+    }
     if raw && merge_after {
         remerge_in_place(s, &changed)?;
     }

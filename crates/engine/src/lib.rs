@@ -20,6 +20,7 @@ mod cmds_paint;
 mod cmds_path;
 pub mod cmds_raw;
 pub mod cmds_rawsub;
+mod cmds_rawpoints;
 mod cmds_recovery;
 mod cmds_script;
 pub mod cmds_plugin;
@@ -116,6 +117,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_path::specs());
     v.extend(cmds_raw::specs());
     v.extend(cmds_rawsub::specs());
+    v.extend(cmds_rawpoints::specs());
     v.extend(cmds_brush::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
@@ -901,6 +903,8 @@ mod merge_tests;
 mod raw_tests;
 #[cfg(test)]
 mod rawsub_tests;
+#[cfg(test)]
+mod rawpoints_tests;
 #[cfg(test)]
 mod brush_tests;
 #[cfg(test)]
