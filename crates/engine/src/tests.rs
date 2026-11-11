@@ -623,6 +623,15 @@ fn panic_hunt_every_command() {
         json!({"first": u64::MAX, "last": 0, "dx": 5, "dy": 5, "items": []}),
         json!({"first": 40, "last": 0, "dx": 3, "dy": -2}),
         json!({"first": 0, "last": 100_001, "dx": f64::NAN, "dy": 0, "items": [[1, 2]]}),
+        // Edit Multiple Frames, complete (ADR 0051): transforms at the limits, pivots and edges
+        // that aren't, pastes onto ranges with nothing in them, merges of what isn't raw.
+        json!({"first": 0, "last": 99_999, "a": 0, "b": 0, "c": 0, "d": 0, "e": 1e30, "f": 0, "merge": "x"}),
+        json!({"first": 0, "last": 50, "a": 1e9, "b": 1, "c": 1, "d": 1e-9, "e": 0, "f": f64::NAN}),
+        json!({"first": 0, "last": 50, "rotate": 1e9, "scale_x": 1e-9, "scale_y": -1e9, "skew_x": 90, "skew_y": -90, "pivot": [1e30, 0]}),
+        json!({"first": 0, "last": 50, "rotate": 45, "skew_x": 89.999, "pivot": [5], "edge": "nope", "to_stage": "x"}),
+        json!({"first": 0, "last": 50, "scale_x": -1, "pivot": [0, 0], "edge": "vcenter", "to_stage": true, "merge": false}),
+        json!({"first": 3, "last": 1, "edge": "right", "layer": u64::MAX, "items": [[0, 0, 0]]}),
+        json!({"first": 0, "last": 99_999, "layer": 0, "items": (0..200).map(|i| json!([i, i, i])).collect::<Vec<_>>()}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -691,7 +700,22 @@ fn panic_hunt_every_command() {
         in_symbol.execute(id, &p).unwrap();
     }
     assert_eq!(in_symbol.editing.len(), 1, "the fuzz starts inside a symbol");
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol] {
+    // Raw drawings on several keyframes, artwork copied from two of them (ADR 0051).
+    let mut keyed = Session::default();
+    keyed.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("draw.rect", json!({"x": 100, "y": 0, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("timeline.goto", json!({"frame": 4})),
+        ("timeline.insert_keyframe", json!({})),
+        ("timeline.goto", json!({"frame": 8})),
+        ("timeline.insert_keyframe", json!({})),
+        ("frames.copy", json!({"first": 0, "last": 8})),
+        ("timeline.goto", json!({"frame": 4})),
+    ] {
+        keyed.execute(id, &p).unwrap();
+    }
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol, keyed] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {

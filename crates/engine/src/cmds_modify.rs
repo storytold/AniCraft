@@ -50,6 +50,9 @@ pub struct ClipLayer {
     pub layer: LayerId,
     pub name: String,
     pub elements: Vec<Element>,
+    /// The keyframe (its first frame) it was copied from with Edit Multiple Frames (ADR 0051),
+    /// where Paste in Place on Multiple Frames puts it back; `None` for a copy on one frame.
+    pub frame: Option<u32>,
 }
 
 impl Clipboard {
@@ -103,7 +106,7 @@ fn copy(s: &mut Session, _: &Value) -> Result<Value> {
         let elements: Vec<Element> = s.elements_on(l).iter().filter(|e| s.selection.contains(l, e.id)).map(|e| (**e).clone()).collect();
         let name = s.timeline().layer(l).map(|x| x.name.clone()).unwrap_or_default();
         if !elements.is_empty() {
-            copied.push(ClipLayer { layer: l, name, elements });
+            copied.push(ClipLayer { layer: l, name, elements, frame: None });
         }
     }
     let all: Vec<Element> = copied.iter().flat_map(|c| c.elements.iter().cloned()).collect();
@@ -141,20 +144,34 @@ fn clip_element_bounds(s: &Session, e: &Element) -> Rect {
 /// layers below it, in order, with missing layers created at the bottom named after the copied
 /// ones, as Paste Frames does.
 fn paste_targets(s: &mut Session) -> Result<Vec<LayerId>> {
-    let n = s.clipboard.layers.len();
+    // Each layer the artwork came from once (a copy with Edit Multiple Frames has one entry per
+    // keyframe, ADR 0051), in order.
+    let mut src: Vec<(LayerId, String)> = Vec::new();
+    for c in &s.clipboard.layers {
+        if !src.iter().any(|(l, _)| *l == c.layer) {
+            src.push((c.layer, c.name.clone()));
+        }
+    }
+    let dst = layer_targets(s, &src)?;
+    Ok(s.clipboard.layers.iter().map(|c| src.iter().position(|(l, _)| *l == c.layer).and_then(|i| dst.get(i)).copied().unwrap_or(s.layer)).collect())
+}
+
+/// [`paste_targets`] for each source layer (its id and name).
+fn layer_targets(s: &mut Session, src: &[(LayerId, String)]) -> Result<Vec<LayerId>> {
+    let n = src.len();
     if n <= 1 {
         return Ok(vec![s.layer]);
     }
     let tl = s.timeline();
     let drawable = |s: &Session, l: &Layer| s.selectable(l.id) && !matches!(l.kind, LayerKind::Folder | LayerKind::Camera | LayerKind::Armature);
-    let home: Vec<LayerId> = s.clipboard.layers.iter().filter_map(|c| tl.layer(c.layer).filter(|l| l.name == c.name && drawable(s, l)).map(|l| l.id)).collect();
+    let home: Vec<LayerId> = src.iter().filter_map(|(id, name)| tl.layer(*id).filter(|l| l.name == *name && drawable(s, l)).map(|l| l.id)).collect();
     if home.len() == n {
         return Ok(home);
     }
     let at = s.active_layer_index().unwrap_or(0);
     let mut out = vec![s.layer];
     out.extend(tl.layers.iter().skip(at + 1).filter(|l| drawable(s, l)).map(|l| l.id).take(n - 1));
-    let names: Vec<String> = s.clipboard.layers.iter().skip(out.len()).map(|c| c.name.clone()).collect();
+    let names: Vec<String> = src.iter().skip(out.len()).map(|(_, name)| name.clone()).collect();
     for name in names {
         if s.timeline().layers.len() >= 1000 {
             return Err(EngineError::State("too many layers (limit 1000)".into()));
@@ -174,13 +191,17 @@ fn paste_targets(s: &mut Session) -> Result<Vec<LayerId>> {
     Ok(out)
 }
 
+/// Whether pasting the clipboard would put a symbol inside itself: inside an open symbol, an
+/// instance of it (or of one using it).
+pub(crate) fn clipboard_nests(s: &Session) -> bool {
+    s.clipboard.layers.iter().flat_map(|c| &c.elements).any(|e| matches!(e.kind, anicraft_doc::ElementKind::Symbol { symbol, .. } if crate::editing::would_nest(s, symbol)))
+}
+
 fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
     if s.clipboard.is_empty() {
         return Err(EngineError::State("the clipboard is empty".into()));
     }
-    // Inside an open symbol, an instance of it (or of one using it) would nest it in itself.
-    let nests = s.clipboard.layers.iter().flat_map(|c| &c.elements).any(|e| matches!(e.kind, anicraft_doc::ElementKind::Symbol { symbol, .. } if crate::editing::would_nest(s, symbol)));
-    if nests {
+    if clipboard_nests(s) {
         return Err(EngineError::State("a symbol can't be pasted inside itself".into()));
     }
     import_symbols(s, &s.clipboard.symbols.clone());
@@ -196,21 +217,27 @@ fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
         sel.extend_on(layer, fresh);
     }
     s.selection = sel;
-    if let Some(&first) = targets.first()
-        && targets.len() > 1
+    let mut layers: Vec<LayerId> = Vec::new();
+    for l in &targets {
+        if !layers.contains(l) {
+            layers.push(*l);
+        }
+    }
+    if let Some(&first) = layers.first()
+        && layers.len() > 1
     {
         s.layer = first;
     }
     let mut v = json!({"pasted": all, "merged": merged});
-    if targets.len() > 1 {
-        v["layers"] = json!(targets.iter().map(|l| l.0).collect::<Vec<_>>());
+    if layers.len() > 1 {
+        v["layers"] = json!(layers.iter().map(|l| l.0).collect::<Vec<_>>());
     }
     Ok(v)
 }
 
 /// Pastes `elements` moved by `offset` into the active layer's keyframe at the playhead; their
 /// new ids, and whether raw shapes merged.
-fn paste_layer(s: &mut Session, elements: &[Element], offset: Vec2) -> Result<(Vec<ElementId>, bool)> {
+pub(crate) fn paste_layer(s: &mut Session, elements: &[Element], offset: Vec2) -> Result<(Vec<ElementId>, bool)> {
     let mut fresh = Vec::new();
     let mut out = Vec::new();
     let mut raw = Vec::new();

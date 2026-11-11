@@ -34,7 +34,7 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
     const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke", "tween", "actions", "instance", "camera", "bone", "script", "raw", "frames"];
     match id {
         "edit.undo" | "edit.redo" => Err("a plug-in run is one undo step; it can't undo or redo"),
-        "edit.cut" | "edit.copy" | "edit.paste" | "edit.paste_in_place" | "timeline.cut_frames" | "timeline.copy_frames" | "timeline.paste_frames" => {
+        "edit.cut" | "edit.copy" | "edit.paste" | "edit.paste_in_place" | "timeline.cut_frames" | "timeline.copy_frames" | "timeline.paste_frames" | "frames.cut" | "frames.copy" | "frames.paste" => {
             Err("plug-ins don't use your clipboard")
         }
         _ => match id.split('.').next().unwrap_or("") {

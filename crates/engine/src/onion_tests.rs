@@ -4,6 +4,7 @@
 use super::*;
 use crate::Session;
 use anicraft_doc::{DisplayItem, ElementId, LayerId, Rgba, evaluate_scene, sample};
+use anicraft_geom::Affine;
 use anicraft_render::{View, render};
 use serde_json::{Value, json};
 

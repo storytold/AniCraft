@@ -32,7 +32,7 @@ pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, W
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
 pub use camera::Camera;
 pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
-pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, guide_walk, instance_start};
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, evaluate_timeline_at, guide_walk, instance_start};
 pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, Language, PluginScript, SourceScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
