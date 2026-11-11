@@ -659,7 +659,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 }
                 // Style, caps and joins (ADR 0046).
                 let style_mixed = shapes.iter().any(|s| s.stroke.as_ref().map(|x| &x.style) != Some(&st.style));
-                if let Some(edit) = line_style_rows(ui, "prop", &st.style, style_mixed) {
+                if let Some(edit) = line_style_rows(ui, ProfileRow::Selection, &st.style, style_mixed) {
                     if edit.drag {
                         live(app, edit.label, "stroke.set_style", edit.params);
                     } else {
@@ -1548,7 +1548,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
             st.set_profile(pick);
         }
         // And their style, caps and joins (with the params the commands take).
-        if let Some(edit) = line_style_rows(ui, "tool", &st.line, false)
+        if let Some(edit) = line_style_rows(ui, ProfileRow::Tool, &st.line, false)
             && let Ok(Some(line)) = anicraft_engine::params::opt_stroke_style(&edit.params, &st.line, st.stroke_width)
         {
             st.line = line;
@@ -1692,7 +1692,7 @@ fn profile_preview(ui: &mut egui::Ui, profile: Option<&anicraft_engine::doc::Wid
     resp
 }
 
-/// Which Width row a profile menu is (each needs its own popup).
+/// Which place a profile or line style menu is in (each needs its own popup).
 #[derive(Clone, Copy, Debug, Hash)]
 enum ProfileRow {
     Selection,
@@ -1765,15 +1765,15 @@ struct LineEdit {
 }
 
 /// The rows under Stroke that shape the line, as in Animate's Properties: Style (solid, dashed,
-/// dotted) with its lengths, Cap, Join and, for miter joins, the miter limit. `salt` keeps each
+/// dotted) with its lengths, Cap, Join and, for miter joins, the miter limit. `which` keeps each
 /// place's menus apart. Returns the change, if any.
-fn line_style_rows(ui: &mut egui::Ui, salt: &str, st: &anicraft_engine::doc::StrokeStyle, differs: bool) -> Option<LineEdit> {
+fn line_style_rows(ui: &mut egui::Ui, which: ProfileRow, st: &anicraft_engine::doc::StrokeStyle, differs: bool) -> Option<LineEdit> {
     use anicraft_engine::doc::{Cap, Dash, DashKind, Join};
     let mut edit = None;
     let kind = st.dash_kind();
     row_prose(ui, tr!("Style"), |ui| {
         line_preview(ui, kind, vec2(44.0, 12.0), T.text_dim);
-        egui::ComboBox::from_id_salt((salt, "line_style")).width(110.0).selected_text(crate::i18n::t(kind.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt((which, "line_style")).width(110.0).selected_text(crate::i18n::t(kind.label())).show_ui(ui, |ui| {
             for k in DashKind::ALL {
                 let on = k == kind;
                 let r = ui.horizontal(|ui| {
@@ -1823,7 +1823,7 @@ fn line_style_rows(ui: &mut egui::Ui, salt: &str, st: &anicraft_engine::doc::Str
         None => {}
     }
     row_prose(ui, tr!("Cap"), |ui| {
-        egui::ComboBox::from_id_salt((salt, "line_cap")).width(110.0).selected_text(crate::i18n::t(st.cap.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt((which, "line_cap")).width(110.0).selected_text(crate::i18n::t(st.cap.label())).show_ui(ui, |ui| {
             for c in Cap::ALL {
                 if ui.selectable_label(c == st.cap, crate::i18n::t(c.label())).clicked() && c != st.cap {
                     edit = Some(LineEdit { label: tr_noop!("Stroke cap"), params: json!({"cap": c.key()}), drag: false });
@@ -1838,7 +1838,7 @@ fn line_style_rows(ui: &mut egui::Ui, salt: &str, st: &anicraft_engine::doc::Str
         }
     });
     row_prose(ui, tr!("Join"), |ui| {
-        egui::ComboBox::from_id_salt((salt, "line_join")).width(110.0).selected_text(crate::i18n::t(st.join.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt((which, "line_join")).width(110.0).selected_text(crate::i18n::t(st.join.label())).show_ui(ui, |ui| {
             for j in Join::ALL {
                 if ui.selectable_label(j == st.join, crate::i18n::t(j.label())).clicked() && j != st.join {
                     edit = Some(LineEdit { label: tr_noop!("Stroke join"), params: json!({"join": j.key()}), drag: false });
