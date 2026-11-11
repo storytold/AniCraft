@@ -811,11 +811,15 @@ impl App {
     }
 
     /// View › Preview Through Camera (ADR 0027). With no camera yet there is nothing to look
-    /// through, so it says how to add one.
+    /// through, so it says how to add one; when the camera layer is hidden, it reminds to show it.
     pub fn toggle_camera_preview(&mut self) {
         self.camera_preview = !self.camera_preview;
-        if self.camera_preview && self.s.timeline().camera_layer().is_none() {
-            self.status_ok(tr!("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it."));
+        if self.camera_preview {
+            if self.s.timeline().camera_layer().is_none() {
+                self.status_ok(tr!("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it."));
+            } else if self.s.timeline().camera_layer().is_some_and(|l| !l.visible) {
+                self.status_ok(tr!("Preview through camera is on, but the camera layer is hidden. Show the layer to look through it."));
+            }
         }
     }
 
