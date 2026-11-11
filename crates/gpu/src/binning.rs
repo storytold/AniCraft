@@ -216,7 +216,6 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
     let op_group: Vec<u32> = scene.fills.iter().map(|f| f.group.filter(|&g| (g as usize) < scene.groups.len()).unwrap_or(NONE)).collect();
     let tables = Tables { fills: nf as u32, op_clip, op_group, clip_chain, art_ops, scene };
 
-    let __t=std::time::Instant::now();
     let tiles_x = width.div_ceil(TILE);
     let tiles_y = height.div_ceil(TILE);
     let (tx, ty) = (tiles_x as usize, tiles_y as usize);
@@ -227,7 +226,7 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         .enumerate()
         .map(|(c, chunk)| {
             let mut out = Local::default();
-            let mut scratch = Vec::new();
+            let mut scratch = (Vec::new(), Track::default());
             for (i, f) in chunk.iter().enumerate() {
                 bin_fill(f, (c * CHUNK + i) as u32, tiles_x, tiles_y, &mut out, &mut scratch);
             }
@@ -245,7 +244,6 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         })
         .collect();
 
-    let __a=__t.elapsed().as_secs_f32()*1000.0;
     // Where each chunk's pieces go in `geo`.
     let pieces: usize = locals.iter().map(|(l, _)| l.pieces.len()).sum();
     let mut piece_at = Vec::with_capacity(locals.len());
@@ -257,7 +255,6 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
 
     // Phase 2, parallel over tile rows: each tile's stream of entries.
     let rows: Vec<RowOut> = (0..ty).into_par_iter().map(|r| row_streams(r, tx, &locals, &piece_at, &tables)).collect();
-    let __b=__t.elapsed().as_secs_f32()*1000.0;
     let mut row_at = vec![0usize; ty + 1];
     for (r, out) in rows.iter().enumerate() {
         row_at[r + 1] = row_at[r] + out.stream.len();
@@ -286,7 +283,6 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
             }
         });
     }
-    let __c=__t.elapsed().as_secs_f32()*1000.0;
     // Pieces copied in parallel into their places.
     let mut geo: Vec<[f32; 4]> = vec![[0.0; 4]; pieces];
     {
@@ -302,8 +298,6 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
     // Tens of thousands of small buffers: free them on the pool, off the frame's path.
     anicraft_render::drop_in_background((locals, rows));
 
-    let __d=__t.elapsed().as_secs_f32()*1000.0;
-    if width>1000 {eprintln!("bin {width}: fills {__a:.2} rows {:.2} index {:.2} geo {:.2}", __b-__a, __c-__b, __d-__c);}
     // Paints: a fixed record per op, then the gradient tables, then the layers' pixels.
     let mut paints: Vec<[f32; 4]> = Vec::with_capacity(PAINT_VEC4S * ops.len());
     let mut ramps: Vec<[f32; 4]> = Vec::new();
@@ -528,7 +522,7 @@ fn tile_stream(fills: &[[u32; 4]], arts: &[[u32; 4]], t: &Tables, out: &mut Vec<
 
 /// Splits one fill's edges into tile pieces (with the steps where its outline crosses a tile's
 /// left edge) and walks each tile row for the backdrops.
-fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, pieces: &mut Vec<Piece>) {
+fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, (pieces, track): &mut (Vec<Piece>, Track)) {
     let Some(range) = Range::of(f, tiles_x, tiles_y) else { return };
     pieces.clear();
     if f.hairline {
@@ -541,11 +535,18 @@ fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, piec
             if n < 2 {
                 continue;
             }
+            track.start(range.nrows as usize);
+            let mut keep = |p: Piece| pieces.push(p);
             for i in 0..n {
                 let (Some(&a), Some(&c)) = (poly.get(i), poly.get((i + 1) % n)) else { continue };
-                split_edge(a, c, &range, |p| pieces.push(p));
-                crossings(a, c, &range, |p| pieces.push(p));
+                split_edge(a, c, &range, |row, col, seg| {
+                    if col < range.ncols {
+                        keep(Piece { row, col, seg });
+                    }
+                    track.see(row, Seen { col, end_y: seg[3] }, &range, &mut keep);
+                });
             }
+            track.finish(&range, &mut keep);
         }
     }
     if pieces.is_empty() {
@@ -655,13 +656,15 @@ impl Range {
     }
 }
 
-/// Splits edge `a → b` at tile rows and columns inside the fill's range.
-fn split_edge(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(Piece)) {
+/// Splits edge `a → b` at tile rows and columns inside the fill's range, row by row, each row's
+/// pieces in the edge's direction of travel. Parts right of the fill's tiles come as column
+/// `ncols` (they draw nothing, but the steps on the tiles' left edges need to see them).
+pub(crate) fn split_edge(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(u32, i32, [f32; 4])) {
     if !(a.is_finite() && b.is_finite()) || a.y == b.y {
         return;
     }
-    // Work top to bottom; restore the direction when storing.
-    let (p, q, down) = if a.y < b.y { (a, b, true) } else { (b, a, false) };
+    let down = a.y < b.y;
+    let (p, q) = if down { (a, b) } else { (b, a) };
     let y0 = p.y.max(r.ylo);
     let y1 = q.y.min(r.yhi);
     if y1 <= y0 {
@@ -678,21 +681,26 @@ fn split_edge(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(Piece)) {
         if ye <= ys {
             continue;
         }
-        let (xs, xe) = (x_at(ys), x_at(ye));
-        split_row(row, Vec2::new(xs, ys), Vec2::new(xe, ye), down, r, &mut out);
+        let (top, bottom) = (Vec2::new(x_at(ys), ys), Vec2::new(x_at(ye), ye));
+        if down {
+            split_row(row, top, bottom, r, &mut out);
+        } else {
+            split_row(row, bottom, top, r, &mut out);
+        }
     }
 }
 
-/// Splits a piece inside one tile row at the fill's left and right edges and at tile columns.
-fn split_row(row: u32, s: Vec2, e: Vec2, down: bool, r: &Range, out: &mut impl FnMut(Piece)) {
+/// Splits a piece inside one tile row, from `s` to `e` (the edge's direction), at the fill's
+/// left and right edges and at tile columns: column −1 left of the fill's tiles, `ncols` right.
+fn split_row(row: u32, s: Vec2, e: Vec2, r: &Range, out: &mut impl FnMut(u32, i32, [f32; 4])) {
+    let down = e.y > s.y;
     let mut push = |col: i32, u: Vec2, v: Vec2| {
-        if v.y <= u.y {
+        if (down && v.y <= u.y) || (!down && v.y >= u.y) {
             return;
         }
-        let seg = if down { [u.x, u.y, v.x, v.y] } else { [v.x, v.y, u.x, u.y] };
-        out(Piece { row, col, seg });
+        out(row, col, [u.x, u.y, v.x, v.y]);
     };
-    // Points where the piece crosses a column boundary (or the range's edges), top to bottom.
+    // Points where the piece crosses a column boundary (or the range's edges), in order.
     let dx = e.x - s.x;
     let at_x = |x: f32| -> Vec2 {
         let t = ((x - s.x) / dx).clamp(0.0, 1.0);
@@ -707,7 +715,8 @@ fn split_row(row: u32, s: Vec2, e: Vec2, down: bool, r: &Range, out: &mut impl F
         return;
     }
     if lo >= r.xhi {
-        return; // wholly right of the fill's tiles: it covers none of their pixels
+        push(r.ncols, s, e);
+        return;
     }
     // Most pieces (flattened curves are short) lie inside one tile column.
     let cl = col_of(lo);
@@ -737,47 +746,93 @@ fn split_row(row: u32, s: Vec2, e: Vec2, down: bool, r: &Range, out: &mut impl F
             push(-1, prev, next);
         } else if mid < r.xhi {
             push(col_of(mid).clamp(0, r.ncols - 1), prev, next);
+        } else {
+            push(r.ncols, prev, next);
         }
         prev = next;
     }
 }
 
-/// The steps edge `a → b` makes in the winding along the left edges of the range's tiles: where
-/// it crosses column boundary `x` (`lo < x ≤ hi`, horizontal edges too) strictly inside a tile
-/// row, a vertical piece on that tile's left edge from the crossing to the row's bottom, upwards
-/// when the edge runs right (the winding to the left drops by one) and downwards when it runs
-/// left.
-fn crossings(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(Piece)) {
-    if !(a.is_finite() && b.is_finite()) || a.x == b.x {
+/// A piece as the left-edge steps see it: its column and the height where it ends.
+#[derive(Clone, Copy)]
+pub(crate) struct Seen {
+    pub(crate) col: i32,
+    pub(crate) end_y: f32,
+}
+
+/// Per tile row of a fill, the last piece of the polygon walked so far there and its first:
+/// consecutive pieces of a row in different columns are where the outline crosses tiles' left
+/// edges.
+#[derive(Default)]
+pub(crate) struct Track {
+    last: Vec<Option<Seen>>,
+    first: Vec<Option<Seen>>,
+    touched: Vec<u32>,
+}
+
+impl Track {
+    /// Ready for a polygon of a fill with `nrows` tile rows.
+    fn start(&mut self, nrows: usize) {
+        for &r in &self.touched {
+            if let Some(l) = self.last.get_mut(r as usize) {
+                *l = None;
+            }
+            if let Some(f) = self.first.get_mut(r as usize) {
+                *f = None;
+            }
+        }
+        self.touched.clear();
+        if self.last.len() < nrows {
+            self.last.resize(nrows, None);
+            self.first.resize(nrows, None);
+        }
+    }
+
+    /// The next piece of the polygon in tile row `row`; the steps between it and the row's
+    /// previous piece go to `out`.
+    fn see(&mut self, row: u32, s: Seen, r: &Range, out: &mut impl FnMut(Piece)) {
+        let (Some(last), Some(first)) = (self.last.get_mut(row as usize), self.first.get_mut(row as usize)) else { return };
+        match *last {
+            Some(p) => steps(p, s, row, r, out),
+            None => {
+                *first = Some(s);
+                self.touched.push(row);
+            }
+        }
+        *last = Some(s);
+    }
+
+    /// The polygon is closed: each row's last piece is followed by its first.
+    fn finish(&mut self, r: &Range, out: &mut impl FnMut(Piece)) {
+        for &row in &self.touched {
+            if let (Some(Some(l)), Some(Some(f))) = (self.last.get(row as usize), self.first.get(row as usize)) {
+                steps(*l, *f, row, r, out);
+            }
+        }
+    }
+}
+
+/// The steps in the winding along the tiles' left edges between consecutive pieces `a` and `b`
+/// of one tile row (ADR 0048): where the outline passes from column `a.col` to `b.col`, at the
+/// height where `a` ends, each tile boundary between them gets a vertical piece on its left
+/// edge from there to the row's bottom: upwards when the outline runs right (the winding left
+/// of the tile drops by one), downwards when it runs left. On the row's top edge the backdrop
+/// has the step already, on its bottom edge it changes nothing.
+pub(crate) fn steps(a: Seen, b: Seen, row: u32, r: &Range, out: &mut impl FnMut(Piece)) {
+    if a.col == b.col {
         return;
     }
-    let (lo, hi) = (a.x.min(b.x), a.x.max(b.x));
-    let kmin = (((lo - r.xlo) / T).floor() + 1.0).max(0.0);
-    let kmax = ((hi - r.xlo) / T).floor().min((r.ncols - 1) as f32);
-    if kmax < kmin {
+    let top = r.ylo + (row * TILE) as f32;
+    let (y, bottom) = (a.end_y, top + T);
+    if !(y > top && y < bottom) {
         return;
     }
-    let slope = (b.y - a.y) / (b.x - a.x);
-    for k in kmin as i32..=kmax as i32 {
+    let right = a.col < b.col;
+    let (lo, hi) = if right { (a.col, b.col) } else { (b.col, a.col) };
+    for k in (lo + 1).max(0)..=hi.min(r.ncols - 1) {
         let x = r.xlo + k as f32 * T;
-        if x <= lo || x > hi {
-            continue;
-        }
-        let y = if a.y == b.y { a.y } else { a.y + (x - a.x) * slope };
-        if !y.is_finite() || y <= r.ylo || y >= r.yhi {
-            continue;
-        }
-        let row = ((y - r.ylo) / T).floor();
-        if row < 0.0 || row >= r.nrows as f32 {
-            continue;
-        }
-        let ry0 = r.ylo + row * T;
-        if y <= ry0 {
-            continue; // on the row's top edge: the backdrop has it
-        }
-        let bottom = ry0 + T;
-        let seg = if b.x > a.x { [x, bottom, x, y] } else { [x, y, x, bottom] };
-        out(Piece { row: row as u32, col: k, seg });
+        let seg = if right { [x, bottom, x, y] } else { [x, y, x, bottom] };
+        out(Piece { row, col: k, seg });
     }
 }
 

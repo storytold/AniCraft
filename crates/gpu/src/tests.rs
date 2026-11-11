@@ -488,6 +488,22 @@ fn binned_coverage_matches_the_oracle_on_the_cpu() {
     }
 }
 
+/// Thousands of overlapping shapes at awkward scales: edges meet tile corners and boundaries
+/// within float rounding, where the backdrops and the left-edge steps must agree (ADR 0048).
+#[test]
+fn binned_coverage_matches_the_oracle_on_stress_frames() {
+    let doc = sample::stress(20, 100, 48);
+    for (f, s, at) in [(0u32, 1.0f32, (0.0, 0.0)), (30, 0.5, (0.0, 0.0)), (7, 2.3, (-900.0, -700.0)), (41, 0.73, (-11.5, -3.25))] {
+        let dl = anicraft_doc::evaluate(&doc, f);
+        let v = View { transform: Affine::translate(at.0, at.1).mul(&Affine::scale(s, s)), width: 1920, height: 1080, background: Some(Rgba::WHITE) };
+        let (scene, _) = prepare_scene(&dl, &v).unwrap();
+        let b = binning::bin(&scene, v.width, v.height).unwrap();
+        let (oracle, _) = render(&dl, &v).unwrap();
+        let (mean, max) = f32_diff(&emulate(&b, &v), &oracle.data);
+        assert!(mean < 1e-4 && max < 4e-3, "frame {f} at {s}: mean {mean:e}, max {max:e}");
+    }
+}
+
 #[test]
 fn the_composited_sample_really_has_masks_and_groups() {
     let comp = composited_sample();
@@ -960,3 +976,4 @@ fn gpu_matches_the_oracle_on_the_filtered_sample() {
         assert_parity(g, "filtered sample tile", &dl, &tile);
     }
 }
+
