@@ -315,6 +315,24 @@ fn lookups_fall_back_from_app_to_shared_to_base_language_to_english() {
 }
 
 #[test]
+fn hebrew_two_uses_the_second_catalog_plural_form() {
+    // Hebrew is not offered in production until RTL is supported; this exercises its
+    // existing parser and runtime by explicitly enabling the locale for this unit test.
+    let he_app = "@plural\t{n} frame|{n} frames\t{n} פריים|{n} פריימים (זוג)|{n} פריימים\n";
+    let (languages, problems) = Languages::new(&[("he", "", he_app)], &["he"]);
+    assert!(problems.is_empty(), "{problems:?}");
+    let he = languages.find("he").expect("fixture Hebrew should be offered");
+    let get = |n| languages.plural(he, "{n} frame", "{n} frames", n);
+    assert_eq!(get(0), "{n} פריימים");
+    assert_eq!(get(1), "{n} פריים");
+    assert_eq!(get(2), "{n} פריימים (זוג)", "n=2 must not fall through to other");
+    assert_eq!(get(3), "{n} פריימים");
+    assert_eq!(get(21), "{n} פריימים");
+    let n = 2u64;
+    assert_eq!(fill(get(n), &[("n", &n as &dyn std::fmt::Display)]), "2 פריימים (זוג)");
+}
+
+#[test]
 fn every_lookup_kind_reads_the_catalog() {
     // The same paths `tr!`, `t_dyn`, `t_cmd` and `trn!` take with a catalog built in.
     let l = fixture();
@@ -467,6 +485,21 @@ fn screen() -> egui::RawInput {
     egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), ..Default::default() }
 }
 
+// AniCraft is a product identifier, not an untranslated English UI label. Keep the
+// exemption exact: a label like "AniCraft settings" must still be checked.
+fn pseudo_name_is_translated_or_exempt(name: &str) -> bool {
+    name.chars().any(pseudo::is_accented) || EGUI_OWN.contains(&name) || name == "AniCraft"
+}
+
+#[test]
+fn pseudo_a11y_name_exception_is_only_the_product_name() {
+    assert!(pseudo_name_is_translated_or_exempt("AniCraft"));
+    assert!(pseudo_name_is_translated_or_exempt("[Šàvé ~~]"));
+    assert!(!pseudo_name_is_translated_or_exempt("Save"));
+    assert!(!pseudo_name_is_translated_or_exempt("AniCraft settings"));
+    assert!(!pseudo_name_is_translated_or_exempt("Save AniCraft"));
+}
+
 /// Names in `nodes` that are ours and still plain English.
 fn plain_names(what: &str, app: &crate::app::App, nodes: Vec<(egui::accesskit::NodeId, egui::accesskit::Node)>) -> Vec<String> {
     // Document text is the document's (layer, symbol and scene names): not ours to translate.
@@ -479,7 +512,7 @@ fn plain_names(what: &str, app: &crate::app::App, nodes: Vec<(egui::accesskit::N
         for name in [n.label(), n.description()].into_iter().flatten() {
             // egui names its own window close button; it offers no way to name it ourselves
             // (docs/localisation.md › Not yet).
-            let translated = name.chars().any(pseudo::is_accented) || EGUI_OWN.contains(&name);
+            let translated = pseudo_name_is_translated_or_exempt(name);
             let ours = scan::is_prose(name) && !doc_text.contains(name) && !doc_text.iter().any(|d| name.contains(d.as_str()));
             if ours && !translated {
                 found.insert(format!("[{what}] {:?} {name:?}", n.role()));
