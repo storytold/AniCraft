@@ -82,7 +82,7 @@ impl Rgba {
     /// Parses `#rrggbb`, `rrggbb` or `#rrggbbaa`.
     pub fn parse_hex(s: &str) -> Option<Rgba> {
         let h = s.trim().trim_start_matches('#');
-        if !h.is_ascii() || (h.len() != 6 && h.len() != 8) {
+        if !h.bytes().all(|c| c.is_ascii_hexdigit()) || (h.len() != 6 && h.len() != 8) {
             return None;
         }
         let byte = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok()).map(|v| v as f32 / 255.0);
@@ -1371,6 +1371,15 @@ mod camera_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_with_signs_is_rejected() {
+        for bad in ["#+1+2+3", "#-1-2-3", "#12345g", "#12345+"] {
+            assert_eq!(Rgba::parse_hex(bad), None, "{bad}");
+        }
+        assert!(Rgba::parse_hex("#0a1B2c").is_some());
+        assert!(Rgba::parse_hex("#0a1B2cFF").is_some());
+    }
 
     #[test]
     fn keyframe_lookup() {
