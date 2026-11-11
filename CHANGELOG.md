@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+* **Raw points, snapping while drawing, and symbols edited in place** (ADR 0045, issue #42, M1).
+  * **Add a point** on a merged drawing's line or fill edge with the Pen's Alt-click or a
+    Subselection double-click: every shape on that edge gets it, and the curve keeps its shape.
+  * **Delete points** with Delete (or the right-click menu): the shapes that share each point are
+    joined across it, so a fill and its outline stay together; deleting a line's last points
+    removes it. A point where three or more lines meet is kept, and the status bar says so.
+  * **Make Smooth / Make Corner** on raw points. Dragging a handle of a smooth point keeps the
+    other handle in line (on drawing objects too); **Alt** moves it alone.
+  * The **Line, Rectangle, Oval, PolyStar and Pen** tools snap their points to points, lines and
+    fill edges within 10 screen pixels, with a ring where they will snap. **Snap to Objects** is
+    now Ctrl+Shift+/, as in Animate.
+  * **Double-click a symbol instance** (or press Ctrl+E, or right-click it in the Library › Edit
+    Symbol) to edit it in place: the rest of the stage dims, the timeline shows the symbol's
+    layers, and merge drawing, the Selection and Subselection tools and every other tool work
+    inside it as on the stage. The edit bar shows `Scene 1 › Symbol`; click the scene, press
+    Ctrl+E or double-click empty stage to go back. Undo returns to the symbol where a change was
+    made. Rotated instances open upright.
+  * Headless: `raw.add_point`, `raw.delete_points`, `raw.convert_points`, `draw.snap`, `smooth`
+    on `raw.move_handle` and `path.move_points`, `symbol.edit`, `symbol.exit`; `doc.info` lists
+    the open symbols.
 * **ActionScript that controls the timeline now runs** (ADR 0013 tier 2). Frame scripts in
   Animate documents, and ones you type in the Actions panel, play in Test Movie and in the
   HTML canvas export when they use the ActionScript 3.0 most animation and e-learning files
