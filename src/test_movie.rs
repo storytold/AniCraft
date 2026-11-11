@@ -102,8 +102,8 @@ pub struct TestMovie {
     paused: bool,
     acc: f64,
     texture: Option<egui::TextureHandle>,
-    /// The state and pixel size the texture shows.
-    shown: Option<(PlayerState, [u32; 2])>,
+    /// The state and pixel size the texture shows, and whether with the hit areas.
+    shown: Option<(PlayerState, [u32; 2], bool)>,
     /// Where the pointer was over the picture last frame, and whether it was down.
     pointer: Option<Vec2>,
     down: bool,
@@ -118,6 +118,8 @@ pub struct TestMovie {
     skipped: usize,
     /// The movie takes the keyboard the next time it is drawn.
     focus: bool,
+    /// Show Hit Areas: every button's hit area drawn over the movie (ADR 0057).
+    pub hit_areas: bool,
 }
 
 impl TestMovie {
@@ -158,7 +160,9 @@ pub fn open(app: &mut App) {
     let movie = Movie::start_seeded(&doc, if app.shot.is_some() { 0 } else { seed }, &mut runner);
     let name = app.s.path.as_ref().and_then(|p| p.file_stem()).map(|n| n.to_string_lossy().into_owned());
     let skipped = anicraft_engine::player::kept_scripts(&doc).iter().filter(|k| !k.runs()).count();
-    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, name, ms: 0.0, voices: Vec::new(), audio: false, skipped, focus: true };
+    // Show Hit Areas stays as it was across a restart.
+    let hit_areas = app.test_movie.as_ref().is_some_and(|t| t.hit_areas);
+    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, name, ms: 0.0, voices: Vec::new(), audio: false, skipped, focus: true, hit_areas };
     // Sound only when there is some, and never in screenshot runs or tests.
     if sound::has_sounds(&tm.doc) && app.shot.is_none() {
         tm.resume(&mut app.sound);
@@ -220,6 +224,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     let keys = if has_keys(ctx) { tr!("Keys go to the movie") } else { tr!("Click the movie to give it the keyboard") };
                     ui.label(text(Type::Caption, keys).color(T.text_dim));
                 }
+                ui.add_space(8.0);
+                ui.checkbox(&mut tm.hit_areas, tr!("Show hit areas")).on_hover_text(tr!("Draw where each button answers the pointer (its Hit frame) over the movie"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // i18n-exempt: numbers and units (data)
                     ui.label(text(Type::Data, format!("{:.0} fps · {:.1} ms", tm.doc.stage.fps, tm.ms)).color(T.text_faint)).on_hover_text(tr!("Frame rate, and the time the last picture took to draw"));
@@ -316,10 +322,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let ppp = ctx.pixels_per_point();
             let scale = (k * ppp).min(MAX_EDGE / sw.max(sh).max(1.0));
             let px = [((sw * scale).round() as u32).max(1), ((sh * scale).round() as u32).max(1)];
-            let stale = tm.shown.as_ref().is_none_or(|(st, at)| *st != tm.movie.state || *at != px);
+            let stale = tm.shown.as_ref().is_none_or(|(st, at, hits)| *st != tm.movie.state || *at != px || *hits != tm.hit_areas);
             if stale {
                 let t0 = web_time::Instant::now();
-                let dl = evaluate_player(&tm.doc, &tm.movie.state);
+                let mut dl = evaluate_player(&tm.doc, &tm.movie.state);
+                if tm.hit_areas {
+                    let (tint, alpha) = crate::theme::hit_area();
+                    dl.append(anicraft_engine::doc::player::hit_overlay(&tm.doc, &tm.movie.state, tint, alpha));
+                }
                 let view = View { transform: Affine::scale(scale, scale), width: px[0], height: px[1], background: Some(tm.doc.stage.background) };
                 if let Ok((pm, _)) = render(&dl, &view) {
                     let image = egui::ColorImage::from_rgba_unmultiplied([px[0] as usize, px[1] as usize], &pm.to_rgba8());
@@ -329,7 +339,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                 }
                 tm.ms = t0.elapsed().as_secs_f32() * 1000.0;
-                tm.shown = Some((tm.movie.state.clone(), px));
+                tm.shown = Some((tm.movie.state.clone(), px, tm.hit_areas));
             }
             ui.painter().rect_filled(outer, crate::theme::SQUARE, T.pasteboard);
             if let Some(t) = &tm.texture {
