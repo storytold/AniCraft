@@ -294,9 +294,9 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                     }
                     k => assert_eq!(k & bn::CTRL, 0, "unknown control entry {k:x}"),
                 }
-                let hd = b.ops_at as usize + op * 4;
-                let mut cov = entry_cover(&b.geo[first..first + n], bd, b.index[hd + 1], lx, ly);
-                let flags = b.index[hd + 3];
+                let hd = op * 4;
+                let mut cov = entry_cover(&b.geo[first..first + n], bd, b.op_heads[hd + 1], lx, ly);
+                let flags = b.op_heads[hd + 3];
                 if flags & bn::ART != 0 {
                     let k = cov.clamp(0.0, 1.0);
                     level = level + k - level * k;
@@ -308,7 +308,7 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                 if cov <= 1e-4 {
                     continue;
                 }
-                let s = match b.index[hd] {
+                let s = match b.op_heads[hd] {
                     0 => solid_of(b, op),
                     kind => {
                         let base = op * PAINT_VEC4S;
@@ -318,7 +318,7 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                         let d = q - Vec2::new(nn[2], nn[3]);
                         let t = if kind == 1 { d.x * g[0] + d.y * g[1] } else { d.length() * g[2] };
                         let i = (t.clamp(0.0, 1.0) * 255.0 + 0.5) as usize & 255;
-                        b.paints[b.index[hd + 2] as usize + i]
+                        b.paints[b.op_heads[hd + 2] as usize + i]
                     }
                 };
                 let sa = s[3] * cov;
@@ -977,3 +977,97 @@ fn gpu_matches_the_oracle_on_the_filtered_sample() {
     }
 }
 
+
+// ----- binning on the GPU (ADR 0048) ----------------------------------------------------------
+
+/// Scenes the GPU bins (no fill in a mask or a group): the analytic ones, the sample, stress
+/// frames at awkward scales and offsets, and onion-skin style outlines over them.
+fn gpu_binned_scenes() -> Vec<(String, DisplayList, View)> {
+    let plain = |dl: &DisplayList| dl.items.iter().all(|i| i.clip.is_none() && i.group.is_none());
+    let mut out: Vec<(String, DisplayList, View)> = scenes().into_iter().filter(|(_, dl, _)| plain(dl)).map(|(n, dl, v)| (n.to_string(), dl, v)).collect();
+    let demo = sample::demo();
+    out.push(("sample".into(), anicraft_doc::evaluate(&demo, 13), View::stage(&demo, 0.37)));
+    let doc = sample::stress(20, 100, 48);
+    for (f, s, at) in [(0u32, 1.0f32, (0.0, 0.0)), (30, 0.5, (0.0, 0.0)), (7, 2.3, (-900.0, -700.0)), (41, 0.73, (-11.5, -3.25))] {
+        let dl = anicraft_doc::evaluate(&doc, f);
+        let v = View { transform: Affine::translate(at.0, at.1).mul(&Affine::scale(s, s)), width: 1920, height: 1080, background: Some(Rgba::WHITE) };
+        out.push((format!("stress frame {f} at {s}"), dl, v));
+    }
+    // Onion skin's outlines: the frames before and after as hairlines, under the playhead's.
+    let mut dl = DisplayList::default();
+    for f in [25u32, 27, 33, 35] {
+        let mut part = anicraft_doc::evaluate(&doc, f);
+        for i in &mut part.items {
+            i.outline = Some(Rgba::hex(if f < 30 { 0x4f8dff } else { 0x4cd07d }).with_alpha(0.4));
+        }
+        dl.append(part);
+    }
+    dl.append(anicraft_doc::evaluate(&doc, 30));
+    out.push(("stress with outlined frames".into(), dl, View::stage(&doc, 0.8)));
+    out
+}
+
+/// What an entry covers in each of its tile's 256 pixels.
+fn entry_pixels(b: &Binned, e: usize) -> [f32; 256] {
+    let (op, first, n, bd) = (b.index[e] as usize, b.index[e + 1] as usize, b.index[e + 2] as usize, b.index[e + 3]);
+    let rule = b.op_heads[4 * op + 1];
+    let pieces = b.geo.get(first..first + n).unwrap_or(&[]);
+    std::array::from_fn(|i| entry_cover(pieces, bd, rule, i % 16, i / 16))
+}
+
+#[test]
+fn gpu_binning_produces_the_cpus_tile_lists() {
+    let Some(g) = gpu() else { return };
+    for (name, dl, v) in gpu_binned_scenes() {
+        let Some(gb) = g.gpu_lists(&dl, &v).unwrap() else { panic!("{name}: the GPU should bin this") };
+        let (scene, _) = prepare_scene(&dl, &v).unwrap();
+        let cb = binning::bin(&scene, v.width, v.height).unwrap();
+        assert_eq!((gb.tiles_x, gb.tiles_y, &gb.op_heads), (cb.tiles_x, cb.tiles_y, &cb.op_heads), "{name}");
+        let (mut entries, mut pieces) = (0usize, 0usize);
+        for t in 0..(cb.tiles_x * cb.tiles_y) as usize {
+            let list = |b: &Binned| -> Vec<(u32, [f32; 256])> {
+                let (s, n) = (b.index[2 * t] as usize, b.index[2 * t + 1] as usize);
+                (s..s + n).map(|i| b.entries_at as usize + 4 * i).map(|e| (b.index[e], entry_pixels(b, e))).collect()
+            };
+            let (a, c) = (list(&gb), list(&cb));
+            let ops = |l: &[(u32, [f32; 256])]| l.iter().map(|x| x.0).collect::<Vec<_>>();
+            assert_eq!(ops(&a), ops(&c), "{name}: tile {t}'s fills");
+            for ((op, pa), (_, pc)) in a.iter().zip(&c) {
+                let worst = pa.iter().zip(pc).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+                assert!(worst < 1e-3, "{name}: tile {t}, op {op}: coverage off by {worst}");
+            }
+            entries += a.len();
+            let (s, n) = (gb.index[2 * t] as usize, gb.index[2 * t + 1] as usize);
+            pieces += (s..s + n).map(|i| gb.index[gb.entries_at as usize + 4 * i + 2] as usize).sum::<usize>();
+        }
+        assert_eq!(entries, cb.entries, "{name}");
+        assert!(pieces <= gb.pieces && entries <= gb.entries, "{name}: within the room made for them");
+        // And the fine pass's arithmetic over the GPU's lists draws the oracle's picture.
+        let (oracle, _) = render(&dl, &v).unwrap();
+        let eg = emulate(&gb, &v);
+        let (mean, max) = f32_diff(&eg, &oracle.data);
+        assert!(mean < 1e-4 && max < 4e-3, "{name}: mean {mean:e}, max {max:e}");
+    }
+}
+
+#[test]
+fn gpu_binned_frames_match_the_oracle() {
+    let Some(g) = gpu() else { return };
+    for (name, dl, v) in gpu_binned_scenes() {
+        let f = g.render_with(&dl, &v, Output::Premul8, Binning::Gpu).unwrap();
+        assert!(f.gpu_binned, "{name}");
+        let (oracle, _) = render(&dl, &v).unwrap();
+        let d = compare_premul8(&f.premul8, &oracle.to_premul_rgba8()).unwrap();
+        assert!(d.mean <= MEAN_TARGET / 16.0 && d.max <= 2, "{name}: {d:?}");
+        let t = g.render_texture_with(&dl, &v, Binning::Gpu).unwrap();
+        assert!(t.gpu_binned && g.read_texture(&t).unwrap() == f.premul8, "{name}: the texture holds the read-back bytes");
+    }
+    // Masks and groups stay on the CPU's binning, and still draw right.
+    for (name, dl, v) in composited_scenes() {
+        let f = g.render_with(&dl, &v, Output::Premul8, Binning::Gpu).unwrap();
+        let uses = |dl: &DisplayList| dl.items.iter().any(|i| i.clip.is_some() || i.group.is_some());
+        assert_eq!(f.gpu_binned, !uses(&dl), "{name}: binned on the GPU {}", f.gpu_binned);
+        let (oracle, _) = render(&dl, &v).unwrap();
+        assert!(compare_premul8(&f.premul8, &oracle.to_premul_rgba8()).unwrap().max <= 2, "{name}");
+    }
+}

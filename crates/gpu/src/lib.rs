@@ -2,10 +2,11 @@
 //!
 //! Draws the same scene as the CPU oracle (`anicraft-render`) with wgpu compute: the oracle
 //! prepares it ([`anicraft_render::prepare_scene`]: flattening, strokes, paints and their
-//! gradient tables, clips and groups), [`binning`] sorts the edges into 16 × 16 tiles on the
-//! CPU, and one compute pass computes every pixel's exact area coverage and composites the
-//! fills in order, inside their masks and groups (alpha and blend modes) as the oracle's band
-//! compositor does. Bitmap fills are sampled from textures uploaded once per image
+//! gradient tables, clips and groups), the edges are sorted into 16 × 16 tiles, on the GPU
+//! ([`gpu_binning`], ADR 0048) or on the CPU ([`binning`], the reference, and the way for fills
+//! in masks and groups), and one compute pass computes every pixel's exact area coverage
+//! (or a hairline's distance) and composites the fills in order, inside their masks and groups
+//! (alpha and blend modes) as the oracle's band compositor does. Bitmap fills are sampled from textures uploaded once per image
 //! ([`images`]); a filtered symbol is drawn into a layer of its own, filtered by compute passes
 //! that run the oracle's filter steps ([`layers`]), and composited like any fill (ADR 0032).
 //! The output is the oracle's within float rounding (the parity tests check mean and maximum
@@ -22,6 +23,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod binning;
+pub mod gpu_binning;
 pub mod images;
 mod layers;
 
@@ -29,6 +31,7 @@ use anicraft_doc::DisplayList;
 use anicraft_render::{MAX_PIXELS, NeedsFull, Pixmap, RenderStats, View, paint::premultiply, prepare_scene};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use web_time::Instant;
 use wgpu::util::DeviceExt;
@@ -68,10 +71,56 @@ pub struct GpuFrame {
     pub pixmap: Option<Pixmap>,
     pub stats: RenderStats,
     pub timings: Timings,
-    /// Tile entries and edge pieces the fine pass walked.
+    /// Tile entries and edge pieces the fine pass walked (when binned on the GPU, the room
+    /// made for them: upper bounds).
     pub entries: usize,
     pub pieces: usize,
+    /// Whether the GPU binned the frame's tiles ([`Binning`]).
+    pub gpu_binned: bool,
 }
+
+/// Where a frame's edges are sorted into tiles (ADR 0048).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binning {
+    /// On the GPU when the scene can take it (no fill inside a mask or a group, for now) and
+    /// has enough edges to be worth the passes ([`AUTO_MIN_EDGES`]); otherwise on the CPU.
+    Auto,
+    /// Always on the CPU (the reference).
+    Cpu,
+    /// On the GPU whenever the scene can take it, however small (tests and benchmarks).
+    Gpu,
+}
+
+impl Binning {
+    fn code(self) -> u8 {
+        match self {
+            Binning::Auto => 0,
+            Binning::Cpu => 1,
+            Binning::Gpu => 2,
+        }
+    }
+
+    fn from_code(c: u8) -> Binning {
+        match c {
+            1 => Binning::Cpu,
+            2 => Binning::Gpu,
+            _ => Binning::Auto,
+        }
+    }
+
+    /// `ANICRAFT_GPU_BINNING=cpu|gpu|auto` (for comparing them in the app); auto otherwise.
+    fn from_env() -> Binning {
+        match std::env::var("ANICRAFT_GPU_BINNING").map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Ok("cpu") => Binning::Cpu,
+            Ok("gpu") => Binning::Gpu,
+            _ => Binning::Auto,
+        }
+    }
+}
+
+/// Fewer edges than this are binned on the CPU in [`Binning::Auto`]: below it the CPU bins a
+/// frame in less time than the GPU's passes take to set up (measured, docs/performance.md).
+pub const AUTO_MIN_EDGES: u64 = 4096;
 
 /// A frame rendered into a texture on the renderer's device: premultiplied RGBA8
 /// (`Rgba8Unorm`, the bytes [`Pixmap::to_premul_rgba8`] gives), sampleable, ready for the window
@@ -86,6 +135,7 @@ pub struct GpuTexture {
     pub timings: Timings,
     pub entries: usize,
     pub pieces: usize,
+    pub gpu_binned: bool,
 }
 
 /// Where a frame's time went (milliseconds, on the calling thread).
@@ -93,7 +143,8 @@ pub struct GpuTexture {
 pub struct Timings {
     /// Cull, flatten, stroke and paint set-up (shared with the oracle, parallel).
     pub prepare: f32,
-    /// Tile binning (parallel per fill and per tile row) and buffer packing.
+    /// Tile binning on the CPU (parallel per fill and per tile row), or laying out the GPU's
+    /// binning (per fill), and buffer packing.
     pub bin: f32,
     /// Upload and submit; for read-back frames also the wait for the GPU and the copy back.
     pub gpu: f32,
@@ -131,6 +182,9 @@ pub struct GpuRenderer {
     texture_pipeline: wgpu::ComputePipeline,
     texture_layout: wgpu::BindGroupLayout,
     filters: layers::FilterPipelines,
+    bins: gpu_binning::Pipelines,
+    /// [`Binning`], as its code.
+    binning: AtomicU8,
     /// Bound where a texture slot or a buffer is unused.
     blank: wgpu::TextureView,
     /// Placeholders for a filter pass's coverage (written) and ramp (read): one buffer can't be
@@ -316,6 +370,7 @@ impl GpuRenderer {
         let storage_texture = wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 };
         let (texture_pipeline, texture_layout) = make("anicraft-fine-texture", entry(5, storage_texture), "main_texture");
         let filters = layers::FilterPipelines::new(&device);
+        let bins = gpu_binning::Pipelines::new(&device);
         let blank = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("anicraft-blank"),
@@ -341,6 +396,8 @@ impl GpuRenderer {
             texture_pipeline,
             texture_layout,
             filters,
+            bins,
+            binning: AtomicU8::new(Binning::from_env().code()),
             blank,
             blank_coverage,
             blank_ramp,
@@ -402,7 +459,24 @@ impl GpuRenderer {
         };
         check("read back", &self.render(&dl, &view, Output::Premul8)?.premul8)?;
         let t = self.render_texture(&dl, &view)?;
-        check("through a texture", &self.read_texture(&t)?)
+        check("through a texture", &self.read_texture(&t)?)?;
+        // And binned on the GPU (the plain fills; the bitmap and the symbol stay on the CPU's).
+        let plain = DisplayList { items: dl.items.iter().take(3).cloned().collect(), ..Default::default() };
+        let (want, _) = anicraft_render::render(&plain, &view).map_err(|e| GpuError::Unavailable(e.to_string()))?;
+        let got = self.render_with(&plain, &view, Output::Premul8, Binning::Gpu)?;
+        match compare_premul8(&got.premul8, &want.to_premul_rgba8()) {
+            Some(d) if got.gpu_binned && d.max <= 2 && d.mean <= 0.1 => Ok(()),
+            d => Err(GpuError::Unavailable(format!("{}: the self-test render came back wrong binned on the GPU ({d:?})", self.adapter))),
+        }
+    }
+
+    /// Where frames' edges are sorted into tiles from now on.
+    pub fn set_binning(&self, b: Binning) {
+        self.binning.store(b.code(), Ordering::Relaxed);
+    }
+
+    pub fn binning(&self) -> Binning {
+        Binning::from_code(self.binning.load(Ordering::Relaxed))
     }
 
     /// Whether the device has failed (lost, or an error in or outside a render); then use the
@@ -423,19 +497,29 @@ impl GpuRenderer {
     /// Renders a display list and reads it back. [`GpuError::NeedsFull`] means "draw this one
     /// on the CPU".
     pub fn render(&self, dl: &DisplayList, view: &View, output: Output) -> Result<GpuFrame, GpuError> {
+        self.render_with(dl, view, output, self.binning())
+    }
+
+    /// [`GpuRenderer::render`], binned as `binning` says (tests and benchmarks).
+    pub fn render_with(&self, dl: &DisplayList, view: &View, output: Output, binning: Binning) -> Result<GpuFrame, GpuError> {
         self.guard(|| {
-            let (job, stats, mut timings, cost) = self.prepare(dl, view)?;
+            let (job, stats, mut timings, cost) = self.prepare(dl, view, binning)?;
             let t = Instant::now();
             let (premul8, pixmap) = self.run_readback(&job, view, output)?;
             timings.gpu = ms(t);
-            Ok(GpuFrame { width: view.width, height: view.height, premul8, pixmap, stats, timings, entries: cost.entries, pieces: cost.pieces })
+            Ok(GpuFrame { width: view.width, height: view.height, premul8, pixmap, stats, timings, entries: cost.entries, pieces: cost.pieces, gpu_binned: job.binned.gpu.is_some() })
         })
     }
 
     /// Renders a display list into a new texture on this renderer's device (no readback).
     pub fn render_texture(&self, dl: &DisplayList, view: &View) -> Result<GpuTexture, GpuError> {
+        self.render_texture_with(dl, view, self.binning())
+    }
+
+    /// [`GpuRenderer::render_texture`], binned as `binning` says (tests and benchmarks).
+    pub fn render_texture_with(&self, dl: &DisplayList, view: &View, binning: Binning) -> Result<GpuTexture, GpuError> {
         self.guard(|| {
-            let (job, stats, mut timings, cost) = self.prepare(dl, view)?;
+            let (job, stats, mut timings, cost) = self.prepare(dl, view, binning)?;
             let t = Instant::now();
             let (w, h) = (view.width, view.height);
             let max = self.limits.max_texture_dimension_2d;
@@ -464,7 +548,7 @@ impl GpuRenderer {
             self.queue.submit([enc.finish()]);
             self.pop(scopes)?;
             timings.gpu = ms(t);
-            Ok(GpuTexture { texture, view: tex_view, width: w, height: h, stats, timings, entries: cost.entries, pieces: cost.pieces })
+            Ok(GpuTexture { texture, view: tex_view, width: w, height: h, stats, timings, entries: cost.entries, pieces: cost.pieces, gpu_binned: job.binned.gpu.is_some() })
         })
     }
 
@@ -511,14 +595,14 @@ impl GpuRenderer {
 
     /// The oracle's preparation and the binning, for the scene and each filtered layer it shows
     /// (in parallel); checked against the limits and the device's.
-    fn prepare(&self, dl: &DisplayList, view: &View) -> Result<(Job, RenderStats, Timings, Cost), GpuError> {
+    fn prepare(&self, dl: &DisplayList, view: &View, binning: Binning) -> Result<(Job, RenderStats, Timings, Cost), GpuError> {
         let (w, h) = (view.width, view.height);
         if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
             return Err(GpuError::TooLarge(format!("image {w}×{h} is outside the GPU stage's range")));
         }
         let t0 = Instant::now();
         let mut bin_ms = 0.0;
-        let (job, stats) = self.plan(dl, view, 0, &mut bin_ms)?;
+        let (job, stats) = self.plan(dl, view, 0, binning, &mut bin_ms)?;
         let total = ms(t0);
         let mut cost = Cost::default();
         job.cost(&mut cost);
@@ -533,10 +617,15 @@ impl GpuRenderer {
     }
 
     /// One scene: prepared and binned, then its shown layers planned the same way.
-    fn plan(&self, dl: &DisplayList, view: &View, depth: usize, bin_ms: &mut f32) -> Result<(Job, RenderStats), GpuError> {
+    fn plan(&self, dl: &DisplayList, view: &View, depth: usize, binning: Binning, bin_ms: &mut f32) -> Result<(Job, RenderStats), GpuError> {
         let (mut scene, stats) = prepare_scene(dl, view).map_err(GpuError::NeedsFull)?;
         let t = Instant::now();
-        let binned = binning::bin(&scene, view.width, view.height).map_err(GpuError::NeedsFull)?;
+        let lim = match binning {
+            Binning::Cpu => None,
+            Binning::Auto => Some(gpu_binning::Limits { binding: self.binding_cap(), min_edges: AUTO_MIN_EDGES }),
+            Binning::Gpu => Some(gpu_binning::Limits { binding: self.binding_cap(), min_edges: 0 }),
+        };
+        let binned = binning::bin_with(&scene, view.width, view.height, lim.as_ref()).map_err(GpuError::NeedsFull)?;
         *bin_ms += ms(t);
         let shown: Vec<(u32, anicraft_render::FilterLayer)> = std::mem::take(&mut scene.layers).into_iter().zip(&binned.layer_at).filter_map(|(l, at)| Some(((*at)?, l))).collect();
         // Free the prepared polygons on the pool, off this frame's path (as the oracle does).
@@ -553,7 +642,7 @@ impl GpuRenderer {
         let shown = shown.into_iter();
         let planned: Vec<Result<LayerJob, GpuError>> = shown
             .map(|(at, l)| {
-                let (job, _) = self.plan(&l.list, &l.view, depth + 1, &mut 0.0)?;
+                let (job, _) = self.plan(&l.list, &l.view, depth + 1, binning, &mut 0.0)?;
                 Ok(LayerJob { at, job: Box::new(job), view: l.view, ops: l.filters })
             })
             .collect();
@@ -561,11 +650,17 @@ impl GpuRenderer {
         Ok((Job { binned, layers }, stats))
     }
 
+    /// The largest buffer the device binds.
+    fn binding_cap(&self) -> u64 {
+        self.limits.max_storage_buffer_binding_size.min(self.limits.max_buffer_size)
+    }
+
     /// Every buffer a job binds fits what the device binds.
     fn check_sizes(&self, job: &Job) -> Result<(), GpuError> {
-        let cap = self.limits.max_storage_buffer_binding_size.min(self.limits.max_buffer_size);
+        let cap = self.binding_cap();
         let b = &job.binned;
-        let sizes = [("tile lists", b.index.len() as u64 * 4), ("edges", b.geo.len() as u64 * 16), ("paints and layers", b.paints_len as u64 * 16)];
+        let pieces = b.gpu.as_ref().map_or(b.geo.len() as u64, |p| u64::from(p.piece_cap));
+        let sizes = [("tile lists", (u64::from(b.ops_at) + b.op_heads.len() as u64) * 4), ("edges", pieces * 16), ("paints and layers", b.paints_len as u64 * 16)];
         for (what, n) in sizes {
             if n > cap {
                 return Err(GpuError::TooLarge(format!("{what} need {} MB, more than this GPU binds ({} MB)", n >> 20, cap >> 20)));
@@ -613,13 +708,34 @@ impl GpuRenderer {
             enc.copy_buffer_to_buffer(&img, 0, &pbuf, u64::from(l.at) * 16, 16 * n);
         }
         let views = self.images.lock().unwrap_or_else(PoisonError::into_inner).views(&self.device, &self.queue, self.limits.max_texture_dimension_2d, &b.images)?;
-        self.fine_pass(enc, b, &pbuf, &views, view, output, target);
+        let (ibuf, gbuf) = match &b.gpu {
+            Some(plan) => gpu_binning::record(&self.device, &self.bins, enc, plan, b.tiles_x, b.tiles_y, b.entries_at, b.ops_at, &b.op_heads).map_err(GpuError::Device)?,
+            None => self.upload_lists(b)?,
+        };
+        self.fine_pass(enc, b, &ibuf, &gbuf, &pbuf, &views, view, output, target);
         Ok(())
+    }
+
+    /// The CPU's tile lists and op headers, and its pieces, as buffers.
+    fn upload_lists(&self, b: &binning::Binned) -> Result<(wgpu::Buffer, wgpu::Buffer), GpuError> {
+        let len = (b.ops_at as usize + b.op_heads.len()).max(4);
+        let ibuf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("index"), size: 4 * len as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: true });
+        {
+            let mut m = ibuf.slice(..).get_mapped_range_mut().map_err(|e| GpuError::Device(e.to_string()))?;
+            write_words(&mut m, 0, &b.index);
+            write_words(&mut m, b.ops_at as usize, &b.op_heads);
+        }
+        ibuf.unmap();
+        // Bindings can't be empty: pad to one vec4.
+        let pad = [[0f32; 4]];
+        let geo: &[[f32; 4]] = if b.geo.is_empty() { &pad } else { &b.geo };
+        let gbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("geo"), contents: bytemuck::cast_slice(geo), usage: wgpu::BufferUsages::STORAGE });
+        Ok((ibuf, gbuf))
     }
 
     /// Uploads the binned scene and records the fine pass into `target`.
     #[allow(clippy::too_many_arguments)]
-    fn fine_pass(&self, enc: &mut wgpu::CommandEncoder, b: &binning::Binned, pbuf: &wgpu::Buffer, images: &[wgpu::TextureView], view: &View, output: Output, target: Target) {
+    fn fine_pass(&self, enc: &mut wgpu::CommandEncoder, b: &binning::Binned, ibuf: &wgpu::Buffer, gbuf: &wgpu::Buffer, pbuf: &wgpu::Buffer, images: &[wgpu::TextureView], view: &View, output: Output, target: Target) {
         let bg = view.background.map_or([0.0; 4], premultiply);
         let mut uniform = [0u32; 12];
         uniform[..4].copy_from_slice(&[view.width, view.height, b.tiles_x, u32::from(output == Output::Float)]);
@@ -627,15 +743,7 @@ impl GpuRenderer {
         for (u, f) in uniform[8..].iter_mut().zip(bg) {
             *u = f.to_bits();
         }
-        let storage = |label: &str, bytes: &[u8]| {
-            // Bindings can't be empty: pad to one vec4.
-            let pad = [0u8; 16];
-            let contents = if bytes.is_empty() { &pad[..] } else { bytes };
-            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage: wgpu::BufferUsages::STORAGE })
-        };
         let ubuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("params"), contents: bytemuck::cast_slice(&uniform), usage: wgpu::BufferUsages::UNIFORM });
-        let ibuf = storage("index", bytemuck::cast_slice(&b.index));
-        let gbuf = storage("geo", bytemuck::cast_slice(&b.geo));
         let mut entries = vec![
             wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: ibuf.as_entire_binding() },
@@ -693,6 +801,30 @@ impl GpuRenderer {
                 (Vec::new(), Some(pm))
             }
         })
+    }
+
+    /// The tile lists the GPU bins for `dl` (forced, however small), read back as a
+    /// [`binning::Binned`] like the CPU's: `None` when the scene isn't one the GPU bins.
+    #[cfg(test)]
+    pub(crate) fn gpu_lists(&self, dl: &DisplayList, view: &View) -> Result<Option<binning::Binned>, GpuError> {
+        let (scene, _) = prepare_scene(dl, view).map_err(GpuError::NeedsFull)?;
+        let lim = gpu_binning::Limits { binding: self.binding_cap(), min_edges: 0 };
+        let mut b = binning::bin_with(&scene, view.width, view.height, Some(&lim)).map_err(GpuError::NeedsFull)?;
+        let Some(plan) = b.gpu.take() else { return Ok(None) };
+        let scopes = Scopes::push(&self.device);
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("anicraft-bin-test") });
+        let (ibuf, gbuf) = gpu_binning::record(&self.device, &self.bins, &mut enc, &plan, b.tiles_x, b.tiles_y, b.entries_at, b.ops_at, &b.op_heads).map_err(GpuError::Device)?;
+        let (isize, gsize) = (ibuf.size(), gbuf.size());
+        let read = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("readback"), size: isize + gsize, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        enc.copy_buffer_to_buffer(&ibuf, 0, &read, 0, isize);
+        enc.copy_buffer_to_buffer(&gbuf, 0, &read, isize, gsize);
+        self.queue.submit([enc.finish()]);
+        let bytes = self.map(&read, scopes)?;
+        let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
+        let n = isize as usize / 4;
+        b.index = words.get(..b.ops_at as usize).unwrap_or(&[]).to_vec();
+        b.geo = words.get(n..).unwrap_or(&[]).as_chunks::<4>().0.iter().map(|v| v.map(f32::from_bits)).collect();
+        Ok(Some(b))
     }
 
     /// Waits for `read`'s copy, pops the error scopes and returns its bytes.
@@ -763,6 +895,14 @@ pub(crate) fn describe(e: &wgpu::Error) -> String {
     match e {
         wgpu::Error::Validation { description, .. } | wgpu::Error::Internal { description, .. } => description.trim().to_string(),
         wgpu::Error::OutOfMemory { .. } => e.to_string(),
+    }
+}
+
+/// Writes `words` at word `at` of a mapped buffer, if they fit.
+pub(crate) fn write_words(m: &mut wgpu::BufferViewMut, at: usize, words: &[u32]) {
+    let (a, b) = (4 * at, 4 * (at + words.len()));
+    if !words.is_empty() && b <= m.len() {
+        m.slice(a..b).copy_from_slice(bytemuck::cast_slice(words));
     }
 }
 

@@ -51,6 +51,9 @@ const T: f32 = TILE as f32;
 pub const NONE: u32 = u32::MAX;
 /// Fill rule code of a hairline in an op header (`0` non-zero, `1` even-odd).
 pub const HAIRLINE: u32 = 2;
+/// How far from a hairline segment its tiles reach: pixel centres within its reach lie within
+/// this of it (`bin.wgsl` › `M`).
+pub(crate) const HAIRLINE_MARGIN: f32 = anicraft_render::hairline::REACH + 1.0;
 /// `vec4`s of paint data per fill.
 pub const PAINT_VEC4S: usize = 4;
 /// Gradient table entries (the oracle's LUT size).
@@ -113,7 +116,8 @@ pub fn blend_code(m: BlendMode) -> u32 {
 ///
 /// * `index` (u32): `[start, count]` per tile into the entry list; then each entry as
 ///   `[op, first piece, pieces, backdrop]` (the backdrop an `i32`), or a control entry ([`CTRL`]
-///   set); then each op's header `[kind, fill rule (or HAIRLINE), ramp start in paints, flags]`.
+///   set); then, at `ops_at`, each op's header `[kind, fill rule (or HAIRLINE), ramp start in
+///   paints, flags]` ([`Binned::op_heads`]).
 /// * `geo` (`vec4<f32>`): pieces `(x0, y0, x1, y1)` relative to their tile's top-left, in the
 ///   edge's direction (left-edge steps included); a hairline's are its segments, whole.
 /// * `paints` (`vec4<f32>`): per op its colour, then the inverse paint transform and gradient,
@@ -127,6 +131,8 @@ pub struct Binned {
     pub index: Vec<u32>,
     pub entries_at: u32,
     pub ops_at: u32,
+    /// The op headers, which go at `ops_at` in the index.
+    pub op_heads: Vec<u32>,
     pub geo: Vec<[f32; 4]>,
     pub paints: Vec<[f32; 4]>,
     /// The paint buffer's whole length in `vec4`s: `paints`, then room for the layers.
@@ -142,6 +148,10 @@ pub struct Binned {
     /// Pieces plus entries the fine pass walks, summed over tiles (each for 256 pixels): what
     /// bounds how long the dispatch runs.
     pub work: u64,
+    /// Binned on the GPU: `index` holds only the tile headers (`[start, 0]`, room for every
+    /// tile the fills' bounds cover), `geo` is empty, and the GPU computes the entries and
+    /// pieces from this plan (`entries` and `pieces` are then upper bounds).
+    pub gpu: Option<crate::gpu_binning::Plan>,
 }
 
 /// A chunk of fills' share of the scene (binned in parallel; chunking keeps allocations few).
@@ -189,6 +199,12 @@ struct RowOut {
 /// shader holds ([`MAX_GROUP_DEPTH`], [`MAX_CLIP_DEPTH`]) or it has more bitmaps than
 /// [`MAX_IMAGES`]; the caller draws it on the CPU.
 pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> {
+    bin_with(scene, width, height, None)
+}
+
+/// [`bin`], or with `gpu`, a plan for binning on the GPU instead ([`Binned::gpu`]) when the
+/// scene can take it and fits `gpu`'s limits ([`crate::gpu_binning`]).
+pub fn bin_with(scene: &Scene, width: u32, height: u32, gpu: Option<&crate::gpu_binning::Limits>) -> Result<Binned, NeedsFull> {
     if scene.groups.iter().any(|g| g.chain.len() > MAX_GROUP_DEPTH) {
         return Err(NeedsFull::Groups);
     }
@@ -218,85 +234,16 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
 
     let tiles_x = width.div_ceil(TILE);
     let tiles_y = height.div_ceil(TILE);
-    let (tx, ty) = (tiles_x as usize, tiles_y as usize);
-    // Phase 1, parallel over chunks of ops: pieces, backdrops and entries; each chunk's
-    // entries then sorted (stably, so drawing order holds) by tile row, with row offsets.
-    let locals: Vec<(Local, Vec<u32>)> = ops
-        .par_chunks(CHUNK)
-        .enumerate()
-        .map(|(c, chunk)| {
-            let mut out = Local::default();
-            let mut scratch = (Vec::new(), Track::default());
-            for (i, f) in chunk.iter().enumerate() {
-                bin_fill(f, (c * CHUNK + i) as u32, tiles_x, tiles_y, &mut out, &mut scratch);
-            }
-            out.entries.sort_by_key(|e| e[1] / tiles_x.max(1));
-            let mut rows = vec![0u32; ty + 1];
-            for e in &out.entries {
-                if let Some(r) = rows.get_mut((e[1] / tiles_x.max(1)) as usize + 1) {
-                    *r += 1;
-                }
-            }
-            for r in 1..rows.len() {
-                rows[r] += rows[r - 1];
-            }
-            (out, rows)
-        })
-        .collect();
-
-    // Where each chunk's pieces go in `geo`.
-    let pieces: usize = locals.iter().map(|(l, _)| l.pieces.len()).sum();
-    let mut piece_at = Vec::with_capacity(locals.len());
-    let mut p = 0usize;
-    for (l, _) in &locals {
-        piece_at.push(p as u32);
-        p += l.pieces.len();
-    }
-
-    // Phase 2, parallel over tile rows: each tile's stream of entries.
-    let rows: Vec<RowOut> = (0..ty).into_par_iter().map(|r| row_streams(r, tx, &locals, &piece_at, &tables)).collect();
-    let mut row_at = vec![0usize; ty + 1];
-    for (r, out) in rows.iter().enumerate() {
-        row_at[r + 1] = row_at[r] + out.stream.len();
-    }
-    let total = row_at[ty];
-    let work = rows.iter().map(|r| r.work).sum();
-    let entries_at = 2 * tx * ty;
-    let ops_at = entries_at + 4 * total;
-    let mut index = vec![0u32; ops_at + 4 * ops.len()];
-    // Phase 3, parallel over tile rows: headers and streams copied into place.
-    {
-        let (headers, rest) = index.split_at_mut(entries_at);
-        let (mut entries, _) = rest.split_at_mut(4 * total);
-        let mut row_entries: Vec<&mut [u32]> = Vec::with_capacity(ty);
-        for r in 0..ty {
-            let (mine, after) = std::mem::take(&mut entries).split_at_mut(4 * (row_at[r + 1] - row_at[r]));
-            row_entries.push(mine);
-            entries = after;
+    // On the GPU when asked and the scene can take it (no fill in a mask or a group, for now):
+    // then the fills alone are the ops (no mask artwork draws).
+    let plan = gpu.filter(|_| scene.fills.iter().all(|f| f.clip.is_none() && f.group.is_none())).and_then(|lim| crate::gpu_binning::plan(&scene.fills, tiles_x, tiles_y, lim));
+    let lists = match &plan {
+        Some(p) => {
+            ops.truncate(nf);
+            Lists::on_gpu(p, tiles_x, tiles_y)
         }
-        headers.par_chunks_mut(2 * tx.max(1)).zip(row_entries).zip(&rows).enumerate().for_each(|(r, ((head, out), row))| {
-            for (h, &[s, n]) in head.as_chunks_mut::<2>().0.iter_mut().zip(&row.heads) {
-                *h = [row_at[r] as u32 + s, n];
-            }
-            for (d, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(&row.stream) {
-                *d = *s;
-            }
-        });
-    }
-    // Pieces copied in parallel into their places.
-    let mut geo: Vec<[f32; 4]> = vec![[0.0; 4]; pieces];
-    {
-        let mut piece_dst = &mut geo[..];
-        let mut jobs: Vec<(&mut [Vec4], &[Vec4])> = Vec::with_capacity(locals.len());
-        for (l, _) in &locals {
-            let (a, rest) = std::mem::take(&mut piece_dst).split_at_mut(l.pieces.len());
-            jobs.push((a, &l.pieces));
-            piece_dst = rest;
-        }
-        jobs.into_par_iter().for_each(|(d, s)| d.copy_from_slice(s));
-    }
-    // Tens of thousands of small buffers: free them on the pool, off the frame's path.
-    anicraft_render::drop_in_background((locals, rows));
+        None => cpu_lists(&ops, &tables, tiles_x, tiles_y),
+    };
 
     // Paints: a fixed record per op, then the gradient tables, then the layers' pixels.
     let mut paints: Vec<[f32; 4]> = Vec::with_capacity(PAINT_VEC4S * ops.len());
@@ -319,6 +266,7 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         return Err(NeedsFull::Filters);
     }
     let paints_len = cursor;
+    let mut op_heads: Vec<u32> = Vec::with_capacity(4 * ops.len());
     let u = f32::from_bits;
     for (op, f) in ops.iter().enumerate() {
         let rule = match f.rule {
@@ -372,10 +320,7 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         } else {
             0
         };
-        let at = ops_at + 4 * op;
-        if let Some(slot) = index.get_mut(at..at + 4) {
-            slot.copy_from_slice(&[kind, rule, ramp, flags]);
-        }
+        op_heads.extend_from_slice(&[kind, rule, ramp, flags]);
     }
     paints.extend_from_slice(&ramps);
     if paints.len() != PAINT_VEC4S * ops.len() + table_len {
@@ -383,7 +328,115 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
         return Err(NeedsFull::Filters);
     }
 
-    Ok(Binned { tiles_x, tiles_y, index, entries_at: entries_at as u32, ops_at: ops_at as u32, geo, paints, paints_len, layer_at, images, entries: total, pieces, work })
+    let Lists { index, geo, entries_at, ops_at, entries, pieces, work } = lists;
+    Ok(Binned { tiles_x, tiles_y, index, entries_at, ops_at, op_heads, geo, paints, paints_len, layer_at, images, entries, pieces, work, gpu: plan })
+}
+
+/// The tile lists (or, binned on the GPU, room for them).
+struct Lists {
+    index: Vec<u32>,
+    geo: Vec<[f32; 4]>,
+    entries_at: u32,
+    ops_at: u32,
+    entries: usize,
+    pieces: usize,
+    work: u64,
+}
+
+impl Lists {
+    /// Headers `[start, 0]` with room for every tile its fills' bounds cover; the GPU fills in
+    /// the entries and the counts. Entries and pieces are upper bounds.
+    fn on_gpu(p: &crate::gpu_binning::Plan, tiles_x: u32, tiles_y: u32) -> Lists {
+        let entries_at = 2 * tiles_x * tiles_y;
+        let ops_at = entries_at + 4 * p.op_tiles;
+        let work = u64::from(p.op_tiles) + u64::from(p.piece_cap);
+        Lists { index: p.headers.clone(), geo: Vec::new(), entries_at, ops_at, entries: p.op_tiles as usize, pieces: p.piece_cap as usize, work }
+    }
+}
+
+/// The tile lists, binned on the CPU (in parallel per chunk of fills, then per tile row).
+fn cpu_lists(ops: &[&Fill], tables: &Tables, tiles_x: u32, tiles_y: u32) -> Lists {
+    let (tx, ty) = (tiles_x as usize, tiles_y as usize);
+    // Phase 1, parallel over chunks of ops: pieces, backdrops and entries; each chunk's
+    // entries then sorted (stably, so drawing order holds) by tile row, with row offsets.
+    let locals: Vec<(Local, Vec<u32>)> = ops
+        .par_chunks(CHUNK)
+        .enumerate()
+        .map(|(c, chunk)| {
+            let mut out = Local::default();
+            let mut scratch = (Vec::new(), Track::default());
+            for (i, f) in chunk.iter().enumerate() {
+                bin_fill(f, (c * CHUNK + i) as u32, tiles_x, tiles_y, &mut out, &mut scratch);
+            }
+            out.entries.sort_by_key(|e| e[1] / tiles_x.max(1));
+            let mut rows = vec![0u32; ty + 1];
+            for e in &out.entries {
+                if let Some(r) = rows.get_mut((e[1] / tiles_x.max(1)) as usize + 1) {
+                    *r += 1;
+                }
+            }
+            for r in 1..rows.len() {
+                rows[r] += rows[r - 1];
+            }
+            (out, rows)
+        })
+        .collect();
+
+    // Where each chunk's pieces go in `geo`.
+    let pieces: usize = locals.iter().map(|(l, _)| l.pieces.len()).sum();
+    let mut piece_at = Vec::with_capacity(locals.len());
+    let mut p = 0usize;
+    for (l, _) in &locals {
+        piece_at.push(p as u32);
+        p += l.pieces.len();
+    }
+
+    // Phase 2, parallel over tile rows: each tile's stream of entries.
+    let rows: Vec<RowOut> = (0..ty).into_par_iter().map(|r| row_streams(r, tx, &locals, &piece_at, tables)).collect();
+    let mut row_at = vec![0usize; ty + 1];
+    for (r, out) in rows.iter().enumerate() {
+        row_at[r + 1] = row_at[r] + out.stream.len();
+    }
+    let total = row_at[ty];
+    let work = rows.iter().map(|r| r.work).sum();
+    let entries_at = 2 * tx * ty;
+    let ops_at = entries_at + 4 * total;
+    let mut index = vec![0u32; ops_at];
+    // Phase 3, parallel over tile rows: headers and streams copied into place.
+    {
+        let (headers, rest) = index.split_at_mut(entries_at);
+        let (mut entries, _) = rest.split_at_mut(4 * total);
+        let mut row_entries: Vec<&mut [u32]> = Vec::with_capacity(ty);
+        for r in 0..ty {
+            let (mine, after) = std::mem::take(&mut entries).split_at_mut(4 * (row_at[r + 1] - row_at[r]));
+            row_entries.push(mine);
+            entries = after;
+        }
+        headers.par_chunks_mut(2 * tx.max(1)).zip(row_entries).zip(&rows).enumerate().for_each(|(r, ((head, out), row))| {
+            for (h, &[s, n]) in head.as_chunks_mut::<2>().0.iter_mut().zip(&row.heads) {
+                *h = [row_at[r] as u32 + s, n];
+            }
+            for (d, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(&row.stream) {
+                *d = *s;
+            }
+        });
+    }
+    // Pieces copied in parallel into their places.
+    let mut geo: Vec<[f32; 4]> = vec![[0.0; 4]; pieces];
+    {
+        let mut piece_dst = &mut geo[..];
+        let mut jobs: Vec<(&mut [Vec4], &[Vec4])> = Vec::with_capacity(locals.len());
+        for (l, _) in &locals {
+            let (a, rest) = std::mem::take(&mut piece_dst).split_at_mut(l.pieces.len());
+            jobs.push((a, &l.pieces));
+            piece_dst = rest;
+        }
+        jobs.into_par_iter().for_each(|(d, s)| d.copy_from_slice(s));
+    }
+    // Tens of thousands of small buffers: free them on the pool, off the frame's path.
+    anicraft_render::drop_in_background((locals, rows));
+
+    Lists { index, geo, entries_at: entries_at as u32, ops_at: ops_at as u32, entries: total, pieces, work }
 }
 
 /// A colour effect as the shader applies it to each bitmap tap, the same arithmetic as
@@ -527,7 +580,7 @@ fn bin_fill(f: &Fill, op: u32, tiles_x: u32, tiles_y: u32, out: &mut Local, (pie
     pieces.clear();
     if f.hairline {
         for poly in &f.polys {
-            for_segments(poly, |a, b| hairline_tiles(a, b, &range, |row, col| pieces.push(Piece { row, col, seg: [a.x, a.y, b.x, b.y] })));
+            for_segments(poly, |a, b| hairline_tiles(a, b, &range, HAIRLINE_MARGIN, |row, col| pieces.push(Piece { row, col, seg: [a.x, a.y, b.x, b.y] })));
         }
     } else {
         for poly in &f.polys {
@@ -622,6 +675,7 @@ pub(crate) fn top_crossing(seg: &[f32; 4], row_y0: f32) -> i32 {
 
 /// A fill's tile range, in pixels and tiles.
 #[derive(Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct Range {
     pub(crate) tx0: u32,
     pub(crate) ty0: u32,
@@ -836,17 +890,17 @@ fn steps(a: Seen, b: Seen, row: u32, r: &Range, out: &mut impl FnMut(Piece)) {
     }
 }
 
-/// Every tile of the range with a pixel centre within a hairline's reach of segment `a → b`
-/// (conservatively: a little more), as `(row, col)` relative to the range.
-fn hairline_tiles(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(u32, i32)) {
+/// Every tile of the range within `margin` of segment `a → b` (rows and columns padded by it),
+/// as `(row, col)` relative to the range. With [`HAIRLINE_MARGIN`], every tile with a pixel
+/// centre within a hairline's reach (`bin.wgsl` › `hairline` uses the same).
+pub(crate) fn hairline_tiles(a: Vec2, b: Vec2, r: &Range, margin: f32, mut out: impl FnMut(u32, i32)) {
     if !(a.is_finite() && b.is_finite()) {
         return;
     }
-    // Pixel centres within reach of the segment lie within these margins of it.
-    const M: f32 = anicraft_render::hairline::REACH + 1.0;
+    let m = margin;
     let (ymin, ymax) = (a.y.min(b.y), a.y.max(b.y));
-    let r0 = (((ymin - M - r.ylo) / T).floor()).max(0.0);
-    let r1 = (((ymax + M - r.ylo) / T).floor()).min((r.nrows - 1) as f32);
+    let r0 = (((ymin - m - r.ylo) / T).floor()).max(0.0);
+    let r1 = (((ymax + m - r.ylo) / T).floor()).min((r.nrows - 1) as f32);
     if r1 < r0 {
         return;
     }
@@ -857,13 +911,13 @@ fn hairline_tiles(a: Vec2, b: Vec2, r: &Range, mut out: impl FnMut(u32, i32)) {
         let (xa, xb) = if dy == 0.0 {
             (a.x.min(b.x), a.x.max(b.x))
         } else {
-            let t0 = ((top - M - a.y) / dy).clamp(0.0, 1.0);
-            let t1 = ((top + T + M - a.y) / dy).clamp(0.0, 1.0);
+            let t0 = ((top - m - a.y) / dy).clamp(0.0, 1.0);
+            let t1 = ((top + T + m - a.y) / dy).clamp(0.0, 1.0);
             let (u, v) = (a.x + dx * t0, a.x + dx * t1);
             (u.min(v), u.max(v))
         };
-        let c0 = (((xa - M - r.xlo) / T).floor()).max(0.0);
-        let c1 = (((xb + M - r.xlo) / T).floor()).min((r.ncols - 1) as f32);
+        let c0 = (((xa - m - r.xlo) / T).floor()).max(0.0);
+        let c1 = (((xb + m - r.xlo) / T).floor()).min((r.ncols - 1) as f32);
         if c1 < c0 {
             continue;
         }
