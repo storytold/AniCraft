@@ -1053,6 +1053,8 @@ fn gpu_binning_produces_the_cpus_tile_lists() {
 #[test]
 fn gpu_binned_frames_match_the_oracle() {
     let Some(g) = gpu() else { return };
+    // Where the GPU stage runs (lavapipe in CI included), its binning must too.
+    assert_eq!(g.gpu_binning_off(), None);
     for (name, dl, v) in gpu_binned_scenes() {
         let f = g.render_with(&dl, &v, Output::Premul8, Binning::Gpu).unwrap();
         assert!(f.gpu_binned, "{name}");

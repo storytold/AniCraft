@@ -82,8 +82,9 @@ pub struct GpuFrame {
 /// Where a frame's edges are sorted into tiles (ADR 0048).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Binning {
-    /// On the GPU when the scene can take it (no fill inside a mask or a group, for now) and
-    /// has enough edges to be worth the passes ([`AUTO_MIN_EDGES`]); otherwise on the CPU.
+    /// On the GPU when the scene can take it (no fill inside a mask or a group, for now), has
+    /// enough edges to be worth the passes ([`AUTO_MIN_EDGES`]) and the device runs Vulkan
+    /// (where it was measured to win); otherwise on the CPU.
     Auto,
     /// Always on the CPU (the reference).
     Cpu,
@@ -185,6 +186,13 @@ pub struct GpuRenderer {
     bins: gpu_binning::Pipelines,
     /// [`Binning`], as its code.
     binning: AtomicU8,
+    /// Why the GPU doesn't bin on this device (its self-test came back wrong); then every
+    /// frame bins on the CPU, and the rest of the GPU stage still runs.
+    no_gpu_binning: Mutex<Option<String>>,
+    /// Whether [`Binning::Auto`] bins on the GPU on this backend: on Vulkan, where it was
+    /// measured to win in the stage's tiles. On Direct3D 12 the passes cost more per stage tile
+    /// than the CPU's binning (ADR 0048), and other backends aren't measured yet.
+    auto_bins: bool,
     /// Bound where a texture slot or a buffer is unused.
     blank: wgpu::TextureView,
     /// Placeholders for a filter pass's coverage (written) and ramp (read): one buffer can't be
@@ -301,7 +309,7 @@ impl GpuRenderer {
             }
             let limits = device.limits();
             check(adapter, &limits, &name)?;
-            Self::build(device, queue, limits, name, true, Arc::new(Mutex::new(None)))
+            Self::build(device, queue, limits, name, info.backend, true, Arc::new(Mutex::new(None)))
         }))
         .unwrap_or_else(|_| Err(GpuError::Unavailable("the GPU driver failed while starting".into())))
     }
@@ -339,10 +347,10 @@ impl GpuRenderer {
                 g.get_or_insert_with(|| format!("device lost: {msg}"));
             });
         }
-        Self::build(device, queue, want, name, false, broken)
+        Self::build(device, queue, want, name, info.backend, false, broken)
     }
 
-    fn build(device: wgpu::Device, queue: wgpu::Queue, limits: wgpu::Limits, name: String, shared: bool, broken: Arc<Mutex<Option<String>>>) -> Result<GpuRenderer, GpuError> {
+    fn build(device: wgpu::Device, queue: wgpu::Queue, limits: wgpu::Limits, name: String, backend: wgpu::Backend, shared: bool, broken: Arc<Mutex<Option<String>>>) -> Result<GpuRenderer, GpuError> {
         let scopes = Scopes::push(&device);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("anicraft-fine"), source: wgpu::ShaderSource::Wgsl(include_str!("fine.wgsl").into()) });
         let entry = |binding: u32, ty: wgpu::BindingType| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
@@ -398,6 +406,8 @@ impl GpuRenderer {
             filters,
             bins,
             binning: AtomicU8::new(Binning::from_env().code()),
+            no_gpu_binning: Mutex::new(None),
+            auto_bins: backend == wgpu::Backend::Vulkan,
             blank,
             blank_coverage,
             blank_ramp,
@@ -457,17 +467,29 @@ impl GpuRenderer {
             let off = d.map_or("a wrong size".to_string(), |d| format!("{} of {} pixels off, by up to {}/255{at}", d.differing, d.pixels, d.max));
             Err(GpuError::Unavailable(format!("{}: the self-test render came back wrong {how} ({off})", self.adapter)))
         };
-        check("read back", &self.render(&dl, &view, Output::Premul8)?.premul8)?;
-        let t = self.render_texture(&dl, &view)?;
+        check("read back", &self.render_with(&dl, &view, Output::Premul8, Binning::Cpu)?.premul8)?;
+        let t = self.render_texture_with(&dl, &view, Binning::Cpu)?;
         check("through a texture", &self.read_texture(&t)?)?;
-        // And binned on the GPU (the plain fills; the bitmap and the symbol stay on the CPU's).
+        // Binned on the GPU (the plain fills; the bitmap and the symbol bin on the CPU): if that
+        // comes back wrong, only the binning stays on the CPU here.
         let plain = DisplayList { items: dl.items.iter().take(3).cloned().collect(), ..Default::default() };
         let (want, _) = anicraft_render::render(&plain, &view).map_err(|e| GpuError::Unavailable(e.to_string()))?;
-        let got = self.render_with(&plain, &view, Output::Premul8, Binning::Gpu)?;
-        match compare_premul8(&got.premul8, &want.to_premul_rgba8()) {
-            Some(d) if got.gpu_binned && d.max <= 2 && d.mean <= 0.1 => Ok(()),
-            d => Err(GpuError::Unavailable(format!("{}: the self-test render came back wrong binned on the GPU ({d:?})", self.adapter))),
-        }
+        let why = match self.render_with(&plain, &view, Output::Premul8, Binning::Gpu) {
+            Ok(got) => match compare_premul8(&got.premul8, &want.to_premul_rgba8()) {
+                Some(d) if got.gpu_binned && d.max <= 2 && d.mean <= 0.1 => None,
+                Some(d) if got.gpu_binned => Some(format!("{} of {} pixels off, by up to {}/255", d.differing, d.pixels, d.max)),
+                _ => Some("it wasn't binned on the GPU".to_string()),
+            },
+            Err(GpuError::Device(e)) => return Err(GpuError::Unavailable(format!("{}: the GPU binning failed: {e}", self.adapter))),
+            Err(e) => Some(e.to_string()),
+        };
+        *self.no_gpu_binning.lock().unwrap_or_else(PoisonError::into_inner) = why.map(|w| format!("{}: the self-test came back wrong binned on the GPU ({w}); binning on the CPU", self.adapter));
+        Ok(())
+    }
+
+    /// Why the GPU doesn't bin on this device, if it doesn't (for Preferences and reports).
+    pub fn gpu_binning_off(&self) -> Option<String> {
+        self.no_gpu_binning.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Where frames' edges are sorted into tiles from now on.
@@ -620,8 +642,11 @@ impl GpuRenderer {
     fn plan(&self, dl: &DisplayList, view: &View, depth: usize, binning: Binning, bin_ms: &mut f32) -> Result<(Job, RenderStats), GpuError> {
         let (mut scene, stats) = prepare_scene(dl, view).map_err(GpuError::NeedsFull)?;
         let t = Instant::now();
+        let off = self.no_gpu_binning.lock().unwrap_or_else(PoisonError::into_inner).is_some();
         let lim = match binning {
+            _ if off => None,
             Binning::Cpu => None,
+            Binning::Auto if !self.auto_bins => None,
             Binning::Auto => Some(gpu_binning::Limits { binding: self.binding_cap(), min_edges: AUTO_MIN_EDGES }),
             Binning::Gpu => Some(gpu_binning::Limits { binding: self.binding_cap(), min_edges: 0 }),
         };
