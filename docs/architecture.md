@@ -36,7 +36,7 @@ app/                         workspace root; the root package is the desktop app
     doc       L1  Document model + timeline evaluation (keyframes, tweens, easing, symbols) + player
     render    L2  CPU oracle rasterizer, paints/gradients, compositor, PNG encode
     engine    L3  Session (document + history + selection + playhead), command registry, file format
-    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019, 0029, 0031; shell feature `gpu-stage`, on by default)
+    gpu       L3  wgpu stage renderer over the oracle's prepared fills (ADR 0019, 0029, 0032, 0048; shell feature `gpu-stage`, on by default)
     cli       L4  `anicraft-cli`: info / render / render-seq / commands / run / serve (JSON-lines)
   src/        L5  egui shell: menus (from registry), tools, stage, timeline, properties, library
   docs/           requirements, architecture, roadmap
@@ -185,11 +185,16 @@ DisplayList ──► for each item:
   Output is bit-identical to serial. Numbers are in [performance.md](performance.md).
 
 **GPU stage** ([ADR 0019](adr/0019-gpu-stage.md), [ADR 0029](adr/0029-gpu-stage-direct-masks-groups.md),
-[ADR 0032](adr/0032-gpu-stage-bitmaps-filters-default.md); the shell's `gpu-stage` feature, on
-by default, and the default stage renderer): `render::prepare_scene` hands the oracle's own
-prepared fills, with their clips, groups, bitmap shaders and filtered layers, to `anicraft-gpu`, which bins edge pieces into
-16 × 16 tiles with per-row backdrops (CPU, parallel) and writes each tile's stream of entries
-in drawing order, with clip-coverage and group open/close entries. One compute pass computes
+[ADR 0032](adr/0032-gpu-stage-bitmaps-filters-default.md), [ADR 0048](adr/0048-gpu-binning-and-hairlines.md);
+the shell's `gpu-stage` feature, on by default, and the default stage renderer):
+`render::prepare_scene` hands the oracle's own prepared fills, with their clips, groups, bitmap
+shaders and filtered layers, to `anicraft-gpu`, which bins edge pieces into 16 × 16 tiles with
+an integer backdrop per tile and steps on the tiles' left edges, and writes each tile's stream
+of entries in drawing order. Heavy scenes without masks or groups are binned on the GPU (count,
+prefix sum, scatter and tile-list passes; the CPU only lays out the points and the fills'
+ranges, and sizes every buffer up front, so nothing is read back); the rest, with their
+clip-coverage and group open/close entries, on the CPU, which is also the reference. Outline
+mode's hairlines are one piece per segment, covered by distance in both renderers. One compute pass computes
 each pixel's exact area coverage and composites it as the oracle's band compositor does (clip
 coverage, a per-pixel group stack, the W3C blend modes). On the window's wgpu device it draws
 each stage tile into a texture egui shows as it is (no readback); otherwise on a headless

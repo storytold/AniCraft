@@ -37,6 +37,11 @@ The default `bench` scenario: 50 layers × 200 shapes × 240 frames, 200k elemen
 | UI frame while rendering | never blocked | worker thread ✅ | design (ADR 0002) |
 | Autosave: time on the editing thread | < 1 ms | 7–15 µs ✅ | `bench --check` |
 | Autosave of the 65 MB file, in the background | < 2 s | 183–184 ms ✅ | `bench --check` |
+| GPU stage, 1,000 shapes at 4K, stage tiles (M3 exit) | < 16.7 ms | 4.5–4.7 ms ✅ (2026-11-10, RTX 5090) | `gpu_bench --check` |
+| GPU stage, 10k shapes at 4K, stage tiles | < 16.7 ms | 10.1–10.4 ms ✅ | `gpu_bench --check` |
+| GPU stage, 50k shapes at 1080p, stage tiles | < 33.3 ms (30 fps) | 24.8–26.3 ms ✅ | `gpu_bench --check` |
+| GPU stage, 50k shapes at 4K, one texture | < 33.3 ms | 22.5–23.8 ms ✅ | `gpu_bench --check` |
+| GPU stage, onion ±5 outlines / tinted at 1080p, stage tiles | ≤ 1.25 | 1.03–1.06 ✅ | `gpu_bench --check` |
 
 **1080p render, back under budget (2026-11-06).** It had drifted to 19.4–20.2 ms (v0.1.0
 measured 18.0–18.9 ms on the same machine; the 16.5 ms of 2026-10-28 didn't reproduce).
@@ -68,8 +73,16 @@ order (an append, then a reorder). One k-way merge by layer, each item moved onc
 to 0.85 ms, and evaluating the extra frames in parallel brought the whole to 3.0–3.3 ms. Output
 is unchanged (the onion tests compare items and pixels). The settings are part of every tile's
 key, so the frame cache keeps working: looking at the same frame again is 40 hits in 0.02 ms,
-and other settings are other pictures. Hairline outlines cost more to rasterize than fills, so
-outline mode on very heavy scenes is the slow case.
+and other settings are other pictures.
+
+**Outlines as hairlines (2026-11-10, ADR 0048).** Outline mode drew half-pixel strokes (four
+edges per segment and a disc at every bend); it now draws hairlines, one edge per segment,
+covered by distance. Same test, same machine:
+
+| Scene | Off | ±5 tinted, fading | ±5 outlines | Keyframes only ±5 | Edit Multiple Frames ±5 |
+|---|---|---|---|---|---|
+| Sample | 5.7 ms | 5.9 ms | 5.5 ms | 5.9 ms | 5.7 ms |
+| Stress 20 × 100 | 7.6 ms | 14.8 ms | **17.1 ms** (was 34–39) | 7.3 ms | 7.2 ms |
 
 **Crash-recovery autosave (2026-11-09, ADR 0015).** `bench` now runs one autosave the way the
 app does: an `Autosaver` in a scratch recovery folder. The editing thread only hands over an
@@ -147,6 +160,44 @@ layer across a frame's tiles is next. The one large difference is a single pixel
 falls within float rounding of a non-repeating bitmap's edge (ADR 0032). Bitmaps are uploaded
 once per image and cached (256 MB budget), so after the first frame they cost no transfer.
 
+### GPU stage, fourth slice: binning on the GPU, hairlines (M3, ADR 0048)
+
+`cargo run --release -p anicraft-gpu --example gpu_bench` (2026-11-10, RTX 5090 over Vulkan,
+32 threads, a machine shared with other builds: best of three runs). *Direct* is the calling
+thread's time with `render_texture`, *tiled* the stage's way (512 px tiles in parallel until
+the GPU has finished).
+
+| Scene | Size | CPU oracle | Before: direct / tiled | After, binned on the CPU: direct / tiled | After, Auto: direct / tiled | Parity (mean / max, 1/255) |
+|---|---|---|---|---|---|---|
+| Stress, 50 × 200 (≈10k shapes) | 1920×1080 | 9.8 ms | 9.0 / 7.4 ms | 8.6 / 5.5 ms | **3.9** / 5.5 ms | < 0.0001 / 1 |
+| Stress, 50 × 200 | 3840×2160 | 25.9 ms | 21.7 / 10.9 ms | 16.4 / 10.1 ms | **4.7** / 10.1 ms | < 0.0001 / 1 |
+| 1,000 shapes (binned on the CPU: few edges) | 3840×2160 | 16.9 ms | 2.2 / 4.5 ms | 1.6 / 4.2 ms | 1.7 / 4.5 ms | < 0.0001 / 1 |
+| 50,000 shapes (250 × 200) | 1920×1080 | 31.7 ms | 52.2 / 32.4 ms | 33.5 / 26.8 ms | **17.7** / 24.8 ms | < 0.0001 / 1 |
+| 50,000 shapes | 3840×2160 | 73.1 ms | 122.1 / 75.3 ms | 103.9 / 61.5 ms | **22.5** / **36.7** ms | < 0.0001 / 1 |
+| Masked stress (binned on the CPU: masks) | 3840×2160 | 72.4 ms | 13.8 / 12.3 ms | 12.0 / 10.7 ms | 11.3 / 10.5 ms | < 0.0001 / 1 |
+| Onion skin off (stress 20 × 100) | 1920×1080 | 5.0 ms | 2.1 / 2.7 ms | 1.8 / 2.2 ms | 1.1 / 2.3 ms | < 0.0001 / 1 |
+| Onion ±5, tinted (22,000 items) | 1920×1080 | 15.1 ms | 15.7 / 12.6 ms | 12.8 / 10.5 ms | 7.1 / 9.8 ms | < 0.0001 / 1 |
+| Onion ±5, tinted | 3840×2160 | 37.3 ms | 32.1 / 25.1 ms | 20.3 / 22.0 ms | 8.5 / 16.5 ms | 0.0001 / 1 |
+| Onion ±5, **outlines** | 1920×1080 | 20.0 ms (was 36.0) | 74.7 / 73.0 ms | 12.9 / 10.4 ms | 7.3 / **10.1** ms | < 0.0001 / 1 |
+| Onion ±5, **outlines** | 3840×2160 | 37.9 ms (was 60.2) | 135.4 / 95.4 ms | 20.3 / 18.1 ms | 8.6 / **15.3** ms | < 0.0001 / 1 |
+
+*Before* is `main` before this slice (CPU binning with float backdrops, stroked hairlines),
+measured the same day on the same machine. In stage tiles the GPU binning wins once frames are
+heavy (50k shapes: 61.5 → 36.7 ms at 4K) and never loses below `AUTO_MIN_EDGES`; a whole frame
+in one texture gains most (10k shapes at 4K: 16.4 → 4.7 ms). **Outline mode is as fast as
+tinted onion skin** on the GPU stage: 10.1 vs 9.8 ms at 1080p in tiles, 15.3 vs 16.5 ms at 4K,
+7.3 vs 7.1 ms in one texture (it was 73 vs 12.6 ms in tiles).
+
+On **Direct3D 12** (same card, `WGPU_BACKEND=dx12`, two runs) the GPU binning still wins in
+one texture (10k shapes at 4K: 17.5 → 6.3 ms; 50k: 154 → 30 ms) but loses in stage tiles
+(onion ±5 at 1080p: 9.7 → 14.4 ms tinted, 10.0 → 15.4 ms outlines; the passes cost more per
+dispatch there, as ADR 0032 saw for the fine pass), so `Binning::Auto` bins on the GPU on
+Vulkan only. With CPU binning, DX12's onion outlines take 10.1 ms in tiles against 10.0 tinted.
+
+The CPU stage (the oracle through the render service's 256 px tiles, `onion_timings`, best of
+frames 12, 30 and 48) with hairlines: onion ±5 outlines **17.1 ms** against 14.8 tinted at
+1080p (was 34–39 against 16.2–17.2).
+
 ### How budgets are enforced
 
 * **Budgets that don't depend on the machine** (undo memory, snapshot sharing, file size,
@@ -158,7 +209,8 @@ once per image and cached (256 MB budget), so after the first frame they cost no
   machine before a release and after performance work. A dedicated benchmark runner would
   let CI run it too.
 * The limits live in `TIME_BUDGETS` in `crates/cli/src/lib.rs`; keep that list and this
-  table in step.
+  table in step. The GPU stage's are `BUDGETS` in `crates/gpu/examples/gpu_bench.rs`
+  (`--check`; the CLI has no GPU).
 
 ## Sound (2026-11-09, ADR 0020)
 
@@ -187,3 +239,5 @@ buffer is tiny; the stage never waits on sound.
   groups on the GPU, binning kept on the CPU
 * [ADR 0032](adr/0032-gpu-stage-bitmaps-filters-default.md): bitmaps and filters on the GPU,
   Direct3D 12, and the GPU as the default stage renderer
+* [ADR 0048](adr/0048-gpu-binning-and-hairlines.md): tile binning on the GPU, one tile format
+  for both binnings, and hairlines for outline mode
