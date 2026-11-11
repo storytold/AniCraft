@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+* **Security: JPEG size checked before decoding.** A JPEG's width and height are read from its header and refused over 8192 px before any pixels are decoded; a PNG no longer makes a second full copy of its pixels.
 * **Stroke caps, joins, miter limit, and dashed and dotted lines** (ADR 0046, M7). Properties ›
   Stroke has Animate's rows: **Style** (Solid, Dashed with a dash and gap editor, Dotted with
   dot spacing), **Cap** (None, Round, Square), **Join** (Miter, Round, Bevel) and **Miter**
