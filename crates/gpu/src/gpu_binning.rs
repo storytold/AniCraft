@@ -321,18 +321,19 @@ fn groups(n: u32, width: u32) -> (u32, u32) {
 }
 
 /// The fine pass's index and pieces, binned on the GPU into `enc` from `plan`: the index with
-/// `heads` (the tile headers) at 0 and `op_heads` at `ops_at`.
+/// the tile headers at 0 and `op_heads` at `ops_at`. Only those are uploaded (through `queue`,
+/// ahead of `enc`'s submission): the entries' room starts zeroed on the GPU.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn record(device: &wgpu::Device, pipes: &Pipelines, enc: &mut wgpu::CommandEncoder, plan: &Plan, tiles_x: u32, tiles_y: u32, entries_at: u32, ops_at: u32, op_heads: &[u32]) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
+pub(crate) fn record(device: &wgpu::Device, queue: &wgpu::Queue, pipes: &Pipelines, enc: &mut wgpu::CommandEncoder, plan: &Plan, tiles_x: u32, tiles_y: u32, entries_at: u32, ops_at: u32, op_heads: &[u32]) -> Result<(wgpu::Buffer, wgpu::Buffer), String> {
     use wgpu::util::DeviceExt;
     let index_len = (ops_at as usize + op_heads.len()).max(4);
-    let index = device.create_buffer(&wgpu::BufferDescriptor { label: Some("index"), size: 4 * index_len as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: true });
-    {
-        let mut m = index.slice(..).get_mapped_range_mut().map_err(|e| e.to_string())?;
-        crate::write_words(&mut m, 0, &plan.headers);
-        crate::write_words(&mut m, ops_at as usize, op_heads);
+    let index = device.create_buffer(&wgpu::BufferDescriptor { label: Some("index"), size: 4 * index_len as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    if !plan.headers.is_empty() && plan.headers.len() <= index_len {
+        queue.write_buffer(&index, 0, bytemuck::cast_slice(&plan.headers));
     }
-    index.unmap();
+    if !op_heads.is_empty() && ops_at as usize + op_heads.len() <= index_len {
+        queue.write_buffer(&index, 4 * u64::from(ops_at), bytemuck::cast_slice(op_heads));
+    }
     let geo = device.create_buffer(&wgpu::BufferDescriptor { label: Some("geo"), size: 16 * u64::from(plan.piece_cap.max(1)), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
     if plan.op_rows == 0 {
         return Ok((index, geo));

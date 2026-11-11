@@ -1,19 +1,21 @@
-//! GPU stage timings and parity against the CPU oracle (ADR 0019, ADR 0029, ADR 0032; numbers
+//! GPU stage timings and parity against the CPU oracle (ADR 0019, 0029, 0032, 0048; numbers
 //! in docs/performance.md).
 //!
 //! ```sh
 //! cargo run --release -p anicraft-gpu --example gpu_bench
 //! cargo run --release -p anicraft-gpu --example gpu_bench -- --layers 50 --shapes 200
+//! cargo run --release -p anicraft-gpu --example gpu_bench -- --only onion
+//! cargo run --release -p anicraft-gpu --example gpu_bench -- --check   # fails past a budget
 //! ```
-//! Prints the adapter, then for each scene and size: CPU ms; the first slice's read-back path
-//! (prepare + bin + upload, compute, copy back); the direct path the window uses (into a
-//! texture, no readback): what the calling thread spends, and until the GPU has finished; the
-//! stage's way (512 px tiles drawn in parallel, as the render service does, until finished);
-//! the work the fine pass did; and how far the GPU's picture is from the oracle's.
+//! Prints the adapter, then for each scene and size: CPU ms; then, with the tiles binned on
+//! the CPU and then on the GPU (ADR 0048), the direct path the window uses (into a texture, no
+//! readback): what the calling thread spends, and until the GPU has finished; the stage's way
+//! (512 px tiles drawn in parallel, as the render service does, until finished); and how far
+//! the GPU-binned picture is from the oracle's.
 
 use anicraft_doc::{Bitmap, BitmapId, ColorEffect, DisplayList, Document, Element, ElementId, ElementKind, Filter, FilterSide, Keyframe, Layer, LayerId, LayerKind, Paint, Pixels, Rgba, Shape, evaluate, sample};
 use anicraft_geom::{FillRule, Path};
-use anicraft_gpu::{GpuRenderer, Output, compare_premul8};
+use anicraft_gpu::{Binning, GpuRenderer, compare_premul8};
 use anicraft_geom::Affine;
 use anicraft_render::{View, render};
 use rayon::prelude::*;
@@ -190,7 +192,21 @@ fn onion_list(doc: &Document, frame: u32, mode: Onion) -> DisplayList {
     dl
 }
 
+/// Timing budgets for the stage on the GPU (docs/performance.md › Budgets), checked with
+/// `--check` on a known machine: `(scene, width, what, limit in ms)`, `what` being the Auto
+/// column's `direct` or `tiled` (the stage's way).
+const BUDGETS: &[(&str, u32, &str, f64)] = &[
+    ("1,000 shapes", 3840, "tiled", 16.7),
+    ("stress 50×200", 3840, "tiled", 16.7),
+    ("50,000 shapes", 1920, "tiled", 33.3),
+    ("50,000 shapes", 3840, "direct", 33.3),
+];
+/// Outline mode against tinted onion skin (ADR 0048: no slower), at 1080p in stage tiles.
+const OUTLINE_RATIO: f64 = 1.25;
+
 fn main() {
+    let check = std::env::args().any(|a| a == "--check");
+    let mut measured: Vec<(String, u32, &str, f64)> = Vec::new();
     let gpu = match GpuRenderer::new() {
         Ok(g) => g,
         Err(e) => {
@@ -217,9 +233,12 @@ fn main() {
         ("onion ±5 tinted".into(), onion_doc.clone(), Onion::Tinted),
         ("onion ±5 outlines".into(), onion_doc, Onion::Outlines),
     ];
+    println!("Per scene and size: the CPU oracle, then the GPU stage with the tiles binned on the CPU, then as Binning::Auto bins them (on the GPU with --forced):");
+    println!("direct = the calling thread's time with render_texture (prepare + bin + upload/submit), waited = until the GPU has finished,");
+    println!("tiled = 512 px stage tiles in parallel until finished. Parity: the GPU-binned picture against the oracle (mean / max / px).");
     println!(
-        "{:<20} {:>10} {:>8} {:>9} {:>9} {:>9} {:>7} {:>22} {:>8} {:>8}  parity (mean / max / differing px)",
-        "scene", "size", "CPU ms", "readback", "direct", "direct+", "tiled", "prepare + bin + submit", "entries", "pieces"
+        "{:<20} {:>10} {:>7} | {:>7} {:>7} {:>7} {:>19} | {:>7} {:>7} {:>7} {:>19} | parity",
+        "scene", "size", "CPU", "direct", "waited", "tiled", "prep + bin + gpu", "direct", "waited", "tiled", "prep + bin + gpu"
     );
     for (name, doc, onion) in scenes.iter().filter(|(n, ..)| only.as_ref().is_none_or(|o| n.contains(o.as_str()))) {
         for scale in [1.0f32, 2.0] {
@@ -227,77 +246,88 @@ fn main() {
             let frames = doc.frame_count().max(1);
             let evaluate = |doc: &Document, f: u32| onion_list(doc, f, *onion);
             let dl0 = evaluate(doc, if *onion == Onion::Off { 0 } else { 30 });
-            // Warm-up (pipeline caches, allocations).
-            let _ = gpu.render(&dl0, &v, Output::Premul8);
-            let _ = gpu.render_texture(&dl0, &v);
-            let _ = gpu.wait_idle();
-            let _ = render(&dl0, &v);
             let lists: Vec<_> = (0..runs).map(|i| evaluate(doc, (i * 20) % frames)).collect();
             let per = |t: Instant| t.elapsed().as_secs_f64() * 1000.0 / f64::from(runs);
+            let _ = render(&dl0, &v);
             let t = Instant::now();
             for dl in &lists {
                 let _ = render(dl, &v);
             }
             let cpu_ms = per(t);
-            let t = Instant::now();
-            for dl in &lists {
-                let _ = gpu.render(dl, &v, Output::Premul8);
-            }
-            let readback_ms = per(t);
-            // Direct: what the calling thread spends (the stage's cost per tile), then each frame
-            // waited for to the end (the latency until the window can show it).
-            let mut sum = [0.0f32; 3];
-            let mut work = (0, 0);
-            let t = Instant::now();
-            let mut keep = Vec::with_capacity(lists.len());
-            for dl in &lists {
-                if let Ok(f) = gpu.render_texture(dl, &v) {
-                    sum[0] += f.timings.prepare;
-                    sum[1] += f.timings.bin;
-                    sum[2] += f.timings.gpu;
-                    work = (f.entries, f.pieces);
-                    keep.push(f);
-                }
-            }
-            let direct_ms = per(t);
-            let _ = gpu.wait_idle();
-            drop(keep);
-            let t = Instant::now();
-            for dl in &lists {
-                let _ = gpu.render_texture(dl, &v);
-                let _ = gpu.wait_idle();
-            }
-            let done_ms = per(t);
-            // The stage: 512 px tiles of the same frame, in parallel, then waited for.
+            // The stage's tiles: 512 px of the same frame, drawn in parallel.
             let tiles: Vec<View> = (0..v.height.div_ceil(512))
                 .flat_map(|ty| (0..v.width.div_ceil(512)).map(move |tx| (tx, ty)))
                 .map(|(tx, ty)| View { transform: Affine::translate(-((tx * 512) as f32), -((ty * 512) as f32)).mul(&v.transform), width: 512.min(v.width - tx * 512), height: 512.min(v.height - ty * 512), background: v.background })
                 .collect();
-            let t = Instant::now();
-            for dl in &lists {
-                let _: Vec<_> = tiles.par_iter().map(|tv| gpu.render_texture(dl, tv).ok()).collect();
+            let mut cols = Vec::new();
+            let mut binned_on_gpu = false;
+            let second = if std::env::args().any(|a| a == "--forced") { Binning::Gpu } else { Binning::Auto };
+            for binning in [Binning::Cpu, second] {
+                // Warm-up (pipeline caches, allocations).
+                let _ = gpu.render_texture_with(&dl0, &v, binning);
                 let _ = gpu.wait_idle();
+                let mut sum = [0.0f32; 3];
+                let t = Instant::now();
+                let mut keep = Vec::with_capacity(lists.len());
+                for dl in &lists {
+                    if let Ok(f) = gpu.render_texture_with(dl, &v, binning) {
+                        sum[0] += f.timings.prepare;
+                        sum[1] += f.timings.bin;
+                        sum[2] += f.timings.gpu;
+                        binned_on_gpu |= f.gpu_binned;
+                        keep.push(f);
+                    }
+                }
+                let direct = per(t);
+                let _ = gpu.wait_idle();
+                drop(keep);
+                let t = Instant::now();
+                for dl in &lists {
+                    let _ = gpu.render_texture_with(dl, &v, binning);
+                    let _ = gpu.wait_idle();
+                }
+                let waited = per(t);
+                let t = Instant::now();
+                for dl in &lists {
+                    let _: Vec<_> = tiles.par_iter().map(|tv| gpu.render_texture_with(dl, tv, binning).ok()).collect();
+                    let _ = gpu.wait_idle();
+                }
+                let tiled = per(t);
+                let n = runs as f32;
+                if binning == Binning::Auto {
+                    measured.push((name.clone(), v.width, "direct", direct));
+                    measured.push((name.clone(), v.width, "tiled", tiled));
+                }
+                cols.push(format!("{direct:>7.2} {waited:>7.2} {tiled:>7.2} {:>19}", format!("{:.2} + {:.2} + {:.2}", sum[0] / n, sum[1] / n, sum[2] / n)));
             }
-            let tiled_ms = per(t);
-            let n = runs as f32;
-            let parity = match (gpu.render_texture(&dl0, &v).and_then(|t| gpu.read_texture(&t)), render(&dl0, &v)) {
+            let parity = match (gpu.render_texture_with(&dl0, &v, Binning::Gpu).and_then(|t| gpu.read_texture(&t)), render(&dl0, &v)) {
                 (Ok(g), Ok((c, _))) => compare_premul8(&g, &c.to_premul_rgba8()).map_or("size mismatch".into(), |d| format!("{:.4} / {} / {}", d.mean, d.max, d.differing)),
                 (Err(e), _) => format!("GPU: {e}"),
                 (_, Err(e)) => format!("CPU: {e}"),
             };
-            println!(
-                "{:<20} {:>10} {:>8.2} {:>9.2} {:>9.2} {:>9.2} {:>7.2} {:>22} {:>8} {:>8}  {parity}",
-                name,
-                format!("{}×{}", v.width, v.height),
-                cpu_ms,
-                readback_ms,
-                direct_ms,
-                done_ms,
-                tiled_ms,
-                format!("{:.2} + {:.2} + {:.2}", sum[0] / n, sum[1] / n, sum[2] / n),
-                work.0,
-                work.1
-            );
+            let note = if binned_on_gpu { "" } else { " (binned on the CPU: masks, groups or few edges)" };
+            println!("{:<20} {:>10} {:>7.2} | {} | {} | {parity}{note}", name, format!("{}×{}", v.width, v.height), cpu_ms, cols[0], cols[1]);
         }
+    }
+    if !check {
+        return;
+    }
+    let get = |scene: &str, w: u32, what: &str| measured.iter().find(|m| m.0 == scene && m.1 == w && m.2 == what).map(|m| m.3);
+    let mut missed = 0;
+    println!();
+    println!("budgets (the means above; run on a quiet machine)");
+    for &(scene, w, what, limit) in BUDGETS {
+        let got = get(scene, w, what);
+        let ok = got.is_some_and(|g| g <= limit);
+        missed += usize::from(!ok);
+        println!("  {} {scene} at {w} px, {what}: {} (budget {limit} ms)", if ok { "ok  " } else { "MISS" }, got.map_or("not measured".into(), |g| format!("{g:.2} ms")));
+    }
+    let ratio = get("onion ±5 outlines", 1920, "tiled").zip(get("onion ±5 tinted", 1920, "tiled")).map(|(o, t)| o / t);
+    let ok = ratio.is_some_and(|r| r <= OUTLINE_RATIO);
+    missed += usize::from(!ok);
+    println!("  {} onion outlines / tinted at 1920 px, tiled: {} (budget {OUTLINE_RATIO})", if ok { "ok  " } else { "MISS" }, ratio.map_or("not measured".into(), |r| format!("{r:.2}")));
+    if missed > 0 {
+        println!("{missed} budget(s) missed");
+        std::process::exit(1);
     }
 }

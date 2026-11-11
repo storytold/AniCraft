@@ -120,7 +120,7 @@ impl Binning {
 
 /// Fewer edges than this are binned on the CPU in [`Binning::Auto`]: below it the CPU bins a
 /// frame in less time than the GPU's passes take to set up (measured, docs/performance.md).
-pub const AUTO_MIN_EDGES: u64 = 4096;
+pub const AUTO_MIN_EDGES: u64 = 32_768;
 
 /// A frame rendered into a texture on the renderer's device: premultiplied RGBA8
 /// (`Rgba8Unorm`, the bytes [`Pixmap::to_premul_rgba8`] gives), sampleable, ready for the window
@@ -709,7 +709,7 @@ impl GpuRenderer {
         }
         let views = self.images.lock().unwrap_or_else(PoisonError::into_inner).views(&self.device, &self.queue, self.limits.max_texture_dimension_2d, &b.images)?;
         let (ibuf, gbuf) = match &b.gpu {
-            Some(plan) => gpu_binning::record(&self.device, &self.bins, enc, plan, b.tiles_x, b.tiles_y, b.entries_at, b.ops_at, &b.op_heads).map_err(GpuError::Device)?,
+            Some(plan) => gpu_binning::record(&self.device, &self.queue, &self.bins, enc, plan, b.tiles_x, b.tiles_y, b.entries_at, b.ops_at, &b.op_heads).map_err(GpuError::Device)?,
             None => self.upload_lists(b)?,
         };
         self.fine_pass(enc, b, &ibuf, &gbuf, &pbuf, &views, view, output, target);
@@ -813,7 +813,7 @@ impl GpuRenderer {
         let Some(plan) = b.gpu.take() else { return Ok(None) };
         let scopes = Scopes::push(&self.device);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("anicraft-bin-test") });
-        let (ibuf, gbuf) = gpu_binning::record(&self.device, &self.bins, &mut enc, &plan, b.tiles_x, b.tiles_y, b.entries_at, b.ops_at, &b.op_heads).map_err(GpuError::Device)?;
+        let (ibuf, gbuf) = gpu_binning::record(&self.device, &self.queue, &self.bins, &mut enc, &plan, b.tiles_x, b.tiles_y, b.entries_at, b.ops_at, &b.op_heads).map_err(GpuError::Device)?;
         let (isize, gsize) = (ibuf.size(), gbuf.size());
         let read = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("readback"), size: isize + gsize, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         enc.copy_buffer_to_buffer(&ibuf, 0, &read, 0, isize);

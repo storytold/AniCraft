@@ -383,7 +383,15 @@ fn pixel(wg: vec3<u32>, lid: vec3<u32>) -> vec4<f32> {
             var d = 2.0;
             let pc = vec2<f32>(px + 0.5, py + 0.5);
             for (var k = 0u; k < pieces; k++) {
-                d = min(d, seg_dist(pc, geo[first + k]));
+                let sg = geo[first + k];
+                // Out of reach of the segment's box: at least 1 away, so it can't be nearest
+                // within reach (the coverage comes out the same, without the division).
+                let lo = min(sg.xy, sg.zw) - vec2<f32>(1.0);
+                let hi = max(sg.xy, sg.zw) + vec2<f32>(1.0);
+                if any(pc < lo) || any(pc > hi) {
+                    continue;
+                }
+                d = min(d, seg_dist(pc, sg));
             }
             cov = clamp(1.0 - d, 0.0, 1.0);
         } else {
