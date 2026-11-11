@@ -294,6 +294,10 @@ pub struct Session {
     pub(crate) pending_cut: Option<(CutOrigin, Vec<ElementId>)>,
     /// The open gesture began on a provisional cut: the document with the cut.
     gesture_cut: Option<Document>,
+    /// How a button open for editing shows its hit area over its other states (ADR 0057): the
+    /// tint and opacity, or `None` for no overlay (the default; the app sets it from its theme).
+    /// View state, like the playhead: never in the document or its undo history.
+    pub hit_area: Option<(anicraft_doc::Rgba, f32)>,
     /// The last picture of an open symbol in place, by its key (ADR 0045).
     picture_cache: RefCell<Option<(u64, Arc<editing::StagePicture>)>>,
 }
@@ -360,6 +364,7 @@ impl Session {
             provisional: None,
             pending_cut: None,
             gesture_cut: None,
+            hit_area: None,
             picture_cache: RefCell::new(None),
         }
     }
