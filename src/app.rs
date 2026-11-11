@@ -1237,6 +1237,27 @@ impl App {
                     self.status_ok(tr!("Added a point to the motion path. {undo} to undo.", undo = self.undo_key()));
                 }
             }
+            Some(which @ ("motionpins" | "motionpinsspan")) => {
+                // Anchors pinned to frames (ADR 0049): `motionpath`'s curve with its middle point
+                // pinned to frame 17, and the star moved up on frame 35, which pinned a new point
+                // there. Subselection on that point, the span selected, and the Motion Editor on
+                // Y (or the timeline, with its diamonds at the pinned frames).
+                self.open_panel(Some("motionpath"));
+                self.run("motion.pin_point", json!({"anchor": 1, "frame": 16}));
+                self.run("timeline.goto", json!({"frame": 34}));
+                self.run("element.translate", json!({"dx": 20, "dy": -110}));
+                self.s.mark_saved();
+                self.run("timeline.goto", json!({"frame": 24}));
+                self.run("element.select", json!({"ids": []}));
+                self.frame_sel = Some(timeline::FrameSel::cell(self.s.layer, 24));
+                self.tool = Tool::Subselect;
+                self.motion_anchors = vec![2];
+                if which == "motionpins" {
+                    self.bottom = BottomTab::MotionEditor;
+                }
+                self.me_prop = anicraft_engine::doc::Property::Y;
+                self.me_key = None;
+            }
             Some("pen") => {
                 // A pen path still being drawn: a corner, a smooth point with handles, a corner.
                 self.tool = Tool::Pen;

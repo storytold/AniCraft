@@ -6,11 +6,15 @@
 //! the span. Drag a key up or down to change its value, drag the two handles of the selected
 //! segment to shape its ease (a cubic Bézier), click to move the playhead, double-click to add
 //! a key. Every drag is one undo step (a session gesture); every change is a command.
+//!
+//! On X and Y, the keys of frames pinned to a motion path point (ADR 0049) are drawn in the
+//! motion colour: they are the point's place and its timing, so dragging one moves the point on
+//! the stage, and removing one unpins it.
 
 use crate::a11y::{self, Named};
 use crate::app::App;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, with_type};
-use anicraft_engine::doc::{Easing, MotionTween, Property, Props, Track};
+use anicraft_engine::doc::{Easing, MotionTween, Pin, Property, Props, Track};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, WidgetType, pos2, vec2};
 use serde_json::json;
 
@@ -117,6 +121,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.text(pos2(list.left() + 10.0, list.top() + RULER_H * 0.5), Align2::LEFT_CENTER, tr!("Property"), font(Type::Heading), color(Type::Heading));
     painter.text(pos2(list.right() - 44.0, list.top() + RULER_H * 0.5), Align2::RIGHT_CENTER, tr!("Frame {frame}", frame = app.s.frame + 1), font(Type::DataSmall), color(Type::DataSmall));
     let now = m.props_at(&base, offset as f32);
+    // Frames pinned to path points: their X and Y keys are the points' places (ADR 0049).
+    let pins = m.pinned_anchors(&base);
+    let pin_at = |p: Property, f: u32| pins.iter().find(|q| q.frame == f).copied().filter(|_| matches!(p, Property::X | Property::Y));
     let rows_top = list.top() + RULER_H;
     // Rows that don't fit scroll with the wheel over the list.
     let fit = (((list.bottom() - rows_top) / ROW_H).floor() as usize).max(1);
@@ -174,7 +181,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_filled(toggle, T.rc(), T.hover);
         }
         diamond(&painter, toggle.center(), 5.0, if keyed { T.text } else { Color32::TRANSPARENT }, Stroke::new(1.5, if keyed { T.text } else { T.text_faint }));
-        let tip = if keyed { tr!("Remove the {property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1) } else { tr!("Add a {property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1) };
+        let tip = match (keyed, pin_at(p, offset)) {
+            (true, Some(q)) if m.path.is_some() && interior(&pins, q) => tr!("Unpin point {anchor} of the motion path from frame {frame}: its X and Y keyframes go", anchor = q.anchor, frame = app.s.frame + 1),
+            (true, _) => tr!("Remove the {property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1),
+            (false, _) => tr!("Add a {property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1),
+        };
         a11y::control(ui, &tr, WidgetType::Checkbox, &tr!("{property} keyframe at frame {frame}", property = label, frame = app.s.frame + 1), Some(keyed));
         if tr.on_hover_text(tip).clicked() {
             app.me_prop = p;
@@ -277,7 +288,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     for &(f, v, _) in &keys {
         let c = pos2(x_of(f as f32), y_of(v));
         let picked = sel_key == Some(f);
-        diamond(&gp, c, if picked { 6.5 } else { 5.5 }, if picked { T.accent } else { T.text }, Stroke::new(1.0, T.ink));
+        if pin_at(p, f).is_some() {
+            // A path point's place: the motion colour, ringed like the stage's pinned points.
+            diamond(&gp, c, if picked { 7.5 } else { 6.5 }, if picked { T.accent } else { T.tween_motion }, Stroke::new(1.5, T.ink));
+        } else {
+            diamond(&gp, c, if picked { 6.5 } else { 5.5 }, if picked { T.accent } else { T.text }, Stroke::new(1.0, T.ink));
+        }
+    }
+    if matches!(p, Property::X | Property::Y) && pins.len() > 2 {
+        gp.text(pos2(graph.right() - 8.0, graph.bottom() - 6.0), Align2::RIGHT_BOTTOM, tr!("Blue keys are pinned motion path points: drag one to move its point"), font(Type::Caption), T.tween_motion);
     }
 
     // ---- graph interaction -------------------------------------------------------------------
@@ -380,9 +399,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.me_key = Some(f - start);
         }
     }
-    gr.on_hover_text_at_pointer(tr!("Drag a key up or down to change it, or a handle to shape the ease. Double-click to add a key."));
+    match hover.and_then(near_key).and_then(|f| pin_at(p, f)) {
+        Some(q) => gr.on_hover_text_at_pointer(tr!("Frame {frame} · point {anchor} of the motion path: drag to move the point", frame = start + q.frame + 1, anchor = q.anchor)),
+        None => gr.on_hover_text_at_pointer(tr!("Drag a key up or down to change it, or a handle to shape the ease. Double-click to add a key.")),
+    };
 
     footer(app, ui, body, track, sel_key, start);
+}
+
+/// Whether `q` is a pin between the ends (which can be let go).
+fn interior(pins: &[Pin], q: Pin) -> bool {
+    pins.first() != Some(&q) && pins.last() != Some(&q)
 }
 
 /// The value distance a segment's handles are measured against: the segment's own rise, or a
