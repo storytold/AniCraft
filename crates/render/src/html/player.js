@@ -174,10 +174,26 @@ var AniCraft = (function () {
     const c = st.clips.get(key);
     return Math.min(c ? c.frame : 0, Math.max(len, 1) - 1);
   }
+  // Where the pointer leaves a button (player.rs `ButtonState`): Up (0), Over (1), Down (2), or
+  // pressed on it and dragged off (3, shown Up).
+  function buttonState(hover, pressed, down, path) {
+    const held = down && samePath(pressed, path);
+    return samePath(hover, path) ? (held ? 2 : 1) : held ? 3 : 0;
+  }
+  // The frame whose sound plays as a button goes from state `a` to `b` (player.rs
+  // `button_sound_frame`, ADR 0057): Over's going over it, Up's leaving, Down's pressing, Hit's
+  // letting go over it; -1 for none.
+  function buttonSoundFrame(a, b) {
+    if (a === 0 && b === 1) return 1;
+    if (a === 1 && b === 0) return 0;
+    if (a === 1 && b === 2) return 2;
+    if (a === 2 && b === 1) return 3;
+    return -1;
+  }
   // Up (0), Over (1) under the pointer, Down (2) while pressed on it.
   function buttonFrame(st, path, len) {
-    const over = samePath(st.hover, path);
-    const f = over ? (st.down && samePath(st.pressed, path) ? 2 : 1) : 0;
+    const s = buttonState(st.hover, st.pressed, st.down, path);
+    const f = s === 1 || s === 2 ? s : 0;
     return Math.min(f, Math.max(len, 1) - 1);
   }
 
@@ -1075,10 +1091,34 @@ var AniCraft = (function () {
   };
   // The sounds of timeline `tl`'s keyframes starting at `frame`, as
   // [sound, sync, repeat, loop, span, gain, envelope], the gain times `gain`.
-  Run.prototype.soundsAt = function (tl, frame, gain) {
+  // On a button's frame (`button`) a stream plays as an event: the frame has no span to stream
+  // over (ADR 0057).
+  Run.prototype.soundsAt = function (tl, frame, gain, button) {
     for (const s of (tl.snd && tl.snd[frame]) || []) {
       if (this.sounds.length >= MAX_SOUNDS_PER_STEP) return;
-      this.sounds.push([s[0], s[1], s[2], s[3], s[4], (s[5] === undefined ? 1 : s[5]) * gain, s[6] || null]);
+      const sync = button && s[1] === "stream" ? "event" : s[1];
+      this.sounds.push([s[0], sync, s[2], s[3], s[4], (s[5] === undefined ? 1 : s[5]) * gain, s[6] || null]);
+    }
+  };
+  // Where the pointer is, for buttonSounds.
+  Run.prototype.pointerNow = function () {
+    return { hover: this.st.hover, pressed: this.st.pressed, down: this.st.down };
+  };
+  // Starts the sounds of the buttons whose state changed since `before` (pointerNow then).
+  Run.prototype.buttonSounds = function (before) {
+    const st = this.st;
+    const same = (a, b) => (a === null ? b === null : samePath(a, b));
+    if (same(before.hover, st.hover) && same(before.pressed, st.pressed) && before.down === st.down) return;
+    this.refresh();
+    const paths = [];
+    for (const p of [before.hover, before.pressed, st.hover, st.pressed]) if (p !== null && !paths.some((q) => samePath(q, p))) paths.push(p);
+    for (const path of paths) {
+      const f = buttonSoundFrame(buttonState(before.hover, before.pressed, before.down, path), buttonState(st.hover, st.pressed, st.down, path));
+      if (f < 0) continue;
+      const i = this.indexOf(path);
+      if (i < 0 || this.nodes[i].kind !== BUTTON) continue;
+      const s = this.M.symbols[this.nodes[i].sym];
+      if (s) this.soundsAt(this.M.timelines[s.tl], f, this.nodes[i].gain, true);
     }
   };
   Run.prototype.out = function (line) {
@@ -1589,19 +1629,24 @@ var AniCraft = (function () {
       case "move":
         this.pointer(e);
         break;
-      case "down":
+      case "down": {
         this.pointer(e);
+        const before = this.pointerNow();
         st.down = true;
         st.pressed = st.hover;
         this.dirty = true;
+        this.buttonSounds(before);
         if (st.hover !== null) this.fire(st.hover, "press");
         break;
+      }
       case "up": {
         this.pointer(e);
+        const before = this.pointerNow();
         st.down = false;
         const pressed = st.pressed;
         st.pressed = null;
         this.dirty = true;
+        this.buttonSounds(before);
         if (st.hover !== null) {
           const h = st.hover;
           this.fire(h, "release");
@@ -1629,9 +1674,11 @@ var AniCraft = (function () {
     const now = p ? hitIn(this.M, st, this.nodes, this.host, p.x, p.y) : null;
     const same = now === null ? st.hover === null : samePath(now, st.hover);
     if (!same) {
+      const before = this.pointerNow();
       const old = st.hover;
       st.hover = now;
       this.dirty = true;
+      this.buttonSounds(before);
       if (old !== null) this.fire(old, "out");
       if (now !== null) this.fire(now, "over");
     }

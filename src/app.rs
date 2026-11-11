@@ -307,6 +307,9 @@ pub struct App {
     pub tl_scroll: f32,
     /// Timeline frame width (zoom), in points.
     pub tl_cell_w: f32,
+    /// The zoom the timeline had before a button opened and widened its frames for their state
+    /// names, and the zoom it set (ADR 0057): it goes back on closing, unless zoomed meanwhile.
+    pub tl_button_zoom: Option<(f32, f32)>,
     /// Timeline vertical scroll, in rows.
     pub tl_vscroll: f32,
     pub tl_last_layer: Option<anicraft_engine::doc::LayerId>,
@@ -426,6 +429,12 @@ pub struct App {
     heard: Option<(usize, u32)>,
     /// The panel Ctrl+F6 last moved focus to (where the next press continues from).
     pub last_panel: Option<crate::a11y::Region>,
+    /// The start screen, while it is up (ADR 0059).
+    pub start: Option<crate::start::StartScreen>,
+    /// Files dragged over and dropped onto the window (ADR 0059).
+    pub drop: crate::drop::DropState,
+    /// Recent files' pictures for the start screen.
+    pub thumbs: crate::recent::Thumbs,
 }
 
 /// How finished this version is, shown next to the version number (docs/release.md). English:
@@ -481,6 +490,8 @@ impl App {
             let _ = anicraft_engine::text::Fonts::get();
         });
         let mut session = session;
+        // Open Recent is the session's list, kept in the preferences (ADR 0059).
+        session.recent = prefs.recent.clone();
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
@@ -508,6 +519,7 @@ impl App {
             cursor_stage: None,
             tl_scroll: 0.0,
             tl_cell_w: timeline::CELL_DEFAULT,
+            tl_button_zoom: None,
             tl_vscroll: 0.0,
             tl_last_layer: None,
             tl_collapsed: HashSet::new(),
@@ -577,6 +589,9 @@ impl App {
             audio_clock: false,
             heard: None,
             last_panel: None,
+            start: None,
+            drop: Default::default(),
+            thumbs: Default::default(),
         };
         app.apply_prefs(ctx);
         app.decode_sounds();
@@ -780,6 +795,18 @@ impl App {
                 self.run("scene.select", json!({"scene": last}));
             }
             Some("files") => self.show_files = true,
+            Some("start") => {
+                // The start screen with sample recent files (one pinned, one missing).
+                crate::start::open(self);
+                if self.shot.is_some() {
+                    crate::recent::sample_entries(self);
+                }
+            }
+            Some("drop") => self.drop.preview = Some((vec![PathBuf::from("sunset.png")], crate::drop::PreviewAt::Stage)), // i18n-exempt: a sample file name
+            Some("droplibrary") => {
+                self.run("library.new_folder", json!({"name": "Backgrounds"})); // i18n-exempt: a sample folder name
+                self.drop.preview = Some((vec![PathBuf::from("sunset.png")], crate::drop::PreviewAt::Library)); // i18n-exempt: a sample file name
+            }
             Some("recovery") => {
                 // Work left behind by a session that didn't close cleanly (sample entries
                 // unless ANICRAFT_RECOVERY_DIR holds real ones).
@@ -1002,6 +1029,33 @@ impl App {
                     crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
                     crate::test_movie::open(self);
                     crate::test_movie::demo_pointer(self);
+                }
+            }
+            Some(which @ ("button" | "testhits")) => {
+                // Buttons (ADR 0057): the sample's Play button open in place on its Over frame,
+                // a click sound on it (made here, a short decaying tone), its states named on
+                // the timeline and its Hit area over the artwork; or Test Movie with Show Hit
+                // Areas on.
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 1}));
+                if which == "testhits" {
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_pointer(self);
+                    if let Some(tm) = self.test_movie.as_mut() {
+                        tm.hit_areas = true;
+                    }
+                } else if let Some(id) = self.s.visible_elements().iter().find(|e| e.name == "play_btn").map(|e| e.id.0) {
+                    self.run("symbol.edit", json!({"id": id}));
+                    let tone: Vec<f32> = (0..4410).map(|i| (i as f32 * 0.12).sin() * 0.6 * (-(i as f32) / 900.0).exp()).collect();
+                    let dir = std::env::temp_dir().join("anicraft-demo");
+                    let wav = dir.join("click.wav");
+                    let _ = std::fs::create_dir_all(&dir);
+                    if std::fs::write(&wav, anicraft_engine::doc::audio::wav::encode(44_100, 1, &tone, anicraft_engine::doc::audio::wav::Bits::Int16)).is_ok()
+                        && let Some(v) = self.run("file.import_to_library", json!({"path": wav.display().to_string()}))
+                    {
+                        self.run("sound.place", json!({"sound": v["sound"], "frame": 1}));
+                    }
+                    self.run("timeline.goto", json!({"frame": 1}));
                 }
             }
             Some(which @ ("script" | "scriptproblems" | "testscript")) => {
@@ -1530,7 +1584,15 @@ impl App {
     /// new document resets. `selected` is how many elements were selected before it ran.
     pub(crate) fn announce(&mut self, id: &str, v: &Value, selected: usize) {
         match id {
-            "file.new" | "file.new_sample" | "file.open" => {
+            "file.new" | "file.new_sample" | "file.open" | "file.open_recent" => {
+                // The document is here: the start screen has done its job (ADR 0059).
+                self.start = None;
+                if id != "file.new"
+                    && id != "file.new_sample"
+                    && let Some(path) = self.s.path.clone().or_else(|| v["imported"].as_str().map(PathBuf::from))
+                {
+                    crate::recent::captured_on_open(self, &path);
+                }
                 self.view.fit = true;
                 self.library_sel = crate::library::first_item(&self.s.doc);
                 self.decode_sounds();
@@ -1538,7 +1600,7 @@ impl App {
                     // An imported file: say what came across and what didn't, and that saving
                     // makes a new .anicraft document.
                     Some(r) => self.status_ok(tr!("{report} Save to keep it as an AniCraft document.", report = r)),
-                    None => self.status_ok(if id == "file.open" { tr!("Opened") } else { tr!("New document") }),
+                    None => self.status_ok(if id == "file.open" || id == "file.open_recent" { tr!("Opened") } else { tr!("New document") }),
                 }
             }
             "file.recover" => {
@@ -1558,6 +1620,10 @@ impl App {
                 self.status_ok(tr!("Discarded the autosaved copy"));
             }
             "file.save" | "file.save_as" => {
+                // The start screen's picture of it (ADR 0059).
+                if let Some(saved) = v["saved"].as_str() {
+                    crate::recent::capture(self, std::path::Path::new(saved));
+                }
                 // In a browser the file goes to the downloads (ADR 0036).
                 let path = v["saved"].as_str().unwrap_or("");
                 self.status_ok(if platform::WEB { tr!("Saved {path} to your downloads", path = path) } else { tr!("Saved {path}", path = path) });
@@ -1707,6 +1773,11 @@ impl App {
             if !self.recovery.show {
                 self.status_ok(if self.recovery.active() { tr!("No autosaved work to recover") } else { tr!("Autosave is off on this system, so there is nothing to recover") });
             }
+            return;
+        }
+        if matches!(id, "file.open_recent" | "file.recent_list") {
+            // The recent files with their pictures (the File menu lists them too).
+            crate::start::open(self);
             return;
         }
         if id == "tween.add_hint" {
@@ -2224,7 +2295,7 @@ impl App {
 
 /// The app icon (`assets/app-icon/`; the PNG carries its rounded corners) as a texture, decoded on
 /// first use and kept in the context. 128 px stays sharp at 64 pt on a 2× display.
-fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
+pub(crate) fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
     const PNG: &[u8] = include_bytes!("../assets/app-icon/hicolor/128x128/apps/ai.storyteller.anicraft.png");
     let id = egui::Id::new("anicraft-app-mark");
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
@@ -2302,6 +2373,8 @@ impl App {
         crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
         crate::bone_tool::upkeep(self);
+        // An open button shows its hit area over its other states, in the theme's colour (ADR 0057).
+        self.s.hit_area = Some(theme::hit_area());
         self.tick_playback(&ctx);
         self.scrub_sound();
         self.update_title(&ctx);
@@ -2311,7 +2384,22 @@ impl App {
             }
 
         let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 2));
+        crate::drop::begin_frame(self);
         egui::Panel::top("menu_bar").frame(bar(T.chrome)).show(ui, |ui| menus::bar(self, ui));
+        if self.start.is_some() {
+            // The start screen takes the workspace's place (ADR 0059); the menus stay.
+            egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| panels::status_bar(self, ui));
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| crate::start::show(self, ui));
+        } else {
+            self.workspace(ui);
+        }
+        self.windows(&ctx);
+    }
+
+    /// The editor's panels: tools, stage, timeline, properties and Library.
+    fn workspace(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 2));
         egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| panels::edit_bar(self, ui));
         egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| panels::status_bar(self, ui));
         // Docks start at their usual size, but never take most of a small window or a large
@@ -2326,7 +2414,12 @@ impl App {
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
         crate::a11y::name_splitter(&ctx, "properties", tr!("Resize the right-hand panels"));
         crate::a11y::name_splitter(&ctx, "timeline", tr!("Resize the timeline"));
+    }
 
+    /// Dialogs and floating windows, the close guard and the end-of-frame upkeep.
+    fn windows(&mut self, ctx: &egui::Context) {
+        let ctx = ctx.clone();
+        crate::drop::frame(self, &ctx);
         self.prompt_window(&ctx);
         crate::convert_symbol::window(self, &ctx);
         self.about_window(&ctx);
@@ -2361,6 +2454,8 @@ impl App {
 
         // After this frame's edits: start a recovery copy when one is due (off this thread).
         autosave::tick(self, &ctx);
+        // Open Recent changed (an open, a save, a pin): into the preferences.
+        crate::recent::sync(self);
         // A browser asks before leaving a page with unsaved work (its close guard).
         platform::set_unsaved(self.s.is_dirty());
 

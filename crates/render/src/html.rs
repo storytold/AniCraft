@@ -94,7 +94,6 @@ pub struct HtmlExport {
 const FILTERS: &str = "filters (not exported; drawn without them)";
 const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
-const BUTTON_SOUNDS: &str = "sounds on button frames (not played yet)";
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
 const NINE_SLICE: &str = "9-slice scaling (scaled as a whole)";
 const OUTSIDE_CALLS: &str = "script calls that reach outside the movie (ignored)";
@@ -701,9 +700,6 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
         frames += sym.timeline.frame_count() as usize;
         let decls = (sym.kind == SymbolKind::MovieClip).then(|| anicraft_doc::player::decls(doc, TimelineRef::Symbol(*id)));
         timelines.push(b.timeline(&sym.timeline, false, decls.as_ref()));
-        if b.sound && sym.kind == SymbolKind::Button && sym.timeline.layers.iter().any(|l| l.has_sounds()) {
-            b.notes.entry(BUTTON_SOUNDS).or_default().insert(sym.id.0);
-        }
         let kind = match sym.kind {
             SymbolKind::Graphic => "graphic",
             SymbolKind::MovieClip => "movieclip",

@@ -98,7 +98,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: true,
             })
         }
-        "file.new" | "file.new_sample" | "file.open" | "file.recover" if s.is_dirty() => Some(Confirmation {
+        "file.new" | "file.new_sample" | "file.open" | "file.open_recent" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
             action: "Discard Changes".into(),

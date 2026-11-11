@@ -92,6 +92,12 @@ pub struct Prefs {
     pub onion: OnionPrefs,
     /// Publish Settings presets, by name (ADR 0060): yours on this computer, for any document.
     pub publish_presets: std::collections::BTreeMap<String, anicraft_engine::doc::publish::PublishProfile>,
+    /// File › Open Recent and the start screen's list (ADR 0059): pinned favourites, then the
+    /// last 10 documents opened or saved.
+    #[serde(deserialize_with = "lenient_recent")]
+    pub recent: anicraft_engine::cmds_recent::RecentFiles,
+    /// Show the start screen when AniCraft starts without a document to open (ADR 0059).
+    pub start_screen: bool,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -147,8 +153,23 @@ impl Default for Prefs {
             autosave_edits: 25,
             onion: OnionPrefs::default(),
             publish_presets: Default::default(),
+            recent: Default::default(),
+            start_screen: true,
         }
     }
+}
+
+/// The recent files as written, skipping entries that aren't one (a hand-edited file): one bad
+/// entry must not reset every preference.
+fn lenient_recent<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_engine::cmds_recent::RecentFiles, D::Error> {
+    use anicraft_engine::cmds_recent::{RecentFile, RecentFiles};
+    let v = serde_json::Value::deserialize(d)?;
+    let list: Vec<serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a.into_iter().take(1000).collect(),
+        _ => Vec::new(),
+    };
+    let good: Vec<RecentFile> = list.into_iter().filter_map(|x| serde_json::from_value::<RecentFile>(x).ok()).collect();
+    Ok(serde_json::from_value::<RecentFiles>(serde_json::to_value(good).unwrap_or_default()).unwrap_or_default())
 }
 
 /// Autosave intervals offered in Preferences: `(seconds, label)`.
@@ -187,6 +208,7 @@ impl Prefs {
                 (name, p)
             })
             .collect();
+        self.recent = std::mem::take(&mut self.recent).sanitized();
         self
     }
 
@@ -307,5 +329,16 @@ mod tests {
         let p = Prefs::from_json(r#"{"autosave": false, "autosave_secs": 1, "autosave_edits": 99999999}"#);
         assert!(!p.autosave);
         assert_eq!((p.autosave_secs, p.autosave_edits), (15, 1000));
+        // Older files have no recent files and show the start screen (ADR 0059); a list
+        // someone edited by hand is cleaned up.
+        let p = Prefs::from_json(r#"{"ui_scale": 1.25}"#);
+        assert!(p.recent.is_empty() && p.start_screen);
+        let p = Prefs::from_json(r#"{"recent": [{"path": "a.anicraft"}, {"path": "a.anicraft"}, {"path": ""}, 7], "start_screen": false}"#);
+        let paths: Vec<_> = p.recent.entries().iter().map(|e| e.path.display().to_string()).collect();
+        assert_eq!(paths, ["a.anicraft"], "bad entries are skipped, the rest kept");
+        assert!(!p.start_screen, "and the other preferences with them");
+        let p = Prefs::from_json(r#"{"recent": [{"path": "b.anicraft"}, {"path": "a.anicraft", "pinned": true}, {"path": "b.anicraft"}]}"#);
+        let paths: Vec<_> = p.recent.entries().iter().map(|e| (e.path.display().to_string(), e.pinned)).collect();
+        assert_eq!(paths, [("a.anicraft".to_string(), true), ("b.anicraft".to_string(), false)]);
     }
 }

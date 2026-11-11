@@ -169,7 +169,7 @@ fn every_command_namespace_has_a_plugin_policy() {
         let ns = c.id.split('.').next().unwrap_or("");
         let verdict = plugin_may_call(c.id);
         match ns {
-            "file" | "plugin" | "control" => assert!(verdict.is_err(), "{} must be refused", c.id),
+            "file" | "plugin" | "control" | "prefs" => assert!(verdict.is_err(), "{} must be refused", c.id),
             // Publish Settings (ADR 0060): read yes, change no (it says what Publish writes).
             "publish" => assert_eq!(verdict.is_ok(), c.id == "publish.settings_get", "{}", c.id),
             _ => assert!(verdict.is_ok() || matches!(c.id, "edit.undo" | "edit.redo") || c.id.contains("copy") || c.id.contains("cut") || c.id.contains("paste"), "{} has no plug-in policy (add its namespace to plugin_may_call)", c.id),

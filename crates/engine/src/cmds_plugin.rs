@@ -42,6 +42,7 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
             // Reading the settings is harmless; changing them changes what Publish writes where.
             "publish" if id == "publish.settings_get" => Ok(()),
             "publish" => Err("plug-ins can't change what Publish writes"),
+            "prefs" => Err("plug-ins can't read or change your preferences"),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
             "control" => Err("plug-ins can't play the movie"),
             ns if DOCUMENT.contains(&ns) => Ok(()),

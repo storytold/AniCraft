@@ -78,7 +78,7 @@ impl Build {
     }
     pub fn symbol(&mut self, name: &str, kind: SymbolKind) -> SymbolId {
         let id = SymbolId(self.id());
-        self.doc.library.push(Arc::new(Symbol { id, name: name.into(), kind, linkage: None, scale_grid: None, timeline: Timeline::default() }));
+        self.doc.library.push(Arc::new(Symbol { id, name: name.into(), kind, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline::default() }));
         id
     }
     pub fn fill(&mut self, id: SymbolId, layers: Vec<Layer>) {
