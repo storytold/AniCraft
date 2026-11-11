@@ -125,11 +125,6 @@ fn symbol_timelines(doc: &Document) -> Vec<(SymbolId, String, SymbolKind)> {
     doc.library.iter().filter(|s| s.kind == SymbolKind::MovieClip || keeps_script(&s.timeline)).map(|s| (s.id, s.name.clone(), s.kind)).collect()
 }
 
-/// Kept scripts in the document (ADR 0013 tier 1), in every scene and symbol.
-pub fn kept_scripts(doc: &Document) -> usize {
-    doc.timelines().flat_map(|tl| tl.layers.iter()).flat_map(|l| l.keyframes.iter()).filter(|k| is_kept(k)).count()
-}
-
 /// Whether the document uses scripts at all (a kept script, a linkage class or a document
 /// class), so the class fields in Properties are worth showing.
 pub fn scripted(doc: &Document) -> bool {
@@ -220,7 +215,7 @@ fn frame_tab(app: &mut App, ui: &mut egui::Ui) {
         for (k, label, hint) in [
             (Holds::Actions, tr!("Actions"), tr!("A list of actions, in order")),
             (Holds::Plugin, tr!("Plug-in"), tr!("An entry point of a frame-script plug-in (WebAssembly)")),
-            (Holds::Script, tr!("Script"), tr!("Code in a scripting language (such as an Animate document's ActionScript), kept with the document. It doesn't run yet")),
+            (Holds::Script, tr!("Script"), tr!("Code in a scripting language (such as an Animate document's ActionScript), kept with the document. ActionScript 3.0 runs when it uses only timeline control, mouse listeners, trace and instance properties")),
         ] {
             if ui.selectable_label(kind == k, label).on_hover_text(hint).clicked() && kind != k {
                 to = Some(k);
@@ -293,8 +288,66 @@ fn switch_kind(app: &mut App, t: &FrameTarget, from: Holds, to: Holds) {
 /// Space above the first line of the script editor (and its line numbers).
 const EDITOR_MARGIN: i8 = 4;
 
+/// The character index of a 1-based line and column in `text` (lines split at `\n`).
+fn char_index(text: &str, line: u32, column: u32) -> usize {
+    let mut index = 0;
+    for (i, l) in text.split('\n').enumerate() {
+        if i + 1 == line as usize {
+            return index + (column.max(1) as usize - 1).min(l.chars().count());
+        }
+        index += l.chars().count() + 1;
+    }
+    index
+}
+
+/// Under the editor: whether the script runs (ADR 0013 tier 2), what in it is ignored, and
+/// each problem that keeps it from running, where it is. Clicking a problem puts the cursor
+/// there.
+fn script_status(ui: &mut egui::Ui, src: &SourceScript, text_shown: &str, editor: egui::Id) {
+    let row = |ui: &mut egui::Ui, p: &anicraft_engine::doc::actions::as3::Problem, color: egui::Color32| {
+        // The engine marks code with backticks (for the CLI and agents); here it reads plainly.
+        let message = p.message.replace('`', "");
+        let label = match p.pos() {
+            Some(at) => tr!("Line {line}, column {column}: {message}", line = at.line, column = at.column, message = message.as_str()),
+            None => message,
+        };
+        let r = ui.add(egui::Label::new(text(Type::Caption, label).color(color)).sense(egui::Sense::click()).wrap());
+        if let Some(at) = p.pos()
+            && r.on_hover_text(tr!("Show this line in the script")).clicked()
+        {
+            let i = char_index(text_shown, at.line, at.column);
+            if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), editor) {
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(i))));
+                st.store(ui.ctx(), editor);
+            }
+            ui.ctx().memory_mut(|m| m.request_focus(editor));
+        }
+    };
+    match src.compiled() {
+        Ok(c) => {
+            ui.horizontal(|ui| {
+                ui.label(text(Type::Body, tr!("Runs in Test Movie and the HTML canvas export")).color(T.ok));
+                ui.label(text(Type::Data, trn!("{n} step", "{n} steps", c.ops.len())).color(T.text_dim));
+            });
+            for n in &c.notes {
+                row(ui, n, T.text_dim);
+            }
+        }
+        Err(problems) => {
+            ui.label(text(Type::Body, trn!("Doesn't run: {n} problem", "Doesn't run: {n} problems", problems.len())).color(T.error));
+            // A few rows tall, so the code stays in view however many there are.
+            egui::ScrollArea::vertical().id_salt("act_script_problems").max_height(96.0).auto_shrink([false, true]).show(ui, |ui| {
+                for p in problems {
+                    row(ui, p, T.error);
+                }
+            });
+        }
+    }
+}
+
 /// The Script view: the kept script's language, and its text in a monospace editor with line
-/// numbers. Typing edits the document live (`script.set`, one undo step per burst of typing).
+/// numbers; under it, whether it runs and what keeps it from running. Typing edits the
+/// document live (`script.set`, one undo step per burst of typing).
 fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&SourceScript>) {
     let language = src.map_or(Language::default(), |s| s.language);
     let mut pick = None;
@@ -324,6 +377,13 @@ fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&S
     let mut edited = shown.clone();
     let code = font(Type::Path);
     let rows = shown.split('\n').count().max(1);
+    let editor_id = ui.make_persistent_id("act_script_editor");
+    // The lines that hold a problem, marked in the gutter.
+    let bad: std::collections::BTreeSet<u32> = src.and_then(|s| s.compiled().as_ref().err()).map(|p| p.iter().map(|p| p.line).collect()).unwrap_or_default();
+    // Whether it runs, and what keeps it from running, above the code.
+    if let Some(s) = src {
+        script_status(ui, s, &shown, editor_id);
+    }
     let changed = egui::ScrollArea::both()
         .id_salt("act_script")
         .max_height(320.0)
@@ -332,12 +392,18 @@ fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&S
             ui.horizontal_top(|ui| {
                 // Line numbers, right-aligned in a gutter, on the same rows as the text.
                 let digits = rows.to_string().len().max(2);
-                let numbers: String = (1..=rows).map(|i| format!("{i:>digits$}")).collect::<Vec<_>>().join("\n");
+                let mut numbers = egui::text::LayoutJob::default();
+                for i in 1..=rows {
+                    let color = if bad.contains(&(i as u32)) { T.error } else { T.text_faint };
+                    let sep = if i < rows { "\n" } else { "" };
+                    numbers.append(&format!("{i:>digits$}{sep}"), 0.0, egui::TextFormat { font_id: code.clone(), color, ..Default::default() });
+                }
                 ui.vertical(|ui| {
                     ui.add_space(f32::from(EDITOR_MARGIN));
-                    ui.add(egui::Label::new(text(Type::Path, numbers).color(T.text_faint)).selectable(false));
+                    ui.add(egui::Label::new(numbers).selectable(false));
                 });
                 let editor = egui::TextEdit::multiline(&mut edited)
+                    .id(editor_id)
                     .code_editor()
                     .font(code.clone())
                     .margin(egui::Margin::symmetric(6, EDITOR_MARGIN))
@@ -358,7 +424,15 @@ fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&S
         }
         run(app, true, tr_noop!("Edit script"), "script.set", p);
     }
-    ui.label(text(Type::Caption, tr!("Kept with the document as written. AniCraft doesn't run scripts yet: Test Movie and exports skip it. Use actions for what should happen while the movie plays.")));
+    match src.map(SourceScript::runs) {
+        None => {
+            ui.label(text(Type::Caption, tr!("Kept with the document as written. ActionScript 3.0 that controls the timeline runs in Test Movie and the HTML canvas export.")));
+        }
+        Some(false) => {
+            ui.label(text(Type::Caption, tr!("A script runs only when all of it is in the ActionScript 3.0 subset AniCraft runs: timeline control (stop, play, go to a frame or label), mouse listeners, trace, and setting x, y, alpha, visible, rotation and scale on named instances. Until then it is kept as written and doesn't run.")));
+        }
+        Some(true) => {}
+    }
     if src.is_some() && ui.small_button(tr!("Remove script")).on_hover_text(tr!("Delete this keyframe's script")).clicked() {
         app.run("script.clear", t.base.clone());
         app.status_ok(tr!("Removed the script — {undo} to undo", undo = app.undo_key()));

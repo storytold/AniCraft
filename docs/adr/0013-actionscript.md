@@ -1,7 +1,7 @@
 # ADR 0013: ActionScript compatibility
 
 * Status: accepted (2026-11-08) as scope and placement. **Tier 1 built** (2026-11-09, see
-  "Tier 1 as built" below); tier 2 is a later PR (roadmap M6)
+  "Tier 1 as built" below). **Tier 2 built** (2026-11-10, see "Tier 2 as built")
 * Relates to: requirements U2 (scripting surface), roadmap M6, ADR 0009 (XFL import),
   `docs/legal/compliance.md`
 
@@ -163,3 +163,80 @@ Tier 1 follows the decision above. Where the build refines it:
   the HTML canvas export lists them in its report.
 * **Not in tier 1:** scripts on instances, linkage on bitmaps and sounds, a document-wide
   default language, syntax colouring, and exporting scripts back to XFL.
+
+## Tier 2 as built (2026-11-10)
+
+Tier 2 follows the decision above. Where the build refines it:
+
+* **Where the language lives: a module, not a crate.** The parser is `anicraft_actions::as3`
+  (`lex.rs`, `parse.rs`, `lower.rs`), inside the L0 crate that holds the action IR, rather than
+  a new `anicraft-script` crate. Two reasons. The layering rule (`src/architecture_tests.rs`)
+  lets a crate use only *lower* layers, so an L0 `anicraft-script` could not name the L0 IR it
+  lowers to; ADR 0024 put the IR at L0 for exactly the front ends that lower to it. And a kept
+  script's compiled form is a pure function of its text, so it is cached on the script itself:
+  `SourceScript::compiled()` fills a `OnceLock` the first time it is asked (never saved, never
+  compared, emptied by a clone). The document shares scripts by `Arc`, so undo snapshots, the
+  render thread, Test Movie, the HTML export and the importer all reuse one compile. A separate
+  crate would have needed a cache keyed outside the script, or a compile on every frame
+  entered. The module knows the language and the IR only; the crate stays serde-only.
+* **The subset.** `stop()`, `play()`, `gotoAndPlay`/`gotoAndStop` (a frame number, 1-based, or
+  a label; optionally a scene), `nextFrame()`, `prevFrame()`, `nextScene()`, `prevScene()`;
+  the same on instance-name paths (`hero_mc.arm_mc.play()`, `this.parent`, `parent`, `root`,
+  the casts `MovieClip(…)`, `Object(…)` and `… as MovieClip`); `addEventListener` for
+  `MouseEvent.CLICK`, `MOUSE_DOWN`, `MOUSE_UP`, `ROLL_OVER`/`MOUSE_OVER` and
+  `ROLL_OUT`/`MOUSE_OUT` (or their strings), with a function declared in the script or written
+  in place, whose body is made of these calls; `e.currentTarget` in a listener is the instance
+  listened to; `trace` of literals and of `+ - * / %` over them, joined and formatted as
+  ActionScript does (`Number.toString`, ECMA-262 §9.8.1); setting `x`, `y`, `alpha`,
+  `visible`, `rotation`, `scaleX`, `scaleY` to such values; a call to one of the script's own
+  functions runs its body in place (no recursion; 16 deep at most). `import`, comments, missing
+  semicolons (insertion as ECMA-262 §7.9), type annotations and `return;` read as the language
+  does.
+* **Never half-run.** Lowering accepts only what the IR says exactly. Anything else (variables,
+  `if`, loops, reading a property, `removeEventListener`, other events, classes) is a problem
+  with its line and column, and the whole script doesn't run. The parser reads more of the
+  language than runs (statements and expressions in general, skipping loop headers and
+  `switch`/`try` bodies by balanced brackets), so the problem names the construct and where it
+  is, and lowering lists every problem (up to 32), not just the first. A syntax error stops at
+  the first.
+* **Outside the movie.** `navigateToURL`, `sendToURL`, `fscommand` and `ExternalInterface.call`
+  are ignored and listed as *notes*; the script still runs. `buttonMode` and `useHandCursor`
+  are noted too (the pointer is already a hand over everything clickable).
+* **Bounds.** 256 KiB of source runs (the 1 MiB kept limit still holds), 65,536 tokens,
+  nesting 64 deep (statements and expressions; deeper is a problem, never a stack overflow),
+  100,000 statements lowered counting inlined copies (calls that fan out), 256 steps per
+  script and per listener, 64 listeners per script, 32 problems. The player's per-step
+  budgets (ADR 0024) count each step as one action. A hostile-input test (token soup and raw
+  bytes, 5,000 scripts) runs in well under a second; it must never panic. Measured (dev
+  profile, this build's optimised debug): a typical frame script compiles in ~9 µs, a 200 KB
+  one of 2,500 functions in ~11 ms, once per script.
+* **Listeners in the player.** The IR gains no new action: a compiled script is a list of
+  `ScriptOp`s, each an `Action` or a `Listen` (a target, a `ButtonEvent`, the function's name
+  and its actions). Running a `Listen` adds the listener to `PlayerState.listeners` under the
+  instance it names (buttons and movie clips; a graphic, the main timeline or a missing name is
+  an Output line). Adding the same function for the same event again changes nothing, as in
+  ActionScript (an inline function counts as one function, so a looping frame doesn't pile up
+  copies). A listener lives while its instance and its script's timeline stay on the stage. On
+  an event the instance's own handler (ADR 0024) runs first, then its listeners in the order
+  added, each on its script's timeline. A movie clip with a listener can be clicked, as one
+  with handlers can. `nextScene()` in a movie clip's own script writes an Output line instead
+  of moving the main timeline (a clip has one scene in ActionScript); the Actions panel's Next
+  scene action keeps its meaning.
+* **Where it shows.** Test Movie's Output starts with one line per kept script: "Frame script
+  runs: Scene 1 › Actions, frame 1", or "not run" with the first problem; the window counts
+  the scripts that don't run. The Actions panel's Script view says whether the script runs
+  (and how many steps it lowered to), lists the notes, or lists each problem with its line and
+  column above the code and marks those lines in the gutter; clicking a problem puts the
+  cursor there. The XFL import report lists frame scripts that run apart from those kept.
+  `script.set` and `script.list` say `runs` and `problems`; `script.check {text, language?}`
+  compiles a text without storing it and returns its steps. The HTML canvas export writes the
+  same steps for `player.js`, which mirrors the Rust player's listeners (tested step by step in
+  Boa, state, output and display list alike); scripts outside the subset stay out of the page
+  and are counted in its report.
+* **Messages.** Problems are engine messages, in English like the rest of the engine's
+  (`docs/localisation.md`); the panel's frame around them is translated.
+* **Not in tier 2 yet:** variables and conditions, reading properties, `removeEventListener`,
+  `Event.ENTER_FRAME` and keyboard events, functions declared on other frames of the timeline,
+  event bubbling from a clip's children to its listeners, `e.target`, `getChildByName`,
+  sound and `stage`, and ActionScript 1.0 and 2.0. Each is reported where it is, so the
+  subset can grow from what users' files actually use.

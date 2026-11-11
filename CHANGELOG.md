@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+* **ActionScript that controls the timeline now runs** (ADR 0013 tier 2). Frame scripts in
+  Animate documents, and ones you type in the Actions panel, play in Test Movie and in the
+  HTML canvas export when they use the ActionScript 3.0 most animation and e-learning files
+  use: `stop()`, `play()`, `gotoAndPlay`/`gotoAndStop` by frame or label (and scene),
+  `nextFrame()`, `prevFrame()`, `nextScene()`, `prevScene()`, on this timeline or on named
+  instances (`hero_mc.gotoAndStop("run")`, `MovieClip(parent).play()`); button and movie clip
+  listeners (`btn.addEventListener(MouseEvent.CLICK, onClick)` for click, mouse down and up,
+  roll over and out, with a named or inline function); `trace`; and setting `x`, `y`,
+  `alpha`, `visible`, `rotation`, `scaleX` and `scaleY`.
+  * A script runs whole or not at all. Anything else (variables, `if`, loops, reading
+    properties) keeps it from running, and AniCraft says where: the Script view lists each
+    problem with its line and column above the code and marks the lines (click one to go
+    there), or says the script runs. Test Movie's Output begins with which scripts run and
+    which don't, and why.
+  * `navigateToURL` and other calls that reach outside the movie are ignored and noted.
+  * The XFL import report lists the frame scripts that run apart from those only kept.
+  * Headless: `script.set` and `script.list` say `runs` and `problems`; new `script.check`
+    compiles a text without storing it. A new XFL corpus package, `interactive`, plays its
+    ActionScript through the player.
 * **Selection across layers** (ADR 0044, issue #42, M1). A selection can hold artwork on several
   layers, as in Animate:
   * The Selection tool's **marquee** selects on every visible, unlocked layer, cutting raw fills

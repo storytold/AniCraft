@@ -200,6 +200,7 @@ fn snapshot(st: &PlayerState) -> Value {
     json!({
         "scene": st.scene, "frame": st.root.frame, "playing": st.root.playing,
         "clips": st.clips.iter().map(|(p, c)| json!([ids(p), c.frame, c.playing])).collect::<Vec<_>>(),
+        "listeners": st.listeners.iter().filter(|(_, l)| !l.is_empty()).map(|(p, l)| json!([ids(p), l.iter().map(|x| json!([x.event.key(), ids(&x.owner), x.function])).collect::<Vec<_>>()])).collect::<Vec<_>>(),
         "hover": st.hover.as_deref().map(ids), "pressed": st.pressed.as_deref().map(ids), "down": st.down,
     })
 }
@@ -584,4 +585,85 @@ fn hostile_documents_export_without_panicking() {
     // An empty document is a one-frame movie.
     let m = movie(&Document::default(), &HtmlOptions::default());
     assert_eq!(m.json["timelines"][0]["n"], 1);
+}
+
+/// `k` with a kept ActionScript 3.0 script in place of its actions.
+fn as3(k: &mut Arc<Keyframe>, src: &str) {
+    Arc::make_mut(k).script = Some(FrameScript::Source(Arc::new(anicraft_doc::actions::SourceScript::new(anicraft_doc::actions::Language::ActionScript3, src))));
+}
+
+/// The fixture with its frame actions and the knob's handlers written as ActionScript: the
+/// main timeline's first frame adds the knob's listeners (named and inline functions,
+/// `currentTarget`), a listener makes the panel clip clickable, one names an instance that
+/// isn't there, the door's last frame calls `nextScene()` in its own script, and a script
+/// outside the subset stays kept and unrun.
+fn scripted() -> Document {
+    let mut d = fixture();
+    let main = "import flash.events.MouseEvent;\n\
+        trace(\"start\");\n\
+        knob.addEventListener(MouseEvent.CLICK, openDoor);\n\
+        knob.addEventListener(MouseEvent.ROLL_OVER, function (e:MouseEvent):void { door.alpha = 0.5; });\n\
+        knob.addEventListener(MouseEvent.ROLL_OUT, function (e:MouseEvent):void { door.alpha = 1; });\n\
+        knob.addEventListener(MouseEvent.MOUSE_DOWN, pressed);\n\
+        knob.addEventListener(MouseEvent.MOUSE_UP, released);\n\
+        panel.addEventListener(MouseEvent.CLICK, function (e:MouseEvent):void { trace(\"panel \" + 1); MovieClip(e.currentTarget).gotoAndStop(1); e.currentTarget.alpha = 0.75; });\n\
+        ghost.addEventListener(MouseEvent.CLICK, pressed);\n\
+        navigateToURL(new URLRequest(\"https://example.com\"));\n\
+        function openDoor(e:MouseEvent):void { door.gotoAndPlay(\"opening\"); panel.door.play(); }\n\
+        function pressed(e:MouseEvent):void { trace(\"pressed\"); }\n\
+        function released(e:MouseEvent):void { MovieClip(root).panel.gotoAndStop(100); }";
+    let tl = d.timeline_mut(0);
+    let l1 = Arc::make_mut(&mut tl.layers[0]);
+    as3(&mut l1.keyframes[0], main);
+    as3(&mut l1.keyframes[1], "ghost.stop()\npanel.stop()");
+    as3(&mut l1.keyframes[2], "var n:int = 3; stop();");
+    let l2 = Arc::make_mut(&mut tl.layers[1]);
+    if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(&mut Arc::make_mut(&mut l2.keyframes[0]).elements[0]).kind {
+        events.clear();
+    }
+    let door = Arc::make_mut(&mut d.library[0]);
+    let dl = Arc::make_mut(&mut door.timeline.layers[0]);
+    as3(&mut dl.keyframes[2], "stop();\ntrace('door open');\nnextScene();");
+    d
+}
+
+#[test]
+fn the_js_player_runs_actionscript_like_the_rust_player() {
+    let doc = scripted();
+    let m = movie(&doc, &HtmlOptions::default());
+    assert_eq!(m.report.get(KEPT_SCRIPTS), Some(&1), "{:?}", m.report);
+    assert_eq!(m.report.get(OUTSIDE_CALLS), Some(&1), "{:?}", m.report);
+    let none = || (vec![], vec![]);
+    let mut script: Vec<(Vec<Event>, Vec<Event>)> = (0..2).map(|_| none()).collect();
+    script.push((vec![Event::Move(at(100.0, 100.0))], vec![]));
+    script.push((vec![Event::Down(at(101.0, 99.0))], vec![]));
+    script.push((vec![], vec![Event::Up(at(102.0, 101.0))]));
+    script.extend((0..6).map(|_| none()));
+    // Click the panel (a movie clip that a listener made clickable).
+    script.push((vec![Event::Move(at(380.0, 300.0))], vec![Event::Down(at(380.0, 300.0)), Event::Up(at(380.0, 300.0))]));
+    script.push((vec![Event::Move(at(10.0, 10.0)), Event::Leave], vec![]));
+    script.extend((0..30).map(|_| none()));
+    let lines = compare(&doc, &script);
+    for want in ["start", "pressed", "door open", "panel 1", "Listen for click (ghost): no instance named “ghost” here", "Stop (ghost): no instance named “ghost” here", "Next scene: a movie clip's timeline has one scene; call it in the main timeline's script"] {
+        assert!(lines.iter().any(|l| l == want), "the scripted fixture never wrote {want:?}: {lines:?}");
+    }
+}
+
+#[test]
+fn actionscript_plays_the_movie_its_hand_made_actions_play() {
+    // The scripted fixture and the fixture write the same lines and reach the same states, but
+    // for the lines only scripts write and the listeners they hold.
+    let (a, b) = (fixture(), scripted());
+    let events = [vec![], vec![], vec![Event::Move(at(100.0, 100.0))], vec![Event::Down(at(101.0, 99.0))], vec![Event::Up(at(102.0, 101.0))], vec![], vec![], vec![], vec![Event::Move(at(10.0, 10.0))]];
+    let (mut x, mut y) = (start(&a, &mut NoScripts), start(&b, &mut NoScripts));
+    let only_scripts = |l: &String| l.starts_with("Listen for") || l.starts_with("Next scene:");
+    for (i, ev) in events.iter().enumerate() {
+        x = step(&a, &x.state, ev, &mut NoScripts);
+        y = step(&b, &y.state, ev, &mut NoScripts);
+        let ys: Vec<&String> = y.output.iter().filter(|l| !only_scripts(l)).collect();
+        assert_eq!(x.output.iter().collect::<Vec<_>>(), ys, "step {}: output", i + 1);
+        let mut st = y.state.clone();
+        st.listeners.clear();
+        assert_eq!(x.state, st, "step {}: state", i + 1);
+    }
 }

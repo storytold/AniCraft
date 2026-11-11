@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A door movie clip: closed (frame 1, a script stops it there) and open (frame 3, a script
+     stops and traces). Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Door" itemID="00000000-0000-0000-0000-000000000401">
+  <timeline>
+    <DOMTimeline name="Door">
+      <layers>
+        <DOMLayer name="Actions" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="2" name="closed" labelType="name" keyMode="9728">
+              <Actionscript><script><![CDATA[stop();]]></script></Actionscript>
+              <elements/>
+            </DOMFrame>
+            <DOMFrame index="2" name="open" labelType="name" keyMode="9728">
+              <Actionscript><script><![CDATA[stop();
+trace("door open");]]></script></Actionscript>
+              <elements/>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Panel" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="2" keyMode="9728"><elements><DOMRectangleObject x="-25" y="-40" objectWidth="50" objectHeight="80"><fill><SolidColor color="#8D5524"/></fill></DOMRectangleObject></elements></DOMFrame>
+            <DOMFrame index="2" keyMode="9728"><elements><DOMRectangleObject x="-25" y="-40" objectWidth="10" objectHeight="80"><fill><SolidColor color="#8D5524"/></fill></DOMRectangleObject></elements></DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

@@ -27,6 +27,7 @@ const FRAMES: &[(&str, &[u32])] = &[
     ("filters", &[0]),
     ("gradients", &[0]),
     ("guides", &[0, 6, 12]),
+    ("interactive", &[0, 9]),
     ("masks", &[0]),
     ("primitives", &[0]),
     ("scenes", &[0, 3, 7, 8, 10]),
@@ -42,6 +43,9 @@ const SCALE: f32 = 0.5;
 
 /// What a frame must show at a stage point: (package, frame, x, y, colour).
 const PROBES: &[(&str, u32, f32, f32, u32)] = &[
+    // The door movie clip and the button, on the authored timeline (scripts never change it).
+    ("interactive", 0, 90.0, 90.0, 0x8D5524),
+    ("interactive", 9, 240.0, 90.0, 0x2A9D8F),
     // Both sides of a shared edge, the hole, the hex-coordinate triangle.
     ("shapes", 0, 45.0, 50.0, 0xD9452B),
     ("shapes", 0, 80.0, 30.0, 0x2B6CD9),

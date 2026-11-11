@@ -821,21 +821,30 @@ impl App {
                     crate::test_movie::demo_pointer(self);
                 }
             }
-            Some("script") => {
+            Some(which @ ("script" | "scriptproblems" | "testscript")) => {
                 // The interactive sample as an imported Animate document might bring it: a
                 // frame script kept on the Actions layer's first keyframe (in place of its
                 // Stop action), a linkage class and a document class; the Actions panel shows
-                // the Script view (ADR 0013 tier 1).
+                // the Script view (ADR 0013). `script` runs (tier 2); `scriptproblems` uses
+                // what the subset doesn't, and shows where; `testscript` plays the one that
+                // runs in Test Movie, its Play button clicked.
                 self.perform("file.new_sample", json!({"which": "interactive"}));
                 self.run("layer.select", json!({"index": 0}));
                 // i18n-exempt: script source, document content
-                let code = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tgotoAndPlay(\"show\");\n}\n";
+                let runs = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\ttrace(\"Play clicked\");\n\tgotoAndPlay(\"show\");\n}\n";
+                // i18n-exempt: script source, document content
+                let problems = "import flash.events.MouseEvent;\n\nstop();\nvar clicks:int = 0;\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tclicks++;\n\tif (clicks > 1) {\n\t\tgotoAndPlay(\"show\");\n\t}\n}\n";
+                let code = if which == "scriptproblems" { problems } else { runs };
                 self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
                 self.run("script.set_class", json!({"class": "com.example.Menu"}));
                 if let Some(button) = self.s.doc.library.iter().find(|s| s.kind == anicraft_engine::doc::SymbolKind::Button).map(|s| s.id.0) {
                     self.run("script.set_class", json!({"symbol": button, "class": "com.example.PlayButton", "base": "flash.display.SimpleButton"}));
                 }
                 crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
+                if which == "testscript" {
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_pointer(self);
+                }
             }
             Some("exporthtml") => {
                 // File › Export › Export HTML Canvas… on the interactive sample (the in-app
