@@ -14,7 +14,7 @@
 use crate::a11y::{self, Named};
 use crate::app::App;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, with_type};
-use anicraft_engine::doc::{Easing, MotionTween, Pin, Property, Props, Track};
+use anicraft_engine::doc::{ColorStyle, Easing, MotionTween, Pin, Property, Props, Track};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, WidgetType, pos2, vec2};
 use serde_json::json;
 
@@ -40,12 +40,24 @@ pub enum MeDrag {
     Scrub,
 }
 
-/// The motion tween at the playhead on the active layer: its first frame, length and data.
-fn current(app: &App) -> Option<(u32, u32, MotionTween, Props)> {
+/// The motion tween at the playhead on the active layer: its first frame, length and data, and
+/// the colour effect styles it shows (ADR 0056).
+fn current(app: &App) -> Option<(u32, u32, MotionTween, Props, Vec<ColorStyle>)> {
     let k = app.s.active_layer()?.keyframe_at(app.s.frame)?;
     let m = k.motion.clone()?;
-    let base = m.target_index(&k.elements).and_then(|i| k.elements.get(i)).map(|e| Props::of(e))?;
-    Some((k.start, k.duration, m, base))
+    let target = m.target_index(&k.elements).and_then(|i| k.elements.get(i))?;
+    let styles = m.colour_styles(&target.color);
+    Some((k.start, k.duration, m, Props::of(target), styles))
+}
+
+/// The properties the list shows: position and transform, and the colour effect styles the
+/// tween uses or the artist added (Alpha when there are none).
+fn listed(used: &[ColorStyle], added: &[ColorStyle]) -> Vec<Property> {
+    let mut shown: Vec<ColorStyle> = used.iter().chain(added).copied().collect();
+    if shown.is_empty() {
+        shown.push(ColorStyle::Alpha);
+    }
+    Property::ALL.into_iter().filter(|p| p.style().is_none_or(|s| shown.contains(&s))).collect()
 }
 
 /// A readable step for grid lines across `span` (1, 2 or 5 × 10ⁿ).
@@ -106,7 +118,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_filled(body, 0.0, T.panel);
     painter.line_segment([body.left_top(), body.right_top()], Stroke::new(1.0, T.border));
 
-    let Some((start, frames, m, base)) = current(app) else {
+    let Some((start, frames, m, base, used)) = current(app) else {
         empty_state(app, ui, body);
         return;
     };
@@ -127,7 +139,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let rows_top = list.top() + RULER_H;
     // Rows that don't fit scroll with the wheel over the list.
     let fit = (((list.bottom() - rows_top) / ROW_H).floor() as usize).max(1);
-    let n = Property::ALL.len();
+    let rows = listed(&used, &app.me_styles);
+    if !rows.contains(&app.me_prop) {
+        app.me_prop = Property::X;
+    }
+    let n = rows.len();
     if ui.rect_contains_pointer(list) {
         let d = ui.input(|i| i.smooth_scroll_delta.y);
         app.me_vscroll = (app.me_vscroll - d / ROW_H).clamp(0.0, n.saturating_sub(fit) as f32);
@@ -135,7 +151,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     app.me_vscroll = app.me_vscroll.min(n.saturating_sub(fit) as f32);
     let first = app.me_vscroll.floor() as usize;
     let mut last_group = "";
-    for (r, p) in Property::ALL.into_iter().enumerate().skip(first).take(fit) {
+    for (r, p) in rows.iter().copied().enumerate().skip(first).take(fit) {
         let y = rows_top + (r - first) as f32 * ROW_H;
         let row = Rect::from_min_size(pos2(list.left(), y), vec2(LIST_W, ROW_H));
         let selected = app.me_prop == p;
@@ -404,7 +420,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         None => gr.on_hover_text_at_pointer(tr!("Drag a key up or down to change it, or a handle to shape the ease. Double-click to add a key.")),
     };
 
-    footer(app, ui, body, track, sel_key, start);
+    footer(app, ui, body, track, sel_key, start, &rows);
 }
 
 /// Whether `q` is a pin between the ends (which can be let go).
@@ -425,7 +441,7 @@ fn diamond(p: &egui::Painter, c: Pos2, r: f32, fill: Color32, stroke: Stroke) {
 }
 
 /// The ease of the selected segment, and the tween's own actions.
-fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, sel_key: Option<u32>, start: u32) {
+fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, sel_key: Option<u32>, start: u32, rows: &[Property]) {
     let bar = Rect::from_min_max(pos2(body.left(), body.bottom() - FOOTER_H), body.right_bottom());
     ui.painter().rect_filled(bar, SQUARE, T.panel_alt);
     ui.painter().line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, T.border));
@@ -454,6 +470,21 @@ fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, s
         }
     }
     ui.separator();
+    // Animate's "+" for colour effects: list another style's properties (keying one adds it).
+    let missing: Vec<ColorStyle> = [ColorStyle::Alpha, ColorStyle::Brightness, ColorStyle::Tint, ColorStyle::Advanced].into_iter().filter(|s| !rows.iter().any(|p| p.style() == Some(*s))).collect();
+    if !missing.is_empty() {
+        ui.menu_button(tr!("Add Colour Effect"), |ui| {
+            for st in missing {
+                if ui.button(crate::i18n::t(st.label())).clicked() {
+                    app.me_styles.push(st);
+                    app.me_prop = Property::ALL.into_iter().find(|p| p.style() == Some(st)).unwrap_or(Property::Alpha);
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("List a colour effect style's properties here; keying one adds it to the tween"));
+    }
     if ui.button(tr!("Remove Tween")).on_hover_text(tr!("The object stays as it is on the span's first frame ({undo} to undo)", undo = app.undo_key())).clicked() {
         app.run("timeline.remove_tween", json!({}));
     }

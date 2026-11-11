@@ -6,7 +6,8 @@
 //!   way (`stroke-dasharray`, `stroke-dashoffset`; dots are zero-length round-capped dashes),
 //!   as the renderer measures them (ADR 0046);
 //! * gradients keep their local geometry under a `gradientTransform`, padded at the ends;
-//! * colour effects (alpha, tint) are baked into every colour and stop;
+//! * colour effects (every style, ADR 0056) are baked into every colour and stop, and drawn
+//!   on bitmaps through an `feColorMatrix` (alpha alone as `fill-opacity`);
 //! * masks become `clipPath`s (fill areas only, nested through `clip-path` on the clip), and an
 //!   empty mask clips everything, as on the stage;
 //! * outline-mode layers are hairlines in the layer colour;
@@ -15,7 +16,7 @@
 //! The output is deterministic and contains only generated ids and numbers, so it needs no
 //! escaping.
 
-use anicraft_doc::{ColorEffect, DisplayItem, DisplayList, Paint, Rgba, Stage};
+use anicraft_doc::{ColorTransform, DisplayItem, DisplayList, Paint, Rgba, Stage};
 use anicraft_geom::{Affine, FillRule};
 use std::fmt::Write;
 
@@ -340,7 +341,7 @@ fn effect_svg(f: &anicraft_doc::Filter, i: usize, prims: &mut String) {
 
 /// The fill attribute for `paint`, defining a gradient in `defs` when needed. `None` when the
 /// paint draws nothing.
-fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize, image: Option<(&std::sync::Arc<anicraft_doc::Pixels>, bool)>, images: &mut Vec<(usize, bool, String)>) -> Option<String> {
+fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorTransform, defs: &mut String, n: &mut usize, image: Option<(&std::sync::Arc<anicraft_doc::Pixels>, bool)>, images: &mut Vec<(usize, bool, String)>) -> Option<String> {
     let stops = match paint {
         Paint::Solid(c) => {
             let c = fx.apply(*c).sanitized();
@@ -350,7 +351,6 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
         Paint::Bitmap { matrix, .. } => {
             // A pattern of the bitmap at its own pixel size, placed by the shape's transform
             // and the fill's image matrix.
-            // (Opacity comes across; tint has no SVG equivalent and is left out.)
             // Without Allow Smoothing (ADR 0050) the image keeps hard pixel edges.
             let (px, smooth) = image?;
             let key = std::sync::Arc::as_ptr(px) as usize;
@@ -367,10 +367,35 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
             };
             let id = format!("p{n}");
             *n += 1;
+            // A colour effect beyond alpha is a colour matrix on the image's pixels (ADR 0056):
+            // the same multiply and offset per straight channel, clamped, as the renderer's.
+            let fxs = fx.sanitized();
+            let recolour = fxs.changes_colour() || fxs.add[3] != 0.0;
+            let filter = if recolour {
+                let fid = format!("cm{n}");
+                *n += 1;
+                let [mr, mg, mb, ma] = fxs.mul;
+                let [ar, ag, ab, aa] = fxs.add;
+                let _ = write!(
+                    defs,
+                    "<filter id=\"{fid}\" color-interpolation-filters=\"sRGB\"><feColorMatrix type=\"matrix\" values=\"{} 0 0 0 {} 0 {} 0 0 {} 0 0 {} 0 {} 0 0 0 {} {}\"/></filter>",
+                    num(mr),
+                    num(ar),
+                    num(mg),
+                    num(ag),
+                    num(mb),
+                    num(ab),
+                    num(ma),
+                    num(aa)
+                );
+                format!(" filter=\"url(#{fid})\"")
+            } else {
+                String::new()
+            };
             let m = xf.mul(matrix).m;
             let _ = write!(
                 defs,
-                "<pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" patternTransform=\"matrix({} {} {} {} {} {})\" width=\"{}\" height=\"{}\"><use href=\"#{img_id}\"/></pattern>",
+                "<pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" patternTransform=\"matrix({} {} {} {} {} {})\" width=\"{}\" height=\"{}\"><use href=\"#{img_id}\"{filter}/></pattern>",
                 num(m[0]),
                 num(m[1]),
                 num(m[2]),
@@ -380,7 +405,7 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
                 px.width,
                 px.height
             );
-            let a = fx.alpha.clamp(0.0, 1.0);
+            let a = if recolour { 1.0 } else { fxs.mul[3].clamp(0.0, 1.0) };
             return Some(if a < 1.0 { format!(" fill=\"url(#{id})\" fill-opacity=\"{}\"", num(a)) } else { format!(" fill=\"url(#{id})\"") });
         }
     };
@@ -428,7 +453,7 @@ mod tests {
             fill,
             stroke: None,
             fill_rule: FillRule::NonZero,
-            color: ColorEffect::default(),
+            color: ColorTransform::default(),
             layer: LayerId(0),
             element: ElementId(0),
             outline: None,
@@ -446,11 +471,26 @@ mod tests {
     }
 
     #[test]
+    fn bitmaps_take_colour_effects_as_a_colour_matrix() {
+        // ADR 0056: alpha alone is fill-opacity; anything more is an feColorMatrix on the image.
+        let px = Arc::new(anicraft_doc::Pixels { width: 1, height: 1, rgba: vec![10, 20, 30, 255] });
+        let mut b = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::IDENTITY }));
+        b.image = Some(px);
+        b.color = ColorTransform::alpha(0.5);
+        let svg = to_svg(&DisplayList { items: vec![b.clone()], ..Default::default() }, &stage());
+        assert!(svg.contains("fill-opacity=\"0.5\"") && !svg.contains("feColorMatrix"), "{svg}");
+        b.color = ColorTransform { mul: [-1.0, 0.5, 1.0, 0.8], add: [1.0, 0.25, 0.0, 0.1] };
+        let svg = to_svg(&DisplayList { items: vec![b], ..Default::default() }, &stage());
+        assert!(svg.contains("<feColorMatrix type=\"matrix\" values=\"-1 0 0 0 1 0 0.5 0 0 0.25 0 0 1 0 0 0 0 0 0.8 0.1\"/>"), "{svg}");
+        assert!(svg.contains("filter=\"url(#cm") && !svg.contains("fill-opacity"), "{svg}");
+    }
+
+    #[test]
     fn shapes_strokes_and_effects_come_out_in_stage_space() {
         let mut a = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Solid(Rgba::hex(0xff0000))));
         a.transform = Affine::translate(5.0, 7.0).mul(&Affine::scale(2.0, 2.0));
         a.stroke = Some(Stroke::new(Rgba::BLACK, 3.0));
-        a.color = ColorEffect { alpha: 0.5, ..Default::default() };
+        a.color = ColorTransform::alpha(0.5);
         a.fill_rule = FillRule::EvenOdd;
         let svg = to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
         assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\">"));
@@ -548,7 +588,7 @@ mod group_tests {
             fill: Some(Paint::Solid(Rgba::BLACK)),
             stroke: None,
             fill_rule: FillRule::NonZero,
-            color: ColorEffect::default(),
+            color: ColorTransform::default(),
             layer: LayerId(0),
             element: ElementId(0),
             outline: None,

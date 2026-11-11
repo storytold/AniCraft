@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Self-authored corpus symbol: a chip tinted inside, for nested colour effects. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Pair" itemID="00000000-0000-0000-0000-000000000502" symbolType="graphic">
+  <timeline>
+    <DOMTimeline name="Pair">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Chip" symbolType="graphic" loop="loop">
+                  <color><Color tintMultiplier="0.5" tintColor="#FF0000"/></color>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

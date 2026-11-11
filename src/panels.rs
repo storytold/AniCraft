@@ -3,7 +3,7 @@
 use crate::app::{App, Tool};
 use crate::icons::{self, Icon};
 use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, section, text, to_color32, with_type};
-use anicraft_engine::doc::{ElementKind, LibraryItem, Paint, Rgba, SymbolKind, evaluate_layer_elements};
+use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, Paint, Rgba, SymbolKind, evaluate_layer_elements};
 use crate::a11y::{self, Named};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
@@ -532,6 +532,81 @@ fn mixed(ui: &mut egui::Ui, differs: bool) {
     }
 }
 
+/// The colour effect (ADR 0056): Animate's Style menu, then the chosen style's controls. Each
+/// change sets that value on every selected element (ADR 0053), as one undo step per drag.
+fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: crate::mixed::ColorMixed) {
+    let current = fx.style();
+    row_prose(ui, tr!("Colour effect"), |ui| {
+        egui::ComboBox::from_id_salt("prop_color_style").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
+            for st in ColorStyle::ALL {
+                if ui.selectable_label(st == current, crate::i18n::t(st.label())).clicked() && (st != current || m.style) {
+                    app.run("element.set_color_effect", json!({"style": st.key()}));
+                }
+            }
+        })
+        .response
+        .set_name(tr!("Colour effect style"));
+        mixed(ui, m.style);
+    });
+    let pct = a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() };
+    let set = |app: &mut App, p: Value| live(app, tr_noop!("Colour Effect"), "element.set_color_effect", p);
+    match *fx {
+        ColorEffect::None => {}
+        ColorEffect::Alpha(a) => {
+            let mut v = a * 100.0;
+            row(ui, tr!("Alpha"), |ui| {
+                if a11y::slider(ui, &mut v, 0.0..=100.0, tr!("Alpha"), pct).changed() {
+                    set(app, json!({"alpha": v}));
+                }
+                mixed(ui, m.alpha);
+            });
+        }
+        ColorEffect::Brightness(b) => {
+            let mut v = b * 100.0;
+            row(ui, tr!("Brightness"), |ui| {
+                if a11y::slider(ui, &mut v, -100.0..=100.0, tr!("Brightness"), pct).changed() {
+                    set(app, json!({"brightness": v}));
+                }
+                mixed(ui, m.brightness);
+            });
+        }
+        ColorEffect::Tint { color, amount } => {
+            let mut c = rgb(color);
+            row(ui, tr!("Tint"), |ui| {
+                if ui.color_edit_button_srgb(&mut c).named(tr!("Tint colour")).changed() {
+                    set(app, json!({"tint": hex(c)}));
+                }
+                ui.label(text(Type::Data, hex(c)));
+                mixed(ui, m.tint);
+            });
+            let mut v = amount * 100.0;
+            row(ui, tr!("Tint amount"), |ui| {
+                if a11y::slider(ui, &mut v, 0.0..=100.0, tr!("Tint amount"), pct).changed() {
+                    set(app, json!({"tint_amount": v}));
+                }
+                mixed(ui, m.tint_amount);
+            });
+        }
+        ColorEffect::Advanced(t) => {
+            // Each channel: its multiplier in percent, then the offset added (−255..255).
+            let channels = [(tr!("Red"), tr!("Red multiplier"), tr!("Red offset"), "red"), (tr!("Green"), tr!("Green multiplier"), tr!("Green offset"), "green"), (tr!("Blue"), tr!("Blue multiplier"), tr!("Blue offset"), "blue"), (tr!("Alpha"), tr!("Alpha multiplier"), tr!("Alpha offset"), "alpha")];
+            for (i, (label, mul_name, off_name, key)) in channels.into_iter().enumerate() {
+                let mut mv = t.mul.get(i).copied().unwrap_or(1.0) * 100.0;
+                let mut ov = t.add.get(i).copied().unwrap_or(0.0) * 255.0;
+                row(ui, label, |ui| {
+                    if ui.add(egui::DragValue::new(&mut mv).suffix(" %").speed(0.5).range(-100.0..=100.0).max_decimals(0)).named(mul_name).changed() {
+                        set(app, json!({format!("{key}_multiplier"): mv}));
+                    }
+                    if ui.add(egui::DragValue::new(&mut ov).custom_formatter(|v, _| format!("{v:+.0}")).speed(1.0).range(-255.0..=255.0).max_decimals(0)).named(off_name).changed() {
+                        set(app, json!({format!("{key}_offset"): ov}));
+                    }
+                    mixed(ui, m.advanced.get(i).copied().unwrap_or(false) || m.advanced.get(i + 4).copied().unwrap_or(false));
+                });
+            }
+        }
+    }
+}
+
 /// The selection's properties: `e` is the first selected element, `all` the whole selection.
 fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, all: &[std::sync::Arc<anicraft_engine::doc::Element>]) {
     let many = all.len() > 1;
@@ -581,13 +656,9 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             }
             mixed(ui, m.rotation);
         });
-        let mut alpha = e.color.alpha * 100.0;
-        row(ui, tr!("Alpha"), |ui| {
-            if a11y::slider(ui, &mut alpha, 0.0..=100.0, tr!("Alpha"), a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() }).changed() {
-                live(app, tr_noop!("Alpha"), "element.set_alpha", json!({"alpha": alpha / 100.0}));
-            }
-            mixed(ui, m.alpha);
-        });
+        if !matches!(e.kind, ElementKind::Camera) {
+            colour_effect_rows(app, ui, &e.color, m.color);
+        }
         // Blending and filters, on movie clips and buttons as in Animate.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)

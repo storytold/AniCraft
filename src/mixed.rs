@@ -5,7 +5,7 @@
 //! it edits (Blending only movie clips and buttons, Looping only graphics, Fill only shapes), so
 //! a shape beside a movie clip never makes Blending mixed. Pure, so every row is tested here.
 
-use anicraft_engine::doc::{Document, Element, ElementKind, Paint, Shape, SymbolKind};
+use anicraft_engine::doc::{ColorEffect, Document, Element, ElementKind, Paint, Shape, SymbolKind};
 use std::sync::Arc;
 
 /// The rows whose values differ across the selection.
@@ -13,8 +13,8 @@ use std::sync::Arc;
 pub struct Mixed {
     pub scale: bool,
     pub rotation: bool,
-    /// The colour effect (the Alpha row).
-    pub alpha: bool,
+    /// The colour effect's rows (ADR 0056).
+    pub color: ColorMixed,
     /// The instances show different symbols (the Symbol row, Swap…).
     pub symbol: bool,
     /// Their symbols are of different types.
@@ -31,6 +31,46 @@ pub struct Mixed {
     pub profile: bool,
     /// Line style, caps, joins and dashes.
     pub style: bool,
+}
+
+/// Which colour effect rows differ. Each value compares the elements as the first one's style
+/// sees them (an element in another style counts as that style's value it would start from),
+/// which is what a change sets on all of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ColorMixed {
+    pub style: bool,
+    pub alpha: bool,
+    pub brightness: bool,
+    pub tint: bool,
+    pub tint_amount: bool,
+    /// Red, green, blue, alpha multipliers, then their offsets.
+    pub advanced: [bool; 8],
+}
+
+fn color_mixed(all: &[Arc<Element>]) -> ColorMixed {
+    let Some(first) = all.first() else { return ColorMixed::default() };
+    let style = first.color.style();
+    let seen: Vec<ColorEffect> = all.iter().map(|e| e.color.to_style(style)).collect();
+    let mut m = ColorMixed { style: differ(all.iter().map(|e| e.color.style())), ..ColorMixed::default() };
+    match style {
+        anicraft_engine::doc::ColorStyle::None => {}
+        anicraft_engine::doc::ColorStyle::Alpha => m.alpha = differ_f32(seen.iter().map(ColorEffect::alpha)),
+        anicraft_engine::doc::ColorStyle::Brightness => {
+            m.brightness = differ_f32(seen.iter().map(|f| if let ColorEffect::Brightness(b) = f { *b } else { 0.0 }));
+        }
+        anicraft_engine::doc::ColorStyle::Tint => {
+            let tints: Vec<_> = seen.iter().filter_map(|f| if let ColorEffect::Tint { color, amount } = f { Some((*color, *amount)) } else { None }).collect();
+            m.tint = differ(tints.iter().map(|t| t.0.to_hex()));
+            m.tint_amount = differ_f32(tints.iter().map(|t| t.1));
+        }
+        anicraft_engine::doc::ColorStyle::Advanced => {
+            let ts: Vec<_> = seen.iter().map(ColorEffect::transform).collect();
+            for (i, slot) in m.advanced.iter_mut().enumerate() {
+                *slot = differ_f32(ts.iter().map(|t| if i < 4 { t.mul.get(i).copied().unwrap_or(1.0) } else { t.add.get(i - 4).copied().unwrap_or(0.0) }));
+            }
+        }
+    }
+    m
 }
 
 /// Whether `values` holds two that differ.
@@ -76,7 +116,7 @@ pub fn of(doc: &Document, all: &[Arc<Element>]) -> Mixed {
     Mixed {
         scale: differ_f32(decomposed.iter().map(|d| d.sx)) || differ_f32(decomposed.iter().map(|d| d.sy)),
         rotation: differ_f32(decomposed.iter().map(|d| d.rotation)),
-        alpha: differ_f32(all.iter().map(|e| e.color.alpha)),
+        color: color_mixed(all),
         symbol: differ(instances().filter_map(|e| match &e.kind {
             ElementKind::Symbol { symbol, .. } => Some(*symbol),
             _ => None,
@@ -174,17 +214,46 @@ mod tests {
         select(&mut s, &[b]);
         run(&mut s, "element.set_transform", json!({"sx": 2.0}));
         select(&mut s, &[a, b, g]);
-        assert!(mixed(&s).scale && !mixed(&s).rotation && !mixed(&s).alpha);
+        assert!(mixed(&s).scale && !mixed(&s).rotation && mixed(&s).color == ColorMixed::default());
         select(&mut s, &[g]);
         run(&mut s, "element.set_transform", json!({"rotation": 30}));
         run(&mut s, "element.set_alpha", json!({"alpha": 0.5}));
         select(&mut s, &[a, g]);
         let m = mixed(&s);
-        assert!(m.rotation && m.alpha && !m.scale);
+        assert!(m.rotation && m.color.style && !m.scale);
         // Editing a mixed row sets all: then it isn't mixed any more.
         run(&mut s, "element.set_alpha", json!({"alpha": 0.25}));
         run(&mut s, "element.set_transform", json!({"rotation": 0}));
-        assert!(!mixed(&s).alpha && !mixed(&s).rotation);
+        assert!(mixed(&s).color == ColorMixed::default() && !mixed(&s).rotation);
+    }
+
+    #[test]
+    fn colour_effect_rows_compare_in_the_first_ones_style() {
+        let (mut s, [a, b, g], _) = session();
+        select(&mut s, &[a]);
+        run(&mut s, "element.set_color_effect", json!({"tint": "#ff0000", "tint_amount": 50}));
+        select(&mut s, &[b]);
+        run(&mut s, "element.set_color_effect", json!({"tint": "#ff0000", "tint_amount": 20}));
+        select(&mut s, &[a, b]);
+        let m = mixed(&s).color;
+        assert!(!m.style && !m.tint && m.tint_amount);
+        // An element in another style differs in style, and counts as a tint of 0 % of white.
+        select(&mut s, &[a, g]);
+        let m = mixed(&s).color;
+        assert!(m.style && m.tint && m.tint_amount);
+        // Setting the amount on all makes them alike tints of their own colours.
+        run(&mut s, "element.set_color_effect", json!({"tint_amount": 30}));
+        let m = mixed(&s).color;
+        assert!(!m.style && !m.tint_amount && m.tint);
+        // Advanced: only the channel that differs.
+        select(&mut s, &[a, b]);
+        run(&mut s, "element.set_color_effect", json!({"tint_amount": 30}));
+        run(&mut s, "element.set_color_effect", json!({"style": "advanced"}));
+        assert_eq!(mixed(&s).color, ColorMixed::default(), "the same tint, as Advanced");
+        select(&mut s, &[b]);
+        run(&mut s, "element.set_color_effect", json!({"green_offset": 40}));
+        select(&mut s, &[a, b]);
+        assert_eq!(mixed(&s).color.advanced, [false, false, false, false, false, true, false, false]);
     }
 
     #[test]

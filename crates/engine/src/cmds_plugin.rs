@@ -126,7 +126,8 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
             "selected": s.selection.contains(s.layer, e.id),
             "transform": e.transform.m,
             "bounds": if b.is_empty() { Value::Null } else { json!([b.min.x, b.min.y, b.max.x - b.min.x, b.max.y - b.min.y]) },
-            "alpha": e.color.alpha,
+            "alpha": e.color.alpha(),
+            "color_effect": crate::color_effect_json(&e.color),
         });
         match &e.kind {
             ElementKind::Shape(sh) => {

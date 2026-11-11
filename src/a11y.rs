@@ -369,6 +369,18 @@ mod tests {
             let filters: Vec<_> = anicraft_engine::doc::Filter::KINDS.iter().map(|(k, _)| serde_json::json!({"type": k})).collect();
             assert!(a.run("element.set_filters", serde_json::json!({"filters": filters})).is_some());
         }));
+        // Each colour effect style's controls (ADR 0056), and the Motion Editor's colour rows.
+        for style in ["brightness", "tint", "advanced", "alpha"] {
+            found.extend(check(&format!("colour effect {style}"), |a, _| {
+                a.run("layer.select", serde_json::json!({"index": 0}));
+                a.run("edit.select_all", serde_json::json!({}));
+                assert!(a.run("element.set_color_effect", serde_json::json!({"style": style})).is_some());
+            }));
+        }
+        found.extend(check("motion editor colour rows", |a, _| {
+            a.open_panel(Some("motionedit"));
+            a.me_styles = vec![anicraft_engine::doc::ColorStyle::Tint, anicraft_engine::doc::ColorStyle::Advanced, anicraft_engine::doc::ColorStyle::Brightness];
+        }));
         found.extend(check("high contrast at 200%", |a, ctx| {
             let mut p = a.prefs.clone();
             p.theme = crate::theme::Palette::HighContrast;
