@@ -453,6 +453,34 @@ mod tests {
     }
 
     #[test]
+    fn an_open_button_names_its_states_widens_its_frames_and_shows_its_hit_area() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::interactive());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        frame(&ctx, &mut app, vec![]);
+        let zoom = app.tl_cell_w;
+        assert!(crate::timeline::button_states(&app).is_none(), "on the stage, frames are numbered");
+        let button = app.s.doc.library.iter().find(|s| s.kind == anicraft_engine::doc::SymbolKind::Button).map(|s| s.id.0);
+        app.run("symbol.edit", json!({"symbol": button}));
+        app.run("timeline.goto", json!({"frame": 1}));
+        frame(&ctx, &mut app, vec![]);
+        assert_eq!(crate::timeline::button_states(&app).map(|s| s.len()), Some(4));
+        assert!(app.tl_cell_w > zoom, "wide enough for “Over”: {} vs {zoom}", app.tl_cell_w);
+        assert!(app.s.hit_overlay().is_some(), "the Hit area over the Over state, in the theme's colour");
+        app.run("symbol.exit", json!({}));
+        frame(&ctx, &mut app, vec![]);
+        assert_eq!(app.tl_cell_w, zoom, "the zoom it had comes back");
+        // Test Movie keeps Show hit areas across a restart.
+        open(&mut app);
+        if let Some(tm) = app.test_movie.as_mut() {
+            tm.hit_areas = true;
+        }
+        open(&mut app);
+        assert!(app.test_movie.as_ref().is_some_and(|t| t.hit_areas));
+        frame(&ctx, &mut app, vec![]);
+    }
+
+    #[test]
     fn key_codes_are_actionscript_s() {
         use egui::Key as K;
         for (k, code) in [(K::A, 65), (K::Z, 90), (K::Num0, 48), (K::Num9, 57), (K::ArrowLeft, 37), (K::ArrowUp, 38), (K::ArrowRight, 39), (K::ArrowDown, 40), (K::Space, 32), (K::Enter, 13), (K::Tab, 9), (K::Backspace, 8), (K::F1, 112), (K::F12, 123), (K::Comma, 188)] {
