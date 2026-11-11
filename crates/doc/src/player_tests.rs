@@ -449,7 +449,7 @@ fn next_scene_in_a_movie_clip_script_stays_in_its_clip() {
     assert_eq!(s.output, ["Next scene: a movie clip's timeline has one scene; call it in the main timeline's script"]);
 }
 
-// ----- ActionScript small logic (ADR 0013 tier 2.5) ---------------------------------------------
+// ----- ActionScript small logic (ADR 0052) ---------------------------------------------
 
 /// A one-layer main timeline of `frames` frames with scripts on some of them, and `extra` layers.
 fn scripted(frames: u32, scripts: &[(u32, &str)], extra: Vec<Arc<Layer>>, library: Vec<Arc<Symbol>>) -> Document {

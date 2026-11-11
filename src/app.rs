@@ -1874,7 +1874,7 @@ impl App {
         if keys == crate::a11y::Keyboard::Text || self.palette.is_some() {
             return;
         }
-        // The Test Movie window's movie has the keyboard (ADR 0013 tier 2.5): its keys are the
+        // The Test Movie window's movie has the keyboard (ADR 0052): its keys are the
         // movie's; only shortcuts with Ctrl (⌘) or Alt reach the app (Restart is Ctrl+Enter).
         if self.test_movie.is_some() && crate::test_movie::has_keys(ctx) {
             let fire: Vec<&'static str> = ctx.input_mut(|i| self.shortcuts.iter().filter(|(m, _, _)| m.command || m.ctrl || m.alt).filter_map(|(m, k, id)| i.consume_key(*m, *k).then_some(*id)).collect());

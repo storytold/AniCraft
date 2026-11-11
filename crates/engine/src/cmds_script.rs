@@ -50,7 +50,7 @@ fn what(script: &Option<FrameScript>) -> Value {
 
 /// Whether a script runs, its problems and notes (each `{line, column, message}`; line 0 is
 /// the whole script). `links`: why it doesn't run on its timeline although it compiles (a
-/// name from another frame that isn't there, ADR 0013 tier 2.5).
+/// name from another frame that isn't there, ADR 0052).
 fn status(c: &CompileResult, links: &[Problem]) -> Value {
     match c {
         Ok(c) if links.is_empty() => json!({"runs": true, "problems": [], "notes": c.notes}),

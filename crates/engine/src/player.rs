@@ -292,7 +292,7 @@ pub struct KeptScript<'a> {
     pub plays: bool,
     pub compiled: &'a CompileResult,
     /// Why it doesn't run on its timeline although it compiles: names from other frames that
-    /// aren't there (ADR 0013 tier 2.5).
+    /// aren't there (ADR 0052).
     pub links: Vec<Problem>,
 }
 

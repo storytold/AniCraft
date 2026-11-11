@@ -722,7 +722,7 @@ fn actionscript_plays_the_movie_its_hand_made_actions_play() {
     }
 }
 
-/// A movie that uses the small-logic tier (ADR 0013 tier 2.5): typed variables kept per
+/// A movie that uses the small-logic tier (ADR 0052): typed variables kept per
 /// timeline and per clip instance, expressions, `if`, loops, `Math.random()`, functions from
 /// another frame, property reads, enter-frame and keyboard listeners that add and remove
 /// themselves, `e.target`, a runtime error and a loop that runs out of fuel.

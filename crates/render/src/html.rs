@@ -486,7 +486,7 @@ impl<'a> Bake<'a> {
     /// `nm`, labels `lb`, and per frame the scripts `a` and sounds `snd` of keyframes starting
     /// there (top layer first). A scene's frames seen through its camera (ADR 0027) carry the
     /// camera's tint (`cc`) and each layer its view (`v`: the camera and the layer's depth).
-    /// `decls`: the declarations its frame scripts share (ADR 0013 tier 2.5), for timelines that
+    /// `decls`: the declarations its frame scripts share (ADR 0052), for timelines that
     /// run scripts; their functions go out as `fn` and their variables' types as `vt`.
     fn timeline(&mut self, tl: &Timeline, scene: bool, decls: Option<&Decls>) -> Value {
         let n = tl.frame_count();

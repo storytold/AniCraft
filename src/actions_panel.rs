@@ -379,7 +379,7 @@ fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&S
     let code = font(Type::Path);
     let rows = shown.split('\n').count().max(1);
     let editor_id = ui.make_persistent_id("act_script_editor");
-    // Names it takes from other frames of its timeline that aren't there (ADR 0013 tier 2.5).
+    // Names it takes from other frames of its timeline that aren't there (ADR 0052).
     let links = match src.map(|s| s.compiled()) {
         Some(Ok(c)) if t.runs => {
             let which = t.base.get("symbol").and_then(Value::as_u64).map_or(anicraft_engine::doc::player::TimelineRef::Root, |id| anicraft_engine::doc::player::TimelineRef::Symbol(SymbolId(id)));

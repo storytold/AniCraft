@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* **Frame scripts in ActionScript 3.0 run small logic** (ADR 0013 tier 2.5, M6).
+* **Frame scripts in ActionScript 3.0 run small logic** (ADR 0052, M6).
   * Typed variables (`var score:int = 0;` as Number, int, uint, Boolean, String or untyped),
     kept per timeline instance across its frame scripts as Animate timelines keep them;
     expressions (arithmetic, comparison, logic, joining text, `Math.min/max/abs/floor/ceil/

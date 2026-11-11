@@ -10,7 +10,7 @@
 //! (`doc::sound::trigger`), movie clips' and graphics' included, and while sound plays the
 //! movie keeps time with it, as the stage does.
 //!
-//! Its keyboard (ADR 0013 tier 2.5): while the movie has the focus (it takes it when the window
+//! Its keyboard (ADR 0052): while the movie has the focus (it takes it when the window
 //! opens and when clicked), keys go to the movie's keyboard listeners as ActionScript key
 //! codes, Tab and the arrows included; shortcuts with Ctrl (⌘ on macOS) still reach the app,
 //! and Esc closes the window.

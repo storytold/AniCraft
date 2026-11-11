@@ -1,4 +1,4 @@
-//! The script IR (ADR 0013 tier 2.5): a small, typed form of statements and expressions that a
+//! The script IR (ADR 0052): a small, typed form of statements and expressions that a
 //! compiled script runs as, evaluated by [`super::run`]. It is data, not code: the player (and
 //! the HTML canvas player, which reads the same IR as JSON) walks it with a fuel budget.
 //!

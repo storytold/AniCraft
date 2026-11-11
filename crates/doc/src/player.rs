@@ -181,7 +181,7 @@ pub struct PlayerState {
     pub listeners: BTreeMap<InstancePath, Vec<Listening>>,
     /// Listeners on the stage (keyboard and enter-frame), in the order added.
     pub stage: Vec<Listening>,
-    /// Each timeline instance's variables (ADR 0013 tier 2.5), by name.
+    /// Each timeline instance's variables (ADR 0052), by name.
     pub vars: BTreeMap<InstancePath, BTreeMap<String, Value>>,
     /// The random generator.
     pub rng: Rng,
@@ -500,7 +500,7 @@ struct Run<'a, 'h> {
     /// The frame each graphic showed when the step began: one that shows another frame at
     /// its end has entered it (and starts its sounds).
     graphics: BTreeMap<InstancePath, u32>,
-    /// Each timeline's declarations (ADR 0013 tier 2.5), made the first time a script there
+    /// Each timeline's declarations (ADR 0052), made the first time a script there
     /// needs them.
     decls: BTreeMap<TimelineRef, Arc<Decls>>,
     /// Script fuel left this step.
@@ -725,7 +725,7 @@ impl<'a, 'h> Run<'a, 'h> {
         self.decls.entry(key).or_insert_with(|| Arc::new(decls(doc, key))).clone()
     }
 
-    /// Runs a compiled frame script on timeline `owner` (ADR 0013 tier 2.5): when every name
+    /// Runs a compiled frame script on timeline `owner` (ADR 0052): when every name
     /// it takes from other frames is there, its statements run with the fuel the step has left.
     fn run_script(&mut self, owner: &[ElementId], frame: u32, c: &'a Compiled) {
         let Some(i) = self.index_of(owner) else { return };
@@ -1297,7 +1297,7 @@ fn decompose64(m: &Affine) -> [f64; 5] {
     [e, f, sx, sy, r]
 }
 
-/// A running script's view of the movie (ADR 0013 tier 2.5).
+/// A running script's view of the movie (ADR 0052).
 struct Script<'r, 'a, 'h> {
     r: &'r mut Run<'a, 'h>,
     /// The timeline the script belongs to.

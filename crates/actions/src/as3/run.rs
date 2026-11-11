@@ -1,4 +1,4 @@
-//! Running the script IR (ADR 0013 tier 2.5): a small tree-walking evaluator over a
+//! Running the script IR (ADR 0052): a small tree-walking evaluator over a
 //! [`World`] (the player, which knows the movie). It is deterministic (the only random numbers
 //! come from the world's seeded generator) and bounded: every statement and expression costs
 //! fuel, text has a length limit, calls a depth limit. When fuel runs out or something can't
