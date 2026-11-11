@@ -14,7 +14,7 @@ cargo deny check licenses bans sources
 cargo run --release -p anicraft-cli -- bench  # performance probe
 ```
 
-Fonts: builds embed Inter and JetBrains Mono when `CRAFT_FONTS_DIR` points at a craft-fonts
+Fonts: builds embed Inter, JetBrains Mono and Noto Sans Georgian (the interface offers Georgian only then) when `CRAFT_FONTS_DIR` points at a craft-fonts
 checkout, or when one is found next to the repository (ADR 0005). Otherwise they use the
 built-in fallback fonts.
 

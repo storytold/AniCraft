@@ -3,7 +3,8 @@
 //!
 //! `CRAFT_FONTS_DIR=<craft-fonts checkout> cargo build` embeds the UI typefaces chosen in
 //! ADR 0005: Inter (prose) and JetBrains Mono (data), both SIL OFL 1.1. Font files are never
-//! committed to this repository. Without the variable the app uses egui's bundled defaults, and
+//! committed to this repository. It also embeds Noto Sans Georgian (`Geor` in craft-fonts) as a
+//! fallback face, which is what lets the interface offer Georgian. Without the variable the app uses egui's bundled defaults, and
 //! everything still works.
 //!
 //! `CRAFT_I18N_DIR=<craft-i18n checkout>` embeds the interface catalogs (ADR 0040); without it
@@ -12,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 /// Files we look for, and the generated constant each fills.
-const FONTS: [(&str, &str); 2] = [("Inter-Regular.ttf", "UI_FONT"), ("JetBrainsMono-Regular.ttf", "MONO_FONT")];
+const FONTS: [(&str, &str); 3] = [("Inter-Regular.ttf", "UI_FONT"), ("JetBrainsMono-Regular.ttf", "MONO_FONT"), ("NotoSansGeorgian.ttf", "GEORGIAN_FONT")];
 
 fn find(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
