@@ -179,14 +179,17 @@ fn rem_euclid(u: f32, n: f32) -> f32 {
     return select(r, r + n, r < 0.0);
 }
 
-// The oracle's bilinear sample of a bitmap at pixel centre `p` (paint.rs › sample).
+// The oracle's sample of a bitmap at pixel centre `p` (paint.rs › sample): bilinear, or the
+// pixel `p` falls in when the bitmap doesn't allow smoothing (flag bit 1).
 fn bitmap(base: u32, p: vec2<f32>) -> vec4<f32> {
     let h0 = paints[base];
     let m = paints[base + 1u];
     let n = paints[base + 2u];
     let tint = paints[base + 3u];
     let slot = bitcast<u32>(h0.x);
-    let repeat = bitcast<u32>(h0.y) != 0u;
+    let flags = bitcast<u32>(h0.y);
+    let repeat = (flags & 1u) != 0u;
+    let nearest = (flags & 2u) != 0u;
     let size = vec2<i32>(i32(bitcast<u32>(h0.z)), i32(bitcast<u32>(h0.w)));
     let w = f32(size.x);
     let h = f32(size.y);
@@ -200,6 +203,9 @@ fn bitmap(base: u32, p: vec2<f32>) -> vec4<f32> {
         v = rem_euclid(v, h);
     } else if u < 0.0 || v < 0.0 || u >= w || v >= h {
         return vec4<f32>(0.0);
+    }
+    if nearest {
+        return tap(slot, i32(floor(u)), i32(floor(v)), size, repeat, n, tint);
     }
     let fx_ = u - 0.5;
     let fy_ = v - 0.5;

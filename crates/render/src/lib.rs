@@ -841,7 +841,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect) -> Vec<Prepared> {
     });
     if let Some(fill) = &item.fill {
         let polys: Vec<Vec<Vec2>> = lines.into_iter().map(|l| l.points).collect();
-        push(polys, item.fill_rule, Shader::new(fill, &m, &item.color, item.image.as_ref()));
+        push(polys, item.fill_rule, Shader::new(fill, &m, &item.color, item.image.as_ref()).smoothed(item.smooth));
     }
     if let Some((polys, shader)) = stroke {
         push(polys, FillRule::NonZero, shader);
@@ -926,6 +926,7 @@ mod tests {
             guide: false,
             group: None,
             image: None,
+            smooth: true,
         }
     }
 

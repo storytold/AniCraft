@@ -37,6 +37,9 @@ pub struct DisplayItem {
     pub group: Option<u32>,
     /// The decoded pixels a [`Paint::Bitmap`] fill shows (shared, never copied).
     pub image: Option<Arc<crate::Pixels>>,
+    /// Whether `image` is filtered between its pixels (the bitmap's Allow Smoothing, ADR 0050);
+    /// off, each pixel is a hard-edged square.
+    pub smooth: bool,
 }
 
 /// Back-to-front list of shapes.
@@ -440,6 +443,10 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                         Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).and_then(crate::Bitmap::pixels),
                         _ => None,
                     },
+                    smooth: match &s.fill {
+                        Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).is_none_or(|b| b.smoothing),
+                        _ => true,
+                    },
                 }),
                 ElementKind::Text(t) => out.items.push(DisplayItem {
                     path: t.outline.clone(),
@@ -456,6 +463,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     guide,
                     group: cx.group,
                     image: None,
+                    smooth: true,
                 }),
                 ElementKind::Camera => {}
                 ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } => {

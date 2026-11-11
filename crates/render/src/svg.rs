@@ -28,7 +28,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
     let mut body = String::new();
     let mut grad = 0usize;
     // Each bitmap is embedded once (by its pixels), then used by every fill that shows it.
-    let mut images: Vec<(usize, String)> = Vec::new();
+    let mut images: Vec<(usize, bool, String)> = Vec::new();
 
     // Clips, in order (a parent always precedes its children; anything else clips all).
     for (i, parent) in dl.clip_parents.iter().enumerate() {
@@ -82,7 +82,7 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
             continue;
         }
         if let Some(fill) = &item.fill
-            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad, item.image.as_ref(), &mut images)
+            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad, item.image.as_ref().map(|px| (px, item.smooth)), &mut images)
         {
             let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
         }
@@ -340,7 +340,7 @@ fn effect_svg(f: &anicraft_doc::Filter, i: usize, prims: &mut String) {
 
 /// The fill attribute for `paint`, defining a gradient in `defs` when needed. `None` when the
 /// paint draws nothing.
-fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize, image: Option<&std::sync::Arc<anicraft_doc::Pixels>>, images: &mut Vec<(usize, String)>) -> Option<String> {
+fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n: &mut usize, image: Option<(&std::sync::Arc<anicraft_doc::Pixels>, bool)>, images: &mut Vec<(usize, bool, String)>) -> Option<String> {
     let stops = match paint {
         Paint::Solid(c) => {
             let c = fx.apply(*c).sanitized();
@@ -351,15 +351,17 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorEffect, defs: &mut String, n
             // A pattern of the bitmap at its own pixel size, placed by the shape's transform
             // and the fill's image matrix.
             // (Opacity comes across; tint has no SVG equivalent and is left out.)
-            let px = image?;
+            // Without Allow Smoothing (ADR 0050) the image keeps hard pixel edges.
+            let (px, smooth) = image?;
             let key = std::sync::Arc::as_ptr(px) as usize;
-            let img_id = match images.iter().find(|(k, _)| *k == key) {
-                Some((_, id)) => id.clone(),
+            let img_id = match images.iter().find(|(k, sm, _)| *k == key && *sm == smooth) {
+                Some((_, _, id)) => id.clone(),
                 None => {
                     let png = crate::encode_png(px.width, px.height, &px.rgba).ok()?;
                     let id = format!("img{}", images.len());
-                    let _ = write!(defs, "<image id=\"{id}\" width=\"{}\" height=\"{}\" href=\"data:image/png;base64,{}\"/>", px.width, px.height, anicraft_doc::base64_encode(&png));
-                    images.push((key, id.clone()));
+                    let look = if smooth { "" } else { " image-rendering=\"pixelated\"" };
+                    let _ = write!(defs, "<image id=\"{id}\" width=\"{}\" height=\"{}\"{look} href=\"data:image/png;base64,{}\"/>", px.width, px.height, anicraft_doc::base64_encode(&png));
+                    images.push((key, smooth, id.clone()));
                     id
                 }
             };
@@ -435,6 +437,7 @@ mod tests {
             guide: false,
             group: None,
             image: None,
+            smooth: true,
         }
     }
 
@@ -554,6 +557,7 @@ mod group_tests {
             guide: false,
             group: g,
             image: None,
+            smooth: true,
         };
         let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };
         let svg = to_svg(&dl, &Stage { width: 4, height: 4, fps: 24.0, background: Rgba::WHITE });

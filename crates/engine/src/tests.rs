@@ -513,7 +513,7 @@ fn save_load_round_trip() {
 /// Adversarial params for every command: must return Ok or Err, never panic.
 #[test]
 fn panic_hunt_every_command() {
-    let hostile: Vec<Value> = vec![
+    let mut hostile: Vec<Value> = vec![
         Value::Null,
         json!({}),
         json!([]),
@@ -691,7 +691,22 @@ fn panic_hunt_every_command() {
         in_symbol.execute(id, &p).unwrap();
     }
     assert_eq!(in_symbol.editing.len(), 1, "the fuzz starts inside a symbol");
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol] {
+    // Library folders, nested, with items in them (ADR 0050); the fuzz moves, renames and
+    // deletes them, folders into themselves, names that clash or hold a slash.
+    let mut library = Session::new(sample::demo());
+    let outer = library.execute("library.new_folder", &json!({"name": "Characters"})).unwrap()["folder"].as_u64().unwrap();
+    let inner = library.execute("library.new_folder", &json!({"name": "Hero", "parent": outer})).unwrap()["folder"].as_u64().unwrap();
+    let ball = library.doc.library.first().map(|x| x.id.0).unwrap();
+    library.execute("library.move", &json!({"items": [{"symbol": ball}], "to": inner})).unwrap();
+    library.execute("library.duplicate", &json!({"symbol": ball})).unwrap();
+    hostile.extend([
+        json!({"items": [{"folder": outer}], "to": inner, "folder": outer, "name": "Hero", "parent": inner, "confirm": true}),
+        json!({"items": [{"folder": inner}, {"symbol": ball}, {"folder": inner}], "to": null, "folder": inner, "name": "a/b", "symbol": ball}),
+        json!({"items": [{"symbol": ball, "folder": outer}, "x", {"sound": u64::MAX}], "to": u64::MAX, "parent": "x", "name": " "}),
+        json!({"items": (0..200).map(|i| json!({"folder": i})).collect::<Vec<_>>(), "to": outer, "symbol": ball, "name": "x".repeat(300), "on": "x", "bitmap": 1}),
+        json!({"items": [{"symbol": ball}], "to": outer, "symbol": ball, "name": "Ball copy", "confirm": true}),
+    ]);
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol, library] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -713,6 +728,10 @@ fn panic_hunt_every_command() {
         let voices = anicraft_doc::sound::voices(&s.doc, 8000);
         let mut out = vec![0.0; 2 * 4096];
         anicraft_doc::audio::mix(&voices, 8000, Default::default(), 0, &mut out);
+        // ...and its Library tree stays whole: nothing a load would have to repair.
+        let mut loaded = s.doc.clone();
+        loaded.sanitize();
+        assert_eq!(loaded.library_tree, s.doc.library_tree);
     }
 }
 

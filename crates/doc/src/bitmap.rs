@@ -43,13 +43,25 @@ pub struct Bitmap {
     /// The image as PNG.
     #[serde(with = "base64_bytes")]
     pub png: Arc<Vec<u8>>,
+    /// Allow Smoothing (ADR 0050): scaled or turned, the image is filtered between its pixels;
+    /// off, each pixel stays a hard-edged square (pixel art). On unless a file says otherwise.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub smoothing: bool,
     #[serde(skip)]
     decoded: Arc<OnceLock<Option<Arc<Pixels>>>>,
 }
 
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
+}
+
 impl PartialEq for Bitmap {
     fn eq(&self, o: &Bitmap) -> bool {
-        self.id == o.id && self.name == o.name && self.width == o.width && self.height == o.height && (Arc::ptr_eq(&self.png, &o.png) || self.png == o.png)
+        self.id == o.id && self.name == o.name && self.width == o.width && self.height == o.height && self.smoothing == o.smoothing && (Arc::ptr_eq(&self.png, &o.png) || self.png == o.png)
     }
 }
 
@@ -60,7 +72,7 @@ impl Bitmap {
         let (width, height) = (px.width, px.height);
         let decoded = OnceLock::new();
         let _ = decoded.set(Some(Arc::new(px)));
-        Some(Bitmap { id, name: name.into(), width, height, png: Arc::new(png), decoded: Arc::new(decoded) })
+        Some(Bitmap { id, name: name.into(), width, height, png: Arc::new(png), smoothing: true, decoded: Arc::new(decoded) })
     }
 
     /// A bitmap from PNG or JPEG data (told apart by their signatures; JPEGs become PNG).

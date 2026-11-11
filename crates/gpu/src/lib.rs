@@ -443,6 +443,7 @@ impl GpuRenderer {
             guide: false,
             group: None,
             image: None,
+            smooth: true,
         };
         let solid = |x: f32, c: Rgba| item(Path::rect(x, 2.0, 8.0, 16.0), Paint::Solid(c));
         let mut bitmap = item(Path::rect(2.0, 18.0, 20.0, 2.0), Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::scale(3.0, 1.0) });

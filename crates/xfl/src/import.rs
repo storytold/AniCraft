@@ -707,6 +707,9 @@ impl<'a> Builder<'a> {
             match bitmap {
                 Some(mut b) => {
                     b.id = BitmapId(self.doc.alloc_id());
+                    // Animate leaves out the default (smoothing on in current versions).
+                    b.smoothing = item.bool("allowSmoothing").unwrap_or(true);
+                    self.place_in_folder(name, anicraft_doc::LibraryItem::Bitmap(b.id));
                     self.bitmaps.insert(name.to_string(), b.id);
                     self.doc.bitmaps.push(Arc::new(b));
                 }
@@ -801,6 +804,27 @@ impl<'a> Builder<'a> {
             };
             let short = name.rsplit('/').next().unwrap_or(&name).to_string();
             self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, timeline }));
+            self.place_in_folder(&name, anicraft_doc::LibraryItem::Symbol(id));
+        }
+    }
+
+    /// The Library's folders (`<folders>`, so empty ones come across too), each a path such as
+    /// `Characters/Hero` (ADR 0050).
+    fn register_folders(&mut self, root: &X) {
+        for f in root.list("folders").iter().filter(|f| f.name == "DOMFolderItem").take(anicraft_doc::library::MAX_FOLDERS) {
+            if let Some(path) = f.attr("name") {
+                self.doc.ensure_folder_path(path);
+            }
+        }
+    }
+
+    /// Puts `item` in the folder its library name's path names (`Characters/Ball` is in
+    /// `Characters`), made if `<folders>` didn't list it.
+    fn place_in_folder(&mut self, name: &str, item: anicraft_doc::LibraryItem) {
+        if let Some((dir, _)) = name.rsplit_once('/')
+            && let Some(f) = self.doc.ensure_folder_path(dir)
+        {
+            self.doc.place_entry(anicraft_doc::LibraryEntry::Item(item), Some(f));
         }
     }
 }
@@ -837,6 +861,7 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
         fps: root.f32("frameRate").unwrap_or(24.0).clamp(1.0, 120.0),
         background: color(&root, "backgroundColor", "__none"),
     };
+    b.register_folders(&root);
     b.register_bitmaps(&root)?;
     b.register_symbols(&root)?;
     b.build_symbols();
@@ -846,6 +871,9 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
         let name: String = tl.attr("name").filter(|n| !n.trim().is_empty()).map_or_else(|| format!("Scene {}", i + 1), |n| n.chars().take(256).collect());
         let timeline = b.timeline(tl);
         b.doc.scenes.push(Arc::new(Scene { name, timeline }));
+    }
+    if !b.doc.library_tree.folders.is_empty() {
+        b.report.keep("library folders");
     }
     if b.doc.scenes.is_empty() {
         let timeline = Timeline { layers: vec![Arc::new(Layer::new(LayerId(b.doc.alloc_id()), "Layer 1"))] };

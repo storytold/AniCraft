@@ -648,8 +648,8 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(&top) = layers.first() else {
         return Err(EngineError::State("select something to convert".into()));
     };
-    let n = s.doc.library.len() + 1;
-    let name: String = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| format!("Symbol {n}"));
+    // The next free “Symbol n” at the Library's top level, where new symbols go (ADR 0050).
+    let name: String = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| s.doc.numbered_name(None, "Symbol", s.doc.library.len() + 1));
     let bounds = s.selection_bounds();
     let center = if bounds.is_empty() { Vec2::ZERO } else { bounds.center() };
     let sym_id = SymbolId(s.doc.alloc_id());
