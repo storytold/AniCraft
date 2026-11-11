@@ -724,24 +724,52 @@ impl MotionTween {
         } else if t >= 1.0 - 1e-3 {
             cmd
         } else {
-            let Some(path) = trial.path.as_mut() else { return Err(PinError::NoPath) };
-            if path.cmds.len() > MAX_PATH_SEGMENTS {
+            if self.path.as_ref().is_some_and(|p| p.cmds.len() > MAX_PATH_SEGMENTS) {
                 return Err(PinError::Full);
             }
-            if !path.split_segment(cmd, t) {
+            if !trial.split_path(cmd, t) {
                 return Err(PinError::OffPath);
-            }
-            // The new anchor ends the first half; the anchors after it move up one.
-            for p in &mut trial.pins {
-                if p.anchor as usize >= cmd {
-                    p.anchor += 1;
-                }
             }
             cmd
         };
         trial.pin(anchor, frame, base)?;
         *self = trial;
         Ok(anchor)
+    }
+
+    /// Splits the path's segment `cmd` at curve parameter `t` (the curve unchanged; the new
+    /// anchor is `cmd`). Pins after it stay on their anchors. False when there is no such
+    /// segment.
+    pub fn split_path(&mut self, cmd: usize, t: f32) -> bool {
+        let Some(path) = self.path.as_mut() else { return false };
+        if !path.split_segment(cmd, t) {
+            return false;
+        }
+        for p in &mut self.pins {
+            if p.anchor as usize >= cmd {
+                p.anchor = p.anchor.saturating_add(1);
+            }
+        }
+        true
+    }
+
+    /// Deletes anchor `i` between the ends, refitting the two segments around it as one
+    /// ([`Path::merge_at`]). A pin on it goes, with its keys; later pins stay on their anchors.
+    /// False when it can't be deleted (an end, or no such anchor).
+    pub fn delete_anchor(&mut self, i: usize) -> bool {
+        let Some(path) = self.path.as_mut() else { return false };
+        if !path.merge_at(i) {
+            return false;
+        }
+        if let Some(frame) = self.pins.iter().find(|p| p.anchor as usize == i).map(|p| p.frame) {
+            self.unpin(frame);
+        }
+        for p in &mut self.pins {
+            if p.anchor as usize > i {
+                p.anchor -= 1;
+            }
+        }
+        true
     }
 
     /// Lets the pin on `frame` go: its X/Y keys go with it and its anchor shapes the path only
