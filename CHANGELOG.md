@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+* **Publish Settings and Publish** (ADR 0060, M8).
+  * **File › Publish Settings** (Ctrl+Shift+F12) is a window that stays open while you work.
+    It lists every format AniCraft exports (HTML canvas, animated GIF, video, Lottie, sprite
+    sheet, PNG sequence, PNG, SVG, audio), each with a checkbox. The selected format shows
+    its output name and the same options its File › Export command has. The settings are
+    saved **in the document** and every change can be undone. Older files open with the HTML
+    page on.
+  * Output names are relative to the document's folder, and `{name}` stands for the
+    document's name (`web/{name}.html`). Each name is checked as you type and the full path
+    is shown below it. A name can't point outside the document's folder, and two formats
+    can't write the same file.
+  * **File › Publish** (Shift+F12) writes every format that is on, in the background. A
+    window shows each format's progress and has a Cancel button. A single report then lists
+    what each format wrote, skipped (video in a browser, audio with no sounds), left out
+    (Lottie's and the HTML page's notes) or why it failed. One failing format doesn't stop
+    the others.
+  * Publishing over files that are already there asks once. After that, the files this
+    session published are replaced without asking.
+  * **Presets**: save the settings under a name, apply them to any document, or delete them.
+    Presets are kept in your preferences.
+  * In a browser, the files go to your downloads, as one ZIP when there are several.
+  * Headless: `publish.settings_get`, `publish.settings_set` and `file.publish`, which returns
+    the report. Publishing the sample in six formats takes 0.64 s.
 * **Find and Replace, and the Movie Explorer** (ADR 0058, M8).
   * **Edit › Find and Replace** (Ctrl+F) is a window that stays open while you work. It finds
     text in text fields, frame labels, layer names, instance names and frame scripts, with
