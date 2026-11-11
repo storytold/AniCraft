@@ -32,6 +32,7 @@ mod bone_tool;
 mod camera_tool;
 mod convert_symbol;
 mod dialogs;
+mod drop;
 mod gpu_stage;
 mod icons;
 mod keymap;
@@ -46,10 +47,12 @@ mod pathtools;
 mod platform;
 mod plugins_ui;
 mod prefs;
+mod recent;
 mod scale_grid;
 mod sound;
 mod shape_hints;
 mod stage;
+mod start;
 mod test_movie;
 mod theme;
 mod timeline;
@@ -108,11 +111,17 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
     // `--lang` before the window exists, so its first status line is in that language too.
     i18n::force(look.lang.as_deref());
     let (session, report) = open_session(file);
+    let file_given = file.map(Path::to_path_buf);
     eframe::run_native(
         "AniCraft",
         options,
         Box::new(move |cc| {
+            let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);
+            // No document to open: the start screen, unless it was switched off (ADR 0059).
+            if starting_fresh && a.prefs.start_screen {
+                start::open(&mut a);
+            }
             a.preview_look(&cc.egui_ctx, look.theme, look.scale);
             a.open_panel(open.as_deref());
             // An imported document says what came across, as opening it from the menu does.
@@ -180,7 +189,7 @@ fn main() -> eframe::Result {
             }
             "--help" | "-h" => {
                 println!( // i18n-exempt: the --help console text
-                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testscript|exporthtml|sound|envelope|library|librarymenu|colour]\n\
+                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testscript|exporthtml|sound|envelope|library|librarymenu|colour]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\

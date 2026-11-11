@@ -120,7 +120,7 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 # In the browser the page's language (navigator.languages) is the system's.
 sys-locale = { version = "0.3", features = ["js"] }
-web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
+web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "DomRect", "DragEvent", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
 
 [build-dependencies]
 # Embeds the app icon in anicraft.exe on Windows (build.rs); does nothing on other targets.

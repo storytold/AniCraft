@@ -264,6 +264,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let cam_geo = crate::camera_tool::Geo { origin: st_origin, zoom: st_zoom, stage_rect, preview };
     // Library items dragged onto the stage land at the pointer (ADR 0053).
     crate::library::stage_drop(app, ui, &resp, to_stage, preview);
+    // Files dropped from the desktop land here too (ADR 0059).
+    app.drop.stage = Some(crate::drop::StageGeo { canvas, origin, zoom, paused: preview });
 
 
     // ---- tools ----------------------------------------------------------------------------
