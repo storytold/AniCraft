@@ -43,8 +43,8 @@ struct Params {
 const T: f32 = 16.0;
 // gpu_binning.rs › HAIRLINE_BIT: the op is a hairline.
 const HAIRLINE_BIT: u32 = 0x80000000u;
-// Margins of a hairline's reach (binning.rs › hairline_tiles).
-const M: f32 = 2.0;
+// How far around a hairline segment its tiles are taken (binning.rs › HAIRLINE_MARGIN).
+const M: f32 = 1.25;
 
 // What to do with a piece.
 const COUNT: u32 = 0u;

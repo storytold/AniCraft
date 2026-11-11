@@ -75,10 +75,7 @@ fn info(f: &Fill, tiles_x: u32, tiles_y: u32) -> Info {
     for poly in &f.polys {
         if f.hairline {
             let mut seg = |a, b| {
-                // With a pixel more reach than the binning's, whatever the GPU's rounding.
-                let mut n = 0u64;
-                hairline_tiles(a, b, &r, HAIRLINE_MARGIN + 1.0, |_, _| n += 1);
-                pieces += n;
+                pieces += hairline_pieces(a, b, &r);
                 edges += 1;
             };
             match poly.as_slice() {
@@ -101,6 +98,25 @@ fn info(f: &Fill, tiles_x: u32, tiles_y: u32) -> Info {
     }
     let points = f.polys.iter().map(Vec::len).sum::<usize>() as u32;
     Info { range: Some(r), polys: f.polys.len() as u32, points, edges, pieces }
+}
+
+/// At most how many tiles a hairline segment reaches (`binning.rs` › `hairline_tiles`), with a
+/// pixel more reach than the binning's, whatever the GPU's rounding: the tiles of its padded
+/// box (most segments are short), or row by row for a long one, where the box would be loose.
+fn hairline_pieces(a: anicraft_geom::Vec2, b: anicraft_geom::Vec2, r: &Range) -> u64 {
+    if !(a.is_finite() && b.is_finite()) {
+        return 0;
+    }
+    let (t, m) = (TILE as f32, HAIRLINE_MARGIN + 1.0);
+    let span = |lo: f32, hi: f32, base: f32, n: i32| (((hi + m - base) / t).floor().min((n - 1) as f32) - ((lo - m - base) / t).floor().max(0.0) + 1.0).max(0.0);
+    let rows = span(a.y.min(b.y), a.y.max(b.y), r.ylo, r.nrows);
+    let cols = span(a.x.min(b.x), a.x.max(b.x), r.xlo, r.ncols);
+    if rows * cols <= 16.0 {
+        return (rows * cols) as u64;
+    }
+    let mut n = 0u64;
+    hairline_tiles(a, b, r, m, |_, _| n += 1);
+    n
 }
 
 /// At most how many pieces edge `a → b` gives (`binning.rs` › `split_edge` and `steps`): one

@@ -51,9 +51,10 @@ const T: f32 = TILE as f32;
 pub const NONE: u32 = u32::MAX;
 /// Fill rule code of a hairline in an op header (`0` non-zero, `1` even-odd).
 pub const HAIRLINE: u32 = 2;
-/// How far from a hairline segment its tiles reach: pixel centres within its reach lie within
-/// this of it (`bin.wgsl` › `M`).
-pub(crate) const HAIRLINE_MARGIN: f32 = anicraft_render::hairline::REACH + 1.0;
+/// How far around a hairline segment its tiles are taken (`bin.wgsl` › `M`): a pixel centre
+/// within its reach is within `REACH` of a point of it, so the tile holding that centre holds a
+/// point within `REACH` of the segment's box; a quarter pixel more absorbs rounding.
+pub(crate) const HAIRLINE_MARGIN: f32 = anicraft_render::hairline::REACH + 0.25;
 /// `vec4`s of paint data per fill.
 pub const PAINT_VEC4S: usize = 4;
 /// Gradient table entries (the oracle's LUT size).
