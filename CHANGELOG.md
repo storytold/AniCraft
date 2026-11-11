@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Library and Properties polish** (ADR 0053, M2).
+  * **Drag Library items onto the stage**: symbols and bitmaps land at the pointer on the
+    active layer at the playhead, a sound goes onto that layer's keyframe; drag several at once.
+    One undo step, and it works inside a symbol open for editing. The stage shows where they
+    land and on which layer.
+  * **Place on Stage** (the Library's button, right-click, or **Enter** in the list) puts the
+    selected items at the centre of the view.
+  * **Swap Bitmap** in Properties › Bitmap: a placed bitmap keeps its position and transform
+    and takes the new bitmap's size; a shape painted with a bitmap fill keeps its outline.
+  * **Convert to Symbol** (F8) asks for a name, a type and a **Library folder**, and offers the
+    folder and type you used last.
+  * **"mixed" on every Properties row** when several elements differ: Symbol, Type, Filters,
+    Blending, Looping, First frame, Bitmap and Width now join Scale, Rotation, Alpha, Fill,
+    Stroke and Style. A change sets them all; Type sets the type of every selected instance's
+    symbol.
+  * Headless: `library.place {items: [..], x, y}` (and `{sound}`), `element.swap_bitmap`,
+    `kind` and `folder` on `modify.convert_to_symbol`; `symbol.set_kind` without `symbol` sets
+    every selected instance's symbol.
 * **Edit Multiple Frames, complete; onion skin inside symbols** (ADR 0051, M1).
   * With Edit Multiple Frames on, **Cut, Copy, Paste, Paste in Place and Clear** act on the
     artwork selected on every keyframe between the markers. Paste in Place puts artwork copied

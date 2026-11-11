@@ -23,4 +23,3 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
-| 0053 | M2 Library and Properties polish | Library drag and drop, Swap Bitmap, mixed Properties |
