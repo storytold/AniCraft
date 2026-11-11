@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+* **Security: `serve` and `mcp` hardening.** Over `serve` and `mcp`, `file.export_video` refuses an `ffmpeg` parameter (set `ANICRAFT_FFMPEG` instead; `exec` and `run` keep it), and a request line over 64 MiB is answered with an error instead of growing without bound.
 * **Stroke caps, joins, miter limit, and dashed and dotted lines** (ADR 0046, M7). Properties ›
   Stroke has Animate's rows: **Style** (Solid, Dashed with a dash and gap editor, Dotted with
   dot spacing), **Cap** (None, Round, Square), **Join** (Miter, Round, Bevel) and **Miter**

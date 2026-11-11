@@ -423,14 +423,14 @@ pub(crate) enum Line {
 /// Reads the next line, never holding more than `max` bytes of it; an overlong line is skipped to its end.
 pub(crate) fn read_line<R: BufRead>(input: &mut R, max: usize) -> std::io::Result<Line> {
     let mut buf = Vec::new();
-    let n = input.by_ref().take(max as u64 + 1).read_until(b'\n', &mut buf)?;
+    let n = std::io::Read::take(&mut *input, max as u64 + 1).read_until(b'\n', &mut buf)?;
     if n == 0 {
         return Ok(Line::Eof);
     }
     if buf.len() > max && buf.last() != Some(&b'\n') {
         loop {
             let mut skip = Vec::new();
-            let k = input.by_ref().take(1 << 20).read_until(b'\n', &mut skip)?;
+            let k = std::io::Read::take(&mut *input, 1 << 20).read_until(b'\n', &mut skip)?;
             if k == 0 || skip.last() == Some(&b'\n') {
                 return Ok(Line::TooLong);
             }
