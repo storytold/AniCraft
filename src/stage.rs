@@ -1850,15 +1850,17 @@ pub fn commit_text(app: &mut App) {
     match te.element {
         None if te.text.trim().is_empty() => {}
         None => {
-            app.run("text.create", json!({"text": te.text, "x": te.at.x, "y": te.at.y}));
+            if app.run("text.create", json!({"text": te.text, "x": te.at.x, "y": te.at.y})).is_none() {
+                app.text_edit = Some(te);
+            }
         }
         Some(_) if te.text == te.original => {}
         Some(id) => {
             app.run("element.select", json!({"ids": [id.0]}));
             if te.text.trim().is_empty() {
                 app.run("edit.delete", json!({}));
-            } else {
-                app.run("text.edit", json!({"text": te.text}));
+            } else if app.run("text.edit", json!({"text": te.text})).is_none() {
+                app.text_edit = Some(te);
             }
         }
     }

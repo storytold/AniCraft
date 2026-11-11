@@ -52,8 +52,11 @@ pub fn previewing(app: &App) -> bool {
 /// Picking the Camera tool adds a camera when the scene has none (as Animate does), once per
 /// pick: undoing the add leaves the tool in hand without adding it again.
 pub fn on_tool_change(app: &mut App) {
-    if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.timeline().camera_layer().is_none() && app.run("camera.add", json!({})).is_some() {
-        app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
+    if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.timeline().camera_layer().is_none() {
+        crate::stage::commit_text(app);
+        if app.run("camera.add", json!({})).is_some() {
+            app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
+        }
     }
     app.last_tool = app.tool;
 }
@@ -256,5 +259,24 @@ mod tests {
         let active_layer = app.s.active_layer().expect("active layer").id;
         let elements = app.s.elements_on(active_layer);
         assert!(elements.iter().any(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Text(t) if t.text == "Hello Camera")));
+    }
+
+    #[test]
+    fn picking_camera_tool_commits_pending_text_before_camera_add() {
+        let mut app = test_app();
+        let artwork_layer = app.s.active_layer().expect("artwork layer").id;
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(15.0, 25.0),
+            element: None,
+            text: "Pre-Camera Text".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+        app.tool = Tool::Camera;
+        on_tool_change(&mut app);
+        assert!(app.text_edit.is_none(), "pending text should be committed before camera layer creation");
+        let elements = app.s.elements_on(artwork_layer);
+        assert!(elements.iter().any(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Text(t) if t.text == "Pre-Camera Text")));
+        assert!(app.s.timeline().camera_layer().is_some(), "camera layer was added");
     }
 }
