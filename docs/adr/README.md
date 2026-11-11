@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0048 | m3/gpu-binning | GPU stage, fourth slice: tile binning on the GPU, cheap outlines |
