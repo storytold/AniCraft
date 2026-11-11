@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0058 | M8 track: find and replace, Movie Explorer | Find and Replace, Movie Explorer |
