@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+* **Colour effects, complete** (ADR 0056, M2).
+  * **Properties › Colour effect**: Animate's Style menu (None, Brightness, Tint, Advanced,
+    Alpha) with each style's controls: brightness −100..100 %, tint colour and amount,
+    Advanced's multiplier and offset for red, green, blue and alpha. Every row says "mixed"
+    when the selection differs, and a change sets only that value on all of them. Switching
+    style keeps the look where it can (Advanced starts as exactly the effect before).
+  * One exact colour transform behind every style: nested effects compose exactly (a
+    brightness around a tint shows both), and the CPU renderer, the GPU stage (bitmaps
+    included, pixel-identical), SVG (`feColorMatrix` on bitmaps), HTML canvas (bitmaps
+    recoloured, no longer reported) and Lottie (baked into the colours) draw the same.
+  * Classic tweens interpolate within a style (a brightness tween passes through 0) and across
+    styles in the Advanced space, as Animate does.
+  * Motion tweens key **Brightness**, **Tint** colour (red, green, blue) beside its amount, and
+    the eight **Advanced** values; the Motion Editor lists the styles in use and adds others
+    with **Add Colour Effect**. A tween has one colour effect style, as in Animate.
+  * XFL/FLA import brings every `Color` style across (Advanced no longer keeps only its
+    alpha); a new `colour` corpus package with goldens.
+  * `element.set_color_effect` for the CLI, MCP and plug-ins; `element.set_alpha` now keeps
+    the rest of the effect. Older files open unchanged, and None, Alpha and Tint effects are
+    still written exactly as before.
+
 * **Library and Properties polish** (ADR 0053, M2).
   * **Drag Library items onto the stage**: symbols and bitmaps land at the pointer on the
     active layer at the playhead, a sound goes onto that layer's keyframe; drag several at once.
