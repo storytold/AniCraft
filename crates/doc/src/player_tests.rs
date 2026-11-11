@@ -342,6 +342,96 @@ fn entered_keyframes_start_their_sounds_in_clips_and_graphics_with_layer_volumes
     assert_eq!(started(&start(&m, &mut NoScripts)), vec![(1, 1.0), (3, 0.0)]);
 }
 
+// ----- Sounds on button frames (ADR 0057) --------------------------------------------------------
+
+/// [`button_doc`] with a sound on each state frame (ids 10 Up, 11 Over, 12 Down, 13 Hit; Over's
+/// a stream), on a layer at half volume, the button on a layer at half volume too.
+fn sounding_button() -> Document {
+    use crate::SoundSync::{Event, Stream};
+    let mut d = button_doc();
+    let art = |id| vec![rect(id, 0.0, 0.0, 10.0, 10.0)];
+    let mut sounds = (*layer(34, vec![with_sound(kf(0, 1, vec![], vec![], ""), 10, Event), with_sound(kf(1, 1, vec![], vec![], ""), 11, Stream), with_sound(kf(2, 1, vec![], vec![], ""), 12, Event), with_sound(kf(3, 1, vec![], vec![], ""), 13, Event)])).clone();
+    sounds.volume = 0.5;
+    let states = layer(31, vec![kf(0, 1, art(32), vec![], ""), kf(1, 1, art(32), vec![], ""), kf(2, 1, art(32), vec![], ""), kf(3, 1, vec![rect(33, 0.0, 0.0, 100.0, 100.0)], vec![], "")]);
+    d.library = vec![symbol(300, SymbolKind::Button, vec![Arc::new(sounds), states])];
+    Arc::make_mut(&mut d.timeline_mut(0).layers[1]).volume = 0.5;
+    let tone: Vec<f32> = (0..800).map(|i| (i as f32 * 0.1).sin() * 0.5).collect();
+    for id in 10..14 {
+        let data = anicraft_audio::wav::encode(8000, 1, &tone, anicraft_audio::wav::Bits::Float32);
+        d.sounds.push(Arc::new(crate::Sound::from_data(crate::SoundId(id), format!("s{id}.wav"), data).expect("a WAV")));
+    }
+    d
+}
+
+#[test]
+fn a_button_plays_the_sound_of_the_state_it_enters() {
+    let d = sounding_button();
+    let at = |x, y| Vec2::new(x, y);
+    let s = start(&d, &mut NoScripts);
+    assert!(s.sounds.is_empty(), "a button on the stage is silent until the pointer comes");
+    // Over: the Over frame's sound, as an event (a button frame has no span to stream over), at
+    // the volumes of both layers.
+    let s = step(&d, &s.state, &[Event::Move(at(150.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25)]);
+    assert_eq!(s.sounds[0].sound.sync, crate::SoundSync::Event);
+    // Moving about inside it plays nothing more.
+    let s = step(&d, &s.state, &[Event::Move(at(160.0, 150.0))], &mut NoScripts);
+    assert!(s.sounds.is_empty());
+    // Pressed: Down's. Released over it: Hit's (the SWF format's Down → Over sound).
+    let s = input(&d, &s.state, &[Event::Down(at(160.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(12, 0.25)]);
+    let s = input(&d, &s.state, &[Event::Up(at(160.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(13, 0.25)]);
+    // Left: Up's.
+    let s = step(&d, &s.state, &[Event::Leave], &mut NoScripts);
+    assert_eq!(started(&s), vec![(10, 0.25)]);
+    // Arriving and pressing in one event: Over's, then Down's.
+    let s = input(&d, &s.state, &[Event::Down(at(150.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25), (12, 0.25)]);
+    // Dragged off while pressed, back on and released off: nothing (no state with a sound).
+    let s = input(&d, &s.state, &[Event::Move(at(400.0, 400.0)), Event::Move(at(150.0, 150.0)), Event::Move(at(400.0, 400.0)), Event::Up(at(400.0, 400.0))], &mut NoScripts);
+    assert!(s.sounds.is_empty(), "{:?}", started(&s));
+}
+
+#[test]
+fn button_sounds_follow_the_frames_a_button_has_and_stay_out_of_the_soundtrack() {
+    // A two-frame button (Up and Over): pressing it shows Over still, and plays nothing.
+    let mut d = sounding_button();
+    let short = Timeline { layers: d.library[0].timeline.layers.iter().map(|l| {
+        let mut l = (**l).clone();
+        l.keyframes.truncate(2);
+        Arc::new(l)
+    }).collect() };
+    Arc::make_mut(&mut d.library[0]).timeline = short;
+    let s = start(&d, &mut NoScripts);
+    // Its Up frame is its hit area (10 × 10 at 100, 100).
+    let s = input(&d, &s.state, &[Event::Move(Vec2::new(105.0, 105.0)), Event::Down(Vec2::new(105.0, 105.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25)]);
+    // The mix and every export leave buttons out: they only sound under the pointer.
+    assert!(crate::sound::voices(&sounding_button(), 48_000).is_empty());
+}
+
+#[test]
+fn the_hit_overlay_is_the_area_the_pointer_finds() {
+    let d = button_doc();
+    let s = start(&d, &mut NoScripts);
+    let tint = Rgba::new(1.0, 0.0, 0.0, 1.0);
+    let dl = hit_overlay(&d, &s.state, tint, 0.4);
+    // One area: the Hit frame's 100 × 100 square at (100, 100), tinted, in one group at 40 %.
+    assert_eq!(dl.items.len(), 1);
+    assert_eq!(dl.groups.first().map(|g| g.alpha), Some(0.4));
+    let i = &dl.items[0];
+    assert_eq!((i.color.tint, i.color.tint_amount, i.group), (tint, 1.0, Some(0)));
+    for p in [Vec2::new(101.0, 101.0), Vec2::new(199.0, 150.0), Vec2::new(50.0, 50.0), Vec2::new(201.0, 150.0)] {
+        assert_eq!(i.path.contains(p, &i.transform, i.fill_rule), hit(&d, &s.state, p).is_some(), "{p:?}");
+    }
+    // A hidden button has no area; a movie without buttons none at all.
+    assert!(hit_overlay(&doc(vec![], vec![]), &PlayerState::default(), tint, 0.4).items.is_empty());
+    assert_eq!(hit_frame(4), 3);
+    assert_eq!(hit_frame(3), 0);
+    assert_eq!(hit_frame(0), 0);
+}
+
 // ----- ActionScript (ADR 0013 tier 2) -----------------------------------------------------------
 
 /// `k` with a kept ActionScript 3.0 script in place of its actions.

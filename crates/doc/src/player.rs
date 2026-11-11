@@ -20,7 +20,7 @@ use crate::actions::as3::{Compiled, Decls, Problem};
 use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Seg, Target};
 use crate::eval::{Play, evaluate_guided, evaluate_symbol, guide_walk};
 use crate::sound::Started;
-use crate::{Document, Element, ElementId, ElementKind, LayerKind, MAX_SYMBOL_DEPTH, SymbolId, SymbolKind, Timeline};
+use crate::{BlendMode, ColorEffect, DisplayList, Document, Element, ElementId, ElementKind, Group, LayerKind, MAX_SYMBOL_DEPTH, Rgba, SoundSync, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Vec2};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -214,18 +214,60 @@ impl PlayerState {
     /// The frame a button shows: Up (0), Over (1) under the pointer, Down (2) while pressed on
     /// it; a button whose timeline is shorter shows its last frame.
     pub fn button_frame(&self, path: &[ElementId], len: u32) -> u32 {
-        let over = self.hover.as_deref() == Some(path);
-        let f = match (over, self.down && self.pressed.as_deref() == Some(path)) {
-            (true, true) => 2,
-            (true, false) => 1,
-            (false, _) => 0,
+        let f = match self.button_state(path) {
+            ButtonState::Down => 2,
+            ButtonState::Over => 1,
+            ButtonState::Up | ButtonState::OutDown => 0,
         };
         f.min(len.max(1) - 1)
+    }
+
+    /// Where the pointer leaves a button: [`ButtonState`].
+    pub fn button_state(&self, path: &[ElementId]) -> ButtonState {
+        ButtonState::of(self.hover.as_deref(), self.pressed.as_deref(), self.down, path)
     }
 
     /// A timeline's playhead: the main timeline's for the empty path.
     pub fn playhead(&self, path: &[ElementId]) -> Option<ClipState> {
         if path.is_empty() { Some(self.root) } else { self.clips.get(path).copied() }
+    }
+}
+
+/// Where the pointer is for one button, as the SWF file format names a button's states: away
+/// (Up), over it (Over), pressed on it (Down), or pressed on it and dragged off (shown Up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonState {
+    Up,
+    Over,
+    Down,
+    OutDown,
+}
+
+impl ButtonState {
+    /// The state of the button at `path` with the pointer over `hover`, pressed on `pressed`,
+    /// and down or not.
+    pub fn of(hover: Option<&[ElementId]>, pressed: Option<&[ElementId]>, down: bool, path: &[ElementId]) -> ButtonState {
+        match (hover == Some(path), down && pressed == Some(path)) {
+            (true, true) => ButtonState::Down,
+            (true, false) => ButtonState::Over,
+            (false, true) => ButtonState::OutDown,
+            (false, false) => ButtonState::Up,
+        }
+    }
+}
+
+/// The frame of a button whose sound plays when the button goes from state `from` to `to`
+/// (ADR 0057), as the SWF format's button sounds are kept: the Over frame's going over it, the
+/// Up frame's leaving it, the Down frame's pressing it, and the Hit frame's letting go over it.
+/// Dragging off a pressed button and back plays nothing.
+pub fn button_sound_frame(from: ButtonState, to: ButtonState) -> Option<u32> {
+    use ButtonState::*;
+    match (from, to) {
+        (Up, Over) => Some(1),
+        (Over, Up) => Some(0),
+        (Over, Down) => Some(2),
+        (Down, Over) => Some(3),
+        _ => None,
     }
 }
 
@@ -393,6 +435,62 @@ pub fn hit(doc: &Document, st: &PlayerState, p: Vec2) -> Option<InstancePath> {
     hit_in(doc, st, &tree(doc, st), p)
 }
 
+/// The frame of a button's timeline, `len` frames long, that answers the pointer: the Hit
+/// frame (the fourth) when it has one, otherwise the Up frame.
+pub fn hit_frame(len: u32) -> u32 {
+    if len > 3 { 3 } else { 0 }
+}
+
+/// The area of a button with timeline `tl` that answers the pointer, placed by `xf`: its
+/// [`hit_frame`]'s artwork without guides and mask artwork (masks don't cut hit areas, and
+/// shapes count however faint they are drawn). The hit test and Test Movie's hit-area overlay
+/// both use it.
+pub fn hit_area(doc: &Document, tl: &Timeline, xf: Affine) -> DisplayList {
+    let mut dl = evaluate_symbol(doc, tl, hit_frame(tl.frame_count()), xf, None);
+    dl.items.retain(|i| !i.guide && i.masks.is_none());
+    for i in &mut dl.items {
+        i.clip = None;
+    }
+    for g in &mut dl.groups {
+        g.clip = None;
+    }
+    dl
+}
+
+/// `dl` drawn as one translucent area: every item filled and stroked in `tint` at full
+/// strength, composited together and laid over what is below at `alpha`, so overlapping shapes
+/// don't darken each other.
+pub fn tinted(dl: DisplayList, tint: Rgba, alpha: f32) -> DisplayList {
+    let mut out = DisplayList::default();
+    let alpha = if alpha.is_finite() { alpha.clamp(0.0, 1.0) } else { 1.0 };
+    out.groups.push(Group { parent: None, alpha, blend: BlendMode::default(), filters: Arc::from(Vec::new()), clip: None });
+    out.append(dl);
+    for g in out.groups.iter_mut().skip(1) {
+        g.alpha = 1.0;
+        g.blend = BlendMode::default();
+        g.filters = Arc::from(Vec::new());
+        g.parent = Some(g.parent.unwrap_or(0));
+    }
+    for it in &mut out.items {
+        it.color = ColorEffect { alpha: 1.0, tint, tint_amount: 1.0 };
+        it.outline = None;
+        it.group = Some(it.group.unwrap_or(0));
+    }
+    out
+}
+
+/// Every button's hit area at `st`, each a translucent area in `tint` (Test Movie's Show Hit
+/// Areas): where the pointer finds the buttons, drawn over the movie.
+pub fn hit_overlay(doc: &Document, st: &PlayerState, tint: Rgba, alpha: f32) -> DisplayList {
+    let mut out = DisplayList::default();
+    for n in tree(doc, st).iter().filter(|n| n.kind == NodeKind::Button && n.hittable) {
+        if let Some(sym) = n.symbol.and_then(|s| doc.symbol(s)) {
+            out.append(tinted(hit_area(doc, &sym.timeline, n.xf), tint, alpha));
+        }
+    }
+    out
+}
+
 /// Whether timeline layer `index` takes part in playback: shown, not a folder or guide, not in
 /// a hidden folder (what is drawn is what plays).
 fn plays(tl: &Timeline, index: usize) -> bool {
@@ -452,9 +550,7 @@ fn hit_in(doc: &Document, st: &PlayerState, nodes: &[Node], p: Vec2) -> Option<I
         }
         let Some(sym) = n.symbol.and_then(|s| doc.symbol(s)) else { continue };
         let dl = if n.kind == NodeKind::Button {
-            // The Hit frame (the fourth) when the button has one; otherwise the Up frame.
-            let f = if n.frames > 3 { 3 } else { 0 };
-            evaluate_symbol(doc, &sym.timeline, f, n.xf, None)
+            hit_area(doc, &sym.timeline, n.xf)
         } else {
             evaluate_symbol(doc, &sym.timeline, n.frame, n.xf, Some(&Play { state: st, path: n.path.clone() }))
         };
@@ -519,12 +615,55 @@ impl<'a, 'h> Run<'a, 'h> {
     /// The sounds on keyframes of `tl` starting at `frame` (every layer but guides, as the
     /// soundtrack has them), at volume `gain` times their layer's.
     fn sounds_at(&mut self, tl: &Timeline, frame: u32, gain: f32) {
+        self.sounds_on(tl, frame, gain, false);
+    }
+
+    /// [`Run::sounds_at`]; on a button's frame (`button`) a stream sound plays as an event,
+    /// since a button's frame has no span to stream over (ADR 0057).
+    fn sounds_on(&mut self, tl: &Timeline, frame: u32, gain: f32, button: bool) {
         for layer in tl.layers.iter().filter(|l| !matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera)) {
             let Some(k) = layer.keyframe_starting_at(frame).and_then(|i| layer.keyframes.get(i)) else { continue };
             if let Some(fs) = &k.sound
                 && self.sounds.len() < MAX_SOUNDS_PER_STEP
             {
-                self.sounds.push(Started { sound: fs.clone(), gain: gain * layer.sound_gain(), span: k.duration });
+                let mut sound = fs.clone();
+                if button && sound.sync == SoundSync::Stream {
+                    sound.sync = SoundSync::Event;
+                }
+                self.sounds.push(Started { sound, gain: gain * layer.sound_gain(), span: k.duration });
+            }
+        }
+    }
+
+    /// Where the pointer is, for [`Run::button_sounds`]: what it is over, what it went down
+    /// on, and whether it is down.
+    fn pointer_now(&self) -> (Option<InstancePath>, Option<InstancePath>, bool) {
+        (self.st.hover.clone(), self.st.pressed.clone(), self.st.down)
+    }
+
+    /// Starts the sounds of the buttons whose state changed since `before` ([`pointer_now`]
+    /// then): the frame [`button_sound_frame`] gives for each change.
+    ///
+    /// [`pointer_now`]: Run::pointer_now
+    fn button_sounds(&mut self, before: (Option<InstancePath>, Option<InstancePath>, bool)) {
+        if before == self.pointer_now() {
+            return;
+        }
+        self.refresh();
+        let (h, p, d) = &before;
+        let mut paths: Vec<InstancePath> = Vec::new();
+        for path in [h, p, &self.st.hover, &self.st.pressed].into_iter().flatten() {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+        for path in paths {
+            let from = ButtonState::of(h.as_deref(), p.as_deref(), *d, &path);
+            let Some(frame) = button_sound_frame(from, self.st.button_state(&path)) else { continue };
+            let Some(n) = self.index_of(&path).and_then(|i| self.nodes.get(i)).filter(|n| n.kind == NodeKind::Button) else { continue };
+            let (gain, symbol) = (n.gain, n.symbol);
+            if let Some(sym) = symbol.and_then(|s| self.doc.symbol(s)) {
+                self.sounds_on(&sym.timeline, frame, gain, true);
             }
         }
     }
@@ -1112,18 +1251,22 @@ impl<'a, 'h> Run<'a, 'h> {
             Event::Move(p) => self.pointer(Some(p)),
             Event::Down(p) => {
                 self.pointer(Some(p));
+                let before = self.pointer_now();
                 self.st.down = true;
                 self.st.pressed = self.st.hover.clone();
                 self.dirty = true;
+                self.button_sounds(before);
                 if let Some(h) = self.st.hover.clone() {
                     self.fire(&h, ButtonEvent::Press);
                 }
             }
             Event::Up(p) => {
                 self.pointer(Some(p));
+                let before = self.pointer_now();
                 self.st.down = false;
                 let pressed = self.st.pressed.take();
                 self.dirty = true;
+                self.button_sounds(before);
                 if let Some(h) = self.st.hover.clone() {
                     self.fire(&h, ButtonEvent::Release);
                     if pressed.as_ref() == Some(&h) {
@@ -1146,8 +1289,10 @@ impl<'a, 'h> Run<'a, 'h> {
         }
         let now = p.and_then(|p| hit_in(self.doc, &self.st, &self.nodes, p));
         if now != self.st.hover {
+            let before = self.pointer_now();
             let old = std::mem::replace(&mut self.st.hover, now.clone());
             self.dirty = true;
+            self.button_sounds(before);
             if let Some(o) = old {
                 self.fire(&o, ButtonEvent::Out);
             }
