@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0057 | (M5 track, button sounds) | Sounds on button frames and hit-area editing |
