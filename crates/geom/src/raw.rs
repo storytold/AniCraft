@@ -384,7 +384,7 @@ pub fn delete_anchor(subs: &mut [Sub], at: Vec2, edges: &[Seg], joined: Option<&
                         _ => false,
                     }
                 }
-                Vertex::Start => match (s.segs.first().and_then(&which), edges.len()) {
+                Vertex::Start => match (s.segs.first().and_then(which), edges.len()) {
                     // The new first segment ends where the old one did.
                     (Some(a), 2) => match (toward(1 - a), s.segs.first_mut()) {
                         (Some(n), Some(first)) => {
