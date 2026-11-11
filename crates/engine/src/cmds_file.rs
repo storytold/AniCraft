@@ -270,7 +270,7 @@ fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         list.into_iter()
             .map(|e| {
                 let id = anicraft_doc::ElementId(s.doc.alloc_id());
-                Arc::new(anicraft_doc::Element { id, name: e.name, transform: place.mul(&e.transform), color: anicraft_doc::ColorEffect { alpha: e.alpha, ..Default::default() }, kind: e.kind })
+                Arc::new(anicraft_doc::Element { id, name: e.name, transform: place.mul(&e.transform), color: anicraft_doc::ColorEffect::opacity(e.alpha), kind: e.kind })
             })
             .collect()
     };

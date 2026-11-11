@@ -29,6 +29,7 @@ fn corpus() -> PathBuf {
 /// The frames rendered for each package (frames count across scenes, from 0).
 const FRAMES: &[(&str, &[u32])] = &[
     ("bitmaps", &[0]),
+    ("colour", &[0, 6, 12]),
     ("filters", &[0]),
     ("gradients", &[0]),
     ("guides", &[0, 6, 12]),
@@ -74,9 +75,27 @@ const PROBES: &[(&str, u32, f32, f32, u32)] = &[
     ("symbols", 5, 130.0, 40.0, 0x457B9D),
     // The button's Up frame.
     ("symbols", 0, 82.0, 130.0, 0x2A9D8F),
-    // Brightness +60% and -50% of #6D597A.
+    // Brightness +60% and -50% of #6D597A; Advanced: red ×20 %, green +120, at 80 % over white.
     ("symbols", 0, 230.0, 130.0, 0xC5BDCA),
     ("symbols", 0, 260.0, 130.0, 0x372D3D),
+    ("symbols", 0, 290.0, 130.0, 0x44DA95),
+    // Colour effects on #2A9D8F (ADR 0056): None, Brightness +50 %, Tint 60 % #E9C46A, Advanced
+    // (red −100 % +255, green 50 %, blue −60), Alpha 25 % over white.
+    ("colour", 0, 30.0, 40.0, 0x2A9D8F),
+    ("colour", 0, 90.0, 40.0, 0x94CEC7),
+    ("colour", 0, 150.0, 40.0, 0x9DB479),
+    ("colour", 0, 210.0, 40.0, 0xD54F53),
+    ("colour", 0, 270.0, 40.0, 0xCAE6E3),
+    // Brightness −40 % around a 50 % red tint: both, exactly (not the stronger one alone).
+    ("colour", 0, 60.0, 110.0, 0x592F2B),
+    // Tint #264653 to Advanced: the ends, and halfway in the advanced space.
+    ("colour", 0, 160.0, 105.0, 0x264653),
+    ("colour", 6, 220.0, 105.0, 0x614771),
+    ("colour", 12, 280.0, 105.0, 0x944C8D),
+    // Brightness −100 % to +60 %: halfway is brightness −20 % (not the transforms' midpoint).
+    ("colour", 0, 160.0, 152.0, 0x000000),
+    ("colour", 6, 220.0, 152.0, 0x227E72),
+    ("colour", 12, 280.0, 152.0, 0xAAD8D2),
     ("tweens", 0, 20.0, 25.0, 0xF4A261),
     ("tweens", 12, 300.0, 25.0, 0xF4A261),
     // Masked stripes: inside the spot, and outside it.

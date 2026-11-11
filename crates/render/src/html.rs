@@ -15,7 +15,7 @@
 //!
 //! What doesn't carry across is counted in the report: filters, 9-slice scaling (instances
 //! scale as a whole), Subtract and Invert blending,
-//! tints on bitmaps, plug-in frame scripts (they need the plug-in host) and kept scripts
+//! plug-in frame scripts (they need the plug-in host) and kept scripts
 //! outside the ActionScript subset. Scripts in the subset (ADR 0013 tiers 2 and 2.5) come
 //! across as the same script IR the Rust player runs (as JSON), with each timeline's functions
 //! and variable types, and `player.js` evaluates it the same way.
@@ -24,7 +24,7 @@ use crate::stroke::stroke_outline;
 use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::player::TimelineRef;
-use anicraft_doc::{BlendMode, ColorEffect, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
+use anicraft_doc::{BlendMode, ColorTransform, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -93,7 +93,6 @@ pub struct HtmlExport {
 /// Notes for the report.
 const FILTERS: &str = "filters (not exported; drawn without them)";
 const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
-const BITMAP_TINT: &str = "tints on bitmap fills (drawn untinted)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
 const BUTTON_SOUNDS: &str = "sounds on button frames (not played yet)";
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
@@ -144,15 +143,14 @@ fn matrix(m: &Affine) -> Option<Value> {
     Some(json!([num(a, 1e5), num(b, 1e5), num(c, 1e5), num(d, 1e5), coord(e), coord(f)]))
 }
 
-/// `[alpha, tint r, g, b, tint amount]`; `None` for no effect.
-fn effect(fx: &ColorEffect) -> Option<Value> {
-    if *fx == ColorEffect::default() {
+/// A colour transform (ADR 0056): `[red, green, blue, alpha multipliers, red, green, blue,
+/// alpha offsets]`; `None` for no effect.
+fn effect(fx: &ColorTransform) -> Option<Value> {
+    let fx = fx.sanitized();
+    if fx.is_identity() {
         return None;
     }
-    let t = fx.tint.sanitized();
-    let a = if fx.alpha.is_finite() { fx.alpha } else { 1.0 };
-    let k = if fx.tint_amount.is_finite() { fx.tint_amount } else { 0.0 };
-    Some(json!([num(a, 1e4), num(t.r, 1e4), num(t.g, 1e4), num(t.b, 1e4), num(k, 1e4)]))
+    Some(Value::Array(fx.mul.iter().chain(fx.add.iter()).map(|v| num(*v, 1e4)).collect()))
 }
 
 /// SVG path data (what `Path2D` reads), three decimals; empty when a point isn't finite.
@@ -311,7 +309,7 @@ impl<'a> Bake<'a> {
         i
     }
 
-    fn paint(&mut self, p: &Paint, el: &Element) -> usize {
+    fn paint(&mut self, p: &Paint) -> usize {
         let stops = |s: &[anicraft_doc::GradientStop]| -> Vec<Value> {
             s.iter()
                 .map(|g| {
@@ -328,9 +326,6 @@ impl<'a> Bake<'a> {
             Paint::Radial { center, radius, stops: s } => json!({"r": [coord(center.x), coord(center.y), coord(radius.max(0.0))], "st": stops(s)}),
             Paint::Bitmap { bitmap, repeat, matrix: m } => match self.doc.bitmap(*bitmap) {
                 Some(b) => {
-                    if el.color.tint_amount > 0.0 {
-                        self.notes.entry(BITMAP_TINT).or_default().insert(el.id.0);
-                    }
                     let n = self.images.len();
                     let i = *self.image_ix.entry(b.id.0).or_insert(n);
                     if i == n {
@@ -361,11 +356,11 @@ impl<'a> Bake<'a> {
     /// A shape item: `p` path, `f` paint, `s` stroke `[r, g, b, a, width]`, `k` its style when
     /// not round and solid (`c` cap, `j` join, `ml` miter limit, `d` dash lengths and `o` their
     /// offset, in local units like the width), `eo` even-odd, `m` transform, `c` colour effect.
-    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorEffect, fill: Option<(&Paint, &Element)>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
+    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorTransform, fill: Option<&Paint>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
         let mut o = Map::new();
         o.insert("p".into(), json!(self.path(path)));
-        if let Some((p, el)) = fill {
-            o.insert("f".into(), json!(self.paint(p, el)));
+        if let Some(p) = fill {
+            o.insert("f".into(), json!(self.paint(p)));
         }
         if let Some(st) = stroke {
             let mut s = color(st.color);
@@ -400,22 +395,22 @@ impl<'a> Bake<'a> {
                     // caps, joins and dashes included).
                     Some(st) => {
                         if let Some(p) = &s.fill {
-                            out.push(self.shape(&s.path, &el.transform, &el.color, Some((p, el)), None, s.fill_rule));
+                            out.push(self.shape(&s.path, &el.transform, &el.color.transform(), Some(p), None, s.fill_rule));
                         }
                         let outline = stroke_outline(&s.path, &el.transform, st, crate::TOLERANCE);
                         if !outline.is_empty() {
                             let fill = Paint::Solid(st.color);
-                            out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color, Some((&fill, el)), None, FillRule::NonZero));
+                            out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
                         }
                     }
-                    None => out.push(self.shape(&s.path, &el.transform, &el.color, s.fill.as_ref().map(|p| (p, el)), stroke, s.fill_rule)),
+                    None => out.push(self.shape(&s.path, &el.transform, &el.color.transform(), s.fill.as_ref(), stroke, s.fill_rule)),
                 }
             }
             // The camera is the view, not artwork (ADR 0027): it is baked into the layers.
             ElementKind::Camera => {}
             ElementKind::Text(t) => {
                 let fill = Paint::Solid(t.color);
-                out.push(self.shape(&t.outline, &el.transform, &el.color, Some((&fill, el)), None, FillRule::NonZero));
+                out.push(self.shape(&t.outline, &el.transform, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
             }
             ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events } => {
                 let (Some(&y), Some(sym)) = (self.symbols.get(symbol), self.doc.symbol(*symbol)) else { return };
@@ -433,7 +428,7 @@ impl<'a> Bake<'a> {
                 if let Some(m) = matrix(&el.transform) {
                     o.insert("m".into(), m);
                 }
-                if let Some(c) = effect(&el.color) {
+                if let Some(c) = effect(&el.color.transform()) {
                     o.insert("c".into(), c);
                 }
                 match sym.kind {

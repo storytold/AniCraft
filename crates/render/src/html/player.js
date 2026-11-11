@@ -26,7 +26,7 @@ var AniCraft = (function () {
   const ROOT = 0, GRAPHIC = 1, CLIP = 2, BUTTON = 3;
   const KINDS = { graphic: GRAPHIC, movieclip: CLIP, button: BUTTON };
   const I = [1, 0, 0, 1, 0, 0];
-  const NO_EFFECT = [1, 1, 1, 1, 0];
+  const NO_EFFECT = [1, 1, 1, 1, 0, 0, 0, 0];
   const EMPTY = { l: [] };
 
   // ----- geometry ------------------------------------------------------------------------------
@@ -60,18 +60,29 @@ var AniCraft = (function () {
     return mul(mul(mul([1, 0, 0, 1, q.tx, q.ty], [c, s, -s, c, 0, 0]), [1, 0, q.k, 1, 0, 0]), [q.sx, 0, 0, q.sy, 0, 0]);
   }
 
-  // ----- colour effects: [alpha, tint r, g, b, tint amount] ---------------------------------------
+  // ----- colour effects (ADR 0056): [r, g, b, a multipliers, r, g, b, a offsets] --------------------
 
-  // ColorEffect::concat: tints keep the stronger one; alpha multiplies.
+  // ColorTransform::concat: `o` applied after `i`, exactly.
   function concat(o, i) {
-    const t = i[4] >= o[4] ? i : o;
-    return [o[0] * i[0], t[1], t[2], t[3], t[4]];
+    const out = new Array(8);
+    for (let k = 0; k < 4; k++) {
+      out[k] = o[k] * i[k];
+      out[k + 4] = o[k] * i[k + 4] + o[k + 4];
+    }
+    return out;
   }
-  // ColorEffect::apply on straight [r, g, b, a].
+  // ColorTransform::apply on straight [r, g, b, a], clamped.
   function applyEffect(fx, c) {
-    const k = Math.min(Math.max(fx[4], 0), 1);
-    const a = Math.min(Math.max(fx[0], 0), 1);
-    return [c[0] + (fx[1] - c[0]) * k, c[1] + (fx[2] - c[1]) * k, c[2] + (fx[3] - c[2]) * k, c[3] * a];
+    const out = new Array(4);
+    for (let k = 0; k < 4; k++) {
+      const v = c[k] * fx[k] + fx[k + 4];
+      out[k] = Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0;
+    }
+    return out;
+  }
+  // Whether it does more than multiply alpha (a bitmap then needs its pixels recoloured).
+  function recolours(fx) {
+    return fx[0] !== 1 || fx[1] !== 1 || fx[2] !== 1 || fx[4] !== 0 || fx[5] !== 0 || fx[6] !== 0 || fx[7] !== 0;
   }
 
   // ----- dictionaries ------------------------------------------------------------------------------
@@ -194,7 +205,7 @@ var AniCraft = (function () {
     }
     if (ov.alpha !== undefined) {
       fx = (fx || NO_EFFECT).slice();
-      fx[0] = ov.alpha;
+      fx[3] = ov.alpha;
     }
     return { m: m, c: fx || NO_EFFECT };
   }
@@ -231,7 +242,7 @@ var AniCraft = (function () {
         const local = kind === GRAPHIC ? e.g || 0 : kind === CLIP ? clipFrame(st, key, len) : buttonFrame(st, path, len);
         const idx = out.length;
         const nxf = mul(lxf, m);
-        out.push({ path: path, key: key, parent: parent, owner: owner, name: e.n || "", sym: e.y, kind: kind, frame: local, frames: len, xf: nxf, local: e.m || I, alpha: e.c ? e.c[0] : 1, hittable: hit && shown, events: e.ev || null, gain: gain });
+        out.push({ path: path, key: key, parent: parent, owner: owner, name: e.n || "", sym: e.y, kind: kind, frame: local, frames: len, xf: nxf, local: e.m || I, alpha: e.c ? e.c[3] : 1, hittable: hit && shown, events: e.ev || null, gain: gain });
         // A graphic's contents belong to the timeline the graphic is on.
         walk(M, st, sym.tl, local, idx, kind === GRAPHIC ? owner : idx, nxf, depth + 1, hit && shown, out);
       }
@@ -325,13 +336,14 @@ var AniCraft = (function () {
     // Outside the player (a button's hit area): movie clips where the timeline has them,
     // buttons on Up.
     else local = sym.kind === CLIP ? e.af || 0 : 0;
-    const fade = Math.min(Math.max(fx[0], 0), 1);
+    // Alpha alone fades the instance as one; an alpha offset stays on each item.
+    const fade = fx[7] === 0 ? Math.min(Math.max(fx[3], 0), 1) : 1;
     const blend = e.bl || "normal";
     let color = concat(cx.c, fx), group = cx.group;
     if (masks === null && (fade < 1 - 1e-4 || blend !== "normal" || e.fx)) {
       group = dl.groups.length;
       dl.groups.push({ parent: cx.group, alpha: fade, blend: blend, clip: clip });
-      color = concat(cx.c, [1, fx[1], fx[2], fx[3], fx[4]]);
+      color = concat(cx.c, fx[7] === 0 ? [fx[0], fx[1], fx[2], 1, fx[4], fx[5], fx[6], 0] : fx);
     }
     if (v && group !== cx.group) v.groupBegin(group, dl.groups[group]);
     const inner = { xf: xf, c: color, depth: cx.depth + 1, clip: clip, masks: masks, group: group };
@@ -1655,5 +1667,5 @@ var AniCraft = (function () {
     return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
   }
 
-  return { Player: Player, evaluate: evaluate, applyEffect: applyEffect, mul: mul, meanScale: meanScale, finite: finite };
+  return { Player: Player, evaluate: evaluate, applyEffect: applyEffect, recolours: recolours, mul: mul, meanScale: meanScale, finite: finite };
 })();

@@ -528,7 +528,7 @@ fn scripts_read_instance_and_timeline_properties() {
     let clip = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 3, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], "walk")])]);
     let mut hero = (*inst(3, 100, "hero", 30.0, 40.0, vec![])).clone();
     hero.transform = Affine::translate(30.25, 40.0).mul(&Affine::scale(2.0, 0.5));
-    hero.color.alpha = 0.3;
+    hero.color = crate::ColorEffect::Alpha(0.3);
     let src = "stop();\ntrace(hero.x, hero.y, hero.scaleX, hero.scaleY, hero.rotation, hero.alpha, hero.visible, hero.name);\ntrace(hero.currentFrame, hero.totalFrames, hero.currentLabel, currentFrame, totalFrames, currentLabel, this.name);\nhero.x = 0.1; hero.alpha = hero.alpha + 0.2; hero.visible = false;\ntrace(hero.x, hero.alpha, hero.visible);\nstage.addEventListener(KeyboardEvent.KEY_DOWN, function (e:KeyboardEvent):void { trace(mouseX, mouseY, hero.mouseX, stage.mouseY); });";
     let k = as3(kf(0, 2, vec![], vec![], "intro"), src);
     let mut hk = Keyframe::new(0, 2);

@@ -353,7 +353,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
             // A motion tween split in two keeps moving the same way in both halves.
             let motion = if copy {
                 k.motion.as_ref().map(|m| {
-                    let base = m.target_index(&k.elements).and_then(|t| k.elements.get(t)).map_or(anicraft_doc::Props([0.0; 8]), |e| anicraft_doc::Props::of(e));
+                    let base = m.target_index(&k.elements).and_then(|t| k.elements.get(t)).map_or(anicraft_doc::Props([0.0; anicraft_doc::PROPERTIES]), |e| anicraft_doc::Props::of(e));
                     m.split_at(&base, frame - k.start)
                 })
             } else {

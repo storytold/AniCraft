@@ -70,8 +70,7 @@ fn camera_rotation_and_tint_apply_to_the_whole_view() {
     // Stage point (105, 50) is right of the centre; the camera turned clockwise, so it shows
     // above the middle. In the square's space that point is (10, 50).
     assert!(i.transform.apply(Vec2::new(10.0, 50.0)).distance(Vec2::new(100.0, 45.0)) < 1e-3);
-    assert_eq!(i.color.tint_amount, 0.5);
-    assert_eq!(i.color.tint, Rgba::hex(0xff0000));
+    assert_eq!(i.color, crate::ColorTransform::tint(Rgba::hex(0xff0000), 0.5));
 }
 
 #[test]

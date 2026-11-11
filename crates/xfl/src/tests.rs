@@ -169,7 +169,7 @@ fn symbols_instances_and_the_tween_between_them() {
     assert_eq!((stops[1].offset, stops[1].color.a), (0.5, 0.0));
     assert_eq!((*symbol, *loop_mode, *first_frame), (sym.id, LoopMode::PlayOnce, 2));
     assert_eq!(inst.transform.m, [2.0, 0.0, 0.0, 2.0, 100.0, 50.0]);
-    assert_eq!(inst.color.alpha, 0.5);
+    assert_eq!(inst.color, anicraft_doc::ColorEffect::Alpha(0.5));
     // Half-way through the tween (eased), the ball is between its two positions.
     let dl = evaluate(&doc, 5);
     let ball = dl.items.iter().find(|i| matches!(i.fill, Some(Paint::Solid(c)) if c == Rgba::hex(0xff0000))).expect("the ball renders");

@@ -77,8 +77,9 @@ Headless: `timeline.create_motion_tween`, `timeline.remove_tween`, `motion.set_k
 * Resizing a span does not rescale its property keys yet: keys past a shortened end are kept
   but not reached, and a lengthened span holds its last values.
 * Motion paths drawn and edited on the stage, with orient to path, came in ADR 0030.
+* Tint colour (red, green, blue), brightness and the eight Advanced properties came in ADR
+  0056, with one colour effect style per tween as in Animate (keys in several styles compose).
 * Not yet (later PRs): dragging keys in time in the Motion Editor, ease presets with
-  strengths and saved custom eases, separate tint colour and brightness/advanced colour
-  properties, 3D rotation and position, Split Motion and joining tweens as commands, Lottie
+  strengths and saved custom eases, 3D rotation and position, Split Motion and joining tweens as commands, Lottie
   export of property curves as eased keyframes (it exports frame-accurate hold keys today),
   and importing motion tweens from XFL (`motionObjectXML`; still reported, kept as keyframes).

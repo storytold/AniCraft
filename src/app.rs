@@ -369,6 +369,8 @@ pub struct App {
     pub me_key: Option<u32>,
     pub me_drag: Option<motion_editor::MeDrag>,
     pub me_vscroll: f32,
+    /// Colour effect styles the Motion Editor lists besides those the tween uses (ADR 0056).
+    pub me_styles: Vec<anicraft_engine::doc::ColorStyle>,
     /// The frame grid was clicked more recently than the stage: Ctrl+X/C/V act on frames.
     pub timeline_focus: bool,
     /// A destructive command waiting for the user's decision (ADR 0004).
@@ -532,6 +534,7 @@ impl App {
             me_key: None,
             me_drag: None,
             me_vscroll: 0.0,
+            me_styles: Vec::new(),
             timeline_focus: false,
             confirm: None,
             skip_confirm: HashSet::new(),
@@ -822,6 +825,20 @@ impl App {
                     self.run("element.set_blend", json!({"mode": "multiply"}));
                     self.run("element.set_filters", json!({"filters": [{"type": "glow"}]}));
                     self.run("element.select", json!({"ids": [a, b]}));
+                }
+            }
+            Some("colour") => {
+                // A row of instances in each colour effect style (ADR 0056), the Advanced one
+                // selected: Properties shows the Style menu and its channel rows.
+                if let Some(ball) = self.s.doc.library.first().map(|s| s.id.0) {
+                    self.run("edit.deselect", json!({}));
+                    let id = |v: Option<Value>| v.and_then(|v| v["element"].as_u64()).unwrap_or(0);
+                    let styles = [json!({"brightness": 45}), json!({"tint": "#2a9d8f", "tint_amount": 70}), json!({"alpha": 40}), json!({"style": "advanced", "red_multiplier": -100, "red_offset": 255, "green_multiplier": 60, "blue_offset": -40})];
+                    for (i, fx) in styles.into_iter().enumerate() {
+                        let e = id(self.run("library.place", json!({"symbol": ball, "x": 640 + 130 * i, "y": 470})));
+                        self.run("element.select", json!({"ids": [e]}));
+                        self.run("element.set_color_effect", fx);
+                    }
                 }
             }
             Some("bitmap") => {
