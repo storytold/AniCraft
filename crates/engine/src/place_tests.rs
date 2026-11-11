@@ -1,7 +1,8 @@
-//! Placing Library items (a drop on the stage, Place on Stage) and Swap Bitmap (ADR 0053).
+//! Placing Library items (a drop on the stage, Place on Stage), Swap Bitmap and Convert to Symbol
+//! into a folder (ADR 0053).
 
 use crate::Session;
-use anicraft_doc::{BitmapId, Element, ElementKind, LibraryItem, Paint, SymbolId, sample};
+use anicraft_doc::{BitmapId, Element, ElementKind, FolderId, LibraryEntry, LibraryItem, Paint, SymbolId, SymbolKind, sample};
 use anicraft_geom::{Affine, Path, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -180,4 +181,39 @@ fn swap_bitmap_resizes_a_placed_bitmap_and_keeps_a_filled_shape() {
     let other = run(&mut s, "draw.rect", json!({"x": 300, "y": 300, "w": 5, "h": 5, "object": true}))["element"].as_u64().unwrap();
     run(&mut s, "element.select", json!({"ids": [other]}));
     assert!(err(&mut s, "element.swap_bitmap", json!({"bitmap": big.0})).contains("filled with one"));
+}
+
+#[test]
+fn convert_to_symbol_goes_into_the_folder_asked_for_with_a_free_name() {
+    let mut s = Session::new(sample::demo());
+    let props = run(&mut s, "library.new_folder", json!({"name": "Props"}))["folder"].as_u64().unwrap();
+    let entry = |v: &Value| LibraryEntry::Item(LibraryItem::Symbol(SymbolId(v["symbol"].as_u64().unwrap())));
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 20, "h": 20, "object": true}));
+    let v = run(&mut s, "modify.convert_to_symbol", json!({"name": "Ball", "kind": "movie_clip", "folder": props}));
+    assert_eq!(v["folder"], props);
+    assert_eq!(v["name"], "Ball", "Props has no Ball yet (the top level's doesn't count)");
+    assert_eq!(s.doc.parent_of(entry(&v)), Some(FolderId(props)));
+    assert_eq!(s.doc.entry_path(entry(&v)), "Props/Ball");
+    assert_eq!(s.doc.symbol(SymbolId(v["symbol"].as_u64().unwrap())).unwrap().kind, SymbolKind::MovieClip);
+    // The same name again in that folder gets a number; no name gives the next free “Symbol n”.
+    run(&mut s, "draw.rect", json!({"x": 50, "y": 10, "w": 20, "h": 20, "object": true}));
+    assert_eq!(run(&mut s, "modify.convert_to_symbol", json!({"name": "ball", "folder": props}))["name"], "ball 2");
+    run(&mut s, "draw.rect", json!({"x": 90, "y": 10, "w": 20, "h": 20, "object": true}));
+    let v = run(&mut s, "modify.convert_to_symbol", json!({"folder": props}));
+    assert!(v["name"].as_str().unwrap().starts_with("Symbol "));
+    assert_eq!(s.doc.symbol(SymbolId(v["symbol"].as_u64().unwrap())).unwrap().kind, SymbolKind::Graphic, "graphic by default");
+    // Without a folder: the top level, as before.
+    run(&mut s, "draw.rect", json!({"x": 130, "y": 10, "w": 20, "h": 20, "object": true}));
+    let v = run(&mut s, "modify.convert_to_symbol", json!({}));
+    assert!(v["folder"].is_null());
+    assert_eq!(s.doc.parent_of(entry(&v)), None);
+    // Refusals change nothing.
+    run(&mut s, "draw.rect", json!({"x": 170, "y": 10, "w": 20, "h": 20, "object": true}));
+    let before = s.doc.clone();
+    assert!(err(&mut s, "modify.convert_to_symbol", json!({"folder": 999_999})).contains("no folder"));
+    assert!(err(&mut s, "modify.convert_to_symbol", json!({"kind": "sprite"})).contains("symbol type"));
+    assert_eq!(s.doc, before);
+    // The file keeps where it went.
+    let back = crate::format::from_json(&crate::format::to_json(&s.doc).unwrap()).unwrap();
+    assert_eq!(back.library_tree, s.doc.library_tree);
 }

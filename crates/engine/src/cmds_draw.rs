@@ -39,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, true))),
         c("arrange.send_backward", "Send Backward", "Modify/Arrange", Some("Ctrl+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, false))),
         c("arrange.send_to_back", "Send to Back", "Modify/Arrange", Some("Ctrl+Shift+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, false))),
-        c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name?} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)", true, convert_to_symbol),
+        c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name? (default: the next free “Symbol n”; a name the folder holds gets a number), kind?: graphic|movie_clip|button (default: graphic), folder?: Library folder id (default: the top level)} → {symbol, instance, name, layer, folder} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)", true, convert_to_symbol),
         c("modify.break_apart", "Break Apart", "Modify", Some("Ctrl+B"), "{}", true, |s, p| s.each_layer(false, |s| break_apart(s, p))),
         c("library.place", "Place on Stage", "", None, "{symbol | bitmap | sound: id, x?, y?} or {items: [{symbol | bitmap | sound: id}, ..], x?, y?} → {element, elements, sound?}: symbols and bitmaps centred on x, y (default: the stage centre; inside an open symbol, in its space) in the active layer's keyframe at the playhead, selected; a sound goes onto that keyframe, its span grown to fit (one sound per keyframe). One undo step", true, place),
     ]
@@ -648,8 +648,14 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(&top) = layers.first() else {
         return Err(EngineError::State("select something to convert".into()));
     };
-    // The next free “Symbol n” at the Library's top level, where new symbols go (ADR 0050).
-    let name: String = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| s.doc.numbered_name(None, "Symbol", s.doc.library.len() + 1));
+    // Into the folder asked for (ADR 0053), else the top level; the name is free there: the
+    // next free “Symbol n”, or the name asked for with a number when the folder has it already.
+    let folder = crate::cmds_library::opt_folder(s, p, "folder")?;
+    let kind = opt_str(p, "kind")?.map(crate::cmds_library::kind_of).transpose()?.unwrap_or(SymbolKind::Graphic);
+    let name: String = match opt_str(p, "name")? {
+        Some(n) => s.doc.unique_name(folder, n),
+        None => s.doc.numbered_name(folder, "Symbol", s.doc.library.len() + 1),
+    };
     let bounds = s.selection_bounds();
     let center = if bounds.is_empty() { Vec2::ZERO } else { bounds.center() };
     let sym_id = SymbolId(s.doc.alloc_id());
@@ -694,10 +700,13 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         }
         inner.push(Arc::new(layer));
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: inner } }));
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, timeline: Timeline { layers: inner } }));
+    if folder.is_some() {
+        s.doc.place_entry(LibraryEntry::Item(LibraryItem::Symbol(sym_id)), folder);
+    }
     s.layer = top;
     s.select_only([inst_id]);
-    Ok(json!({"symbol": sym_id.0, "instance": inst_id.0, "name": name, "layer": top.0}))
+    Ok(json!({"symbol": sym_id.0, "instance": inst_id.0, "name": name, "layer": top.0, "folder": folder.map(|f| f.0)}))
 }
 
 fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {

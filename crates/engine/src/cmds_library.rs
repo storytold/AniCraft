@@ -85,7 +85,7 @@ fn describe(e: LibraryEntry) -> String {
     }
 }
 
-fn opt_folder(s: &Session, p: &Value, key: &str) -> Result<Option<FolderId>> {
+pub(crate) fn opt_folder(s: &Session, p: &Value, key: &str) -> Result<Option<FolderId>> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => {
@@ -98,7 +98,17 @@ fn opt_folder(s: &Session, p: &Value, key: &str) -> Result<Option<FolderId>> {
     }
 }
 
-fn kind_key(k: SymbolKind) -> &'static str {
+/// The symbol type `key` names (`graphic`, `movie_clip` or `button`).
+pub(crate) fn kind_of(key: &str) -> Result<SymbolKind> {
+    match key {
+        "graphic" => Ok(SymbolKind::Graphic),
+        "movie_clip" | "movie clip" => Ok(SymbolKind::MovieClip),
+        "button" => Ok(SymbolKind::Button),
+        _ => Err(EngineError::Param(format!("unknown symbol type '{key}' (graphic, movie_clip or button)"))),
+    }
+}
+
+pub(crate) fn kind_key(k: SymbolKind) -> &'static str {
     match k {
         SymbolKind::Graphic => "graphic",
         SymbolKind::MovieClip => "movie_clip",
