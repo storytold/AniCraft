@@ -114,6 +114,8 @@ const MAX_SYMBOLS: usize = 20_000;
 const MAX_LAYERS: usize = 5_000;
 const MAX_FRAME: u32 = 100_000;
 const MAX_BITMAPS: usize = 10_000;
+/// Most decoded bitmap bytes (RGBA) one import keeps: 1 GiB, 256 megapixels.
+const MAX_BITMAP_BYTES: u64 = 1 << 30;
 
 /// Bitmap fill matrices scale image pixels by twips (1/20 px): `a = 20` is one pixel per pixel.
 const TWIPS: f32 = 20.0;
@@ -684,6 +686,7 @@ impl<'a> Builder<'a> {
     /// `bin/`; either is used when it is a PNG or JPEG. Animate's own encodings of the data
     /// file are not public, so those bitmaps are reported instead.
     fn register_bitmaps(&mut self, root: &X) -> Result<(), XflError> {
+        let mut kept = 0u64;
         for item in root.list("media").iter().filter(|i| i.name == "DOMBitmapItem").take(MAX_BITMAPS) {
             let Some(name) = item.attr("name").filter(|n| !self.bitmaps.contains_key(*n)) else { continue };
             let mut candidates = Vec::new();
@@ -701,6 +704,13 @@ impl<'a> Builder<'a> {
                 found_data = true;
                 if let Ok(b) = Bitmap::from_image(BitmapId(0), short.clone(), bytes) {
                     bitmap = Some(b);
+                    break;
+                }
+            }
+            if let Some(b) = &bitmap {
+                kept += u64::from(b.width) * u64::from(b.height) * 4;
+                if kept > MAX_BITMAP_BYTES {
+                    self.report.skip("bitmaps past the import size budget");
                     break;
                 }
             }
@@ -859,11 +869,24 @@ pub const MAX_FLA_BYTES: u64 = crate::zip::MAX_ENTRY as u64 * 4;
 
 /// Imports a `.fla` archive from its bytes (a file the browser handed over, say).
 pub fn import_fla(data: &[u8]) -> Result<(Document, Report), XflError> {
+    import_fla_capped(data, crate::zip::MAX_TOTAL)
+}
+
+pub(crate) fn import_fla_capped(data: &[u8], cap: usize) -> Result<(Document, Report), XflError> {
     if data.len() as u64 > MAX_FLA_BYTES {
         return Err(XflError::NotXfl("the file is too large".into()));
     }
     let archive = crate::zip::Archive::open(data)?;
-    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(p)?) };
+    let inflated = std::cell::Cell::new(0usize);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
+        let bytes = archive.read(p)?;
+        let total = inflated.get().saturating_add(bytes.as_ref().map_or(0, Vec::len));
+        inflated.set(total);
+        if total > cap {
+            return Err(crate::zip::ZipError::TooLarge(p.into()).into());
+        }
+        Ok(bytes)
+    };
     import_with(&read)
 }
 
@@ -879,17 +902,25 @@ pub fn import_path(path: &std::path::Path) -> Result<(Document, Report), XflErro
     }
     let dir = if meta.is_dir() { path.to_path_buf() } else { path.parent().map(std::path::Path::to_path_buf).unwrap_or_default() };
     let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
-        // Only plain relative paths inside the package.
-        if p.split('/').any(|c| c == ".." || c.is_empty()) || p.contains(':') {
+        // Only plain relative paths inside the package (either slash is a separator on Windows).
+        if p.split(['/', '\\']).any(|c| c == ".." || c.is_empty()) || p.contains(':') {
             return Ok(None);
         }
         let full = dir.join(p);
-        match std::fs::read(&full) {
-            Ok(b) if b.len() <= xml::MAX_INPUT => Ok(Some(b)),
-            Ok(_) => Err(XflError::NotXfl(format!("{p} is too large"))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+        // Regular files only (a symlink to /dev/zero or a secret is not package content), and
+        // never more than the cap is read, however big the file claims to be.
+        match std::fs::symlink_metadata(&full) {
+            Ok(m) if m.is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
         }
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(&full)?, xml::MAX_INPUT as u64 + 1), &mut b)?;
+        if b.len() > xml::MAX_INPUT {
+            return Err(XflError::NotXfl(format!("{p} is too large")));
+        }
+        Ok(Some(b))
     };
     import_with(&read)
 }

@@ -11,6 +11,9 @@ use std::collections::HashMap;
 /// Largest single entry inflated (bytes).
 pub const MAX_ENTRY: usize = 256 * 1024 * 1024;
 
+/// Most bytes one import inflates in all (4 entries' worth: real packages are far smaller).
+pub const MAX_TOTAL: usize = MAX_ENTRY * 4;
+
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ZipError {
     #[error("not a zip archive (no end-of-directory record)")]
