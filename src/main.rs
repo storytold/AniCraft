@@ -36,6 +36,7 @@ mod icons;
 mod keymap;
 mod library;
 mod menus;
+mod mixed;
 mod motion_editor;
 mod panels;
 mod motion_path;

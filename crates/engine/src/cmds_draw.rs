@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
-        c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
+        c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the symbols of every selected instance)}", true, set_symbol_kind),
         c("element.rename", "Instance Name", "", None, "{name}", true, |s, p| s.each_layer(true, |s| rename(s, p))),
         c("arrange.bring_to_front", "Bring to Front", "Modify/Arrange", Some("Ctrl+Shift+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, true))),
         c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, true))),
@@ -526,30 +526,33 @@ fn set_loop(s: &mut Session, p: &Value) -> Result<Value> {
 /// A symbol's kind, for every instance of it: a graphic keeps step with the timeline it is
 /// placed on, a movie clip plays its own timeline on a loop, a button shows its Up frame.
 fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
-    let kind = match str_req(p, "kind")? {
-        "graphic" => SymbolKind::Graphic,
-        "movie_clip" | "movie clip" => SymbolKind::MovieClip,
-        "button" => SymbolKind::Button,
-        other => return Err(EngineError::Param(format!("unknown symbol kind '{other}' (graphic, movie_clip or button)"))),
-    };
-    let id = match opt_u64(p, "symbol")? {
-        Some(id) => SymbolId(id),
+    let kind = crate::cmds_library::kind_of(str_req(p, "kind")?)?;
+    let ids: Vec<SymbolId> = match opt_u64(p, "symbol")? {
+        Some(id) => vec![SymbolId(id)],
         None => {
-            // The symbol of the selected instance.
-            let (layer, sel) = s.selection.first().ok_or_else(|| EngineError::State("select a symbol instance, or pass 'symbol'".into()))?;
-            s.elements_on(layer)
-                .iter()
-                .find(|e| e.id == sel)
-                .and_then(|e| match e.kind {
-                    ElementKind::Symbol { symbol, .. } => Some(symbol),
-                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
-                })
-                .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
+            // The symbols of the selected instances, on every layer (ADR 0053: a "mixed" Type
+            // row sets them all), in selection order.
+            let mut ids = Vec::new();
+            for (layer, sel) in s.selection.iter() {
+                if let Some(ElementKind::Symbol { symbol, .. }) = s.elements_on(layer).iter().find(|e| e.id == sel).map(|e| &e.kind)
+                    && !ids.contains(symbol)
+                {
+                    ids.push(*symbol);
+                }
+            }
+            if ids.is_empty() {
+                return Err(EngineError::State(if s.selection.is_empty() { "select a symbol instance, or pass 'symbol'".into() } else { "the selection is not a symbol instance".into() }));
+            }
+            ids
         }
     };
-    let sym = s.doc.library.iter_mut().find(|x| x.id == id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
-    std::sync::Arc::make_mut(sym).kind = kind;
-    Ok(json!({"symbol": id.0, "kind": format!("{kind:?}")}))
+    for id in &ids {
+        let sym = s.doc.library.iter_mut().find(|x| x.id == *id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
+        if sym.kind != kind {
+            std::sync::Arc::make_mut(sym).kind = kind;
+        }
+    }
+    Ok(json!({"symbol": ids.first().map(|i| i.0), "symbols": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "kind": format!("{kind:?}")}))
 }
 
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
