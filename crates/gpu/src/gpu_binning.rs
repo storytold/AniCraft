@@ -209,11 +209,11 @@ pub fn plan(fills: &[Fill], tiles_x: u32, tiles_y: u32, lim: &Limits) -> Option<
             let flags = if f.hairline { HAIRLINE_BIT } else { 0 };
             h.copy_from_slice(&[p0, i.polys, tx0, ty0, ncols, nrows, t0, flags]);
             let mut q = q0;
-            for (slot, poly) in pw.chunks_exact_mut(2).zip(&f.polys) {
+            for (slot, poly) in pw.as_chunks_mut::<2>().0.iter_mut().zip(&f.polys) {
                 slot.copy_from_slice(&[q, poly.len() as u32]);
                 q += poly.len() as u32;
             }
-            for (slot, p) in qw.chunks_exact_mut(2).zip(f.polys.iter().flatten()) {
+            for (slot, p) in qw.as_chunks_mut::<2>().0.iter_mut().zip(f.polys.iter().flatten()) {
                 slot.copy_from_slice(&[p.x.to_bits(), p.y.to_bits()]);
             }
         });
