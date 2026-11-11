@@ -311,3 +311,20 @@ fn raw_points_timings() {
     let inside = ms(t);
     eprintln!("{n} raw shapes; add point {add:.2} ms, delete point {delete:.2} ms, make smooth {smooth:.2} ms, smooth handle frame {pair:.2} ms, draw snap {snap:.3} ms; inside a symbol: open {open:.2} ms, stage picture {picture:.2} ms (frame {}), point move {inside:.2} ms", pic.frame);
 }
+
+#[test]
+fn point_edits_keep_a_dashed_lines_style() {
+    let mut s = raw_session();
+    // A dashed, butt-capped, mitred zigzag (ADR 0046).
+    run(&mut s, "draw.path", json!({"d": "M0 0 L50 40 L100 0 L150 40", "stroke": "#000000", "fill": null, "stroke_width": 2, "cap": "none", "join": "miter", "dash": [6, 3]}));
+    let styled = |s: &Session| {
+        raw(s).iter().all(|e| match &e.kind {
+            ElementKind::Shape(sh) => sh.stroke.as_ref().is_some_and(|st| st.style.dash == anicraft_doc::Dash::dashed(6.0, 3.0) && st.style.cap == anicraft_doc::Cap::Butt && st.style.join == anicraft_doc::Join::Miter),
+            _ => false,
+        })
+    };
+    run(&mut s, "raw.add_point", json!({"x": 25, "y": 20}));
+    run(&mut s, "raw.delete_points", json!({"points": [[50, 40]]}));
+    run(&mut s, "raw.convert_points", json!({"points": [[100, 0]], "smooth": true}));
+    assert!(!raw(&s).is_empty() && styled(&s), "every piece keeps the line's style");
+}

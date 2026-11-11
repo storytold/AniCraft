@@ -552,6 +552,12 @@ fn panic_hunt_every_command() {
         json!({"id": 3, "profile": [[0, 1e30, -5], ["x"], [0.5, 16, 16]], "index": u64::MAX, "t": -0.5, "left": 1e9, "width": f64::MAX}),
         json!({"id": 3, "profile": "taper_both", "index": 0, "t": 1, "x": 1e30, "y": -1e30, "left": 0, "right": 16}),
         json!({"profile": (0..500).map(|i| json!([f64::from(i) / 500.0, 2, 2])).collect::<Vec<_>>()}),
+        // Stroke styles (ADR 0046): junk, extremes and patterns that would be very fine.
+        json!({"cap": "none", "join": "miter", "miter": 100, "dash": [0, 1e-30], "dash_offset": -1e4, "style": "dashed"}),
+        json!({"cap": 7, "join": "mitre", "miter": f64::NAN, "dash": vec![1e4; 16], "dot_spacing": 0, "style": "dotted"}),
+        json!({"style": "dotted", "dot_spacing": 0, "x0": 0, "y0": 0, "x1": 1e6, "y1": 1, "stroke_width": 1000}),
+        json!({"dash": [0.001, 0.001], "x0": -1e6, "y0": 0, "x1": 1e6, "y1": 0, "x": 0, "y": 0}),
+        json!({"dash": "x", "cap": "square", "style": "ragged", "dash_offset": 1e30}),
         json!({"sound": SOUND, "sync": "stream", "repeat": 9999, "loop": true, "extend": true, "frame": 99_999}),
         json!({"sound": SOUND, "sync": "nope", "repeat": 0, "loop": "x", "name": ""}),
         json!({"sound": SOUND, "frame": 3, "extend": true, "name": "renamed"}),
@@ -611,6 +617,12 @@ fn panic_hunt_every_command() {
         json!({"from": 10, "to": 12, "head": [0, 0], "tail": [1e30, 0], "name": "x".repeat(300)}),
         json!({"from": 12, "to": 10, "head": [5], "tail": "x", "bone": u64::MAX}),
         json!({"from": 11, "to": 13, "head": [-1e6, 1e6], "layer": 101}),
+        // Edit Multiple Frames (ADR 0047): ranges past the end or reversed, items that aren't
+        // there or aren't triples, moves at the limits.
+        json!({"first": 0, "last": 99_999, "dx": 1e7, "dy": -1e7, "items": [[0, 0, 1], "x", [u64::MAX, u64::MAX, u64::MAX]]}),
+        json!({"first": u64::MAX, "last": 0, "dx": 5, "dy": 5, "items": []}),
+        json!({"first": 40, "last": 0, "dx": 3, "dy": -2}),
+        json!({"first": 0, "last": 100_001, "dx": f64::NAN, "dy": 0, "items": [[1, 2]]}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");

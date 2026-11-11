@@ -3,7 +3,8 @@
 //! What maps (first slice of M4): stage size, frame rate and colour; the first scene's
 //! layers (name, colour, visibility, lock, outline; guide layers; folders flattened); frames
 //! and keyframes with durations, labels and classic tweens with their ease; shapes (solid,
-//! linear and radial fills, solid strokes), groups (flattened), rectangle and oval
+//! linear and radial fills, solid, dashed and dotted strokes with their caps, joints and
+//! miter limit), groups (flattened), rectangle and oval
 //! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
@@ -13,14 +14,14 @@
 //! lists which run and which are only kept.
 //! Everything else (sound, motion tweens with property curves, unknown filters,
 //! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
-//! and so is whatever is drawn the nearest way AniCraft can (square caps, reflecting
-//! gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
+//! and so is whatever is drawn the nearest way AniCraft can (ragged, stipple and hatched
+//! strokes, reflecting gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
 //! every feature listed here, with golden renders (ADR 0035).
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, SourceScript,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
@@ -224,19 +225,35 @@ fn paint(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> O
     }
 }
 
-/// A stroke definition (`SolidStroke` and friends) as a stroke: weight and its fill colour.
-fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> Option<Stroke> {
+/// A stroke definition (`SolidStroke` and friends) as a stroke: weight, its fill colour, caps,
+/// joints and miter limit, and the dashes of `DashedStroke` and dots of `DottedStroke`
+/// (ADR 0046). Ragged, stipple and hatched strokes are drawn solid.
+pub(crate) fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> Option<Stroke> {
     if !matches!(def.name.as_str(), "SolidStroke" | "DashedStroke" | "DottedStroke" | "RaggedStroke" | "StippleStroke" | "HatchedStroke") {
         return None;
     }
-    if def.name != "SolidStroke" {
-        report.skip("stroke styles drawn as solid");
-    }
-    // AniCraft strokes have round caps and joins (the format's default).
-    let round = |k: &str| def.attr(k).is_none_or(|v| v.trim() == "round");
-    if !round("caps") || !round("joints") {
-        report.skip("stroke caps and joins other than round (drawn round)");
-    }
+    // Round caps and joints are the format's default, and a miter limit of 3.
+    let cap = match def.attr("caps").map(str::trim) {
+        Some("none") => Cap::Butt,
+        Some("square") => Cap::Square,
+        _ => Cap::Round,
+    };
+    let join = match def.attr("joints").map(str::trim) {
+        Some("miter") => Join::Miter,
+        Some("bevel") => Join::Bevel,
+        _ => Join::Round,
+    };
+    let miter_limit = def.f32("miterLimit").unwrap_or(anicraft_doc::stroke_style::DEFAULT_MITER_LIMIT);
+    let dash = match def.name.as_str() {
+        "DashedStroke" => Dash::dashed(def.f32("dash1").unwrap_or(6.0), def.f32("dash2").unwrap_or(3.0)),
+        "DottedStroke" => Dash::dotted(def.f32("dotSpace").unwrap_or(3.0)),
+        "SolidStroke" => None,
+        _ => {
+            report.skip("ragged, stipple and hatched strokes (drawn solid)");
+            None
+        }
+    };
+    let style = StrokeStyle { cap, join, miter_limit, dash };
     let width = def.f32("weight").unwrap_or(1.0).clamp(0.05, 1000.0);
     let fill = def.child("fill").and_then(|f| f.children.first());
     let c = fill.map_or(Rgba::BLACK, |f| {
@@ -247,7 +264,7 @@ fn stroke(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> 
             paint(f, bitmaps, report).map_or(Rgba::BLACK, |p| p.primary_color())
         }
     });
-    Some(Stroke::new(c, width))
+    Some(Stroke::new(c, width).with_style(style))
 }
 
 impl<'a> Builder<'a> {

@@ -2,7 +2,9 @@
 //!
 //! It draws what the CPU renderer draws, from the same evaluated frame:
 //! * paths are written in stage space, and strokes get the same stage-space width
-//!   (`width × mean scale`, round joins and caps);
+//!   (`width × mean scale`) with their caps, joins and miter limit, and dashes scaled the same
+//!   way (`stroke-dasharray`, `stroke-dashoffset`; dots are zero-length round-capped dashes),
+//!   as the renderer measures them (ADR 0046);
 //! * gradients keep their local geometry under a `gradientTransform`, padded at the ends;
 //! * colour effects (alpha, tint) are baked into every colour and stop;
 //! * masks become `clipPath`s (fill areas only, nested through `clip-path` on the clip), and an
@@ -90,9 +92,10 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
                 let c = item.color.apply(st.color);
                 let _ = write!(
                     body,
-                    "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"{}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"{clip}/>",
+                    "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"{}\"{}{clip}/>",
                     color_attrs("stroke", c),
-                    num(width)
+                    num(width),
+                    style_attrs(st, item.transform.mean_scale())
                 );
             }
         }
@@ -140,6 +143,25 @@ fn num(v: f32) -> String {
     }
     let r = (v * 10_000.0).round() / 10_000.0;
     if r == 0.0 { "0".into() } else { format!("{r}") }
+}
+
+/// A stroke's join, cap, miter limit and dashes as SVG attributes (dash lengths scaled by `k`,
+/// like the width). The default style writes `stroke-linejoin="round" stroke-linecap="round"`.
+fn style_attrs(st: &anicraft_doc::Stroke, k: f32) -> String {
+    let style = &st.style;
+    let mut out = format!(" stroke-linejoin=\"{}\" stroke-linecap=\"{}\"", style.join.key(), style.effective_cap().key());
+    if style.join == anicraft_doc::Join::Miter {
+        let _ = write!(out, " stroke-miterlimit=\"{}\"", num(style.miter_limit));
+    }
+    if let Some(dash) = &style.dash {
+        let (lengths, offset) = dash.pattern(st.width);
+        let list: Vec<String> = lengths.iter().map(|l| num(l * k)).collect();
+        let _ = write!(out, " stroke-dasharray=\"{}\"", list.join(" "));
+        if num(offset * k) != "0" {
+            let _ = write!(out, " stroke-dashoffset=\"{}\"", num(offset * k));
+        }
+    }
+    out
 }
 
 fn hex(c: Rgba) -> String {
@@ -433,6 +455,29 @@ mod tests {
         assert!(svg.contains("d=\"M5 7L25 7L25 27L5 27Z\" fill=\"#ff0000\" fill-opacity=\"0.5\" fill-rule=\"evenodd\""), "{svg}");
         assert!(svg.contains("stroke=\"#000000\" stroke-opacity=\"0.5\" stroke-width=\"6\""), "stroke width scales like the renderer");
         assert!(svg.trim_end().ends_with("</svg>"));
+    }
+
+    #[test]
+    fn stroke_caps_joins_and_dashes_are_written_scaled() {
+        use anicraft_doc::{Cap, Dash, Join, StrokeStyle};
+        let svg_of = |st: Stroke| {
+            let mut a = item(Path::line(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)), None);
+            a.transform = Affine::scale(2.0, 2.0);
+            a.stroke = Some(st);
+            to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage())
+        };
+        // The default style is written as before: round, no dashes.
+        let svg = svg_of(Stroke::new(Rgba::BLACK, 3.0));
+        assert!(svg.contains("stroke-width=\"6\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"), "{svg}");
+        assert!(!svg.contains("dasharray") && !svg.contains("miterlimit"));
+        // Dashes, offset and the miter limit; lengths scale with the shape, like the width.
+        let dashed = StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 6.0, dash: Some(Dash::Dashed { lengths: vec![4.0, 1.5].into(), offset: 1.0 }) };
+        let svg = svg_of(Stroke::new(Rgba::BLACK, 3.0).with_style(dashed));
+        assert!(svg.contains("stroke-linejoin=\"miter\" stroke-linecap=\"butt\" stroke-miterlimit=\"6\" stroke-dasharray=\"8 3\" stroke-dashoffset=\"2\"/>"), "{svg}");
+        // Dots: zero-length round dashes one width plus the spacing apart.
+        let dotted = StrokeStyle { cap: Cap::Square, join: Join::Bevel, dash: Dash::dotted(2.0), ..StrokeStyle::default() };
+        let svg = svg_of(Stroke::new(Rgba::BLACK, 3.0).with_style(dotted));
+        assert!(svg.contains("stroke-linejoin=\"bevel\" stroke-linecap=\"round\" stroke-dasharray=\"0 10\"/>"), "{svg}");
     }
 
     #[test]

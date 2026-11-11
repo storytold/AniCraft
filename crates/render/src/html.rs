@@ -18,7 +18,7 @@
 //! outside the ActionScript subset. Scripts in the subset (ADR 0013 tier 2) come across as the
 //! same actions and listeners the Rust player runs.
 
-use crate::stroke::variable_outline;
+use crate::stroke::stroke_outline;
 use anicraft_doc::actions::as3::ScriptOp;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::{BlendMode, ColorEffect, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
@@ -106,6 +106,20 @@ fn num(v: f32, scale: f64) -> Value {
     } else {
         json!(r)
     }
+}
+
+/// A stroke's style for the page (ADR 0046): `c` cap, `j` join, `ml` miter limit, and for a
+/// broken line `d` its on/off lengths and `o` the offset into them (local units, scaled by
+/// the page like the width; dots are zero-length round-capped dashes).
+fn line_style(st: &anicraft_doc::Stroke) -> Value {
+    let style = &st.style;
+    let mut k = json!({"c": style.effective_cap().key(), "j": style.join.key(), "ml": num(style.miter_limit, 1e3)});
+    if let Some(d) = &style.dash {
+        let (lengths, offset) = d.pattern(st.width);
+        k["d"] = Value::Array(lengths.into_iter().map(|l| num(l, 1e3)).collect());
+        k["o"] = num(offset, 1e3);
+    }
+    k
 }
 
 fn coord(v: f32) -> Value {
@@ -358,18 +372,22 @@ impl<'a> Bake<'a> {
         i
     }
 
-    /// A shape item: `p` path, `f` paint, `s` stroke `[r, g, b, a, width]`, `eo` even-odd,
-    /// `m` transform, `c` colour effect.
-    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorEffect, fill: Option<(&Paint, &Element)>, stroke: Option<(Rgba, f32)>, rule: FillRule) -> Value {
+    /// A shape item: `p` path, `f` paint, `s` stroke `[r, g, b, a, width]`, `k` its style when
+    /// not round and solid (`c` cap, `j` join, `ml` miter limit, `d` dash lengths and `o` their
+    /// offset, in local units like the width), `eo` even-odd, `m` transform, `c` colour effect.
+    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorEffect, fill: Option<(&Paint, &Element)>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
         let mut o = Map::new();
         o.insert("p".into(), json!(self.path(path)));
         if let Some((p, el)) = fill {
             o.insert("f".into(), json!(self.paint(p, el)));
         }
-        if let Some((c, w)) = stroke {
-            let mut s = color(c);
-            s.push(num(w, 1e3));
+        if let Some(st) = stroke {
+            let mut s = color(st.color);
+            s.push(num(st.width, 1e3));
             o.insert("s".into(), Value::Array(s));
+            if !st.style.is_default() {
+                o.insert("k".into(), line_style(st));
+            }
         }
         if rule == FillRule::EvenOdd {
             o.insert("eo".into(), json!(1));
@@ -391,19 +409,20 @@ impl<'a> Bake<'a> {
         match &el.kind {
             ElementKind::Shape(s) => {
                 let stroke = s.stroke.as_ref().filter(|st| st.width.is_finite() && st.width > 0.0);
-                match stroke.and_then(|st| st.profile.as_ref().map(|p| (st, p))) {
-                    // A variable-width stroke is the filled outline the renderer fills.
-                    Some((st, profile)) => {
+                match stroke.filter(|st| st.profile.is_some()) {
+                    // A variable-width stroke is the filled outline the renderer fills (its
+                    // caps, joins and dashes included).
+                    Some(st) => {
                         if let Some(p) = &s.fill {
                             out.push(self.shape(&s.path, &el.transform, &el.color, Some((p, el)), None, s.fill_rule));
                         }
-                        let outline = variable_outline(&s.path, &el.transform, st.width, profile, crate::TOLERANCE);
+                        let outline = stroke_outline(&s.path, &el.transform, st, crate::TOLERANCE);
                         if !outline.is_empty() {
                             let fill = Paint::Solid(st.color);
                             out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color, Some((&fill, el)), None, FillRule::NonZero));
                         }
                     }
-                    None => out.push(self.shape(&s.path, &el.transform, &el.color, s.fill.as_ref().map(|p| (p, el)), stroke.map(|st| (st.color, st.width)), s.fill_rule)),
+                    None => out.push(self.shape(&s.path, &el.transform, &el.color, s.fill.as_ref().map(|p| (p, el)), stroke, s.fill_rule)),
                 }
             }
             // The camera is the view, not artwork (ADR 0027): it is baked into the layers.

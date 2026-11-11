@@ -29,11 +29,13 @@ pub mod cmds_sound;
 pub mod cmds_text;
 mod cmds_timeline;
 mod cmds_width;
+mod cmds_stroke;
 pub mod confirm;
 pub mod editing;
 pub mod format;
 pub mod history;
 mod merge;
+pub mod onion;
 pub mod recovery;
 pub mod render_service;
 pub mod selection;
@@ -112,6 +114,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
+    v.extend(onion::specs());
     v.extend(cmds_draw::specs());
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
@@ -125,6 +128,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_paint::specs());
     v.extend(cmds_text::specs());
     v.extend(cmds_width::specs());
+    v.extend(cmds_stroke::specs());
     v.extend(cmds_plugin::specs());
     v.extend(cmds_sound::specs());
     v.extend(cmds_actions::specs());
@@ -153,6 +157,27 @@ pub use selection::Selection;
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
 pub const MAX_FRAME: u32 = 100_000;
 
+/// The index of the topmost item of `dl` under `p` (stage space) that `ok` accepts (given its
+/// index). A bounding-box test rejects almost every item before any curve is flattened;
+/// masked-away parts cannot be picked.
+pub(crate) fn pick_index(dl: &DisplayList, p: Vec2, slop: f32, ok: impl Fn(usize, &anicraft_doc::DisplayItem) -> bool) -> Option<usize> {
+    for (i, item) in dl.items.iter().enumerate().rev() {
+        let hw = item.stroke.as_ref().map_or(0.0, |s| s.reach() * item.transform.mean_scale());
+        let bounds = item.path.bounds().transformed(&item.transform).inflate(hw + slop);
+        if !bounds.contains(p) || !ok(i, item) {
+            continue;
+        }
+        if item.clip.is_some_and(|c| !dl.clip_contains(c, p)) {
+            continue;
+        }
+        let inside = item.fill.is_some() && item.path.contains(p, &item.transform, item.fill_rule);
+        if inside || item.path.distance_to_edge(p, &item.transform) <= hw + slop {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Drawing defaults used by the drawing commands when params omit colours.
 #[derive(Clone, Debug)]
 pub struct ToolStyle {
@@ -168,6 +193,8 @@ pub struct ToolStyle {
     pub stroke_profile: anicraft_doc::ProfilePreset,
     /// A picked width profile that is none of the presets (it wins over `stroke_profile`).
     pub custom_profile: Option<anicraft_doc::WidthProfile>,
+    /// The caps, joins and dashes new strokes get (ADR 0046).
+    pub line: anicraft_doc::StrokeStyle,
     /// Object Drawing: new shapes are drawing objects. Off, they merge with the raw shapes they
     /// touch (ADR 0031). On by default, so a script's draw command makes one element; the editor
     /// starts with it off, as Animate does.
@@ -179,7 +206,7 @@ pub struct ToolStyle {
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, object_drawing: true, snap_objects: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, line: anicraft_doc::StrokeStyle::default(), object_drawing: true, snap_objects: true }
     }
 }
 
@@ -196,6 +223,10 @@ impl ToolStyle {
     /// The width profile new strokes get.
     pub fn profile(&self) -> Option<anicraft_doc::WidthProfile> {
         self.custom_profile.clone().or_else(|| self.stroke_profile.profile())
+    }
+    /// A new stroke of `color` and `width` with the current profile and line style.
+    pub fn new_stroke(&self, color: anicraft_doc::Rgba, width: f32) -> anicraft_doc::Stroke {
+        anicraft_doc::Stroke::new(color, width).with_profile(self.profile()).with_style(self.line.clone())
     }
     /// The snapping radius a command asked for (`snap`), or none when Snap to Objects is off.
     pub fn snap_radius(&self, asked: f32) -> f32 {
@@ -716,28 +747,11 @@ impl Session {
     /// Topmost element under `p` (stage space) on a visible, unlocked layer. A bounding-box
     /// test rejects almost every item before any curve is flattened.
     pub fn hit_test(&self, p: Vec2, slop: f32) -> Option<(LayerId, ElementId)> {
+        // The timeline being edited: a symbol open in place picks in its own layers (ADR 0045).
+        let tl = self.timeline();
         let dl = self.display_list();
-        for item in dl.items.iter().rev() {
-            let hw = item.stroke.as_ref().map_or(0.0, |s| s.reach() * item.transform.mean_scale());
-            let bounds = item.path.bounds().transformed(&item.transform).inflate(hw + slop);
-            if !bounds.contains(p) {
-                continue;
-            }
-            let tl = self.timeline();
-            let Some(layer) = tl.layer(item.layer) else { continue };
-            if layer.locked || tl.locked_by_folder(layer.id) {
-                continue;
-            }
-            // Masked-away parts cannot be picked.
-            if item.clip.is_some_and(|c| !dl.clip_contains(c, p)) {
-                continue;
-            }
-            let inside = item.fill.is_some() && item.path.contains(p, &item.transform, item.fill_rule);
-            if inside || item.path.distance_to_edge(p, &item.transform) <= hw + slop {
-                return Some((item.layer, item.element));
-            }
-        }
-        None
+        let i = pick_index(&dl, p, slop, |_, it| tl.layer(it.layer).is_some_and(|layer| !layer.locked && !tl.locked_by_folder(layer.id)))?;
+        dl.items.get(i).map(|it| (it.layer, it.element))
     }
 
     /// Stage-space bounds of a top-level element at the playhead.

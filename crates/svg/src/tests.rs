@@ -57,7 +57,9 @@ fn shapes_styles_and_inheritance() {
     let r = &i.shapes[0];
     assert_eq!(r.name, "box");
     assert_eq!(solid(r), Rgba::hex(0xff0000));
-    assert_eq!(r.shape.stroke, Some(Stroke::new(Rgba::hex(0x0000ff), 4.0)));
+    // SVG's initial stroke style: butt caps, miter joins, a miter limit of 4.
+    let svg_style = StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 4.0, dash: None };
+    assert_eq!(r.shape.stroke, Some(Stroke::new(Rgba::hex(0x0000ff), 4.0).with_style(svg_style)));
     assert_eq!(r.alpha, 0.5, "group opacity reaches every child");
     assert_eq!(r.shape.path.bounds(), Rect::new(10.0, 10.0, 60.0, 40.0));
     let c = &i.shapes[1];
@@ -147,10 +149,50 @@ fn use_references_and_reported_leftovers() {
     assert_eq!(first.transform.apply(Vec2::new(0.0, 0.0)), Vec2::new(10.0, 20.0));
     assert_eq!(solid(first), Rgba::hex(0x123456));
     assert_eq!(i.shapes.len(), 4, "the dot, the symbol's two rects and the plain rect");
-    for k in ["text (no fonts on this computer)", "images", "references to missing elements", "dashed strokes (drawn solid)", "filters", "references to missing clip paths (drawn unclipped)", "style sheets (inline styles are read)"] {
+    for k in ["text (no fonts on this computer)", "images", "references to missing elements", "filters", "references to missing clip paths (drawn unclipped)", "style sheets (inline styles are read)"] {
         assert_eq!(i.report.skipped.get(k), Some(&1), "{k}: {:?}", i.report);
     }
     assert!(i.report.summary().starts_with("Imported. Not yet supported: "));
+}
+
+#[test]
+fn stroke_caps_joins_and_dashes() {
+    let i = imp(r##"<svg width="200" height="100">
+      <g stroke="#000" stroke-linecap="round" stroke-linejoin="bevel" stroke-dasharray="6, 3" stroke-dashoffset="2">
+        <line id="inherits" x1="0" y1="0" x2="100" y2="0"/>
+        <line id="own" x1="0" y1="0" x2="100" y2="0" style="stroke-linecap: square; stroke-linejoin: miter-clip; stroke-miterlimit: 8; stroke-dasharray: 1pt 2 3"/>
+        <line id="none" x1="0" y1="0" x2="100" y2="0" stroke-dasharray="none" stroke-linejoin="arcs"/>
+        <line id="negative" x1="0" y1="0" x2="100" y2="0" stroke-dasharray="4 -1"/>
+        <line id="junk" x1="0" y1="0" x2="100" y2="0" stroke-dasharray="4 wide" stroke-miterlimit="0.5" stroke-linecap="fancy"/>
+        <line id="no-gaps" x1="0" y1="0" x2="100" y2="0" stroke-dasharray="0 0"/>
+      </g>
+      <line id="plain" x1="0" y1="0" x2="100" y2="0" stroke="#000"/>
+    </svg>"##);
+    let st = |name: &str| i.shapes.iter().find(|s| s.name == name).and_then(|s| s.shape.stroke.clone()).map(|s| s.style).unwrap();
+    assert_eq!(st("inherits"), StrokeStyle { cap: Cap::Round, join: Join::Bevel, miter_limit: 4.0, dash: Some(Dash::Dashed { lengths: vec![6.0, 3.0].into(), offset: 2.0 }) });
+    // style= wins; an odd list repeats; units convert; the offset is inherited.
+    let own = st("own");
+    assert_eq!((own.cap, own.join, own.miter_limit), (Cap::Square, Join::Miter, 8.0));
+    let pt = 96.0 / 72.0;
+    assert_eq!(own.dash, Some(Dash::Dashed { lengths: vec![pt, 2.0, 3.0, pt, 2.0, 3.0].into(), offset: 2.0 }));
+    assert_eq!((st("none").dash, st("none").join), (None, Join::Round));
+    // Invalid arrays draw solid (as SVG renders them); unknown values keep the inherited ones.
+    assert_eq!(st("negative").dash, None);
+    let junk = st("junk");
+    assert_eq!((junk.dash, junk.miter_limit, junk.cap), (None, 4.0, Cap::Round));
+    assert_eq!(st("no-gaps").dash, None);
+    assert_eq!(st("plain"), StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 4.0, dash: None });
+    assert!(i.report.skipped.is_empty(), "{:?}", i.report);
+}
+
+#[test]
+fn dash_lists() {
+    assert_eq!(dash_array("5,3 2"), Some(vec![5.0, 3.0, 2.0]));
+    assert_eq!(dash_array(" 10% , 1in "), Some(vec![10.0, 96.0]));
+    assert_eq!(dash_array("none"), None);
+    assert_eq!(dash_array(""), None);
+    assert_eq!(dash_array("1 -2"), None);
+    assert_eq!(dash_array("1 nan"), None);
 }
 
 #[test]

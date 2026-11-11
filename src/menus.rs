@@ -201,9 +201,13 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
                 app.zoom_about(canvas, center, 1.0);
             }
             ui.separator();
-            if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion)) {
-                app.onion = !app.onion;
+            if ui_item(ui, tr!("Onion Skin"), app.keymap.primary("view.onion").unwrap_or(""), Some(app.onion.ghosts)) {
+                crate::onion::toggle_ghosts(app);
             }
+            if ui_item(ui, tr!("Edit Multiple Frames"), "", Some(app.onion.edit_multiple)) {
+                crate::onion::toggle_edit_multiple(app);
+            }
+            ui.menu_button(tr!("Onion Skin Options"), |ui| crate::onion::menu(app, ui));
             if ui_item(ui, tr!("Preview Through Camera"), "", Some(app.camera_preview)) {
                 app.toggle_camera_preview();
             }
@@ -254,8 +258,8 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
                 app.show_actions = !app.show_actions;
             }
             ui.separator();
-            if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion)) {
-                app.onion = !app.onion;
+            if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion.ghosts)) {
+                crate::onion::toggle_ghosts(app);
             }
             ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library")));
         }

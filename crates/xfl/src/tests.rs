@@ -461,3 +461,31 @@ fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
     // Each square is a fill and a stroke.
     assert_eq!(merge, [true, true, false, false, false, false]);
 }
+
+#[test]
+fn stroke_caps_joints_dashes_and_dots_come_across() {
+    use anicraft_doc::{Cap, Dash, Join, StrokeStyle};
+    let read = |xml: &str| {
+        let el = crate::xml::parse(xml.as_bytes()).unwrap();
+        let mut report = crate::Report::default();
+        let st = crate::import::stroke(&el, &HashMap::new(), &mut report).unwrap();
+        (st, report)
+    };
+    let (st, report) = read(r##"<SolidStroke weight="4" caps="none" joints="miter" miterLimit="7"><fill><SolidColor color="#112233"/></fill></SolidStroke>"##);
+    assert_eq!((st.width, st.color), (4.0, Rgba::hex(0x112233)));
+    assert_eq!(st.style, StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 7.0, dash: None });
+    assert!(report.skipped.is_empty());
+    // Round caps and joints and a miter limit of 3 are the format's defaults.
+    assert_eq!(read(r#"<SolidStroke weight="1"/>"#).0.style, StrokeStyle::default());
+    assert_eq!(read(r#"<SolidStroke caps="square" joints="bevel" miterLimit="1e9"/>"#).0.style, StrokeStyle { cap: Cap::Square, join: Join::Bevel, miter_limit: 100.0, dash: None });
+    let (dashed, _) = read(r#"<DashedStroke weight="2" dash1="8" dash2="2.5" caps="square"/>"#);
+    assert_eq!(dashed.style, StrokeStyle { cap: Cap::Square, dash: Dash::dashed(8.0, 2.5), ..StrokeStyle::default() });
+    // No gap draws solid.
+    assert_eq!(read(r#"<DashedStroke dash1="8" dash2="0"/>"#).0.style.dash, None);
+    assert_eq!(read(r#"<DottedStroke weight="3" dotSpace="5"/>"#).0.style.dash, Dash::dotted(5.0));
+    for kind in ["RaggedStroke", "StippleStroke", "HatchedStroke"] {
+        let (st, report) = read(&format!("<{kind} weight=\"2\"/>"));
+        assert_eq!(st.style.dash, None);
+        assert_eq!(report.skipped.get("ragged, stipple and hatched strokes (drawn solid)"), Some(&1));
+    }
+}

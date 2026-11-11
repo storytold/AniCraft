@@ -190,6 +190,10 @@ pub enum Drag {
     /// pointer to the point. The points that move are `App::raw_points`.
     RawPoint { at: egui::Pos2, off: egui::Vec2 },
     Marquee { start: egui::Pos2, cur: egui::Pos2 },
+    /// Edit Multiple Frames (ADR 0047): moving the selection on every keyframe it is on, the
+    /// pointer at `last` last frame; or a marquee over them.
+    MultiMove { last: egui::Pos2 },
+    MultiMarquee { start: egui::Pos2, cur: egui::Pos2 },
     Shape { start: egui::Pos2, cur: egui::Pos2 },
     /// Subselection: dragging the selected points (stage position of the last frame).
     Points { last: egui::Pos2 },
@@ -290,7 +294,9 @@ pub struct App {
     pub playing: bool,
     pub looping: bool,
     play_acc: f64,
-    pub onion: bool,
+    /// Onion skin and Edit Multiple Frames (ADR 0047): view state, passed with each render.
+    pub onion: anicraft_engine::onion::OnionSkin,
+    pub onion_ui: crate::onion::OnionUi,
     /// View › Preview Through Camera: the stage shows what the movie shows (ADR 0027).
     pub camera_preview: bool,
     /// The tool in hand last frame (picking the Camera tool adds a camera).
@@ -477,7 +483,8 @@ impl App {
             playing: false,
             looping: true,
             play_acc: 0.0,
-            onion: false,
+            onion: crate::onion::from_prefs(&prefs.onion),
+            onion_ui: crate::onion::OnionUi::default(),
             camera_preview: false,
             last_tool: Tool::Select,
             status: None,
@@ -635,6 +642,7 @@ impl App {
         ctx.request_repaint();
         ctx.set_zoom_factor(self.prefs.ui_scale);
         theme::apply_palette(ctx, self.prefs.theme);
+        crate::onion::refresh_colors(self);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
         let wants_system = [&self.prefs.ui_font, &self.prefs.data_font].iter().any(|f| matches!(f, prefs::FontChoice::System(_)));
@@ -776,6 +784,24 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some(which @ ("onion" | "onionmenu")) => {
+                // Onion skin ±5 on a frame with frames before and after it, the markers on the
+                // ruler; with its menu open, in outlines (ADR 0047).
+                self.onion.ghosts = true;
+                self.onion.preset(5);
+                self.run("timeline.goto", json!({"frame": 12}));
+                if which == "onionmenu" {
+                    self.onion.outlines = true;
+                    self.onion_ui.open_menu = true;
+                }
+            }
+            Some("editmultiple") => {
+                // Edit Multiple Frames over the sample's walk, everything selected (ADR 0047).
+                self.onion.preset(5);
+                crate::onion::toggle_edit_multiple(self);
+                self.run("timeline.goto", json!({"frame": 12}));
+                crate::onion::select_all(self);
+            }
             Some("selection") => {
                 // A selection across layers (ADR 0044): Select All takes every unlocked layer's
                 // artwork; the timeline marks the layers, Properties says how many.
@@ -789,6 +815,15 @@ impl App {
                     Some(id) => crate::plugins_ui::open(self, &id),
                     None => self.show_plugins = true,
                 }
+            }
+            Some("strokes") => {
+                // Stroke styles (ADR 0046): a mitred zigzag with square caps, a dotted tapering
+                // line, and a dashed oval with bevelled corners, selected, so Properties shows
+                // Style with its dash editor, Cap, Join and Miter.
+                self.tool = Tool::Select;
+                self.run("draw.path", json!({"d": "M 80 640 L 200 520 L 320 640 L 440 520 L 560 640", "fill": null, "stroke": "#1b2a4a", "stroke_width": 14, "cap": "square", "join": "miter", "miter": 4, "object": true}));
+                self.run("draw.line", json!({"x0": 80, "y0": 690, "x1": 560, "y1": 690, "stroke": "#e8553b", "stroke_width": 8, "style": "dotted", "dot_spacing": 6, "profile": "taper_end", "object": true}));
+                self.run("draw.rect", json!({"x": 640, "y": 500, "w": 300, "h": 180, "fill": "#f3d36b", "stroke": "#3d8bfd", "stroke_width": 6, "cap": "none", "join": "miter", "dash": [18, 8], "object": true}));
             }
             Some("filters") => {
                 // A movie clip with a bevel and a gradient glow, selected: Properties › Filters
@@ -1449,6 +1484,22 @@ impl App {
             self.status_err(crate::i18n::t(why));
             return;
         }
+        // Edit Multiple Frames (ADR 0047) selects on every keyframe between the markers.
+        if crate::onion::editing(self) {
+            match id {
+                "edit.select_all" => return crate::onion::select_all(self),
+                "edit.deselect" => {
+                    self.onion_ui.sel.clear();
+                    return;
+                }
+                // This slice moves artwork across keyframes; other edits stay on one frame.
+                "edit.delete" | "edit.cut" | "edit.copy" | "edit.duplicate" if !self.onion_ui.sel.is_empty() => {
+                    self.status_err(tr!("Edit Multiple Frames moves artwork on several keyframes; to delete, copy or duplicate it, turn Edit Multiple Frames off and work frame by frame."));
+                    return;
+                }
+                _ => {}
+            }
+        }
         if id == "timeline.paste_frames"
             && let Some(p) = timeline::paste_params(self)
         {
@@ -1765,7 +1816,7 @@ impl App {
             match id {
                 // View-state keys (Animate's), handled here rather than in the engine.
                 "view.fit" => self.view.fit = true,
-                "view.onion" => self.onion = !self.onion,
+                "view.onion" => crate::onion::toggle_ghosts(self),
                 "view.align_to_stage" => {
                     self.align_to_stage = !self.align_to_stage;
                     self.status_ok(if self.align_to_stage { tr!("Align: to stage") } else { tr!("Align: to the selection") });
@@ -1792,7 +1843,9 @@ impl App {
         if play {
             self.toggle_play();
         }
-        if nudge != egui::Vec2::ZERO && !self.s.selection.is_empty() {
+        if nudge != egui::Vec2::ZERO && crate::onion::editing(self) {
+            crate::onion::nudge(self, anicraft_engine::geom::Vec2::new(nudge.x, nudge.y));
+        } else if nudge != egui::Vec2::ZERO && !self.s.selection.is_empty() {
             // One undo step: the move, and raw shapes merging where they land (ADR 0031).
             let own = !self.s.in_gesture();
             if own {

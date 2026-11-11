@@ -98,8 +98,9 @@ nothing was copied.
      symbol exactly as on the stage: they are the same commands.
    * `symbol.edit {id?, symbol?}` (Edit › Edit Symbols, **Ctrl+E**, a **double-click** on an
      instance with the Selection tool) opens the selected or given instance where it stands, at
-     the frame a graphic shows (a movie clip or button at its first); `{symbol}` (the Library's
-     Edit Symbol) opens one alone at the stage's centre. Ctrl+E with no instance selected goes
+     the frame a graphic shows (a movie clip or button at its first); `{symbol}` (a double-click on
+     a symbol in the Library, as in Animate, or its right-click Edit Symbol; Place on stage still
+     places it) opens one alone at the stage's centre. Ctrl+E with no instance selected goes
      back to the document, as in Animate. `symbol.exit {all?}` (Edit › Edit Document, a
      double-click on empty stage, the edit bar's path) closes one level or all, selecting the
      instance again.
@@ -151,7 +152,9 @@ nothing was copied.
 * Not in this slice:
   * in-place editing of rotated, skewed or flipped instances (they open upright, alone);
   * the parent symbol's frame moving with the open one (a nested graphic shows the frame it
-    was opened at), and onion skin while a symbol is open;
+    was opened at), and onion skin and Edit Multiple Frames (ADR 0047) while a symbol is open in
+    place: the stage then draws a picture of the symbol, so both switch off (`frames.*` commands
+    still work on the open timeline);
   * deleting a point where three or more edges meet;
   * width profiles in the merge (ADR 0042);
   * a marquee across layers with the Subselection tool (Animate keeps it on one layer too).

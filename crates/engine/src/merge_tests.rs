@@ -125,3 +125,19 @@ fn double_click_selects_connected_strokes_or_a_fill_with_its_outline() {
     let r = run(&mut s, "element.select_connected", json!({"x": 350, "y": 0}));
     assert_eq!(r["selected"].as_array().map(Vec::len), Some(1));
 }
+
+#[test]
+fn dashed_raw_strokes_keep_their_style_when_cut() {
+    let mut s = blank();
+    // A dashed, butt-capped, mitred square outline, then a solid line across it.
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": null, "stroke": "#000000", "stroke_width": 2, "cap": "none", "join": "miter", "dash": [6, 3]}));
+    run(&mut s, "draw.line", json!({"x0": -20, "y0": 50, "x1": 120, "y1": 50, "stroke": "#000000", "stroke_width": 2}));
+    let strokes: Vec<anicraft_doc::Stroke> = shapes(&s).into_iter().filter_map(|x| x.stroke).collect();
+    let dashed = strokes.iter().filter(|st| st.style.dash == anicraft_doc::Dash::dashed(6.0, 3.0)).count();
+    assert!(dashed >= 5, "the cut sides are pieces, all still dashed: {dashed} of {}", strokes.len());
+    assert!(strokes.iter().filter(|st| st.style.dash.is_some()).all(|st| st.style.cap == anicraft_doc::Cap::Butt && st.style.join == anicraft_doc::Join::Miter));
+    assert!(strokes.iter().any(|st| st.style.is_default()), "the solid line stays solid, a style of its own");
+    // Saved and loaded, the pieces keep it.
+    let back = crate::format::from_json(&crate::format::to_json(&s.doc).unwrap_or_default()).unwrap_or_default();
+    assert_eq!(back, s.doc);
+}

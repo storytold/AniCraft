@@ -13,8 +13,8 @@
   * The **Line, Rectangle, Oval, PolyStar and Pen** tools snap their points to points, lines and
     fill edges within 10 screen pixels, with a ring where they will snap. **Snap to Objects** is
     now Ctrl+Shift+/, as in Animate.
-  * **Double-click a symbol instance** (or press Ctrl+E, or right-click it in the Library › Edit
-    Symbol) to edit it in place: the rest of the stage dims, the timeline shows the symbol's
+  * **Double-click a symbol instance** (or press Ctrl+E, or double-click the symbol in the
+    Library) to edit it in place: the rest of the stage dims, the timeline shows the symbol's
     layers, and merge drawing, the Selection and Subselection tools and every other tool work
     inside it as on the stage. The edit bar shows `Scene 1 › Symbol`; click the scene, press
     Ctrl+E or double-click empty stage to go back. Undo returns to the symbol where a change was
@@ -22,6 +22,42 @@
   * Headless: `raw.add_point`, `raw.delete_points`, `raw.convert_points`, `draw.snap`, `smooth`
     on `raw.move_handle` and `path.move_points`, `symbol.edit`, `symbol.exit`; `doc.info` lists
     the open symbols.
+* **Stroke caps, joins, miter limit, and dashed and dotted lines** (ADR 0046, M7). Properties ›
+  Stroke has Animate's rows: **Style** (Solid, Dashed with a dash and gap editor, Dotted with
+  dot spacing), **Cap** (None, Round, Square), **Join** (Miter, Round, Bevel) and **Miter**
+  (the limit past which corners are bevelled). The drawing tools' options set them for new
+  strokes, the Ink Bottle gives them and the Eyedropper picks them.
+  * Drawn exactly by the CPU renderer and the GPU stage: butt and square caps, miter joins with
+    their limit, dashes by arc length along curves (restarting on each subpath, an offset into
+    the pattern), round dots one width across, and dashes that keep a width profile's widths.
+    Patterns finer than a pixel draw solid and lighter. No slower than round strokes.
+  * SVG, HTML canvas and Lottie export write caps, joins, miter limit and dashes; SVG import
+    reads `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `stroke-dasharray` and
+    `stroke-dashoffset`; Animate documents bring their caps, joins, miter limit, dashed and
+    dotted strokes (ragged, stipple and hatched strokes are drawn solid and reported).
+  * Merge drawing keeps a dashed line's style on every piece it is cut into; shape tweens blend
+    miter limits and dash lengths. Older files open unchanged.
+  * Headless: new `stroke.set_style`; `cap`, `join`, `miter`, `style`, `dash`, `dash_offset`
+    and `dot_spacing` on `element.set_stroke`, the drawing commands and `paint.ink`.
+* **Onion skin controls and Edit Multiple Frames** (ADR 0047, M1). Onion skin works as Animate
+  users expect:
+  * **Markers** on the frame ruler: drag the start and end brackets to choose how many frames
+    show before and after the playhead. The onion menu (the arrow next to the timeline's onion
+    buttons, a right-click on the ruler, or View › Onion Skin Options) has Always Show Markers,
+    Anchor Markers (they stay put when the playhead moves), and the Onion 2, Onion 5 and Onion
+    All presets.
+  * Frames before the playhead are tinted blue and frames after it green, each fainter the
+    farther it is. Pick your own colours or turn tinting or fading off in the menu; **Outlines**
+    draws onion frames as outlines only, and **Keyframes Only** shows only keyframes. Your
+    choices are remembered.
+  * Onion frames now show over a background layer (they used to be hidden under it), and locked
+    layers are left out, as in Animate.
+  * **Edit Multiple Frames** (the timeline button next to Onion Skin) shows every keyframe
+    between the markers at full strength. Click, Shift-click, marquee or Select All to select
+    artwork on all of them, then drag it or use the arrow keys to move it everywhere at once:
+    one undo step. A motion tween's path moves with its object.
+  * Headless: `frames.artwork` lists the artwork on those keyframes and
+    `frames.edit_multiple` moves it.
 * **ActionScript that controls the timeline now runs** (ADR 0013 tier 2). Frame scripts in
   Animate documents, and ones you type in the Actions panel, play in Test Movie and in the
   HTML canvas export when they use the ActionScript 3.0 most animation and e-learning files

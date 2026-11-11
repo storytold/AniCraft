@@ -466,6 +466,33 @@ fn variable_width_strokes_become_filled_outlines() {
 }
 
 #[test]
+fn stroke_caps_joins_and_dashes_reach_the_page() {
+    use anicraft_doc::{Cap, Dash, Join, Stroke, StrokeStyle};
+    let mut doc = Document::default();
+    let style = StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 6.0, dash: Some(Dash::Dashed { lengths: vec![4.0, 1.5].into(), offset: 1.0 }) };
+    let line = |y: f32, st: Stroke| Shape { path: Arc::new(Path::line(Vec2::new(10.0, y), Vec2::new(200.0, y))), fill: None, stroke: Some(st), fill_rule: FillRule::NonZero, merge: false };
+    let shapes = [line(10.0, Stroke::new(Rgba::BLACK, 3.0)), line(30.0, Stroke::new(Rgba::BLACK, 3.0).with_style(style)), line(50.0, Stroke::new(Rgba::BLACK, 3.0).with_style(StrokeStyle { dash: Dash::dotted(2.0), ..StrokeStyle::default() }))];
+    for (i, sh) in shapes.into_iter().enumerate() {
+        let el = Element { id: ElementId(70 + i as u64), name: String::new(), transform: Affine::scale(2.0, 2.0), color: Default::default(), kind: ElementKind::Shape(sh) };
+        Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap().elements.push(Arc::new(el));
+    }
+    let m = movie(&doc, &HtmlOptions::default());
+    let items = &m.json["contents"][0]["l"][0]["e"];
+    // Round and solid: no style entry, as before.
+    assert!(items[0]["s"].is_array() && items[0].get("k").is_none(), "{items}");
+    // Lengths stay in local units; the page scales them like the width.
+    assert_eq!(items[1]["k"], json!({"c": "butt", "j": "miter", "ml": 6, "d": [4, 1.5], "o": 1}));
+    assert_eq!(items[2]["k"], json!({"c": "round", "j": "round", "ml": 3, "d": [0, 5], "o": 0}), "dots are round zero-length dashes");
+    // The player hands the style to the page with each item.
+    let mut js = Js::new(&m);
+    js.eval("P.start()");
+    let ours = js.eval("P.evaluate()");
+    let theirs = ours["items"].as_array().unwrap();
+    assert!(theirs[0]["k"].is_null());
+    assert_eq!(theirs[1]["k"], items[1]["k"]);
+}
+
+#[test]
 fn what_does_not_carry_across_is_reported() {
     let mut doc = fixture();
     let tl = doc.timeline_mut(0);

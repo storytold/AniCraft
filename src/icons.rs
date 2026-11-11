@@ -67,11 +67,13 @@ pub enum Icon {
     Camera,
     Magnet,
     Bone,
+    EditMultiple,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 53] = [
+    pub const ALL: [Icon; 54] = [
+        Icon::EditMultiple,
         Icon::Bone,
         Icon::Magnet,
         Icon::SoundOff,
@@ -200,6 +202,9 @@ impl Icon {
             Icon::Magnet => ("anicraft-magnet", false),
             // A bone: a wedge from its joint to its end (AniCraft original, on Lucide's grid).
             Icon::Bone => ("anicraft-bone", false),
+            // Frames stacked one behind the other, all edited at once (AniCraft original, on
+            // Lucide's grid): Edit Multiple Frames.
+            Icon::EditMultiple => ("anicraft-edit-multiple", false),
             Icon::FolderOpen => ("folder-open", false),
         }
     }
@@ -255,6 +260,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("anicraft-bone", include_str!("../assets/icons/anicraft-bone.svg")),
+    ("anicraft-edit-multiple", include_str!("../assets/icons/anicraft-edit-multiple.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
 ];

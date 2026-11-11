@@ -88,6 +88,39 @@ pub struct Prefs {
     pub autosave_secs: u32,
     /// Also make a copy after this many changes (0: by time only).
     pub autosave_edits: u32,
+    /// Onion skin options (ADR 0047), kept from session to session.
+    pub onion: OnionPrefs,
+}
+
+/// Onion skin options that carry over between sessions (ADR 0047). Whether onion skin and Edit
+/// Multiple Frames are on, and anchored markers, last for the session only, as in Animate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnionPrefs {
+    /// Frames before and after the playhead the markers reach (unless Onion All).
+    pub before: u32,
+    pub after: u32,
+    /// Onion All: the markers span the whole timeline.
+    pub all: bool,
+    pub tint: bool,
+    pub fade: bool,
+    pub outlines: bool,
+    pub keyframes_only: bool,
+    /// The markers show on the frame ruler even while onion skin is off.
+    pub always_markers: bool,
+    /// The past and future colours the user picked (sRGB); `None`: the theme's.
+    pub past: Option<[u8; 3]>,
+    pub future: Option<[u8; 3]>,
+}
+
+/// Most frames a marker reaches from the playhead in the preferences (the timeline's own
+/// limit is far beyond what anyone onion-skins).
+pub const ONION_REACH_MAX: u32 = 999;
+
+impl Default for OnionPrefs {
+    fn default() -> Self {
+        OnionPrefs { before: 2, after: 2, all: false, tint: true, fade: true, outlines: false, keyframes_only: false, always_markers: false, past: None, future: None }
+    }
 }
 
 impl Default for Prefs {
@@ -106,6 +139,7 @@ impl Default for Prefs {
             autosave: true,
             autosave_secs: 60,
             autosave_edits: 25,
+            onion: OnionPrefs::default(),
         }
     }
 }
@@ -135,6 +169,8 @@ impl Prefs {
         self.shortcuts = crate::keymap::sanitize(std::mem::take(&mut self.shortcuts));
         self.autosave_secs = self.autosave_secs.clamp(*AUTOSAVE_SECS_RANGE.start(), *AUTOSAVE_SECS_RANGE.end());
         self.autosave_edits = self.autosave_edits.min(*AUTOSAVE_EDITS_RANGE.end());
+        self.onion.before = self.onion.before.min(ONION_REACH_MAX);
+        self.onion.after = self.onion.after.min(ONION_REACH_MAX);
         self
     }
 

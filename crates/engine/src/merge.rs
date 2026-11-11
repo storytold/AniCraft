@@ -151,7 +151,7 @@ fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Opt
                 // Gradients and bitmaps are placed in keyframe space, so every piece shows its
                 // part of the paint where it was.
                 let fill = sh.fill.as_ref().map(|f| fill_index(&mut fills, (f.transformed(&e.transform), e.color)));
-                let stroke = sh.stroke.clone().map(|st| index_of(&mut strokes, (Stroke { width: st.width * e.transform.mean_scale(), ..st }, e.color)));
+                let stroke = sh.stroke.clone().map(|st| index_of(&mut strokes, (st.scaled(e.transform.mean_scale()), e.color)));
                 styles.push((fill, stroke, sh.fill_rule));
                 marked.push(*mark);
             }

@@ -10,10 +10,10 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_rect as crate::RunFn),
-        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, object?}", true, draw_ellipse),
-        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, object?}", true, draw_star),
-        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
+        c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_rect as crate::RunFn),
+        c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_ellipse),
+        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, cap?, join?, style?, dash?, object?}", true, draw_star),
+        c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (the line style, as stroke.set_style; default: the tool's), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
         c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
         c("draw.snap_to_objects", "Snap to Objects", "View/Snapping", Some("Ctrl+Shift+/"), "{on?: bool} (default: toggle) dragged points and selections, and the points the Line, Rectangle, Oval, PolyStar and Pen tools draw, snap to points, lines and fill edges (the `snap` params of element.translate, raw.move_point, raw.move_handle and draw.snap do nothing while it is off)", false, snap_to_objects),
         c("edit.select_all", "Select All", "Edit", Some("Ctrl+A"), "{}", false, select_all),
@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.translate", "Move", "", None, "{dx, dy, snap?, from?: [x, y]} moves the selection, on every layer; with `snap` (a distance) one of its corners or ends (the nearest to `from`) then snaps onto a point, line or fill edge of the rest within that distance", true, translate),
         c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, |s, p| s.each_layer(true, |s| set_transform(s, p))),
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, |s, p| s.each_layer(false, |s| set_fill(s, p))),
-        c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..]}", true, |s, p| s.each_layer(false, |s| set_stroke(s, p))),
+        c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..], cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (as stroke.set_style)}", true, |s, p| s.each_layer(false, |s| set_stroke(s, p))),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
@@ -66,6 +66,7 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
         None => s.style.stroke_width,
     };
     let profile = opt_profile(p, "profile")?.unwrap_or_else(|| s.style.profile());
+    let line = opt_stroke_style(p, &s.style.line, width)?.unwrap_or_else(|| s.style.line.clone());
     let stroke = if p.get("stroke").is_some_and(Value::is_null) || width <= 0.0 {
         None
     } else {
@@ -74,7 +75,7 @@ pub(crate) fn style(s: &Session, p: &Value, closed: bool) -> Result<(Option<Pain
             None => (s.style.use_stroke || !closed).then_some(Stroke::new(s.style.stroke, width)),
         }
     }
-    .map(|st| st.with_profile(profile));
+    .map(|st| st.with_profile(profile).with_style(line));
     if fill.is_none() && stroke.is_none() {
         return Err(EngineError::Param("shape would be invisible: give it a fill or a stroke".into()));
     }
@@ -369,12 +370,14 @@ fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let profile = opt_profile(p, "profile")?;
     let default = s.style.clone();
+    // Checked once up front, so a bad style param changes nothing.
+    opt_stroke_style(p, &default.line, default.stroke_width)?;
     for sh in shapes_mut(s)? {
         if remove {
             sh.stroke = None;
             continue;
         }
-        let mut st = sh.stroke.take().unwrap_or_else(|| Stroke::new(default.stroke, default.stroke_width).with_profile(default.profile()));
+        let mut st = sh.stroke.take().unwrap_or_else(|| default.new_stroke(default.stroke, default.stroke_width));
         if let Some(c) = color {
             st.color = c;
         }
@@ -383,6 +386,9 @@ fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(pr) = &profile {
             st = st.with_profile(pr.clone());
+        }
+        if let Some(line) = opt_stroke_style(p, &st.style, st.width)? {
+            st = st.with_style(line);
         }
         sh.stroke = (st.width > 0.0).then_some(st);
     }

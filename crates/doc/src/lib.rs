@@ -17,6 +17,7 @@ mod hints;
 pub mod motion;
 pub mod path_table;
 pub mod width;
+pub mod stroke_style;
 pub mod player;
 pub mod sample;
 pub mod sound;
@@ -28,6 +29,7 @@ pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index
 pub use motion::{MotionTween, OnPath, Property, PropertyKey, Props, Track, motion_path};
 pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
+pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
 pub use camera::Camera;
 pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, guide_walk, instance_start};
@@ -159,7 +161,8 @@ impl Paint {
     }
 }
 
-/// Stroke style: round joins and caps, one width or a width profile (ADR 0018).
+/// A line: colour, width, an optional width profile (ADR 0018) and its style: caps, joins,
+/// miter limit, dashes (ADR 0046).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "StrokeFile")]
 pub struct Stroke {
@@ -169,40 +172,60 @@ pub struct Stroke {
     /// How the width varies along each subpath (`None`: the same everywhere). Never uniform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<WidthProfile>,
+    /// Caps, joins and dashes. The default (round, solid) is written as nothing, so strokes
+    /// without a style are stored as before.
+    #[serde(default, skip_serializing_if = "StrokeStyle::is_default")]
+    pub style: StrokeStyle,
 }
 
-/// What a file may hold for a stroke (a uniform profile is dropped on load).
+/// What a file may hold for a stroke (a uniform profile is dropped on load, the style is
+/// sanitized).
 #[derive(Deserialize)]
 struct StrokeFile {
     color: Rgba,
     width: f32,
     #[serde(default)]
     profile: Option<WidthProfile>,
+    #[serde(default)]
+    style: StrokeStyle,
 }
 
 impl From<StrokeFile> for Stroke {
     fn from(f: StrokeFile) -> Stroke {
-        Stroke { color: f.color, width: f.width, profile: f.profile.filter(|p| !p.is_uniform()) }
+        Stroke { color: f.color, width: f.width, profile: f.profile.filter(|p| !p.is_uniform()), style: f.style.sanitized() }
     }
 }
 
 impl Stroke {
-    /// A stroke of one width.
+    /// A solid stroke of one width with round caps and joins.
     pub fn new(color: Rgba, width: f32) -> Stroke {
-        Stroke { color, width, profile: None }
+        Stroke { color, width, profile: None, style: StrokeStyle::default() }
     }
     pub fn with_profile(self, profile: Option<WidthProfile>) -> Stroke {
         Stroke { profile: profile.filter(|p| !p.is_uniform()), ..self }
     }
+    /// The same stroke with caps, joins and dashes from `style` (sanitized).
+    pub fn with_style(self, style: StrokeStyle) -> Stroke {
+        Stroke { style: style.sanitized(), ..self }
+    }
     /// The farthest the stroke reaches from its path (local units): half its nominal width
-    /// times the profile's widest factor.
+    /// times the profile's widest factor, times what miter corners and square caps add.
     pub fn reach(&self) -> f32 {
         let w = if self.width.is_finite() { self.width.max(0.0) } else { 0.0 };
-        w * 0.5 * self.profile.as_ref().map_or(1.0, WidthProfile::max_factor)
+        w * 0.5 * self.profile.as_ref().map_or(1.0, WidthProfile::max_factor) * self.style.reach_factor()
     }
-    /// The stroke `t` of the way to `o` (shape tweens): colour, width and profile blend.
+    /// The stroke of a shape scaled by `k` (mean scale): the width and the dashes scale.
+    pub fn scaled(&self, k: f32) -> Stroke {
+        Stroke { width: self.width * k, style: self.style.scaled(k), ..self.clone() }
+    }
+    /// The stroke `t` of the way to `o` (shape tweens): colour, width, profile and style blend.
     pub fn lerp(&self, o: &Stroke, t: f32) -> Stroke {
-        Stroke { color: self.color.lerp(o.color, t), width: anicraft_geom::lerp(self.width, o.width, t), profile: WidthProfile::lerp(self.profile.as_ref(), o.profile.as_ref(), t) }
+        Stroke {
+            color: self.color.lerp(o.color, t),
+            width: anicraft_geom::lerp(self.width, o.width, t),
+            profile: WidthProfile::lerp(self.profile.as_ref(), o.profile.as_ref(), t),
+            style: self.style.lerp(&o.style, t),
+        }
     }
 }
 

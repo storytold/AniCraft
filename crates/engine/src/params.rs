@@ -146,3 +146,86 @@ pub fn opt_profile(p: &Value, key: &str) -> Result<Option<Option<WidthProfile>>>
         Some(_) => Err(bad(key, want)),
     }
 }
+
+/// What the stroke style params take (`stroke.set_style`, `element.set_stroke`, the drawing
+/// commands, `paint.ink`).
+pub const STROKE_STYLE_PARAMS: &str = "cap?: none|round|square, join?: miter|round|bevel, miter? (limit, 1..=100), style?: solid|dashed|dotted, dash? ([on, off, ..] lengths; implies dashed), dash_offset?, dot_spacing? (implies dotted)";
+
+/// The stroke style params (ADR 0046) applied to `base`, for a stroke `width` wide (which sizes
+/// a new dash pattern or dot spacing); `None` when none are given.
+pub fn opt_stroke_style(p: &Value, base: &anicraft_doc::StrokeStyle, width: f32) -> Result<Option<anicraft_doc::StrokeStyle>> {
+    use anicraft_doc::stroke_style::{MAX_DASH_ENTRIES, MAX_DASH_LENGTH, MAX_MITER_LIMIT, MIN_MITER_LIMIT};
+    use anicraft_doc::{Cap, Dash, DashKind, Join};
+    let keys = ["cap", "join", "miter", "style", "dash", "dash_offset", "dot_spacing"];
+    if !keys.iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+        return Ok(None);
+    }
+    let mut st = base.clone();
+    if let Some(c) = opt_str(p, "cap")? {
+        st.cap = Cap::from_key(c).ok_or_else(|| bad("cap", "none, round or square"))?;
+    }
+    if let Some(j) = opt_str(p, "join")? {
+        st.join = Join::from_key(j).ok_or_else(|| bad("join", "miter, round or bevel"))?;
+    }
+    if let Some(m) = opt_f32(p, "miter")? {
+        if !(MIN_MITER_LIMIT..=MAX_MITER_LIMIT).contains(&m) {
+            return Err(bad("miter", &format!("a miter limit in {MIN_MITER_LIMIT}..={MAX_MITER_LIMIT}")));
+        }
+        st.miter_limit = m;
+    }
+    let len_ok = |v: f32| (0.0..=MAX_DASH_LENGTH).contains(&v);
+    let dash = match p.get("dash") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(list)) => {
+            if list.is_empty() || list.len() > MAX_DASH_ENTRIES {
+                return Err(bad("dash", &format!("a list of 1 to {MAX_DASH_ENTRIES} lengths")));
+            }
+            let mut v = Vec::with_capacity(list.len());
+            for x in list {
+                match x.as_f64().filter(|f| f.is_finite()).map(|f| f as f32) {
+                    Some(f) if len_ok(f) => v.push(f),
+                    _ => return Err(bad("dash", &format!("lengths in 0..={MAX_DASH_LENGTH}"))),
+                }
+            }
+            Some(v)
+        }
+        Some(_) => return Err(bad("dash", "a list of [on, off, ..] lengths")),
+    };
+    let offset = opt_f32(p, "dash_offset")?;
+    if offset.is_some_and(|o| o.abs() > MAX_DASH_LENGTH) {
+        return Err(bad("dash_offset", &format!("in -{MAX_DASH_LENGTH}..={MAX_DASH_LENGTH}")));
+    }
+    let spacing = opt_f32(p, "dot_spacing")?;
+    if spacing.is_some_and(|s| !len_ok(s)) {
+        return Err(bad("dot_spacing", &format!("in 0..={MAX_DASH_LENGTH}")));
+    }
+    let kind = match opt_str(p, "style")? {
+        Some(k) => DashKind::from_key(k).ok_or_else(|| bad("style", "solid, dashed or dotted"))?,
+        None if dash.is_some() || offset.is_some() => DashKind::Dashed,
+        None if spacing.is_some() => DashKind::Dotted,
+        None => st.dash_kind(),
+    };
+    // A new pattern is sized by the stroke: dashes three widths long with two-width gaps, dots
+    // one width apart.
+    let w = if width.is_finite() { width.clamp(0.0, MAX_DASH_LENGTH) } else { 1.0 };
+    st.dash = match kind {
+        DashKind::Solid => None,
+        DashKind::Dashed => {
+            let (lengths, old_offset) = match &st.dash {
+                Some(Dash::Dashed { lengths, offset }) => (lengths.to_vec(), *offset),
+                _ => (vec![(3.0 * w).max(2.0), (2.0 * w).max(2.0)], 0.0),
+            };
+            let lengths = dash.unwrap_or(lengths);
+            let d = Dash::Dashed { lengths: lengths.into(), offset: offset.unwrap_or(old_offset) }.sanitized();
+            Some(d.ok_or_else(|| bad("dash", "a pattern with a gap (some off length above 0)"))?)
+        }
+        DashKind::Dotted => {
+            let old = match &st.dash {
+                Some(Dash::Dotted { spacing }) => *spacing,
+                _ => w.max(2.0),
+            };
+            Dash::dotted(spacing.unwrap_or(old))
+        }
+    };
+    Ok(Some(st.sanitized()))
+}
