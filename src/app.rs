@@ -294,6 +294,9 @@ pub struct App {
     pub last_tool: Tool,
     pub status: Option<Status>,
     pub prompt: Option<Prompt>,
+    /// The Convert to Symbol dialog, and what it chose last (ADR 0053).
+    pub convert: Option<crate::convert_symbol::ConvertDialog>,
+    pub convert_last: crate::convert_symbol::Last,
     pub show_about: bool,
     pub show_files: bool,
     pub show_licenses: bool,
@@ -482,6 +485,8 @@ impl App {
             last_tool: Tool::Select,
             status: None,
             prompt: None,
+            convert: None,
+            convert_last: Default::default(),
             show_about: false,
             show_files: false,
             show_licenses: false,
@@ -793,6 +798,50 @@ impl App {
                 if which == "librarymenu" {
                     crate::library::select_unused(self);
                 }
+            }
+            Some("convert") => {
+                // Convert to Symbol with folders to choose from, the last one used offered again
+                // (ADR 0053).
+                let folder = self.run("library.new_folder", json!({"name": "Characters"})).and_then(|v| v["folder"].as_u64());
+                self.run("library.new_folder", json!({"name": "Props"}));
+                self.run("draw.rect", json!({"x": 820, "y": 120, "w": 140, "h": 90, "fill": "#e0a030", "object": true}));
+                self.convert_last = crate::convert_symbol::Last { folder: folder.map(anicraft_engine::doc::FolderId), kind: anicraft_engine::doc::SymbolKind::MovieClip };
+                crate::convert_symbol::open(self);
+            }
+            Some("mixed") => {
+                // Two movie clips that differ in blending and filters, selected: those rows say
+                // "mixed" (ADR 0053).
+                if let Some(ball) = self.s.doc.library.first().map(|s| s.id.0) {
+                    self.run("edit.deselect", json!({}));
+                    self.run("symbol.set_kind", json!({"symbol": ball, "kind": "movie_clip"}));
+                    let id = |v: Option<Value>| v.and_then(|v| v["element"].as_u64()).unwrap_or(0);
+                    let a = id(self.run("library.place", json!({"symbol": ball, "x": 760, "y": 180})));
+                    let b = id(self.run("library.place", json!({"symbol": ball, "x": 900, "y": 220})));
+                    self.run("element.set_blend", json!({"mode": "multiply"}));
+                    self.run("element.set_filters", json!({"filters": [{"type": "glow"}]}));
+                    self.run("element.select", json!({"ids": [a, b]}));
+                }
+            }
+            Some("bitmap") => {
+                // Two placed bitmaps of different images, selected: the Bitmap row with Swap…
+                // says "mixed" (ADR 0053).
+                let dir = std::env::temp_dir().join("anicraft-shot-bitmaps");
+                let _ = std::fs::create_dir_all(&dir);
+                let mut ids = Vec::new();
+                for (name, w, h, px) in [("checker.png", 8u32, 8u32, [40u8, 120, 220, 255]), ("sunset.png", 12, 6, [230, 120, 40, 255])] {
+                    let path = dir.join(name);
+                    let Ok(png) = anicraft_engine::render::encode_png(w, h, &px.repeat((w * h) as usize)) else { continue };
+                    if std::fs::write(&path, png).is_err() {
+                        continue;
+                    }
+                    if let Some(b) = self.run("file.import_to_library", json!({"path": path.display().to_string(), "name": name})).and_then(|v| v["bitmap"].as_u64()) {
+                        let at = 700 + 160 * ids.len();
+                        if let Some(e) = self.run("library.place", json!({"bitmap": b, "x": at, "y": 200})).and_then(|v| v["element"].as_u64()) {
+                            ids.push(e);
+                        }
+                    }
+                }
+                self.run("element.select", json!({"ids": ids}));
             }
             Some(which @ ("onion" | "onionmenu")) => {
                 // Onion skin ±5 on a frame with frames before and after it, the markers on the
@@ -1350,7 +1399,7 @@ impl App {
 
     /// Any modal (prompt, confirmation, close guard) is open: global shortcuts pause.
     pub fn modal_open(&self) -> bool {
-        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
+        self.prompt.is_some() || self.convert.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
     }
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
@@ -1575,6 +1624,11 @@ impl App {
             self.show_plugins = true;
             return;
         }
+        if id == "modify.convert_to_symbol" {
+            // Name, type and Library folder (ADR 0053).
+            crate::convert_symbol::open(self);
+            return;
+        }
         if id == "edit.paste" {
             // Paste in the centre of what you are looking at.
             let c = self.view_center_stage();
@@ -1599,7 +1653,6 @@ impl App {
             "file.import_to_library" => Some((tr_noop!("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)"), "path", "sound.wav".to_string())),
             "file.import" => Some((tr_noop!("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)"), "path", "drawing.svg".to_string())),
             "plugin.install" => Some((tr_noop!("Install plug-in (.wasm file)"), "path", "plugin.wasm".to_string())),
-            "modify.convert_to_symbol" => Some((tr_noop!("Convert to symbol — name"), "name", format!("Symbol {}", self.s.doc.library.len() + 1))), // i18n-exempt: a new symbol's default name is document text
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
@@ -2152,6 +2205,7 @@ impl App {
         crate::a11y::name_splitter(&ctx, "timeline", tr!("Resize the timeline"));
 
         self.prompt_window(&ctx);
+        crate::convert_symbol::window(self, &ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);

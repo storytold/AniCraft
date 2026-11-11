@@ -25,6 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("library.unused", "Select Unused Items", "", None, "{} → {items: [..]} the items nothing in the movie reaches: not in a scene, nor inside a symbol that is; symbols with a linkage class count as used", false, unused),
         c("library.delete_unused", "Delete Unused Items", "", None, "{} deletes every item `library.unused` lists (asks first)", true, delete_unused),
         c("library.set_smoothing", "Allow Smoothing", "", None, "{bitmap, on?: bool (default: toggle)} whether the bitmap is filtered when scaled or turned (off: hard-edged pixels)", true, set_smoothing),
+        c("element.swap_bitmap", "Swap Bitmap", "", None, "{bitmap} the selected bitmaps and bitmap-filled shapes show another bitmap: a placed bitmap keeps its transform and top-left corner and takes the new bitmap's size; a bitmap fill keeps its shape and fill transform", true, |s, p| s.each_layer(false, |s| swap_bitmap(s, p))),
         c("element.swap_symbol", "Swap Symbol", "", None, "{symbol} the selected instances show another symbol, keeping their transform, colour effect, blending, filters, looping, actions and instance name", true, |s, p| s.each_layer(false, |s| swap_symbol(s, p))),
     ]
 }
@@ -84,7 +85,7 @@ fn describe(e: LibraryEntry) -> String {
     }
 }
 
-fn opt_folder(s: &Session, p: &Value, key: &str) -> Result<Option<FolderId>> {
+pub(crate) fn opt_folder(s: &Session, p: &Value, key: &str) -> Result<Option<FolderId>> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => {
@@ -97,7 +98,17 @@ fn opt_folder(s: &Session, p: &Value, key: &str) -> Result<Option<FolderId>> {
     }
 }
 
-fn kind_key(k: SymbolKind) -> &'static str {
+/// The symbol type `key` names (`graphic`, `movie_clip` or `button`).
+pub(crate) fn kind_of(key: &str) -> Result<SymbolKind> {
+    match key {
+        "graphic" => Ok(SymbolKind::Graphic),
+        "movie_clip" | "movie clip" => Ok(SymbolKind::MovieClip),
+        "button" => Ok(SymbolKind::Button),
+        _ => Err(EngineError::Param(format!("unknown symbol type '{key}' (graphic, movie_clip or button)"))),
+    }
+}
+
+pub(crate) fn kind_key(k: SymbolKind) -> &'static str {
     match k {
         SymbolKind::Graphic => "graphic",
         SymbolKind::MovieClip => "movie_clip",
@@ -395,6 +406,47 @@ fn swap_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"swapped": swapped, "symbol": to.0}))
 }
 
+/// Swap Bitmap (ADR 0053), as Animate's Properties offer on a bitmap. A bitmap placed from the
+/// Library is a rectangle of the bitmap's size filled with it: it keeps its transform (so its
+/// top-left corner stays put) and becomes the new bitmap's size, and its name follows when it was
+/// the old bitmap's. Any other shape filled with a bitmap keeps its outline and fill transform.
+fn swap_bitmap(s: &mut Session, p: &Value) -> Result<Value> {
+    let to = BitmapId(opt_u64(p, "bitmap")?.ok_or_else(|| EngineError::Param("param 'bitmap' is required".into()))?);
+    let Some(new) = s.doc.bitmap(to).map(|b| (b.name.clone(), b.width as f32, b.height as f32)) else {
+        return Err(EngineError::State(format!("no bitmap with id {}", to.0)));
+    };
+    let sizes: std::collections::HashMap<BitmapId, (String, f32, f32)> = s.doc.bitmaps.iter().map(|b| (b.id, (b.name.clone(), b.width as f32, b.height as f32))).collect();
+    let mut swapped = 0;
+    for e in s.selected_elements_mut()? {
+        let ElementKind::Shape(sh) = &mut e.kind else { continue };
+        let Some(Paint::Bitmap { bitmap, repeat, matrix }) = &mut sh.fill else { continue };
+        let old = *bitmap;
+        *bitmap = to;
+        swapped += 1;
+        if old == to {
+            continue;
+        }
+        if let Some((name, w, h)) = sizes.get(&old)
+            && !*repeat
+            && *matrix == anicraft_geom::Affine::IDENTITY
+            && *sh.path == anicraft_geom::Path::rect(0.0, 0.0, *w, *h)
+        {
+            sh.path = Arc::new(anicraft_geom::Path::rect(0.0, 0.0, new.1, new.2));
+            if e.name == *name {
+                e.name.clone_from(&new.0);
+            }
+        }
+    }
+    if swapped == 0 {
+        return Err(EngineError::State("select a bitmap, or a shape filled with one, to swap".into()));
+    }
+    Ok(json!({"swapped": swapped, "bitmap": to.0}))
+}
+
 #[cfg(test)]
 #[path = "library_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "place_tests.rs"]
+mod place_tests;

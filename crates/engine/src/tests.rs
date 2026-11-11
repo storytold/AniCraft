@@ -723,12 +723,24 @@ fn panic_hunt_every_command() {
     let ball = library.doc.library.first().map(|x| x.id.0).unwrap();
     library.execute("library.move", &json!({"items": [{"symbol": ball}], "to": inner})).unwrap();
     library.execute("library.duplicate", &json!({"symbol": ball})).unwrap();
+    // ...and a bitmap placed on the stage, for Swap Bitmap (ADR 0053).
+    let bm = anicraft_doc::BitmapId(library.doc.alloc_id());
+    let png = anicraft_render::encode_png(3, 2, &[0, 0, 255, 255].repeat(6)).unwrap();
+    library.doc.bitmaps.push(Arc::new(anicraft_doc::Bitmap::from_png(bm, "b.png", png).unwrap()));
+    library.execute("library.place", &json!({"bitmap": bm.0})).unwrap();
+    hostile.push(json!({"bitmap": bm.0, "items": [{"bitmap": bm.0}, {"symbol": ball}], "x": 3, "y": 4}));
     hostile.extend([
         json!({"items": [{"folder": outer}], "to": inner, "folder": outer, "name": "Hero", "parent": inner, "confirm": true}),
         json!({"items": [{"folder": inner}, {"symbol": ball}, {"folder": inner}], "to": null, "folder": inner, "name": "a/b", "symbol": ball}),
         json!({"items": [{"symbol": ball, "folder": outer}, "x", {"sound": u64::MAX}], "to": u64::MAX, "parent": "x", "name": " "}),
         json!({"items": (0..200).map(|i| json!({"folder": i})).collect::<Vec<_>>(), "to": outer, "symbol": ball, "name": "x".repeat(300), "on": "x", "bitmap": 1}),
         json!({"items": [{"symbol": ball}], "to": outer, "symbol": ball, "name": "Ball copy", "confirm": true}),
+        // Drops from the Library and Swap Bitmap (ADR 0053): mixed lists, two sounds, far points.
+        json!({"items": [{"symbol": ball}, {"sound": SOUND}, {"bitmap": u64::MAX}], "x": 1e300, "y": -1e300}),
+        json!({"items": [{"sound": SOUND}, {"sound": SOUND}, {"symbol": ball}], "x": 999_999, "y": -999_999, "bitmap": 0}),
+        json!({"items": [{"symbol": ball}, {"symbol": ball}, {"folder": inner}, null], "x": "a"}),
+        json!({"items": (0..1500).map(|_| json!({"symbol": ball})).collect::<Vec<_>>(), "x": 0, "y": 0}),
+        json!({"sound": SOUND, "symbol": ball, "x": 10, "y": 10}),
     ]);
     for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol, keyed, library] {
         let mut s = start;

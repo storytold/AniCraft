@@ -485,7 +485,8 @@ fn mixed(ui: &mut egui::Ui, differs: bool) {
 /// The selection's properties: `e` is the first selected element, `all` the whole selection.
 fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, all: &[std::sync::Arc<anicraft_engine::doc::Element>]) {
     let many = all.len() > 1;
-    let differs = |f: &dyn Fn(&anicraft_engine::doc::Element) -> f32| all.iter().any(|x| (f(x) - f(e)).abs() > 1e-4);
+    // Which rows differ across the selection (ADR 0053): they say "mixed", and a change sets all.
+    let m = crate::mixed::of(&app.s.doc, all);
     if let ElementKind::Symbol { symbol, events, .. } = &e.kind
         && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
     {
@@ -516,35 +517,32 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 }
             });
         }
-        let scale_mixed = many && (differs(&|x| x.transform.decompose().sx) || differs(&|x| x.transform.decompose().sy));
         row(ui, tr!("Scale"), |ui| {
             let a = ui.add(egui::DragValue::new(&mut sx).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named(tr!("Scale width"));
             let b = ui.add(egui::DragValue::new(&mut sy).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named(tr!("Scale height"));
             if a.changed() || b.changed() {
                 live(app, tr_noop!("Scale"), "element.set_transform", json!({"sx": sx / 100.0, "sy": sy / 100.0}));
             }
-            mixed(ui, scale_mixed);
+            mixed(ui, m.scale);
         });
-        let rot_mixed = many && differs(&|x| x.transform.decompose().rotation);
         row(ui, tr!("Rotation"), |ui| {
             if ui.add(egui::DragValue::new(&mut rot).suffix("°").speed(0.5).range(-360.0..=360.0).max_decimals(1)).named(tr!("Rotation")).changed() {
                 live(app, tr_noop!("Rotate"), "element.set_transform", json!({"rotation": rot}));
             }
-            mixed(ui, rot_mixed);
+            mixed(ui, m.rotation);
         });
         let mut alpha = e.color.alpha * 100.0;
-        let alpha_mixed = many && differs(&|x| x.color.alpha);
         row(ui, tr!("Alpha"), |ui| {
             if a11y::slider(ui, &mut alpha, 0.0..=100.0, tr!("Alpha"), a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() }).changed() {
                 live(app, tr_noop!("Alpha"), "element.set_alpha", json!({"alpha": alpha / 100.0}));
             }
-            mixed(ui, alpha_mixed);
+            mixed(ui, m.alpha);
         });
         // Blending and filters, on movie clips and buttons as in Animate.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
         {
-            filter_rows(app, ui, filters);
+            filter_rows(app, ui, filters, m.filters);
         }
         if let ElementKind::Symbol { symbol, blend, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
@@ -552,14 +550,15 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             let current = *blend;
             row_prose(ui, tr!("Blending"), |ui| {
                 egui::ComboBox::from_id_salt("prop_blend").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
-                    for m in anicraft_engine::doc::BlendMode::ALL {
-                        if ui.selectable_label(m == current, crate::i18n::t(m.label())).clicked() && m != current {
-                            app.run("element.set_blend", json!({"mode": m.key()}));
+                    for mode in anicraft_engine::doc::BlendMode::ALL {
+                        if ui.selectable_label(mode == current, crate::i18n::t(mode.label())).clicked() && (mode != current || m.blend) {
+                            app.run("element.set_blend", json!({"mode": mode.key()}));
                         }
                     }
                 })
                 .response
                 .set_name(tr!("Blending"));
+                mixed(ui, m.blend);
             });
         }
         if let ElementKind::Symbol { symbol, loop_mode, first_frame, .. } = &e.kind
@@ -576,13 +575,15 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                         (SymbolKind::MovieClip, "movie_clip", tr!("Plays its own timeline on a loop, from when it appears")),
                         (SymbolKind::Button, "button", tr!("Shows its Up frame")),
                     ] {
-                        if ui.selectable_label(kind == k, symbol_kind_label(k)).on_hover_text(tip).clicked() && kind != k {
-                            app.run("symbol.set_kind", json!({"symbol": symbol.0, "kind": id}));
+                        if ui.selectable_label(kind == k, symbol_kind_label(k)).on_hover_text(tip).clicked() && (kind != k || m.kind) {
+                            // Every selected instance's symbol (ADR 0053), or just this one's.
+                            app.run("symbol.set_kind", if many { json!({"kind": id}) } else { json!({"symbol": symbol.0, "kind": id}) });
                         }
                     }
                 })
                 .response
                 .set_name(tr!("Symbol type"));
+                mixed(ui, m.kind);
             });
             // Swap Symbol (ADR 0050): another symbol in this instance's place, keeping its
             // transform, colour effect, filters and name.
@@ -597,7 +598,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                         for (id, path) in &choices {
                             if ui.selectable_label(*id == current, path.as_str()).clicked() {
                                 ui.close();
-                                if *id != current {
+                                if *id != current || m.symbol {
                                     app.run("element.swap_symbol", json!({"symbol": id.0}));
                                 }
                             }
@@ -607,6 +608,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 .response
                 .on_hover_text(tr!("Show another symbol here, keeping position, colour effect, filters and name"))
                 .set_name(tr!("Swap Symbol"));
+                mixed(ui, m.symbol);
             });
             // The class scripts know the symbol by (kept, not run; ADR 0013), in documents
             // that use scripts.
@@ -623,17 +625,18 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             }
             if kind == SymbolKind::Graphic {
                 let names = [(LoopMode::Loop, "loop", tr!("Loop")), (LoopMode::PlayOnce, "play_once", tr!("Play once")), (LoopMode::SingleFrame, "single_frame", tr!("Single frame"))];
-                let current = names.iter().find(|(m, _, _)| m == loop_mode).map_or(tr!("Loop"), |(_, _, l)| l);
+                let current = names.iter().find(|(mode, _, _)| mode == loop_mode).map_or(tr!("Loop"), |(_, _, l)| l);
                 row_prose(ui, tr!("Looping"), |ui| {
                     egui::ComboBox::from_id_salt("prop_loop").width(150.0).selected_text(current).show_ui(ui, |ui| {
-                        for (m, id, l) in names {
-                            if ui.selectable_label(m == *loop_mode, l).clicked() && m != *loop_mode {
+                        for (mode, id, l) in names {
+                            if ui.selectable_label(mode == *loop_mode, l).clicked() && (mode != *loop_mode || m.looping) {
                                 app.run("element.set_loop", json!({"loop": id}));
                             }
                         }
                     })
                     .response
                     .set_name(tr!("Looping"));
+                    mixed(ui, m.looping);
                 });
                 let mut first = first_frame + 1;
                 row(ui, tr!("First frame"), |ui| {
@@ -642,6 +645,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                         live(app, tr_noop!("First frame"), "element.set_loop", json!({"first_frame": first.saturating_sub(1)}));
                     }
                     ui.label(text(Type::Caption, tr!("of {frames}", frames = frames)));
+                    mixed(ui, m.first_frame);
                 });
             } else if kind == SymbolKind::MovieClip {
                 ui.label(text(Type::Caption, trn!("Plays its {n}-frame timeline on a loop from when it appears.", "Plays its {n}-frame timeline on a loop from when it appears.", frames)));
@@ -664,14 +668,6 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         if let ElementKind::Shape(sh) = &e.kind {
             ui.add_space(4.0);
             let fill = sh.fill.as_ref().map(Paint::primary_color);
-            // Mixed: the selected shapes' fills, or lines, are not all alike.
-            let shapes: Vec<&anicraft_engine::doc::Shape> = all.iter().filter_map(|x| match &x.kind {
-                ElementKind::Shape(s) => Some(s),
-                _ => None,
-            }).collect();
-            let fill_mixed = shapes.iter().any(|s| s.fill.as_ref().map(Paint::primary_color) != fill);
-            let line = |s: &anicraft_engine::doc::Shape| s.stroke.as_ref().map(|st| (st.color, st.width.to_bits()));
-            let stroke_mixed = shapes.iter().any(|s| line(s) != line(sh));
             row(ui, tr!("Fill"), |ui| {
                 let is_grad = matches!(sh.fill, Some(Paint::Linear { .. } | Paint::Radial { .. }));
                 let mut c = rgb(fill.unwrap_or(Rgba::WHITE));
@@ -682,14 +678,14 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 if crate::theme::checkbox(ui, &mut on, "").named(tr!("Fill")).on_hover_text(tr!("Fill on/off")).changed() {
                     app.run("element.set_fill", if on { json!({"color": hex(c)}) } else { json!({"color": null}) });
                 }
-                if let Some(Paint::Bitmap { bitmap, .. }) = &sh.fill {
-                    let name = app.s.doc.bitmap(*bitmap).map_or_else(|| tr!("missing bitmap").to_string(), |b| format!("{} · {}×{}", b.name, b.width, b.height));
-                    ui.label(text(Type::Caption, name));
-                } else if is_grad {
+                if is_grad {
                     ui.label(text(Type::Caption, tr!("gradient")));
                 }
-                mixed(ui, fill_mixed);
+                mixed(ui, m.fill);
             });
+            if let Some(Paint::Bitmap { bitmap, .. }) = &sh.fill {
+                bitmap_row(app, ui, *bitmap, m.bitmap);
+            }
             let mut sc = rgb(sh.stroke.as_ref().map_or(app.s.style.stroke, |s| s.color));
             let mut sw = sh.stroke.as_ref().map_or(0.0, |s| s.width);
             row(ui, tr!("Stroke"), |ui| {
@@ -699,17 +695,16 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 if ui.add(egui::DragValue::new(&mut sw).suffix(" px").speed(0.1).range(0.0..=200.0).max_decimals(1)).named(tr!("Stroke width")).changed() {
                     live(app, tr_noop!("Stroke width"), "element.set_stroke", json!({"width": sw}));
                 }
-                mixed(ui, stroke_mixed);
+                mixed(ui, m.stroke);
             });
             if let Some(st) = &sh.stroke {
                 // The width profile, as Animate's Width menu: built-ins with a picture of each.
                 let current = st.profile.clone();
-                if let Some(pick) = profile_picker(ui, ProfileRow::Selection, current.as_ref()) {
+                if let Some(pick) = profile_picker(ui, ProfileRow::Selection, current.as_ref(), m.profile) {
                     app.run("stroke.set_profile", json!({"profile": pick.key()}));
                 }
                 // Style, caps and joins (ADR 0046).
-                let style_mixed = shapes.iter().any(|s| s.stroke.as_ref().map(|x| &x.style) != Some(&st.style));
-                if let Some(edit) = line_style_rows(ui, ProfileRow::Selection, &st.style, style_mixed) {
+                if let Some(edit) = line_style_rows(ui, ProfileRow::Selection, &st.style, m.style) {
                     if edit.drag {
                         live(app, edit.label, "stroke.set_style", edit.params);
                     } else {
@@ -727,6 +722,33 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             }
         });
     }
+}
+
+/// The bitmap a placed bitmap or bitmap fill shows, with Swap Bitmap (ADR 0053): another
+/// Library bitmap in its place, for every selected bitmap.
+fn bitmap_row(app: &mut App, ui: &mut egui::Ui, current: anicraft_engine::doc::BitmapId, differs: bool) {
+    let name = app.s.doc.bitmap(current).map_or_else(|| tr!("missing bitmap").to_string(), |b| format!("{} · {}×{}", b.name, b.width, b.height));
+    let mut choices: Vec<(anicraft_engine::doc::BitmapId, String)> = app.s.doc.bitmaps.iter().map(|b| (b.id, app.s.doc.entry_path(anicraft_engine::doc::LibraryEntry::Item(LibraryItem::Bitmap(b.id))))).collect();
+    choices.sort_by_key(|(_, p)| p.to_lowercase());
+    row_prose(ui, tr!("Bitmap"), |ui| {
+        ui.label(text(Type::Body, name));
+        ui.menu_button(tr!("Swap…"), |ui| {
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for (id, path) in &choices {
+                    if ui.selectable_label(*id == current, path.as_str()).clicked() {
+                        ui.close();
+                        if *id != current || differs {
+                            app.run("element.swap_bitmap", json!({"bitmap": id.0}));
+                        }
+                    }
+                }
+            });
+        })
+        .response
+        .on_hover_text(tr!("Show another bitmap from the Library here, keeping its position and transform"))
+        .set_name(tr!("Swap Bitmap"));
+        mixed(ui, differs);
+    });
 }
 
 /// A movie clip or button instance's name (what actions address it by) and its events, as at
@@ -753,7 +775,7 @@ fn instance_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Ele
 /// The Filters rows of a movie clip or button instance: an Add menu, then each filter's values
 /// with a remove button. Every change replaces the list (`element.set_filters`), one undo step
 /// per gesture.
-fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc::Filter]) {
+fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc::Filter], differs: bool) {
     use anicraft_engine::doc::Filter;
     // As the renderer sees them (a file may hold values or ramps a command would refuse).
     let mut list: Vec<Filter> = current.iter().map(Filter::sanitized).collect();
@@ -771,6 +793,7 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
         })
         .response
         .set_name(tr!("Add filter"));
+        mixed(ui, differs);
     });
     let quality_names = [tr!("Low"), tr!("Medium"), tr!("High")];
     let mut remove = None;
@@ -1621,7 +1644,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         });
         // The width profile new strokes get.
         let current = st.profile();
-        if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref()) {
+        if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref(), false) {
             st.set_profile(pick);
         }
         // And their style, caps and joins (with the params the commands take).
@@ -1777,7 +1800,7 @@ enum ProfileRow {
 }
 
 /// The Width row: a profile menu with a picture of each built-in. Returns the one picked.
-fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraft_engine::doc::WidthProfile>) -> Option<anicraft_engine::doc::ProfilePreset> {
+fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraft_engine::doc::WidthProfile>, differs: bool) -> Option<anicraft_engine::doc::ProfilePreset> {
     use anicraft_engine::doc::ProfilePreset;
     let preset = match current {
         None => Some(ProfilePreset::Uniform),
@@ -1797,7 +1820,7 @@ fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraf
                     let lab = ui.selectable_label(on, name);
                     pic.clicked() || lab.clicked()
                 });
-                if r.inner && !on {
+                if r.inner && (!on || differs) {
                     picked = Some(pr);
                 }
             }
@@ -1805,6 +1828,7 @@ fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraf
         .response
         .on_hover_text(tr!("How the stroke's width varies along it. Shape it by hand with the Width tool (U)."))
         .set_name(tr!("Stroke width profile"));
+        mixed(ui, differs);
     });
     picked
 }

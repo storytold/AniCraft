@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Selection, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Layer, LayerId, LoopMode, Paint, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
+use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Layer, LayerId, LibraryEntry, LibraryItem, LoopMode, Paint, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Decomposed, Path, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -33,15 +33,15 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
-        c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the selected instance's)}", true, set_symbol_kind),
+        c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the symbols of every selected instance)}", true, set_symbol_kind),
         c("element.rename", "Instance Name", "", None, "{name}", true, |s, p| s.each_layer(true, |s| rename(s, p))),
         c("arrange.bring_to_front", "Bring to Front", "Modify/Arrange", Some("Ctrl+Shift+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, true))),
         c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, true))),
         c("arrange.send_backward", "Send Backward", "Modify/Arrange", Some("Ctrl+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, false))),
         c("arrange.send_to_back", "Send to Back", "Modify/Arrange", Some("Ctrl+Shift+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, false))),
-        c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name?} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)", true, convert_to_symbol),
+        c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name? (default: the next free “Symbol n”; a name the folder holds gets a number), kind?: graphic|movie_clip|button (default: graphic), folder?: Library folder id (default: the top level)} → {symbol, instance, name, layer, folder} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)", true, convert_to_symbol),
         c("modify.break_apart", "Break Apart", "Modify", Some("Ctrl+B"), "{}", true, |s, p| s.each_layer(false, |s| break_apart(s, p))),
-        c("library.place", "Place Instance", "", None, "{symbol | bitmap, x?, y?}", true, place),
+        c("library.place", "Place on Stage", "", None, "{symbol | bitmap | sound: id, x?, y?} or {items: [{symbol | bitmap | sound: id}, ..], x?, y?} → {element, elements, sound?}: symbols and bitmaps centred on x, y (default: the stage centre; inside an open symbol, in its space) in the active layer's keyframe at the playhead, selected; a sound goes onto that keyframe, its span grown to fit (one sound per keyframe). One undo step", true, place),
     ]
 }
 
@@ -526,30 +526,33 @@ fn set_loop(s: &mut Session, p: &Value) -> Result<Value> {
 /// A symbol's kind, for every instance of it: a graphic keeps step with the timeline it is
 /// placed on, a movie clip plays its own timeline on a loop, a button shows its Up frame.
 fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
-    let kind = match str_req(p, "kind")? {
-        "graphic" => SymbolKind::Graphic,
-        "movie_clip" | "movie clip" => SymbolKind::MovieClip,
-        "button" => SymbolKind::Button,
-        other => return Err(EngineError::Param(format!("unknown symbol kind '{other}' (graphic, movie_clip or button)"))),
-    };
-    let id = match opt_u64(p, "symbol")? {
-        Some(id) => SymbolId(id),
+    let kind = crate::cmds_library::kind_of(str_req(p, "kind")?)?;
+    let ids: Vec<SymbolId> = match opt_u64(p, "symbol")? {
+        Some(id) => vec![SymbolId(id)],
         None => {
-            // The symbol of the selected instance.
-            let (layer, sel) = s.selection.first().ok_or_else(|| EngineError::State("select a symbol instance, or pass 'symbol'".into()))?;
-            s.elements_on(layer)
-                .iter()
-                .find(|e| e.id == sel)
-                .and_then(|e| match e.kind {
-                    ElementKind::Symbol { symbol, .. } => Some(symbol),
-                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
-                })
-                .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
+            // The symbols of the selected instances, on every layer (ADR 0053: a "mixed" Type
+            // row sets them all), in selection order.
+            let mut ids = Vec::new();
+            for (layer, sel) in s.selection.iter() {
+                if let Some(ElementKind::Symbol { symbol, .. }) = s.elements_on(layer).iter().find(|e| e.id == sel).map(|e| &e.kind)
+                    && !ids.contains(symbol)
+                {
+                    ids.push(*symbol);
+                }
+            }
+            if ids.is_empty() {
+                return Err(EngineError::State(if s.selection.is_empty() { "select a symbol instance, or pass 'symbol'".into() } else { "the selection is not a symbol instance".into() }));
+            }
+            ids
         }
     };
-    let sym = s.doc.library.iter_mut().find(|x| x.id == id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
-    std::sync::Arc::make_mut(sym).kind = kind;
-    Ok(json!({"symbol": id.0, "kind": format!("{kind:?}")}))
+    for id in &ids {
+        let sym = s.doc.library.iter_mut().find(|x| x.id == *id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
+        if sym.kind != kind {
+            std::sync::Arc::make_mut(sym).kind = kind;
+        }
+    }
+    Ok(json!({"symbol": ids.first().map(|i| i.0), "symbols": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "kind": format!("{kind:?}")}))
 }
 
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
@@ -648,8 +651,14 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(&top) = layers.first() else {
         return Err(EngineError::State("select something to convert".into()));
     };
-    // The next free “Symbol n” at the Library's top level, where new symbols go (ADR 0050).
-    let name: String = opt_str(p, "name")?.map(|x| x.chars().take(128).collect()).unwrap_or_else(|| s.doc.numbered_name(None, "Symbol", s.doc.library.len() + 1));
+    // Into the folder asked for (ADR 0053), else the top level; the name is free there: the
+    // next free “Symbol n”, or the name asked for with a number when the folder has it already.
+    let folder = crate::cmds_library::opt_folder(s, p, "folder")?;
+    let kind = opt_str(p, "kind")?.map(crate::cmds_library::kind_of).transpose()?.unwrap_or(SymbolKind::Graphic);
+    let name: String = match opt_str(p, "name")? {
+        Some(n) => s.doc.unique_name(folder, n),
+        None => s.doc.numbered_name(folder, "Symbol", s.doc.library.len() + 1),
+    };
     let bounds = s.selection_bounds();
     let center = if bounds.is_empty() { Vec2::ZERO } else { bounds.center() };
     let sym_id = SymbolId(s.doc.alloc_id());
@@ -694,10 +703,13 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         }
         inner.push(Arc::new(layer));
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: inner } }));
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, timeline: Timeline { layers: inner } }));
+    if folder.is_some() {
+        s.doc.place_entry(LibraryEntry::Item(LibraryItem::Symbol(sym_id)), folder);
+    }
     s.layer = top;
     s.select_only([inst_id]);
-    Ok(json!({"symbol": sym_id.0, "instance": inst_id.0, "name": name, "layer": top.0}))
+    Ok(json!({"symbol": sym_id.0, "instance": inst_id.0, "name": name, "layer": top.0, "folder": folder.map(|f| f.0)}))
 }
 
 fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
@@ -752,21 +764,86 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"created": fresh_ids.len()}))
 }
 
-/// Places a Library item centred on `x`/`y` (default: the stage centre): an instance of
-/// `symbol`, or a rectangle of `bitmap`'s size showing it, in the current keyframe, selected.
+/// Most items one `library.place` takes.
+const MAX_PLACE: usize = 1_000;
+
+/// Places Library items at `x`/`y` (default: the stage centre), as a drop from the Library
+/// does (ADR 0053): an instance of each symbol, a rectangle of each bitmap's size showing it,
+/// in the active layer's keyframe at the playhead, all selected; a sound goes onto that
+/// keyframe. One command, so one undo step however many items.
 fn place(s: &mut Session, p: &Value) -> Result<Value> {
-    if let Some(bitmap) = opt_u64(p, "bitmap")? {
-        return place_bitmap(s, p, anicraft_doc::BitmapId(bitmap));
+    let items: Vec<LibraryItem> = match p.get("items") {
+        Some(list) => {
+            let list = list.as_array().ok_or_else(|| EngineError::Param("param 'items' must be a list of {\"symbol\" | \"bitmap\" | \"sound\": id}".into()))?;
+            if list.len() > MAX_PLACE {
+                return Err(EngineError::Param(format!("at most {MAX_PLACE} items at once")));
+            }
+            let mut out = Vec::with_capacity(list.len());
+            for v in list {
+                match crate::cmds_library::entry_of(v)? {
+                    LibraryEntry::Item(i) => out.push(i),
+                    LibraryEntry::Folder(_) => return Err(EngineError::Param("a folder can't be placed; name the items in it".into())),
+                }
+            }
+            out
+        }
+        None => match (opt_u64(p, "symbol")?, opt_u64(p, "bitmap")?, opt_u64(p, "sound")?) {
+            (Some(i), None, None) => vec![LibraryItem::Symbol(SymbolId(i))],
+            (None, Some(i), None) => vec![LibraryItem::Bitmap(anicraft_doc::BitmapId(i))],
+            (None, None, Some(i)) => vec![LibraryItem::Sound(anicraft_doc::SoundId(i))],
+            _ => return Err(EngineError::Param("name one item ('symbol', 'bitmap' or 'sound'), or a list in 'items'".into())),
+        },
+    };
+    if items.is_empty() {
+        return Err(EngineError::Param("nothing to place".into()));
     }
-    let sym = SymbolId(opt_u64(p, "symbol")?.ok_or_else(|| EngineError::Param("param 'symbol' or 'bitmap' is required".into()))?);
-    if s.doc.symbol(sym).is_none() {
-        return Err(EngineError::State(format!("no symbol with id {}", sym.0)));
-    }
-    if crate::editing::would_nest(s, sym) {
-        return Err(EngineError::State("a symbol can't be placed inside itself".into()));
+    let mut sound = None;
+    for &i in &items {
+        if !s.doc.has_item(i) {
+            return Err(EngineError::State(match i {
+                LibraryItem::Symbol(id) => format!("no symbol with id {}", id.0),
+                LibraryItem::Bitmap(id) => format!("no bitmap with id {}", id.0),
+                LibraryItem::Sound(id) => format!("no sound with id {} in the library", id.0),
+            }));
+        }
+        match i {
+            LibraryItem::Symbol(id) if crate::editing::would_nest(s, id) => return Err(EngineError::State("a symbol can't be placed inside itself".into())),
+            LibraryItem::Sound(id) => {
+                if sound.is_some_and(|x| x != id) {
+                    return Err(EngineError::State("a keyframe holds one sound; place sounds one at a time, on different keyframes or layers".into()));
+                }
+                sound = Some(id);
+            }
+            _ => {}
+        }
     }
     let x = opt_f32(p, "x")?.unwrap_or(s.doc.stage.width as f32 / 2.0);
     let y = opt_f32(p, "y")?.unwrap_or(s.doc.stage.height as f32 / 2.0);
+    if !(x.is_finite() && y.is_finite()) || x.abs() > 1.0e6 || y.abs() > 1.0e6 {
+        return Err(EngineError::Param("'x' and 'y' must be within a million pixels of the origin".into()));
+    }
+    let mut placed = Vec::new();
+    for &i in &items {
+        match i {
+            LibraryItem::Symbol(id) => placed.push(place_symbol(s, id, x, y)?),
+            LibraryItem::Bitmap(id) => placed.push(place_bitmap(s, id, x, y)?),
+            LibraryItem::Sound(_) => {}
+        }
+    }
+    let mut out = json!({"element": placed.first().map(|e| e.0), "elements": placed.iter().map(|e| e.0).collect::<Vec<_>>()});
+    if let Some(id) = sound {
+        if s.active_layer().is_some_and(|l| l.locked) || s.timeline().locked_by_folder(s.layer) {
+            return Err(EngineError::State("the active layer is locked; unlock it to put a sound on it".into()));
+        }
+        out["sound"] = crate::cmds_sound::place(s, &json!({"sound": id.0, "extend": true}))?;
+    }
+    if !placed.is_empty() {
+        s.select_only(placed.iter().copied());
+    }
+    Ok(out)
+}
+
+fn place_symbol(s: &mut Session, sym: SymbolId, x: f32, y: f32) -> Result<ElementId> {
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
@@ -776,17 +853,14 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
         kind: ElementKind::Symbol { symbol: sym, loop_mode: LoopMode::Loop, first_frame: 0, blend: anicraft_doc::BlendMode::Normal, filters: Vec::new(), events: Vec::new() },
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
-    s.select_only([id]);
-    Ok(json!({"element": id.0}))
+    Ok(id)
 }
 
-fn place_bitmap(s: &mut Session, p: &Value, bitmap: anicraft_doc::BitmapId) -> Result<Value> {
+fn place_bitmap(s: &mut Session, bitmap: anicraft_doc::BitmapId, x: f32, y: f32) -> Result<ElementId> {
     let (name, w, h) = match s.doc.bitmap(bitmap) {
         Some(b) => (b.name.clone(), b.width as f32, b.height as f32),
         None => return Err(EngineError::State(format!("no bitmap with id {}", bitmap.0))),
     };
-    let x = opt_f32(p, "x")?.unwrap_or(s.doc.stage.width as f32 / 2.0);
-    let y = opt_f32(p, "y")?.unwrap_or(s.doc.stage.height as f32 / 2.0);
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
@@ -802,6 +876,5 @@ fn place_bitmap(s: &mut Session, p: &Value, bitmap: anicraft_doc::BitmapId) -> R
         }),
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));
-    s.select_only([id]);
-    Ok(json!({"element": id.0}))
+    Ok(id)
 }

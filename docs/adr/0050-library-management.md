@@ -120,7 +120,7 @@ watching the program. Nothing was copied.
 
 ## Not yet
 
-Dragging Library items onto the stage, Animate's Properties dialog (the properties are inline),
+(Dragging items onto the stage, choosing a folder in Convert to Symbol and Swap Bitmap came in
+ADR 0053.) Animate's Properties dialog (the properties are inline),
 linkage on bitmaps and sounds, bitmap compression settings, Update and Import of library items
-from another document (shared libraries), folder expansion saved in the file, sorting by size,
-choosing a folder in Convert to Symbol, and Swap Bitmap.
+from another document (shared libraries), folder expansion saved in the file and sorting by size.
