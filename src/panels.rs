@@ -326,7 +326,9 @@ pub fn right(app: &mut App, ui: &mut egui::Ui) {
     let h = ui.available_height();
     let dock = ui.max_rect();
     // Dock sections are layout bands; each folds away to give the others room.
-    let props = egui::ScrollArea::vertical().id_salt("props").max_height(h * 0.56).auto_shrink([false, true]).show(ui, |ui| {
+    // The Movie Explorer's tree needs room: Properties gives some up while it shows.
+    let props_share = if app.explorer.tab == crate::movie_explorer::DockTab::Explorer { 0.4 } else { 0.56 };
+    let props = egui::ScrollArea::vertical().id_salt("props").max_height(h * props_share).auto_shrink([false, true]).show(ui, |ui| {
         crate::theme::section_with_header(ui, "dock_properties", Section::Band, tr!("Properties"), None, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| properties(app, ui));
         })
@@ -338,13 +340,21 @@ pub fn right(app: &mut App, ui: &mut egui::Ui) {
     // Ctrl+F6 lands on the Properties and Library headers; each panel owns the dock down to the
     // next one (Align goes with Properties, History with the Library).
     let split = ui.cursor().top();
-    let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, tr!("Library"), None, |ui| {
+    // The Library and the Movie Explorer share the band, as tabs (ADR 0058).
+    let explorer = app.explorer.tab == crate::movie_explorer::DockTab::Explorer;
+    let title = if explorer { tr!("Movie Explorer") } else { tr!("Library") };
+    let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, title, None, |ui| {
         // The Library scrolls on its own, so a short window still reaches every row (History's
         // header stays below it).
         let room = (ui.available_height() - 48.0).max(120.0);
-        egui::ScrollArea::vertical().id_salt("library_dock").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
-            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
-        });
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 0 }).show(ui, |ui| crate::movie_explorer::tabs(app, ui));
+        if explorer {
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 4)).show(ui, |ui| crate::movie_explorer::panel(app, ui));
+        } else {
+            egui::ScrollArea::vertical().id_salt("library_dock").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
+            });
+        }
     });
     section(ui, "dock_history", Section::Band, tr!("History"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| history(app, ui));

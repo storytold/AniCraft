@@ -382,6 +382,10 @@ pub struct App {
     pub show_plugins: bool,
     /// Window › Actions (F9), and what it addresses.
     pub show_actions: bool,
+    /// Edit › Find and Replace (Ctrl+F) and its results (ADR 0058).
+    pub find: crate::find_panel::FindState,
+    /// Window › Movie Explorer, the Library dock's other tab (ADR 0058).
+    pub explorer: crate::movie_explorer::ExplorerView,
     pub actions: crate::actions_panel::State,
     /// Control › Test Movie: the movie playing in its own window.
     pub test_movie: Option<crate::test_movie::TestMovie>,
@@ -435,6 +439,10 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+F6", "view.next_panel"),
     ("Ctrl+Shift+F6", "view.prev_panel"),
     ("F9", "view.actions"),
+    // Find Next and Find Previous, and Window › Movie Explorer, as in Animate (ADR 0058).
+    ("F3", "view.find_next"),
+    ("Shift+F3", "view.find_prev"),
+    ("Alt+F3", "view.movie_explorer"),
     // Brush size, as in paint programs.
     ("[", "view.brush_smaller"),
     ("]", "view.brush_larger"),
@@ -539,6 +547,8 @@ impl App {
             plugin_dialog: None,
             show_plugins: false,
             show_actions: false,
+            find: Default::default(),
+            explorer: Default::default(),
             actions: crate::actions_panel::State::default(),
             test_movie: None,
             envelope: None,
@@ -773,6 +783,22 @@ impl App {
                 self.recovery.show = true;
             }
             Some("licenses") => self.show_licenses = true,
+            Some("find") => {
+                // Find and Replace (ADR 0058): a caption on the stage and the sample's names hold
+                // "ball"; the results listed, the first one gone to.
+                self.run("text.create", json!({"text": "Ball bounces (ball 1)", "x": 60, "y": 40, "size": 28}));
+                self.run("edit.deselect", json!({}));
+                self.find.open = true;
+                self.find.text = "ball".into();
+                self.find.with = "planet".into();
+                crate::find_panel::step(self, true);
+            }
+            Some("explorer") => {
+                // The Movie Explorer tab (ADR 0058), its first rows open: scene, layers, keyframes
+                // and the instances on them, opening into their symbols.
+                crate::movie_explorer::open(self);
+                crate::movie_explorer::expand_to(self, 3);
+            }
             Some("about") => self.show_about = true,
             Some("zoom") => {
                 // 300% on the ball: many tiles, edges cross shapes (seam check).
@@ -1515,6 +1541,15 @@ impl App {
                 self.status_ok(if n == 0 { tr!("Exported {path} ({secs} s). No sounds play in that range, so the file is silent.", path = path, secs = secs) } else { tr!("Exported {path} ({secs} s).", path = path, secs = secs) });
             }
             "sound.delete" => self.status_ok(tr!("Deleted sound — {undo} to undo", undo = self.undo_key())),
+            "find.replace" => {
+                let n = v["replaced"].as_u64().unwrap_or(0);
+                let skipped = v["skipped"].as_u64().unwrap_or(0);
+                self.status_ok(if skipped > 0 {
+                    trn!("Replaced {n} place, left {skipped} as it was — {undo} to undo", "Replaced {n} places, left {skipped} as they were — {undo} to undo", n, skipped = skipped, undo = self.undo_key())
+                } else {
+                    trn!("Replaced {n} place — {undo} to undo", "Replaced {n} places — {undo} to undo", n, undo = self.undo_key())
+                });
+            }
             "file.import" => {
                 if let Some(b) = self.s.doc.bitmaps.last().filter(|b| v["bitmap"].as_u64() == Some(b.id.0)) {
                     self.library_sel = Some(LibraryItem::Bitmap(b.id));
@@ -1634,6 +1669,11 @@ impl App {
         }
         if id == "tween.add_hint" {
             crate::shape_hints::add(self);
+            return;
+        }
+        if id == "find.search" {
+            // Edit › Find and Replace (Ctrl+F): its window (headless, the command searches).
+            crate::find_panel::open(self);
             return;
         }
         if id == "control.test_movie" {
@@ -1961,6 +2001,9 @@ impl App {
                     }
                 }
                 "view.actions" => self.show_actions = !self.show_actions,
+                "view.find_next" => crate::find_panel::step(self, true),
+                "view.find_prev" => crate::find_panel::step(self, false),
+                "view.movie_explorer" => crate::movie_explorer::open(self),
                 "view.brush_smaller" => crate::brushtool::resize(self, false),
                 "view.brush_larger" => crate::brushtool::resize(self, true),
                 id if id.starts_with("tool.") => tool = keymap::tool_for(id).or(tool),
@@ -2243,6 +2286,7 @@ impl App {
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
         crate::actions_panel::show(self, &ctx);
+        crate::find_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
 
