@@ -565,7 +565,7 @@ impl<'a> Layout<'a> {
                 let enters = pa == s0 || (pa == st.l0 && st.enters);
                 self.looped(tl, g, (pa - s0) % len, n, len, enters, gain, depth);
             }
-            // Buttons wait for the pointer: their sounds are not in this slice (ADR 0039).
+            // Buttons sound only under the pointer, in the interactive player (ADR 0057).
             (SymbolKind::Button, _) => {}
         }
     }

@@ -307,6 +307,9 @@ pub struct App {
     pub tl_scroll: f32,
     /// Timeline frame width (zoom), in points.
     pub tl_cell_w: f32,
+    /// The zoom the timeline had before a button opened and widened its frames for their state
+    /// names, and the zoom it set (ADR 0057): it goes back on closing, unless zoomed meanwhile.
+    pub tl_button_zoom: Option<(f32, f32)>,
     /// Timeline vertical scroll, in rows.
     pub tl_vscroll: f32,
     pub tl_last_layer: Option<anicraft_engine::doc::LayerId>,
@@ -506,6 +509,7 @@ impl App {
             cursor_stage: None,
             tl_scroll: 0.0,
             tl_cell_w: timeline::CELL_DEFAULT,
+            tl_button_zoom: None,
             tl_vscroll: 0.0,
             tl_last_layer: None,
             tl_collapsed: HashSet::new(),
@@ -982,6 +986,33 @@ impl App {
                     crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
                     crate::test_movie::open(self);
                     crate::test_movie::demo_pointer(self);
+                }
+            }
+            Some(which @ ("button" | "testhits")) => {
+                // Buttons (ADR 0057): the sample's Play button open in place on its Over frame,
+                // a click sound on it (made here, a short decaying tone), its states named on
+                // the timeline and its Hit area over the artwork; or Test Movie with Show Hit
+                // Areas on.
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 1}));
+                if which == "testhits" {
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_pointer(self);
+                    if let Some(tm) = self.test_movie.as_mut() {
+                        tm.hit_areas = true;
+                    }
+                } else if let Some(id) = self.s.visible_elements().iter().find(|e| e.name == "play_btn").map(|e| e.id.0) {
+                    self.run("symbol.edit", json!({"id": id}));
+                    let tone: Vec<f32> = (0..4410).map(|i| (i as f32 * 0.12).sin() * 0.6 * (-(i as f32) / 900.0).exp()).collect();
+                    let dir = std::env::temp_dir().join("anicraft-demo");
+                    let wav = dir.join("click.wav");
+                    let _ = std::fs::create_dir_all(&dir);
+                    if std::fs::write(&wav, anicraft_engine::doc::audio::wav::encode(44_100, 1, &tone, anicraft_engine::doc::audio::wav::Bits::Int16)).is_ok()
+                        && let Some(v) = self.run("file.import_to_library", json!({"path": wav.display().to_string()}))
+                    {
+                        self.run("sound.place", json!({"sound": v["sound"], "frame": 1}));
+                    }
+                    self.run("timeline.goto", json!({"frame": 1}));
                 }
             }
             Some(which @ ("script" | "scriptproblems" | "testscript")) => {
@@ -2271,6 +2302,8 @@ impl App {
         crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
         crate::bone_tool::upkeep(self);
+        // An open button shows its hit area over its other states, in the theme's colour (ADR 0057).
+        self.s.hit_area = Some(theme::hit_area());
         self.tick_playback(&ctx);
         self.scrub_sound();
         self.update_title(&ctx);
