@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0056 | m2/colour-effects | Colour effects: one colour transform for every style |
