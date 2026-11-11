@@ -513,7 +513,7 @@ fn save_load_round_trip() {
 /// Adversarial params for every command: must return Ok or Err, never panic.
 #[test]
 fn panic_hunt_every_command() {
-    let hostile: Vec<Value> = vec![
+    let mut hostile: Vec<Value> = vec![
         Value::Null,
         json!({}),
         json!([]),
@@ -623,6 +623,15 @@ fn panic_hunt_every_command() {
         json!({"first": u64::MAX, "last": 0, "dx": 5, "dy": 5, "items": []}),
         json!({"first": 40, "last": 0, "dx": 3, "dy": -2}),
         json!({"first": 0, "last": 100_001, "dx": f64::NAN, "dy": 0, "items": [[1, 2]]}),
+        // Edit Multiple Frames, complete (ADR 0051): transforms at the limits, pivots and edges
+        // that aren't, pastes onto ranges with nothing in them, merges of what isn't raw.
+        json!({"first": 0, "last": 99_999, "a": 0, "b": 0, "c": 0, "d": 0, "e": 1e30, "f": 0, "merge": "x"}),
+        json!({"first": 0, "last": 50, "a": 1e9, "b": 1, "c": 1, "d": 1e-9, "e": 0, "f": f64::NAN}),
+        json!({"first": 0, "last": 50, "rotate": 1e9, "scale_x": 1e-9, "scale_y": -1e9, "skew_x": 90, "skew_y": -90, "pivot": [1e30, 0]}),
+        json!({"first": 0, "last": 50, "rotate": 45, "skew_x": 89.999, "pivot": [5], "edge": "nope", "to_stage": "x"}),
+        json!({"first": 0, "last": 50, "scale_x": -1, "pivot": [0, 0], "edge": "vcenter", "to_stage": true, "merge": false}),
+        json!({"first": 3, "last": 1, "edge": "right", "layer": u64::MAX, "items": [[0, 0, 0]]}),
+        json!({"first": 0, "last": 99_999, "layer": 0, "items": (0..200).map(|i| json!([i, i, i])).collect::<Vec<_>>()}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -677,7 +686,63 @@ fn panic_hunt_every_command() {
         layered.execute(id, &p).unwrap();
     }
     assert_eq!(layered.selected_layers().len(), 2, "the fuzz starts with a selection on two layers");
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered] {
+    // Raw drawings inside a symbol open for editing in place (ADR 0045), with a point added.
+    let mut in_symbol = Session::default();
+    in_symbol.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("modify.convert_to_symbol", json!({"name": "Inner"})),
+        ("element.translate", json!({"dx": 30, "dy": 15})),
+        ("symbol.edit", json!({})),
+        ("draw.rect", json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("raw.add_point", json!({"x": 45, "y": 90})),
+    ] {
+        in_symbol.execute(id, &p).unwrap();
+    }
+    assert_eq!(in_symbol.editing.len(), 1, "the fuzz starts inside a symbol");
+    // Raw drawings on several keyframes, artwork copied from two of them (ADR 0051).
+    let mut keyed = Session::default();
+    keyed.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("draw.rect", json!({"x": 100, "y": 0, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("timeline.goto", json!({"frame": 4})),
+        ("timeline.insert_keyframe", json!({})),
+        ("timeline.goto", json!({"frame": 8})),
+        ("timeline.insert_keyframe", json!({})),
+        ("frames.copy", json!({"first": 0, "last": 8})),
+        ("timeline.goto", json!({"frame": 4})),
+    ] {
+        keyed.execute(id, &p).unwrap();
+    }
+    // Library folders, nested, with items in them (ADR 0050); the fuzz moves, renames and
+    // deletes them, folders into themselves, names that clash or hold a slash.
+    let mut library = Session::new(sample::demo());
+    let outer = library.execute("library.new_folder", &json!({"name": "Characters"})).unwrap()["folder"].as_u64().unwrap();
+    let inner = library.execute("library.new_folder", &json!({"name": "Hero", "parent": outer})).unwrap()["folder"].as_u64().unwrap();
+    let ball = library.doc.library.first().map(|x| x.id.0).unwrap();
+    library.execute("library.move", &json!({"items": [{"symbol": ball}], "to": inner})).unwrap();
+    library.execute("library.duplicate", &json!({"symbol": ball})).unwrap();
+    // ...and a bitmap placed on the stage, for Swap Bitmap (ADR 0053).
+    let bm = anicraft_doc::BitmapId(library.doc.alloc_id());
+    let png = anicraft_render::encode_png(3, 2, &[0, 0, 255, 255].repeat(6)).unwrap();
+    library.doc.bitmaps.push(Arc::new(anicraft_doc::Bitmap::from_png(bm, "b.png", png).unwrap()));
+    library.execute("library.place", &json!({"bitmap": bm.0})).unwrap();
+    hostile.push(json!({"bitmap": bm.0, "items": [{"bitmap": bm.0}, {"symbol": ball}], "x": 3, "y": 4}));
+    hostile.extend([
+        json!({"items": [{"folder": outer}], "to": inner, "folder": outer, "name": "Hero", "parent": inner, "confirm": true}),
+        json!({"items": [{"folder": inner}, {"symbol": ball}, {"folder": inner}], "to": null, "folder": inner, "name": "a/b", "symbol": ball}),
+        json!({"items": [{"symbol": ball, "folder": outer}, "x", {"sound": u64::MAX}], "to": u64::MAX, "parent": "x", "name": " "}),
+        json!({"items": (0..200).map(|i| json!({"folder": i})).collect::<Vec<_>>(), "to": outer, "symbol": ball, "name": "x".repeat(300), "on": "x", "bitmap": 1}),
+        json!({"items": [{"symbol": ball}], "to": outer, "symbol": ball, "name": "Ball copy", "confirm": true}),
+        // Drops from the Library and Swap Bitmap (ADR 0053): mixed lists, two sounds, far points.
+        json!({"items": [{"symbol": ball}, {"sound": SOUND}, {"bitmap": u64::MAX}], "x": 1e300, "y": -1e300}),
+        json!({"items": [{"sound": SOUND}, {"sound": SOUND}, {"symbol": ball}], "x": 999_999, "y": -999_999, "bitmap": 0}),
+        json!({"items": [{"symbol": ball}, {"symbol": ball}, {"folder": inner}, null], "x": "a"}),
+        json!({"items": (0..1500).map(|_| json!({"symbol": ball})).collect::<Vec<_>>(), "x": 0, "y": 0}),
+        json!({"sound": SOUND, "symbol": ball, "x": 10, "y": 10}),
+    ]);
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol, keyed, library] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -689,14 +754,20 @@ fn panic_hunt_every_command() {
                 let _ = s.execute(spec.id, p);
             }
         }
-        // The document must still evaluate and render.
+        // The document must still evaluate and render, and so must what the stage shows.
         for f in [0, 1, 5, 47, 1000] {
             let _ = anicraft_render::render_frame(&s.doc, f, 0.1);
         }
+        let pic = s.stage_picture();
+        let _ = anicraft_render::render_frame(&pic.doc, pic.frame, 0.1);
         // ...and its sounds lay out and mix.
         let voices = anicraft_doc::sound::voices(&s.doc, 8000);
         let mut out = vec![0.0; 2 * 4096];
         anicraft_doc::audio::mix(&voices, 8000, Default::default(), 0, &mut out);
+        // ...and its Library tree stays whole: nothing a load would have to repair.
+        let mut loaded = s.doc.clone();
+        loaded.sanitize();
+        assert_eq!(loaded.library_tree, s.doc.library_tree);
     }
 }
 

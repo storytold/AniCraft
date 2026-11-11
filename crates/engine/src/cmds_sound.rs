@@ -200,7 +200,7 @@ fn sound_param(s: &Session, p: &Value) -> Result<SoundId> {
 /// Place Sound: the sound goes on the keyframe covering the frame (a blank keyframe is made
 /// on an empty frame), Animate-style. With `extend`, the layer's last span grows to the sound's
 /// length so its waveform shows in full.
-fn place(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let id = sound_param(s, p)?;
     let fps = s.doc.stage.fps;
     let want = s.doc.sound(id).map_or(1, |x| x.movie_frames(fps));
@@ -239,7 +239,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     // shaped over, which Custom starts from.
     let (lid, frame) = target(s, p)?;
     let fps = s.doc.stage.fps;
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let place = tl.layer(lid.unwrap_or(s.layer)).and_then(|l| l.keyframe_at(frame)).map(|k| (k.duration, s.doc.frame_count().saturating_sub(s.doc.scene_start(s.scene).saturating_add(k.start))));
     let sounds = s.doc.sounds.clone();
     let heard = move |fs: &FrameSound| match (sounds.iter().find(|x| x.id == fs.sound), place) {

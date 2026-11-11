@@ -548,6 +548,15 @@ fn bitmaps_and_sounds_are_embedded_once() {
     assert_eq!(js.eval("P.start().sounds"), json!([[0, "event", 1, false, 1, 1, null]]));
     let silent = movie(&doc, &HtmlOptions { sound: false, ..Default::default() });
     assert_eq!((silent.stats.sounds, silent.json["timelines"][0].get("snd")), (0, None));
+    // A bitmap without Allow Smoothing says so; the page draws it with hard pixel edges, and
+    // an SVG frame marks its image pixelated (ADR 0050).
+    if let Some(b) = doc.bitmaps.first_mut() {
+        Arc::make_mut(b).smoothing = false;
+    }
+    let hard = movie(&doc, &HtmlOptions::default());
+    assert_eq!(hard.json["paints"][0], json!({"b": 0, "rep": true, "m": [2, 0, 0, 2, 0, 0], "px": true}));
+    let svg = crate::svg::to_svg(&anicraft_doc::evaluate(&doc, 0), &doc.stage);
+    assert!(svg.contains("image-rendering=\"pixelated\""), "{svg}");
 }
 
 #[test]

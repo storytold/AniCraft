@@ -383,7 +383,7 @@ fn leaving(cands: [Vec2; 3]) -> Option<Vec2> {
 }
 
 /// One cubic in place of `a` then `b` (see [`Path::merge_at`]). `None` for non-finite input.
-fn merge_cubics(a: [Vec2; 4], b: [Vec2; 4]) -> Option<[Vec2; 4]> {
+pub(crate) fn merge_cubics(a: [Vec2; 4], b: [Vec2; 4]) -> Option<[Vec2; 4]> {
     use crate::walk::cubic_point;
     const N: usize = 24;
     let (p0, p3) = (a[0], b[3]);

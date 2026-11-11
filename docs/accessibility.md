@@ -25,6 +25,10 @@ work yet. Design decisions are in ADR 0022; the rules for contributors are in
   shortcut works, including Enter (play) and the arrows (nudge). With a button or checkbox
   focused, the other shortcuts still work but Enter, Space and the arrows belong to it. In a
   text field every key types. Esc leaves a field.
+* **Library items without dragging** (ADR 0053): after clicking a Library row, **Enter** places
+  the selected items at the centre of the view on the active layer (sounds on its keyframe at
+  the playhead), as dragging them onto the stage does; F2 renames and Delete deletes. Place on
+  Stage is also a button under the list and in each row's right-click menu.
 * Frames are reached with `,` and `.` (previous and next), Home and End, F5/F6/F7 to insert,
   and Shift+`,`/`.`; layers with the layer rows (Tab from the timeline anchor) and the
   Up/Down buttons under them.

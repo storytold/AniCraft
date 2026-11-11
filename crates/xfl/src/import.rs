@@ -707,6 +707,9 @@ impl<'a> Builder<'a> {
             match bitmap {
                 Some(mut b) => {
                     b.id = BitmapId(self.doc.alloc_id());
+                    // Animate leaves out the default (smoothing on in current versions).
+                    b.smoothing = item.bool("allowSmoothing").unwrap_or(true);
+                    self.place_in_folder(name, anicraft_doc::LibraryItem::Bitmap(b.id));
                     self.bitmaps.insert(name.to_string(), b.id);
                     self.doc.bitmaps.push(Arc::new(b));
                 }
@@ -801,6 +804,27 @@ impl<'a> Builder<'a> {
             };
             let short = name.rsplit('/').next().unwrap_or(&name).to_string();
             self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, timeline }));
+            self.place_in_folder(&name, anicraft_doc::LibraryItem::Symbol(id));
+        }
+    }
+
+    /// The Library's folders (`<folders>`, so empty ones come across too), each a path such as
+    /// `Characters/Hero` (ADR 0050).
+    fn register_folders(&mut self, root: &X) {
+        for f in root.list("folders").iter().filter(|f| f.name == "DOMFolderItem").take(anicraft_doc::library::MAX_FOLDERS) {
+            if let Some(path) = f.attr("name") {
+                self.doc.ensure_folder_path(path);
+            }
+        }
+    }
+
+    /// Puts `item` in the folder its library name's path names (`Characters/Ball` is in
+    /// `Characters`), made if `<folders>` didn't list it.
+    fn place_in_folder(&mut self, name: &str, item: anicraft_doc::LibraryItem) {
+        if let Some((dir, _)) = name.rsplit_once('/')
+            && let Some(f) = self.doc.ensure_folder_path(dir)
+        {
+            self.doc.place_entry(anicraft_doc::LibraryEntry::Item(item), Some(f));
         }
     }
 }
@@ -837,6 +861,7 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
         fps: root.f32("frameRate").unwrap_or(24.0).clamp(1.0, 120.0),
         background: color(&root, "backgroundColor", "__none"),
     };
+    b.register_folders(&root);
     b.register_bitmaps(&root)?;
     b.register_symbols(&root)?;
     b.build_symbols();
@@ -846,6 +871,9 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
         let name: String = tl.attr("name").filter(|n| !n.trim().is_empty()).map_or_else(|| format!("Scene {}", i + 1), |n| n.chars().take(256).collect());
         let timeline = b.timeline(tl);
         b.doc.scenes.push(Arc::new(Scene { name, timeline }));
+    }
+    if !b.doc.library_tree.folders.is_empty() {
+        b.report.keep("library folders");
     }
     if b.doc.scenes.is_empty() {
         let timeline = Timeline { layers: vec![Arc::new(Layer::new(LayerId(b.doc.alloc_id()), "Layer 1"))] };
@@ -857,21 +885,48 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
 /// Largest `.fla` archive read.
 pub const MAX_FLA_BYTES: u64 = crate::zip::MAX_ENTRY as u64 * 4;
 
-/// Imports a `.fla` archive from its bytes (a file the browser handed over, say).
+/// The first bytes of a compound (OLE) file: a `.fla` saved by Flash CS4 or earlier.
+const OLE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+/// Imports a `.fla` archive from its bytes (a file the browser handed over, say). Text is laid
+/// out with the fonts on this computer.
 pub fn import_fla(data: &[u8]) -> Result<(Document, Report), XflError> {
+    fla_from(data, None)
+}
+
+/// Imports a `.fla` archive, laying text out with `fonts` (tests, and hosts with their own
+/// font library).
+pub fn import_fla_with_fonts(data: &[u8], fonts: &Fonts) -> Result<(Document, Report), XflError> {
+    fla_from(data, Some(fonts))
+}
+
+fn fla_from(data: &[u8], fonts: Option<&Fonts>) -> Result<(Document, Report), XflError> {
     if data.len() as u64 > MAX_FLA_BYTES {
         return Err(XflError::NotXfl("the file is too large".into()));
     }
+    if data.starts_with(&OLE_MAGIC) {
+        return Err(XflError::NotXfl("this .fla was saved by Flash CS4 or earlier, in a format AniCraft can't read: open it in Animate and save it again".into()));
+    }
     let archive = crate::zip::Archive::open(data)?;
     let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(p)?) };
-    import_with(&read)
+    import_from(&read, fonts)
 }
 
-/// Imports from disk: an XFL folder, its `.xfl` file, or a `.fla` archive.
+/// Whether the file at `path` starts as a zip archive or an old binary `.fla` does.
+fn looks_like_fla(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    head.get(..n).is_some_and(|h| h.starts_with(b"PK\x03\x04") || h.starts_with(b"PK\x05\x06") || h.starts_with(&OLE_MAGIC))
+}
+
+/// Imports from disk: an XFL folder, its `.xfl` file (or any file in the folder, such as its
+/// `DOMDocument.xml`), or a `.fla` archive (recognised by its contents too, so a renamed one
+/// opens).
 pub fn import_path(path: &std::path::Path) -> Result<(Document, Report), XflError> {
     let meta = std::fs::metadata(path)?;
     let is_fla = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fla"));
-    if meta.is_file() && is_fla {
+    if meta.is_file() && (is_fla || looks_like_fla(path)) {
         if meta.len() > MAX_FLA_BYTES {
             return Err(XflError::NotXfl("the file is too large".into()));
         }

@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
 fn find(s: &Session, p: &Value) -> Result<(LayerId, usize, HintSide)> {
     let (lid, frame) = target(s, p)?;
     let lid = lid.unwrap_or(s.layer);
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let layer = tl.layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
     let (i, side) = layer.hint_tween_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is not in a shape tween; select the span and use Insert › Create Shape Tween", frame + 1)))?;
     Ok((lid, i, side))
@@ -36,7 +36,7 @@ fn find(s: &Session, p: &Value) -> Result<(LayerId, usize, HintSide)> {
 /// The same, for an edit: refuses locked layers.
 fn find_mut<'a>(s: &'a mut Session, p: &Value) -> Result<(&'a mut Layer, usize, HintSide)> {
     let (lid, i, side) = find(s, p)?;
-    if s.doc.timeline(s.scene).locked_by_folder(lid) {
+    if s.timeline().locked_by_folder(lid) {
         return Err(EngineError::State("the layer is in a locked folder".into()));
     }
     let layer = s.layer_mut(Some(lid))?;
@@ -125,7 +125,7 @@ fn clear_hints(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn list_hints(s: &mut Session, p: &Value) -> Result<Value> {
     let (lid, i, side) = find(s, p)?;
-    let layer = s.doc.timeline(s.scene).layer(lid).ok_or_else(|| EngineError::State("no such layer".into()))?;
+    let layer = s.timeline().layer(lid).ok_or_else(|| EngineError::State("no such layer".into()))?;
     let (Some(a), Some(b)) = (layer.hint_keyframe(i, HintSide::Start), layer.hint_keyframe(i, HintSide::End)) else { return Err(EngineError::State("the keyframe went away".into())) };
     let hints: Vec<Value> = a
         .hints

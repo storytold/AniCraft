@@ -106,6 +106,10 @@ pub fn pen_input(app: &mut App, ui: &egui::Ui, resp: &egui::Response, xf: Xf) {
             commit_pen(app, false);
             return;
         }
+        // A new knot snaps to points, lines and fill edges (ADR 0045); handles never do.
+        let p = crate::stage::snap_draw(app, pos2(p.x, p.y), xf.zoom);
+        let p = Vec2::new(p.x, p.y);
+        let Some(pen) = app.pen.as_mut() else { return };
         pen.knots.push([p; 3]);
         pen.dragging = true;
         return;
@@ -293,13 +297,14 @@ pub fn subselect_drag_start(app: &mut App, press: Pos2, shift: bool, xf: Xf) -> 
     Drag::PointMarquee { start: pos2(sp.x, sp.y), cur: pos2(sp.x, sp.y) }
 }
 
-/// Moves the selected points by a stage-space delta (inside the open gesture).
-pub fn move_points(app: &mut App, d: Vec2) {
+/// Moves the selected points by a stage-space delta (inside the open gesture). A handle moved
+/// alone at a smooth anchor turns the other one with it unless `smooth` is false (Alt).
+pub fn move_points(app: &mut App, d: Vec2, smooth: bool) {
     let mut ids: Vec<ElementId> = app.points.iter().map(|p| p.0).collect();
     ids.dedup();
     for id in ids {
         let pts: Vec<[u64; 2]> = app.points.iter().filter(|p| p.0 == id).map(|p| [p.1 as u64, u64::from(p.2)]).collect();
-        app.run("path.move_points", json!({"id": id.0, "points": pts, "dx": d.x, "dy": d.y}));
+        app.run("path.move_points", json!({"id": id.0, "points": pts, "dx": d.x, "dy": d.y, "smooth": smooth}));
     }
 }
 
@@ -372,7 +377,25 @@ fn add_point_on_selected(app: &mut App, at: Pos2, xf: Xf) -> bool {
             return true;
         }
     }
-    false
+    raw_add_point(app, at, xf)
+}
+
+/// Adds a point on the raw line or fill edge at screen point `at` (ADR 0045): every raw shape with
+/// that edge gets it, and it shows selected with everything connected to it. False when there
+/// is no raw edge there.
+fn raw_add_point(app: &mut App, at: Pos2, xf: Xf) -> bool {
+    let sp = xf.to_stage(at);
+    let Ok(v) = app.s.execute("raw.add_point", &json!({"x": sp.x, "y": sp.y, "slop": PICK * xf.unit()})) else { return false };
+    let q = Vec2::new(v["x"].as_f64().unwrap_or(0.0) as f32, v["y"].as_f64().unwrap_or(0.0) as f32);
+    // Show the shapes on it, as a Subselection click there would.
+    if let Some(r) = app.run("raw.subselect", json!({"x": q.x, "y": q.y, "slop": 2.0 * xf.unit()})) {
+        app.raw_ends = positions(&r["ends"]);
+    }
+    app.points.clear();
+    app.motion_anchors.clear();
+    app.raw_anchors = vec![q];
+    app.status_ok(tr!("Added a point. {undo} to undo.", undo = app.undo_key()));
+    true
 }
 
 /// Anchors in the point selection, grouped per element.
@@ -397,6 +420,27 @@ pub fn delete_points(app: &mut App) {
     app.points.clear();
 }
 
+/// Deletes the selected raw anchors (ADR 0045): the shapes that share each are joined across it.
+fn raw_delete(app: &mut App) {
+    let pts: Vec<[f32; 2]> = app.raw_anchors.iter().map(|q| [q.x, q.y]).collect();
+    let Some(v) = app.run("raw.delete_points", json!({"points": pts})) else { return };
+    app.raw_anchors.clear();
+    app.raw_ends.clear();
+    let (n, kept) = (v["deleted"].as_u64().unwrap_or(0) as usize, v["kept"].as_u64().unwrap_or(0) as usize);
+    let undo = app.undo_key();
+    app.status_ok(if kept > 0 {
+        trn!("Deleted {n} point; kept {kept} where three or more lines meet. {undo} to undo.", "Deleted {n} points; kept {kept} where three or more lines meet. {undo} to undo.", n, kept = kept, undo = undo)
+    } else {
+        trn!("Deleted {n} point. {undo} to undo.", "Deleted {n} points. {undo} to undo.", n, undo = undo)
+    });
+}
+
+/// Makes the selected raw anchors smooth or corners, in every shape that has them.
+fn raw_convert(app: &mut App, smooth: bool) {
+    let pts: Vec<[f32; 2]> = app.raw_anchors.iter().map(|q| [q.x, q.y]).collect();
+    app.run("raw.convert_points", json!({"points": pts, "smooth": smooth}));
+}
+
 pub fn convert_points(app: &mut App, smooth: bool) {
     for (id, cmds) in selected_anchors(app) {
         for cmd in cmds {
@@ -405,22 +449,25 @@ pub fn convert_points(app: &mut App, smooth: bool) {
     }
 }
 
-/// Right-click menu for selected points; false when no anchor is selected.
+/// Right-click menu for selected points (of drawing objects, or raw anchors, ADR 0045); false
+/// when no anchor is selected.
 pub fn point_menu(app: &mut App, ui: &mut egui::Ui) -> bool {
-    if app.tool != Tool::Subselect || selected_anchors(app).is_empty() {
+    let raw = !app.raw_anchors.is_empty();
+    if app.tool != Tool::Subselect || (!raw && selected_anchors(app).is_empty()) {
         return false;
     }
     if ui.button(tr!("Make Smooth")).clicked() {
-        convert_points(app, true);
+        if raw { raw_convert(app, true) } else { convert_points(app, true) }
         ui.close();
     }
     if ui.button(tr!("Make Corner")).clicked() {
-        convert_points(app, false);
+        if raw { raw_convert(app, false) } else { convert_points(app, false) }
         ui.close();
     }
     ui.separator();
-    if ui.button(tr!("Delete Point")).clicked() {
-        delete_points(app);
+    let label = if raw { trn!("Delete Point", "Delete Points", app.raw_anchors.len()) } else { tr!("Delete Point").to_string() };
+    if ui.button(label).clicked() {
+        if raw { raw_delete(app) } else { delete_points(app) }
         ui.close();
     }
     true
@@ -668,7 +715,7 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
     }
     if app.tool == Tool::Subselect && !app.raw_anchors.is_empty() {
         if take(Key::Delete) || take(Key::Backspace) {
-            app.status_err(tr!("Points of merged drawings can't be deleted yet. Select the parts with the Selection tool (V) and delete them."));
+            raw_delete(app);
         }
         if take(Key::Escape) {
             app.raw_anchors.clear();
@@ -701,7 +748,7 @@ fn move_points_step(app: &mut App, d: Vec2) {
     if own {
         app.s.begin_gesture(tr_noop!("Move Points"));
     }
-    move_points(app, d);
+    move_points(app, d, true);
     if own {
         app.s.end_gesture();
     }
@@ -864,6 +911,30 @@ mod tests {
             let pts = raw_shown(&app);
             assert!(has(&pts.anchors, 0.0, -10.0) && has(&pts.anchors, 100.0, 80.0) && pts.anchors.len() == 4, "{:?}", pts.anchors);
             assert!(app.s.can_undo());
+        }
+
+        #[test]
+        fn delete_removes_selected_raw_anchors_and_a_double_click_adds_one() {
+            let (mut app, ctx) = app_and_ctx();
+            subselect_click(&mut app, pos2(50.0, 0.0), false, XF);
+            subselect_click(&mut app, pos2(0.0, 0.0), false, XF);
+            assert_eq!(app.raw_anchors.len(), 1);
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Key { key: Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+            let mut out = ctx.run_ui(input, |ui| consume_keys(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+            assert!(app.raw_anchors.is_empty());
+            let pts = raw_shown(&app);
+            assert_eq!(pts.anchors.len(), 3, "a triangle: {:?}", pts.anchors);
+            assert!(!has(&pts.anchors, 0.0, 0.0));
+            // A double-click on the right side adds a point there, shared and selected.
+            subselect_double_click(&mut app, pos2(101.0, 40.0), XF);
+            assert!(has(&app.raw_anchors, 100.0, 40.0), "{:?}", app.raw_anchors);
+            assert_eq!(raw_shown(&app).anchors.len(), 4);
+            // Make Smooth reaches the engine for raw anchors: the corner at (100, 80) rounds.
+            app.raw_anchors = vec![Vec2::new(100.0, 80.0)];
+            raw_convert(&mut app, true);
+            assert!(!raw_shown(&app).handles.is_empty(), "smooth: handles appear");
         }
 
         #[test]

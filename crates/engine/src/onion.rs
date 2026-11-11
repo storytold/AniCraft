@@ -18,10 +18,9 @@
 //! Behaviour learned from Adobe's public help pages on onion skinning and from watching the
 //! program; nothing was copied.
 
-use crate::params::*;
-use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
+use crate::{CommandSpec, MAX_FRAME, Result, Session};
 use anicraft_doc::{ColorEffect, DisplayList, Document, ElementId, LayerId, LayerKind, Rgba, Timeline};
-use anicraft_geom::{Affine, Rect, Vec2};
+use anicraft_geom::{Rect, Vec2};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -341,9 +340,14 @@ fn interleave(tl: &Timeline, parts: Vec<DisplayList>) -> (DisplayList, Vec<usize
 /// or Edit Multiple Frames' keyframes, each under the playhead's artwork on its own layer.
 /// `eval` evaluates one frame of the scene (with or without its camera).
 pub fn compose(doc: &Document, scene: usize, local: u32, skin: Option<&OnionSkin>, eval: impl Fn(usize, u32) -> DisplayList + Sync) -> DisplayList {
-    let now = eval(scene, local);
+    compose_timeline(doc.timeline(scene), local, skin, |f| eval(scene, f))
+}
+
+/// [`compose`] for any timeline: `tl` at its frame `local`, `eval` evaluating one of its frames
+/// (a scene's, or a symbol's open in place, ADR 0051). Pure: the same inputs give the same list.
+pub fn compose_timeline(tl: &Timeline, local: u32, skin: Option<&OnionSkin>, eval: impl Fn(u32) -> DisplayList + Sync) -> DisplayList {
+    let now = eval(local);
     let Some(skin) = skin.filter(|s| s.shows()) else { return now };
-    let tl = doc.timeline(scene);
     let (first, last) = skin.range(local, tl.frame_count());
     let extras = if skin.edit_multiple { multi_frames(tl, local, first, last) } else { onion_frames(tl, local, skin) };
     if extras.is_empty() {
@@ -351,7 +355,7 @@ pub fn compose(doc: &Document, scene: usize, local: u32, skin: Option<&OnionSkin
     }
     // The frames are independent: evaluated in parallel, kept in order.
     use rayon::prelude::*;
-    let mut parts: Vec<DisplayList> = extras.par_iter().map(|e| eval(scene, e.frame)).collect();
+    let mut parts: Vec<DisplayList> = extras.par_iter().map(|e| eval(e.frame)).collect();
     for (part, e) in parts.iter_mut().zip(&extras) {
         keep_layers(part, &e.layers);
         if let Some(past) = e.past {
@@ -391,11 +395,15 @@ impl Session {
     /// (each keyframe as it looks on its first frame, the playhead's as it looks there), with
     /// the keyframe start of each item's layer (`None`: a layer it doesn't edit).
     fn multi_list(&self, first: u32, last: u32) -> (DisplayList, Vec<Option<u32>>) {
-        let tl = self.doc.timeline(self.scene);
+        // The timeline being edited: a symbol open in place has its own frames (ADR 0045).
+        let tl = self.timeline();
         let mut parts = Vec::new();
         let mut starts: Vec<Vec<(LayerId, u32)>> = Vec::new();
         for e in multi_frames(tl, self.frame, first, last) {
-            let mut dl = anicraft_doc::evaluate_scene(&self.doc, self.scene, e.frame);
+            let mut dl = match self.editing_symbol().and_then(|id| self.doc.symbol(id)) {
+                Some(sym) => anicraft_doc::evaluate_timeline(&self.doc, &sym.timeline, e.frame),
+                None => anicraft_doc::evaluate_scene(&self.doc, self.scene, e.frame),
+            };
             keep_layers(&mut dl, &e.layers);
             parts.push(dl);
             starts.push(e.layers.iter().map(|l| (*l, e.frame)).collect());
@@ -450,93 +458,13 @@ pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
         c("frames.artwork", "Artwork on Multiple Frames", "", None, "{first, last} lists every element Edit Multiple Frames shows in frames first..=last (0-based): [layer, frame (its keyframe's first frame), id] with stage bounds; the playhead's elements as they look there", false, artwork as crate::RunFn),
-        c("frames.edit_multiple", "Move on Multiple Frames", "", None, "{first, last, dx, dy, items?: [[layer, frame, id], ..]} moves artwork on every keyframe within frames first..=last (0-based) on visible, unlocked layers, as Edit Multiple Frames does: the items given (a keyframe's first frame and an element id), or all of them; a motion tween's path and X/Y keys move with its object; one undo step", true, edit_multiple),
     ]
 }
 
-/// The `first` and `last` params, in order.
-fn range_param(p: &Value) -> Result<(u32, u32)> {
-    let req = |k: &str| opt_u32(p, k)?.ok_or_else(|| EngineError::Param(format!("param '{k}' is required (a frame, 0-based)")));
-    let (a, b) = (req("first")?, req("last")?);
-    if a.max(b) > MAX_FRAME {
-        return Err(EngineError::Param(format!("frames go up to {MAX_FRAME}")));
-    }
-    Ok((a.min(b), a.max(b)))
-}
-
 fn artwork(s: &mut Session, p: &Value) -> Result<Value> {
-    let (first, last) = range_param(p)?;
+    let (first, last) = crate::multi::range_param(p)?;
     let items: Vec<Value> = s.multi_frame_items(first, last).into_iter().map(|(it, b)| json!({"layer": it.layer.0, "frame": it.frame, "id": it.element.0, "bounds": [b.min.x, b.min.y, b.max.x, b.max.y]})).collect();
     Ok(json!({"first": first, "last": last, "items": items}))
-}
-
-/// Most items `frames.edit_multiple` takes.
-const MAX_ITEMS: usize = 100_000;
-
-fn items_param(p: &Value) -> Result<Option<Vec<FrameItem>>> {
-    let Some(v) = p.get("items").filter(|v| !v.is_null()) else { return Ok(None) };
-    let bad = || EngineError::Param("param 'items' must be a list of [layer, frame, id]".into());
-    let list = v.as_array().ok_or_else(bad)?;
-    if list.len() > MAX_ITEMS {
-        return Err(EngineError::Param(format!("param 'items' has more than {MAX_ITEMS} items")));
-    }
-    list.iter()
-        .map(|t| {
-            let t = t.as_array().filter(|t| t.len() == 3).ok_or_else(bad)?;
-            let n = |i: usize| t.get(i).and_then(Value::as_u64).ok_or_else(bad);
-            let frame = u32::try_from(n(1)?).map_err(|_| bad())?;
-            Ok(FrameItem { layer: LayerId(n(0)?), frame, element: ElementId(n(2)?) })
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(Some)
-}
-
-fn edit_multiple(s: &mut Session, p: &Value) -> Result<Value> {
-    let (first, last) = range_param(p)?;
-    let d = Vec2::new(f32_req(p, "dx")?, f32_req(p, "dy")?);
-    if d.x.abs() > crate::cmds_draw::MAX_EXTENT || d.y.abs() > crate::cmds_draw::MAX_EXTENT {
-        return Err(EngineError::Param("the move is too large".into()));
-    }
-    let shown: Vec<FrameItem> = s.multi_frame_items(first, last).into_iter().map(|(it, _)| it).collect();
-    let items = match items_param(p)? {
-        Some(list) => {
-            let have: HashSet<FrameItem> = shown.iter().copied().collect();
-            if let Some(bad) = list.iter().find(|it| !have.contains(it)) {
-                return Err(EngineError::State(format!(
-                    "element {} on layer {} at frame {} is not on a keyframe Edit Multiple Frames shows in frames {first}..={last} (on a visible, unlocked layer)",
-                    bad.element.0, bad.layer.0, bad.frame
-                )));
-            }
-            list
-        }
-        None => shown,
-    };
-    // One pass per keyframe: (layer, keyframe start) → its ids.
-    let mut by_key: BTreeMap<(LayerId, u32), HashSet<ElementId>> = BTreeMap::new();
-    for it in &items {
-        by_key.entry((it.layer, it.frame)).or_default().insert(it.element);
-    }
-    let mv = Affine::translate(d.x, d.y);
-    let mut moved = 0usize;
-    for ((layer, start), ids) in &by_key {
-        let l = s.layer_mut(Some(*layer))?;
-        let Some(ki) = l.keyframe_starting_at(*start) else { continue };
-        let Some(kf) = l.keyframe_mut(ki) else { continue };
-        // A motion tween's object carries its path and X/Y keys along (refused, with nothing
-        // changed, if they would leave the stage's range).
-        if let Some(m) = kf.motion.as_mut()
-            && ids.contains(&m.target)
-            && d != Vec2::ZERO
-            && !m.translate(d)
-        {
-            return Err(EngineError::State("the motion path would move out of range".into()));
-        }
-        for e in kf.elements_mut_where(|id| ids.contains(&id)) {
-            e.transform = mv.mul(&e.transform);
-            moved += 1;
-        }
-    }
-    Ok(json!({"moved": moved, "keyframes": by_key.len(), "dx": d.x, "dy": d.y}))
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
 
 /// What each package keeps without running (ADR 0013 tier 1: scripts outside the subset, and
 /// class names); packages not listed keep nothing.
-const KEPT: &[(&str, &[(&str, usize)])] = &[("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)])];
+const KEPT: &[(&str, &[(&str, usize)])] = &[("bitmaps", &[("library folders", 1)]), ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]), ("symbols", &[("library folders", 1)])];
 
 /// The frame scripts each package brings that run (ADR 0013 tier 2: in the subset).
 const RUNS: &[(&str, &[(&str, usize)])] = &[
