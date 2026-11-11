@@ -34,6 +34,7 @@ const FRAMES: &[(&str, &[u32])] = &[
     ("guides", &[0, 6, 12]),
     ("interactive", &[0, 9]),
     ("masks", &[0]),
+    ("nineslice", &[0]),
     ("primitives", &[0]),
     ("scenes", &[0, 3, 7, 8, 10]),
     ("scripts", &[0, 4]),
@@ -84,6 +85,14 @@ const PROBES: &[(&str, u32, f32, f32, u32)] = &[
     ("masks", 0, 10.0, 22.0, 0xFFFFFF),
     ("masks", 0, 145.0, 10.0, 0xFFFFFF),
     ("masks", 0, 270.0, 70.0, 0xCB997E),
+    // 9-slice (ADR 0055): the stretched panel's top-left corner keeps its radius-10 curve (plain
+    // scaling would leave the background there), its middle is the panel, and the graphic inside
+    // it scales normally (a dot 2.8 times as wide).
+    ("nineslice", 0, 27.0, 113.0, 0x2A9D8F),
+    ("nineslice", 0, 137.0, 13.0, 0x2A9D8F),
+    ("nineslice", 0, 100.0, 125.0, 0x2A9D8F),
+    ("nineslice", 0, 151.0, 130.0, 0xE9C46A),
+    ("nineslice", 0, 21.0, 111.0, 0xF1FAEE),
     // Guide artwork never draws.
     ("guides", 0, 5.0, 5.0, 0xFFFFFF),
     ("guides", 0, 160.0, 60.0, 0xFFFFFF),

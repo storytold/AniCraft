@@ -782,16 +782,11 @@ impl<'a> Builder<'a> {
             [l, r, t, b] => Some(ScaleGrid { left: l.min(r), right: l.max(r), top: t.min(b), bottom: t.max(b) }),
             _ => None,
         };
-        match grid.filter(|g| g.check().is_ok()) {
-            Some(g) => {
-                self.report.keep("9-slice scaling guides");
-                Some(g)
-            }
-            None => {
-                self.report.skip("9-slice guides that aren't numbers (left out)");
-                None
-            }
+        let grid = grid.filter(|g| g.check().is_ok());
+        if grid.is_none() {
+            self.report.skip("9-slice guides that aren't usable (left out)");
         }
+        grid
     }
 
     /// The script settings of the package's publish profile (`PublishSettings.xml`): the
