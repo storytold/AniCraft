@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Selection, Session};
-use anicraft_doc::{ColorEffect, ColorStyle, Element, ElementId, ElementKind, Layer, LayerId, LibraryEntry, LibraryItem, LoopMode, Paint, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
+use anicraft_doc::{ColorEffect, ColorStyle, Element, ElementId, ElementKind, Layer, LayerId, LibraryEntry, LibraryItem, LoopMode, Paint, ScaleGrid, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Decomposed, Path, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -35,6 +35,15 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the symbols of every selected instance)}", true, set_symbol_kind),
+        c(
+            "symbol.set_scale_grid",
+            "9-Slice Scaling",
+            "",
+            None,
+            "{symbol?: id (default: the symbol open for editing, else the selected instance's), on?: bool, left?, right?, top?, bottom? (guide positions in the symbol's space)} turns a symbol's guides for 9-slice scaling on or off, or moves them (ADR 0055). Turning them on puts them a quarter of the way in from each edge of the symbol's artwork; moving one turns them on. Scaled instances then keep the corners outside the guides unscaled, stretch the edges one way and the centre both ways → {symbol, scale_grid: {left, right, top, bottom} | null}",
+            true,
+            set_scale_grid,
+        ),
         c("element.rename", "Instance Name", "", None, "{name}", true, |s, p| s.each_layer(true, |s| rename(s, p))),
         c("arrange.bring_to_front", "Bring to Front", "Modify/Arrange", Some("Ctrl+Shift+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, true))),
         c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, true))),
@@ -631,6 +640,61 @@ fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"symbol": ids.first().map(|i| i.0), "symbols": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "kind": format!("{kind:?}")}))
 }
 
+/// The symbol a command means: `symbol`, else the selected instance's.
+fn selected_symbol(s: &Session, p: &Value) -> Result<SymbolId> {
+    Ok(match opt_u64(p, "symbol")? {
+        Some(id) => SymbolId(id),
+        None => {
+            // The symbol of the selected instance.
+            let (layer, sel) = s.selection.first().ok_or_else(|| EngineError::State("select a symbol instance, or pass 'symbol'".into()))?;
+            s.elements_on(layer)
+                .iter()
+                .find(|e| e.id == sel)
+                .and_then(|e| match e.kind {
+                    ElementKind::Symbol { symbol, .. } => Some(symbol),
+                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
+                })
+                .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
+        }
+    })
+}
+
+/// 9-slice guides (ADR 0055): on, off or moved, on one symbol.
+fn set_scale_grid(s: &mut Session, p: &Value) -> Result<Value> {
+    let on = opt_bool(p, "on")?;
+    let edges = [opt_f32(p, "left")?, opt_f32(p, "right")?, opt_f32(p, "top")?, opt_f32(p, "bottom")?];
+    if on.is_none() && edges.iter().all(Option::is_none) {
+        return Err(EngineError::Param("pass 'on', or a guide to move: 'left', 'right', 'top' or 'bottom'".into()));
+    }
+    // The open symbol is the one being edited; otherwise the selected instance's.
+    let id = match (opt_u64(p, "symbol")?, s.editing_symbol()) {
+        (None, Some(open)) => open,
+        _ => selected_symbol(s, p)?,
+    };
+    let sym = s.doc.symbol(id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
+    let grid = if on == Some(false) {
+        if edges.iter().any(Option::is_some) {
+            return Err(EngineError::Param("guides can't be moved while turning them off".into()));
+        }
+        None
+    } else {
+        let start = sym.scale_grid.unwrap_or_else(|| {
+            let b = anicraft_doc::symbol_box(&s.doc, sym);
+            ScaleGrid::inset(&if b.is_empty() { anicraft_geom::Rect::new(0.0, 0.0, 100.0, 100.0) } else { b })
+        });
+        let [l, r, t, b] = edges;
+        let g = ScaleGrid { left: l.unwrap_or(start.left), right: r.unwrap_or(start.right), top: t.unwrap_or(start.top), bottom: b.unwrap_or(start.bottom) };
+        g.check().map_err(EngineError::Param)?;
+        Some(g)
+    };
+    if let Some(sym) = s.doc.library.iter_mut().find(|x| x.id == id)
+        && sym.scale_grid != grid
+    {
+        Arc::make_mut(sym).scale_grid = grid;
+    }
+    Ok(json!({"symbol": id.0, "scale_grid": grid.map(|g| json!({"left": g.left, "right": g.right, "top": g.top, "bottom": g.bottom}))}))
+}
+
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     let name: String = str_req(p, "name")?.chars().take(128).collect();
     for e in s.selected_elements_mut()? {
@@ -779,7 +843,7 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         }
         inner.push(Arc::new(layer));
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, timeline: Timeline { layers: inner } }));
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, scale_grid: None, timeline: Timeline { layers: inner } }));
     if folder.is_some() {
         s.doc.place_entry(LibraryEntry::Item(LibraryItem::Symbol(sym_id)), folder);
     }

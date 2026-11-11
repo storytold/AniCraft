@@ -11,6 +11,7 @@ pub mod edit;
 pub mod morph;
 pub mod planar;
 pub mod raw;
+pub mod slice;
 mod fit;
 mod path;
 pub mod svg;

@@ -904,6 +904,9 @@ fn composite(cov: &Coverage, op: &Prepared, b: IRect, band_y0: i32, w: usize, ro
 }
 
 #[cfg(test)]
+mod nine_slice_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use anicraft_doc::{ElementId, LayerId, sample};

@@ -15,6 +15,7 @@ mod filter;
 mod easing;
 mod eval;
 mod hints;
+pub mod nine_slice;
 pub mod library;
 pub mod motion;
 pub mod path_table;
@@ -35,6 +36,7 @@ pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, Soun
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
 pub use camera::Camera;
+pub use nine_slice::symbol_box;
 pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, evaluate_timeline_at, guide_walk, instance_start};
 pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, Language, PluginScript, SourceScript};
@@ -983,8 +985,48 @@ pub struct Symbol {
     /// The class scripts know the symbol by (Animate's "linkage"), kept as text (ADR 0013).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linkage: Option<Linkage>,
+    /// Guides for 9-slice scaling (ADR 0055): an instance scaled keeps the corners outside them
+    /// unscaled. `None`: the symbol scales as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_grid: Option<ScaleGrid>,
     pub timeline: Timeline,
 }
+
+/// The four 9-slice guides of a symbol (ADR 0055), in the symbol's own space: two vertical
+/// lines at `x = left` and `x = right`, two horizontal ones at `y = top` and `y = bottom`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScaleGrid {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl ScaleGrid {
+    /// Guides a quarter of the way in from each edge of `bounds` (what turning guides on gives).
+    pub fn inset(bounds: &Rect) -> ScaleGrid {
+        let (w, h) = (bounds.width() * 0.25, bounds.height() * 0.25);
+        ScaleGrid { left: bounds.min.x + w, right: bounds.max.x - w, top: bounds.min.y + h, bottom: bounds.max.y - h }
+    }
+
+    /// Whether the guides are usable: finite, within the format's range, and in order.
+    pub fn check(&self) -> Result<(), String> {
+        let v = [self.left, self.right, self.top, self.bottom];
+        if !v.iter().all(|x| x.is_finite() && x.abs() <= MAX_GRID_COORD) {
+            return Err(format!("9-slice guides must be numbers within ±{MAX_GRID_COORD}"));
+        }
+        if self.left > self.right {
+            return Err("the left 9-slice guide must not be right of the right one".into());
+        }
+        if self.top > self.bottom {
+            return Err("the top 9-slice guide must not be below the bottom one".into());
+        }
+        Ok(())
+    }
+}
+
+/// Largest 9-slice guide coordinate accepted from files and commands.
+pub const MAX_GRID_COORD: f32 = 1_000_000.0;
 
 /// A symbol's script class: what scripts create it by, and the class it extends. Kept with
 /// the document and shown, never run (ADR 0013 tier 1).
@@ -1234,6 +1276,10 @@ impl Document {
             max_id = max_id.max(sym.id.0);
             if sym.linkage.as_ref().is_some_and(|l| l.check().is_err()) {
                 Arc::make_mut(sym).linkage = None;
+            }
+            // 9-slice guides that aren't usable are dropped: the symbol scales as a whole.
+            if sym.scale_grid.as_ref().is_some_and(|g| g.check().is_err()) {
+                Arc::make_mut(sym).scale_grid = None;
             }
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {

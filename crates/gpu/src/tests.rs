@@ -465,6 +465,27 @@ fn composited_sample() -> anicraft_doc::Document {
     doc
 }
 
+/// A rounded panel with 9-slice guides, placed stretched, scaled up and turned.
+fn nine_slice_sample() -> anicraft_doc::Document {
+    use anicraft_doc::{Element, ElementId, ElementKind, Keyframe, Layer, LayerId, ScaleGrid, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
+    let mut d = anicraft_doc::Document { stage: anicraft_doc::Stage { width: 320, height: 200, ..Default::default() }, ..Default::default() };
+    let mut shape = Shape::filled(Path::rounded_rect(0.0, 0.0, 60.0, 30.0, 8.0), Paint::Solid(Rgba::hex(0x2a9d8f)));
+    shape.stroke = Some(Stroke::new(Rgba::hex(0x264653), 2.0));
+    let el = |id, transform, kind| std::sync::Arc::new(Element { id: ElementId(id), name: String::new(), transform, color: ColorEffect::default(), kind });
+    let mut k = Keyframe::new(0, 1);
+    k.elements.push(el(2, Affine::IDENTITY, ElementKind::Shape(shape)));
+    let mut l = Layer::new(LayerId(3), "art");
+    l.keyframes = vec![std::sync::Arc::new(k)];
+    d.library.push(std::sync::Arc::new(Symbol { id: SymbolId(4), name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid: Some(ScaleGrid { left: 8.0, right: 52.0, top: 8.0, bottom: 22.0 }), timeline: Timeline { layers: vec![std::sync::Arc::new(l)] } }));
+    let inst = |id, xf| el(id, xf, ElementKind::Symbol { symbol: SymbolId(4), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() });
+    let mut k = Keyframe::new(0, 1);
+    k.elements.push(inst(5, Affine::translate(10.0, 10.0).mul(&Affine::scale(4.5, 1.2))));
+    k.elements.push(inst(6, Affine::translate(30.0, 70.0).mul(&Affine::scale(2.0, 3.5))));
+    k.elements.push(inst(7, Affine::translate(220.0, 90.0).mul(&Affine::rotate(0.5)).mul(&Affine::scale(1.5, 2.5))));
+    std::sync::Arc::make_mut(&mut d.timeline_mut(0).layers[0]).keyframes = vec![std::sync::Arc::new(k)];
+    d
+}
+
 #[test]
 fn binned_coverage_matches_the_oracle_on_the_cpu() {
     let mut all = scenes();
@@ -480,6 +501,10 @@ fn binned_coverage_matches_the_oracle_on_the_cpu() {
     for (f, s) in [(0u32, 0.4f32), (30, 0.6)] {
         all.push(("composited sample", anicraft_doc::evaluate(&comp, f), View::stage(&comp, s)));
     }
+    // A 9-sliced instance (ADR 0055) reaches the stage through evaluation: cut outlines, strokes
+    // at their own width.
+    let nine = nine_slice_sample();
+    all.push(("9-slice", anicraft_doc::evaluate(&nine, 0), View::stage(&nine, 0.7)));
     for (name, dl, v) in all {
         let (scene, _) = prepare_scene(&dl, &v).unwrap();
         let b = binning::bin(&scene, v.width, v.height).unwrap();
@@ -622,6 +647,39 @@ fn degenerate_geometry_bins_without_trouble() {
 }
 
 // ----- the real GPU ----------------------------------------------------------------------------
+
+/// The shaders, as `pipelines` and the stage build them.
+const SHADERS: [(&str, &str); 4] = [
+    ("fine.wgsl", include_str!("fine.wgsl")),
+    ("bin.wgsl", include_str!("bin.wgsl")),
+    ("scan.wgsl", include_str!("scan.wgsl")),
+    ("filters.wgsl", include_str!("filters.wgsl")),
+];
+
+#[test]
+fn shaders_take_no_signed_remainder() {
+    // naga writes WGSL's `%` on integers as GLSL's, which is undefined when an operand is
+    // negative: on the GL backend (llvmpipe in the FreeBSD VM) a repeating bitmap's wrap,
+    // `((q % size) + size) % size` at q = -1, picked the wrong texel at its edges (bitmap
+    // repeated: max 79). Unsigned remainders and float ones (written as `a - b * trunc(a / b)`)
+    // are defined on every backend.
+    for (name, src) in SHADERS {
+        let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let functions = module.functions.iter().map(|(h, f)| (f, &info[h]));
+        let entries = module.entry_points.iter().enumerate().map(|(i, e)| (&e.function, info.get_entry_point(i)));
+        for (f, fi) in functions.chain(entries) {
+            for (h, e) in f.expressions.iter() {
+                if let naga::Expression::Binary { op: naga::BinaryOperator::Modulo, left, .. } = *e {
+                    let kind = fi[left].ty.inner_with(&module.types).scalar_kind();
+                    assert_ne!(kind, Some(naga::ScalarKind::Sint), "{name}: `%` on a signed integer in {:?} ({h:?})", f.name);
+                }
+            }
+        }
+    }
+}
 
 /// One device for all tests: the graphics card, or else the software adapter (CI runners have
 /// lavapipe or WARP); `None` (with the reasons printed) when there is neither.

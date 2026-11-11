@@ -156,13 +156,22 @@ fn finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
+// Rust's `rem_euclid` for i32 and `n` >= 1, without `%` on a negative operand: naga writes
+// WGSL's `%` as GLSL's, which leaves negative operands undefined, so on the GL backend
+// (llvmpipe in the FreeBSD VM) the texel left of or above a repeating bitmap's edge, -1, came
+// out wrong. The unsigned remainder is defined everywhere.
+fn wrap(i: i32, n: i32) -> i32 {
+    let r = i32(u32(abs(i)) % u32(n));
+    return select(r, select(n - r, 0, r == 0), i < 0);
+}
+
 // One bitmap tap at integer (x, y) (wrapped when repeating, then clamped to the edges as
 // `Pixels::at` does), through the colour effect, premultiplied.
 // The colour transform (ColorTransform::apply): each straight channel `c·mul + add`, clamped.
 fn tap(slot: u32, x: i32, y: i32, size: vec2<i32>, repeat: bool, mul: vec4<f32>, add: vec4<f32>) -> vec4<f32> {
     var q = vec2<i32>(x, y);
     if repeat {
-        q = ((q % size) + size) % size;
+        q = vec2<i32>(wrap(q.x, size.x), wrap(q.y, size.y));
     }
     q = clamp(q, vec2<i32>(0), size - vec2<i32>(1));
     let c = clamp(texel(slot, q) * mul + add, vec4<f32>(0.0), vec4<f32>(1.0));

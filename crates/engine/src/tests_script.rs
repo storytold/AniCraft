@@ -145,14 +145,14 @@ fn scripts_in_the_subset_run_and_the_rest_are_kept_and_said_so() {
     assert!(v["state"]["frame"].as_u64().unwrap() < 10 && v["state"]["playing"] == false, "it stopped: {}", v["state"]);
     // The HTML export runs it too, as the same actions.
     let out = anicraft_render::html::to_html(&s.doc, &anicraft_render::html::HtmlOptions::default()).unwrap();
-    assert!(out.html.contains("xyzzy-1") && !out.report.keys().any(|k| k.starts_with("kept frame scripts")), "{:?}", out.report);
+    assert!(out.html.contains("xyzzy-") && !out.report.keys().any(|k| k.starts_with("kept frame scripts")), "{:?}", out.report);
     // One outside the subset doesn't run at all, and Test Movie says where and why.
     let v = s.execute("script.set", &json!({"layer": layer, "frame": 1, "text": "stop();
-var n:int = 1;"})).unwrap();
+var n:int = 1; switch (n) { }"})).unwrap();
     assert_eq!(v["runs"], false);
-    assert_eq!(v["problems"][0], json!({"line": 2, "column": 1, "message": "variables (`var`) aren't supported yet"}));
+    assert_eq!(v["problems"][0], json!({"line": 2, "column": 16, "message": "`switch` statements aren't supported yet"}));
     let v = s.execute("control.test_movie", &json!({"frames": 20, "events": [{"tick": 2, "type": "click", "x": 640, "y": 400}]})).unwrap();
-    assert_eq!(v["output"][0]["line"], "Frame script not run: Scene 1 › Actions, frame 2: line 2, column 1: variables (`var`) aren't supported yet");
+    assert_eq!(v["output"][0]["line"], "Frame script not run: Scene 1 › Actions, frame 2: line 2, column 16: `switch` statements aren't supported yet");
     assert!(v["state"]["frame"].as_u64().unwrap() > 10, "it played on: {}", v["state"]);
     let out = anicraft_render::html::to_html(&s.doc, &anicraft_render::html::HtmlOptions::default()).unwrap();
     assert!(out.report.keys().any(|k| k.starts_with("kept frame scripts")), "{:?}", out.report);
@@ -174,11 +174,44 @@ btn.addEventListener(MouseEvent.CLICK, go);
 function go(e:MouseEvent):void { gotoAndPlay(\"run\"); }
 navigateToURL(new URLRequest(\"x\"));"})).unwrap();
     assert_eq!(v["runs"], true);
-    assert_eq!(v["describe"], json!(["Stop", "On click (btn): Go to “run” and play"]));
-    assert_eq!(v["steps"][1]["listen"]["target"], "btn");
+    assert_eq!(v["steps"], 3);
+    assert_eq!(v["program"]["body"][1]["s"], "listen");
+    assert_eq!(v["program"]["body"][1]["at"]["path"], "btn");
+    assert_eq!(v["program"]["functions"][0]["name"], "go");
     assert_eq!(v["notes"][0]["line"], 4);
+    // Names from other frames are listed; the text alone can't say whether they are there.
+    let v = s.execute("script.check", &json!({"text": "score += bonus(2);"})).unwrap();
+    assert_eq!((v["runs"].as_bool(), v["uses"].clone()), (Some(true), json!([{"name": "score", "line": 1, "column": 1, "call": false}, {"name": "bonus", "line": 1, "column": 10, "call": true}])));
     let v = s.execute("script.check", &json!({"text": "stop();", "language": "actionscript1or2"})).unwrap();
     assert_eq!((v["runs"].as_bool(), v["problems"][0]["line"].as_u64()), (Some(false), Some(0)));
     assert!(s.execute("script.check", &json!({})).is_err());
     assert!(s.doc == before && s.undo_label().is_none());
+}
+
+#[test]
+fn scripts_link_through_their_timeline_and_test_movie_plays_keys() {
+    let mut s = Session::new(sample::interactive());
+    let layer = s.doc.timeline(0).layers[0].id.0;
+    // Frame 2 uses a variable and a function that no frame declares yet: it doesn't run.
+    let v = s.execute("script.set", &json!({"layer": layer, "frame": 1, "text": "stop();\nstage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);\nfunction onKey(e:KeyboardEvent):void { hits++; trace(\"key \" + e.keyCode + \" \" + hits + \" \" + Math.floor(Math.random() * 1000)); }"})).unwrap();
+    assert_eq!(v["runs"], false, "{v}");
+    assert_eq!(v["problems"][0]["message"], "`hits` isn't a variable of this timeline (declare it with `var` in one of its frame scripts)");
+    let out = s.execute("control.test_movie", &json!({"frames": 5})).unwrap();
+    assert!(out["output"][0]["line"].as_str().unwrap().starts_with("Frame script not run: Scene 1 › Actions, frame 2: line 3"), "{}", out["output"]);
+    // Declaring it on frame 1 links frame 2.
+    s.execute("script.set", &json!({"layer": layer, "frame": 0, "text": "var hits:int = 0;"})).unwrap();
+    let list = s.execute("script.list", &json!({"text": false})).unwrap();
+    assert!(list["frames"].as_array().unwrap().iter().all(|f| f["runs"] == true), "{list}");
+    let play = |s: &mut Session, seed: u64| {
+        let v = s.execute("control.test_movie", &json!({"frames": 6, "seed": seed, "events": [{"tick": 3, "type": "key_down", "key": "LEFT"}, {"tick": 4, "type": "key", "key": "a"}, {"tick": 5, "type": "key_down", "key": 32}]})).unwrap();
+        v["output"].as_array().unwrap().iter().filter_map(|l| l["line"].as_str().map(str::to_string)).filter(|l| l.starts_with("key ")).collect::<Vec<_>>()
+    };
+    let a = play(&mut s, 1);
+    assert_eq!(a.len(), 3, "{a:?}");
+    assert!(a[0].starts_with("key 37 1 ") && a[1].starts_with("key 65 2 ") && a[2].starts_with("key 32 3 "), "{a:?}");
+    assert_eq!(play(&mut s, 1), a, "the same seed plays the same");
+    assert_ne!(play(&mut s, 2), a, "another seed draws other numbers");
+    for bad in [json!({"tick": 1, "type": "key_down"}), json!({"tick": 1, "type": "key_down", "key": 0}), json!({"tick": 1, "type": "key_up", "key": "WIGGLE"})] {
+        assert!(s.execute("control.test_movie", &json!({"events": [bad]})).is_err());
+    }
 }

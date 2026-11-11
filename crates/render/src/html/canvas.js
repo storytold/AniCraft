@@ -40,7 +40,10 @@
       return scratch.isPointInStroke(stagePath(path, m), x, y);
     },
   };
-  const player = new AniCraft.Player(movie, host);
+  // Each page load gets its own Math.random() sequence (a movie's, not for security); the
+  // player itself is deterministic.
+  const seed = Date.now() % 4294967296;
+  const player = new AniCraft.Player(movie, host, seed);
 
   function stagePath(path, m) {
     const out = new Path2D();
@@ -356,7 +359,19 @@
     report(player.input([{ type: "leave" }]));
     draw();
   });
-  window.addEventListener("keydown", audioOn);
+  // Keys go to the movie's keyboard listeners (ActionScript key codes are the browser's).
+  function key(type, e) {
+    if (e.repeat && type === "keyup") return;
+    report(player.input([{ type: type, code: e.keyCode }]));
+    // Arrows and space would scroll the page; a movie that listens for keys keeps them.
+    if (player.st.stage.some((l) => l.ev === "key_down" || l.ev === "key_up") && [32, 37, 38, 39, 40].indexOf(e.keyCode) >= 0) e.preventDefault();
+    draw();
+  }
+  window.addEventListener("keydown", (e) => {
+    audioOn();
+    key("keydown", e);
+  });
+  window.addEventListener("keyup", (e) => key("keyup", e));
   window.addEventListener("resize", resize);
 
   const dt = 1000 / movie.stage.fps;

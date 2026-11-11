@@ -243,3 +243,17 @@ fn files_keep_every_style() {
 fn plug_ins_may_set_colour_effects() {
     assert!(crate::cmds_plugin::plugin_may_call("element.set_color_effect").is_ok());
 }
+
+#[test]
+fn a_nine_slice_instance_takes_its_colour_effect() {
+    // ADR 0055 with ADR 0056: the slices are geometry; the colour effect applies to all of them.
+    let mut s = square();
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Panel"}));
+    run(&mut s, "symbol.set_scale_grid", json!({"on": true, "left": 5, "right": 15, "top": 5, "bottom": 15}));
+    run(&mut s, "element.set_transform", json!({"sx": 3.0, "sy": 3.0}));
+    run(&mut s, "element.set_color_effect", json!({"tint": "#ff0000", "tint_amount": 50}));
+    let dl = anicraft_doc::evaluate(&s.doc, 0);
+    assert!(!dl.items.is_empty());
+    let want = ColorTransform::tint(Rgba::hex(0xff0000), 0.5);
+    assert!(dl.items.iter().all(|i| i.color == want), "every slice is tinted");
+}

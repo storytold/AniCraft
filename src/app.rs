@@ -235,6 +235,8 @@ pub enum Drag {
     BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
     /// Moving a whole armature by its root, from stage point `last` last frame.
     ArmatureMove { layer: anicraft_engine::doc::LayerId, last: egui::Pos2 },
+    /// Moving one of the open symbol's 9-slice guides (ADR 0055).
+    SliceGuide { guide: crate::scale_grid::Guide },
     Pan,
 }
 
@@ -960,15 +962,16 @@ impl App {
                 // The interactive sample as an imported Animate document might bring it: a
                 // frame script kept on the Actions layer's first keyframe (in place of its
                 // Stop action), a linkage class and a document class; the Actions panel shows
-                // the Script view (ADR 0013). `script` runs (tier 2); `scriptproblems` uses
-                // what the subset doesn't, and shows where; `testscript` plays the one that
-                // runs in Test Movie, its Play button clicked.
+                // the Script view (ADR 0013). `script` runs (tiers 2 and 2.5: a typed variable,
+                // `if`, a keyboard listener); `scriptproblems` uses what the subset doesn't, and
+                // shows where; `testscript` plays the one that runs in Test Movie, its Play
+                // button clicked.
                 self.perform("file.new_sample", json!({"which": "interactive"}));
                 self.run("layer.select", json!({"index": 0}));
                 // i18n-exempt: script source, document content
-                let runs = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\ttrace(\"Play clicked\");\n\tgotoAndPlay(\"show\");\n}\n";
+                let runs = "import flash.events.*;\n\nstop();\nvar clicks:int = 0;\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\nstage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);\n\nfunction onPlay(event:MouseEvent):void {\n\tclicks++;\n\ttrace(\"Play clicked \" + clicks + (clicks == 1 ? \" time\" : \" times\"));\n\tgotoAndPlay(\"show\");\n}\n\nfunction onKey(event:KeyboardEvent):void {\n\tif (event.keyCode == Keyboard.SPACE) {\n\t\tgotoAndPlay(\"show\");\n\t}\n}\n";
                 // i18n-exempt: script source, document content
-                let problems = "import flash.events.MouseEvent;\n\nstop();\nvar clicks:int = 0;\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tclicks++;\n\tif (clicks > 1) {\n\t\tgotoAndPlay(\"show\");\n\t}\n}\n";
+                let problems = "import flash.events.MouseEvent;\n\nstop();\nvar labels:Array = [\"show\", \"menu\"];\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tswitch (labels.length) {\n\t\tcase 2: gotoAndPlay(labels[0]);\n\t}\n}\n";
                 let code = if which == "scriptproblems" { problems } else { runs };
                 self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
                 self.run("script.set_class", json!({"class": "com.example.Menu"}));
@@ -1126,6 +1129,26 @@ impl App {
                 self.tool = Tool::Subselect;
                 self.run("raw.subselect", json!({"x": 0, "y": 60, "slop": 4}));
                 self.raw_ends = Vec::new();
+            }
+            Some(which @ ("nineslice" | "nineslicedit")) => {
+                // 9-slice scaling (ADR 0055): a rounded panel symbol with its guides on, one
+                // instance as drawn and one stretched wide (its corners stay round), the wide one
+                // selected; "nineslicedit" opens the symbol with its guides on the stage.
+                self.run("layer.new", json!({"name": "Panels"}));
+                self.run("draw.rect", json!({"x": 80, "y": 560, "w": 200, "h": 80, "radius": 24, "fill": "#2a9d8f", "stroke": "#264653", "stroke_width": 4}));
+                self.run("modify.convert_to_symbol", json!({"name": "Panel"}));
+                self.run("symbol.set_kind", json!({"kind": "movie_clip"}));
+                self.run("symbol.set_scale_grid", json!({"left": -70, "right": 70, "top": -14, "bottom": 14}));
+                self.run("edit.duplicate", json!({"dx": 260, "dy": 0}));
+                // Stretched about its left edge (x = 340): 2.9 times as wide, 1.4 times as high.
+                self.run("modify.transform", json!({"a": 2.9, "b": 0, "c": 0, "d": 1.4, "e": 340.0 * -1.9, "f": 600.0 * -0.4}));
+                if which == "nineslicedit" {
+                    // The instance as drawn opens in place, the scene dimmed around it.
+                    self.run("element.pick", json!({"x": 180, "y": 600}));
+                    self.run("symbol.edit", json!({}));
+                    self.run("edit.deselect", json!({}));
+                    self.tool = Tool::Select;
+                }
             }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
@@ -1888,6 +1911,15 @@ impl App {
         // text field keeps every key.
         let keys = crate::a11y::keyboard(ctx);
         if keys == crate::a11y::Keyboard::Text || self.palette.is_some() {
+            return;
+        }
+        // The Test Movie window's movie has the keyboard (ADR 0052): its keys are the
+        // movie's; only shortcuts with Ctrl (⌘) or Alt reach the app (Restart is Ctrl+Enter).
+        if self.test_movie.is_some() && crate::test_movie::has_keys(ctx) {
+            let fire: Vec<&'static str> = ctx.input_mut(|i| self.shortcuts.iter().filter(|(m, _, _)| m.command || m.ctrl || m.alt).filter_map(|(m, k, id)| i.consume_key(*m, *k).then_some(*id)).collect());
+            for id in fire.into_iter().filter(|id| !id.starts_with("view.") && !id.starts_with("tool.")) {
+                self.invoke(id);
+            }
             return;
         }
         let control = keys == crate::a11y::Keyboard::Control;

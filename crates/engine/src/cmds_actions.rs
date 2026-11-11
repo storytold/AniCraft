@@ -17,7 +17,7 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("control.test_movie", "Test Movie", "Control", Some("Ctrl+Enter"), "{frames?: steps to play (default 10 s of frames, at most 10,000), events?: [{tick, type: move|down|up|click|leave, x, y}]} plays the movie with its actions and frame scripts from the first frame; returns the output and where it ended (the app opens the Test Movie window)", false, test_movie as crate::RunFn),
+        c("control.test_movie", "Test Movie", "Control", Some("Ctrl+Enter"), "{frames?: steps to play (default 10 s of frames, at most 10,000), events?: [{tick, type: move|down|up|click|leave, x, y} or {tick, type: key_down|key_up|key, key: code|letter|LEFT…}], seed?: Math.random()'s seed (default 0)} plays the movie with its actions and frame scripts from the first frame; returns the output and where it ended (the app opens the Test Movie window)", false, test_movie as crate::RunFn),
         c("actions.set", "Set Actions", "", None, "{actions: [{op: stop|play|goto_and_play|goto_and_stop|next_frame|prev_frame|next_scene|prev_scene|trace|set_property, target?, frame?, scene?, message?, property?, value?}] | plugin: id, entry?, symbol?: id (a movie clip's timeline), layer?, frame?} sets what the keyframe at the frame runs; or {element, event: click|press|release|over|out, actions} sets an instance's event handler. An empty list clears it", true, set),
         c("actions.clear", "Clear Actions", "", None, "{symbol?, layer?, frame?} clears the keyframe's actions; {element, event?} clears an instance's handlers (one event, or all)", true, clear),
         c("actions.list", "List Actions", "", None, "{} every keyframe with actions or a frame script and every instance with event handlers, in every scene and symbol", false, list),
@@ -259,8 +259,9 @@ fn test_movie(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Some(_) => return Err(EngineError::Param("param 'events' must be a list".into())),
     }
+    let seed = opt_u64(p, "seed")?.unwrap_or(anicraft_doc::player::DEFAULT_SEED);
     let mut runner = ScriptRunner::new(&s.plugins);
-    let mut movie = Movie::start(&s.doc, &mut runner);
+    let mut movie = Movie::start_seeded(&s.doc, seed, &mut runner);
     for tick in 1..=u64::from(frames) {
         let events: Vec<_> = timed.iter().filter(|(t, _)| *t == tick).flat_map(|(_, e)| e.iter().copied()).collect();
         movie.step(&s.doc, &events, &mut runner);

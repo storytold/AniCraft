@@ -275,6 +275,43 @@ pub(crate) fn live(app: &mut App, label: &str, id: &str, p: Value) {
     app.run(id, p);
 }
 
+/// A symbol's 9-slice guides (ADR 0055): Animate's "Enable guides for 9-slice scaling" and,
+/// when on, where the four guides are (in the symbol's space; also dragged on the stage while
+/// the symbol is open). `place` keeps two copies of the controls apart (Library, Properties).
+pub(crate) fn scale_grid_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::SymbolId, place: &str) {
+    let Some(grid) = app.s.doc.symbol(id).map(|s| s.scale_grid) else { return };
+    let mut on = grid.is_some();
+    ui.push_id(place, |ui| {
+        let tip = tr!("Scaled instances keep the corners outside the guides unscaled, stretch the edges one way and the centre both ways (for buttons and panels). Edit the symbol to drag the guides");
+        if crate::theme::checkbox(ui, &mut on, tr!("Enable guides for 9-slice scaling")).on_hover_text(tip).changed() {
+            app.run("symbol.set_scale_grid", json!({"symbol": id.0, "on": on}));
+        }
+        let Some(g) = grid else { return };
+        let limit = anicraft_engine::doc::MAX_GRID_COORD;
+        let (mut l, mut r, mut t, mut b) = (g.left, g.right, g.top, g.bottom);
+        let mut changed = None;
+        row(ui, tr!("Guides x"), |ui| {
+            if ui.add(egui::DragValue::new(&mut l).range(-limit..=g.right).speed(0.5).max_decimals(1)).named(tr!("Left 9-slice guide")).changed() {
+                changed = Some(("left", l));
+            }
+            if ui.add(egui::DragValue::new(&mut r).range(g.left..=limit).speed(0.5).max_decimals(1)).named(tr!("Right 9-slice guide")).changed() {
+                changed = Some(("right", r));
+            }
+        });
+        row(ui, tr!("Guides y"), |ui| {
+            if ui.add(egui::DragValue::new(&mut t).range(-limit..=g.bottom).speed(0.5).max_decimals(1)).named(tr!("Top 9-slice guide")).changed() {
+                changed = Some(("top", t));
+            }
+            if ui.add(egui::DragValue::new(&mut b).range(g.top..=limit).speed(0.5).max_decimals(1)).named(tr!("Bottom 9-slice guide")).changed() {
+                changed = Some(("bottom", b));
+            }
+        });
+        if let Some((key, v)) = changed {
+            live(app, tr_noop!("Move 9-Slice Guide"), "symbol.set_scale_grid", json!({"symbol": id.0, key: v}));
+        }
+    });
+}
+
 /// A property row for values: proportional label (left-aligned column), monospace fields.
 fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     crate::theme::form_row(ui, crate::theme::FORM_LABEL_DOCK, label, |ui| with_type(ui, Type::Data, add));
@@ -431,6 +468,9 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             (n, l) => trn!("{n} element {on_layers}", "{n} elements {on_layers}", n, on_layers = trn!("on {n} layer", "on {n} layers", l)),
         };
         section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, &sel));
+    } else if let Some((id, name)) = app.s.editing_symbol().and_then(|id| app.s.doc.symbol(id).map(|x| (id, x.name.clone()))) {
+        // Inside a symbol, nothing selected: the symbol's own settings (ADR 0055).
+        section(ui, "prop_symbol", Section::Rule, &tr!("Symbol: {name}", name = name), None, |ui| scale_grid_props(app, ui, id, "open"));
     } else {
         section(ui, "prop_document", Section::Rule, tr!("Document"), None, |ui| document_props(app, ui));
     }
@@ -680,6 +720,11 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 .on_hover_text(tr!("Show another symbol here, keeping position, colour effect, filters and name"))
                 .set_name(tr!("Swap Symbol"));
                 mixed(ui, m.symbol);
+            });
+            // 9-slice scaling is the symbol's (ADR 0055): on here, it is on for every instance.
+            let sym_id = *symbol;
+            row_prose(ui, tr!("Scaling"), |ui| {
+                ui.vertical(|ui| scale_grid_props(app, ui, sym_id, "instance"));
             });
             // The class scripts know the symbol by (kept, not run; ADR 0013), in documents
             // that use scripts.

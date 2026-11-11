@@ -23,6 +23,43 @@
     the rest of the effect. Older files open unchanged, and None, Alpha and Tint effects are
     still written exactly as before.
 
+* **9-slice scaling for symbols** (ADR 0055, M2).
+  * **Enable guides for 9-slice scaling** on a symbol, in the Library's item properties or in
+    Properties. A scaled instance then keeps its corners unscaled, stretches its edges one way
+    and its centre both ways. Rounded buttons and panels resize without distorting, strokes
+    keep their width, and rotation and skew apply after. Nested symbols, text and bitmaps
+    inside scale normally, as in Animate. When there isn't room for the corners, they shrink
+    together in proportion.
+  * While the symbol is open for editing, its four guides are **dashed lines across the
+    stage**. Drag them with the Selection tool (one undo step per drag), or type their
+    positions in Properties.
+  * Every export draws it from the same frames. SVG and Lottie get baked outlines. HTML canvas
+    export scales such instances as a whole for now and says so in its report.
+  * XFL and `.fla` import read `scaleGridLeft/Right/Top/Bottom`. Headless:
+    `symbol.set_scale_grid {symbol?, on?, left?, right?, top?, bottom?}`.
+* **Frame scripts in ActionScript 3.0 run small logic** (ADR 0052, M6).
+  * Typed variables (`var score:int = 0;` as Number, int, uint, Boolean, String or untyped),
+    kept per timeline instance across its frame scripts as Animate timelines keep them;
+    expressions (arithmetic, comparison, logic, joining text, `Math.min/max/abs/floor/ceil/
+    round/random`, casts); `if`/`else`, `for`, `while` and `do` loops; functions with
+    parameters and results, callable from any frame of the same timeline.
+  * Scripts read properties of instances and timelines (`x`, `y`, `alpha`, `visible`,
+    `rotation`, `scaleX/Y`, `currentFrame`, `totalFrames`, `currentLabel`, `mouseX/Y`, `name`),
+    remove listeners, and listen for `Event.ENTER_FRAME` and for keys on the stage
+    (`KeyboardEvent.KEY_DOWN`/`KEY_UP`, `e.keyCode`); `e.target` and `e.currentTarget` work.
+  * Test Movie sends your keys to the movie (it says so in its bar); `Math.random()` is
+    seeded, so a headless `control.test_movie` with the same `seed` and events always plays the
+    same; key events and `seed` there too.
+  * An endless loop or an error stops only its script, with a line in Output, and the movie
+    plays on. A script that uses a name no frame of its timeline declares doesn't run, and the
+    Actions panel shows the name in place.
+  * The HTML canvas export runs the same scripts, keys included, checked against Test Movie
+    step by step.
+
+* **Repeating bitmap fills on the GL backend** (M3): the GPU stage wrapped a repeating
+  bitmap with a signed remainder, which GLSL leaves undefined for negative values, so on
+  OpenGL (llvmpipe in the FreeBSD VM) the texels at the bitmap's left and top edges came out
+  wrong. It now wraps without one, and a test keeps every shader free of signed remainders.
 * **Library and Properties polish** (ADR 0053, M2).
   * **Drag Library items onto the stage**: symbols and bitmaps land at the pointer on the
     active layer at the playhead, a sound goes onto that layer's keyframe; drag several at once.

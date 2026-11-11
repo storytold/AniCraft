@@ -1,7 +1,8 @@
 # ADR 0013: ActionScript compatibility
 
 * Status: accepted (2026-11-08) as scope and placement. **Tier 1 built** (2026-11-09, see
-  "Tier 1 as built" below). **Tier 2 built** (2026-11-10, see "Tier 2 as built")
+  "Tier 1 as built" below). **Tier 2 built** (2026-11-10, see "Tier 2 as built"). **Tier 2.5,
+  small logic, built** (2026-11-11, ADR 0052)
 * Relates to: requirements U2 (scripting surface), roadmap M6, ADR 0009 (XFL import),
   `docs/legal/compliance.md`
 

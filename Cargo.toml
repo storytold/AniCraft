@@ -6,7 +6,7 @@ default-members = [".", "crates/*"]
 [workspace.package]
 # 0.1.0 is the early alpha (release stage in src/app.rs, RELEASE_STAGE); see CHANGELOG.md
 # and docs/release.md.
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 # An application, not a library: not published to crates.io.
@@ -29,6 +29,8 @@ anicraft-gpu = { path = "crates/gpu" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
+# The WGSL front end wgpu already builds, for checking the shaders in tests.
+naga = { version = "30", features = ["wgsl-in"] }
 pollster = "1"
 bytemuck = "1"
 anicraft-actions = { path = "crates/actions" }

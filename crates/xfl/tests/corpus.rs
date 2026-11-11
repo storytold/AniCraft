@@ -70,6 +70,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("guides", &[]),
     ("interactive", &[]),
     ("masks", &[]),
+    ("nineslice", &[("9-slice guides that aren't usable (left out)", 1)]),
     ("primitives", &[]),
     ("scenes", &[("frame comments", 1)]),
     ("scripts", &[]),
@@ -84,7 +85,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
 
 /// What each package keeps without running (ADR 0013 tier 1: scripts outside the subset, and
 /// class names); packages not listed keep nothing.
-const KEPT: &[(&str, &[(&str, usize)])] = &[("bitmaps", &[("library folders", 1)]), ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]), ("symbols", &[("library folders", 1)])];
+const KEPT: &[(&str, &[(&str, usize)])] = &[("bitmaps", &[("library folders", 1)]), ("nineslice", &[("library folders", 1)]), ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]), ("symbols", &[("library folders", 1)])];
 
 /// The frame scripts each package brings that run (ADR 0013 tier 2: in the subset).
 const RUNS: &[(&str, &[(&str, usize)])] = &[
@@ -216,6 +217,16 @@ fn tweens_keep_their_kinds_eases_and_hints() {
     assert!(hints[0].start.distance(anicraft_geom::Vec2::new(20.0, 120.0)) < 0.01 && hints[0].end.distance(anicraft_geom::Vec2::new(270.0, 115.0)) < 0.01, "{hints:?}");
     assert!(doc.timeline(0).layers[4].keyframes[0].tween.is_none(), "a motion tween stays a keyframe");
     assert_eq!(doc.frame_count(), 13);
+}
+
+#[test]
+fn nineslice_guides_come_across_in_the_symbols_space() {
+    let (doc, _) = import("nineslice");
+    let grid = |name: &str| doc.library.iter().find(|s| s.name == name).and_then(|s| s.scale_grid);
+    assert_eq!(grid("Panel"), Some(anicraft_doc::ScaleGrid { left: 10.0, right: 90.0, top: 10.0, bottom: 30.0 }));
+    assert_eq!(grid("Pip"), None);
+    assert_eq!(grid("Half"), None, "one guide alone isn't a grid");
+    assert_eq!(doc.library.iter().find(|s| s.name == "Panel").map(|s| s.kind), Some(SymbolKind::MovieClip));
 }
 
 #[test]

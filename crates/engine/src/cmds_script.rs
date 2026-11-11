@@ -13,8 +13,10 @@
 use crate::cmds_actions::{Scope, keyframe_in};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
+use anicraft_doc::actions::as3::Problem;
 use anicraft_doc::actions::{self, CompileResult, FrameScript, Language, SourceScript};
-use anicraft_doc::{Linkage, SymbolId};
+use anicraft_doc::player::{TimelineRef, link_problems};
+use anicraft_doc::{Document, Linkage, SymbolId, SymbolKind};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -24,7 +26,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("script.set", "Set Frame Script", "", None, "{text?: the script, verbatim (\"\" clears; at most 1 MiB), language?: actionscript3|actionscript1or2|other (default: the script's, else actionscript3), symbol?: id, layer?, frame?} keeps a script on the keyframe at the frame (it replaces actions there); ActionScript 3.0 in the subset runs in Test Movie and the HTML export, the rest is kept and not run (`runs`, `problems` say which)", true, set as crate::RunFn),
         c("script.clear", "Clear Frame Script", "", None, "{symbol?, layer?, frame?} removes the keyframe's kept script (actions are left alone: actions.clear)", true, clear),
         c("script.list", "List Frame Scripts", "", None, "{text?: bool (default true)} every kept script in every scene and symbol, with its text, whether it runs and its problems, plus symbol linkage classes and the document class", false, list),
-        c("script.check", "Check Frame Script", "", None, "{text: the script, language?: actionscript3|actionscript1or2|other (default actionscript3)} whether it would run (the ActionScript 3.0 subset, ADR 0013), its problems with line and column, what is ignored, and the steps it runs; changes nothing", false, check),
+        c("script.check", "Check Frame Script", "", None, "{text: the script, language?: actionscript3|actionscript1or2|other (default actionscript3)} whether it would run (the ActionScript 3.0 subset, ADR 0013), its problems with line and column, what is ignored, the names it takes from other frames of its timeline (`uses`), and what it compiles to (`steps`, `program`); changes nothing", false, check),
         c("script.set_class", "Set Script Class", "", None, "{symbol?: id (default: the document), class: dotted class name (\"\" clears), base?: the class it extends} sets a symbol's linkage class, or the document class; kept as text, not run", true, set_class),
     ]
 }
@@ -47,11 +49,30 @@ fn what(script: &Option<FrameScript>) -> Value {
 }
 
 /// Whether a script runs, its problems and notes (each `{line, column, message}`; line 0 is
-/// the whole script).
-fn status(c: &CompileResult) -> Value {
+/// the whole script). `links`: why it doesn't run on its timeline although it compiles (a
+/// name from another frame that isn't there, ADR 0052).
+fn status(c: &CompileResult, links: &[Problem]) -> Value {
     match c {
-        Ok(c) => json!({"runs": true, "problems": [], "notes": c.notes}),
+        Ok(c) if links.is_empty() => json!({"runs": true, "problems": [], "notes": c.notes}),
+        Ok(c) => json!({"runs": false, "problems": links, "notes": c.notes}),
         Err(p) => json!({"runs": false, "problems": p, "notes": []}),
+    }
+}
+
+/// The timeline a keyframe's script belongs to, for linking (graphic and button timelines
+/// don't run scripts: `None`).
+fn timeline_of(doc: &Document, symbol: Option<SymbolId>) -> Option<TimelineRef> {
+    match symbol {
+        None => Some(TimelineRef::Root),
+        Some(id) => doc.symbol(id).filter(|s| s.kind == SymbolKind::MovieClip).map(|_| TimelineRef::Symbol(id)),
+    }
+}
+
+/// Why a compiled script doesn't link on its timeline.
+fn links(doc: &Document, which: Option<TimelineRef>, c: &CompileResult) -> Vec<Problem> {
+    match (which, c) {
+        (Some(w), Ok(c)) => link_problems(doc, w, c),
+        _ => Vec::new(),
     }
 }
 
@@ -62,10 +83,11 @@ fn check(_: &mut Session, p: &Value) -> Result<Value> {
     }
     let script = SourceScript::new(language(p)?.unwrap_or_default(), text);
     let c = script.compiled();
-    let mut v = status(c);
+    let mut v = status(c, &[]);
     if let Ok(c) = c {
-        v["steps"] = json!(c.ops);
-        v["describe"] = json!(c.ops.iter().map(|o| o.describe()).collect::<Vec<_>>());
+        v["steps"] = json!(c.steps);
+        v["uses"] = json!(c.free);
+        v["program"] = json!(c);
     }
     Ok(v)
 }
@@ -103,10 +125,12 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let script = SourceScript::new(lang.or(old.map(|o| o.language)).unwrap_or_default(), text);
     script.check().map_err(EngineError::Param)?;
     let mut out = json!({"layer": lid.0, "keyframe": k.start, "language": script.language.key(), "lines": script.lines(), "bytes": script.text.len(), "replaced": if before == json!("script") { Value::Null } else { before }});
-    if let (Some(o), Value::Object(st)) = (out.as_object_mut(), status(script.compiled())) {
+    let script = Arc::new(script);
+    k.script = Some(FrameScript::Source(script.clone()));
+    let which = timeline_of(&s.doc, opt_u64(p, "symbol")?.map(SymbolId));
+    if let (Some(o), Value::Object(st)) = (out.as_object_mut(), status(script.compiled(), &links(&s.doc, which, script.compiled()))) {
         o.extend(st);
     }
-    k.script = Some(FrameScript::Source(Arc::new(script)));
     Ok(out)
 }
 
@@ -122,13 +146,14 @@ fn clear(s: &mut Session, p: &Value) -> Result<Value> {
 fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let with_text = opt_bool(p, "text")?.unwrap_or(true);
     let mut frames = Vec::new();
-    let timelines = s.doc.scenes.iter().enumerate().map(|(i, sc)| (json!({"scene": i}), sc.name.as_str(), &sc.timeline)).chain(s.doc.library.iter().map(|sym| (json!({"symbol": sym.id.0}), sym.name.as_str(), &sym.timeline)));
-    for (at, name, tl) in timelines {
+    let doc = &s.doc;
+    let timelines = doc.scenes.iter().enumerate().map(|(i, sc)| (json!({"scene": i}), sc.name.as_str(), &sc.timeline, Some(TimelineRef::Root))).chain(doc.library.iter().map(|sym| (json!({"symbol": sym.id.0}), sym.name.as_str(), &sym.timeline, timeline_of(doc, Some(sym.id)))));
+    for (at, name, tl, which) in timelines {
         for l in &tl.layers {
             for k in &l.keyframes {
                 let Some(src) = k.script.as_ref().and_then(FrameScript::source) else { continue };
                 let mut v = json!({"timeline": name, "layer": l.id.0, "layer_name": l.name, "frame": k.start, "label": k.label, "language": src.language.key(), "lines": src.lines(), "bytes": src.text.len()});
-                if let (Some(o), Value::Object(st)) = (v.as_object_mut(), status(src.compiled())) {
+                if let (Some(o), Value::Object(st)) = (v.as_object_mut(), status(src.compiled(), &links(doc, which, src.compiled()))) {
                     o.extend(st);
                 }
                 if with_text {
