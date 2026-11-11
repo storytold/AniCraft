@@ -3,7 +3,7 @@
 use crate::camera::Camera;
 use crate::nine_slice::Slicing;
 use crate::player::PlayerState;
-use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
+use crate::{ColorTransform, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
 use anicraft_geom::walk::PathWalk;
 use anicraft_geom::{Affine, FillRule, Path};
 use std::borrow::Cow;
@@ -21,7 +21,8 @@ pub struct DisplayItem {
     pub fill: Option<Paint>,
     pub stroke: Option<Stroke>,
     pub fill_rule: FillRule,
-    pub color: ColorEffect,
+    /// The colour transform of every instance around it, composed (ADR 0056).
+    pub color: ColorTransform,
     /// The top-level layer and element this item came from (for picking).
     pub layer: LayerId,
     pub element: ElementId,
@@ -33,7 +34,7 @@ pub struct DisplayItem {
     pub masks: Option<u32>,
     /// Guide artwork: shown while editing, never in output.
     pub guide: bool,
-    /// The innermost group this item fades with (see [`DisplayList::groups`]); `color.alpha`
+    /// The innermost group this item fades with (see [`DisplayList::groups`]); `color`
     /// leaves out the groups' opacity.
     pub group: Option<u32>,
     /// The decoded pixels a [`Paint::Bitmap`] fill shows (shared, never copied).
@@ -74,7 +75,7 @@ impl DisplayList {
     /// The opacity an item ends up with: its own times every group's it is in (what an item
     /// looks like when nothing overlaps it; also what picking and outlines use).
     pub fn effective_alpha(&self, item: &DisplayItem) -> f32 {
-        let mut a = item.color.alpha;
+        let mut a = item.color.opacity();
         let mut g = item.group;
         for _ in 0..self.groups.len() {
             let Some(id) = g else { break };
@@ -294,7 +295,7 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
 struct Ctx {
     /// Local → stage transform and colour effect of the enclosing instance.
     xf: Affine,
-    color: ColorEffect,
+    color: ColorTransform,
     depth: usize,
     /// The top-level layer and element everything inside belongs to (for picking).
     root: Option<(LayerId, ElementId)>,
@@ -317,7 +318,7 @@ struct Ctx {
 
 impl Ctx {
     fn top(xf: Affine) -> Ctx {
-        Ctx { xf, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None, slice: None }
+        Ctx { xf, color: ColorTransform::IDENTITY, depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None, slice: None }
     }
 
     /// A main timeline seen through `camera`: its tint colours everything.
@@ -437,7 +438,8 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
             };
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
             let xf = layer_xf.mul(&el.transform);
-            let color = cx.color.concat(&el.color);
+            let fx = el.color.transform();
+            let color = cx.color.concat(&fx);
             match &el.kind {
                 ElementKind::Shape(s) => {
                     // Inside a 9-slice instance, the shape's outline is cut and mapped (bitmap
@@ -508,11 +510,14 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     // group at full opacity, and the group blends at the instance's alpha. (Mask
                     // artwork ignores opacity, so it never needs one.)
                     // A blend mode composites the instance on its own too, then blends it.
-                    let fade = el.color.alpha.clamp(0.0, 1.0);
+                    // An alpha offset (Advanced) changes each item's alpha on its own: it stays
+                    // in the items' transform, and the group (for a blend or filters) is opaque.
+                    let fade = fx.alpha_factor().unwrap_or(1.0);
                     let (color, group) = if masks.is_none() && (fade < 1.0 - 1e-4 || !blend.is_normal() || !filters.is_empty()) {
                         let gid = out.groups.len() as u32;
                         out.groups.push(Group { parent: cx.group, alpha: fade, blend: *blend, filters: filters.iter().map(crate::Filter::sanitized).collect(), clip });
-                        (cx.color.concat(&ColorEffect { alpha: 1.0, ..el.color }), Some(gid))
+                        let inner = if fx.alpha_factor().is_some() { fx.without_alpha() } else { fx };
+                        (cx.color.concat(&inner), Some(gid))
                     } else {
                         (color, cx.group)
                     };

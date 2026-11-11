@@ -206,7 +206,7 @@ fn properties_edits_apply_to_each_layer() {
     run(&mut s, "element.set_transform", json!({"rotation": 45}));
     for (l, id) in [(top, a), (bottom, b)] {
         let e = element(&s, l, id).unwrap();
-        assert_eq!(e.color.alpha, 0.5);
+        assert_eq!(e.color, anicraft_doc::ColorEffect::Alpha(0.5));
         assert_eq!(e.name, "both");
         assert!((e.transform.decompose().rotation.to_degrees() - 45.0).abs() < 1e-3);
         let ElementKind::Shape(sh) = &e.kind else { panic!() };

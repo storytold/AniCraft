@@ -193,7 +193,7 @@ impl Session {
         // A button's hit area over the state being edited, translucent (ADR 0057).
         if let Some((tint, alpha)) = hit {
             let frame = anicraft_doc::player::hit_frame(open.frame_count());
-            tl.layers.push(placed(&mut doc, hit_timeline(&open), at, frame, ColorEffect { alpha, tint, tint_amount: 1.0 }));
+            tl.layers.push(placed(&mut doc, hit_timeline(&open), at, frame, ColorEffect::Advanced(hit_tint(tint, alpha))));
         }
         let layer = placed(&mut doc, open.clone(), at, self.frame, ColorEffect::default());
         let front = Arc::new(Front { layer: layer.id, timeline: open, frame: self.frame, at });
@@ -207,7 +207,7 @@ impl Session {
                     Some(p) => self.doc.symbol(p.symbol).map(|s| s.timeline.clone()).unwrap_or_default(),
                 };
                 let xf = parent.map_or(Affine::IDENTITY, |p| p.transform);
-                tl.layers.push(placed(&mut doc, without(below, l.instance), xf, l.frame, ColorEffect { alpha: DIM, ..ColorEffect::default() }));
+                tl.layers.push(placed(&mut doc, without(below, l.instance), xf, l.frame, ColorEffect::opacity(DIM)));
             }
         }
         *doc.timeline_mut(self.scene) = tl;
@@ -386,4 +386,10 @@ fn exit(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn editing_json(s: &Session) -> Value {
     let list: Vec<Value> = s.editing.iter().map(|l| json!({"symbol": l.symbol.0, "name": s.doc.symbol(l.symbol).map(|x| x.name.clone()), "instance": l.instance.map(|(_, e)| e.0)})).collect();
     json!({"editing": list, "layer": s.layer.0, "frame": s.frame, "selected": s.selection.id_list()})
+}
+
+/// Every colour of the hit area replaced by `tint`, the whole faded to `alpha` (ADR 0057): what
+/// Animate's Advanced effect calls multipliers 0 % and offsets of the tint, alpha at `alpha`.
+fn hit_tint(tint: anicraft_doc::Rgba, alpha: f32) -> anicraft_doc::ColorTransform {
+    anicraft_doc::ColorTransform { mul: [0.0, 0.0, 0.0, alpha], add: [tint.r, tint.g, tint.b, 0.0] }
 }

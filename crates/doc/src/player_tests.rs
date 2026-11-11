@@ -421,7 +421,8 @@ fn the_hit_overlay_is_the_area_the_pointer_finds() {
     assert_eq!(dl.items.len(), 1);
     assert_eq!(dl.groups.first().map(|g| g.alpha), Some(0.4));
     let i = &dl.items[0];
-    assert_eq!((i.color.tint, i.color.tint_amount, i.group), (tint, 1.0, Some(0)));
+    assert_eq!((i.color, i.group), (ColorTransform::tint(tint, 1.0), Some(0)));
+    assert_eq!(i.color.apply(Rgba::new(0.1, 0.6, 0.9, 0.8)), Rgba::new(1.0, 0.0, 0.0, 0.8), "every colour becomes the tint, its alpha kept");
     for p in [Vec2::new(101.0, 101.0), Vec2::new(199.0, 150.0), Vec2::new(50.0, 50.0), Vec2::new(201.0, 150.0)] {
         assert_eq!(i.path.contains(p, &i.transform, i.fill_rule), hit(&d, &s.state, p).is_some(), "{p:?}");
     }
@@ -618,7 +619,7 @@ fn scripts_read_instance_and_timeline_properties() {
     let clip = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 3, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], "walk")])]);
     let mut hero = (*inst(3, 100, "hero", 30.0, 40.0, vec![])).clone();
     hero.transform = Affine::translate(30.25, 40.0).mul(&Affine::scale(2.0, 0.5));
-    hero.color.alpha = 0.3;
+    hero.color = crate::ColorEffect::Alpha(0.3);
     let src = "stop();\ntrace(hero.x, hero.y, hero.scaleX, hero.scaleY, hero.rotation, hero.alpha, hero.visible, hero.name);\ntrace(hero.currentFrame, hero.totalFrames, hero.currentLabel, currentFrame, totalFrames, currentLabel, this.name);\nhero.x = 0.1; hero.alpha = hero.alpha + 0.2; hero.visible = false;\ntrace(hero.x, hero.alpha, hero.visible);\nstage.addEventListener(KeyboardEvent.KEY_DOWN, function (e:KeyboardEvent):void { trace(mouseX, mouseY, hero.mouseX, stage.mouseY); });";
     let k = as3(kf(0, 2, vec![], vec![], "intro"), src);
     let mut hk = Keyframe::new(0, 2);

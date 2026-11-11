@@ -79,15 +79,17 @@ asset was used.
    reported ("sounds stored in Animate's own format"), as are missing files. Keyframes keep
    their sound (`soundName`, `soundSync`, `soundLoopMode`/`soundLoop`) on every timeline,
    buttons' included; a frame whose sound didn't come across, sound effects and envelopes, and
-   in/out points are reported. The attribute names follow the publicly described XFL format;
-   our test package is self-made.
+   in/out points are reported. **Assumption, not yet verified:** the attribute names
+   (`soundName`, `soundSync`, `soundLoopMode`, `soundLoop`, `soundEffect`, `inPoint44`,
+   `outPoint44`) follow the publicly described XFL format and have not been checked against a
+   file saved by Animate; our test package is self-made.
 9. **9-slice guides are remembered** (from the ADR 0055 review). `Symbol::scale_grid_kept`
    (`#[serde(default)]`, left out when empty) holds the guides while 9-slice is off;
    `symbol.set_scale_grid {on: true}` (or moving a guide) brings them back where they were
    instead of starting again from the artwork. Loading drops a kept grid that isn't usable, or
    one kept beside guides that are on. Older files open unchanged.
 
-## Choices made without the project lead (defaults; easy to change later)
+## Defaults (accepted by the project lead, 2026-11-11)
 
 * **Up and Hit frame sounds play too** (on leaving and on release), as the SWF format keeps
   them, rather than only Over and Down.

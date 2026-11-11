@@ -20,7 +20,7 @@ use crate::actions::as3::{Compiled, Decls, Problem};
 use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Seg, Target};
 use crate::eval::{Play, evaluate_guided, evaluate_symbol, guide_walk};
 use crate::sound::Started;
-use crate::{BlendMode, ColorEffect, DisplayList, Document, Element, ElementId, ElementKind, Group, LayerKind, MAX_SYMBOL_DEPTH, Rgba, SoundSync, SymbolId, SymbolKind, Timeline};
+use crate::{BlendMode, ColorTransform, DisplayList, Document, Element, ElementId, ElementKind, Group, LayerKind, MAX_SYMBOL_DEPTH, Rgba, SoundSync, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Vec2};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -111,7 +111,7 @@ impl Overrides {
             }
         }
         if let Some(a) = self.alpha {
-            e.color.alpha = a;
+            e.color = e.color.with_alpha(a);
         }
         e
     }
@@ -472,7 +472,7 @@ pub fn tinted(dl: DisplayList, tint: Rgba, alpha: f32) -> DisplayList {
         g.parent = Some(g.parent.unwrap_or(0));
     }
     for it in &mut out.items {
-        it.color = ColorEffect { alpha: 1.0, tint, tint_amount: 1.0 };
+        it.color = ColorTransform::tint(tint, 1.0);
         it.outline = None;
         it.group = Some(it.group.unwrap_or(0));
     }
@@ -533,7 +533,7 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
             };
             let idx = out.len();
             let node_xf = layer_xf.mul(&e.transform);
-            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, local: el.transform, alpha: el.color.alpha, hittable: hit && shown, events: events.clone(), gain });
+            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, local: el.transform, alpha: el.color.alpha(), hittable: hit && shown, events: events.clone(), gain });
             // Names inside a movie clip (or a button's states) are its own; a graphic's
             // contents belong to the timeline the graphic is on.
             let inner_owner = if kind == NodeKind::Graphic { owner } else { idx };

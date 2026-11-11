@@ -899,6 +899,30 @@ pub(crate) enum KeyEdit {
     Pose,
 }
 
+/// A colour effect as commands report it (ADR 0056): its style and that style's values, in the
+/// units `element.set_color_effect` takes (percent; Advanced offsets −255..255).
+pub fn color_effect_json(fx: &anicraft_doc::ColorEffect) -> serde_json::Value {
+    use anicraft_doc::ColorEffect;
+    let r = |v: f32, k: f32| f64::from((v * k * 100.0).round() / 100.0);
+    let mut v = serde_json::json!({"style": fx.style().key()});
+    match *fx {
+        ColorEffect::None => {}
+        ColorEffect::Alpha(a) => v["alpha"] = r(a, 100.0).into(),
+        ColorEffect::Brightness(b) => v["brightness"] = r(b, 100.0).into(),
+        ColorEffect::Tint { color, amount } => {
+            v["tint"] = color.to_hex().into();
+            v["tint_amount"] = r(amount, 100.0).into();
+        }
+        ColorEffect::Advanced(t) => {
+            for (i, ch) in ["red", "green", "blue", "alpha"].iter().enumerate() {
+                v[format!("{ch}_multiplier")] = r(t.mul.get(i).copied().unwrap_or(1.0), 100.0).into();
+                v[format!("{ch}_offset")] = r(t.add.get(i).copied().unwrap_or(0.0), 255.0).into();
+            }
+        }
+    }
+    v
+}
+
 /// Short human label for an element (properties panel, library, CLI).
 pub fn element_label(doc: &Document, e: &Element) -> String {
     let kind = match &e.kind {
@@ -925,6 +949,8 @@ mod tests;
 
 #[cfg(test)]
 mod motion_tests;
+#[cfg(test)]
+mod color_tests;
 #[cfg(test)]
 mod motion_path_tests;
 #[cfg(test)]

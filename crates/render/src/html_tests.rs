@@ -1,7 +1,7 @@
 use super::*;
 use anicraft_doc::actions::{ButtonEvent, EventHandler, PluginScript, Property, Target};
 use anicraft_doc::player::{Event, NoScripts, PlayerState, start, step};
-use anicraft_doc::{ElementId, GradientStop, Keyframe, LayerId, LoopMode, Scene, Shape, Symbol, Tween, evaluate_player, sample};
+use anicraft_doc::{ColorEffect, ColorTransform, ElementId, GradientStop, Keyframe, LayerId, LoopMode, Scene, Shape, Symbol, Tween, evaluate_player, sample};
 use anicraft_geom::Vec2;
 use boa_engine::{Context, Source};
 
@@ -65,7 +65,7 @@ fn fixture() -> Document {
     let knob = symbol(200, SymbolKind::Button, vec![layer(201, vec![kf(0, 1, vec![rect(2001, -20.0, -20.0, 40.0, 40.0, 0x3d8bfd)], vec![], ""), kf(1, 1, vec![rect(2002, -20.0, -20.0, 40.0, 40.0, 0x6aa8ff)], vec![], ""), kf(2, 1, vec![rect(2003, -20.0, -20.0, 40.0, 40.0, 0x2a64c0)], vec![], ""), kf(3, 1, vec![rect(2004, -25.0, -25.0, 50.0, 50.0, 0)], vec![], "")])]);
     // A looping three-frame graphic.
     let mut red = (*rect(3001, 0.0, 0.0, 30.0, 30.0, 0xff0000)).clone();
-    red.color = ColorEffect { alpha: 0.8, tint: Rgba::hex(0xffffff), tint_amount: 0.2 };
+    red.color = ColorEffect::Brightness(0.2).with_alpha(0.8);
     let blink = symbol(300, SymbolKind::Graphic, vec![layer(301, vec![kf(0, 1, vec![Arc::new(red)], vec![], ""), kf(1, 1, vec![rect(3002, 0.0, 0.0, 30.0, 30.0, 0x00ff00)], vec![], ""), kf(2, 1, vec![rect(3003, 0.0, 0.0, 30.0, 30.0, 0x0000ff)], vec![], "")])]);
     // A panel clip holding its own door (panel.door), that plays on and talks to its parent.
     let panel = symbol(400, SymbolKind::MovieClip, vec![
@@ -83,12 +83,13 @@ fn fixture() -> Document {
         on(ButtonEvent::Release, vec![Action::GotoAndStop { target: Target::new("panel"), frame: FrameRef::Number(99), scene: None }]),
     ];
     let mut faded = (*inst(5003, 300, "", Affine::translate(500.0, 40.0), vec![])).clone();
-    faded.color = ColorEffect { alpha: 0.5, tint: Rgba::hex(0x00ffff), tint_amount: 0.6 };
+    // Advanced, with an alpha offset (it stays on each item: no group fade).
+    faded.color = ColorEffect::Advanced(ColorTransform { mul: [0.4, 0.4, 0.4, 0.5], add: [0.0, 0.6, 0.6, 0.1] });
     let gradient = Arc::new(Element {
         id: ElementId(5004),
         name: String::new(),
         transform: Affine::translate(20.0, 300.0),
-        color: ColorEffect { alpha: 1.0, tint: Rgba::hex(0xff00ff), tint_amount: 0.25 },
+        color: ColorEffect::Tint { color: Rgba::hex(0xff00ff), amount: 0.25 },
         kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 100.0, 40.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(100.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(0xffffff) }, GradientStop { offset: 1.0, color: Rgba::hex(0x000000) }] }).with_stroke(Rgba::hex(0xffff00), 2.0)),
     });
     let mut mask = Layer::new(LayerId(6), "mask");
@@ -278,7 +279,7 @@ fn same_display_list(js: &mut Js, m: &Movie, doc: &Document, st: &PlayerState, w
         }
         assert_eq!(a["s"].is_array(), b.stroke.is_some(), "{when}: item {k} stroke");
         let c = &a["c"];
-        for (i, y) in [b.color.alpha, b.color.tint.r, b.color.tint.g, b.color.tint.b, b.color.tint_amount].into_iter().enumerate() {
+        for (i, y) in b.color.mul.into_iter().chain(b.color.add).enumerate() {
             assert!(close(c[i].as_f64().unwrap(), y, 1e-3), "{when}: item {k} colour effect {c} vs {:?}", b.color);
         }
         let idx = |v: &Value| v.as_u64().map(|x| x as u32);
@@ -689,7 +690,7 @@ fn button_sounds_start_in_the_page_as_in_the_player() {
 #[test]
 fn hostile_documents_export_without_panicking() {
     let mut doc = Document::default();
-    let bad = Element { id: ElementId(5), name: "x".into(), transform: Affine { m: [f32::NAN, 0.0, 0.0, 1.0, f32::INFINITY, 0.0] }, color: ColorEffect { alpha: f32::NAN, tint: Rgba::new(f32::NAN, 2.0, -1.0, 1.0), tint_amount: f32::INFINITY }, kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, f32::NAN, 1.0), Paint::Radial { center: Vec2::ZERO, radius: -5.0, stops: vec![GradientStop { offset: f32::NAN, color: Rgba::BLACK }] })) };
+    let bad = Element { id: ElementId(5), name: "x".into(), transform: Affine { m: [f32::NAN, 0.0, 0.0, 1.0, f32::INFINITY, 0.0] }, color: ColorEffect::Advanced(ColorTransform { mul: [f32::NAN, 2.0, -1.0, f32::INFINITY], add: [f32::NAN, 0.0, 0.0, 0.0] }), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, f32::NAN, 1.0), Paint::Radial { center: Vec2::ZERO, radius: -5.0, stops: vec![GradientStop { offset: f32::NAN, color: Rgba::BLACK }] })) };
     let fine = Element { id: ElementId(6), transform: Affine::IDENTITY, ..bad.clone() };
     let missing = inst(7, 12345, "ghost", Affine::IDENTITY, vec![]);
     Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap().elements = vec![Arc::new(bad), Arc::new(fine), missing];
