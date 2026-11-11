@@ -16,10 +16,12 @@ mod cmds_frames;
 mod cmds_modify;
 mod cmds_motion;
 mod cmds_hints;
+pub mod cmds_library;
 mod cmds_paint;
 mod cmds_path;
 pub mod cmds_raw;
 pub mod cmds_rawsub;
+mod cmds_rawpoints;
 mod cmds_recovery;
 mod cmds_script;
 pub mod cmds_plugin;
@@ -30,9 +32,11 @@ mod cmds_timeline;
 mod cmds_width;
 mod cmds_stroke;
 pub mod confirm;
+pub mod editing;
 pub mod format;
 pub mod history;
 mod merge;
+pub mod multi;
 pub mod onion;
 pub mod recovery;
 pub mod render_service;
@@ -113,12 +117,16 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(onion::specs());
+    v.extend(multi::specs());
     v.extend(cmds_draw::specs());
+    v.extend(cmds_library::specs());
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
     v.extend(cmds_path::specs());
     v.extend(cmds_raw::specs());
     v.extend(cmds_rawsub::specs());
+    v.extend(cmds_rawpoints::specs());
+    v.extend(editing::specs());
     v.extend(cmds_brush::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
@@ -138,6 +146,9 @@ pub const SHORTCUT_ALIASES: &[(&str, &str)] = &[
     ("Backspace", "edit.delete"),
     ("Shift+,", "timeline.first_frame"),
     ("Shift+.", "timeline.last_frame"),
+    // Snap to Objects is Animate's Ctrl+Shift+/ (ADR 0045). Where / and ? share a key (US, UK),
+    // the key arrives as ?, so that spelling is bound too.
+    ("Ctrl+Shift+?", "draw.snap_to_objects"),
 ];
 
 pub fn find_command(id: &str) -> Option<CommandSpec> {
@@ -233,14 +244,17 @@ impl ToolStyle {
 }
 
 /// An open document plus everything the editor tracks about it.
-/// A display list and the `(state, scene, frame)` it was evaluated for.
-type CachedList = (StateId, usize, u32, Arc<DisplayList>);
+/// A display list and the `(state, scene, frame, open symbol)` it was evaluated for.
+type CachedList = (StateId, usize, u32, Option<anicraft_doc::SymbolId>, Arc<DisplayList>);
 
 pub struct Session {
     /// The document: a persistent tree, so cloning it (undo, render thread) is cheap.
     pub doc: Document,
     /// The scene being edited (index into `doc.scenes`).
     pub scene: usize,
+    /// Symbols open for editing, outermost first (ADR 0045). While one is open, commands work on
+    /// its timeline: `frame`, `layer` and `selection` are its.
+    pub editing: Vec<editing::EditLevel>,
     /// Playhead within the scene (0-based).
     pub frame: u32,
     /// Active layer.
@@ -280,6 +294,8 @@ pub struct Session {
     pub(crate) pending_cut: Option<(CutOrigin, Vec<ElementId>)>,
     /// The open gesture began on a provisional cut: the document with the cut.
     gesture_cut: Option<Document>,
+    /// The last picture of an open symbol in place, by its key (ADR 0045).
+    picture_cache: RefCell<Option<(u64, Arc<editing::StagePicture>)>>,
 }
 
 /// Each piece of a marquee's cut, with the shape it was cut from.
@@ -323,6 +339,7 @@ impl Session {
         Session {
             doc,
             scene: 0,
+            editing: Vec::new(),
             frame: 0,
             layer,
             selection: Selection::default(),
@@ -343,6 +360,7 @@ impl Session {
             provisional: None,
             pending_cut: None,
             gesture_cut: None,
+            picture_cache: RefCell::new(None),
         }
     }
 
@@ -617,20 +635,22 @@ impl Session {
         if g.doc == self.doc && g.selection == self.selection {
             return;
         }
-        let back = Snapshot { label: String::new(), doc: g.doc.clone(), state: g.state, scene: g.scene, frame: g.frame, layer: g.layer, selection: g.selection.clone(), bytes: 0 };
+        let back = Snapshot { label: String::new(), doc: g.doc.clone(), state: g.state, scene: g.scene, editing: g.editing.clone(), frame: g.frame, layer: g.layer, selection: g.selection.clone(), bytes: 0 };
         self.restore(back);
         self.revision += 1;
         self.fix_selection();
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
-        Snapshot { label: label.to_string(), doc: self.doc.clone(), state: self.state, scene: self.scene, frame: self.frame, layer: self.layer, selection: self.selection.clone(), bytes: 0 }
+        Snapshot { label: label.to_string(), doc: self.doc.clone(), state: self.state, scene: self.scene, editing: self.editing.clone(), frame: self.frame, layer: self.layer, selection: self.selection.clone(), bytes: 0 }
     }
 
     fn restore(&mut self, s: Snapshot) {
         self.doc = s.doc;
         self.state = s.state;
         self.scene = s.scene;
+        // Where the change was made: an undo inside a symbol opens it again (ADR 0045).
+        self.editing = s.editing;
         self.frame = s.frame;
         self.layer = s.layer;
         self.selection = s.selection;
@@ -691,28 +711,34 @@ impl Session {
     // ----- queries ---------------------------------------------------------------------------
 
     pub fn frame_count(&self) -> u32 {
-        self.doc.timeline(self.scene).frame_count()
+        self.timeline().frame_count()
     }
 
     pub fn active_layer(&self) -> Option<&Layer> {
-        self.doc.timeline(self.scene).layer(self.layer)
+        self.timeline().layer(self.layer)
     }
 
     pub fn active_layer_index(&self) -> Option<usize> {
-        self.doc.timeline(self.scene).layers.iter().position(|l| l.id == self.layer)
+        self.timeline().layers.iter().position(|l| l.id == self.layer)
     }
 
     /// The current scene evaluated at the playhead, cached per `(state, scene, frame)`.
     pub fn display_list(&self) -> Arc<DisplayList> {
-        if let Some((s, sc, f, dl)) = &*self.dl_cache.borrow()
+        let open = self.editing_symbol();
+        if let Some((s, sc, f, o, dl)) = &*self.dl_cache.borrow()
             && *s == self.state
             && *sc == self.scene
             && *f == self.frame
+            && *o == open
         {
             return dl.clone();
         }
-        let dl = Arc::new(evaluate_scene(&self.doc, self.scene, self.frame));
-        self.dl_cache.replace(Some((self.state, self.scene, self.frame, dl.clone())));
+        // An open symbol is edited in its own space (ADR 0045).
+        let dl = Arc::new(match open.and_then(|id| self.doc.symbol(id)) {
+            Some(sym) => anicraft_doc::evaluate_timeline(&self.doc, &sym.timeline, self.frame),
+            None => evaluate_scene(&self.doc, self.scene, self.frame),
+        });
+        self.dl_cache.replace(Some((self.state, self.scene, self.frame, open, dl.clone())));
         dl
     }
 
@@ -725,7 +751,8 @@ impl Session {
     /// Topmost element under `p` (stage space) on a visible, unlocked layer. A bounding-box
     /// test rejects almost every item before any curve is flattened.
     pub fn hit_test(&self, p: Vec2, slop: f32) -> Option<(LayerId, ElementId)> {
-        let tl = self.doc.timeline(self.scene);
+        // The timeline being edited: a symbol open in place picks in its own layers (ADR 0045).
+        let tl = self.timeline();
         let dl = self.display_list();
         let i = pick_index(&dl, p, slop, |_, it| tl.layer(it.layer).is_some_and(|layer| !layer.locked && !tl.locked_by_folder(layer.id)))?;
         dl.items.get(i).map(|it| (it.layer, it.element))
@@ -750,7 +777,7 @@ impl Session {
 
     pub(crate) fn layer_mut(&mut self, id: Option<LayerId>) -> Result<&mut Layer> {
         let id = id.unwrap_or(self.layer);
-        self.doc.timeline_mut(self.scene).layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
+        crate::editing::edited_mut(&mut self.doc, self.scene, &self.editing).layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
     }
 
     /// The keyframe on the active layer that edits at the playhead should change. Creates a
@@ -764,7 +791,7 @@ impl Session {
     /// refused there.
     pub(crate) fn editable_keyframe_in(&mut self, what: KeyEdit) -> Result<&mut Keyframe> {
         let frame = self.frame;
-        let tl = self.doc.timeline(self.scene);
+        let tl = self.timeline();
         if let Some(l) = tl.layer(self.layer) {
             if l.kind == LayerKind::Folder {
                 return Err(EngineError::State(format!("'{}' is a folder; pick a layer inside it to draw on", l.name)));
@@ -781,7 +808,7 @@ impl Session {
         }
         // Through the fields, not `layer_mut`, so `motion_edit` can be set below.
         let (scene, active) = (self.scene, self.layer);
-        let layer = self.doc.timeline_mut(scene).layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
+        let layer = crate::editing::edited_mut(&mut self.doc, scene, &self.editing).layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
         if layer.locked {
             return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));
         }
@@ -821,8 +848,7 @@ impl Session {
     /// JSON summary used by `doc.info` and the CLI.
     pub fn info(&self) -> Value {
         let layers: Vec<Value> = self
-            .doc
-            .timeline(self.scene)
+            .timeline()
             .layers
             .iter()
             .map(|l| {
@@ -844,6 +870,8 @@ impl Session {
             "layer": self.layer.0,
             "selection": self.selection.id_list(),
             "selection_layers": self.selected_layers().iter().map(|l| l.0).collect::<Vec<_>>(),
+            // The symbols open for editing, outermost first (ADR 0045); `layers` are the open one's.
+            "editing": editing::editing_json(self)["editing"],
             "layers": layers,
             "library": symbols,
             "sounds": sounds,
@@ -916,6 +944,10 @@ mod merge_tests;
 mod raw_tests;
 #[cfg(test)]
 mod rawsub_tests;
+#[cfg(test)]
+mod rawpoints_tests;
+#[cfg(test)]
+mod editing_tests;
 #[cfg(test)]
 mod brush_tests;
 #[cfg(test)]

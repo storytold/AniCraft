@@ -91,7 +91,7 @@ impl Shown {
 /// The motion path of the active layer's motion tween at the playhead, when its object or a
 /// frame of its span is selected and it moves at all.
 pub fn shown(app: &App) -> Option<Shown> {
-    let tl = app.s.doc.timeline(app.s.scene);
+    let tl = app.s.timeline();
     let layer = app.s.active_layer().filter(|l| l.visible && l.kind == anicraft_engine::doc::LayerKind::Normal)?;
     let k = layer.keyframe_at(app.s.frame)?;
     let m = k.motion.as_ref()?;

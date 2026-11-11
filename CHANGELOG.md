@@ -2,6 +2,115 @@
 
 ## Unreleased
 
+* **Library and Properties polish** (ADR 0053, M2).
+  * **Drag Library items onto the stage**: symbols and bitmaps land at the pointer on the
+    active layer at the playhead, a sound goes onto that layer's keyframe; drag several at once.
+    One undo step, and it works inside a symbol open for editing. The stage shows where they
+    land and on which layer.
+  * **Place on Stage** (the Library's button, right-click, or **Enter** in the list) puts the
+    selected items at the centre of the view.
+  * **Swap Bitmap** in Properties › Bitmap: a placed bitmap keeps its position and transform
+    and takes the new bitmap's size; a shape painted with a bitmap fill keeps its outline.
+  * **Convert to Symbol** (F8) asks for a name, a type and a **Library folder**, and offers the
+    folder and type you used last.
+  * **"mixed" on every Properties row** when several elements differ: Symbol, Type, Filters,
+    Blending, Looping, First frame, Bitmap and Width now join Scale, Rotation, Alpha, Fill,
+    Stroke and Style. A change sets them all; Type sets the type of every selected instance's
+    symbol.
+  * Headless: `library.place {items: [..], x, y}` (and `{sound}`), `element.swap_bitmap`,
+    `kind` and `folder` on `modify.convert_to_symbol`; `symbol.set_kind` without `symbol` sets
+    every selected instance's symbol.
+* **`.fla` files open reliably, and hostile ones safely** (ADR 0054, M4).
+  * The `.fla` reader takes the layouts zip tools write: folder entries, Windows `\`
+    separators, CP437 and UTF-8 names (and Info-ZIP Unicode names), data descriptors and
+    ZIP64. Each entry's size and checksum are checked.
+  * Damaged or hostile archives fail with a sentence that names the problem: entries sharing
+    bytes, sizes or checksums that lie, compression bombs (a 1024 : 1 ratio cap, 256 MB per
+    entry, 1 GiB in all), paths with `..`, absolute or drive paths, duplicate names, more than
+    32 nested folders, a central directory cut short. Nothing is ever extracted to disk.
+  * A renamed `.fla` opens (it is recognised by its contents), and a `.fla` saved by Flash CS4
+    or earlier says to open it in Animate and save it again.
+  * Every corpus package, packed nine ways, imports identically to its folder and renders the
+    same golden frames; a fuzz throws 9,664 hostile archives at the reader. A 54.6 MB `.fla`
+    imports in 311–328 ms (checksums by slicing by 8: reading every entry 53 ms, was 130 ms).
+
+* **Edit Multiple Frames, complete; onion skin inside symbols** (ADR 0051, M1).
+  * With Edit Multiple Frames on, **Cut, Copy, Paste, Paste in Place and Clear** act on the
+    artwork selected on every keyframe between the markers. Paste in Place puts artwork copied
+    from several keyframes back keyframe by keyframe, and artwork copied on one frame onto every
+    keyframe; Paste puts it on the current frame.
+  * **Free Transform** shows one box around the selection on every keyframe and scales, rotates
+    and moves it all about one pivot, one undo step per drag. **Align** (To Stage too),
+    **Rotate 90°** and **Flip** work across keyframes, and so do the arrow keys.
+  * Merge-drawing shapes moved, transformed or pasted there **merge again** on their own
+    keyframe, so drawings stay connected.
+  * **Onion skin and Edit Multiple Frames work inside a symbol** edited in place, on the
+    symbol's own timeline.
+  * Headless: `frames.transform`, `frames.align`, `frames.delete`, `frames.copy`, `frames.cut`,
+    `frames.paste`, `frames.merge`.
+
+* **Library management** (ADR 0050, M2).
+  * **Folders**: New Folder (the folder icon under the list, or right-click), nested as deep as
+    you like (32 levels). Drag items and folders onto a folder to move them in, onto an item to
+    join its folder, or below the list for the top level; right-click › Move to does the same.
+    Deleting a folder that holds items asks first, and its items go with it.
+  * **Rename in place** with F2 or a double-click on the name; Enter keeps it, Esc cancels.
+    Names are unique within a folder (case aside), as in Animate. Convert to Symbol picks the next
+    free “Symbol n”.
+  * **Duplicate Symbol** (right-click): “Ball copy” in the same folder, ready to rename.
+  * **Swap Symbol** in Properties › Symbol: pick another symbol for the selected instances.
+    Position, colour effect, blending, filters, looping and instance name stay.
+  * A **use count** for every item, **Select Unused Items** and **Delete Unused Items…** (in
+    More). Unused means nothing in any scene reaches it, so one pass clears a whole unused
+    branch; symbols with a linkage class count as used. Deleting an item the movie uses asks,
+    and its instances go with it.
+  * **Sort** by name, type, use count or date added, ascending or descending, and **search**
+    by name; folders that hold a match open.
+  * A **preview** of the current item (a symbol's first frame, the bitmap, or a sound's
+    waveform with a play button) and its **properties**: a symbol's type and linkage class, a
+    bitmap's **Allow Smoothing**. Smoothing off keeps hard pixel edges on the stage, in
+    renders, in SVG and in the HTML page.
+  * Animate files keep their library folders and Allow Smoothing.
+  * Headless: `library.items`, `library.new_folder`, `library.rename`, `library.move`,
+    `library.duplicate`, `library.delete`, `library.unused`, `library.delete_unused`,
+    `library.set_smoothing`, `element.swap_symbol`.
+* **The GPU stage sorts heavy frames into tiles on the graphics card, and outlines are cheap**
+  (ADR 0048, M3).
+  * Frames with many shapes are binned on the GPU (count, prefix sum, scatter and tile-list
+    compute passes) instead of on the CPU: the CPU only lays out the shapes' points, and every
+    buffer is sized up front, so nothing is read back. On Vulkan, a 10,000-shape 4K frame
+    drawn as one texture takes about 5 ms instead of 22, a 50,000-shape one about 23 ms
+    instead of 122, and the 50,000-shape 4K stage about 37 ms instead of 75. Frames with few
+    shapes, shapes inside masks or faded symbols, and Direct3D 12 (where the passes cost more
+    per stage tile) are still binned on the CPU, which stays the reference
+    (`ANICRAFT_GPU_BINNING=cpu|gpu|auto` to compare).
+  * **Outline mode** (an outlined layer, and onion skin's Outlines) draws true one-pixel
+    hairlines, one edge per segment where the old half-pixel strokes had four and a disc at
+    every bend, in the CPU renderer and on the GPU alike. On a 2,000-shape scene with ±5 onion
+    frames, outlines are now as fast as tinted onion frames: 10 ms on the GPU stage at 1080p
+    (was 73) and 17 ms on the CPU stage (was 34–39). Lines look the same, with smoother joins.
+  * Parity with the CPU renderer is unchanged (at most 1/255 on every test scene), and a test
+    checks that the GPU's tile lists are the CPU's, entry by entry and pixel by pixel.
+* **Raw points, snapping while drawing, and symbols edited in place** (ADR 0045, issue #42, M1).
+  * **Add a point** on a merged drawing's line or fill edge with the Pen's Alt-click or a
+    Subselection double-click: every shape on that edge gets it, and the curve keeps its shape.
+  * **Delete points** with Delete (or the right-click menu): the shapes that share each point are
+    joined across it, so a fill and its outline stay together; deleting a line's last points
+    removes it. A point where three or more lines meet is kept, and the status bar says so.
+  * **Make Smooth / Make Corner** on raw points. Dragging a handle of a smooth point keeps the
+    other handle in line (on drawing objects too); **Alt** moves it alone.
+  * The **Line, Rectangle, Oval, PolyStar and Pen** tools snap their points to points, lines and
+    fill edges within 10 screen pixels, with a ring where they will snap. **Snap to Objects** is
+    now Ctrl+Shift+/, as in Animate.
+  * **Double-click a symbol instance** (or press Ctrl+E, or double-click the symbol in the
+    Library) to edit it in place: the rest of the stage dims, the timeline shows the symbol's
+    layers, and merge drawing, the Selection and Subselection tools and every other tool work
+    inside it as on the stage. The edit bar shows `Scene 1 › Symbol`; click the scene, press
+    Ctrl+E or double-click empty stage to go back. Undo returns to the symbol where a change was
+    made. Rotated instances open upright.
+  * Headless: `raw.add_point`, `raw.delete_points`, `raw.convert_points`, `draw.snap`, `smooth`
+    on `raw.move_handle` and `path.move_points`, `symbol.edit`, `symbol.exit`; `doc.info` lists
+    the open symbols.
 * **Motion path points pinned to frames** (ADR 0049, M2). As in Animate, a motion tween's
   position keyframes are now points on its path: move the object at a frame and the path gets a
   point there that the object passes exactly on that frame, whatever else you do to the path.

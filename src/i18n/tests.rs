@@ -578,7 +578,7 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
         a.run("symbol.set_kind", serde_json::json!({"symbol": symbol, "kind": "movie_clip"}));
         a.run("element.set_filters", serde_json::json!({"filters": [{"type": "drop_shadow"}, {"type": "gradient_glow"}]}));
     }));
-    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple"] {
+    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
     for tool in [crate::app::Tool::Brush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {
@@ -621,6 +621,25 @@ fn status_lines_for_every_result_are_translated() {
         }
     }
     assert!(plain.is_empty(), "status lines in plain English:\n{}", plain.join("\n"));
+}
+
+#[test]
+fn edit_multiple_frames_status_lines_are_translated() {
+    // The Edit menu with Edit Multiple Frames on (ADR 0051), as the status bar shows it.
+    let (mut app, _ctx) = pseudo_app(|a, _| a.open_panel(Some("edittransform")));
+    let mut plain = Vec::new();
+    for id in ["edit.copy", "edit.cut", "edit.paste_in_place", "edit.duplicate", "edit.delete"] {
+        app.status = None;
+        app.invoke(id);
+        match &app.status {
+            Some(s) if !s.text.chars().any(pseudo::is_accented) => plain.push(format!("{id}: {:?}", s.text)),
+            None => plain.push(format!("{id}: said nothing")),
+            _ => {}
+        }
+    }
+    assert!(plain.is_empty(), "status lines in plain English:
+{}", plain.join("
+"));
 }
 
 #[test]

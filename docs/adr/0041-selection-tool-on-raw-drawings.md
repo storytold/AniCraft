@@ -125,8 +125,8 @@ was copied.
   won). The move is at most 0.2, and merging again changes nothing (tested).
 * Not in this slice:
   * ~~selecting across layers~~ (ADR 0044);
-  * snapping while drawing with the shape tools;
+  * ~~snapping while drawing with the shape tools~~ (ADR 0045);
   * ~~a Snap to Objects switch~~ (ADR 0042);
   * ~~Subselection anchors and handles of connected raw shapes~~ (ADR 0042);
-  * bending or moving points of raw shapes inside symbols;
+  * ~~bending or moving points of raw shapes inside symbols~~ (ADR 0045);
   * the Free Transform tool's handles on raw parts.

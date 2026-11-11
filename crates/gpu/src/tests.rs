@@ -31,6 +31,7 @@ fn item(path: Path, fill: Paint) -> DisplayItem {
         guide: false,
         group: None,
         image: None,
+        smooth: true,
     }
 }
 
@@ -126,8 +127,38 @@ fn scenes() -> Vec<(&'static str, DisplayList, View)> {
     let mut huge = item(Path::ellipse(50.0, 40.0, 300.0, 200.0), Paint::Solid(red));
     huge.color = ColorEffect { alpha: 0.5, tint: Rgba::hex(0x4cd07d), tint_amount: 0.7 };
     out.push(("off-surface", list(vec![huge]), view(100, 80, Some(Rgba::WHITE))));
+    out.push(("outlines", outlined(), view(150, 110, Some(Rgba::WHITE))));
     out.extend(composited_scenes());
     out
+}
+
+/// Outline mode (ADR 0048): hairlines along closed and open paths, crossing tiles in every
+/// direction, overlapping, faded, past the surface, over a fill, and a point.
+fn outlined() -> DisplayList {
+    let outline = |path: Path, c: Rgba, t: Affine| {
+        let mut i = item(path, Paint::Solid(Rgba::BLACK));
+        i.outline = Some(c);
+        i.transform = t;
+        i
+    };
+    let blue = Rgba::hex(0x4f8dff).with_alpha(0.5);
+    let green = Rgba::hex(0x4cd07d).with_alpha(0.8);
+    let mut wave = Path::default();
+    wave.move_to(Vec2::new(-20.0, 90.0));
+    for k in 0..12 {
+        wave.line_to(Vec2::new(k as f32 * 15.3, 90.0 + if k % 2 == 0 { 9.7 } else { -7.1 }));
+    }
+    list(vec![
+        item(Path::rect(20.0, 20.0, 50.0, 40.0), Paint::Solid(Rgba::new(0.9, 0.8, 0.2, 1.0))),
+        outline(Path::ellipse(50.0, 45.0, 37.3, 29.1), blue, Affine::IDENTITY),
+        outline(Path::star(95.0, 50.0, 40.0, 16.0, 5), green, Affine::rotate(0.05)),
+        outline(Path::star(95.0, 50.0, 40.0, 16.0, 5), green, Affine::translate(0.25, 0.5)),
+        outline(Path::rect(16.0, 32.0, 112.0, 0.0), Rgba::BLACK, Affine::IDENTITY),
+        outline(Path::rect(8.5, 4.25, 133.0, 100.0), Rgba::new(0.8, 0.1, 0.1, 1.0), Affine::IDENTITY),
+        outline(wave, Rgba::new(0.2, 0.2, 0.2, 0.9), Affine::IDENTITY),
+        outline(Path::ellipse(140.0, 100.0, 60.0, 50.0), blue, Affine::IDENTITY),
+        outline(Path::line(Vec2::new(60.5, 70.5), Vec2::new(60.5, 70.5)), Rgba::BLACK, Affine::IDENTITY),
+    ])
 }
 
 /// Masks and groups (ADR 0029): each stresses one part of the oracle's band compositor.
@@ -264,14 +295,9 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                     }
                     k => assert_eq!(k & bn::CTRL, 0, "unknown control entry {k:x}"),
                 }
-                let mut wnd = if bd == binning::NONE { 0.0 } else { b.geo[bd as usize + ly / 4][ly % 4] };
-                for k in 0..n {
-                    let s = b.geo[first + k];
-                    wnd += piece_cover(s, lx as f32, ly as f32);
-                }
-                let hd = b.ops_at as usize + op * 4;
-                let mut cov = if b.index[hd + 1] == 0 { wnd.abs().min(1.0) } else { let t = wnd.abs() % 2.0; if t > 1.0 { 2.0 - t } else { t } };
-                let flags = b.index[hd + 3];
+                let hd = op * 4;
+                let mut cov = entry_cover(&b.geo[first..first + n], bd, b.op_heads[hd + 1], lx, ly);
+                let flags = b.op_heads[hd + 3];
                 if flags & bn::ART != 0 {
                     let k = cov.clamp(0.0, 1.0);
                     level = level + k - level * k;
@@ -283,7 +309,7 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                 if cov <= 1e-4 {
                     continue;
                 }
-                let s = match b.index[hd] {
+                let s = match b.op_heads[hd] {
                     0 => solid_of(b, op),
                     kind => {
                         let base = op * PAINT_VEC4S;
@@ -293,7 +319,7 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                         let d = q - Vec2::new(nn[2], nn[3]);
                         let t = if kind == 1 { d.x * g[0] + d.y * g[1] } else { d.length() * g[2] };
                         let i = (t.clamp(0.0, 1.0) * 255.0 + 0.5) as usize & 255;
-                        b.paints[b.index[hd + 2] as usize + i]
+                        b.paints[b.op_heads[hd + 2] as usize + i]
                     }
                 };
                 let sa = s[3] * cov;
@@ -306,6 +332,26 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
         }
     }
     out
+}
+
+/// An entry's coverage of pixel `(lx, ly)` of its tile, as `fine.wgsl` computes it: the
+/// backdrop and its pieces under fill rule `rule`, or a hairline's distance.
+fn entry_cover(pieces: &[[f32; 4]], backdrop: u32, rule: u32, lx: usize, ly: usize) -> f32 {
+    if rule == bn::HAIRLINE {
+        let p = Vec2::new(lx as f32 + 0.5, ly as f32 + 0.5);
+        let d = pieces.iter().fold(2.0f32, |d, s| d.min(anicraft_render::hairline::seg_dist(p, Vec2::new(s[0], s[1]), Vec2::new(s[2], s[3]))));
+        return (1.0 - d).clamp(0.0, 1.0);
+    }
+    let mut wnd = backdrop as i32 as f32;
+    for s in pieces {
+        wnd += piece_cover(*s, lx as f32, ly as f32);
+    }
+    if rule == 0 {
+        wnd.abs().min(1.0)
+    } else {
+        let t = wnd.abs() % 2.0;
+        if t > 1.0 { 2.0 - t } else { t }
+    }
 }
 
 /// `fine.wgsl` › `close_group` and `blend`, on the CPU (the oracle's formulas, written again
@@ -443,6 +489,22 @@ fn binned_coverage_matches_the_oracle_on_the_cpu() {
     }
 }
 
+/// Thousands of overlapping shapes at awkward scales: edges meet tile corners and boundaries
+/// within float rounding, where the backdrops and the left-edge steps must agree (ADR 0048).
+#[test]
+fn binned_coverage_matches_the_oracle_on_stress_frames() {
+    let doc = sample::stress(20, 100, 48);
+    for (f, s, at) in [(0u32, 1.0f32, (0.0, 0.0)), (30, 0.5, (0.0, 0.0)), (7, 2.3, (-900.0, -700.0)), (41, 0.73, (-11.5, -3.25))] {
+        let dl = anicraft_doc::evaluate(&doc, f);
+        let v = View { transform: Affine::translate(at.0, at.1).mul(&Affine::scale(s, s)), width: 1920, height: 1080, background: Some(Rgba::WHITE) };
+        let (scene, _) = prepare_scene(&dl, &v).unwrap();
+        let b = binning::bin(&scene, v.width, v.height).unwrap();
+        let (oracle, _) = render(&dl, &v).unwrap();
+        let (mean, max) = f32_diff(&emulate(&b, &v), &oracle.data);
+        assert!(mean < 1e-4 && max < 4e-3, "frame {f} at {s}: mean {mean:e}, max {max:e}");
+    }
+}
+
 #[test]
 fn the_composited_sample_really_has_masks_and_groups() {
     let comp = composited_sample();
@@ -549,6 +611,7 @@ fn degenerate_geometry_bins_without_trouble() {
         clip,
         group,
         layer: None,
+        hairline: false,
     };
     // A fill naming a layer that isn't there draws nothing.
     let mut lost = fill(None, None);
@@ -734,6 +797,12 @@ fn bitmap_scenes() -> Vec<(&'static str, DisplayList, View)> {
     let inside = in_group(clipped(bitmap_item(Path::rect(4.0, 4.0, 72.0, 52.0), &a, true, turned), 0), 0);
     let dl = DisplayList { items: vec![grad, inside, mask(Path::ellipse(40.0, 30.0, 30.0, 22.0), 0)], clip_parents: vec![None], groups: vec![group(None, 0.7, BlendMode::Multiply)] };
     out.push(("bitmap masked and multiplied", dl, view(80, 60, white)));
+    // Without smoothing (ADR 0050): the nearest pixel, magnified, turned and repeated.
+    let mut hard = bitmap_item(Path::rect(2.0, 3.0, 90.0, 70.0), &a, false, turned);
+    hard.smooth = false;
+    let mut hard_tiled = bitmap_item(Path::ellipse(50.0, 40.0, 45.0, 35.0), &c, true, Affine::scale(4.0, 3.0));
+    hard_tiled.smooth = false;
+    out.push(("bitmaps without smoothing", list(vec![hard_tiled, hard]), view(100, 80, white)));
     out
 }
 
@@ -912,5 +981,102 @@ fn gpu_matches_the_oracle_on_the_filtered_sample() {
         // And a stage tile as the stage asks for it (512 px, zoomed and panned).
         let tile = View { transform: Affine::translate(-300.0, -200.0).mul(&Affine::scale(s * 1.4, s * 1.4)), width: 512, height: 512, background: Some(doc.stage.background) };
         assert_parity(g, "filtered sample tile", &dl, &tile);
+    }
+}
+
+
+// ----- binning on the GPU (ADR 0048) ----------------------------------------------------------
+
+/// Scenes the GPU bins (no fill in a mask or a group): the analytic ones, the sample, stress
+/// frames at awkward scales and offsets, and onion-skin style outlines over them.
+fn gpu_binned_scenes() -> Vec<(String, DisplayList, View)> {
+    let plain = |dl: &DisplayList| dl.items.iter().all(|i| i.clip.is_none() && i.group.is_none());
+    let mut out: Vec<(String, DisplayList, View)> = scenes().into_iter().filter(|(_, dl, _)| plain(dl)).map(|(n, dl, v)| (n.to_string(), dl, v)).collect();
+    let demo = sample::demo();
+    out.push(("sample".into(), anicraft_doc::evaluate(&demo, 13), View::stage(&demo, 0.37)));
+    let doc = sample::stress(20, 100, 48);
+    for (f, s, at) in [(0u32, 1.0f32, (0.0, 0.0)), (30, 0.5, (0.0, 0.0)), (7, 2.3, (-900.0, -700.0)), (41, 0.73, (-11.5, -3.25))] {
+        let dl = anicraft_doc::evaluate(&doc, f);
+        let v = View { transform: Affine::translate(at.0, at.1).mul(&Affine::scale(s, s)), width: 1920, height: 1080, background: Some(Rgba::WHITE) };
+        out.push((format!("stress frame {f} at {s}"), dl, v));
+    }
+    // Onion skin's outlines: the frames before and after as hairlines, under the playhead's.
+    let mut dl = DisplayList::default();
+    for f in [25u32, 27, 33, 35] {
+        let mut part = anicraft_doc::evaluate(&doc, f);
+        for i in &mut part.items {
+            i.outline = Some(Rgba::hex(if f < 30 { 0x4f8dff } else { 0x4cd07d }).with_alpha(0.4));
+        }
+        dl.append(part);
+    }
+    dl.append(anicraft_doc::evaluate(&doc, 30));
+    out.push(("stress with outlined frames".into(), dl, View::stage(&doc, 0.8)));
+    out
+}
+
+/// What an entry covers in each of its tile's 256 pixels.
+fn entry_pixels(b: &Binned, e: usize) -> [f32; 256] {
+    let (op, first, n, bd) = (b.index[e] as usize, b.index[e + 1] as usize, b.index[e + 2] as usize, b.index[e + 3]);
+    let rule = b.op_heads[4 * op + 1];
+    let pieces = b.geo.get(first..first + n).unwrap_or(&[]);
+    std::array::from_fn(|i| entry_cover(pieces, bd, rule, i % 16, i / 16))
+}
+
+#[test]
+fn gpu_binning_produces_the_cpus_tile_lists() {
+    let Some(g) = gpu() else { return };
+    for (name, dl, v) in gpu_binned_scenes() {
+        let Some(gb) = g.gpu_lists(&dl, &v).unwrap() else { panic!("{name}: the GPU should bin this") };
+        let (scene, _) = prepare_scene(&dl, &v).unwrap();
+        let cb = binning::bin(&scene, v.width, v.height).unwrap();
+        assert_eq!((gb.tiles_x, gb.tiles_y, &gb.op_heads), (cb.tiles_x, cb.tiles_y, &cb.op_heads), "{name}");
+        let (mut entries, mut pieces) = (0usize, 0usize);
+        for t in 0..(cb.tiles_x * cb.tiles_y) as usize {
+            let list = |b: &Binned| -> Vec<(u32, [f32; 256])> {
+                let (s, n) = (b.index[2 * t] as usize, b.index[2 * t + 1] as usize);
+                (s..s + n).map(|i| b.entries_at as usize + 4 * i).map(|e| (b.index[e], entry_pixels(b, e))).collect()
+            };
+            let (a, c) = (list(&gb), list(&cb));
+            let ops = |l: &[(u32, [f32; 256])]| l.iter().map(|x| x.0).collect::<Vec<_>>();
+            assert_eq!(ops(&a), ops(&c), "{name}: tile {t}'s fills");
+            for ((op, pa), (_, pc)) in a.iter().zip(&c) {
+                let worst = pa.iter().zip(pc).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+                assert!(worst < 1e-3, "{name}: tile {t}, op {op}: coverage off by {worst}");
+            }
+            entries += a.len();
+            let (s, n) = (gb.index[2 * t] as usize, gb.index[2 * t + 1] as usize);
+            pieces += (s..s + n).map(|i| gb.index[gb.entries_at as usize + 4 * i + 2] as usize).sum::<usize>();
+        }
+        assert_eq!(entries, cb.entries, "{name}");
+        assert!(pieces <= gb.pieces && entries <= gb.entries, "{name}: within the room made for them");
+        // And the fine pass's arithmetic over the GPU's lists draws the oracle's picture.
+        let (oracle, _) = render(&dl, &v).unwrap();
+        let eg = emulate(&gb, &v);
+        let (mean, max) = f32_diff(&eg, &oracle.data);
+        assert!(mean < 1e-4 && max < 4e-3, "{name}: mean {mean:e}, max {max:e}");
+    }
+}
+
+#[test]
+fn gpu_binned_frames_match_the_oracle() {
+    let Some(g) = gpu() else { return };
+    // Where the GPU stage runs (lavapipe in CI included), its binning must too.
+    assert_eq!(g.gpu_binning_off(), None);
+    for (name, dl, v) in gpu_binned_scenes() {
+        let f = g.render_with(&dl, &v, Output::Premul8, Binning::Gpu).unwrap();
+        assert!(f.gpu_binned, "{name}");
+        let (oracle, _) = render(&dl, &v).unwrap();
+        let d = compare_premul8(&f.premul8, &oracle.to_premul_rgba8()).unwrap();
+        assert!(d.mean <= MEAN_TARGET / 16.0 && d.max <= 2, "{name}: {d:?}");
+        let t = g.render_texture_with(&dl, &v, Binning::Gpu).unwrap();
+        assert!(t.gpu_binned && g.read_texture(&t).unwrap() == f.premul8, "{name}: the texture holds the read-back bytes");
+    }
+    // Masks and groups stay on the CPU's binning, and still draw right.
+    for (name, dl, v) in composited_scenes() {
+        let f = g.render_with(&dl, &v, Output::Premul8, Binning::Gpu).unwrap();
+        let uses = |dl: &DisplayList| dl.items.iter().any(|i| i.clip.is_some() || i.group.is_some());
+        assert_eq!(f.gpu_binned, !uses(&dl), "{name}: binned on the GPU {}", f.gpu_binned);
+        let (oracle, _) = render(&dl, &v).unwrap();
+        assert!(compare_premul8(&f.premul8, &oracle.to_premul_rgba8()).unwrap().max <= 2, "{name}");
     }
 }

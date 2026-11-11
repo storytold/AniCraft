@@ -75,7 +75,7 @@ pub(crate) fn begin_edit(layer: LayerId, kf: &mut Keyframe, frame: u32) -> Optio
 /// the base back. On the span's first frame a property without keys changes the base itself.
 pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     let scene = s.scene;
-    let Some(layer) = s.doc.timeline_mut(scene).layer_mut(e.layer) else { return };
+    let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).layer_mut(e.layer) else { return };
     let Some(kf) = layer.keyframe_starting_at(e.start).and_then(|i| layer.keyframe_mut(i)) else { return };
     let Some(idx) = kf.elements.iter().position(|x| x.id == e.target) else { return };
     let Some(after) = kf.elements.get(idx).map(|x| (**x).clone()) else { return };
@@ -550,7 +550,7 @@ pub(crate) fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let (lid, frame) = target(s, p)?;
     let lid = lid.unwrap_or(s.layer);
     let (start, ids) = {
-        let tl = s.doc.timeline(s.scene);
+        let tl = s.timeline();
         let layer = tl.layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
         if layer.kind == LayerKind::Folder {
             return Err(EngineError::State("a folder holds layers, not frames; pick a layer inside it".into()));
@@ -704,7 +704,7 @@ fn set_ease(s: &mut Session, p: &Value) -> Result<Value> {
 fn info(s: &mut Session, p: &Value) -> Result<Value> {
     let (lid, frame) = target(s, p)?;
     let lid = lid.unwrap_or(s.layer);
-    let layer = s.doc.timeline(s.scene).layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
+    let layer = s.timeline().layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
     let kf = layer.keyframe_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;
     let m = kf.motion.as_ref().ok_or_else(|| EngineError::State(format!("frame {} is not in a motion tween", frame + 1)))?;
     let base = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i)).map(|e| Props::of(e));

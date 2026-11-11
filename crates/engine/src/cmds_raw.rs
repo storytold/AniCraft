@@ -158,7 +158,7 @@ fn hit(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Makes the layer of what is at `at` (within `slop`) the active one, as a click does.
-fn activate_layer_at(s: &mut Session, at: Vec2, slop: f32) {
+pub(crate) fn activate_layer_at(s: &mut Session, at: Vec2, slop: f32) {
     if let Some((layer, _)) = s.hit_test(at, slop)
         && layer != s.layer
     {
@@ -252,6 +252,38 @@ pub(crate) fn edit_edge(s: &mut Session, id: ElementId, cmd: usize, old: &Cubic,
             rawgeom::follow(&mut edited, &ol, &nl, SNAP / e.transform.mean_scale().max(1e-6))
         };
         if n == 0 {
+            continue;
+        }
+        check_extent(&edited)?;
+        if let ElementKind::Shape(x) = &mut Arc::make_mut(e).kind {
+            x.path = Arc::new(edited);
+        }
+        changed.push(e.id);
+    }
+    Ok(changed)
+}
+
+/// Changes every copy of the edge `old` (stage space) into `new` (same ends): in every raw shape on
+/// the editable keyframe, or only in `only` (a drawing object edits itself alone). Returns the
+/// shapes that changed.
+pub(crate) fn follow_edge(s: &mut Session, only: Option<ElementId>, old: &Cubic, new: &Cubic) -> Result<Vec<ElementId>> {
+    let area = new.iter().chain(old).fold(Rect::EMPTY, |mut r, q| {
+        r.include(*q);
+        r
+    });
+    let kf = s.editable_keyframe()?;
+    let mut changed = Vec::new();
+    for e in kf.elements.iter_mut() {
+        let take = match only {
+            Some(id) => e.id == id,
+            None => mergeable(e).is_some_and(|x| !reach(x, &e.transform).intersect(&area).is_empty()),
+        };
+        if !take {
+            continue;
+        }
+        let (Some(inv), ElementKind::Shape(x)) = (e.transform.inverse(), &e.kind) else { continue };
+        let mut edited = (*x.path).clone();
+        if rawgeom::follow(&mut edited, &rawgeom::transform(old, &inv), &rawgeom::transform(new, &inv), SNAP / e.transform.mean_scale().max(1e-6)) == 0 {
             continue;
         }
         check_extent(&edited)?;
@@ -497,6 +529,31 @@ fn snap_point(els: &[Arc<Element>], to: Vec2, radius: f32, moving: &[(ElementId,
     snap_to(&t, to, radius).map(|(q, k, _)| (q, k))
 }
 
+/// Where a point drawn at `p` snaps (the Line, Rectangle, Oval, PolyStar and Pen tools, ADR
+/// 0045): the nearest anchor within `radius`, else the nearest point on a line or fill edge, of
+/// what the stage shows near it.
+pub(crate) fn snap_drawn(s: &Session, p: Vec2, radius: f32) -> Option<(Vec2, SnapTo)> {
+    if !(radius > 0.0 && p.is_finite()) {
+        return None;
+    }
+    let dl = s.display_list();
+    let mut t = Targets::default();
+    for item in dl.items.iter() {
+        if t.points.len() + t.segs.len() > MAX_TARGETS {
+            break;
+        }
+        let pad = item.stroke.as_ref().map_or(0.0, |st| st.reach() * item.transform.mean_scale());
+        if !item.path.bounds().transformed(&item.transform).inflate(pad + radius).contains(p) {
+            continue;
+        }
+        let mut path = (*item.path).clone();
+        path.close_explicitly();
+        t.points.extend(path.editable_anchors().into_iter().map(|(_, q)| item.transform.apply(q)));
+        t.segs.extend((0..path.cmds.len().min(MAX_TARGETS)).filter_map(|k| rawgeom::segment_cubic(&path, k)).map(|c| rawgeom::transform(&c, &item.transform)));
+    }
+    snap_to(&t, p, radius).map(|(q, k, _)| (q, k))
+}
+
 /// After the selection moved: the extra move that snaps one of its anchors (the nearest to
 /// `from` when given, else whichever comes closest) onto an anchor or line of the shapes that
 /// did not move, within `radius`.
@@ -555,7 +612,7 @@ fn select_rect(s: &mut Session, p: &Value) -> Result<Value> {
     // What each layer has under the marquee, from one display list: wholly inside, or (raw
     // shapes) partly.
     let mut found: Vec<(LayerId, Vec<ElementId>, Vec<ElementId>)> = Vec::new();
-    let layers: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).filter(|l| s.gathers(*l)).collect();
+    let layers: Vec<LayerId> = s.timeline().layers.iter().map(|l| l.id).filter(|l| s.gathers(*l)).collect();
     for l in layers {
         let (mut picked, mut partial) = (Vec::new(), Vec::new());
         for e in s.elements_on(l) {

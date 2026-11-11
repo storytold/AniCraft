@@ -121,8 +121,8 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => tr_noop!("Click to select, drag to move, drag on empty space to marquee-select. Shift adds to the selection."),
-            Tool::Subselect => tr_noop!("Click a shape to show its points; on a merged drawing, the points of everything connected to it. Drag points or handles to reshape (a shared point moves every shape that has it); drag a line or fill to move everything connected. Shift adds to the point selection, drag on empty space to marquee points, arrow keys nudge them. On drawing objects, double-click an edge to add a point, Delete removes points, and right-click makes a point smooth or a corner. A motion path's points edit the same way (its ends stay)."),
-            Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape or a motion path to add a point to it."),
+            Tool::Subselect => tr_noop!("Click a shape to show its points; on a merged drawing, the points of everything connected to it. Drag points or handles to reshape (a shared point moves every shape that has it; a smooth point's handles stay in line, Alt moves one alone); drag a line or fill to move everything connected. Shift adds to the point selection, drag on empty space to marquee points, arrow keys nudge them. Double-click an edge to add a point, Delete removes points, and right-click makes a point smooth or a corner. A motion path's points edit the same way (its ends stay)."),
+            Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape, a merged drawing's line or a motion path to add a point to it. Points snap to points and lines while Snap to Objects is on."),
             Tool::Text => tr_noop!("Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too."),
             Tool::Pencil => tr_noop!("Drag to draw freehand. The options bar sets Smooth, Straighten or Ink."),
             Tool::Brush => tr_noop!("Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode."),
@@ -194,6 +194,9 @@ pub enum Drag {
     /// pointer at `last` last frame; or a marquee over them.
     MultiMove { last: egui::Pos2 },
     MultiMarquee { start: egui::Pos2, cur: egui::Pos2 },
+    /// Free Transform on Edit Multiple Frames' selection (ADR 0051): as `Transform`, on every
+    /// keyframe the selection is on, about one shared pivot.
+    MultiTransform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     Shape { start: egui::Pos2, cur: egui::Pos2 },
     /// Subselection: dragging the selected points (stage position of the last frame).
     Points { last: egui::Pos2 },
@@ -269,19 +272,7 @@ pub struct Shot {
 pub const SHOT_FRAMES: u32 = 120;
 
 /// The item picked in the Library panel (view state).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LibraryItem {
-    Symbol(anicraft_engine::doc::SymbolId),
-    Bitmap(anicraft_engine::doc::BitmapId),
-    Sound(anicraft_engine::doc::SoundId),
-}
-
-impl LibraryItem {
-    /// The first item in the Library: its first symbol, else its first bitmap, else sound.
-    pub fn first(doc: &anicraft_engine::doc::Document) -> Option<LibraryItem> {
-        doc.library.first().map(|s| LibraryItem::Symbol(s.id)).or_else(|| doc.bitmaps.first().map(|b| LibraryItem::Bitmap(b.id))).or_else(|| doc.sounds.first().map(|s| LibraryItem::Sound(s.id)))
-    }
-}
+pub use anicraft_engine::doc::LibraryItem;
 
 pub struct App {
     pub s: Session,
@@ -303,6 +294,9 @@ pub struct App {
     pub last_tool: Tool,
     pub status: Option<Status>,
     pub prompt: Option<Prompt>,
+    /// The Convert to Symbol dialog, and what it chose last (ADR 0053).
+    pub convert: Option<crate::convert_symbol::ConvertDialog>,
+    pub convert_last: crate::convert_symbol::Last,
     pub show_about: bool,
     pub show_files: bool,
     pub show_licenses: bool,
@@ -317,6 +311,8 @@ pub struct App {
     /// Folders shown closed on the timeline (view state: not saved, not undoable).
     pub tl_collapsed: HashSet<anicraft_engine::doc::LayerId>,
     pub library_sel: Option<LibraryItem>,
+    /// The Library panel's folders, selection, sorting, search and preview (ADR 0050).
+    pub library: crate::library::LibraryView,
     /// Text being typed on the stage.
     pub text_edit: Option<TextEditing>,
     /// Font families on this computer, listed once on first need.
@@ -460,7 +456,7 @@ impl App {
         let prefs = if shot_mode { prefs::Prefs::default() } else { prefs::Prefs::load() };
         let keymap = keymap::Keymap::new(&prefs.shortcuts);
         let shortcuts = keymap.table();
-        let library_sel = LibraryItem::first(&session.doc);
+        let library_sel = crate::library::first_item(&session.doc);
         let (recovery, recovery_err) = autosave::Recovery::start(shot_mode);
         // Text lays out with the fonts on this computer plus the embedded interface font (so new
         // text has the same default everywhere). Scan them now, off the UI thread.
@@ -489,6 +485,8 @@ impl App {
             last_tool: Tool::Select,
             status: None,
             prompt: None,
+            convert: None,
+            convert_last: Default::default(),
             show_about: false,
             show_files: false,
             show_licenses: false,
@@ -500,6 +498,7 @@ impl App {
             tl_last_layer: None,
             tl_collapsed: HashSet::new(),
             library_sel,
+            library: Default::default(),
             text_edit: None,
             font_families: None,
             star_points: 5,
@@ -575,7 +574,7 @@ impl App {
     /// through, so it says how to add one.
     pub fn toggle_camera_preview(&mut self) {
         self.camera_preview = !self.camera_preview;
-        if self.camera_preview && self.s.doc.timeline(self.s.scene).camera_layer().is_none() {
+        if self.camera_preview && self.s.timeline().camera_layer().is_none() {
             self.status_ok(tr!("Preview through camera is on; add a camera (the camera button on the timeline, or the Camera tool) to look through it."));
         }
     }
@@ -784,6 +783,66 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some(which @ ("library" | "librarymenu")) => {
+                // Library folders with an item inside, a copy, the item previewed (ADR 0050).
+                let ball = self.s.doc.library.first().map(|s| s.id);
+                let folder = self.run("library.new_folder", json!({"name": "Characters"})).and_then(|v| v["folder"].as_u64());
+                self.run("library.new_folder", json!({"name": "Props"}));
+                if let (Some(ball), Some(f)) = (ball, folder) {
+                    self.run("library.duplicate", json!({"symbol": ball.0}));
+                    self.run("library.move", json!({"items": [{"symbol": ball.0}], "to": f}));
+                    self.library.expanded.insert(anicraft_engine::doc::FolderId(f));
+                    self.library_sel = Some(LibraryItem::Symbol(ball));
+                    self.library.sel = vec![anicraft_engine::doc::LibraryEntry::Item(LibraryItem::Symbol(ball))];
+                }
+                if which == "librarymenu" {
+                    crate::library::select_unused(self);
+                }
+            }
+            Some("convert") => {
+                // Convert to Symbol with folders to choose from, the last one used offered again
+                // (ADR 0053).
+                let folder = self.run("library.new_folder", json!({"name": "Characters"})).and_then(|v| v["folder"].as_u64());
+                self.run("library.new_folder", json!({"name": "Props"}));
+                self.run("draw.rect", json!({"x": 820, "y": 120, "w": 140, "h": 90, "fill": "#e0a030", "object": true}));
+                self.convert_last = crate::convert_symbol::Last { folder: folder.map(anicraft_engine::doc::FolderId), kind: anicraft_engine::doc::SymbolKind::MovieClip };
+                crate::convert_symbol::open(self);
+            }
+            Some("mixed") => {
+                // Two movie clips that differ in blending and filters, selected: those rows say
+                // "mixed" (ADR 0053).
+                if let Some(ball) = self.s.doc.library.first().map(|s| s.id.0) {
+                    self.run("edit.deselect", json!({}));
+                    self.run("symbol.set_kind", json!({"symbol": ball, "kind": "movie_clip"}));
+                    let id = |v: Option<Value>| v.and_then(|v| v["element"].as_u64()).unwrap_or(0);
+                    let a = id(self.run("library.place", json!({"symbol": ball, "x": 760, "y": 180})));
+                    let b = id(self.run("library.place", json!({"symbol": ball, "x": 900, "y": 220})));
+                    self.run("element.set_blend", json!({"mode": "multiply"}));
+                    self.run("element.set_filters", json!({"filters": [{"type": "glow"}]}));
+                    self.run("element.select", json!({"ids": [a, b]}));
+                }
+            }
+            Some("bitmap") => {
+                // Two placed bitmaps of different images, selected: the Bitmap row with Swap…
+                // says "mixed" (ADR 0053).
+                let dir = std::env::temp_dir().join("anicraft-shot-bitmaps");
+                let _ = std::fs::create_dir_all(&dir);
+                let mut ids = Vec::new();
+                for (name, w, h, px) in [("checker.png", 8u32, 8u32, [40u8, 120, 220, 255]), ("sunset.png", 12, 6, [230, 120, 40, 255])] {
+                    let path = dir.join(name);
+                    let Ok(png) = anicraft_engine::render::encode_png(w, h, &px.repeat((w * h) as usize)) else { continue };
+                    if std::fs::write(&path, png).is_err() {
+                        continue;
+                    }
+                    if let Some(b) = self.run("file.import_to_library", json!({"path": path.display().to_string(), "name": name})).and_then(|v| v["bitmap"].as_u64()) {
+                        let at = 700 + 160 * ids.len();
+                        if let Some(e) = self.run("library.place", json!({"bitmap": b, "x": at, "y": 200})).and_then(|v| v["element"].as_u64()) {
+                            ids.push(e);
+                        }
+                    }
+                }
+                self.run("element.select", json!({"ids": ids}));
+            }
             Some(which @ ("onion" | "onionmenu")) => {
                 // Onion skin ±5 on a frame with frames before and after it, the markers on the
                 // ruler; with its menu open, in outlines (ADR 0047).
@@ -801,6 +860,30 @@ impl App {
                 crate::onion::toggle_edit_multiple(self);
                 self.run("timeline.goto", json!({"frame": 12}));
                 crate::onion::select_all(self);
+            }
+            Some("edittransform") => {
+                // Free Transform on Edit Multiple Frames' selection (ADR 0051): one box, one
+                // pivot, over the artwork on every keyframe between the markers.
+                self.onion.preset(5);
+                crate::onion::toggle_edit_multiple(self);
+                self.run("timeline.goto", json!({"frame": 12}));
+                self.tool = Tool::Transform;
+                crate::onion::select_all(self);
+                // The bouncing ball on its keyframes.
+                let top = self.s.timeline().layers.first().map(|l| l.id);
+                self.onion_ui.sel.retain(|it| Some(it.layer) == top);
+            }
+            Some("onionsymbol") => {
+                // Onion skin inside a symbol open in place (ADR 0051): the sample's spinning star,
+                // its own frames before and after its playhead around it.
+                let star = self.s.timeline().layers.iter().flat_map(|l| l.keyframes.iter().flat_map(|k| k.elements.iter())).find(|e| e.name == "star").map(|e| e.id.0);
+                if let Some(id) = star {
+                    self.run("element.select", json!({"ids": [id]}));
+                    self.run("symbol.edit", json!({}));
+                    self.run("timeline.goto", json!({"frame": 12}));
+                }
+                self.onion.ghosts = true;
+                self.onion.preset(5);
             }
             Some("selection") => {
                 // A selection across layers (ADR 0044): Select All takes every unlocked layer's
@@ -984,6 +1067,49 @@ impl App {
                     self.drag = Drag::RawHandle { id: h.id, cmd: h.cmd, slot: h.slot, last: egui::pos2(h.at.x + 40.0, h.at.y + 10.0) };
                 }
             }
+            Some("rawpoints") => {
+                // Raw points (ADR 0045) on a new layer: an outlined square whose top-left corner
+                // was deleted (the fill and its outline joined across the diagonal), and a point
+                // added on its right side, pulled out and made smooth, selected with its handle
+                // pair showing.
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 240, "y": 140, "w": 320, "h": 260, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("draw.ellipse", json!({"x": 640, "y": 170, "w": 240, "h": 200, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("edit.deselect", json!({}));
+                self.run("raw.delete_points", json!({"points": [[240, 140]]}));
+                self.run("raw.add_point", json!({"x": 560, "y": 270}));
+                self.run("raw.move_point", json!({"x": 560, "y": 270, "to_x": 620, "to_y": 270}));
+                self.run("raw.convert_points", json!({"points": [[620, 270]], "smooth": true}));
+                self.tool = Tool::Subselect;
+                self.run("raw.subselect", json!({"x": 400, "y": 400, "slop": 4}));
+                self.raw_ends = Vec::new();
+                self.raw_anchors = vec![anicraft_engine::geom::Vec2::new(620.0, 270.0)];
+            }
+            Some("rawsnap") => {
+                // Snapping while drawing (ADR 0045): a line being drawn from a corner of a raw
+                // square, its end snapping onto the square's other corner (the ring).
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 240, "y": 140, "w": 320, "h": 260, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Line;
+                self.drag = Drag::Shape { start: egui::pos2(240.0, 400.0), cur: egui::pos2(560.0, 140.0) };
+                self.snap_ring = Some(anicraft_engine::geom::Vec2::new(560.0, 140.0));
+            }
+            Some("symboledit") => {
+                // A symbol open for editing in place (ADR 0045): a raw drawing inside it, merged
+                // with a line drawn across it there, its connected points showing under the
+                // Subselection tool; the stage around it dimmed, the way back above.
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 260, "y": 160, "w": 300, "h": 220, "fill": "#e8553b", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("modify.convert_to_symbol", json!({"name": "Badge"}));
+                self.run("symbol.edit", json!({}));
+                self.run("draw.line", json!({"x0": -190, "y0": 40, "x1": 190, "y1": -40, "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("draw.ellipse", json!({"x": 60, "y": -150, "w": 140, "h": 140, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Subselect;
+                self.run("raw.subselect", json!({"x": 0, "y": 60, "slop": 4}));
+                self.raw_ends = Vec::new();
+            }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
                 // calligraphic tip at 45°, square dabs, and a pink stroke painted behind a raw
@@ -1051,7 +1177,7 @@ impl App {
             Some("frames") => {
                 // Frames 8–20 selected on the top three layers, with a keyframe drag in progress:
                 // 6 frames later and one layer down.
-                let layers = &self.s.doc.timeline(self.s.scene).layers;
+                let layers = &self.s.timeline().layers;
                 if let (Some(a), Some(b)) = (layers.first(), layers.get(2)) {
                     self.frame_sel = Some(timeline::FrameSel { anchor: (a.id, 7), head: (b.id, 19) });
                     self.tl_drag = timeline::TlDrag::Move { grab: 10, by: 6, grab_row: 0, rows_by: 1 };
@@ -1164,7 +1290,7 @@ impl App {
             }
             Some("span") => {
                 // Stretching the Star layer's span by its end, with the length readout.
-                if let Some(l) = self.s.doc.timeline(self.s.scene).layers.get(1)
+                if let Some(l) = self.s.timeline().layers.get(1)
                     && let Some(k) = l.keyframes.first()
                 {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
@@ -1273,7 +1399,7 @@ impl App {
 
     /// Any modal (prompt, confirmation, close guard) is open: global shortcuts pause.
     pub fn modal_open(&self) -> bool {
-        self.prompt.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
+        self.prompt.is_some() || self.convert.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
     }
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
@@ -1298,7 +1424,7 @@ impl App {
         if let Some(session) = restored {
             self.view.fit = true;
             self.frame_sel = None;
-            self.library_sel = LibraryItem::first(&self.s.doc);
+            self.library_sel = crate::library::first_item(&self.s.doc);
             self.decode_sounds();
             self.recovery.restored(&session);
             let name = self.s.path.as_deref().and_then(std::path::Path::file_name).map_or_else(|| tr!("Untitled").to_string(), |n| n.to_string_lossy().into_owned());
@@ -1315,7 +1441,7 @@ impl App {
         match id {
             "file.new" | "file.new_sample" | "file.open" => {
                 self.view.fit = true;
-                self.library_sel = LibraryItem::first(&self.s.doc);
+                self.library_sel = crate::library::first_item(&self.s.doc);
                 self.decode_sounds();
                 match v.get("report").and_then(Value::as_str) {
                     // An imported file: say what came across and what didn't, and that saving
@@ -1327,7 +1453,7 @@ impl App {
             "file.recover" => {
                 self.view.fit = true;
                 self.frame_sel = None;
-                self.library_sel = LibraryItem::first(&self.s.doc);
+                self.library_sel = crate::library::first_item(&self.s.doc);
                 self.recovery.restored(v["recovered"].as_str().unwrap_or(""));
                 let name = v["name"].as_str().unwrap_or(tr!("Untitled"));
                 self.status_ok(if v["original_newer"].as_bool() == Some(true) {
@@ -1462,21 +1588,10 @@ impl App {
             self.status_err(crate::i18n::t(why));
             return;
         }
-        // Edit Multiple Frames (ADR 0047) selects on every keyframe between the markers.
-        if crate::onion::editing(self) {
-            match id {
-                "edit.select_all" => return crate::onion::select_all(self),
-                "edit.deselect" => {
-                    self.onion_ui.sel.clear();
-                    return;
-                }
-                // This slice moves artwork across keyframes; other edits stay on one frame.
-                "edit.delete" | "edit.cut" | "edit.copy" | "edit.duplicate" if !self.onion_ui.sel.is_empty() => {
-                    self.status_err(tr!("Edit Multiple Frames moves artwork on several keyframes; to delete, copy or duplicate it, turn Edit Multiple Frames off and work frame by frame."));
-                    return;
-                }
-                _ => {}
-            }
+        // Edit Multiple Frames (ADR 0047, 0051) selects and edits on every keyframe between the
+        // markers: the Edit menu, Align and Transform act there.
+        if crate::onion::editing(self) && crate::onion::invoke(self, id) {
+            return;
         }
         if id == "timeline.paste_frames"
             && let Some(p) = timeline::paste_params(self)
@@ -1509,6 +1624,11 @@ impl App {
             self.show_plugins = true;
             return;
         }
+        if id == "modify.convert_to_symbol" {
+            // Name, type and Library folder (ADR 0053).
+            crate::convert_symbol::open(self);
+            return;
+        }
         if id == "edit.paste" {
             // Paste in the centre of what you are looking at.
             let c = self.view_center_stage();
@@ -1533,7 +1653,6 @@ impl App {
             "file.import_to_library" => Some((tr_noop!("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)"), "path", "sound.wav".to_string())),
             "file.import" => Some((tr_noop!("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)"), "path", "drawing.svg".to_string())),
             "plugin.install" => Some((tr_noop!("Install plug-in (.wasm file)"), "path", "plugin.wasm".to_string())),
-            "modify.convert_to_symbol" => Some((tr_noop!("Convert to symbol — name"), "name", format!("Symbol {}", self.s.doc.library.len() + 1))), // i18n-exempt: a new symbol's default name is document text
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
@@ -1761,6 +1880,7 @@ impl App {
             crate::widthtool::consume_keys(self, ctx);
             crate::bone_tool::consume_keys(self, ctx);
         }
+        crate::library::consume_keys(self, ctx);
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
         let mut play = false;
@@ -1800,7 +1920,7 @@ impl App {
                     self.status_ok(if self.align_to_stage { tr!("Align: to stage") } else { tr!("Align: to the selection") });
                 }
                 "view.select_all_frames" => {
-                    let layers = &self.s.doc.timeline(self.s.scene).layers;
+                    let layers = &self.s.timeline().layers;
                     if let (Some(a), Some(b)) = (layers.first(), layers.last()) {
                         let last = self.s.frame_count().saturating_sub(1);
                         self.frame_sel = Some(timeline::FrameSel { anchor: (a.id, 0), head: (b.id, last) });
@@ -2085,6 +2205,7 @@ impl App {
         crate::a11y::name_splitter(&ctx, "timeline", tr!("Resize the timeline"));
 
         self.prompt_window(&ctx);
+        crate::convert_symbol::window(self, &ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);

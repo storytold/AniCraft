@@ -175,6 +175,9 @@ fn every_command_namespace_has_a_plugin_policy() {
     }
     assert!(plugin_may_call("draw.rect").is_ok());
     assert!(plugin_may_call("future.thing").is_err());
+    // Edit Multiple Frames (ADR 0051): document edits yes, the clipboard no.
+    assert!(["frames.transform", "frames.delete", "frames.align", "frames.merge", "frames.edit_multiple"].iter().all(|c| plugin_may_call(c).is_ok()));
+    assert!(["frames.copy", "frames.cut", "frames.paste"].iter().all(|c| plugin_may_call(c).is_err()));
 }
 
 #[test]

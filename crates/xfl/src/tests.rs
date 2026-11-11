@@ -101,7 +101,9 @@ fn stage_layers_frames_and_tweens() {
     // Frame scripts, on the scene's frames and inside symbols, are kept verbatim (ADR 0013
     // tier 1); these are in the subset that runs (tier 2).
     assert_eq!(report.runs.get("frame scripts in ActionScript 3.0"), Some(&2));
-    assert!(report.kept.is_empty(), "{report:?}");
+    // The symbol's path puts it in a Library folder (ADR 0050).
+    assert_eq!(report.kept.keys().collect::<Vec<_>>(), ["library folders"], "{report:?}");
+    assert_eq!(doc.entry_path(anicraft_doc::LibraryEntry::Item(anicraft_doc::LibraryItem::Symbol(doc.library[0].id))), "Characters/Ball");
     assert!(report.skipped.keys().all(|k| !k.contains("script")), "{report:?}");
     assert_eq!(ball.keyframes[1].script.as_ref().and_then(|s| s.source()).map(|s| s.text.as_str()), Some("stop();"));
     let inner = &doc.library[0].timeline.layers[0].keyframes[0];
@@ -191,7 +193,7 @@ fn shapes_become_fills_and_strokes() {
 
 #[test]
 fn a_fla_archive_imports_the_same() {
-    let z = crate::zip::tests::make_zip(&[("DOMDocument.xml", DOC.as_bytes(), true), ("LIBRARY/Characters/Ball.xml", BALL.as_bytes(), true)]);
+    let z = crate::zip::pack::write(&[crate::zip::pack::Raw::new("DOMDocument.xml", DOC.as_bytes(), true), crate::zip::pack::Raw::new("LIBRARY/Characters/Ball.xml", BALL.as_bytes(), true)], false);
     let dir = std::env::temp_dir().join(format!("anicraft-xfl-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fla = dir.join("scene.fla");
@@ -257,9 +259,10 @@ fn png_2x1() -> Vec<u8> {
 }
 
 const BITMAP_DOC: &str = r##"<DOMDocument width="200" height="100">
+  <folders><DOMFolderItem name="Art" isExpanded="true"/><DOMFolderItem name="Empty/Inner"/></folders>
   <media>
     <DOMBitmapItem name="Art/photo.png" href="Art/photo.png" bitmapDataHRef="M 1 1.dat"/>
-    <DOMBitmapItem name="packed.png" href="packed.png" bitmapDataHRef="M 2 2.dat"/>
+    <DOMBitmapItem name="packed.png" href="packed.png" bitmapDataHRef="M 2 2.dat" allowSmoothing="false"/>
     <DOMBitmapItem name="private.jpg" href="private.jpg" bitmapDataHRef="M 3 3.dat"/>
     <DOMBitmapItem name="gone.png" href="gone.png"/>
   </media>
@@ -309,6 +312,15 @@ fn bitmaps_come_across_when_their_image_is_png_or_jpeg() {
     // The renderer gets the pixels with the items.
     let list = evaluate(&doc, 0);
     assert_eq!(list.items.iter().filter(|i| i.image.is_some()).count(), 3);
+    // Library folders come across (ADR 0050): the item's path places it, empty ones are kept,
+    // and Allow Smoothing is read (on unless the file turns it off).
+    let path = |i| doc.entry_path(anicraft_doc::LibraryEntry::Item(anicraft_doc::LibraryItem::Bitmap(i)));
+    assert_eq!((path(doc.bitmaps[0].id).as_str(), path(doc.bitmaps[1].id).as_str()), ("Art/photo.png", "packed.png"));
+    let folders: Vec<String> = doc.library_tree.folders.iter().map(|f| doc.entry_path(anicraft_doc::LibraryEntry::Folder(f.id))).collect();
+    assert_eq!(folders, ["Art", "Empty", "Empty/Inner"]);
+    assert_eq!(report.kept.get("library folders"), Some(&1));
+    assert_eq!((doc.bitmaps[0].smoothing, doc.bitmaps[1].smoothing), (true, false));
+    assert!(list.items.iter().any(|i| i.image.is_some() && !i.smooth));
 }
 
 /// A square (0, 0)–(100, 100) shape-tweening to a triangle (200, 0), (300, 50), (200, 100),

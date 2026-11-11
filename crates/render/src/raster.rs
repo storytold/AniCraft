@@ -46,16 +46,19 @@ pub struct Coverage {
     pub bounds: IRect,
     stride: usize,
     acc: Vec<f32>,
+    /// The buffer holds coverage itself (hairlines, ADR 0048), not area to sum along rows.
+    direct: bool,
 }
 
 impl Coverage {
     pub fn new(bounds: IRect) -> Coverage {
         let stride = bounds.width() + 2;
-        Coverage { bounds, stride, acc: vec![0.0; stride * bounds.height()] }
+        Coverage { bounds, stride, acc: vec![0.0; stride * bounds.height()], direct: false }
     }
 
     /// Re-targets the buffer at `bounds`, reusing its allocation (one buffer per render band).
     pub fn reset(&mut self, bounds: IRect) {
+        self.direct = false;
         self.bounds = bounds;
         self.stride = bounds.width() + 2;
         self.acc.clear();
@@ -180,6 +183,24 @@ impl Coverage {
         }
     }
 
+    /// Re-targets the buffer at `bounds` for hairlines ([`Coverage::add_hairline`]): it then
+    /// holds each pixel's coverage, and [`Coverage::resolve_row`] reads it as it is.
+    pub fn reset_direct(&mut self, bounds: IRect) {
+        self.direct = true;
+        self.bounds = bounds;
+        self.stride = bounds.width();
+        self.acc.clear();
+        self.acc.resize(self.stride * bounds.height(), 0.0);
+    }
+
+    /// Adds a hairline along an open polyline ([`crate::hairline`]); the buffer must be in
+    /// direct mode ([`Coverage::reset_direct`]).
+    pub fn add_hairline(&mut self, pts: &[Vec2]) {
+        if self.direct {
+            crate::hairline::add_polyline(&mut self.acc, self.bounds, pts);
+        }
+    }
+
     /// Resolves row `y` (relative to the bounds) into coverage values in `out` (len = width).
     pub fn resolve_row(&self, y: usize, rule: FillRule, out: &mut [f32]) {
         let start = y * self.stride;
@@ -187,6 +208,12 @@ impl Coverage {
             out.fill(0.0);
             return;
         };
+        if self.direct {
+            for (o, a) in out.iter_mut().zip(row) {
+                *o = *a;
+            }
+            return;
+        }
         let mut sum = 0.0f32;
         for (o, a) in out.iter_mut().zip(row) {
             sum += a;
