@@ -502,3 +502,65 @@ fn stroke_caps_joints_dashes_and_dots_come_across() {
         assert_eq!(report.skipped.get("ragged, stipple and hatched strokes (drawn solid)"), Some(&1));
     }
 }
+
+/// A button whose Over and Down frames hold sounds (ADR 0057), a sound on the main timeline, and
+/// sounds the package doesn't hold in a form anyone can read.
+const SOUND_DOC: &str = r##"<DOMDocument width="200" height="100">
+  <media>
+    <DOMSoundItem name="Sounds/click.wav" href="Sounds/click.wav" soundDataHRef="M 1 1.dat"/>
+    <DOMSoundItem name="private.mp3" href="private.mp3" soundDataHRef="M 2 2.dat"/>
+    <DOMSoundItem name="gone.wav" href="gone.wav"/>
+  </media>
+  <symbols><Include href="Push.xml"/></symbols>
+  <timelines><DOMTimeline name="Scene 1"><layers>
+    <DOMLayer name="Music"><frames><DOMFrame index="0" duration="4" soundName="Sounds/click.wav" soundSync="start" soundLoopMode="repeat" soundLoop="3"/></frames></DOMLayer>
+    <DOMLayer name="Buttons"><frames><DOMFrame index="0" duration="4"><elements><DOMSymbolInstance libraryItemName="Push"/></elements></DOMFrame></frames></DOMLayer>
+  </layers></DOMTimeline></timelines>
+</DOMDocument>"##;
+
+const PUSH: &str = r##"<DOMSymbolItem name="Push" symbolType="button"><timeline><DOMTimeline name="Push"><layers>
+  <DOMLayer name="Sounds"><frames>
+    <DOMFrame index="0"/>
+    <DOMFrame index="1" soundName="Sounds/click.wav"/>
+    <DOMFrame index="2" soundName="Sounds/click.wav" soundSync="stream" soundEffect="fade in"/>
+    <DOMFrame index="3" soundName="private.mp3"/>
+  </frames></DOMLayer>
+  <DOMLayer name="Art"><frames><DOMFrame index="0" duration="4"><elements><DOMRectangleObject x="0" y="0" objectWidth="40" objectHeight="20"><fill><SolidColor color="#3366CC"/></fill></DOMRectangleObject></elements></DOMFrame></frames></DOMLayer>
+</layers></DOMTimeline></timeline></DOMSymbolItem>"##;
+
+#[test]
+fn sounds_in_the_package_come_across_on_frames_and_buttons_states() {
+    let wav = anicraft_doc::audio::wav::encode(8000, 1, &[0.25; 800], anicraft_doc::audio::wav::Bits::Int16);
+    let files: HashMap<String, Vec<u8>> = HashMap::from([
+        ("DOMDocument.xml".to_string(), SOUND_DOC.as_bytes().to_vec()),
+        ("LIBRARY/Push.xml".to_string(), PUSH.as_bytes().to_vec()),
+        // An XFL folder keeps the original file in LIBRARY/.
+        ("LIBRARY/Sounds/click.wav".to_string(), wav),
+        // Animate's own encoding is not public: reported, not guessed.
+        ("bin/M 2 2.dat".to_string(), vec![1, 2, 3, 4, 5, 6, 7, 8]),
+    ]);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+    let (doc, report) = import_with(&read).unwrap();
+    assert_eq!(doc.sounds.iter().map(|s| (s.name.as_str(), s.rate, s.frames)).collect::<Vec<_>>(), [("click.wav", 8000, 800)]);
+    let click = doc.sounds[0].id;
+    let path = doc.entry_path(anicraft_doc::LibraryEntry::Item(anicraft_doc::LibraryItem::Sound(click)));
+    assert_eq!(path, "Sounds/click.wav", "in its Library folder");
+    // The main timeline's: Start, three times.
+    let music = doc.timeline(0).layers[0].keyframes[0].sound.clone().unwrap();
+    assert_eq!((music.sound, music.sync, music.repeat, music.looping), (click, anicraft_doc::SoundSync::Start, 3, false));
+    // The button's Over and Down frames keep theirs; the Hit frame's sound isn't readable.
+    let push = doc.library.iter().find(|s| s.name == "Push").unwrap();
+    let on = |f: u32| push.timeline.layers[0].keyframes.iter().find(|k| k.start == f).and_then(|k| k.sound.clone());
+    assert_eq!(on(1).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Event)));
+    assert_eq!(on(2).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Stream)));
+    assert_eq!(on(3), None);
+    assert_eq!(report.skipped.get("sounds stored in Animate's own format"), Some(&1));
+    assert_eq!(report.skipped.get("missing sound files"), Some(&1));
+    assert_eq!(report.skipped.get("frame sounds whose sound isn't in the package"), Some(&1));
+    assert_eq!(report.skipped.get("sound effects and envelopes (played without)"), Some(&1));
+    // In the player, going over the button starts its Over sound.
+    use anicraft_doc::player::{Event, NoScripts, input, start};
+    let s = start(&doc, &mut NoScripts);
+    let s = input(&doc, &s.state, &[Event::Move(anicraft_geom::Vec2::new(10.0, 10.0))], &mut NoScripts);
+    assert_eq!(s.sounds.iter().map(|x| x.sound.sound).collect::<Vec<_>>(), [click]);
+}
