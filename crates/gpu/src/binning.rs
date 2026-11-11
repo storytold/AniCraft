@@ -336,8 +336,8 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
                 let m = inv.m;
                 (RADIAL, [[0.0; 4], [m[0], m[1], m[2], m[3]], [m[4], m[5], center.x, center.y], [0.0, 0.0, *inv_radius, 0.0]])
             }
-            // The oracle's bilinear sample of a bitmap (crates/render/src/paint.rs › sample).
-            (Shader::Bitmap { inv, pixels, repeat, fx }, _) => {
+            // The oracle's sample of a bitmap (crates/render/src/paint.rs › sample).
+            (Shader::Bitmap { inv, pixels, repeat, fx, smooth }, _) => {
                 if pixels.width == 0 || pixels.height == 0 {
                     (SOLID, [[0.0; 4]; 4])
                 } else {
@@ -351,7 +351,8 @@ pub fn bin(scene: &Scene, width: u32, height: u32) -> Result<Binned, NeedsFull> 
                     };
                     let m = inv.m;
                     let (k, alpha, tint, keep) = colour_effect(fx);
-                    (BITMAP, [[u(slot as u32), u(u32::from(*repeat)), u(pixels.width), u(pixels.height)], [m[0], m[1], m[2], m[3]], [m[4], m[5], k, alpha], [tint[0], tint[1], tint[2], u(keep)]])
+                    // Bit 0: repeat; bit 1: the nearest pixel instead of bilinear (no smoothing).
+                    (BITMAP, [[u(slot as u32), u(u32::from(*repeat) | (u32::from(!*smooth) << 1)), u(pixels.width), u(pixels.height)], [m[0], m[1], m[2], m[3]], [m[4], m[5], k, alpha], [tint[0], tint[1], tint[2], u(keep)]])
                 }
             }
             // `prepare_scene` never hands these over; draw nothing rather than guess.

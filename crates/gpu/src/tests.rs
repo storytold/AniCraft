@@ -31,6 +31,7 @@ fn item(path: Path, fill: Paint) -> DisplayItem {
         guide: false,
         group: None,
         image: None,
+        smooth: true,
     }
 }
 
@@ -734,6 +735,12 @@ fn bitmap_scenes() -> Vec<(&'static str, DisplayList, View)> {
     let inside = in_group(clipped(bitmap_item(Path::rect(4.0, 4.0, 72.0, 52.0), &a, true, turned), 0), 0);
     let dl = DisplayList { items: vec![grad, inside, mask(Path::ellipse(40.0, 30.0, 30.0, 22.0), 0)], clip_parents: vec![None], groups: vec![group(None, 0.7, BlendMode::Multiply)] };
     out.push(("bitmap masked and multiplied", dl, view(80, 60, white)));
+    // Without smoothing (ADR 0050): the nearest pixel, magnified, turned and repeated.
+    let mut hard = bitmap_item(Path::rect(2.0, 3.0, 90.0, 70.0), &a, false, turned);
+    hard.smooth = false;
+    let mut hard_tiled = bitmap_item(Path::ellipse(50.0, 40.0, 45.0, 35.0), &c, true, Affine::scale(4.0, 3.0));
+    hard_tiled.smooth = false;
+    out.push(("bitmaps without smoothing", list(vec![hard_tiled, hard]), view(100, 80, white)));
     out
 }
 

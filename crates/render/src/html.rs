@@ -354,6 +354,9 @@ impl<'a> Bake<'a> {
                         self.images.push(format!("data:image/png;base64,{}", base64_encode(&b.png)));
                     }
                     let mut o = json!({"b": i, "rep": repeat});
+                    if !b.smoothing {
+                        o["px"] = json!(true);
+                    }
                     if let Some(m) = matrix(m) {
                         o["m"] = m;
                     }
