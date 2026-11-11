@@ -103,6 +103,20 @@ pub struct Front {
     pub timeline: Timeline,
     pub frame: u32,
     pub at: Affine,
+    /// The timeline the symbol was opened from, when it shows around it (in place): with onion
+    /// skin on, its frames around its own playhead show dimmed too (ADR 0061).
+    pub parent: Option<Around>,
+}
+
+/// A timeline drawn dimmed around an open symbol: the picture's layer `layer` shows `timeline`
+/// (without the instance that was opened) at its `frame`, placed by `at`, at opacity `dim`.
+#[derive(Clone, Debug)]
+pub struct Around {
+    pub layer: LayerId,
+    pub timeline: Timeline,
+    pub frame: u32,
+    pub at: Affine,
+    pub dim: f32,
 }
 
 impl Session {
@@ -196,7 +210,7 @@ impl Session {
             tl.layers.push(placed(&mut doc, hit_timeline(&open), at, frame, ColorEffect::Advanced(hit_tint(tint, alpha))));
         }
         let layer = placed(&mut doc, open.clone(), at, self.frame, ColorEffect::default());
-        let front = Arc::new(Front { layer: layer.id, timeline: open, frame: self.frame, at });
+        let mut front = Front { layer: layer.id, timeline: open, frame: self.frame, at, parent: None };
         tl.layers.push(layer);
         // Around it, dimmed: each timeline below, without the instance opened from it.
         if view.in_place {
@@ -207,9 +221,16 @@ impl Session {
                     Some(p) => self.doc.symbol(p.symbol).map(|s| s.timeline.clone()).unwrap_or_default(),
                 };
                 let xf = parent.map_or(Affine::IDENTITY, |p| p.transform);
-                tl.layers.push(placed(&mut doc, without(below, l.instance), xf, l.frame, ColorEffect::opacity(DIM)));
+                let around = without(below, l.instance);
+                let layer = placed(&mut doc, around.clone(), xf, l.frame, ColorEffect::opacity(DIM));
+                // The timeline right under the open symbol is the one onion skin shows around it.
+                if front.parent.is_none() {
+                    front.parent = Some(Around { layer: layer.id, timeline: around, frame: l.frame, at: xf, dim: DIM });
+                }
+                tl.layers.push(layer);
             }
         }
+        let front = Arc::new(front);
         *doc.timeline_mut(self.scene) = tl;
         // Apart from document states (counted up from 1), and the same for the same picture.
         let pic = Arc::new(StagePicture { frame: doc.scene_start(self.scene), doc, state: key | 1 << 63, front: Some(front) });

@@ -126,7 +126,7 @@ fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(layer_type_json(s, id))
 }
 
-fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
+pub(crate) fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder) {
@@ -161,7 +161,7 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     Ok(())
 }
 
-fn layer_type_json(s: &Session, id: LayerId) -> Value {
+pub(crate) fn layer_type_json(s: &Session, id: LayerId) -> Value {
     let Some(l) = s.timeline().layer(id) else { return json!({}) };
     let tl = s.timeline();
     let parent_kind = l.parent.and_then(|p| tl.layer(p)).map(|x| x.kind);

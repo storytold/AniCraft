@@ -199,15 +199,22 @@ pub struct Extra {
     pub distance: u32,
 }
 
-/// Whether onion skin draws `layer` (Animate doesn't onion-skin locked layers).
-fn ghosted(tl: &Timeline, i: usize) -> bool {
+/// Whether `layer` is shown and unlocked artwork (not a folder), itself and through its folders.
+fn open_artwork(tl: &Timeline, i: usize) -> bool {
     tl.layers.get(i).is_some_and(|l| l.visible && !l.locked && l.kind != LayerKind::Folder && !tl.locked_by_folder(l.id) && !tl.hidden_by_folder(i))
+}
+
+/// Whether onion skin draws `layer`: shown and unlocked (Animate doesn't onion-skin locked
+/// layers), with its own onion toggle on (ADR 0061).
+pub fn ghosted(tl: &Timeline, i: usize) -> bool {
+    open_artwork(tl, i) && tl.layers.get(i).is_some_and(|l| l.onion)
 }
 
 /// Whether Edit Multiple Frames shows and edits `layer`'s other keyframes: it is shown and
 /// unlocked, and holds artwork (not a folder, the camera or an armature posed by its bones).
+/// A layer's onion toggle doesn't apply: it is about the faded frames, not editing.
 pub fn multi_editable(tl: &Timeline, i: usize) -> bool {
-    ghosted(tl, i) && tl.layers.get(i).is_some_and(|l| !matches!(l.kind, LayerKind::Camera | LayerKind::Armature))
+    open_artwork(tl, i) && tl.layers.get(i).is_some_and(|l| !matches!(l.kind, LayerKind::Camera | LayerKind::Armature))
 }
 
 /// The onion frames to draw for the playhead on `playhead`, farthest first (nearest on top),
