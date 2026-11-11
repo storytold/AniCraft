@@ -186,6 +186,8 @@ fn js_events(events: &[Event]) -> String {
             Event::Down(p) => json!({"type": "down", "x": p.x, "y": p.y}),
             Event::Up(p) => json!({"type": "up", "x": p.x, "y": p.y}),
             Event::Leave => json!({"type": "leave"}),
+            Event::KeyDown(k) => json!({"type": "keydown", "code": k}),
+            Event::KeyUp(k) => json!({"type": "keyup", "code": k}),
         })
         .collect();
     Value::Array(list).to_string()
@@ -201,8 +203,22 @@ fn snapshot(st: &PlayerState) -> Value {
         "scene": st.scene, "frame": st.root.frame, "playing": st.root.playing,
         "clips": st.clips.iter().map(|(p, c)| json!([ids(p), c.frame, c.playing])).collect::<Vec<_>>(),
         "listeners": st.listeners.iter().filter(|(_, l)| !l.is_empty()).map(|(p, l)| json!([ids(p), l.iter().map(|x| json!([x.event.key(), ids(&x.owner), x.function])).collect::<Vec<_>>()])).collect::<Vec<_>>(),
+        "stage": st.stage.iter().map(|x| json!([x.event.key(), ids(&x.owner), x.function])).collect::<Vec<_>>(),
+        "vars": st.vars.iter().map(|(p, v)| json!([ids(p), v.iter().map(|(k, v)| json!([k, format!("{}:{}", kind(v), v.text())])).collect::<Vec<_>>()])).collect::<Vec<_>>(),
         "hover": st.hover.as_deref().map(ids), "pressed": st.pressed.as_deref().map(ids), "down": st.down,
     })
+}
+
+/// A script value's kind, as the JS snapshot tags it.
+fn kind(v: &anicraft_doc::actions::as3::ir::Value) -> &'static str {
+    use anicraft_doc::actions::as3::ir::Value as V;
+    match v {
+        V::Undefined => "u",
+        V::Null => "null",
+        V::Bool(_) => "b",
+        V::Num(_) => "n",
+        V::Str(_) => "s",
+    }
 }
 
 fn props_of_rust(st: &PlayerState) -> Vec<String> {
@@ -621,9 +637,10 @@ fn hostile_documents_export_without_panicking() {
     let fine = Element { id: ElementId(6), transform: Affine::IDENTITY, ..bad.clone() };
     let missing = inst(7, 12345, "ghost", Affine::IDENTITY, vec![]);
     Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap().elements = vec![Arc::new(bad), Arc::new(fine), missing];
-    let e = to_html(&doc, &HtmlOptions::default()).unwrap();
-    assert!(!e.html.contains("NaN") && !e.html.contains("inf"), "numbers stay finite");
+    to_html(&doc, &HtmlOptions::default()).unwrap();
     let m = movie(&doc, &HtmlOptions::default());
+    let data = m.json.to_string();
+    assert!(!data.contains("NaN") && !data.contains("inf") && !data.contains("null,"), "numbers stay finite: {data}");
     assert_eq!(m.json["paths"][0], "", "a path with a NaN point is left empty");
     let mut js = Js::new(&m);
     js.eval("P.start()");
@@ -662,7 +679,7 @@ fn scripted() -> Document {
     let l1 = Arc::make_mut(&mut tl.layers[0]);
     as3(&mut l1.keyframes[0], main);
     as3(&mut l1.keyframes[1], "ghost.stop()\npanel.stop()");
-    as3(&mut l1.keyframes[2], "var n:int = 3; stop();");
+    as3(&mut l1.keyframes[2], "var n:int = 3; stop(); switch (n) { }");
     let l2 = Arc::make_mut(&mut tl.layers[1]);
     if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(&mut Arc::make_mut(&mut l2.keyframes[0]).elements[0]).kind {
         events.clear();
@@ -710,6 +727,91 @@ fn actionscript_plays_the_movie_its_hand_made_actions_play() {
         assert_eq!(x.output.iter().collect::<Vec<_>>(), ys, "step {}: output", i + 1);
         let mut st = y.state.clone();
         st.listeners.clear();
+        st.seq = 0;
         assert_eq!(x.state, st, "step {}: state", i + 1);
+    }
+}
+
+/// A movie that uses the small-logic tier (ADR 0052): typed variables kept per
+/// timeline and per clip instance, expressions, `if`, loops, `Math.random()`, functions from
+/// another frame, property reads, enter-frame and keyboard listeners that add and remove
+/// themselves, `e.target`, a runtime error and a loop that runs out of fuel.
+fn logic() -> Document {
+    let mut d = fixture();
+    let main = "import flash.events.*;\n\
+        var score:int = 0;\n\
+        var label:String = \"go\";\n\
+        var ticks:uint;\n\
+        var total:Number = 0;\n\
+        trace(\"start \" + score + \" \" + label + \" \" + ticks + \" \" + currentFrame + \"/\" + totalFrames + \" \" + currentLabel);\n\
+        for (var i:int = 0; i < 5; i++) { if (i % 2 == 0) continue; total += i * 1.5; }\n\
+        var k:int = 3; while (k > 0) { k--; } do { k += 2; } while (k < 5);\n\
+        trace(total, k, Math.max(1, 7, 3), Math.min(), Math.round(-2.5), Math.abs(-0.25), int(\"42\") + uint(-1), 7 / 2, \"10\" < \"9\", 1 == \"1\", null == undefined);\n\
+        trace(Math.floor(Math.random() * 100), Math.random() < 1, knob.x, knob.y, knob.alpha, knob.visible, knob.name, panel.currentFrame, panel.totalFrames);\n\
+        addEventListener(Event.ENTER_FRAME, onTick);\n\
+        stage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);\n\
+        stage.addEventListener(KeyboardEvent.KEY_UP, function (e:KeyboardEvent):void { trace(\"up \" + e.keyCode + \" \" + (e.currentTarget == stage)); });\n\
+        knob.addEventListener(MouseEvent.CLICK, function (e:MouseEvent):void { score += 10; trace(\"click \" + e.target.name + \" \" + (e.currentTarget == knob) + \" \" + score); door.x = door.x + 0.1; trace(door.x); });\n\
+        function onTick(e:Event):void {\n\
+          ticks++;\n\
+          if (ticks % 4 == 0) trace(\"tick \" + ticks + \" frame \" + currentFrame + \" mouse \" + mouseX + \",\" + mouseY);\n\
+          if (ticks >= 12) { removeEventListener(Event.ENTER_FRAME, onTick); trace(\"stopped ticking\"); }\n\
+        }\n\
+        function onKey(e:KeyboardEvent):void {\n\
+          if (e.keyCode == Keyboard.RIGHT) { knob.x += 5; } else if (e.keyCode == Keyboard.SPACE) { trace(\"space \" + bump(2)); } else { trace(\"key \" + e.keyCode); }\n\
+          trace(\"knob at \" + knob.x + \" \" + label);\n\
+        }";
+    let tl = d.timeline_mut(0);
+    let l1 = Arc::make_mut(&mut tl.layers[0]);
+    as3(&mut l1.keyframes[0], main);
+    as3(&mut l1.keyframes[1], "function bump(n:int):int { score += n; return score % 3 + 1; }\nlabel = label + \"!\";\ntrace(\"frame 2: \" + bump(1) + \" \" + label);\ntrace(ghost.x);\ntrace(\"never\");");
+    as3(&mut l1.keyframes[2], "var spin:int = 0; while (true) { spin++; }");
+    let l2 = Arc::make_mut(&mut tl.layers[1]);
+    if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(&mut Arc::make_mut(&mut l2.keyframes[0]).elements[0]).kind {
+        events.clear();
+    }
+    // The door clip keeps its own count across its loops.
+    let door = Arc::make_mut(&mut d.library[0]);
+    let dl = Arc::make_mut(&mut door.timeline.layers[0]);
+    as3(&mut dl.keyframes[0], "var laps:int; laps++; if (laps > 1) trace(\"door lap \" + laps);");
+    d
+}
+
+#[test]
+fn the_js_player_runs_small_logic_like_the_rust_player() {
+    let doc = logic();
+    let m = movie(&doc, &HtmlOptions::default());
+    assert_eq!(m.report.get(KEPT_SCRIPTS), None, "every script links: {:?}", m.report);
+    assert!(m.json["timelines"][0]["fn"]["bump"].is_object() && m.json["timelines"][0]["vt"]["score"] == "int", "{}", m.json["timelines"][0]["vt"]);
+    let none = || (vec![], vec![]);
+    let mut script: Vec<(Vec<Event>, Vec<Event>)> = vec![none()];
+    script.push((vec![Event::Move(at(100.0, 100.0))], vec![]));
+    script.push((vec![Event::Down(at(101.0, 99.0))], vec![Event::Up(at(101.0, 99.0))]));
+    script.push((vec![Event::KeyDown(39), Event::KeyUp(39)], vec![Event::KeyDown(65)]));
+    script.push((vec![Event::KeyDown(32)], vec![]));
+    script.extend((0..14).map(|_| none()));
+    script.push((vec![Event::Move(at(10.0, 10.0)), Event::Leave], vec![Event::KeyDown(39)]));
+    script.extend((0..20).map(|_| none()));
+    let lines = compare(&doc, &script);
+    for want in ["start 0 go 0 1/33 null", "6 6 7 Infinity -2 0.25 4294967337 3.5 true true true", "10 true 100 100 1 true knob 1 4", "frame 2: 2 go!", "Script on frame 4 of the main timeline stopped: line 4: no instance named “ghost” here", "stopped ticking", "up 39 true", "key 65"] {
+        assert!(lines.iter().any(|l| l == want), "the logic fixture never wrote {want:?}: {lines:?}");
+    }
+    assert!(lines.iter().any(|l| l == "click knob true 11"), "{lines:?}");
+    assert!(lines.iter().any(|l| l.ends_with("ran more than 100000 steps (an endless loop?)")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l == "never"));
+}
+
+#[test]
+fn the_js_player_draws_random_numbers_like_the_rust_player() {
+    // The seeded generator, number for number, at several seeds.
+    for seed in [0u64, 1, 7, 0xdead_beef, u64::from(u32::MAX) + 5] {
+        let mut d = Document::default();
+        let k = Arc::make_mut(&mut Arc::make_mut(&mut d.timeline_mut(0).layers[0]).keyframes[0]);
+        k.script = Some(FrameScript::Source(Arc::new(anicraft_doc::actions::SourceScript::new(anicraft_doc::actions::Language::ActionScript3, "for (var i:int = 0; i < 20; i++) trace(Math.random());"))));
+        let m = movie(&d, &HtmlOptions::default());
+        let rust = anicraft_doc::player::start_seeded(&d, seed, &mut NoScripts).output;
+        let mut js = Js::new(&m);
+        js.eval(&format!("(P = new AniCraft.Player({}, host, {seed}), 0)", m.json));
+        assert_eq!(js.eval("P.start().output"), json!(rust), "seed {seed}");
     }
 }

@@ -945,15 +945,16 @@ impl App {
                 // The interactive sample as an imported Animate document might bring it: a
                 // frame script kept on the Actions layer's first keyframe (in place of its
                 // Stop action), a linkage class and a document class; the Actions panel shows
-                // the Script view (ADR 0013). `script` runs (tier 2); `scriptproblems` uses
-                // what the subset doesn't, and shows where; `testscript` plays the one that
-                // runs in Test Movie, its Play button clicked.
+                // the Script view (ADR 0013). `script` runs (tiers 2 and 2.5: a typed variable,
+                // `if`, a keyboard listener); `scriptproblems` uses what the subset doesn't, and
+                // shows where; `testscript` plays the one that runs in Test Movie, its Play
+                // button clicked.
                 self.perform("file.new_sample", json!({"which": "interactive"}));
                 self.run("layer.select", json!({"index": 0}));
                 // i18n-exempt: script source, document content
-                let runs = "import flash.events.MouseEvent;\n\nstop();\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\ttrace(\"Play clicked\");\n\tgotoAndPlay(\"show\");\n}\n";
+                let runs = "import flash.events.*;\n\nstop();\nvar clicks:int = 0;\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\nstage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);\n\nfunction onPlay(event:MouseEvent):void {\n\tclicks++;\n\ttrace(\"Play clicked \" + clicks + (clicks == 1 ? \" time\" : \" times\"));\n\tgotoAndPlay(\"show\");\n}\n\nfunction onKey(event:KeyboardEvent):void {\n\tif (event.keyCode == Keyboard.SPACE) {\n\t\tgotoAndPlay(\"show\");\n\t}\n}\n";
                 // i18n-exempt: script source, document content
-                let problems = "import flash.events.MouseEvent;\n\nstop();\nvar clicks:int = 0;\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tclicks++;\n\tif (clicks > 1) {\n\t\tgotoAndPlay(\"show\");\n\t}\n}\n";
+                let problems = "import flash.events.MouseEvent;\n\nstop();\nvar labels:Array = [\"show\", \"menu\"];\nplay_btn.addEventListener(MouseEvent.CLICK, onPlay);\n\nfunction onPlay(event:MouseEvent):void {\n\tswitch (labels.length) {\n\t\tcase 2: gotoAndPlay(labels[0]);\n\t}\n}\n";
                 let code = if which == "scriptproblems" { problems } else { runs };
                 self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
                 self.run("script.set_class", json!({"class": "com.example.Menu"}));
@@ -1893,6 +1894,15 @@ impl App {
         // text field keeps every key.
         let keys = crate::a11y::keyboard(ctx);
         if keys == crate::a11y::Keyboard::Text || self.palette.is_some() {
+            return;
+        }
+        // The Test Movie window's movie has the keyboard (ADR 0052): its keys are the
+        // movie's; only shortcuts with Ctrl (⌘) or Alt reach the app (Restart is Ctrl+Enter).
+        if self.test_movie.is_some() && crate::test_movie::has_keys(ctx) {
+            let fire: Vec<&'static str> = ctx.input_mut(|i| self.shortcuts.iter().filter(|(m, _, _)| m.command || m.ctrl || m.alt).filter_map(|(m, k, id)| i.consume_key(*m, *k).then_some(*id)).collect());
+            for id in fire.into_iter().filter(|id| !id.starts_with("view.") && !id.starts_with("tool.")) {
+                self.invoke(id);
+            }
             return;
         }
         let control = keys == crate::a11y::Keyboard::Control;

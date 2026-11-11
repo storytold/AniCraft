@@ -446,7 +446,8 @@ trace(n);]]></script></Actionscript><elements><DOMSymbolInstance libraryItemName
     files.insert("PublishSettings.xml", "<flash_profiles><unclosed>");
     let (d, report) = import(&files).unwrap();
     assert!(d.document_class.is_empty() && !report.kept.contains_key("document class"));
-    assert!(report.kept.contains_key("frame scripts in ActionScript 3.0"));
+    // Read as ActionScript 3.0, its variable and `?:` are in the subset now (ADR 0052).
+    assert!(report.runs.contains_key("frame scripts in ActionScript 3.0"));
 }
 
 #[test]

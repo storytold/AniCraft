@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-audio",
  "anicraft-doc",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-actions"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lewton",
  "nanomp3",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-engine",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-doc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-actions",
  "anicraft-audio",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-geom"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -304,12 +304,13 @@ dependencies = [
 
 [[package]]
 name = "anicraft-gpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
  "anicraft-render",
  "bytemuck",
+ "naga",
  "pollster 1.0.1",
  "rayon",
  "thiserror 2.0.21",
@@ -319,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-plugins"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -330,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
@@ -343,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-svg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
@@ -354,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-text"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-geom",
  "fontdb",
@@ -364,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-xfl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anicraft-doc",
  "anicraft-geom",
@@ -377,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "anicraft-xml"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
