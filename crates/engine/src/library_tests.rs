@@ -267,3 +267,19 @@ fn convert_to_symbol_picks_a_free_name() {
     let second = run(&mut s, "modify.convert_to_symbol", json!({}));
     assert_eq!(second["name"], "Symbol 3", "“Symbol 2” is taken");
 }
+
+#[test]
+fn inside_an_open_symbol_swap_never_nests_and_deleting_it_closes_it() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
+    let outer = run(&mut s, "modify.convert_to_symbol", json!({"name": "Outer"}))["symbol"].as_u64().unwrap();
+    run(&mut s, "draw.rect", json!({"x": 40, "y": 0, "w": 10, "h": 10}));
+    let other = run(&mut s, "modify.convert_to_symbol", json!({"name": "Other"}))["symbol"].as_u64().unwrap();
+    run(&mut s, "symbol.edit", json!({"symbol": outer}));
+    assert_eq!(s.editing.len(), 1);
+    run(&mut s, "library.place", json!({"symbol": other}));
+    assert!(err(&mut s, "element.swap_symbol", json!({"symbol": outer})).contains("inside itself"));
+    // Deleting the open symbol takes the editor back to the scene.
+    run(&mut s, "library.delete", json!({"items": [{"symbol": outer}], "confirm": true}));
+    assert!(s.editing.is_empty() && s.doc.symbol(SymbolId(outer)).is_none());
+}

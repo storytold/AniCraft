@@ -378,6 +378,10 @@ fn swap_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     if s.doc.symbol(to).is_none() {
         return Err(EngineError::State(format!("no symbol with id {}", to.0)));
     }
+    // Inside a symbol open for editing (ADR 0045), never swap in that symbol or one that holds it.
+    if crate::editing::would_nest(s, to) {
+        return Err(EngineError::State("a symbol can't be placed inside itself".into()));
+    }
     let mut swapped = 0;
     for e in s.selected_elements_mut()? {
         if let ElementKind::Symbol { symbol, .. } = &mut e.kind {
