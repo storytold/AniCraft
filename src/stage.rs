@@ -1054,6 +1054,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // selection.
     crate::camera_tool::draw(app, &painter, &cam_geo, pointer);
     if preview {
+        commit_text(app);
         // The movie's picture: stage-space overlays don't belong on it.
         painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, tr!("Camera view"), crate::theme::font(crate::theme::Type::Caption), T.text_dim);
         let badge = format!("{:.0}%", st_zoom * 100.0);

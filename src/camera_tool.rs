@@ -239,4 +239,22 @@ mod tests {
         assert!(app.s.timeline().camera_layer().expect("camera layer").visible);
         assert!(previewing(&app), "unhiding the camera layer restores camera preview");
     }
+
+    #[test]
+    fn toggling_camera_preview_commits_pending_text() {
+        let mut app = test_app();
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(10.0, 20.0),
+            element: None,
+            text: "Hello Camera".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+        assert!(app.text_edit.is_some());
+        app.toggle_camera_preview();
+        assert!(app.text_edit.is_none(), "pending text should be committed when toggling preview");
+        let active_layer = app.s.active_layer().expect("active layer").id;
+        let elements = app.s.elements_on(active_layer);
+        assert!(elements.iter().any(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Text(t) if t.text == "Hello Camera")));
+    }
 }

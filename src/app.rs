@@ -813,6 +813,7 @@ impl App {
     /// View › Preview Through Camera (ADR 0027). With no camera yet there is nothing to look
     /// through, so it says how to add one; when the camera layer is hidden, it reminds to show it.
     pub fn toggle_camera_preview(&mut self) {
+        crate::stage::commit_text(self);
         self.camera_preview = !self.camera_preview;
         if self.camera_preview {
             if self.s.timeline().camera_layer().is_none() {
