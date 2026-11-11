@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+* **Library management** (ADR 0050, M2).
+  * **Folders**: New Folder (the folder icon under the list, or right-click), nested as deep as
+    you like (32 levels). Drag items and folders onto a folder to move them in, onto an item to
+    join its folder, or below the list for the top level; right-click › Move to does the same.
+    Deleting a folder that holds items asks first, and its items go with it.
+  * **Rename in place** with F2 or a double-click on the name; Enter keeps it, Esc cancels.
+    Names are unique within a folder (case aside), as in Animate. Convert to Symbol picks the next
+    free “Symbol n”.
+  * **Duplicate Symbol** (right-click): “Ball copy” in the same folder, ready to rename.
+  * **Swap Symbol** in Properties › Symbol: pick another symbol for the selected instances.
+    Position, colour effect, blending, filters, looping and instance name stay.
+  * A **use count** for every item, **Select Unused Items** and **Delete Unused Items…** (in
+    More). Unused means nothing in any scene reaches it, so one pass clears a whole unused
+    branch; symbols with a linkage class count as used. Deleting an item the movie uses asks,
+    and its instances go with it.
+  * **Sort** by name, type, use count or date added, ascending or descending, and **search**
+    by name; folders that hold a match open.
+  * A **preview** of the current item (a symbol's first frame, the bitmap, or a sound's
+    waveform with a play button) and its **properties**: a symbol's type and linkage class, a
+    bitmap's **Allow Smoothing**. Smoothing off keeps hard pixel edges on the stage, in
+    renders, in SVG and in the HTML page.
+  * Animate files keep their library folders and Allow Smoothing.
+  * Headless: `library.items`, `library.new_folder`, `library.rename`, `library.move`,
+    `library.duplicate`, `library.delete`, `library.unused`, `library.delete_unused`,
+    `library.set_smoothing`, `element.swap_symbol`.
 * **Raw points, snapping while drawing, and symbols edited in place** (ADR 0045, issue #42, M1).
   * **Add a point** on a merged drawing's line or fill edge with the Pen's Alt-click or a
     Subselection double-click: every shape on that edge gets it, and the curve keeps its shape.
