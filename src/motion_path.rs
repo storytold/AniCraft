@@ -68,7 +68,7 @@ pub fn shown(app: &App) -> Option<Shown> {
         let (a, b) = sel.frames();
         sel.layers(&tl.layers).contains(&layer.id) && a < k.end() && b >= k.start
     });
-    if !app.s.selection.contains(&target.id) && !span_selected {
+    if !app.s.selection.contains(layer.id, target.id) && !span_selected {
         return None;
     }
     let base = Props::of(target);

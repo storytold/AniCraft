@@ -38,6 +38,8 @@ const FOOTER_H: f32 = 38.0;
 const TOGGLE: f32 = 24.0;
 /// Indent per folder or mask level in the layer list.
 const INDENT: f32 = 14.0;
+/// The selected-artwork square after a layer's name (points).
+const SEL_MARK: f32 = 7.0;
 
 /// A rectangle of frames: the layers between the anchor's and the head's rows (in the
 /// current layer order) by the frames between them. View state: commands get explicit ranges.
@@ -315,6 +317,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // rows
     let layers = app.s.doc.timeline(app.s.scene).layers.clone();
     let active = app.s.layer;
+    // Layers with selected artwork show a square in their colour after the name, as in
+    // Animate: a selection can span layers (ADR 0044).
+    let holding = app.s.selection.layers();
     let rows_top = ruler.bottom();
     let rows_bottom = body.bottom() - FOOTER_H;
     let tl_now = app.s.doc.timeline(app.s.scene).clone();
@@ -370,7 +375,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             _ => x0 + 4.0,
         };
-        painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
+        let name_at = painter.text(pos2(name_x, left.center().y), Align2::LEFT_CENTER, &layer.name, font(Type::Body), name_color);
+        let has_selection = holding.contains(&layer.id);
+        if has_selection {
+            let sq = Rect::from_center_size(pos2(name_at.right() + 9.0, left.center().y), vec2(SEL_MARK, SEL_MARK));
+            painter.rect_filled(sq, 0.0, to_color32(layer.color));
+            painter.rect_stroke(sq, 0.0, Stroke::new(1.0, T.text), StrokeKind::Outside);
+        }
 
         // eye / lock / outline toggles: 24 × 24 targets with a hover fill
         let toggle = |k: f32| Rect::from_center_size(pos2(left.right() - 16.0 - k * (TOGGLE + 2.0), left.center().y), vec2(TOGGLE, TOGGLE));
@@ -417,6 +428,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             LayerKind::Normal if masked => tr!("{name} · masked layer", name = name),
             LayerKind::Normal => tr!("{name} · layer", name = name),
         };
+        let row_name = if has_selection { tr!("{row} · has selected artwork", row = row_name) } else { row_name };
         a11y::control(ui, &nr, WidgetType::SelectableLabel, &row_name, Some(is_active));
         // Ctrl+F6 lands on the active layer, or on the top row shown when it is scrolled away
         // (rows are drawn top down, so the active row, when drawn, has the last word).
@@ -438,8 +450,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.run("layer.toggle_mute", json!({"layer": layer.id.0}));
             }
         }
+        // As in Animate: a click on the name makes the layer active and selects its artwork.
         if nr.clicked() {
-            app.run("layer.select", json!({"layer": layer.id.0}));
+            app.run("layer.select", json!({"layer": layer.id.0, "select": true}));
         }
         if nr.secondary_clicked() && app.s.layer != layer.id {
             app.run("layer.select", json!({"layer": layer.id.0}));

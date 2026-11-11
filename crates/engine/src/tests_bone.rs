@@ -185,7 +185,7 @@ fn poses_key_frames_and_tween_with_easing() {
 #[test]
 fn artwork_edits_are_refused_on_the_armature_layer() {
     let (mut s, _, _) = rigged();
-    s.selection = vec![ElementId(HAND)];
+    s.select_only([ElementId(HAND)]);
     for (id, p) in [("draw.rect", json!({"x": 0, "y": 0, "w": 5, "h": 5})), ("element.translate", json!({"dx": 5, "dy": 0})), ("edit.delete", json!({})), ("timeline.create_motion_tween", json!({}))] {
         let e = s.execute(id, &p).unwrap_err().to_string();
         assert!(e.contains("armature"), "{id}: {e}");

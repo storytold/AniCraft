@@ -90,7 +90,7 @@ fn document_view(s: &Session) -> Value {
         "frames": s.frame_count(),
         "layer": s.layer.0,
         "layers": layers,
-        "selection": s.selection.iter().map(|e| e.0).collect::<Vec<_>>(),
+        "selection": s.selection.id_list(),
     })
 }
 
@@ -116,7 +116,7 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
         *e = e.union(&r);
     }
     let mut out = Vec::new();
-    for e in s.visible_elements().iter().filter(|e| !only_selected || s.selection.contains(&e.id)) {
+    for e in s.visible_elements().iter().filter(|e| !only_selected || s.selection.contains(s.layer, e.id)) {
         if out.len() >= MAX_ELEMENTS {
             break;
         }
@@ -124,7 +124,7 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
         let mut v = json!({
             "id": e.id.0,
             "name": e.name,
-            "selected": s.selection.contains(&e.id),
+            "selected": s.selection.contains(s.layer, e.id),
             "transform": e.transform.m,
             "bounds": if b.is_empty() { Value::Null } else { json!([b.min.x, b.min.y, b.max.x - b.min.x, b.max.y - b.min.y]) },
             "alpha": e.color.alpha,

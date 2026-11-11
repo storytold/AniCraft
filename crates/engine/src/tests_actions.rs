@@ -16,7 +16,7 @@ fn with_instance(kind: &str) -> (Session, u64) {
     let id = s.execute("draw.rect", &json!({"x": 100, "y": 100, "w": 80, "h": 40})).unwrap()["element"].as_u64().unwrap();
     s.execute("element.select", &json!({"ids": [id]})).unwrap();
     let v = s.execute("modify.convert_to_symbol", &json!({"name": "Thing"})).unwrap();
-    let inst = v["instance"].as_u64().or_else(|| s.selection.first().map(|e| e.0)).unwrap();
+    let inst = v["instance"].as_u64().or_else(|| s.selection.first().map(|(_, e)| e.0)).unwrap();
     s.execute("symbol.set_kind", &json!({"kind": kind})).unwrap();
     (s, inst)
 }

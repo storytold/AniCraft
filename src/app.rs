@@ -589,8 +589,7 @@ impl App {
     /// Runs an engine command, reporting failures in the status bar.
     /// After a move, selected raw shapes merge where they land (ADR 0031).
     pub fn drop_raw(&mut self) {
-        let sel = &self.s.selection;
-        let raw = self.s.visible_elements().iter().any(|e| sel.contains(&e.id) && matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge));
+        let raw = self.s.selected_elements().iter().any(|(_, e)| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge));
         if raw {
             self.run("draw.drop", json!({}));
         }
@@ -777,6 +776,12 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some("selection") => {
+                // A selection across layers (ADR 0044): Select All takes every unlocked layer's
+                // artwork; the timeline marks the layers, Properties says how many.
+                self.tool = Tool::Select;
+                self.run("edit.select_all", json!({}));
+            }
             Some("plugins") => {
                 // The first generator's dialog, previewing (run with ANICRAFT_PLUGINS set).
                 let first = self.s.plugins.list().find(|p| crate::plugins_ui::is_command(p) && !p.manifest().params.is_empty() && p.manifest().selection == anicraft_engine::plugins::SelectionNeed::Optional).map(|p| p.id().to_string());
@@ -927,7 +932,7 @@ impl App {
                 self.raw_ends = Vec::new();
                 let anchor = anicraft_engine::geom::Vec2::new(600.0, 330.0);
                 self.raw_anchors = vec![anchor];
-                let pts = self.s.raw_points(&self.s.selection.clone());
+                let pts = self.s.raw_points(&self.s.selection.on(self.s.layer));
                 if let (Some(_), Some(h)) = (v, pts.handles.iter().find(|h| h.anchor.distance(anchor) < 0.5 && h.at.y > anchor.y)) {
                     self.s.begin_gesture(tr_noop!("Move Handle"));
                     let r = self.run("raw.move_handle", json!({"id": h.id.0, "cmd": h.cmd, "slot": h.slot, "dx": 40, "dy": 10, "merge": false}));

@@ -311,7 +311,7 @@ fn gradient_fills_take_part_in_the_merge() {
     }
     // Deleting the line joins the halves again: one gradient fill.
     let line = raw(&s).into_iter().find(|e| fill_color(e).is_none() && matches!(&e.kind, ElementKind::Shape(sh) if sh.stroke.is_some())).unwrap();
-    s.selection = vec![line.id];
+    s.select_only([line.id]);
     run(&mut s, "edit.delete", json!({}));
     let halves: Vec<u64> = fills(&s).iter().map(|e| e.id.0).collect();
     run(&mut s, "raw.merge", json!({"ids": halves}));
@@ -346,7 +346,7 @@ fn subselection_timings() {
     let t = std::time::Instant::now();
     let v = run(&mut s, "raw.subselect", json!({"x": 320, "y": 320}));
     let click = t.elapsed();
-    let sel: Vec<anicraft_doc::ElementId> = s.selection.clone();
+    let sel: Vec<anicraft_doc::ElementId> = s.selection.ids().collect();
     let t = std::time::Instant::now();
     let pts = s.raw_points(&sel);
     let list = t.elapsed();

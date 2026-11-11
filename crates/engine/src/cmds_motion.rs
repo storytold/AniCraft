@@ -443,7 +443,7 @@ pub(crate) fn create(s: &mut Session, p: &Value) -> Result<Value> {
         let name = format!("Tween {}", s.doc.library.len() + 1);
         s.layer = lid;
         s.frame = start;
-        s.selection = ids;
+        s.selection = crate::Selection::only(lid, ids);
         let r = crate::cmds_draw::convert_to_symbol(s, &json!({"name": name}));
         s.frame = frame;
         if layer != lid {
