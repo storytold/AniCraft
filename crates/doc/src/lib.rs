@@ -81,7 +81,8 @@ impl Rgba {
     }
     /// Parses `#rrggbb`, `rrggbb` or `#rrggbbaa`.
     pub fn parse_hex(s: &str) -> Option<Rgba> {
-        let h = s.trim().trim_start_matches('#');
+        let s = s.trim();
+        let h = s.strip_prefix('#').unwrap_or(s);
         if !h.is_ascii() || (h.len() != 6 && h.len() != 8) {
             return None;
         }
@@ -1409,6 +1410,8 @@ mod tests {
         assert_eq!(c.to_hex(), "#ff8000");
         assert!(Rgba::parse_hex("zz").is_none());
         assert!(Rgba::parse_hex("ééé").is_none());
+        assert!(Rgba::parse_hex("##ff0000").is_none());
+        assert!(Rgba::parse_hex("ff0000").is_some());
     }
 
     #[test]
