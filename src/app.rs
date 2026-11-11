@@ -307,6 +307,9 @@ pub struct App {
     pub tl_scroll: f32,
     /// Timeline frame width (zoom), in points.
     pub tl_cell_w: f32,
+    /// The zoom the timeline had before a button opened and widened its frames for their state
+    /// names, and the zoom it set (ADR 0057): it goes back on closing, unless zoomed meanwhile.
+    pub tl_button_zoom: Option<(f32, f32)>,
     /// Timeline vertical scroll, in rows.
     pub tl_vscroll: f32,
     pub tl_last_layer: Option<anicraft_engine::doc::LayerId>,
@@ -384,6 +387,10 @@ pub struct App {
     pub show_plugins: bool,
     /// Window › Actions (F9), and what it addresses.
     pub show_actions: bool,
+    /// Edit › Find and Replace (Ctrl+F) and its results (ADR 0058).
+    pub find: crate::find_panel::FindState,
+    /// Window › Movie Explorer, the Library dock's other tab (ADR 0058).
+    pub explorer: crate::movie_explorer::ExplorerView,
     pub actions: crate::actions_panel::State,
     /// Control › Test Movie: the movie playing in its own window.
     pub test_movie: Option<crate::test_movie::TestMovie>,
@@ -443,6 +450,10 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+F6", "view.next_panel"),
     ("Ctrl+Shift+F6", "view.prev_panel"),
     ("F9", "view.actions"),
+    // Find Next and Find Previous, and Window › Movie Explorer, as in Animate (ADR 0058).
+    ("F3", "view.find_next"),
+    ("Shift+F3", "view.find_prev"),
+    ("Alt+F3", "view.movie_explorer"),
     // Brush size, as in paint programs.
     ("[", "view.brush_smaller"),
     ("]", "view.brush_larger"),
@@ -506,6 +517,7 @@ impl App {
             cursor_stage: None,
             tl_scroll: 0.0,
             tl_cell_w: timeline::CELL_DEFAULT,
+            tl_button_zoom: None,
             tl_vscroll: 0.0,
             tl_last_layer: None,
             tl_collapsed: HashSet::new(),
@@ -550,6 +562,8 @@ impl App {
             plugin_dialog: None,
             show_plugins: false,
             show_actions: false,
+            find: Default::default(),
+            explorer: Default::default(),
             actions: crate::actions_panel::State::default(),
             test_movie: None,
             envelope: None,
@@ -799,6 +813,22 @@ impl App {
                 self.recovery.show = true;
             }
             Some("licenses") => self.show_licenses = true,
+            Some("find") => {
+                // Find and Replace (ADR 0058): a caption on the stage and the sample's names hold
+                // "ball"; the results listed, the first one gone to.
+                self.run("text.create", json!({"text": "Ball bounces (ball 1)", "x": 60, "y": 40, "size": 28}));
+                self.run("edit.deselect", json!({}));
+                self.find.open = true;
+                self.find.text = "ball".into();
+                self.find.with = "planet".into();
+                crate::find_panel::step(self, true);
+            }
+            Some("explorer") => {
+                // The Movie Explorer tab (ADR 0058), its first rows open: scene, layers, keyframes
+                // and the instances on them, opening into their symbols.
+                crate::movie_explorer::open(self);
+                crate::movie_explorer::expand_to(self, 3);
+            }
             Some("about") => self.show_about = true,
             Some("zoom") => {
                 // 300% on the ball: many tiles, edges cross shapes (seam check).
@@ -979,6 +1009,33 @@ impl App {
                     crate::actions_panel::open(self, crate::actions_panel::Tab::Frame);
                     crate::test_movie::open(self);
                     crate::test_movie::demo_pointer(self);
+                }
+            }
+            Some(which @ ("button" | "testhits")) => {
+                // Buttons (ADR 0057): the sample's Play button open in place on its Over frame,
+                // a click sound on it (made here, a short decaying tone), its states named on
+                // the timeline and its Hit area over the artwork; or Test Movie with Show Hit
+                // Areas on.
+                self.perform("file.new_sample", json!({"which": "interactive"}));
+                self.run("layer.select", json!({"index": 1}));
+                if which == "testhits" {
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_pointer(self);
+                    if let Some(tm) = self.test_movie.as_mut() {
+                        tm.hit_areas = true;
+                    }
+                } else if let Some(id) = self.s.visible_elements().iter().find(|e| e.name == "play_btn").map(|e| e.id.0) {
+                    self.run("symbol.edit", json!({"id": id}));
+                    let tone: Vec<f32> = (0..4410).map(|i| (i as f32 * 0.12).sin() * 0.6 * (-(i as f32) / 900.0).exp()).collect();
+                    let dir = std::env::temp_dir().join("anicraft-demo");
+                    let wav = dir.join("click.wav");
+                    let _ = std::fs::create_dir_all(&dir);
+                    if std::fs::write(&wav, anicraft_engine::doc::audio::wav::encode(44_100, 1, &tone, anicraft_engine::doc::audio::wav::Bits::Int16)).is_ok()
+                        && let Some(v) = self.run("file.import_to_library", json!({"path": wav.display().to_string()}))
+                    {
+                        self.run("sound.place", json!({"sound": v["sound"], "frame": 1}));
+                    }
+                    self.run("timeline.goto", json!({"frame": 1}));
                 }
             }
             Some(which @ ("script" | "scriptproblems" | "testscript")) => {
@@ -1567,6 +1624,15 @@ impl App {
                 self.status_ok(if n == 0 { tr!("Exported {path} ({secs} s). No sounds play in that range, so the file is silent.", path = path, secs = secs) } else { tr!("Exported {path} ({secs} s).", path = path, secs = secs) });
             }
             "sound.delete" => self.status_ok(tr!("Deleted sound — {undo} to undo", undo = self.undo_key())),
+            "find.replace" => {
+                let n = v["replaced"].as_u64().unwrap_or(0);
+                let skipped = v["skipped"].as_u64().unwrap_or(0);
+                self.status_ok(if skipped > 0 {
+                    trn!("Replaced {n} place, left {skipped} as it was — {undo} to undo", "Replaced {n} places, left {skipped} as they were — {undo} to undo", n, skipped = skipped, undo = self.undo_key())
+                } else {
+                    trn!("Replaced {n} place — {undo} to undo", "Replaced {n} places — {undo} to undo", n, undo = self.undo_key())
+                });
+            }
             "file.import" => {
                 if let Some(b) = self.s.doc.bitmaps.last().filter(|b| v["bitmap"].as_u64() == Some(b.id.0)) {
                     self.library_sel = Some(LibraryItem::Bitmap(b.id));
@@ -1691,6 +1757,11 @@ impl App {
         }
         if id == "tween.add_hint" {
             crate::shape_hints::add(self);
+            return;
+        }
+        if id == "find.search" {
+            // Edit › Find and Replace (Ctrl+F): its window (headless, the command searches).
+            crate::find_panel::open(self);
             return;
         }
         if id == "control.test_movie" {
@@ -2018,6 +2089,9 @@ impl App {
                     }
                 }
                 "view.actions" => self.show_actions = !self.show_actions,
+                "view.find_next" => crate::find_panel::step(self, true),
+                "view.find_prev" => crate::find_panel::step(self, false),
+                "view.movie_explorer" => crate::movie_explorer::open(self),
                 "view.brush_smaller" => crate::brushtool::resize(self, false),
                 "view.brush_larger" => crate::brushtool::resize(self, true),
                 id if id.starts_with("tool.") => tool = keymap::tool_for(id).or(tool),
@@ -2268,6 +2342,8 @@ impl App {
         crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
         crate::bone_tool::upkeep(self);
+        // An open button shows its hit area over its other states, in the theme's colour (ADR 0057).
+        self.s.hit_area = Some(theme::hit_area());
         self.tick_playback(&ctx);
         self.scrub_sound();
         self.update_title(&ctx);
@@ -2320,6 +2396,7 @@ impl App {
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
         crate::actions_panel::show(self, &ctx);
+        crate::find_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
 

@@ -83,6 +83,9 @@ pub struct Tokens {
     /// A symbol's 9-slice guides while it is open for editing (ADR 0055), dashed over a light
     /// underlay so they read on any artwork.
     pub slice_guide: Color32,
+    /// A button's hit area (ADR 0057): laid over its other states while it is open for editing,
+    /// and over the movie in Test Movie's Show Hit Areas, at [`HIT_AREA_ALPHA`].
+    pub hit_area: Color32,
     /// Library symbol kinds.
     pub kind_graphic: Color32,
     pub kind_movie_clip: Color32,
@@ -152,6 +155,7 @@ pub const GRAPHITE: Tokens = Tokens {
     onion_past: Color32::from_rgb(0x4f, 0x8d, 0xff),
     onion_future: Color32::from_rgb(0x4c, 0xd0, 0x7d),
     slice_guide: Color32::from_rgb(0xd9, 0x3c, 0xc4),
+    hit_area: Color32::from_rgb(0x1f, 0xc8, 0x8c),
     kind_graphic: Color32::from_rgb(0x22, 0xc7, 0xa9),
     kind_movie_clip: Color32::from_rgb(0x5a, 0x8f, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xb5, 0x3d),
@@ -209,6 +213,7 @@ pub const HIGH_CONTRAST: Tokens = Tokens {
     onion_past: Color32::from_rgb(0x6f, 0xa8, 0xff),
     onion_future: Color32::from_rgb(0x5c, 0xf0, 0x9a),
     slice_guide: Color32::from_rgb(0xff, 0x6e, 0xe6),
+    hit_area: Color32::from_rgb(0x3d, 0xff, 0xb0),
     kind_graphic: Color32::from_rgb(0x3d, 0xf0, 0xcf),
     kind_movie_clip: Color32::from_rgb(0x85, 0xad, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xc8, 0x5c),
@@ -629,4 +634,13 @@ pub fn to_rgba(c: Color32) -> anicraft_engine::doc::Rgba {
 pub fn to_color32(c: anicraft_engine::doc::Rgba) -> Color32 {
     let c = c.sanitized();
     Color32::from_rgba_unmultiplied((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8, (c.a * 255.0).round() as u8)
+}
+
+/// How strongly a button's hit area is laid over the artwork (ADR 0057): enough to see where the
+/// pointer finds the button, light enough to see the state under it.
+pub const HIT_AREA_ALPHA: f32 = 0.35;
+
+/// The tint and opacity a button's hit area is drawn in (ADR 0057).
+pub fn hit_area() -> (anicraft_engine::doc::Rgba, f32) {
+    (to_rgba(T.hit_area), HIT_AREA_ALPHA)
 }

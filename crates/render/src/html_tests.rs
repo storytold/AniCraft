@@ -36,7 +36,7 @@ fn layer(id: u64, keys: Vec<Arc<Keyframe>>) -> Arc<Layer> {
 }
 
 fn symbol(id: u64, kind: SymbolKind, layers: Vec<Arc<Layer>>) -> Arc<Symbol> {
-    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, scale_grid: None, timeline: Timeline { layers } })
+    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers } })
 }
 
 fn this() -> Target {
@@ -464,7 +464,7 @@ fn frames_are_baked_and_stored_once() {
     assert!(m.stats.paths < 40, "{:?}", m.stats);
     // Unused library symbols stay out.
     let mut d = doc.clone();
-    d.library.push(Arc::new(Symbol { id: SymbolId(999_999), name: "unused".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline: Timeline::default() }));
+    d.library.push(Arc::new(Symbol { id: SymbolId(999_999), name: "unused".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline::default() }));
     assert_eq!(movie(&d, &HtmlOptions::default()).json["symbols"], m.json["symbols"]);
 }
 
@@ -609,8 +609,8 @@ fn sounds_carry_their_envelopes_and_volumes_and_start_in_graphics_and_clips_as_i
     let inst = |id, symbol| Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: Default::default(), kind: ElementKind::Symbol { symbol: SymbolId(symbol), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() } });
     // A graphic with a fading sound on its frame 1 (of 2), a clip with a left-channel one on its
     // frame 0 (of 3), both on a layer at half volume; a sound of the main timeline's own.
-    doc.library.push(Arc::new(Symbol { linkage: None, scale_grid: None, id: SymbolId(20), name: "g".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![layer(21, vec![key(0, 1, None, vec![]), key(1, 1, snd(SoundSync::Event, SoundEffect::FadeOut), vec![])], 1.0)] } }));
-    doc.library.push(Arc::new(Symbol { linkage: None, scale_grid: None, id: SymbolId(30), name: "c".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![layer(31, vec![key(0, 3, snd(SoundSync::Stream, SoundEffect::LeftChannel), vec![])], 0.5)] } }));
+    doc.library.push(Arc::new(Symbol { linkage: None, scale_grid_kept: None, scale_grid: None, id: SymbolId(20), name: "g".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![layer(21, vec![key(0, 1, None, vec![]), key(1, 1, snd(SoundSync::Event, SoundEffect::FadeOut), vec![])], 1.0)] } }));
+    doc.library.push(Arc::new(Symbol { linkage: None, scale_grid_kept: None, scale_grid: None, id: SymbolId(30), name: "c".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![layer(31, vec![key(0, 3, snd(SoundSync::Stream, SoundEffect::LeftChannel), vec![])], 0.5)] } }));
     doc.timeline_mut(0).layers = vec![layer(1, vec![key(0, 6, snd(SoundSync::Event, SoundEffect::None), vec![])], 1.0), layer(2, vec![key(0, 6, None, vec![inst(40, 20), inst(41, 30)])], 0.5)];
     let m = movie(&doc, &HtmlOptions::default());
     // The fade's points span one play (half a second); the clip's span its 3 frames.
@@ -629,6 +629,62 @@ fn sounds_carry_their_envelopes_and_volumes_and_start_in_graphics_and_clips_as_i
         r = anicraft_doc::player::step(&doc, &r.state, &[], &mut NoScripts);
         ours = js.eval("P.step([]).sounds");
     }
+}
+
+#[test]
+fn button_sounds_start_in_the_page_as_in_the_player() {
+    use anicraft_doc::{FrameSound, Sound, SoundId, SoundSync};
+    // A button at (100, 100), 10 × 10 art, a 100 × 100 Hit frame; a sound on each of its frames
+    // (Over's a stream) on a layer at half volume; the button's own layer at half volume too.
+    let mut d = Document::default();
+    for (i, name) in ["up", "over", "down", "hit"].iter().enumerate() {
+        let wav = anicraft_doc::audio::wav::encode(8000, 1, &[0.25; 800], anicraft_doc::audio::wav::Bits::Int16);
+        d.sounds.push(Arc::new(Sound::from_data(SoundId(60 + i as u64), *name, wav).unwrap()));
+    }
+    let with = |k: Arc<Keyframe>, i: u64, sync| {
+        let mut k = (*k).clone();
+        k.sound = Some(FrameSound { sync, ..FrameSound::new(SoundId(60 + i)) });
+        Arc::new(k)
+    };
+    let mut sounds = (*layer(34, vec![with(kf(0, 1, vec![], vec![], ""), 0, SoundSync::Event), with(kf(1, 1, vec![], vec![], ""), 1, SoundSync::Stream), with(kf(2, 1, vec![], vec![], ""), 2, SoundSync::Event), with(kf(3, 1, vec![], vec![], ""), 3, SoundSync::Event)])).clone();
+    sounds.volume = 0.5;
+    let art = || vec![rect(32, 0.0, 0.0, 10.0, 10.0, 0x336699)];
+    let states = layer(31, vec![kf(0, 1, art(), vec![], ""), kf(1, 1, art(), vec![], ""), kf(2, 1, art(), vec![], ""), kf(3, 1, vec![rect(33, 0.0, 0.0, 100.0, 100.0, 0)], vec![], "")]);
+    d.library.push(symbol(300, SymbolKind::Button, vec![Arc::new(sounds), states]));
+    let mut holder = (*layer(2, vec![kf(0, 4, vec![inst(3, 300, "go", Affine::translate(100.0, 100.0), vec![])], vec![], "")])).clone();
+    holder.volume = 0.5;
+    d.timeline_mut(0).layers = vec![Arc::new(holder)];
+    let m = movie(&d, &HtmlOptions::default());
+    let names: Vec<String> = m.json["sounds"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names.len(), 4, "every button sound is embedded");
+    assert!(m.report.keys().all(|n| !n.contains("button")), "nothing reported: {:?}", m.report);
+    let mut js = Js::new(&m);
+    let mut r = start(&d, &mut NoScripts);
+    js.eval("P.start()");
+    let at = |x, y| Vec2::new(x, y);
+    // Over, about, Down, Hit (released), Up (left), Over and Down at once, dragged off and back.
+    let batches: Vec<Vec<Event>> = vec![
+        vec![Event::Move(at(150.0, 150.0))],
+        vec![Event::Move(at(160.0, 150.0))],
+        vec![Event::Down(at(160.0, 150.0))],
+        vec![Event::Up(at(160.0, 150.0))],
+        vec![Event::Leave],
+        vec![Event::Down(at(150.0, 150.0))],
+        vec![Event::Move(at(400.0, 300.0)), Event::Move(at(150.0, 150.0)), Event::Up(at(150.0, 150.0))],
+    ];
+    let mut heard = Vec::new();
+    for (i, events) in batches.iter().enumerate() {
+        // Between frames and with a frame, alike.
+        let (rs, page) = if i % 2 == 0 { (anicraft_doc::player::input(&d, &r.state, events, &mut NoScripts), js.eval(&format!("P.input({}).sounds", js_events(events)))) } else { (step(&d, &r.state, events, &mut NoScripts), js.eval(&format!("P.step({}).sounds", js_events(events)))) };
+        let theirs: Vec<Value> = rs.sounds.iter().map(|s| json!([d.sound(s.sound.sound).unwrap().name, s.sound.sync.key(), f64::from(s.gain)])).collect();
+        let ours: Vec<Value> = page.as_array().unwrap().iter().map(|s| json!([names[s[0].as_u64().unwrap() as usize], s[1], s[5].as_f64()])).collect();
+        assert_eq!(ours, theirs, "batch {i}");
+        heard.extend(theirs);
+        r = rs;
+    }
+    let order: Vec<&str> = heard.iter().map(|h| h[0].as_str().unwrap()).collect();
+    assert_eq!(order, ["over", "down", "hit", "up", "over", "down", "hit"]);
+    assert!(heard.iter().all(|h| h[1] == "event" && h[2] == 0.25), "{heard:?}");
 }
 
 #[test]

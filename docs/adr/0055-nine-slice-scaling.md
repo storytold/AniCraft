@@ -118,3 +118,8 @@ work stays bounded.
 HTML canvas export slicing (its player), 9-slice for bitmaps (Animate doesn't either), guides
 shown in Library previews, snapping guides to artwork, a symbol-wide "scale strokes" option,
 and Lottie's native 9-slice (it has none).
+
+## Update (2026-11-11, ADR 0057)
+
+Turning the guides off no longer forgets them: they are kept (`Symbol::scale_grid_kept`, only
+hidden) and turning 9-slice on again, or moving a guide, brings them back where they were.

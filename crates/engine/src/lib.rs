@@ -35,6 +35,8 @@ mod cmds_width;
 mod cmds_stroke;
 pub mod confirm;
 pub mod editing;
+pub mod explorer;
+pub mod find;
 pub mod format;
 pub mod history;
 mod merge;
@@ -131,6 +133,8 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_rawsub::specs());
     v.extend(cmds_rawpoints::specs());
     v.extend(editing::specs());
+    v.extend(find::specs());
+    v.extend(explorer::specs());
     v.extend(cmds_brush::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
@@ -298,6 +302,10 @@ pub struct Session {
     pub(crate) pending_cut: Option<(CutOrigin, Vec<ElementId>)>,
     /// The open gesture began on a provisional cut: the document with the cut.
     gesture_cut: Option<Document>,
+    /// How a button open for editing shows its hit area over its other states (ADR 0057): the
+    /// tint and opacity, or `None` for no overlay (the default; the app sets it from its theme).
+    /// View state, like the playhead: never in the document or its undo history.
+    pub hit_area: Option<(anicraft_doc::Rgba, f32)>,
     /// The last picture of an open symbol in place, by its key (ADR 0045).
     picture_cache: RefCell<Option<(u64, Arc<editing::StagePicture>)>>,
     /// The files opened and saved last, and pinned favourites (ADR 0059). They belong to the
@@ -368,6 +376,7 @@ impl Session {
             provisional: None,
             pending_cut: None,
             gesture_cut: None,
+            hit_area: None,
             picture_cache: RefCell::new(None),
             recent: cmds_recent::RecentFiles::default(),
         }

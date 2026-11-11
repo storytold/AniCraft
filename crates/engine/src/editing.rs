@@ -13,7 +13,7 @@
 use crate::history::StateId;
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Selection, Session};
-use anicraft_doc::{ColorEffect, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LoopMode, Symbol, SymbolId, SymbolKind, Timeline};
+use anicraft_doc::{ColorEffect, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, LoopMode, Symbol, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Vec2};
 use serde_json::{Value, json};
 use std::hash::{Hash, Hasher};
@@ -177,6 +177,8 @@ impl Session {
         for l in &self.editing {
             (l.symbol, l.instance, l.frame, l.transform.m.map(f32::to_bits)).hash(&mut h);
         }
+        let hit = self.hit_overlay();
+        hit.map(|(c, a)| [c.r, c.g, c.b, c.a, a].map(f32::to_bits)).hash(&mut h);
         let key = h.finish();
         if let Some((k, pic)) = &*self.picture_cache.borrow()
             && *k == key
@@ -188,7 +190,12 @@ impl Session {
         // The open symbol, in front.
         let at = Affine::translate(view.origin.x, view.origin.y).mul(&Affine::scale(view.scale, view.scale));
         let open = self.timeline().clone();
-        let layer = placed(&mut doc, open.clone(), at, self.frame, 1.0);
+        // A button's hit area over the state being edited, translucent (ADR 0057).
+        if let Some((tint, alpha)) = hit {
+            let frame = anicraft_doc::player::hit_frame(open.frame_count());
+            tl.layers.push(placed(&mut doc, hit_timeline(&open), at, frame, ColorEffect::Advanced(hit_tint(tint, alpha))));
+        }
+        let layer = placed(&mut doc, open.clone(), at, self.frame, ColorEffect::default());
         let front = Arc::new(Front { layer: layer.id, timeline: open, frame: self.frame, at });
         tl.layers.push(layer);
         // Around it, dimmed: each timeline below, without the instance opened from it.
@@ -200,7 +207,7 @@ impl Session {
                     Some(p) => self.doc.symbol(p.symbol).map(|s| s.timeline.clone()).unwrap_or_default(),
                 };
                 let xf = parent.map_or(Affine::IDENTITY, |p| p.transform);
-                tl.layers.push(placed(&mut doc, without(below, l.instance), xf, l.frame, DIM));
+                tl.layers.push(placed(&mut doc, without(below, l.instance), xf, l.frame, ColorEffect::opacity(DIM)));
             }
         }
         *doc.timeline_mut(self.scene) = tl;
@@ -211,17 +218,55 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The tint and opacity the stage draws the open button's hit area in (ADR 0057): while a
+    /// button is open and its playhead is on another frame than the one that answers the
+    /// pointer (the Hit frame, or Up when it has none), and [`Session::hit_area`] is set.
+    pub fn hit_overlay(&self) -> Option<(anicraft_doc::Rgba, f32)> {
+        let (tint, alpha) = self.hit_area?;
+        let sym = self.editing_symbol().and_then(|id| self.doc.symbol(id))?;
+        let frame = anicraft_doc::player::hit_frame(sym.timeline.frame_count());
+        (sym.kind == SymbolKind::Button && self.frame != frame && alpha.is_finite() && alpha > 0.0).then_some((tint, alpha.min(1.0)))
+    }
+}
+
+/// What answers the pointer on a button with timeline `tl`, as a timeline to draw (the hit test's
+/// rules, `doc::player::hit_area`): mask layers go and what they masked is whole again, guide
+/// layers are hidden (they still steer what follows them).
+fn hit_timeline(tl: &Timeline) -> Timeline {
+    let masks: Vec<LayerId> = tl.layers.iter().filter(|l| l.kind == LayerKind::Mask).map(|l| l.id).collect();
+    let layers = tl
+        .layers
+        .iter()
+        .filter(|l| l.kind != LayerKind::Mask)
+        .map(|l| {
+            if l.kind != LayerKind::Guide && !l.parent.is_some_and(|p| masks.contains(&p)) {
+                return l.clone();
+            }
+            let mut l = (**l).clone();
+            if l.kind == LayerKind::Guide {
+                l.visible = false;
+            }
+            if l.parent.is_some_and(|p| masks.contains(&p)) {
+                l.parent = None;
+            }
+            Arc::new(l)
+        })
+        .collect();
+    Timeline { layers }
+}
+
 /// A layer holding `timeline` as a graphic symbol's instance at `transform`, showing its `frame`
-/// at opacity `alpha` (a symbol added to `doc`, which is only drawn).
-fn placed(doc: &mut Document, timeline: Timeline, transform: Affine, frame: u32, alpha: f32) -> Arc<Layer> {
+/// with colour effect `color` (a symbol added to `doc`, which is only drawn).
+fn placed(doc: &mut Document, timeline: Timeline, transform: Affine, frame: u32, color: ColorEffect) -> Arc<Layer> {
     let symbol = SymbolId(doc.alloc_id());
-    doc.library.push(Arc::new(Symbol { id: symbol, name: String::new(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, timeline }));
+    doc.library.push(Arc::new(Symbol { id: symbol, name: String::new(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline }));
     let mut k = Keyframe::new(0, 1);
     k.elements.push(Arc::new(Element {
         id: ElementId(doc.alloc_id()),
         name: String::new(),
         transform,
-        color: ColorEffect::opacity(alpha),
+        color,
         kind: ElementKind::Symbol { symbol, loop_mode: LoopMode::SingleFrame, first_frame: frame, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
     }));
     let mut layer = Layer::new(LayerId(doc.alloc_id()), "");
@@ -274,7 +319,7 @@ fn instance(s: &Session, id: ElementId) -> Option<(LayerId, Arc<Element>)> {
     s.timeline().layers.iter().map(|l| l.id).find_map(|l| s.elements_on(l).into_iter().find(|e| e.id == id).map(|e| (l, e)))
 }
 
-fn edit(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     if s.editing.len() >= MAX_LEVELS {
         return Err(EngineError::State(format!("at most {MAX_LEVELS} symbols can be open inside each other")));
     }
@@ -341,4 +386,10 @@ fn exit(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn editing_json(s: &Session) -> Value {
     let list: Vec<Value> = s.editing.iter().map(|l| json!({"symbol": l.symbol.0, "name": s.doc.symbol(l.symbol).map(|x| x.name.clone()), "instance": l.instance.map(|(_, e)| e.0)})).collect();
     json!({"editing": list, "layer": s.layer.0, "frame": s.frame, "selected": s.selection.id_list()})
+}
+
+/// Every colour of the hit area replaced by `tint`, the whole faded to `alpha` (ADR 0057): what
+/// Animate's Advanced effect calls multipliers 0 % and offsets of the tint, alpha at `alpha`.
+fn hit_tint(tint: anicraft_doc::Rgba, alpha: f32) -> anicraft_doc::ColorTransform {
+    anicraft_doc::ColorTransform { mul: [0.0, 0.0, 0.0, alpha], add: [tint.r, tint.g, tint.b, 0.0] }
 }

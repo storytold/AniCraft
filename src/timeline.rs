@@ -229,6 +229,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.tl_scroll = (under - (h.x - grid.left() - pad_for(new)) / new).max(0.0);
         }
     }
+    // A button open (ADR 0057): its four frames are named Up, Over, Down and Hit, as in Animate,
+    // and drawn wide enough for their names; the zoom it had comes back when it closes.
+    let states = button_states(app);
+    match (states, app.tl_button_zoom) {
+        (Some(names), None) => {
+            let widest = names.iter().map(|n| painter.layout_no_wrap(n.to_string(), font(Type::Caption), T.text).rect.width()).fold(0.0f32, f32::max);
+            let set = app.tl_cell_w.max((widest + 8.0).min(*CELL_RANGE.end()));
+            app.tl_button_zoom = Some((app.tl_cell_w, set));
+            app.tl_cell_w = set;
+        }
+        (None, Some((before, set))) => {
+            if (app.tl_cell_w - set).abs() < 1e-3 {
+                app.tl_cell_w = before;
+            }
+            app.tl_button_zoom = None;
+        }
+        _ => {}
+    }
     let cell_w = app.tl_cell_w;
     // Dead space before frame 1 (a preference): the playhead's flag never touches the edge.
     let pad = pad_for(cell_w);
@@ -295,7 +313,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Ticks and numbers sit on the frame's centre, where the playhead line and the
         // keyframe dots are, so "1" is exactly under the playhead on frame 1 at any zoom.
         let cx = frame_center(x, cell_w);
-        if n % step == 0 || n == 1 {
+        if let Some(name) = states.and_then(|s| s.get(f as usize).copied()) {
+            // A button's state frame: its name in place of the number, the Hit frame underlined
+            // in the colour its area is drawn in on the stage.
+            let cell = Rect::from_min_max(pos2(x, ruler.top()), pos2(x + cell_w, ruler.bottom()));
+            gp.with_clip_rect(cell.intersect(grid)).text(pos2(cx, ruler.center().y - 1.0), Align2::CENTER_CENTER, name, font(Type::Caption), color(Type::Caption));
+            if f == 3 {
+                gp.line_segment([pos2(x + 2.0, ruler.bottom() - 1.5), pos2(x + cell_w - 2.0, ruler.bottom() - 1.5)], Stroke::new(2.0, T.hit_area));
+            }
+        } else if n % step == 0 || n == 1 {
             gp.line_segment([pos2(cx, ruler.bottom() - 6.0), pos2(cx, ruler.bottom())], Stroke::new(1.0, T.text_faint));
             gp.text(pos2(cx, ruler.top() + 3.0), Align2::CENTER_TOP, n.to_string(), font(Type::DataSmall), color(Type::DataSmall));
         } else if n % minor == 0 {
@@ -313,6 +339,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     // The onion menu on a right-click, as the markers live here (ADR 0047).
     ruler_resp.context_menu(|ui| crate::onion::menu(app, ui));
+    // What a button's state frame is for, under the pointer.
+    if let Some(f) = states.and(ruler_resp.hover_pos()).map(|p| frame_at(p.x)).filter(|f| *f < 4) {
+        let tip = match f {
+            0 => tr!("Up: the button as it first shows"),
+            1 => tr!("Over: the button with the pointer over it"),
+            2 => tr!("Down: the button while it is pressed"),
+            _ => tr!("Hit: the area that answers the pointer, never shown (drawn over the other states while you edit them)"),
+        };
+        ruler_resp.clone().on_hover_text(tip);
+    }
     // Onion markers over the ruler (they take the pointer before it).
     crate::onion::ruler(app, ui, ruler, cell_w, x_of, frame_at);
 
@@ -878,9 +914,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if px + cell_w > grid.left() && px < grid.right() {
         // The same pixel as the ruler tick for this frame.
         let cx = frame_center(px, cell_w);
-        // The flag fits its number; it never grows with the zoom.
-        let label = (app.s.frame + 1).to_string();
-        let tw = painter.layout_no_wrap(label.clone(), font(Type::DataSmall), T.ink).rect.width();
+        // The flag fits its number (a button's state name on its state frames); it never grows
+        // with the zoom.
+        let state = states.and_then(|s| s.get(app.s.frame as usize).copied());
+        let (label, role) = state.map_or_else(|| ((app.s.frame + 1).to_string(), Type::DataSmall), |n| (n.to_string(), Type::Caption));
+        let tw = painter.layout_no_wrap(label.clone(), font(role), T.ink).rect.width();
         let head = Rect::from_center_size(pos2(cx, ruler.center().y), vec2((tw + 8.0).max(HEAD_W), RULER_H - 4.0));
         // The frame's band, centred on the same pixel column as the line and the flag: an odd
         // whole-pixel width around a half-pixel centre puts both edges on pixel boundaries,
@@ -889,7 +927,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         painter.with_clip_rect(grid).rect_filled(Rect::from_min_max(pos2(cx - band * 0.5, rows_top), pos2(cx + band * 0.5, body.bottom())), 0.0, T.playhead.gamma_multiply(0.12));
         painter.with_clip_rect(grid).line_segment([pos2(cx, ruler.bottom()), pos2(cx, body.bottom())], Stroke::new(1.5, T.playhead));
         painter.with_clip_rect(grid).rect_filled(head, T.rc(), T.playhead);
-        painter.with_clip_rect(grid).text(head.center(), Align2::CENTER_CENTER, label, font(Type::DataSmall), T.ink);
+        painter.with_clip_rect(grid).text(head.center(), Align2::CENTER_CENTER, label, font(role), T.ink);
     }
 
     // footer buttons for layers
@@ -1010,6 +1048,12 @@ fn waveform(p: &egui::Painter, doc: &anicraft_engine::doc::Document, fs: &anicra
 
 /// An ease's name in the interface language: the presets and "Custom" are catalog strings, a
 /// classic ease's strength is filled in, a free Bézier's numbers are data.
+/// The names of a button's four state frames, while a button is open for editing (ADR 0057).
+pub fn button_states(app: &App) -> Option<[&'static str; 4]> {
+    let open = app.s.editing_symbol().and_then(|id| app.s.doc.symbol(id))?;
+    (open.kind == anicraft_engine::doc::SymbolKind::Button).then(|| [trc!("button state", "Up"), trc!("button state", "Over"), trc!("button state", "Down"), trc!("button state", "Hit")])
+}
+
 pub fn easing_label(e: &Easing) -> String {
     match e {
         Easing::Classic(s) => tr!("Classic {strength}", strength = format!("{s:+.0}")),

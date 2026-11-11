@@ -747,8 +747,32 @@ fn panic_hunt_every_command() {
         json!({"items": [{"symbol": ball}, {"symbol": ball}, {"folder": inner}, null], "x": "a"}),
         json!({"items": (0..1500).map(|_| json!({"symbol": ball})).collect::<Vec<_>>(), "x": 0, "y": 0}),
         json!({"sound": SOUND, "symbol": ball, "x": 10, "y": 10}),
+        // Find and Replace and the Movie Explorer (ADR 0058): patterns that are slow in
+        // backtracking engines or too large, replacements that would nest a symbol in itself,
+        // stale hits, junk paths, rows and pages.
+        json!({"kind": "text", "text": "(a+)+$", "regex": true, "with": "$1$1$1${x}", "in": ["text", "labels", "layers", "instances", "scripts"], "scope": "document"}),
+        json!({"kind": "text", "text": "a{1000}{1000}", "regex": true, "with": ""}),
+        json!({"kind": "text", "text": "", "with": "x"}),
+        json!({"kind": "text", "text": "[a-z]", "regex": true, "with": "", "whole_word": false, "match_case": true, "confirm": true}),
+        json!({"kind": "text", "text": "L", "with": "", "at": {"scene": 0, "layer": 1, "field": "layer_name", "start": u64::MAX}}),
+        json!({"kind": "text", "text": "e", "with": "x".repeat(1000), "at": {"symbol": ball, "layer": u64::MAX, "field": "text", "frame": -1}}),
+        json!({"kind": "color", "color": "#ff0000", "with": "#00ff00", "in": ["fills", "strokes", "text", "nope"]}),
+        json!({"kind": "color", "color": "#3d8bfd", "with": "#000000", "scope": "document"}),
+        json!({"kind": "font", "font": "Inter", "with": "No Such Font"}),
+        json!({"kind": "symbol", "symbol": ball, "with": ball, "scope": "document"}),
+        json!({"kind": "sound", "sound": SOUND, "with": SOUND}),
+        json!({"kind": "bitmap", "bitmap": bm.0, "with": bm.0, "scope": "document"}),
+        json!({"kind": "nope", "layer": u64::MAX, "path": [{"layer": 1, "frame": u32::MAX, "element": u64::MAX}], "symbol": ball, "scene": 0}),
+        json!({"path": (0..100).map(|i| json!({"layer": i, "frame": i, "element": i})).collect::<Vec<_>>(), "layer": 1}),
+        json!({"all": true, "filter": "a", "show": {"frames": false, "symbols": "x"}, "expanded": ["s0", 5], "offset": u64::MAX, "limit": u64::MAX}),
+        json!({"all": true, "scope": "scene", "definitions": false, "show": {"frames": false}, "limit": 0}),
     ]);
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol, keyed, library] {
+    // A button open for editing, its hit area drawn over its other states (ADR 0057).
+    let mut button = Session::new(sample::interactive());
+    if let Some(id) = button.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::Button).map(|x| x.id) {
+        button.execute("symbol.edit", &json!({"symbol": id.0})).unwrap();
+    }
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol, keyed, library, button] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -764,7 +788,14 @@ fn panic_hunt_every_command() {
         for f in [0, 1, 5, 47, 1000] {
             let _ = anicraft_render::render_frame(&s.doc, f, 0.1);
         }
+        s.hit_area = Some((anicraft_doc::Rgba::WHITE, 0.4));
         let pic = s.stage_picture();
+        // ...and every button's hit area draws, under a pointer that goes over and presses.
+        let mut ns = anicraft_doc::player::NoScripts;
+        let st = anicraft_doc::player::start(&s.doc, &mut ns).state;
+        let p = anicraft_geom::Vec2::new(640.0, 400.0);
+        let st = anicraft_doc::player::input(&s.doc, &st, &[anicraft_doc::player::Event::Move(p), anicraft_doc::player::Event::Down(p), anicraft_doc::player::Event::Up(p)], &mut ns).state;
+        let _ = anicraft_render::render(&anicraft_doc::player::hit_overlay(&s.doc, &st, anicraft_doc::Rgba::WHITE, 0.4), &anicraft_render::View { transform: anicraft_geom::Affine::scale(0.1, 0.1), width: 128, height: 72, background: None });
         let _ = anicraft_render::render_frame(&pic.doc, pic.frame, 0.1);
         // ...and its sounds lay out and mix.
         let voices = anicraft_doc::sound::voices(&s.doc, 8000);
