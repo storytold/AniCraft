@@ -42,6 +42,10 @@ fn no_camera() -> EngineError {
 }
 
 fn add(s: &mut Session, _: &Value) -> Result<Value> {
+    // A scene has the camera, not a symbol (ADR 0027, 0045).
+    if !s.editing.is_empty() {
+        return Err(EngineError::State("the camera belongs to a scene: close the symbol you are editing first (Edit › Edit Document)".into()));
+    }
     if let Some(id) = camera_layer(s) {
         s.layer = id;
         s.selection.clear();

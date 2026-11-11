@@ -46,12 +46,15 @@ fn enabled(app: &App, id: &str) -> bool {
         "edit.undo" => app.s.can_undo(),
         "edit.redo" => app.s.can_redo(),
         "edit.delete" | "edit.duplicate" | "modify.convert_to_symbol" | "modify.break_apart" | "arrange.bring_to_front" | "arrange.send_to_back" => !app.s.selection.is_empty(),
-        "layer.delete" => app.s.doc.timeline(app.s.scene).layers.len() > 1,
+        "layer.delete" => app.s.timeline().layers.len() > 1,
         "scene.delete" => app.s.doc.scenes.len() > 1,
+        // Ctrl+E opens the selected instance, or goes back to the document (ADR 0045).
+        "symbol.exit" => !app.s.editing.is_empty(),
+        "symbol.edit" => !app.s.editing.is_empty() || app.s.selected_elements().iter().any(|(_, e)| matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. })),
         "scene.prev" | "scene.move_up" => app.s.scene > 0,
         "scene.next" | "scene.move_down" => app.s.scene + 1 < app.s.doc.scenes.len(),
         "timeline.clear_keyframe" => match app.frame_sel {
-            Some(sel) => sel.has_keys(&app.s.doc.timeline(app.s.scene).layers),
+            Some(sel) => sel.has_keys(&app.s.timeline().layers),
             None => app.s.active_layer().is_some_and(|l| l.keyframe_starting_at(app.s.frame).is_some()),
         },
         "timeline.paste_frames" => !app.s.frame_clipboard.is_empty(),

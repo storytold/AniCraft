@@ -139,6 +139,11 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
                     app.playing = false;
                     app.frame_sel = None;
                     app.run("scene.select", serde_json::json!({"scene": i}));
+                } else if r.inner.clicked() && !app.s.editing.is_empty() {
+                    // The scene itself, from inside a symbol: back to it (ADR 0045).
+                    app.playing = false;
+                    app.frame_sel = None;
+                    app.run("symbol.exit", serde_json::json!({"all": true}));
                 }
             }
             ui.separator();
@@ -148,6 +153,22 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
         })
         .response
         .set_name(tr!("Scene"));
+        // The symbols open for editing (ADR 0045), as in Animate's edit bar: a click on one
+        // goes back to it; the last is the one being edited.
+        let open: Vec<String> = app.s.editing.iter().map(|l| app.s.doc.symbol(l.symbol).map_or_else(String::new, |s| s.name.clone())).collect();
+        let mut back: Option<usize> = None;
+        for (i, name) in open.iter().enumerate() {
+            ui.label(text(Type::Caption, "›"));
+            if i + 1 == open.len() {
+                ui.label(text(Type::Body, name.clone()).strong());
+            } else if ui.link(text(Type::Body, name.clone())).on_hover_text(tr!("Back to this symbol")).clicked() {
+                back = Some(i + 1);
+            }
+        }
+        if let Some(keep) = back {
+            app.playing = false;
+            while app.s.editing.len() > keep && app.run("symbol.exit", serde_json::json!({})).is_some() {}
+        }
         ui.label(text(Type::Caption, "›"));
         let layer = app.s.active_layer().map_or("—".to_string(), |l| l.name.clone());
         ui.label(text(Type::Body, layer).color(T.text_dim));
@@ -384,13 +405,13 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         });
     }
     // ---- the camera, with the Camera tool or its layer active (ADR 0027) ----
-    let camera_layer = app.s.doc.timeline(app.s.scene).camera_layer().map(|l| l.id);
+    let camera_layer = app.s.timeline().camera_layer().map(|l| l.id);
     if camera_layer.is_some() && (app.tool == Tool::Camera || camera_layer == Some(app.s.layer)) {
         section(ui, "prop_camera", Section::Rule, tr!("Camera"), None, |ui| camera_props(app, ui));
     }
     // ---- the bone picked on the stage (ADR 0043) ----
     if let Some(id) = app.bone_sel {
-        let name = app.s.doc.timeline(app.s.scene).layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| b.name.clone()));
+        let name = app.s.timeline().layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| b.name.clone()));
         if let Some(name) = name {
             let title = if name.is_empty() { tr!("Bone").to_string() } else { tr!("Bone: {name}", name = name) };
             section(ui, "prop_bone", Section::Rule, &title, None, |ui| bone_props(app, ui, id));
@@ -1142,14 +1163,14 @@ fn camera_props(app: &mut App, ui: &mut egui::Ui) {
             app.run("camera.set", json!({"reset": true}));
         }
     });
-    let hidden = app.s.doc.timeline(app.s.scene).camera_layer().is_some_and(|l| !l.visible);
+    let hidden = app.s.timeline().camera_layer().is_some_and(|l| !l.visible);
     ui.label(text(Type::Caption, if hidden { tr!("The camera layer is hidden: the movie shows the stage as it is.") } else { tr!("The movie shows what the frame on the stage shows. Layer depth (in Frame, per layer) moves far layers less.") }));
 }
 
 /// The selected bone: its joint angle at the playhead (editing it keys the pose), the joint's
 /// limits, the pin, and removal.
 fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId) {
-    let tl = app.s.doc.timeline(app.s.scene);
+    let tl = app.s.timeline();
     let Some((layer, bone)) = tl.layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| (l.clone(), b.clone()))) else { return };
     let pose = anicraft_engine::doc::armature::pose_at(&layer, app.s.frame).unwrap_or_default();
     let mut angle = bone.allow(pose.angle(id)).to_degrees();
@@ -1223,14 +1244,14 @@ fn document_props(app: &mut App, ui: &mut egui::Ui) {
 
 fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::Layer, frame: u32) {
     if layer.kind == anicraft_engine::doc::LayerKind::Folder {
-        let tl = app.s.doc.timeline(app.s.scene);
+        let tl = app.s.timeline();
         let n = tl.layers.iter().position(|l| l.id == layer.id).map_or(0, |i| tl.group_range(i).len().saturating_sub(1));
         ui.label(text(Type::Label, trn!("Folder · {n} layer", "Folder · {n} layers", n)));
         ui.label(text(Type::Caption, tr!("Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down.")));
         return;
     }
     // Layer depth matters once the scene has a camera: deeper layers move less as it pans.
-    if layer.kind != anicraft_engine::doc::LayerKind::Camera && app.s.doc.timeline(app.s.scene).camera_layer().is_some() {
+    if layer.kind != anicraft_engine::doc::LayerKind::Camera && app.s.timeline().camera_layer().is_some() {
         let mut depth = layer.depth;
         let (lo, hi) = (anicraft_engine::doc::camera::MIN_DEPTH, anicraft_engine::doc::camera::MAX_DEPTH);
         row(ui, tr!("Depth"), |ui| {
@@ -1351,7 +1372,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                             .set_name(tr!("Tween kind"));
                         });
                         // On a layer a motion guide steers: turn with the path.
-                        let guided = layer.parent.is_some_and(|p| app.s.doc.timeline(app.s.scene).layer(p).is_some_and(|g| g.kind == anicraft_engine::doc::LayerKind::Guide));
+                        let guided = layer.parent.is_some_and(|p| app.s.timeline().layer(p).is_some_and(|g| g.kind == anicraft_engine::doc::LayerKind::Guide));
                         if guided {
                             let mut orient = t.orient;
                             if crate::theme::checkbox(ui, &mut orient, tr!("Orient to path")).on_hover_text(tr!("Turn with the motion guide as it bends")).changed() {
@@ -1791,6 +1812,15 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             }
             if resp.double_clicked() {
                 place(app, row.item);
+            }
+            // Opens it alone, its registration point at the stage's centre (ADR 0045).
+            if let LibraryItem::Symbol(id) = row.item {
+                resp.context_menu(|ui| {
+                    if ui.button(tr!("Edit Symbol")).clicked() {
+                        ui.close();
+                        app.run("symbol.edit", json!({"symbol": id.0}));
+                    }
+                });
             }
             if let LibraryItem::Sound(id) = row.item {
                 resp.context_menu(|ui| {

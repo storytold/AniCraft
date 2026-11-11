@@ -94,7 +94,7 @@ pub enum TlDrag {
 /// Range params for the frame commands when frames are selected: `{layers, frame, count}`.
 pub fn range_params(app: &App) -> Option<serde_json::Value> {
     let sel = app.frame_sel?;
-    let layers = sel.layers(&app.s.doc.timeline(app.s.scene).layers);
+    let layers = sel.layers(&app.s.timeline().layers);
     if layers.is_empty() {
         return None;
     }
@@ -109,7 +109,7 @@ pub const RANGE_COMMANDS: [&str; 7] = ["timeline.insert_frame", "timeline.remove
 /// Params for Paste Frames: the selection's top layer and first frame.
 pub fn paste_params(app: &App) -> Option<serde_json::Value> {
     let sel = app.frame_sel?;
-    let top = *sel.layers(&app.s.doc.timeline(app.s.scene).layers).first()?;
+    let top = *sel.layers(&app.s.timeline().layers).first()?;
     Some(json!({"layer": top.0, "frame": sel.frames().0}))
 }
 
@@ -157,7 +157,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
     }
     // Add Camera, as Animate has it on the timeline: on while the scene has a camera; a click
     // then takes it away (asking first when the camera moves; undoable).
-    let has = app.s.doc.timeline(app.s.scene).camera_layer().is_some();
+    let has = app.s.timeline().camera_layer().is_some();
     if icon_button(ui, if has { tr!("Remove camera") } else { tr!("Add camera") }, Some(has), Icon::Camera).clicked() {
         if has {
             app.request("camera.remove", json!({}));
@@ -195,7 +195,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // A frame selection lives while the playhead is inside it and its layers exist.
     if let Some(sel) = app.frame_sel {
         let (f0, f1) = sel.frames();
-        let gone = sel.layers(&app.s.doc.timeline(app.s.scene).layers).is_empty();
+        let gone = sel.layers(&app.s.timeline().layers).is_empty();
         if gone || app.playing || (app.tl_drag == TlDrag::None && !(f0..=f1).contains(&app.s.frame)) {
             app.frame_sel = None;
         }
@@ -242,7 +242,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // rows and columns are painted, so cost is independent of document size.
     // Rows are the layers not inside a closed folder (`rows[r]` is row r's layer index).
     let rows: Vec<usize> = {
-        let tl = app.s.doc.timeline(app.s.scene);
+        let tl = app.s.timeline();
         (0..tl.layers.len()).filter(|&i| !app.tl_collapsed.iter().any(|f| tl.is_inside(i, *f))).collect()
     };
     let n_layers = rows.len();
@@ -315,14 +315,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
 
     // rows
-    let layers = app.s.doc.timeline(app.s.scene).layers.clone();
+    let layers = app.s.timeline().layers.clone();
     let active = app.s.layer;
     // Layers with selected artwork show a square in their colour after the name, as in
     // Animate: a selection can span layers (ADR 0044).
     let holding = app.s.selection.layers();
     let rows_top = ruler.bottom();
     let rows_bottom = body.bottom() - FOOTER_H;
-    let tl_now = app.s.doc.timeline(app.s.scene).clone();
+    let tl_now = app.s.timeline().clone();
     for (r, &i) in rows.iter().enumerate().skip(first_row) {
         let Some(layer) = layers.get(i) else { continue };
         let y = rows_top + (r - first_row) as f32 * ROW_H;
@@ -501,7 +501,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if menus::check_item(ui, tr!("Mask"), layer.kind == LayerKind::Mask, !is_folder) {
                 app.run("layer.toggle_mask", json!({"layer": layer.id.0}));
             }
-            let can_mask = layer.kind == LayerKind::Normal && app.s.doc.timeline(app.s.scene).mask_above(i).is_some();
+            let can_mask = layer.kind == LayerKind::Normal && app.s.timeline().mask_above(i).is_some();
             if menus::check_item(ui, tr!("Masked"), masked, can_mask || masked) {
                 let ty = if masked { "normal" } else { "masked" };
                 app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));
@@ -511,7 +511,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let ty = if layer.kind == LayerKind::Guide { "normal" } else { "guide" };
                 app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));
             }
-            let can_guide = layer.kind == LayerKind::Normal && app.s.doc.timeline(app.s.scene).guide_above(i).is_some();
+            let can_guide = layer.kind == LayerKind::Normal && app.s.timeline().guide_above(i).is_some();
             if menus::check_item(ui, tr!("Guided"), guided, can_guide || guided) {
                 let ty = if guided { "normal" } else { "guided" };
                 app.run("layer.set_type", json!({"layer": layer.id.0, "type": ty}));

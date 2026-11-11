@@ -37,18 +37,18 @@ impl Geo {
 
 /// The scene's camera at the playhead (the rest camera on a blank camera keyframe).
 pub fn camera(app: &App) -> Option<Camera> {
-    app.s.doc.timeline(app.s.scene).camera_state_at(app.s.frame, &app.s.doc.stage)
+    app.s.timeline().camera_state_at(app.s.frame, &app.s.doc.stage)
 }
 
 /// Whether the stage shows the movie through the camera this frame.
 pub fn previewing(app: &App) -> bool {
-    app.camera_preview && app.s.doc.timeline(app.s.scene).camera_layer().is_some()
+    app.camera_preview && app.s.timeline().camera_layer().is_some()
 }
 
 /// Picking the Camera tool adds a camera when the scene has none (as Animate does), once per
 /// pick: undoing the add leaves the tool in hand without adding it again.
 pub fn on_tool_change(app: &mut App) {
-    if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.doc.timeline(app.s.scene).camera_layer().is_none() && app.run("camera.add", json!({})).is_some() {
+    if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.timeline().camera_layer().is_none() && app.run("camera.add", json!({})).is_some() {
         app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
     }
     app.last_tool = app.tool;
@@ -150,7 +150,7 @@ pub fn tick(app: &mut App, ctx: &egui::Context, now: f64) {
 /// The camera frame (editing) or the camera-view marks (previewing), and the Camera tool's
 /// handles.
 pub fn draw(app: &App, painter: &egui::Painter, g: &Geo, hot: Option<Pos2>) {
-    let tl = app.s.doc.timeline(app.s.scene);
+    let tl = app.s.timeline();
     let Some(layer) = tl.camera_layer() else { return };
     let Some(cam) = camera(app) else { return };
     let color = to_color32(layer.color);

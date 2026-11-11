@@ -241,19 +241,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
-    let zoom = app.view.zoom;
+    let st_zoom = app.view.zoom;
     // Snap the stage origin to whole device pixels: tile edges then land exactly on screen
     // pixels, so texture filtering can't show seams between tiles.
-    let raw = canvas.center() + app.view.pan - size * zoom * 0.5;
-    let origin = pos2((raw.x * ppp).round() / ppp, (raw.y * ppp).round() / ppp);
+    let raw = canvas.center() + app.view.pan - size * st_zoom * 0.5;
+    let st_origin = pos2((raw.x * ppp).round() / ppp, (raw.y * ppp).round() / ppp);
+    let st_screen = |p: Vec2| pos2(st_origin.x + p.x * st_zoom, st_origin.y + p.y * st_zoom);
+    let stage_rect = Rect::from_min_size(st_origin, size * st_zoom);
+    // While a symbol is open (ADR 0045), tools and overlays work in its space, which the stage
+    // shows moved and scaled where its instance stands.
+    let edit_view = app.s.edit_view();
+    let (origin, zoom) = match edit_view {
+        Some(v) => (st_origin + vec2(v.origin.x, v.origin.y) * st_zoom, st_zoom * v.scale),
+        None => (st_origin, st_zoom),
+    };
     let to_screen = |p: Vec2| pos2(origin.x + p.x * zoom, origin.y + p.y * zoom);
     let to_stage = |p: Pos2| pos2((p.x - origin.x) / zoom, (p.y - origin.y) / zoom);
-    let stage_rect = Rect::from_min_size(origin, size * zoom);
     let painter = ui.painter_at(canvas);
     // View > Preview Through Camera: the stage shows the movie's picture (ADR 0027). Artwork
     // tools pause meanwhile (what they'd edit is in stage space, not where it shows).
     let preview = crate::camera_tool::previewing(app);
-    let cam_geo = crate::camera_tool::Geo { origin, zoom, stage_rect, preview };
+    let cam_geo = crate::camera_tool::Geo { origin: st_origin, zoom: st_zoom, stage_rect, preview };
 
 
     // ---- tools ----------------------------------------------------------------------------
@@ -664,9 +672,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     {
         commit_text(app);
         let sp = to_stage(p);
-        // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and its outline.
-        if !open_text_at(app, sp, 3.0 / zoom.max(1e-3)) {
-            app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": 3.0 / zoom.max(1e-3)}));
+        let slop = 3.0 / zoom.max(1e-3);
+        if !open_text_at(app, sp, slop) {
+            match app.s.hit_test(to_v(sp), slop) {
+                // A symbol instance opens for editing in place (ADR 0045).
+                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. })) => {
+                    app.run("symbol.edit", json!({"id": id.0}));
+                }
+                // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and
+                // its outline.
+                Some(_) => {
+                    app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": slop}));
+                }
+                // Empty space inside a symbol goes back up a level, as in Animate.
+                None if !app.s.editing.is_empty() => {
+                    app.run("symbol.exit", json!({}));
+                }
+                None => {}
+            }
         }
     }
     if app.tool == Tool::Subselect
@@ -738,18 +761,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         // Jobs are keyed by who draws them, so a renderer switch re-renders (old tiles stand in).
         let raster = app.stage_cache.service.as_ref().map_or(0, RenderService::raster_id);
-        // Tiles on a device-pixel grid at this zoom (ADR 0007).
-        let z = zoom * ppp;
+        // Tiles on a device-pixel grid at this zoom (ADR 0007), of what the stage shows: the
+        // document, or an open symbol in place (ADR 0045).
+        let z = st_zoom * ppp;
         let bg = app.s.doc.stage.background;
         let stage_px = ((size.x * z).ceil().max(1.0) as u32, (size.y * z).ceil().max(1.0) as u32);
-        let px = [(vis.min.x - origin.x) * ppp, (vis.min.y - origin.y) * ppp, (vis.max.x - origin.x) * ppp, (vis.max.y - origin.y) * ppp];
+        let px = [(vis.min.x - st_origin.x) * ppp, (vis.min.y - st_origin.y) * ppp, (vis.max.x - st_origin.x) * ppp, (vis.max.y - st_origin.y) * ppp];
         let visible = tiles_for(z, stage_px, px, 0, bg);
-        let onion = app.onion && !app.playing;
-        let state = app.s.state;
+        let pic = app.s.stage_picture();
+        let editing = edit_view.is_some();
+        let onion = app.onion && !app.playing && !editing;
+        let state = pic.state;
         // Render jobs take movie frames: the current scene starts at `start`.
         let start = app.s.doc.scene_start(app.s.scene);
         let frame = app.s.frame;
-        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion).through_camera(preview); (t, j) }).collect();
+        let jobs: Vec<(TileSpec, FrameJob)> = visible.into_iter().map(|t| { let j = make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview); (t, j) }).collect();
         let keys: Vec<u64> = jobs.iter().map(|(_, j)| j.key).collect();
         let missing: Vec<usize> = (0..jobs.len()).filter(|&i| !app.stage_cache.has(keys[i])).collect();
 
@@ -810,33 +836,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // during playback, the next frames' visible tiles.
         if let Some(svc) = &app.stage_cache.service {
             let mut ahead: Vec<FrameJob> = Vec::new();
-            if app.playing {
+            if app.playing && !editing {
                 let n = app.s.frame_count().max(1);
                 for d in 1..=LOOKAHEAD.min(n - 1) {
                     let f = (frame + d) % n;
                     ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, false).through_camera(preview)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &app.s.doc, start + frame, t.view, onion).through_camera(preview)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview)));
             }
             svc.prefetch(ahead);
         }
 
         // Draw: tiles from earlier zooms/states that cover the view go first (scaled, as a
         // placeholder), then the current tiles on top.
-        let view_rect = [(vis.min.x - origin.x) / zoom, (vis.min.y - origin.y) / zoom, (vis.max.x - origin.x) / zoom, (vis.max.y - origin.y) / zoom];
+        let view_rect = [(vis.min.x - st_origin.x) / st_zoom, (vis.min.y - st_origin.y) / st_zoom, (vis.max.x - st_origin.x) / st_zoom, (vis.max.y - st_origin.y) / st_zoom];
         let overlaps = |r: &[f32; 4]| r[0] < view_rect[2] && r[2] > view_rect[0] && r[1] < view_rect[3] && r[3] > view_rect[1];
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
         let mut stale: Vec<&TileTex> = app.stage_cache.tiles.iter().filter(|t| !keys.contains(&t.key) && overlaps(&t.rect)).collect();
         if ready < keys.len() {
             stale.sort_by_key(|t| t.used);
             for t in stale.iter().rev().take(96).rev() {
-                let r = Rect::from_min_max(to_screen(Vec2::new(t.rect[0], t.rect[1])), to_screen(Vec2::new(t.rect[2], t.rect[3])));
+                let r = Rect::from_min_max(st_screen(Vec2::new(t.rect[0], t.rect[1])), st_screen(Vec2::new(t.rect[2], t.rect[3])));
                 painter.image(t.tex.id(), r, uv, Color32::WHITE);
             }
         }
         for t in app.stage_cache.tiles.iter().filter(|t| keys.contains(&t.key)) {
-            let r = Rect::from_min_max(to_screen(Vec2::new(t.rect[0], t.rect[1])), to_screen(Vec2::new(t.rect[2], t.rect[3])));
+            let r = Rect::from_min_max(st_screen(Vec2::new(t.rect[0], t.rect[1])), st_screen(Vec2::new(t.rect[2], t.rect[3])));
             painter.image(t.tex.id(), r, uv, Color32::WHITE);
         }
 
@@ -863,7 +889,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if preview {
         // The movie's picture: stage-space overlays don't belong on it.
         painter.text(stage_rect.left_top() + vec2(0.0, -6.0), egui::Align2::LEFT_BOTTOM, tr!("Camera view"), crate::theme::font(crate::theme::Type::Caption), T.text_dim);
-        let badge = format!("{:.0}%", zoom * 100.0);
+        let badge = format!("{:.0}%", st_zoom * 100.0);
         painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
         crate::a11y::surface(ui, &resp, &tr!("Stage · previewing through the camera · {tool} tool · frame {frame}", tool = crate::i18n::t(app.tool.label()), frame = app.s.frame + 1));
         return;
@@ -876,7 +902,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
         let dl = app.s.display_list();
         for item in dl.items.iter().filter(|i| i.masks.is_some() || i.guide).take(2_000) {
-            let Some(layer) = app.s.doc.timeline(app.s.scene).layer(item.layer).filter(|l| item.guide || !l.locked) else { continue };
+            let Some(layer) = app.s.timeline().layer(item.layer).filter(|l| item.guide || !l.locked) else { continue };
             let stroke = Stroke::new(if item.guide { 2.0 } else { 1.5 }, to_color32(layer.color));
             for pl in item.path.flatten(&to_px.mul(&item.transform), 0.5) {
                 let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
@@ -1023,8 +1049,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     text_editor(app, ui, to_screen(Vec2::new(0.0, 0.0)), zoom);
 
+    // Inside a symbol: its registration point (ADR 0045; the way back is in the edit bar).
+    if edit_view.is_some() {
+        let c = to_screen(Vec2::ZERO);
+        for (a, b) in [(vec2(-8.0, 0.0), vec2(8.0, 0.0)), (vec2(0.0, -8.0), vec2(0.0, 8.0))] {
+            painter.line_segment([c + a, c + b], Stroke::new(3.0, Color32::WHITE));
+            painter.line_segment([c + a, c + b], Stroke::new(1.0, T.ink));
+        }
+    }
+
     // zoom badge
-    let badge = format!("{:.0}%", zoom * 100.0);
+    let badge = format!("{:.0}%", st_zoom * 100.0);
     painter.text(canvas.right_bottom() + vec2(-10.0, -8.0), egui::Align2::RIGHT_BOTTOM, badge, crate::theme::font(crate::theme::Type::Data), T.text_dim);
     // Last, so the focus ring is drawn over the artwork.
     let selected = app.s.selection.len();
@@ -1143,7 +1178,7 @@ fn grab_mark(painter: &egui::Painter, p: Pos2, grab: Grab) {
 /// The raw shapes (parts of the layer's merged drawing) on the active layer.
 /// The raw shapes at the playhead, on every layer, with their layers.
 fn raw_ids(app: &App) -> std::collections::HashSet<(anicraft_engine::doc::LayerId, anicraft_engine::doc::ElementId)> {
-    let layers: Vec<_> = app.s.doc.timeline(app.s.scene).layers.iter().map(|l| l.id).collect();
+    let layers: Vec<_> = app.s.timeline().layers.iter().map(|l| l.id).collect();
     layers.into_iter().flat_map(|l| app.s.elements_on(l).into_iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(move |e| (l, e.id))).collect()
 }
 
