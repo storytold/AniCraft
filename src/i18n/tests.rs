@@ -121,6 +121,9 @@ fn all_keys() -> BTreeSet<Key> {
     add(&doc::Easing::Linear.label());
     doc::Property::ALL.iter().for_each(|p| add(p.label()));
     doc::ProfilePreset::ALL.iter().for_each(|p| add(p.label()));
+    doc::Cap::ALL.iter().for_each(|c| add(c.label()));
+    doc::Join::ALL.iter().for_each(|j| add(j.label()));
+    doc::DashKind::ALL.iter().for_each(|k| add(k.label()));
     for s in doc::SoundSync::ALL {
         add(s.label());
         add(s.hint());

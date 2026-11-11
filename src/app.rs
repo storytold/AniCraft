@@ -816,6 +816,15 @@ impl App {
                     None => self.show_plugins = true,
                 }
             }
+            Some("strokes") => {
+                // Stroke styles (ADR 0046): a mitred zigzag with square caps, a dotted tapering
+                // line, and a dashed oval with bevelled corners, selected, so Properties shows
+                // Style with its dash editor, Cap, Join and Miter.
+                self.tool = Tool::Select;
+                self.run("draw.path", json!({"d": "M 80 640 L 200 520 L 320 640 L 440 520 L 560 640", "fill": null, "stroke": "#1b2a4a", "stroke_width": 14, "cap": "square", "join": "miter", "miter": 4, "object": true}));
+                self.run("draw.line", json!({"x0": 80, "y0": 690, "x1": 560, "y1": 690, "stroke": "#e8553b", "stroke_width": 8, "style": "dotted", "dot_spacing": 6, "profile": "taper_end", "object": true}));
+                self.run("draw.rect", json!({"x": 640, "y": 500, "w": 300, "h": 180, "fill": "#f3d36b", "stroke": "#3d8bfd", "stroke_width": 6, "cap": "none", "join": "miter", "dash": [18, 8], "object": true}));
+            }
             Some("filters") => {
                 // A movie clip with a bevel and a gradient glow, selected: Properties › Filters
                 // shows both (scrolled to the glow's ramp editor).

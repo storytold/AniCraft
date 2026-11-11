@@ -2,7 +2,8 @@
 <!-- AniCraft XFL corpus: shapes. Self-authored from the public description of the format.
      Edges in twips: `!` move, `|` and `/` lines, `[` and `]` quadratic curves, `S` selection
      marks, `#` hex fixed point. A fill style on both sides of an edge, a hole, alpha, strokes
-     with every cap and join, a stroke continuing across edges and one with a gap. -->
+     with every cap and join, a stroke continuing across edges and one with a gap, a dashed
+     and a dotted stroke. -->
 <DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F4F1EA" currentTimeline="1" xflVersion="2.97">
   <timelines>
     <DOMTimeline name="Scene 1">
@@ -33,6 +34,16 @@
                         <fill><SolidColor color="#000000" alpha="0.6"/></fill>
                       </SolidStroke>
                     </StrokeStyle>
+                    <StrokeStyle index="5">
+                      <DashedStroke scaleMode="normal" weight="3" caps="none" dash1="10" dash2="5">
+                        <fill><SolidColor color="#7A3355"/></fill>
+                      </DashedStroke>
+                    </StrokeStyle>
+                    <StrokeStyle index="6">
+                      <DottedStroke scaleMode="normal" weight="3" dotSpace="4">
+                        <fill><SolidColor color="#33557A"/></fill>
+                      </DottedStroke>
+                    </StrokeStyle>
                   </strokes>
                   <edges>
                     <!-- A zigzag split over two edges; the second starts where the first ends. -->
@@ -42,6 +53,9 @@
                     <Edge strokeStyle="3" edges="!4400 3200]5100 1600 5800 3200"/>
                     <!-- One edge, two runs: the second move leaves a gap. -->
                     <Edge strokeStyle="4" edges="!400 3460|1800 3460!2400 3460|3800 3460"/>
+                    <!-- Dashes 10 on, 5 off from (220, 169), butt-capped; dots 7 apart below. -->
+                    <Edge strokeStyle="5" edges="!4400 3380|6200 3380"/>
+                    <Edge strokeStyle="6" edges="!4400 3520|6200 3520"/>
                   </edges>
                 </DOMShape>
               </elements>

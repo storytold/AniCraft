@@ -11,7 +11,7 @@
 //! * consecutive items with the same mask share one masked layer under one mask layer.
 
 use crate::{Builder, ImportedElement, ImportedLayer, ImportedMask, Item, PaintSpec, Report, Style, declarations, get, hidden, length, local, name_of, paint_spec, transform};
-use anicraft_doc::{ElementKind, Paint, Rgba, Shape};
+use anicraft_doc::{ElementKind, Paint, Rgba, Shape, Stroke};
 use anicraft_geom::clip::{clip_convex, convex_polygon};
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use anicraft_xml::Element as X;
@@ -40,7 +40,7 @@ pub(crate) struct Region {
 /// Conservative drawing-space bounds of an element's artwork.
 fn element_bounds(e: &ImportedElement) -> Rect {
     match &e.kind {
-        ElementKind::Shape(s) => s.path.bounds().inflate(s.stroke.as_ref().map_or(0.0, |st| st.width * 0.5)).transformed(&e.transform),
+        ElementKind::Shape(s) => s.path.bounds().inflate(s.stroke.as_ref().map_or(0.0, Stroke::reach)).transformed(&e.transform),
         ElementKind::Text(t) => t.outline.bounds().union(&Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0))).transformed(&e.transform),
         ElementKind::Symbol { .. } | ElementKind::Camera => Rect::EMPTY,
     }

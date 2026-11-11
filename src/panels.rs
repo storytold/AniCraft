@@ -657,6 +657,15 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 if let Some(pick) = profile_picker(ui, ProfileRow::Selection, current.as_ref()) {
                     app.run("stroke.set_profile", json!({"profile": pick.key()}));
                 }
+                // Style, caps and joins (ADR 0046).
+                let style_mixed = shapes.iter().any(|s| s.stroke.as_ref().map(|x| &x.style) != Some(&st.style));
+                if let Some(edit) = line_style_rows(ui, ProfileRow::Selection, &st.style, style_mixed) {
+                    if edit.drag {
+                        live(app, edit.label, "stroke.set_style", edit.params);
+                    } else {
+                        app.run("stroke.set_style", edit.params);
+                    }
+                }
             }
         }
         ui.add_space(6.0);
@@ -1538,6 +1547,12 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         if let Some(pick) = profile_picker(ui, ProfileRow::Tool, current.as_ref()) {
             st.set_profile(pick);
         }
+        // And their style, caps and joins (with the params the commands take).
+        if let Some(edit) = line_style_rows(ui, ProfileRow::Tool, &st.line, false)
+            && let Ok(Some(line)) = anicraft_engine::params::opt_stroke_style(&edit.params, &st.line, st.stroke_width)
+        {
+            st.line = line;
+        }
     }
     // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush) {
@@ -1677,7 +1692,7 @@ fn profile_preview(ui: &mut egui::Ui, profile: Option<&anicraft_engine::doc::Wid
     resp
 }
 
-/// Which Width row a profile menu is (each needs its own popup).
+/// Which place a profile or line style menu is in (each needs its own popup).
 #[derive(Clone, Copy, Debug, Hash)]
 enum ProfileRow {
     Selection,
@@ -1715,6 +1730,135 @@ fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraf
         .set_name(tr!("Stroke width profile"));
     });
     picked
+}
+
+/// A picture of a line style: solid, dashed or dotted, as the Style menu shows them.
+fn line_preview(ui: &mut egui::Ui, kind: anicraft_engine::doc::DashKind, size: egui::Vec2, color: Color32) {
+    use anicraft_engine::doc::DashKind;
+    let (r, _) = ui.allocate_exact_size(size, Sense::hover());
+    let p = ui.painter();
+    let y = r.center().y;
+    let line = Stroke::new(2.0, color);
+    match kind {
+        DashKind::Solid => {
+            p.line_segment([pos2(r.left(), y), pos2(r.right(), y)], line);
+        }
+        DashKind::Dashed => {
+            p.extend(egui::Shape::dashed_line(&[pos2(r.left(), y), pos2(r.right(), y)], line, 6.0, 3.0));
+        }
+        DashKind::Dotted => {
+            let mut x = r.left() + 1.5;
+            while x < r.right() {
+                p.circle_filled(pos2(x, y), 1.5, color);
+                x += 5.0;
+            }
+        }
+    }
+}
+
+/// A change made in the line style rows: its undo label, the `stroke.set_style` params, and
+/// whether it is a drag (coalesced into one undo step) rather than a pick.
+struct LineEdit {
+    label: &'static str,
+    params: Value,
+    drag: bool,
+}
+
+/// The rows under Stroke that shape the line, as in Animate's Properties: Style (solid, dashed,
+/// dotted) with its lengths, Cap, Join and, for miter joins, the miter limit. `which` keeps each
+/// place's menus apart. Returns the change, if any.
+fn line_style_rows(ui: &mut egui::Ui, which: ProfileRow, st: &anicraft_engine::doc::StrokeStyle, differs: bool) -> Option<LineEdit> {
+    use anicraft_engine::doc::{Cap, Dash, DashKind, Join};
+    let mut edit = None;
+    let kind = st.dash_kind();
+    row_prose(ui, tr!("Style"), |ui| {
+        line_preview(ui, kind, vec2(44.0, 12.0), T.text_dim);
+        egui::ComboBox::from_id_salt((which, "line_style")).width(110.0).selected_text(crate::i18n::t(kind.label())).show_ui(ui, |ui| {
+            for k in DashKind::ALL {
+                let on = k == kind;
+                let r = ui.horizontal(|ui| {
+                    line_preview(ui, k, vec2(44.0, 12.0), if on { T.text } else { T.text_dim });
+                    ui.selectable_label(on, crate::i18n::t(k.label())).clicked()
+                });
+                if r.inner && !on {
+                    edit = Some(LineEdit { label: tr_noop!("Stroke style"), params: json!({"style": k.key()}), drag: false });
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("Solid, dashed or dotted"))
+        .set_name(tr!("Stroke style"));
+        mixed(ui, differs);
+    });
+    // The small dash editor: the first dash and gap (an imported pattern keeps the rest).
+    match &st.dash {
+        Some(Dash::Dashed { lengths, .. }) => {
+            let mut v = lengths.to_vec();
+            row(ui, tr!("Dash"), |ui| {
+                let mut changed = false;
+                for (i, name, hint) in [(0usize, tr!("Dash length"), tr!("Length of each dash")), (1, tr!("Gap length"), tr!("Length of each gap"))] {
+                    if let Some(x) = v.get_mut(i) {
+                        let r = ui.add(egui::DragValue::new(x).suffix(" px").speed(0.1).range(0.0..=1000.0).max_decimals(1)).named(name);
+                        changed |= r.on_hover_text(hint).changed();
+                    }
+                }
+                if lengths.len() > 2 {
+                    ui.label(text(Type::Caption, trn!("+{n} more", "+{n} more", lengths.len() - 2))).on_hover_text(tr!("This pattern has more dashes and gaps than these two; they stay as they are"));
+                }
+                // Without any gap the line would be solid: that is the Style menu's job.
+                if changed && v.iter().skip(1).step_by(2).sum::<f32>() > 0.0 {
+                    edit = Some(LineEdit { label: tr_noop!("Dash length"), params: json!({"dash": v}), drag: true });
+                }
+            });
+        }
+        Some(Dash::Dotted { spacing }) => {
+            let mut sp = *spacing;
+            row(ui, tr!("Spacing"), |ui| {
+                let r = ui.add(egui::DragValue::new(&mut sp).suffix(" px").speed(0.1).range(0.0..=1000.0).max_decimals(1)).named(tr!("Dot spacing"));
+                if r.on_hover_text(tr!("Space between the dots")).changed() {
+                    edit = Some(LineEdit { label: tr_noop!("Dot spacing"), params: json!({"dot_spacing": sp}), drag: true });
+                }
+            });
+        }
+        None => {}
+    }
+    row_prose(ui, tr!("Cap"), |ui| {
+        egui::ComboBox::from_id_salt((which, "line_cap")).width(110.0).selected_text(crate::i18n::t(st.cap.label())).show_ui(ui, |ui| {
+            for c in Cap::ALL {
+                if ui.selectable_label(c == st.cap, crate::i18n::t(c.label())).clicked() && c != st.cap {
+                    edit = Some(LineEdit { label: tr_noop!("Stroke cap"), params: json!({"cap": c.key()}), drag: false });
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("How open ends finish: flat at the end (None), rounded, or squared off past it"))
+        .set_name(tr!("Stroke cap"));
+        if kind == DashKind::Dotted {
+            ui.label(text(Type::Caption, tr!("dots are round")));
+        }
+    });
+    row_prose(ui, tr!("Join"), |ui| {
+        egui::ComboBox::from_id_salt((which, "line_join")).width(110.0).selected_text(crate::i18n::t(st.join.label())).show_ui(ui, |ui| {
+            for j in Join::ALL {
+                if ui.selectable_label(j == st.join, crate::i18n::t(j.label())).clicked() && j != st.join {
+                    edit = Some(LineEdit { label: tr_noop!("Stroke join"), params: json!({"join": j.key()}), drag: false });
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("How corners turn: sharp (Miter), rounded, or cut across (Bevel)"))
+        .set_name(tr!("Stroke join"));
+    });
+    if st.join == Join::Miter {
+        let mut m = st.miter_limit;
+        row(ui, tr!("Miter"), |ui| {
+            let r = ui.add(egui::DragValue::new(&mut m).speed(0.05).range(1.0..=100.0).max_decimals(1)).named(tr!("Miter limit"));
+            if r.on_hover_text(tr!("Corners sharper than this are bevelled: how far a point may reach, in stroke widths")).changed() {
+                edit = Some(LineEdit { label: tr_noop!("Miter limit"), params: json!({"miter": m}), drag: true });
+            }
+        });
+    }
+    edit
 }
 
 /// Plots the easing curve (output against time).
