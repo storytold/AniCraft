@@ -267,7 +267,7 @@ fn faucet(s: &mut Session, p: &Value) -> Result<Value> {
 /// The layers `draw.erase_all` clears: visible, unlocked layers that hold artwork (not folders,
 /// not the camera), with the number of elements at the playhead on each.
 pub(crate) fn erasable_layers(s: &Session) -> Vec<(anicraft_doc::LayerId, usize)> {
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     tl.layers
         .iter()
         .filter(|l| l.visible && !l.locked && !tl.locked_by_folder(l.id) && !matches!(l.kind, LayerKind::Folder | LayerKind::Camera))
@@ -283,7 +283,7 @@ fn erase_all(s: &mut Session, _: &Value) -> Result<Value> {
     let (scene, frame) = (s.scene, s.frame);
     let mut erased = 0;
     for (id, _) in &layers {
-        let Some(layer) = s.doc.timeline_mut(scene).layer_mut(*id) else { continue };
+        let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).layer_mut(*id) else { continue };
         let Some(i) = layer.keyframe_index_at(frame) else { continue };
         let Some(kf) = layer.keyframe_mut(i) else { continue };
         erased += kf.elements.len();

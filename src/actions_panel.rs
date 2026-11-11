@@ -444,7 +444,7 @@ fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&S
 fn frame_target(app: &mut App, ui: &mut egui::Ui, doc: &Document) -> Option<FrameTarget> {
     match app.actions.symbol {
         None => {
-            let tl = doc.timeline(app.s.scene);
+            let tl = app.s.timeline().clone();
             let layer = tl.layer(app.s.layer)?;
             let frame = app.s.frame;
             form_row(ui, FORM_LABEL_DOCK, tr!("Keyframe"), |ui| {
@@ -581,7 +581,7 @@ fn instance_tab(app: &mut App, ui: &mut egui::Ui, e: &Element) {
         ui.label(text(Type::Caption, tr!("Name it to address it from actions (letters, digits and _). Its events work without a name.")));
     }
     let ElementKind::Symbol { events, .. } = &e.kind else { return };
-    let tl = doc.timeline(app.s.scene).clone();
+    let tl = app.s.timeline().clone();
     let cx = Choices::new(&doc, &tl, true);
     ui.add_space(4.0);
     ui.label(text(Type::Caption, tr!("Its actions run on the timeline it is on: “this” is the main timeline.")));

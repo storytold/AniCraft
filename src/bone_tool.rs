@@ -35,7 +35,7 @@ pub struct Shown {
 
 /// Every visible armature on the scene at the playhead, bottom layer first.
 pub fn shown(app: &App) -> Vec<Shown> {
-    let tl = app.s.doc.timeline(app.s.scene);
+    let tl = app.s.timeline();
     tl.layers
         .iter()
         .enumerate()
@@ -85,7 +85,7 @@ fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
 /// its layer and id.
 fn instance_at(app: &App, sp: Vec2, slop: f32, skip: Option<ElementId>) -> Option<(LayerId, ElementId)> {
     let dl = app.s.display_list();
-    let tl = app.s.doc.timeline(app.s.scene);
+    let tl = app.s.timeline();
     for item in dl.items.iter().rev() {
         if Some(item.element) == skip || item.guide || item.masks.is_some() {
             continue;
@@ -120,7 +120,7 @@ pub fn select(app: &mut App, layer: LayerId, bone: Option<BoneId>) {
 pub fn drag_start(app: &mut App, xf: Xf, press: Pos2) -> Drag {
     let sp = xf.to_stage(press);
     if let Some((layer, id, Part::End)) = hit(app, xf, press)
-        && let Some(child) = app.s.doc.timeline(app.s.scene).layer(layer).and_then(|l| l.armature.as_ref()).and_then(|a| a.bone(id)).map(|b| b.child)
+        && let Some(child) = app.s.timeline().layer(layer).and_then(|l| l.armature.as_ref()).and_then(|a| a.bone(id)).map(|b| b.child)
         && let Some(b) = shown(app).into_iter().find(|s| s.layer == layer).and_then(|s| s.bones.into_iter().find(|b| b.id == id))
     {
         // A chain joins end to start.
@@ -163,7 +163,7 @@ pub fn click(app: &mut App, xf: Xf, p: Pos2) {
 /// isn't on an armature.
 pub fn select_drag_start(app: &mut App, xf: Xf, press: Pos2) -> Option<Drag> {
     let sp = xf.to_stage(press);
-    let tl = app.s.doc.timeline(app.s.scene);
+    let tl = app.s.timeline();
     let (layer, bone, local) = match hit(app, xf, press) {
         Some((layer, id, _)) => (layer, Some(id), None),
         None => {
@@ -178,7 +178,7 @@ pub fn select_drag_start(app: &mut App, xf: Xf, press: Pos2) -> Option<Drag> {
     match bone {
         Some(id) => {
             select(app, layer, Some(id));
-            let arm = app.s.doc.timeline(app.s.scene).layer(layer).and_then(|l| l.armature.clone())?;
+            let arm = app.s.timeline().layer(layer).and_then(|l| l.armature.clone())?;
             if armature::movable_chain(&arm, id).is_empty() {
                 app.status_ok(tr!("That bone is pinned (or hangs from a pinned bone): unpin it in Properties to drag it."));
                 return Some(Drag::None);
@@ -231,7 +231,7 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
 /// Drops a selected bone that no longer exists.
 pub fn upkeep(app: &mut App) {
     if let Some(id) = app.bone_sel {
-        let tl = app.s.doc.timeline(app.s.scene);
+        let tl = app.s.timeline();
         if !tl.layers.iter().any(|l| l.kind == LayerKind::Armature && l.armature.as_ref().is_some_and(|a| a.bone(id).is_some())) {
             app.bone_sel = None;
         }

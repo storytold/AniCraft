@@ -150,11 +150,11 @@ nothing was copied.
 * A Paint Bucket fill in merge drawing lies exactly along its lines. Deleting a line later
   joins fills of one colour, as in Animate.
 * Not in this slice:
-  * deleting raw anchors (Delete says so), and adding them;
-  * Make Smooth and Make Corner on raw anchors;
-  * smooth handle pairs (a handle moves alone, as on drawing objects);
+  * ~~deleting raw anchors (Delete says so), and adding them~~ (ADR 0045);
+  * ~~Make Smooth and Make Corner on raw anchors~~ (ADR 0045);
+  * ~~smooth handle pairs (a handle moves alone, as on drawing objects)~~ (ADR 0045);
   * width profiles in the merge;
-  * Subselection inside symbols;
-  * a default shortcut for Snap to Objects;
-  * snapping while drawing with the shape tools;
-  * a marquee across layers (ADR 0041).
+  * ~~Subselection inside symbols~~ (ADR 0045: symbols open for editing in place);
+  * ~~a default shortcut for Snap to Objects~~ (ADR 0045: Ctrl+Shift+/);
+  * ~~snapping while drawing with the shape tools~~ (ADR 0045);
+  * ~~a marquee across layers~~ (ADR 0044, for the Selection tool).

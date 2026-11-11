@@ -40,7 +40,7 @@ fn plural(n: usize, word: &str) -> String {
 
 fn target_layer<'a>(s: &'a Session, p: &Value) -> Option<&'a Layer> {
     let id = p.get("layer").and_then(Value::as_u64).map_or(s.layer, LayerId);
-    s.doc.timeline(s.scene).layer(id)
+    s.timeline().layer(id)
 }
 
 fn target_frame(s: &Session, p: &Value) -> u32 {
@@ -59,7 +59,7 @@ fn lost_keys(s: &Session, p: &Value, hit: impl Fn(&Keyframe) -> bool) -> Vec<(St
         None => vec![p.get("layer").and_then(Value::as_u64).map_or(s.layer, LayerId)],
     };
     ids.iter()
-        .filter_map(|id| s.doc.timeline(s.scene).layer(*id))
+        .filter_map(|id| s.timeline().layer(*id))
         .flat_map(|l| l.keyframes.iter().filter(|k| !k.elements.is_empty() && hit(k)).map(|k| (l.name.clone(), k.elements.len())))
         .collect()
 }
@@ -155,11 +155,11 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: false,
             })
         }
-        "camera.remove" => camera_removal(s, s.doc.timeline(s.scene).camera_layer()?),
+        "camera.remove" => camera_removal(s, s.timeline().camera_layer()?),
         "bone.remove" => {
             // The bone's moves in every pose go with it (ADR 0043); one pose loses nothing.
             let id = anicraft_doc::BoneId(p.get("bone").and_then(Value::as_u64)?);
-            let l = s.doc.timeline(s.scene).layers.iter().find(|l| l.armature.as_ref().is_some_and(|a| a.bone(id).is_some()))?;
+            let l = s.timeline().layers.iter().find(|l| l.armature.as_ref().is_some_and(|a| a.bone(id).is_some()))?;
             let arm = l.armature.as_deref()?;
             let n = crate::cmds_bone::poses(l);
             let below = arm.subtree(id).len().saturating_sub(1);
@@ -184,7 +184,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             }
             if l.kind == anicraft_doc::LayerKind::Folder {
                 // A folder goes with everything in it.
-                let tl = s.doc.timeline(s.scene);
+                let tl = s.timeline();
                 let i = tl.layers.iter().position(|x| x.id == l.id)?;
                 let inner = tl.layers.get(tl.group_range(i))?;
                 let n = inner.len().saturating_sub(1);

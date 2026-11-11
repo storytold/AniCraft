@@ -46,7 +46,7 @@ struct Found {
 
 /// Instance `id` on the scene at the playhead (as it shows: tweened, posed).
 fn find_instance(s: &Session, id: ElementId) -> Option<Found> {
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     tl.layers.iter().enumerate().find_map(|(index, l)| {
         let (_, els) = evaluate_layer_elements(l, s.frame)?;
         let el = els.iter().find(|e| e.id == id)?.clone();
@@ -56,8 +56,8 @@ fn find_instance(s: &Session, id: ElementId) -> Option<Found> {
 
 /// The armature layer holding bone `id`, and its armature.
 fn find_bone(s: &Session, id: BoneId) -> Result<(LayerId, Arc<Armature>)> {
-    s.doc
-        .timeline(s.scene)
+    s
+        .timeline()
         .layers
         .iter()
         .filter(|l| l.kind == LayerKind::Armature)
@@ -85,7 +85,7 @@ fn opt_point(p: &Value, key: &str) -> Result<Option<Vec2>> {
 }
 
 fn unlocked(s: &Session, id: LayerId) -> Result<()> {
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let l = tl.layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     if l.locked || tl.locked_by_folder(id) {
         return Err(EngineError::State(format!("layer '{}' is locked", l.name)));
@@ -105,7 +105,7 @@ fn take_off(s: &mut Session, layer: LayerId, id: ElementId) -> Result<()> {
 
 /// A layer name `base_N` no layer of the scene has yet.
 fn fresh_name(s: &Session, base: &str) -> String {
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     (1..).map(|n| format!("{base}{n}")).find(|n| tl.layers.iter().all(|l| &l.name != n)).unwrap_or_else(|| base.to_string())
 }
 
@@ -142,7 +142,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         }
         unlocked(s, x.layer)?;
     }
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let arm_of = |x: &Found| (x.kind == LayerKind::Armature).then(|| tl.layer(x.layer).and_then(|l| l.armature.clone()).unwrap_or_default());
     let (fa, ta) = (arm_of(&f), arm_of(&t));
     match (&fa, &ta) {
@@ -186,10 +186,10 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         None => {
             // The first bone: both instances move to a new armature layer above them, whose one
             // pose spans from their keyframe to the end of the timeline.
-            let (start, end) = s.doc.timeline(s.scene).layer(f.layer).and_then(|l| l.keyframe_at(s.frame)).map_or((s.frame, s.frame + 1), |k| (k.start, k.end()));
+            let (start, end) = s.timeline().layer(f.layer).and_then(|l| l.keyframe_at(s.frame)).map_or((s.frame, s.frame + 1), |k| (k.start, k.end()));
             let end = end.max(s.frame_count());
             take_off(s, f.layer, from)?;
-            if s.doc.timeline(s.scene).layers.len() >= 1000 {
+            if s.timeline().layers.len() >= 1000 {
                 return Err(EngineError::State("too many layers (limit 1000)".into()));
             }
             let lid = LayerId(s.doc.alloc_id());
@@ -203,7 +203,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
             k.tween = Some(Tween::default());
             layer.keyframes = vec![Arc::new(k)];
             let index = f.index.min(t.index);
-            let tl = s.doc.timeline_mut(s.scene);
+            let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
             layer.parent = tl.container_at(index, LayerKind::Armature);
             tl.layers.insert(index.min(tl.layers.len()), Arc::new(layer));
             tl.repair_masks();
@@ -230,7 +230,7 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     left.bones.retain(|b| !gone.contains(&b.id));
     let dissolve = left.is_empty();
     let freed: Vec<ElementId> = if dissolve { arm.members() } else { arm.bones.iter().filter(|b| gone.contains(&b.id)).map(|b| b.child).collect() };
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let index = tl.layers.iter().position(|l| l.id == lid).ok_or_else(|| EngineError::State("the armature layer went away".into()))?;
     let layer = tl.layer(lid).ok_or_else(|| EngineError::State("the armature layer went away".into()))?;
     let (start, end) = (layer.keyframes.first().map_or(0, |k| k.start), layer.end_frame());
@@ -244,7 +244,7 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let mut k = Keyframe::new(start, end.saturating_sub(start).max(1));
     k.elements = shown;
     freed_layer.keyframes = vec![Arc::new(k)];
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     if dissolve {
         tl.layers.retain(|l| l.id != lid);
         tl.layers.insert(index.min(tl.layers.len()), Arc::new(freed_layer));
@@ -328,7 +328,7 @@ fn edit_pose<T>(s: &mut Session, lid: LayerId, frame: u32, edit: impl FnOnce(&Ar
     if frame > MAX_FRAME {
         return Err(EngineError::Param(format!("param 'frame' must be at most {MAX_FRAME}")));
     }
-    let arm = s.doc.timeline(s.scene).layer(lid).and_then(|l| l.armature.clone()).ok_or_else(|| EngineError::State("that is not an armature layer".into()))?;
+    let arm = s.timeline().layer(lid).and_then(|l| l.armature.clone()).ok_or_else(|| EngineError::State("that is not an armature layer".into()))?;
     // Past the end a pose carries on from the last one (not a blank keyframe).
     {
         let l = s.layer_mut(Some(lid))?;
@@ -411,7 +411,7 @@ fn solve(s: &mut Session, p: &Value) -> Result<Value> {
 fn info(s: &mut Session, p: &Value) -> Result<Value> {
     let frame = opt_u32(p, "frame")?.unwrap_or(s.frame).min(MAX_FRAME);
     let only = opt_u64(p, "layer")?.map(LayerId);
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let deg = |v: f32| v.to_degrees();
     let pt = |v: Vec2| json!([v.x, v.y]);
     let list: Vec<Value> = tl

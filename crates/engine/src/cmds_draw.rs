@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, cap?, join?, style?, dash?, object?}", true, draw_star),
         c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (the line style, as stroke.set_style; default: the tool's), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
         c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
-        c("draw.snap_to_objects", "Snap to Objects", "View/Snapping", None, "{on?: bool} (default: toggle) dragged points and selections snap to points, lines and fill edges (the `snap` params of element.translate, raw.move_point and raw.move_handle do nothing while it is off)", false, snap_to_objects),
+        c("draw.snap_to_objects", "Snap to Objects", "View/Snapping", Some("Ctrl+Shift+/"), "{on?: bool} (default: toggle) dragged points and selections, and the points the Line, Rectangle, Oval, PolyStar and Pen tools draw, snap to points, lines and fill edges (the `snap` params of element.translate, raw.move_point, raw.move_handle and draw.snap do nothing while it is off)", false, snap_to_objects),
         c("edit.select_all", "Select All", "Edit", Some("Ctrl+A"), "{}", false, select_all),
         c("edit.deselect", "Deselect All", "Edit", Some("Ctrl+Shift+A"), "{}", false, |s, _| {
             s.selection.clear();
@@ -182,7 +182,7 @@ fn object_drawing(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Everything on every visible, unlocked layer at the playhead, as Animate's Select All.
 fn select_all(s: &mut Session, _: &Value) -> Result<Value> {
-    let layers: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).collect();
+    let layers: Vec<LayerId> = s.timeline().layers.iter().map(|l| l.id).collect();
     let mut sel = Selection::default();
     for l in layers.into_iter().filter(|l| s.gathers(*l)) {
         sel.extend_on(l, s.elements_on(l).iter().map(|e| e.id));
@@ -203,9 +203,9 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
     // Where each element is at the playhead: on `layer`, else the active layer first, then the
     // others top to bottom.
     let order: Vec<LayerId> = match opt_u64(p, "layer")?.map(LayerId) {
-        Some(l) if s.doc.timeline(s.scene).layer(l).is_none() => return Err(EngineError::State(format!("no layer with id {}", l.0))),
+        Some(l) if s.timeline().layer(l).is_none() => return Err(EngineError::State(format!("no layer with id {}", l.0))),
         Some(l) => vec![l],
-        None => std::iter::once(s.layer).chain(s.doc.timeline(s.scene).layers.iter().map(|l| l.id).filter(|l| *l != s.layer)).collect(),
+        None => std::iter::once(s.layer).chain(s.timeline().layers.iter().map(|l| l.id).filter(|l| *l != s.layer)).collect(),
     };
     let mut at: std::collections::HashMap<ElementId, LayerId> = std::collections::HashMap::new();
     for l in order {
@@ -219,7 +219,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::State(format!("element {} is not on the active layer, or any layer, at this frame", id.0)));
         };
         if !s.selectable(l) {
-            let name = s.doc.timeline(s.scene).layer(l).map(|x| x.name.clone()).unwrap_or_default();
+            let name = s.timeline().layer(l).map(|x| x.name.clone()).unwrap_or_default();
             return Err(EngineError::State(format!("element {} is on layer '{name}', which is locked or hidden", id.0)));
         }
         picked.push((l, id));
@@ -668,7 +668,7 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
     let mut inner: Vec<Arc<Layer>> = Vec::with_capacity(layers.len());
     for l in layers {
         let sel = s.selection.on(l);
-        let source = s.doc.timeline(s.scene).layer(l).map(|x| x.name.clone()).unwrap_or_default();
+        let source = s.timeline().layer(l).map(|x| x.name.clone()).unwrap_or_default();
         let picked = s.with_layer(l, |s| -> Result<Vec<Arc<Element>>> {
             let kf = s.editable_keyframe()?;
             let first_pos = kf.elements.iter().position(|e| sel.contains(&e.id)).unwrap_or(kf.elements.len());
@@ -761,6 +761,9 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let sym = SymbolId(opt_u64(p, "symbol")?.ok_or_else(|| EngineError::Param("param 'symbol' or 'bitmap' is required".into()))?);
     if s.doc.symbol(sym).is_none() {
         return Err(EngineError::State(format!("no symbol with id {}", sym.0)));
+    }
+    if crate::editing::would_nest(s, sym) {
+        return Err(EngineError::State("a symbol can't be placed inside itself".into()));
     }
     let x = opt_f32(p, "x")?.unwrap_or(s.doc.stage.width as f32 / 2.0);
     let y = opt_f32(p, "y")?.unwrap_or(s.doc.stage.height as f32 / 2.0);

@@ -391,11 +391,15 @@ impl Session {
     /// (each keyframe as it looks on its first frame, the playhead's as it looks there), with
     /// the keyframe start of each item's layer (`None`: a layer it doesn't edit).
     fn multi_list(&self, first: u32, last: u32) -> (DisplayList, Vec<Option<u32>>) {
-        let tl = self.doc.timeline(self.scene);
+        // The timeline being edited: a symbol open in place has its own frames (ADR 0045).
+        let tl = self.timeline();
         let mut parts = Vec::new();
         let mut starts: Vec<Vec<(LayerId, u32)>> = Vec::new();
         for e in multi_frames(tl, self.frame, first, last) {
-            let mut dl = anicraft_doc::evaluate_scene(&self.doc, self.scene, e.frame);
+            let mut dl = match self.editing_symbol().and_then(|id| self.doc.symbol(id)) {
+                Some(sym) => anicraft_doc::evaluate_timeline(&self.doc, &sym.timeline, e.frame),
+                None => anicraft_doc::evaluate_scene(&self.doc, self.scene, e.frame),
+            };
             keep_layers(&mut dl, &e.layers);
             parts.push(dl);
             starts.push(e.layers.iter().map(|l| (*l, e.frame)).collect());

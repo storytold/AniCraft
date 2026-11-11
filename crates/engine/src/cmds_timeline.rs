@@ -54,11 +54,11 @@ pub fn specs() -> Vec<CommandSpec> {
 /// mask back into a normal layer (its masked layers become normal too).
 fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let is_mask = s.doc.timeline(s.scene).layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?.kind == LayerKind::Mask;
+    let is_mask = s.timeline().layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?.kind == LayerKind::Mask;
     let ty = if is_mask { "normal" } else { "mask" };
     set_type(s, id, ty)?;
     if !is_mask {
-        let tl = s.doc.timeline_mut(s.scene);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
         // The normal layer directly below, in the same folder, becomes masked.
         let mask_parent = tl.layer(id).and_then(|m| m.parent);
         if let Some(i) = tl.layers.iter().position(|l| l.id == id)
@@ -76,7 +76,7 @@ fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
 /// Draw a line on the guide; the layer's classic tweens travel along it.
 fn add_motion_guide(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let Some(l) = tl.layers.get(i) else { return Err(EngineError::State("no such layer".into())) };
     if l.kind != LayerKind::Normal {
@@ -100,7 +100,7 @@ fn add_motion_guide(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(k) = guide.keyframe_mut(0) {
         k.duration = s.frame_count().max(1);
     }
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     tl.layers.insert(i, Arc::new(guide));
     if let Some(l) = tl.layers.get_mut(i + 1) {
         Arc::make_mut(l).parent = Some(gid);
@@ -127,7 +127,7 @@ fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder) {
         return Err(EngineError::State("a folder holds layers; it can't become another kind of layer".into()));
@@ -162,8 +162,8 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
 }
 
 fn layer_type_json(s: &Session, id: LayerId) -> Value {
-    let Some(l) = s.doc.timeline(s.scene).layer(id) else { return json!({}) };
-    let tl = s.doc.timeline(s.scene);
+    let Some(l) = s.timeline().layer(id) else { return json!({}) };
+    let tl = s.timeline();
     let parent_kind = l.parent.and_then(|p| tl.layer(p)).map(|x| x.kind);
     let masked_by = l.parent.filter(|_| parent_kind == Some(LayerKind::Mask));
     let guided_by = l.parent.filter(|_| parent_kind == Some(LayerKind::Guide));
@@ -200,7 +200,7 @@ pub(crate) fn target_layers(s: &Session, p: &Value) -> Result<Vec<LayerId>> {
     let mut out: Vec<LayerId> = Vec::with_capacity(ids.len());
     let mut folders = 0;
     for id in ids {
-        let Some(l) = s.doc.timeline(s.scene).layer(id) else { return Err(EngineError::State(format!("no layer with id {}", id.0))) };
+        let Some(l) = s.timeline().layer(id) else { return Err(EngineError::State(format!("no layer with id {}", id.0))) };
         // Folders have no frames: a range across a folder row acts on the layers only.
         if l.kind == LayerKind::Folder {
             folders += 1;
@@ -463,7 +463,7 @@ fn move_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
 /// keep their content. Lifting everything before placing anything makes overlapping row
 /// ranges (dragging two rows down by one) come out right.
 fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, layer_by: i64) -> Result<Value> {
-    let order: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).collect();
+    let order: Vec<LayerId> = s.timeline().layers.iter().map(|l| l.id).collect();
     let mut rows: Vec<usize> = target_layers(s, p)?.iter().filter_map(|id| order.iter().position(|o| o == id)).collect();
     rows.sort_unstable();
     let mut plan = Vec::with_capacity(rows.len());
@@ -661,7 +661,7 @@ pub(crate) fn layer_color(n: usize) -> anicraft_doc::Rgba {
 }
 
 fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     if tl.layers.len() >= 1000 {
         return Err(EngineError::State("too many layers (limit 1000)".into()));
     }
@@ -688,7 +688,7 @@ fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
         k.duration = s.frame_count().max(1);
     }
     layer.color = layer_color(n);
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     tl.layers.insert(at, Arc::new(layer));
     tl.repair_masks();
     s.layer = id;
@@ -700,7 +700,7 @@ fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
 /// stays where it is, in the mask's folder.
 fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let is_folder = tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder);
     let range = if is_folder { tl.group_range(i) } else { i..i + 1 };
@@ -709,7 +709,7 @@ fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::State("a document needs at least one layer to draw on".into()));
     }
     let up = tl.layers.get(i).and_then(|l| l.parent);
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     if !is_folder {
         for l in tl.layers.iter_mut().filter(|l| l.parent == Some(id)) {
             Arc::make_mut(l).parent = up;
@@ -718,8 +718,8 @@ fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let removed: Vec<LayerId> = tl.layers.drain(range.clone()).map(|l| l.id).collect();
     tl.repair_masks();
     if removed.contains(&s.layer) {
-        let j = range.start.min(s.doc.timeline(s.scene).layers.len().saturating_sub(1));
-        s.layer = s.doc.timeline(s.scene).layers.get(j).map_or(LayerId(0), |l| l.id);
+        let j = range.start.min(s.timeline().layers.len().saturating_sub(1));
+        s.layer = s.timeline().layers.get(j).map_or(LayerId(0), |l| l.id);
         s.selection.clear();
     }
     Ok(json!({"deleted": id.0, "layers": removed.len()}))
@@ -747,11 +747,11 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = if let Some(id) = opt_u64(p, "layer")? {
         LayerId(id)
     } else if let Some(i) = opt_u64(p, "index")? {
-        usize::try_from(i).ok().and_then(|i| s.doc.timeline(s.scene).layers.get(i)).map(|l| l.id).ok_or_else(|| EngineError::Param("layer index out of range".into()))?
+        usize::try_from(i).ok().and_then(|i| s.timeline().layers.get(i)).map(|l| l.id).ok_or_else(|| EngineError::Param("layer index out of range".into()))?
     } else {
         return Err(EngineError::Param("pass {\"layer\": id} or {\"index\": n}".into()));
     };
-    if s.doc.timeline(s.scene).layer(id).is_none() {
+    if s.timeline().layer(id).is_none() {
         return Err(EngineError::State(format!("no layer with id {}", id.0)));
     }
     // A click on a layer's name in Animate: the layer becomes active with all of its artwork at
@@ -774,7 +774,7 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
 /// where it landed: moving it in under a folder or mask puts it inside, moving it out frees it.
 fn move_layer(s: &mut Session, p: &Value, d: i64) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let n = tl.layers.len();
     if tl.layers.get(i).is_some_and(|l| matches!(l.kind, LayerKind::Mask | LayerKind::Folder)) {

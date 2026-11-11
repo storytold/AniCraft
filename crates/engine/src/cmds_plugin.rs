@@ -75,8 +75,7 @@ impl Host for SessionHost<'_> {
 fn document_view(s: &Session) -> Value {
     let st = &s.doc.stage;
     let layers: Vec<Value> = s
-        .doc
-        .timeline(s.scene)
+        .timeline()
         .layers
         .iter()
         .map(|l| json!({"id": l.id.0, "name": l.name, "kind": format!("{:?}", l.kind).to_lowercase(), "visible": l.visible, "locked": l.locked, "parent": l.parent.map(|p| p.0)}))

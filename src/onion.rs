@@ -82,7 +82,8 @@ pub fn range(app: &App) -> (u32, u32) {
 
 /// What the stage composes now: `None` while playing or when nothing is on.
 pub fn stage_skin(app: &App) -> Option<&OnionSkin> {
-    (!app.playing && app.onion.shows()).then_some(&app.onion)
+    // Not inside a symbol open in place: the stage then draws a picture of it (ADR 0045).
+    (!app.playing && app.onion.shows() && app.s.editing.is_empty()).then_some(&app.onion)
 }
 
 /// Onion skin on or off (the timeline button, View › Onion Skin, Alt+Shift+O).
@@ -103,7 +104,7 @@ pub fn toggle_edit_multiple(app: &mut App) {
 
 /// Edit Multiple Frames is taking the Selection tool's input.
 pub fn editing(app: &App) -> bool {
-    app.onion.edit_multiple && !app.playing && !crate::camera_tool::previewing(app)
+    app.onion.edit_multiple && !app.playing && !crate::camera_tool::previewing(app) && app.s.editing.is_empty()
 }
 
 // ----- the menu ------------------------------------------------------------------------------
@@ -435,7 +436,7 @@ pub fn draw(app: &mut App, painter: &egui::Painter, to_screen: impl Fn(Vec2) -> 
         let r = box_of(b);
         // The playhead's keyframe in the selection colour; the others a step lighter, so it is
         // clear which artwork is on this frame.
-        let here = app.s.doc.timeline(app.s.scene).layer(it.layer).and_then(|l| l.keyframe_at(app.s.frame)).is_some_and(|k| k.start == it.frame);
+        let here = app.s.timeline().layer(it.layer).and_then(|l| l.keyframe_at(app.s.frame)).is_some_and(|k| k.start == it.frame);
         let c = if here { T.selection } else { T.selection.gamma_multiply(0.7) };
         painter.rect_stroke(r, 0.0, Stroke::new(if here { 1.5 } else { 1.0 }, c), StrokeKind::Middle);
     }
