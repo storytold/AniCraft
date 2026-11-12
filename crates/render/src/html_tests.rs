@@ -441,6 +441,11 @@ fn the_page_holds_the_movie_and_the_player_and_nothing_can_close_its_scripts() {
     assert_eq!((back["stage"]["w"].as_u64(), back["stage"]["fps"].as_f64()), (Some(640), Some(24.0)));
     assert_eq!(e.stats.data_bytes, end - start);
     assert!(e.report.is_empty(), "nothing lost: {:?}", e.report);
+    // The page's script holds the player, the filters and the page code, in that order (the page
+    // code uses both).
+    let script = &e.html[end..];
+    let at = |js: &str| script.find(js).unwrap_or_else(|| panic!("a script is missing from the page"));
+    assert!(at(PLAYER_JS) < at(FILTERS_JS) && at(FILTERS_JS) < at(CANVAS_JS));
     // The page code needs a browser to run, but it must compile.
     let mut ctx = Context::default();
     ctx.eval(Source::from_bytes(&format!("new Function({})", json!(CANVAS_JS)))).unwrap_or_else(|e| panic!("canvas.js: {e}"));

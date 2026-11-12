@@ -915,6 +915,8 @@ pub fn to_html(doc: &Document, opts: &HtmlOptions) -> Result<HtmlExport, String>
     html.push_str("</script>\n<script>\n");
     html.push_str(PLAYER_JS);
     html.push('\n');
+    html.push_str(FILTERS_JS);
+    html.push('\n');
     html.push_str(CANVAS_JS);
     html.push_str("</script>\n</body>\n</html>\n");
     if html.len() > MAX_HTML_BYTES {
