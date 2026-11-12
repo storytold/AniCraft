@@ -106,6 +106,15 @@ nothing was copied.
 
 * Animate users find Group, Ungroup and Combine Objects where they expect them, with the same
   keys; Animate files keep their groups.
+* Measured on 288 raw shapes (12 × 12 outlined, rounded squares; optimised debug build):
+
+  | Operation | Time |
+  |---|---|
+  | Group | 0.10 ms |
+  | Evaluate the frame with the group | 0.07 ms |
+  | Open it in place (with its stage picture) | 0.10 ms |
+  | Ungroup, merging every raw shape back | 18 ms |
+  | Union / Intersect / Punch / Crop (a circle and a 12-point star) | 0.27 / 0.33 / 0.28 / 0.27 ms |
 * Drawing objects stay single shapes. A multi-colour drawing object (Union of colours, Punch of a
   stroked shape) is a group, so it is edited with a double-click instead of in place. Merging the
   two ideas (a drawing object as a group that tools reach into without opening it, issue #181)
