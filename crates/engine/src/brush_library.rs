@@ -122,7 +122,7 @@ pub const BUILTIN: [(&str, &str); 7] = [
 /// A one-line description of each built-in preset, for tooltips.
 pub fn builtin_hint(key: &str) -> &'static str {
     match key {
-        "pencil" => "A thin line with a slightly grainy edge; it takes a firm press to paint wide.",
+        "pencil" => "A thin line with short tapered ends; it takes a firm press to paint wide.",
         "ink_pen" => "A smooth inking line that follows a light touch and tapers at both ends.",
         "calligraphy" => "A flat nib at 45°: thick and thin strokes by direction.",
         "round_taper" => "A round brush that swells from a point and thins back to one.",
@@ -138,7 +138,7 @@ pub fn builtin(key: &str) -> Option<BrushPreset> {
     let (_, name) = BUILTIN.iter().find(|(k, _)| *k == key)?;
     let d = BrushPreset { name: (*name).to_string(), ..BrushPreset::default() };
     Some(match key {
-        "pencil" => BrushPreset { size: 3.0, smoothing: 30.0, curve: PressureCurve::FIRM, jitter: 8.0, ..d },
+        "pencil" => BrushPreset { size: 3.0, smoothing: 30.0, curve: PressureCurve::FIRM, taper_start: 5.0, taper_end: 5.0, ..d },
         "ink_pen" => BrushPreset { size: 6.0, smoothing: 60.0, curve: PressureCurve::SOFT, taper_start: 12.0, taper_end: 18.0, ..d },
         "calligraphy" => BrushPreset { size: 18.0, angle: 45.0, roundness: 15.0, smoothing: 50.0, ..d },
         "round_taper" => BrushPreset { size: 14.0, smoothing: 55.0, taper_start: 35.0, taper_end: 35.0, ..d },

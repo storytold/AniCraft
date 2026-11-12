@@ -121,3 +121,10 @@ pressure curve and tilt; brush strokes with a stroke colour (Animate's Paint Bru
 draws width-profiled strokes, ADR 0018); gradients and bitmap fills as brush paint; the live
 preview through the merge; the Eraser (shares this sweep) and Eyedropper, which come in the next
 PR.
+
+## Note (2026-11-11)
+
+ADR 0068 adds the brush library (parameter presets with tapers, dabs and a ragged edge),
+pressure curves, Velocity, and the Paint Brush (Y), which draws width-profiled strokes through
+`draw.brush`'s `as_stroke`. Without the new params `draw.brush` paints exactly as described
+here. Tilt waits for the toolkit to report it.

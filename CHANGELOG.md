@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+* **Brush library, pressure curves and the Paint Brush** (ADR 0068, M7).
+  * **Window › Brush Library**: seven built-in brushes, each with a stroke preview drawn by the
+    renderer: Pencil, Ink Pen, Flat Calligraphy, Round Taper, Marker, Chalk (a ragged edge that
+    is the same every time) and Dotted. They are all made of parameters, with no bitmaps. A click
+    sets the brush in hand.
+  * **Your own brushes**: Save Brush keeps the brush in hand under a name, in your preferences.
+    Right-click to rename or delete one (deleting asks first). Import… and Export… move a brush
+    set between computers as a small JSON file.
+  * **Pressure curves**: an editor in Properties maps pen pressure to the size and, optionally,
+    to the stroke's opacity. It has Linear, Soft and Firm presets, or your own points.
+  * **Shaping**: tapers at the start and end, dab spacing and a rough edge, in Properties.
+  * **Velocity**: without a pen, drawing faster draws thinner (off by default).
+  * **Paint Brush (Y)**: draws a line in the stroke colour whose width follows the pressure and
+    tapers, as a width profile you can reshape with the Width tool.
+  * Headless: `brush.preset_list`, `brush.preset_save`, `brush.preset_rename`,
+    `brush.preset_delete`, `brush.preset_export`, `brush.preset_import`; `preset`, `curve`,
+    `pressure_size`, `pressure_opacity`, `taper_start`, `taper_end`, `spacing`, `jitter` and
+    `as_stroke` on `draw.brush`.
+  * Pen tilt isn't read yet: egui doesn't report it.
+
 * **Dynamic and input text fields** (ADR 0066, M5).
   * **Properties › Text type**: Static, Dynamic or Input text, as in Animate. Dynamic and input
     fields have an **instance name**, a **line type** (single line, multiline, multiline no wrap,

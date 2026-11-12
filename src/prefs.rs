@@ -407,6 +407,15 @@ mod tests {
         let paths: Vec<_> = p.recent.entries().iter().map(|e| e.path.display().to_string()).collect();
         assert_eq!(paths, ["a.anicraft"], "bad entries are skipped, the rest kept");
         assert!(!p.start_screen, "and the other preferences with them");
+        // Your brushes (ADR 0068): none in older files; junk entries skipped, values clamped,
+        // and they survive a save and load.
+        assert!(Prefs::from_json(r#"{"ui_scale": 1.25}"#).brushes.is_empty());
+        let p = Prefs::from_json(r#"{"brushes": [{"name": "Soft", "size": 99999, "curve": "x"}, 3, {"name": "Ink", "jitter": 12}, {"name": ""}], "start_screen": false}"#);
+        let names: Vec<_> = p.brushes.user().iter().map(|b| (b.name.clone(), b.size)).collect();
+        assert_eq!(names, [("Ink".to_string(), 10.0)], "a bad curve drops that brush, the rest stay");
+        assert!(!p.start_screen);
+        let back = Prefs::from_json(&serde_json::to_string(&p).unwrap());
+        assert_eq!(back.brushes, p.brushes);
         // Older files open Test Movie in its own window, with no remembered place (ADR 0062);
         // a place someone broke by hand is forgotten, not used.
         let p = Prefs::from_json(r#"{"ui_scale": 1.25}"#);

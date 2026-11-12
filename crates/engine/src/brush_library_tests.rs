@@ -69,7 +69,7 @@ fn every_preset_paints_within_its_area_bounds() {
     let len = wave_length();
     // (key, least, most) area as a part of length × size: what each preset's settings allow.
     let bounds = [
-        ("pencil", 0.45, 0.65),      // a firm curve thins the light parts; a slight grain
+        ("pencil", 0.4, 0.65),       // a firm curve thins the light parts; short tapers
         ("ink_pen", 0.7, 0.9),       // a soft curve keeps it wide; tapered ends
         ("calligraphy", 0.45, 0.7),  // a 15 % flat nib: thick and thin by direction
         ("round_taper", 0.55, 0.75), // swells from a point and back
@@ -264,6 +264,33 @@ fn previews_are_drawn_by_the_renderer() {
         }
     }
     assert!(crate::cmds_brush::preview(&crate::brush_library::BrushPreset::default(), false, 2, 2, 1.0, anicraft_doc::Rgba::hex(0)).is_err());
+}
+
+/// Measured numbers for ADR 0068: `cargo test --release -p anicraft-engine preset_timings -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn preset_timings() {
+    for (key, _) in BUILTIN {
+        for as_stroke in [false, true] {
+            let mut ms: Vec<f64> = (0..15)
+                .map(|_| {
+                    let mut s = blank();
+                    let t = std::time::Instant::now();
+                    run(&mut s, "draw.brush", json!({"points": wave(), "preset": key, "as_stroke": as_stroke}));
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            ms.sort_by(f64::total_cmp);
+            let (sh, _) = painted(key, json!({"as_stroke": as_stroke}));
+            eprintln!("{key:12} stroke {as_stroke:5}: median {:6.2} ms, {} anchors", ms[7], sh.path.anchors().len());
+        }
+    }
+    let b = crate::brush_library::builtin("chalk").unwrap();
+    let t = std::time::Instant::now();
+    for _ in 0..10 {
+        crate::cmds_brush::preview(&b, false, 300, 80, 2.0, anicraft_doc::Rgba::hex(0)).unwrap();
+    }
+    eprintln!("chalk preview 300x80: {:.2} ms each", t.elapsed().as_secs_f64() * 100.0);
 }
 
 #[test]
