@@ -194,7 +194,7 @@ fn nested(kind: SymbolKind, len: u32, inner: &[(u32, u32, Option<FrameSound>)], 
     // Pad the symbol's timeline to `len` frames with a second, silent layer.
     let mut pad = Layer::new(LayerId(11), "pad");
     pad.keyframes = vec![Arc::new(Keyframe::new(0, len))];
-    d.library.push(Arc::new(Symbol { linkage: None, id: SymbolId(50), name: "S".into(), kind, timeline: Timeline { layers: vec![Arc::new(il), Arc::new(pad)] } }));
+    d.library.push(Arc::new(Symbol { linkage: None, scale_grid_kept: None, scale_grid: None, id: SymbolId(50), name: "S".into(), kind, timeline: Timeline { layers: vec![Arc::new(il), Arc::new(pad)] } }));
     let mut l = Layer::new(LayerId(1), "outer");
     l.keyframes = instances
         .iter()

@@ -2,7 +2,7 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Selection, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Layer, LayerId, LibraryEntry, LibraryItem, LoopMode, Paint, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
+use anicraft_doc::{ColorEffect, ColorStyle, Element, ElementId, ElementKind, Layer, LayerId, LibraryEntry, LibraryItem, LoopMode, Paint, ScaleGrid, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Decomposed, Path, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -29,11 +29,21 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, |s, p| s.each_layer(true, |s| set_transform(s, p))),
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, |s, p| s.each_layer(false, |s| set_fill(s, p))),
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..], cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (as stroke.set_style)}", true, |s, p| s.each_layer(false, |s| set_stroke(s, p))),
-        c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1}", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
+        c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1} sets the alpha multiplier and keeps the rest of the colour effect (None becomes Alpha; Brightness and Tint become Advanced below 1)", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
+        c("element.set_color_effect", "Colour Effect", "", None, "{style?: none|brightness|tint|advanced|alpha (default: the style the values belong to, else each element's own), alpha? (%, 0..100), brightness? (%, -100..100), tint? (#rrggbb), tint_amount? (%, 0..100), red_multiplier?, green_multiplier?, blue_multiplier?, alpha_multiplier? (%, -100..100), red_offset?, green_offset?, blue_offset?, alpha_offset? (-255..255)} on every selected element (ADR 0056); values not given keep each element's own. A new style starts from the look it can keep: Advanced is exactly the effect before, Alpha keeps the opacity, Brightness and Tint start at 0 %. The camera's effect is a tint", true, |s, p| s.each_layer(true, |s| set_color_effect(s, p))),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the symbols of every selected instance)}", true, set_symbol_kind),
+        c(
+            "symbol.set_scale_grid",
+            "9-Slice Scaling",
+            "",
+            None,
+            "{symbol?: id (default: the symbol open for editing, else the selected instance's), on?: bool, left?, right?, top?, bottom? (guide positions in the symbol's space)} turns a symbol's guides for 9-slice scaling on or off, or moves them (ADR 0055). Turning them on brings back the guides it had when they were turned off (ADR 0057), else puts them a quarter of the way in from each edge of the symbol's artwork; moving one turns them on. Scaled instances then keep the corners outside the guides unscaled, stretch the edges one way and the centre both ways → {symbol, scale_grid: {left, right, top, bottom} | null}",
+            true,
+            set_scale_grid,
+        ),
         c("element.rename", "Instance Name", "", None, "{name}", true, |s, p| s.each_layer(true, |s| rename(s, p))),
         c("arrange.bring_to_front", "Bring to Front", "Modify/Arrange", Some("Ctrl+Shift+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, true))),
         c("arrange.bring_forward", "Bring Forward", "Modify/Arrange", Some("Ctrl+Up"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, true))),
@@ -401,9 +411,84 @@ fn set_alpha(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("param 'alpha' must be between 0 and 1".into()));
     }
     for e in s.selected_elements_mut()? {
-        e.color.alpha = a;
+        e.color = e.color.with_alpha(a);
     }
     Ok(json!({"alpha": a}))
+}
+
+/// Each colour effect value `element.set_color_effect` takes: its key, style, range and scale
+/// (the model's value is the param's divided by it).
+const EFFECT_VALUES: [(&str, ColorStyle, f32, f32, f32); 11] = [
+    ("alpha", ColorStyle::Alpha, 0.0, 100.0, 100.0),
+    ("brightness", ColorStyle::Brightness, -100.0, 100.0, 100.0),
+    ("tint_amount", ColorStyle::Tint, 0.0, 100.0, 100.0),
+    ("red_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("green_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("blue_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("alpha_multiplier", ColorStyle::Advanced, -100.0, 100.0, 100.0),
+    ("red_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+    ("green_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+    ("blue_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+    ("alpha_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
+];
+
+fn set_color_effect(s: &mut Session, p: &Value) -> Result<Value> {
+    let style = match opt_str(p, "style")? {
+        Some(k) => Some(ColorStyle::from_key(k).ok_or_else(|| EngineError::Param(format!("unknown style '{k}' (none, brightness, tint, advanced or alpha)")))?),
+        None => None,
+    };
+    let tint = opt_color(p, "tint")?;
+    let mut values: Vec<(usize, f32)> = Vec::new();
+    let mut families: Vec<ColorStyle> = tint.map(|_| ColorStyle::Tint).into_iter().collect();
+    for (i, (key, fam, lo, hi, scale)) in EFFECT_VALUES.iter().enumerate() {
+        if let Some(v) = opt_f32(p, key)? {
+            if !(*lo..=*hi).contains(&v) {
+                return Err(EngineError::Param(format!("param '{key}' must be between {lo} and {hi}")));
+            }
+            values.push((i, v / scale));
+            if !families.contains(fam) {
+                families.push(*fam);
+            }
+        }
+    }
+    let style = match (style, families.as_slice()) {
+        (Some(st), f) if f.iter().any(|x| *x != st) => return Err(EngineError::Param(format!("the {} style has none of these values: give only its own", st.key()))),
+        (Some(st), _) => Some(st),
+        (None, []) => return Err(EngineError::Param("give a style, or a value to set".into())),
+        (None, [one]) => Some(*one),
+        (None, _) => return Err(EngineError::Param("these values belong to different styles: give one style's values".into())),
+    };
+    let mut first = None;
+    for e in s.selected_elements_mut()? {
+        let target = style.unwrap_or(e.color.style());
+        if matches!(e.kind, ElementKind::Camera) && !matches!(target, ColorStyle::Tint | ColorStyle::None) {
+            return Err(EngineError::State("the camera's colour effect is a tint".into()));
+        }
+        let mut fx = e.color.to_style(target);
+        if let ColorEffect::Tint { color, .. } = &mut fx
+            && let Some(t) = tint
+        {
+            *color = t.with_alpha(1.0);
+        }
+        for &(i, v) in &values {
+            match &mut fx {
+                ColorEffect::Alpha(a) if i == 0 => *a = v,
+                ColorEffect::Brightness(b) if i == 1 => *b = v,
+                ColorEffect::Tint { amount, .. } if i == 2 => *amount = v,
+                ColorEffect::Advanced(t) => {
+                    if let Some(m) = i.checked_sub(3).and_then(|j| t.mul.get_mut(j)) {
+                        *m = v;
+                    } else if let Some(o) = i.checked_sub(7).and_then(|j| t.add.get_mut(j)) {
+                        *o = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+        e.color = fx.sanitized();
+        first.get_or_insert(e.color);
+    }
+    Ok(first.map_or(Value::Null, |fx| crate::color_effect_json(&fx)))
 }
 
 /// Most filters on one instance.
@@ -555,6 +640,66 @@ fn set_symbol_kind(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"symbol": ids.first().map(|i| i.0), "symbols": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "kind": format!("{kind:?}")}))
 }
 
+/// The symbol a command means: `symbol`, else the selected instance's.
+fn selected_symbol(s: &Session, p: &Value) -> Result<SymbolId> {
+    Ok(match opt_u64(p, "symbol")? {
+        Some(id) => SymbolId(id),
+        None => {
+            // The symbol of the selected instance.
+            let (layer, sel) = s.selection.first().ok_or_else(|| EngineError::State("select a symbol instance, or pass 'symbol'".into()))?;
+            s.elements_on(layer)
+                .iter()
+                .find(|e| e.id == sel)
+                .and_then(|e| match e.kind {
+                    ElementKind::Symbol { symbol, .. } => Some(symbol),
+                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
+                })
+                .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
+        }
+    })
+}
+
+/// 9-slice guides (ADR 0055): on, off or moved, on one symbol.
+fn set_scale_grid(s: &mut Session, p: &Value) -> Result<Value> {
+    let on = opt_bool(p, "on")?;
+    let edges = [opt_f32(p, "left")?, opt_f32(p, "right")?, opt_f32(p, "top")?, opt_f32(p, "bottom")?];
+    if on.is_none() && edges.iter().all(Option::is_none) {
+        return Err(EngineError::Param("pass 'on', or a guide to move: 'left', 'right', 'top' or 'bottom'".into()));
+    }
+    // The open symbol is the one being edited; otherwise the selected instance's.
+    let id = match (opt_u64(p, "symbol")?, s.editing_symbol()) {
+        (None, Some(open)) => open,
+        _ => selected_symbol(s, p)?,
+    };
+    let sym = s.doc.symbol(id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
+    let grid = if on == Some(false) {
+        if edges.iter().any(Option::is_some) {
+            return Err(EngineError::Param("guides can't be moved while turning them off".into()));
+        }
+        None
+    } else {
+        // Switched on again, the guides come back where they were (ADR 0057).
+        let start = sym.scale_grid.or(sym.scale_grid_kept).unwrap_or_else(|| {
+            let b = anicraft_doc::symbol_box(&s.doc, sym);
+            ScaleGrid::inset(&if b.is_empty() { anicraft_geom::Rect::new(0.0, 0.0, 100.0, 100.0) } else { b })
+        });
+        let [l, r, t, b] = edges;
+        let g = ScaleGrid { left: l.unwrap_or(start.left), right: r.unwrap_or(start.right), top: t.unwrap_or(start.top), bottom: b.unwrap_or(start.bottom) };
+        g.check().map_err(EngineError::Param)?;
+        Some(g)
+    };
+    // Off, the guides are kept (only hidden), so switching back on finds them.
+    let kept = if grid.is_none() { sym.scale_grid.or(sym.scale_grid_kept) } else { None };
+    if let Some(sym) = s.doc.library.iter_mut().find(|x| x.id == id)
+        && (sym.scale_grid != grid || sym.scale_grid_kept != kept)
+    {
+        let sym = Arc::make_mut(sym);
+        sym.scale_grid = grid;
+        sym.scale_grid_kept = kept;
+    }
+    Ok(json!({"symbol": id.0, "scale_grid": grid.map(|g| json!({"left": g.left, "right": g.right, "top": g.top, "bottom": g.bottom}))}))
+}
+
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     let name: String = str_req(p, "name")?.chars().take(128).collect();
     for e in s.selected_elements_mut()? {
@@ -703,7 +848,7 @@ pub(crate) fn convert_to_symbol(s: &mut Session, p: &Value) -> Result<Value> {
         }
         inner.push(Arc::new(layer));
     }
-    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, timeline: Timeline { layers: inner } }));
+    s.doc.library.push(Arc::new(Symbol { id: sym_id, name: name.clone(), kind, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: inner } }));
     if folder.is_some() {
         s.doc.place_entry(LibraryEntry::Item(LibraryItem::Symbol(sym_id)), folder);
     }
@@ -750,7 +895,7 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
                 let mut c = (**child).clone();
                 c.id = ElementId(s.doc.alloc_id());
                 c.transform = e.transform.mul(&child.transform);
-                c.color = e.color.concat(&child.color);
+                c.color = e.color.nested(&child.color);
                 fresh_ids.push(c.id);
                 out.push(Arc::new(c));
             }
@@ -771,7 +916,7 @@ const MAX_PLACE: usize = 1_000;
 /// does (ADR 0053): an instance of each symbol, a rectangle of each bitmap's size showing it,
 /// in the active layer's keyframe at the playhead, all selected; a sound goes onto that
 /// keyframe. One command, so one undo step however many items.
-fn place(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<LibraryItem> = match p.get("items") {
         Some(list) => {
             let list = list.as_array().ok_or_else(|| EngineError::Param("param 'items' must be a list of {\"symbol\" | \"bitmap\" | \"sound\": id}".into()))?;

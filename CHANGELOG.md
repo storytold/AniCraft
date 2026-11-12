@@ -2,6 +2,135 @@
 
 ## Unreleased
 
+* **Publish Settings and Publish** (ADR 0060, M8).
+  * **File › Publish Settings** (Ctrl+Shift+F12) is a window that stays open while you work.
+    It lists every format AniCraft exports (HTML canvas, animated GIF, video, Lottie, sprite
+    sheet, PNG sequence, PNG, SVG, audio), each with a checkbox. The selected format shows
+    its output name and the same options its File › Export command has. The settings are
+    saved **in the document** and every change can be undone. Older files open with the HTML
+    page on.
+  * Output names are relative to the document's folder, and `{name}` stands for the
+    document's name (`web/{name}.html`). Each name is checked as you type and the full path
+    is shown below it. A name can't point outside the document's folder, and two formats
+    can't write the same file.
+  * **File › Publish** (Shift+F12) writes every format that is on, in the background. A
+    window shows each format's progress and has a Cancel button. A single report then lists
+    what each format wrote, skipped (video in a browser, audio with no sounds), left out
+    (Lottie's and the HTML page's notes) or why it failed. One failing format doesn't stop
+    the others.
+  * Publishing over files that are already there asks once. After that, the files this
+    session published are replaced without asking.
+  * **Presets**: save the settings under a name, apply them to any document, or delete them.
+    Presets are kept in your preferences.
+  * In a browser, the files go to your downloads, as one ZIP when there are several.
+  * Headless: `publish.settings_get`, `publish.settings_set` and `file.publish`, which returns
+    the report. Publishing the sample in six formats takes 0.64 s.
+* **Files from the desktop, recent files and a start screen** (ADR 0059, M8).
+  * **Drop files onto the window**: `.anicraft`, `.fla` and `.xfl` open (asking first over
+    unsaved work); SVG drawings, PNG and JPEG images and WAV, Ogg and MP3 sounds dropped on the
+    **stage** go onto the active layer at the playhead, centred where they were dropped, and
+    dropped on the **Library** go into the folder under the pointer. One undo step per drop.
+    A highlight shows where they will land; anything AniCraft can't take gets one clear
+    status line. In the web editor too.
+  * **File › Open Recent**: the last 10 documents opened or saved, with pinned favourites on
+    top, missing files greyed out with Remove, and Clear Recent Files. Kept in the
+    preferences (browser storage on the web).
+  * **Start screen** when AniCraft starts without a document: New with HD, Full HD, square
+    and vertical presets or a custom size and frame rate, Open, the sample animation, and the
+    recent files with a picture of their first frame (captured on save). Esc goes back to the
+    document; File › Start Screen brings it back; it can be switched off.
+  * New commands for the CLI and MCP: `file.drop`, `file.open_recent`, `file.recent_list`,
+    `prefs.recent_pin`, `prefs.recent_remove`, `prefs.recent_clear`; `file.import` takes
+    `cx`/`cy` and `layer: "active"`.
+
+* **Buttons, complete: sounds on button frames and hit-area editing** (ADR 0057, M5).
+  * A sound on a button's **Over** or **Down** frame plays when the pointer goes over or
+    presses the button, in Test Movie and in the HTML canvas page (Web Audio). As the SWF format
+    keeps them, the Up frame's plays on leaving and the Hit frame's on letting go over it. A
+    stream on a button frame plays as an event. Buttons stay out of the soundtrack: Export Audio
+    and video are unchanged.
+  * Editing a button in place, the timeline names its four frames **Up, Over, Down, Hit** (and
+    widens them to fit while the button is open), and the stage draws the **Hit area**
+    translucent over the other states.
+  * Test Movie has a **Show hit areas** checkbox.
+  * XFL and `.fla` import bring sounds whose file is in the package (WAV, Ogg Vorbis, MP3), with
+    the sounds on frames that use them, buttons' states included; sounds kept only in Animate's
+    own format are reported.
+  * Headless: `control.test_movie` lists the sounds it started.
+  * 9-slice guides switched off are now kept, and come back where they were when switched on.
+* **Find and Replace, and the Movie Explorer** (ADR 0058, M8).
+  * **Edit › Find and Replace** (Ctrl+F) is a window that stays open while you work. It finds
+    text in text fields, frame labels, layer names, instance names and frame scripts, with
+    match case, whole word and regular expressions. It also finds fonts, colours (fills,
+    gradient stops, strokes, text), symbols, sounds and bitmaps. It searches this scene and
+    the symbols in it, or the whole document. Results show as you type.
+  * Click a result, or press **Find Next** (F3) or Find Previous (Shift+F3), to go there: the
+    scene, the frame and the item selected. A symbol opens in place through the instances
+    that lead to it.
+  * **Replace** replaces the current result and goes on to the next. **Replace All** is one
+    undo step and asks first above 100 places. Replaced text is laid out again, colours keep
+    their transparency, and a symbol is never put inside itself.
+  * **Window › Movie Explorer** (Alt+F3) is a tab next to the Library. It shows scenes ›
+    layers › keyframes › instances, text, sounds, bitmaps and scripts, each instance opening
+    into its symbol, plus the Library's symbol definitions. A Show menu filters it by kind
+    and a search keeps matching rows. Double-click a row to go there.
+  * Both lists draw only the rows in view, so movies with 100,000 rows stay smooth.
+  * Headless: `find.search`, `find.replace`, `find.goto` and `explorer.tree` (paged).
+    Patterns use a linear-time engine with size limits.
+* **Colour effects, complete** (ADR 0056, M2).
+  * **Properties › Colour effect**: Animate's Style menu (None, Brightness, Tint, Advanced,
+    Alpha) with each style's controls: brightness −100..100 %, tint colour and amount,
+    Advanced's multiplier and offset for red, green, blue and alpha. Every row says "mixed"
+    when the selection differs, and a change sets only that value on all of them. Switching
+    style keeps the look where it can (Advanced starts as exactly the effect before).
+  * One exact colour transform behind every style: nested effects compose exactly (a
+    brightness around a tint shows both), and the CPU renderer, the GPU stage (bitmaps
+    included, pixel-identical), SVG (`feColorMatrix` on bitmaps), HTML canvas (bitmaps
+    recoloured, no longer reported) and Lottie (baked into the colours) draw the same.
+  * Classic tweens interpolate within a style (a brightness tween passes through 0) and across
+    styles in the Advanced space, as Animate does.
+  * Motion tweens key **Brightness**, **Tint** colour (red, green, blue) beside its amount, and
+    the eight **Advanced** values; the Motion Editor lists the styles in use and adds others
+    with **Add Colour Effect**. A tween has one colour effect style, as in Animate.
+  * XFL/FLA import brings every `Color` style across (Advanced no longer keeps only its
+    alpha); a new `colour` corpus package with goldens.
+  * `element.set_color_effect` for the CLI, MCP and plug-ins; `element.set_alpha` now keeps
+    the rest of the effect. Older files open unchanged, and None, Alpha and Tint effects are
+    still written exactly as before.
+
+* **9-slice scaling for symbols** (ADR 0055, M2).
+  * **Enable guides for 9-slice scaling** on a symbol, in the Library's item properties or in
+    Properties. A scaled instance then keeps its corners unscaled, stretches its edges one way
+    and its centre both ways. Rounded buttons and panels resize without distorting, strokes
+    keep their width, and rotation and skew apply after. Nested symbols, text and bitmaps
+    inside scale normally, as in Animate. When there isn't room for the corners, they shrink
+    together in proportion.
+  * While the symbol is open for editing, its four guides are **dashed lines across the
+    stage**. Drag them with the Selection tool (one undo step per drag), or type their
+    positions in Properties.
+  * Every export draws it from the same frames. SVG and Lottie get baked outlines. HTML canvas
+    export scales such instances as a whole for now and says so in its report.
+  * XFL and `.fla` import read `scaleGridLeft/Right/Top/Bottom`. Headless:
+    `symbol.set_scale_grid {symbol?, on?, left?, right?, top?, bottom?}`.
+* **Frame scripts in ActionScript 3.0 run small logic** (ADR 0052, M6).
+  * Typed variables (`var score:int = 0;` as Number, int, uint, Boolean, String or untyped),
+    kept per timeline instance across its frame scripts as Animate timelines keep them;
+    expressions (arithmetic, comparison, logic, joining text, `Math.min/max/abs/floor/ceil/
+    round/random`, casts); `if`/`else`, `for`, `while` and `do` loops; functions with
+    parameters and results, callable from any frame of the same timeline.
+  * Scripts read properties of instances and timelines (`x`, `y`, `alpha`, `visible`,
+    `rotation`, `scaleX/Y`, `currentFrame`, `totalFrames`, `currentLabel`, `mouseX/Y`, `name`),
+    remove listeners, and listen for `Event.ENTER_FRAME` and for keys on the stage
+    (`KeyboardEvent.KEY_DOWN`/`KEY_UP`, `e.keyCode`); `e.target` and `e.currentTarget` work.
+  * Test Movie sends your keys to the movie (it says so in its bar); `Math.random()` is
+    seeded, so a headless `control.test_movie` with the same `seed` and events always plays the
+    same; key events and `seed` there too.
+  * An endless loop or an error stops only its script, with a line in Output, and the movie
+    plays on. A script that uses a name no frame of its timeline declares doesn't run, and the
+    Actions panel shows the name in place.
+  * The HTML canvas export runs the same scripts, keys included, checked against Test Movie
+    step by step.
+
 * **Repeating bitmap fills on the GL backend** (M3): the GPU stage wrapped a repeating
   bitmap with a signed remainder, which GLSL leaves undefined for negative values, so on
   OpenGL (llvmpipe in the FreeBSD VM) the texels at the bitmap's left and top edges came out

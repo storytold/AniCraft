@@ -388,7 +388,7 @@ impl Document {
         let src = self.library.get(at)?.clone();
         let new_id = SymbolId(self.alloc_id());
         let timeline = fresh_ids(&src.timeline, &mut || self.alloc_id());
-        let copy = Symbol { id: new_id, name, kind: src.kind, linkage: None, timeline };
+        let copy = Symbol { id: new_id, name, kind: src.kind, linkage: None, scale_grid_kept: src.scale_grid_kept, scale_grid: src.scale_grid, timeline };
         self.library.insert(at + 1, Arc::new(copy));
         if let Some(f) = self.library_tree.placed.get(&LibraryItem::Symbol(id)).copied() {
             Arc::make_mut(&mut self.library_tree).placed.insert(LibraryItem::Symbol(new_id), f);

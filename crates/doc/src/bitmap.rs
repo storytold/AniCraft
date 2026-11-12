@@ -222,6 +222,7 @@ pub(crate) mod base64_bytes {
     }
 }
 
+pub use base64_bytes::decode as base64_decode;
 pub use base64_bytes::encode as base64_encode;
 
 #[cfg(test)]

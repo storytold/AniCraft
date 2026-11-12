@@ -13,15 +13,18 @@
 //! clips have their own playheads, buttons their pointer states). Identical paths, paints and
 //! frames are stored once, so a still keyframe over many frames costs one entry.
 //!
-//! What doesn't carry across is counted in the report: filters, Subtract and Invert blending,
-//! tints on bitmaps, plug-in frame scripts (they need the plug-in host) and kept scripts
-//! outside the ActionScript subset. Scripts in the subset (ADR 0013 tier 2) come across as the
-//! same actions and listeners the Rust player runs.
+//! What doesn't carry across is counted in the report: filters, 9-slice scaling (instances
+//! scale as a whole), Subtract and Invert blending,
+//! plug-in frame scripts (they need the plug-in host) and kept scripts
+//! outside the ActionScript subset. Scripts in the subset (ADR 0013 tiers 2 and 2.5) come
+//! across as the same script IR the Rust player runs (as JSON), with each timeline's functions
+//! and variable types, and `player.js` evaluates it the same way.
 
 use crate::stroke::stroke_outline;
-use anicraft_doc::actions::as3::ScriptOp;
+use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
-use anicraft_doc::{BlendMode, ColorEffect, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
+use anicraft_doc::player::TimelineRef;
+use anicraft_doc::{BlendMode, ColorTransform, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -90,10 +93,9 @@ pub struct HtmlExport {
 /// Notes for the report.
 const FILTERS: &str = "filters (not exported; drawn without them)";
 const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
-const BITMAP_TINT: &str = "tints on bitmap fills (drawn untinted)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
-const BUTTON_SOUNDS: &str = "sounds on button frames (not played yet)";
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
+const NINE_SLICE: &str = "9-slice scaling (scaled as a whole)";
 const OUTSIDE_CALLS: &str = "script calls that reach outside the movie (ignored)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
@@ -140,15 +142,14 @@ fn matrix(m: &Affine) -> Option<Value> {
     Some(json!([num(a, 1e5), num(b, 1e5), num(c, 1e5), num(d, 1e5), coord(e), coord(f)]))
 }
 
-/// `[alpha, tint r, g, b, tint amount]`; `None` for no effect.
-fn effect(fx: &ColorEffect) -> Option<Value> {
-    if *fx == ColorEffect::default() {
+/// A colour transform (ADR 0056): `[red, green, blue, alpha multipliers, red, green, blue,
+/// alpha offsets]`; `None` for no effect.
+fn effect(fx: &ColorTransform) -> Option<Value> {
+    let fx = fx.sanitized();
+    if fx.is_identity() {
         return None;
     }
-    let t = fx.tint.sanitized();
-    let a = if fx.alpha.is_finite() { fx.alpha } else { 1.0 };
-    let k = if fx.tint_amount.is_finite() { fx.tint_amount } else { 0.0 };
-    Some(json!([num(a, 1e4), num(t.r, 1e4), num(t.g, 1e4), num(t.b, 1e4), num(k, 1e4)]))
+    Some(Value::Array(fx.mul.iter().chain(fx.add.iter()).map(|v| num(*v, 1e4)).collect()))
 }
 
 /// SVG path data (what `Path2D` reads), three decimals; empty when a point isn't finite.
@@ -257,27 +258,6 @@ fn actions(list: &[Action]) -> Value {
     Value::Array(list.iter().map(action).collect())
 }
 
-/// A compiled script's steps (ADR 0013 tier 2): actions, and `listen` steps with the target,
-/// the event `ev`, the function `k` and the actions `h` it runs.
-fn script_ops(ops: &[ScriptOp]) -> Value {
-    Value::Array(
-        ops.iter()
-            .map(|op| match op {
-                ScriptOp::Action(a) => action(a),
-                ScriptOp::Listen(l) => {
-                    let mut o = Map::new();
-                    o.insert("op".into(), json!("listen"));
-                    target(&mut o, &l.target);
-                    o.insert("ev".into(), json!(l.event.key()));
-                    o.insert("k".into(), json!(l.function));
-                    o.insert("h".into(), actions(&l.actions));
-                    o.insert("d".into(), json!(format!("Listen for {} ({})", l.event.key(), l.target)));
-                    Value::Object(o)
-                }
-            })
-            .collect(),
-    )
-}
 
 /// Whether timeline layer `index` takes part in playback (what the player walks and draws):
 /// shown, not a folder or guide, not in a hidden folder.
@@ -328,7 +308,7 @@ impl<'a> Bake<'a> {
         i
     }
 
-    fn paint(&mut self, p: &Paint, el: &Element) -> usize {
+    fn paint(&mut self, p: &Paint) -> usize {
         let stops = |s: &[anicraft_doc::GradientStop]| -> Vec<Value> {
             s.iter()
                 .map(|g| {
@@ -345,9 +325,6 @@ impl<'a> Bake<'a> {
             Paint::Radial { center, radius, stops: s } => json!({"r": [coord(center.x), coord(center.y), coord(radius.max(0.0))], "st": stops(s)}),
             Paint::Bitmap { bitmap, repeat, matrix: m } => match self.doc.bitmap(*bitmap) {
                 Some(b) => {
-                    if el.color.tint_amount > 0.0 {
-                        self.notes.entry(BITMAP_TINT).or_default().insert(el.id.0);
-                    }
                     let n = self.images.len();
                     let i = *self.image_ix.entry(b.id.0).or_insert(n);
                     if i == n {
@@ -378,11 +355,11 @@ impl<'a> Bake<'a> {
     /// A shape item: `p` path, `f` paint, `s` stroke `[r, g, b, a, width]`, `k` its style when
     /// not round and solid (`c` cap, `j` join, `ml` miter limit, `d` dash lengths and `o` their
     /// offset, in local units like the width), `eo` even-odd, `m` transform, `c` colour effect.
-    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorEffect, fill: Option<(&Paint, &Element)>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
+    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorTransform, fill: Option<&Paint>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
         let mut o = Map::new();
         o.insert("p".into(), json!(self.path(path)));
-        if let Some((p, el)) = fill {
-            o.insert("f".into(), json!(self.paint(p, el)));
+        if let Some(p) = fill {
+            o.insert("f".into(), json!(self.paint(p)));
         }
         if let Some(st) = stroke {
             let mut s = color(st.color);
@@ -417,26 +394,30 @@ impl<'a> Bake<'a> {
                     // caps, joins and dashes included).
                     Some(st) => {
                         if let Some(p) = &s.fill {
-                            out.push(self.shape(&s.path, &el.transform, &el.color, Some((p, el)), None, s.fill_rule));
+                            out.push(self.shape(&s.path, &el.transform, &el.color.transform(), Some(p), None, s.fill_rule));
                         }
                         let outline = stroke_outline(&s.path, &el.transform, st, crate::TOLERANCE);
                         if !outline.is_empty() {
                             let fill = Paint::Solid(st.color);
-                            out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color, Some((&fill, el)), None, FillRule::NonZero));
+                            out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
                         }
                     }
-                    None => out.push(self.shape(&s.path, &el.transform, &el.color, s.fill.as_ref().map(|p| (p, el)), stroke, s.fill_rule)),
+                    None => out.push(self.shape(&s.path, &el.transform, &el.color.transform(), s.fill.as_ref(), stroke, s.fill_rule)),
                 }
             }
             // The camera is the view, not artwork (ADR 0027): it is baked into the layers.
             ElementKind::Camera => {}
             ElementKind::Text(t) => {
                 let fill = Paint::Solid(t.color);
-                out.push(self.shape(&t.outline, &el.transform, &el.color, Some((&fill, el)), None, FillRule::NonZero));
+                out.push(self.shape(&t.outline, &el.transform, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
             }
             ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events } => {
                 let (Some(&y), Some(sym)) = (self.symbols.get(symbol), self.doc.symbol(*symbol)) else { return };
                 let len = sym.timeline.frame_count();
+                // The page's player places symbols itself and doesn't slice them yet (ADR 0055).
+                if anicraft_doc::nine_slice::slices(self.doc, sym, &el.transform) {
+                    self.notes.entry(NINE_SLICE).or_default().insert(el.id.0);
+                }
                 let mut o = Map::new();
                 o.insert("y".into(), json!(y));
                 o.insert("id".into(), json!(el.id.0));
@@ -446,7 +427,7 @@ impl<'a> Bake<'a> {
                 if let Some(m) = matrix(&el.transform) {
                     o.insert("m".into(), m);
                 }
-                if let Some(c) = effect(&el.color) {
+                if let Some(c) = effect(&el.color.transform()) {
                     o.insert("c".into(), c);
                 }
                 match sym.kind {
@@ -505,7 +486,9 @@ impl<'a> Bake<'a> {
     /// `nm`, labels `lb`, and per frame the scripts `a` and sounds `snd` of keyframes starting
     /// there (top layer first). A scene's frames seen through its camera (ADR 0027) carry the
     /// camera's tint (`cc`) and each layer its view (`v`: the camera and the layer's depth).
-    fn timeline(&mut self, tl: &Timeline, scene: bool) -> Value {
+    /// `decls`: the declarations its frame scripts share (ADR 0052), for timelines that
+    /// run scripts; their functions go out as `fn` and their variables' types as `vt`.
+    fn timeline(&mut self, tl: &Timeline, scene: bool, decls: Option<&Decls>) -> Value {
         let n = tl.frame_count();
         // One clip slot per visible mask layer, top first (as the evaluator numbers them).
         let slots: HashMap<u64, usize> = tl.layers.iter().filter(|l| l.kind == LayerKind::Mask && l.visible).enumerate().map(|(i, l)| (l.id.0, i)).collect();
@@ -574,14 +557,19 @@ impl<'a> Bake<'a> {
                     // kept (ADR 0013).
                     Some(FrameScript::Source(src)) => {
                         let key = u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0);
-                        match src.compiled() {
-                            Ok(c) => {
-                                a.push(json!({"as": script_ops(&c.ops)}));
+                        match (src.compiled(), decls) {
+                            // It runs where its names from other frames are all there.
+                            (Ok(c), Some(d)) if d.problems(c).is_empty() => {
+                                let mut o = json!({"b": c.body});
+                                if !c.inner.is_empty() {
+                                    o["i"] = json!(c.inner);
+                                }
+                                a.push(json!({"as": o}));
                                 if !c.notes.is_empty() {
                                     self.notes.entry(OUTSIDE_CALLS).or_default().insert(key);
                                 }
                             }
-                            Err(_) => {
+                            _ => {
                                 self.notes.entry(KEPT_SCRIPTS).or_default().insert(key);
                             }
                         }
@@ -643,6 +631,14 @@ impl<'a> Bake<'a> {
         if !sounds.is_empty() {
             o["snd"] = Value::Object(sounds);
         }
+        if let Some(d) = decls {
+            if !d.functions.is_empty() {
+                o["fn"] = json!(d.functions);
+            }
+            if !d.vars.is_empty() {
+                o["vt"] = json!(d.vars);
+            }
+        }
         o
     }
 }
@@ -692,18 +688,18 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
     let scenes = doc.scenes.len();
     let mut timelines = Vec::with_capacity(scenes + used.len());
     let mut frames = 0usize;
+    // The main timeline's scripts share one set of declarations over every scene.
+    let root = anicraft_doc::player::decls(doc, TimelineRef::Root);
     for s in &doc.scenes {
         frames += s.timeline.frame_count() as usize;
-        timelines.push(b.timeline(&s.timeline, true));
+        timelines.push(b.timeline(&s.timeline, true, Some(&root)));
     }
     let mut symbols = Vec::with_capacity(used.len());
     for (i, id) in used.iter().enumerate() {
         let Some(sym) = doc.symbol(*id) else { continue };
         frames += sym.timeline.frame_count() as usize;
-        timelines.push(b.timeline(&sym.timeline, false));
-        if b.sound && sym.kind == SymbolKind::Button && sym.timeline.layers.iter().any(|l| l.has_sounds()) {
-            b.notes.entry(BUTTON_SOUNDS).or_default().insert(sym.id.0);
-        }
+        let decls = (sym.kind == SymbolKind::MovieClip).then(|| anicraft_doc::player::decls(doc, TimelineRef::Symbol(*id)));
+        timelines.push(b.timeline(&sym.timeline, false, decls.as_ref()));
         let kind = match sym.kind {
             SymbolKind::Graphic => "graphic",
             SymbolKind::MovieClip => "movieclip",

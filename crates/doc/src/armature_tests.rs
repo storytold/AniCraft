@@ -173,7 +173,7 @@ fn every_export_sees_the_pose() {
     let mut k = Keyframe::new(0, 1);
     k.elements.push(Arc::new(Element { id: ElementId(3), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, -5.0, 100.0, 10.0), Paint::Solid(Rgba::BLACK))) }));
     seg.keyframes = vec![Arc::new(k)];
-    d.library.push(Arc::new(Symbol { id: SEG, name: "Seg".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(seg)] } }));
+    d.library.push(Arc::new(Symbol { id: SEG, name: "Seg".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(seg)] } }));
     d.timeline_mut(0).layers = vec![Arc::new(armature_layer(Easing::Linear))];
     d.sanitize();
     let dl = evaluate(&d, 10);

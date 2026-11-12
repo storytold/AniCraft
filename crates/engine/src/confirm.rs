@@ -98,7 +98,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: true,
             })
         }
-        "file.new" | "file.new_sample" | "file.open" | "file.recover" if s.is_dirty() => Some(Confirmation {
+        "file.new" | "file.new_sample" | "file.open" | "file.open_recent" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
             action: "Discard Changes".into(),
@@ -112,6 +112,24 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
         "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             crate::vfs::exists(path).then(|| overwrite(path, "Exporting"))
+        }
+        "file.publish" => {
+            // Publishing replaces what is already there; what this session published itself
+            // it replaces without asking again (ADR 0060).
+            let found = crate::publish::existing(s, &crate::publish::planned(s, p)?);
+            let names: Vec<String> = found.iter().take(3).map(|f| f.display().to_string()).collect();
+            let more = found.len().saturating_sub(names.len());
+            (!found.is_empty()).then(|| Confirmation {
+                title: if found.len() == 1 { "Replace published file?".into() } else { "Replace published files?".into() },
+                message: format!(
+                    "Publishing replaces {} already there: {}{}. This cannot be undone.",
+                    if found.len() == 1 { "a file".to_string() } else { plural(found.len(), "file") },
+                    names.join(", "),
+                    if more > 0 { format!(" and {more} more") } else { String::new() }
+                ),
+                action: "Publish".into(),
+                irreversible: true,
+            })
         }
         "file.export_sprite_sheet" => {
             // The sheet and its frame map: either one already there is replaced.
@@ -141,6 +159,16 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 title: "Delete sound?".into(),
                 message: format!("“{}” plays on {}. It comes off them and out of the library. You can undo this.", snd.name, plural(used, "keyframe")),
                 action: "Delete Sound".into(),
+                irreversible: false,
+            })
+        }
+        "find.replace" => {
+            // Replace All over many places asks first (ADR 0058); one undo step takes it back.
+            let n = crate::find::replace_count(s, p)?;
+            (n > crate::find::REPLACE_ASK).then(|| Confirmation {
+                title: "Replace all?".into(),
+                message: format!("This replaces what was found in {}. You can undo this in one step.", plural(n, "place")),
+                action: "Replace All".into(),
                 irreversible: false,
             })
         }

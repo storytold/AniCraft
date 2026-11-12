@@ -54,7 +54,12 @@ autosave) work. On another host, serve over HTTPS for the same reason. Compressi
   a crash. Copies of tabs that are still open are never offered. Browsers keep only a few MB per
   site, so documents with large images or sounds may not fit; the status bar says when a copy
   fails.
-* **Preferences** are kept in the browser's storage too.
+* **Dropping files** on the page works as on the desktop (ADR 0059): documents open, drawings,
+  images and sounds land where they are dropped on the stage or in the Library. An XFL folder
+  can't be dropped (the browser hands over files, not folders): drop the `.fla`.
+* **Preferences** are kept in the browser's storage too, with Open Recent and the start
+  screen's pictures. A recent file reopens while the page still holds it; after a reload it
+  shows as missing (the browser never gives its path back): open it again with Open.
 * **Leaving the page** with unsaved changes asks first.
 * **Shortcuts** are the desktop ones; on a Mac they use ⌘.
 

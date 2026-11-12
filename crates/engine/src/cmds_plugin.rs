@@ -31,14 +31,18 @@ const MAX_ELEMENTS: usize = 10_000;
 /// a namespace this list doesn't know is refused until someone decides (a test checks that
 /// every registered namespace is known).
 pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
-    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke", "tween", "actions", "instance", "camera", "bone", "script", "raw", "frames"];
+    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke", "tween", "actions", "instance", "camera", "bone", "script", "raw", "frames", "find", "explorer"];
     match id {
         "edit.undo" | "edit.redo" => Err("a plug-in run is one undo step; it can't undo or redo"),
         "edit.cut" | "edit.copy" | "edit.paste" | "edit.paste_in_place" | "timeline.cut_frames" | "timeline.copy_frames" | "timeline.paste_frames" | "frames.cut" | "frames.copy" | "frames.paste" => {
             Err("plug-ins don't use your clipboard")
         }
         _ => match id.split('.').next().unwrap_or("") {
-            "file" => Err("plug-ins can't open, save, import or export files"),
+            "file" => Err("plug-ins can't open, save, import, export or publish files"),
+            // Reading the settings is harmless; changing them changes what Publish writes where.
+            "publish" if id == "publish.settings_get" => Ok(()),
+            "publish" => Err("plug-ins can't change what Publish writes"),
+            "prefs" => Err("plug-ins can't read or change your preferences"),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
             "control" => Err("plug-ins can't play the movie"),
             ns if DOCUMENT.contains(&ns) => Ok(()),
@@ -126,7 +130,8 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
             "selected": s.selection.contains(s.layer, e.id),
             "transform": e.transform.m,
             "bounds": if b.is_empty() { Value::Null } else { json!([b.min.x, b.min.y, b.max.x - b.min.x, b.max.y - b.min.y]) },
-            "alpha": e.color.alpha,
+            "alpha": e.color.alpha(),
+            "color_effect": crate::color_effect_json(&e.color),
         });
         match &e.kind {
             ElementKind::Shape(sh) => {

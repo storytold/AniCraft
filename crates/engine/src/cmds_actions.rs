@@ -17,7 +17,7 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("control.test_movie", "Test Movie", "Control", Some("Ctrl+Enter"), "{frames?: steps to play (default 10 s of frames, at most 10,000), events?: [{tick, type: move|down|up|click|leave, x, y}]} plays the movie with its actions and frame scripts from the first frame; returns the output and where it ended (the app opens the Test Movie window)", false, test_movie as crate::RunFn),
+        c("control.test_movie", "Test Movie", "Control", Some("Ctrl+Enter"), "{frames?: steps to play (default 10 s of frames, at most 10,000), events?: [{tick, type: move|down|up|click|leave, x, y} or {tick, type: key_down|key_up|key, key: code|letter|LEFT…}], seed?: Math.random()'s seed (default 0)} plays the movie with its actions and frame scripts from the first frame; returns the output, the sounds it started ({tick, sound, name, sync, gain}; buttons' as the pointer changes their state) and where it ended (the app opens the Test Movie window)", false, test_movie as crate::RunFn),
         c("actions.set", "Set Actions", "", None, "{actions: [{op: stop|play|goto_and_play|goto_and_stop|next_frame|prev_frame|next_scene|prev_scene|trace|set_property, target?, frame?, scene?, message?, property?, value?}] | plugin: id, entry?, symbol?: id (a movie clip's timeline), layer?, frame?} sets what the keyframe at the frame runs; or {element, event: click|press|release|over|out, actions} sets an instance's event handler. An empty list clears it", true, set),
         c("actions.clear", "Clear Actions", "", None, "{symbol?, layer?, frame?} clears the keyframe's actions; {element, event?} clears an instance's handlers (one event, or all)", true, clear),
         c("actions.list", "List Actions", "", None, "{} every keyframe with actions or a frame script and every instance with event handlers, in every scene and symbol", false, list),
@@ -241,6 +241,8 @@ fn set_name(s: &mut Session, p: &Value) -> Result<Value> {
 /// Most steps and events of a headless test.
 const MAX_TEST_STEPS: u32 = 10_000;
 const MAX_TEST_EVENTS: usize = 10_000;
+/// Most started sounds `control.test_movie` lists (the rest are counted).
+const MAX_TEST_SOUNDS: usize = 10_000;
 
 fn test_movie(s: &mut Session, p: &Value) -> Result<Value> {
     let fps = s.doc.stage.fps.max(1.0);
@@ -259,16 +261,34 @@ fn test_movie(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Some(_) => return Err(EngineError::Param("param 'events' must be a list".into())),
     }
+    let seed = opt_u64(p, "seed")?.unwrap_or(anicraft_doc::player::DEFAULT_SEED);
     let mut runner = ScriptRunner::new(&s.plugins);
-    let mut movie = Movie::start(&s.doc, &mut runner);
+    let mut movie = Movie::start_seeded(&s.doc, seed, &mut runner);
+    // The sounds the movie started (buttons' under the pointer too, ADR 0057), in order.
+    let mut sounds: Vec<Value> = Vec::new();
+    let mut more = 0usize;
+    let mut heard = |movie: &mut Movie, doc: &anicraft_doc::Document| {
+        for (tick, st) in movie.take_sounds() {
+            if sounds.len() >= MAX_TEST_SOUNDS {
+                more += 1;
+                continue;
+            }
+            let name = doc.sound(st.sound.sound).map(|x| x.name.clone());
+            sounds.push(json!({"tick": tick, "sound": st.sound.sound.0, "name": name, "sync": st.sound.sync.key(), "gain": st.gain}));
+        }
+    };
+    heard(&mut movie, &s.doc);
     for tick in 1..=u64::from(frames) {
         let events: Vec<_> = timed.iter().filter(|(t, _)| *t == tick).flat_map(|(_, e)| e.iter().copied()).collect();
         movie.step(&s.doc, &events, &mut runner);
+        heard(&mut movie, &s.doc);
     }
     let nodes = anicraft_doc::player::tree(&s.doc, &movie.state);
     Ok(json!({
         "steps": frames,
         "output": movie.output.iter().map(|(t, l)| json!({"tick": t, "line": l})).collect::<Vec<_>>(),
+        "sounds": sounds,
+        "more_sounds": more,
         "state": state_view(&s.doc, &movie.state, &nodes, None),
         "script_runs": runner.runs,
         "script_fuel": runner.fuel_used,

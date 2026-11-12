@@ -33,7 +33,7 @@ fn layer(id: u64, keys: Vec<Arc<Keyframe>>) -> Arc<Layer> {
 }
 
 fn symbol(id: u64, kind: SymbolKind, layers: Vec<Arc<Layer>>) -> Arc<Symbol> {
-    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, timeline: Timeline { layers } })
+    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers } })
 }
 
 fn doc(root: Vec<Arc<Layer>>, library: Vec<Arc<Symbol>>) -> Document {
@@ -342,6 +342,97 @@ fn entered_keyframes_start_their_sounds_in_clips_and_graphics_with_layer_volumes
     assert_eq!(started(&start(&m, &mut NoScripts)), vec![(1, 1.0), (3, 0.0)]);
 }
 
+// ----- Sounds on button frames (ADR 0057) --------------------------------------------------------
+
+/// [`button_doc`] with a sound on each state frame (ids 10 Up, 11 Over, 12 Down, 13 Hit; Over's
+/// a stream), on a layer at half volume, the button on a layer at half volume too.
+fn sounding_button() -> Document {
+    use crate::SoundSync::{Event, Stream};
+    let mut d = button_doc();
+    let art = |id| vec![rect(id, 0.0, 0.0, 10.0, 10.0)];
+    let mut sounds = (*layer(34, vec![with_sound(kf(0, 1, vec![], vec![], ""), 10, Event), with_sound(kf(1, 1, vec![], vec![], ""), 11, Stream), with_sound(kf(2, 1, vec![], vec![], ""), 12, Event), with_sound(kf(3, 1, vec![], vec![], ""), 13, Event)])).clone();
+    sounds.volume = 0.5;
+    let states = layer(31, vec![kf(0, 1, art(32), vec![], ""), kf(1, 1, art(32), vec![], ""), kf(2, 1, art(32), vec![], ""), kf(3, 1, vec![rect(33, 0.0, 0.0, 100.0, 100.0)], vec![], "")]);
+    d.library = vec![symbol(300, SymbolKind::Button, vec![Arc::new(sounds), states])];
+    Arc::make_mut(&mut d.timeline_mut(0).layers[1]).volume = 0.5;
+    let tone: Vec<f32> = (0..800).map(|i| (i as f32 * 0.1).sin() * 0.5).collect();
+    for id in 10..14 {
+        let data = anicraft_audio::wav::encode(8000, 1, &tone, anicraft_audio::wav::Bits::Float32);
+        d.sounds.push(Arc::new(crate::Sound::from_data(crate::SoundId(id), format!("s{id}.wav"), data).expect("a WAV")));
+    }
+    d
+}
+
+#[test]
+fn a_button_plays_the_sound_of_the_state_it_enters() {
+    let d = sounding_button();
+    let at = |x, y| Vec2::new(x, y);
+    let s = start(&d, &mut NoScripts);
+    assert!(s.sounds.is_empty(), "a button on the stage is silent until the pointer comes");
+    // Over: the Over frame's sound, as an event (a button frame has no span to stream over), at
+    // the volumes of both layers.
+    let s = step(&d, &s.state, &[Event::Move(at(150.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25)]);
+    assert_eq!(s.sounds[0].sound.sync, crate::SoundSync::Event);
+    // Moving about inside it plays nothing more.
+    let s = step(&d, &s.state, &[Event::Move(at(160.0, 150.0))], &mut NoScripts);
+    assert!(s.sounds.is_empty());
+    // Pressed: Down's. Released over it: Hit's (the SWF format's Down → Over sound).
+    let s = input(&d, &s.state, &[Event::Down(at(160.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(12, 0.25)]);
+    let s = input(&d, &s.state, &[Event::Up(at(160.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(13, 0.25)]);
+    // Left: Up's.
+    let s = step(&d, &s.state, &[Event::Leave], &mut NoScripts);
+    assert_eq!(started(&s), vec![(10, 0.25)]);
+    // Arriving and pressing in one event: Over's, then Down's.
+    let s = input(&d, &s.state, &[Event::Down(at(150.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25), (12, 0.25)]);
+    // Dragged off while pressed, back on and released off: nothing (no state with a sound).
+    let s = input(&d, &s.state, &[Event::Move(at(400.0, 400.0)), Event::Move(at(150.0, 150.0)), Event::Move(at(400.0, 400.0)), Event::Up(at(400.0, 400.0))], &mut NoScripts);
+    assert!(s.sounds.is_empty(), "{:?}", started(&s));
+}
+
+#[test]
+fn button_sounds_follow_the_frames_a_button_has_and_stay_out_of_the_soundtrack() {
+    // A two-frame button (Up and Over): pressing it shows Over still, and plays nothing.
+    let mut d = sounding_button();
+    let short = Timeline { layers: d.library[0].timeline.layers.iter().map(|l| {
+        let mut l = (**l).clone();
+        l.keyframes.truncate(2);
+        Arc::new(l)
+    }).collect() };
+    Arc::make_mut(&mut d.library[0]).timeline = short;
+    let s = start(&d, &mut NoScripts);
+    // Its Up frame is its hit area (10 × 10 at 100, 100).
+    let s = input(&d, &s.state, &[Event::Move(Vec2::new(105.0, 105.0)), Event::Down(Vec2::new(105.0, 105.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25)]);
+    // The mix and every export leave buttons out: they only sound under the pointer.
+    assert!(crate::sound::voices(&sounding_button(), 48_000).is_empty());
+}
+
+#[test]
+fn the_hit_overlay_is_the_area_the_pointer_finds() {
+    let d = button_doc();
+    let s = start(&d, &mut NoScripts);
+    let tint = Rgba::new(1.0, 0.0, 0.0, 1.0);
+    let dl = hit_overlay(&d, &s.state, tint, 0.4);
+    // One area: the Hit frame's 100 × 100 square at (100, 100), tinted, in one group at 40 %.
+    assert_eq!(dl.items.len(), 1);
+    assert_eq!(dl.groups.first().map(|g| g.alpha), Some(0.4));
+    let i = &dl.items[0];
+    assert_eq!((i.color, i.group), (ColorTransform::tint(tint, 1.0), Some(0)));
+    assert_eq!(i.color.apply(Rgba::new(0.1, 0.6, 0.9, 0.8)), Rgba::new(1.0, 0.0, 0.0, 0.8), "every colour becomes the tint, its alpha kept");
+    for p in [Vec2::new(101.0, 101.0), Vec2::new(199.0, 150.0), Vec2::new(50.0, 50.0), Vec2::new(201.0, 150.0)] {
+        assert_eq!(i.path.contains(p, &i.transform, i.fill_rule), hit(&d, &s.state, p).is_some(), "{p:?}");
+    }
+    // A hidden button has no area; a movie without buttons none at all.
+    assert!(hit_overlay(&doc(vec![], vec![]), &PlayerState::default(), tint, 0.4).items.is_empty());
+    assert_eq!(hit_frame(4), 3);
+    assert_eq!(hit_frame(3), 0);
+    assert_eq!(hit_frame(0), 0);
+}
+
 // ----- ActionScript (ADR 0013 tier 2) -----------------------------------------------------------
 
 /// `k` with a kept ActionScript 3.0 script in place of its actions.
@@ -353,7 +444,7 @@ fn as3(k: Arc<Keyframe>, src: &str) -> Arc<Keyframe> {
 
 /// The state without the listeners scripts add (hand-made actions use handlers instead).
 fn lean(st: &PlayerState) -> PlayerState {
-    PlayerState { listeners: BTreeMap::new(), ..st.clone() }
+    PlayerState { listeners: BTreeMap::new(), seq: 0, ..st.clone() }
 }
 
 /// Plays both documents through the same pointer events and asserts the same movie: state and
@@ -403,7 +494,7 @@ fn actionscript_and_hand_made_actions_play_the_same_movie() {
 
 #[test]
 fn a_script_outside_the_subset_does_not_run_at_all() {
-    let d = doc(vec![layer(1, vec![as3(kf(0, 10, vec![], vec![], ""), "stop();\ntrace(\"half\");\nif (true) { play(); }")])], vec![]);
+    let d = doc(vec![layer(1, vec![as3(kf(0, 10, vec![], vec![], ""), "stop();\ntrace(\"half\");\nswitch (1) { }")])], vec![]);
     let s = run(&d, 3);
     assert!(s.state.root.playing && s.output.is_empty(), "nothing of it ran: {:?}", s.output);
     assert_eq!(s.state.root.frame, 3);
@@ -447,4 +538,170 @@ fn next_scene_in_a_movie_clip_script_stays_in_its_clip() {
     let s = start(&d, &mut NoScripts);
     assert_eq!(s.state.scene, 0);
     assert_eq!(s.output, ["Next scene: a movie clip's timeline has one scene; call it in the main timeline's script"]);
+}
+
+// ----- ActionScript small logic (ADR 0052) ---------------------------------------------
+
+/// A one-layer main timeline of `frames` frames with scripts on some of them, and `extra` layers.
+fn scripted(frames: u32, scripts: &[(u32, &str)], extra: Vec<Arc<Layer>>, library: Vec<Arc<Symbol>>) -> Document {
+    let mut keys = Vec::new();
+    let mut starts: Vec<u32> = scripts.iter().map(|(f, _)| *f).collect();
+    starts.push(frames);
+    for (i, (f, src)) in scripts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(frames);
+        keys.push(if src.is_empty() { kf(*f, end - f, vec![], vec![], "") } else { as3(kf(*f, end - f, vec![], vec![], ""), src) });
+    }
+    let mut layers = vec![layer(1, keys)];
+    layers.extend(extra);
+    doc(layers, library)
+}
+
+fn outputs(d: &Document, steps: usize) -> Vec<String> {
+    let mut s = start(d, &mut NoScripts);
+    let mut out = s.output.clone();
+    for _ in 0..steps {
+        s = step(d, &s.state, &[], &mut NoScripts);
+        out.extend(s.output.iter().cloned());
+    }
+    out
+}
+
+#[test]
+fn timeline_variables_and_functions_live_across_frames() {
+    let d = scripted(4, &[(0, "var score:int = 10;\nfunction bump(k:int):int { score += k; return score; }\ntrace(\"start \" + score + \" \" + level);"), (2, "trace(bump(5), bump(1.9), level);\nlevel = \"two\";"), (3, "trace(level);\nvar level:String = \"one\"; trace(level); stop();")], vec![], vec![]);
+    // `level` is declared on frame 4 but is the timeline's from the start (null until set).
+    assert_eq!(outputs(&d, 5), ["start 10 null", "15 16 null", "two", "one"]);
+    let s = run(&d, 5);
+    assert_eq!(s.state.vars.get(&Vec::new()).and_then(|v| v.get("score")), Some(&Value::Num(16.0)));
+    // A script that uses a name no frame declares doesn't run at all.
+    let d = scripted(3, &[(0, "trace(\"one\");"), (1, "trace(\"two\"); trace(nobody);")], vec![], vec![]);
+    assert_eq!(outputs(&d, 2), ["one"]);
+    assert_eq!(link_problems(&d, TimelineRef::Root, d.scenes[0].timeline.layers[0].keyframes[1].script.as_ref().and_then(FrameScript::source).unwrap().compiled().as_ref().unwrap())[0].message, "`nobody` isn't a variable of this timeline (declare it with `var` in one of its frame scripts)");
+}
+
+#[test]
+fn each_movie_clip_instance_keeps_its_own_variables() {
+    // A two-frame clip counts its loops; two instances count apart, and one that leaves the
+    // stage and comes back starts again.
+    let clip = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![as3(kf(0, 2, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], ""), "var n:int; n++; trace(name + \" \" + n);")])]);
+    let a = layer(2, vec![kf(0, 8, vec![inst(3, 100, "a", 0.0, 0.0, vec![])], vec![], "")]);
+    let b = layer(3, vec![kf(0, 3, vec![inst(4, 100, "b", 50.0, 0.0, vec![])], vec![], ""), kf(3, 2, vec![], vec![], ""), kf(5, 3, vec![inst(5, 100, "b", 50.0, 0.0, vec![])], vec![], "")]);
+    let d = scripted(8, &[(0, "")], vec![a, b], vec![clip]);
+    let out = outputs(&d, 6);
+    assert_eq!(out, ["a 1", "b 1", "a 2", "b 2", "a 3", "b 1", "a 4"], "{out:?}");
+}
+
+#[test]
+fn enter_frame_listeners_run_every_frame_until_removed() {
+    let src = "var t:int = 0;\nstop();\naddEventListener(Event.ENTER_FRAME, tick);\nfunction tick(e:Event):void {\n  t++;\n  trace(\"tick \" + t + \" on \" + currentFrame + \" of \" + totalFrames);\n  if (t == 3) { removeEventListener(Event.ENTER_FRAME, tick); gotoAndStop(2); }\n}";
+    let d = scripted(3, &[(0, src), (1, "trace(\"frame 2 runs after the listener\");")], vec![], vec![]);
+    assert_eq!(outputs(&d, 5), ["tick 1 on 1 of 3", "tick 2 on 1 of 3", "tick 3 on 1 of 3", "frame 2 runs after the listener"]);
+    assert!(run(&d, 5).state.listeners.is_empty());
+}
+
+#[test]
+fn keys_reach_the_stage_listeners_with_their_codes() {
+    let clip = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 1, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], "")])]);
+    let src = "stop();\nstage.addEventListener(KeyboardEvent.KEY_DOWN, down);\nstage.addEventListener(KeyboardEvent.KEY_UP, function (e:KeyboardEvent):void { trace(\"up \" + e.keyCode); });\nfunction down(e:KeyboardEvent):void {\n  if (e.keyCode == Keyboard.RIGHT) hero.x += 10;\n  else if (e.keyCode == Keyboard.LEFT) hero.x -= 10;\n  trace(e.keyCode, hero.x, e.target == stage);\n}";
+    let d = scripted(2, &[(0, src)], vec![layer(2, vec![kf(0, 2, vec![inst(3, 100, "hero", 30.0, 40.0, vec![])], vec![], "")])], vec![clip]);
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(s.state.stage.len(), 2);
+    let s = step(&d, &s.state, &[Event::KeyDown(39), Event::KeyDown(39), Event::KeyUp(39)], &mut NoScripts);
+    assert_eq!(s.output, ["39 40 true", "39 50 true", "up 39"]);
+    // Between frames too.
+    let s = input(&d, &s.state, &[Event::KeyDown(37)], &mut NoScripts);
+    assert_eq!(s.output, ["37 40 true"]);
+    assert_eq!(s.state.props.get(&vec![ElementId(3)]).and_then(|o| o.x), Some(40.0));
+}
+
+#[test]
+fn scripts_read_instance_and_timeline_properties() {
+    let clip = symbol(100, SymbolKind::MovieClip, vec![layer(11, vec![kf(0, 3, vec![rect(12, 0.0, 0.0, 5.0, 5.0)], vec![], "walk")])]);
+    let mut hero = (*inst(3, 100, "hero", 30.0, 40.0, vec![])).clone();
+    hero.transform = Affine::translate(30.25, 40.0).mul(&Affine::scale(2.0, 0.5));
+    hero.color = crate::ColorEffect::Alpha(0.3);
+    let src = "stop();\ntrace(hero.x, hero.y, hero.scaleX, hero.scaleY, hero.rotation, hero.alpha, hero.visible, hero.name);\ntrace(hero.currentFrame, hero.totalFrames, hero.currentLabel, currentFrame, totalFrames, currentLabel, this.name);\nhero.x = 0.1; hero.alpha = hero.alpha + 0.2; hero.visible = false;\ntrace(hero.x, hero.alpha, hero.visible);\nstage.addEventListener(KeyboardEvent.KEY_DOWN, function (e:KeyboardEvent):void { trace(mouseX, mouseY, hero.mouseX, stage.mouseY); });";
+    let k = as3(kf(0, 2, vec![], vec![], "intro"), src);
+    let mut hk = Keyframe::new(0, 2);
+    hk.elements = vec![Arc::new(hero)];
+    let d = doc(vec![layer(1, vec![k]), layer(2, vec![Arc::new(hk)])], vec![clip]);
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(s.output, ["30.25 40 2 0.5 0 0.3 true hero", "1 3 walk 1 2 intro root1", "0.1 0.5 false"]);
+    let s = input(&d, &s.state, &[Event::Move(Vec2::new(50.5, 60.0)), Event::Leave, Event::KeyDown(32)], &mut NoScripts);
+    // The pointer's last place stays after it leaves; a clip sees it in its own space.
+    assert_eq!(s.output, ["50.5 60 25.2 60"]);
+}
+
+#[test]
+fn random_numbers_are_seeded_and_repeat() {
+    let src = "trace(Math.random(), Math.floor(Math.random() * 6) + 1);";
+    let d = scripted(2, &[(0, src)], vec![], vec![]);
+    let a = start_seeded(&d, 7, &mut NoScripts).output;
+    let b = start_seeded(&d, 7, &mut NoScripts).output;
+    let c = start_seeded(&d, 8, &mut NoScripts).output;
+    assert_eq!(a, b);
+    assert_ne!(a, c);
+    // The generator itself: in [0, 1), and spread out.
+    let mut r = Rng::seeded(DEFAULT_SEED);
+    let v: Vec<f64> = (0..10_000).map(|_| r.next_f64()).collect();
+    assert!(v.iter().all(|x| (0.0..1.0).contains(x)));
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    assert!((mean - 0.5).abs() < 0.02, "{mean}");
+    assert_eq!(start(&d, &mut NoScripts).output, start_seeded(&d, DEFAULT_SEED, &mut NoScripts).output);
+}
+
+#[test]
+fn an_endless_loop_stops_its_script_and_the_movie_plays_on() {
+    let d = scripted(3, &[(0, "trace(\"a\");\nwhile (true) { }\ntrace(\"never\");"), (1, "trace(\"frame 2\");")], vec![], vec![]);
+    let s = start(&d, &mut NoScripts);
+    assert_eq!(s.output, ["a", "Script on frame 1 of the main timeline stopped: it ran more than 100000 steps (an endless loop?)"]);
+    let s = step(&d, &s.state, &[], &mut NoScripts);
+    assert_eq!((s.state.root.frame, s.output.as_slice()), (1, ["frame 2".to_string()].as_slice()));
+    // A runtime error stops only its script.
+    let d = scripted(2, &[(0, "trace(\"x\");\ntrace(ghost.x);\ntrace(\"y\");")], vec![], vec![]);
+    assert_eq!(start(&d, &mut NoScripts).output, ["x", "Script on frame 1 of the main timeline stopped: line 2: no instance named “ghost” here"]);
+    // Many listeners that each loop share one step's fuel; the step ends with one message.
+    let mut src = String::from("stop();\n");
+    for i in 0..15 {
+        src.push_str(&format!("addEventListener(Event.ENTER_FRAME, function (e:Event):void {{ var n:int = {i}; while (true) n++; }});\n"));
+    }
+    let d = scripted(2, &[(0, &src)], vec![], vec![]);
+    let s = step(&d, &start(&d, &mut NoScripts).state, &[], &mut NoScripts);
+    assert_eq!(s.output.iter().filter(|l| l.ends_with("(an endless loop?)")).count(), 10, "{:?}", s.output);
+    assert!(s.output.last().is_some_and(|l| l.starts_with("Stopped running actions this frame: scripts ran more than 1000000 steps")), "{:?}", s.output);
+}
+
+#[test]
+fn listeners_know_their_target_and_current_target() {
+    let mut d = button_doc();
+    {
+        let tl = d.timeline_mut(0);
+        let l0 = Arc::make_mut(&mut tl.layers[0]);
+        l0.keyframes[0] = as3(l0.keyframes[0].clone(), "stop();\ngo.addEventListener(MouseEvent.CLICK, clicked);\nfunction clicked(e:MouseEvent):void { trace(e.target.name, e.currentTarget == go, e.target != stage, e.currentTarget.x); report(e); }\nfunction report(ev:MouseEvent):void { trace(\"from \" + ev.currentTarget.name); }");
+        let k = Arc::make_mut(&mut Arc::make_mut(&mut tl.layers[1]).keyframes[0]);
+        if let ElementKind::Symbol { events, .. } = &mut Arc::make_mut(&mut k.elements[0]).kind {
+            events.clear();
+        }
+    }
+    let p = Vec2::new(150.0, 150.0);
+    let s = step(&d, &start(&d, &mut NoScripts).state, &[Event::Move(p), Event::Down(p), Event::Up(p)], &mut NoScripts);
+    assert_eq!(s.output, ["go true true 100", "from go"]);
+}
+
+#[test]
+fn scripted_play_is_deterministic() {
+    let src = "var n:Number = 0;\naddEventListener(Event.ENTER_FRAME, function (e:Event):void { n += Math.random(); if (n > 2) { trace(n); n = 0; } });";
+    let d = scripted(4, &[(0, src)], vec![], vec![]);
+    let play = || {
+        let mut s = start_seeded(&d, 3, &mut NoScripts);
+        let mut out = Vec::new();
+        for _ in 0..40 {
+            s = step(&d, &s.state, &[Event::KeyDown(65)], &mut NoScripts);
+            out.extend(s.output.clone());
+        }
+        (s.state, out)
+    };
+    let (a, b) = (play(), play());
+    assert!(!a.1.is_empty());
+    assert_eq!(a, b);
 }

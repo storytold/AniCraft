@@ -19,7 +19,7 @@ fn add_symbol(d: &mut Document, name: &str, inside: &[SymbolId]) -> SymbolId {
     if let Some(k) = layer.keyframe_mut(0) {
         k.elements = els;
     }
-    d.library.push(Arc::new(Symbol { id, name: name.into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
+    d.library.push(Arc::new(Symbol { id, name: name.into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
     id
 }
 

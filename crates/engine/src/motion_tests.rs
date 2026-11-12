@@ -95,7 +95,7 @@ fn transforms_and_colour_edits_key_their_own_properties() {
     assert!(m.track(Property::ScaleY).is_none() && m.track(Property::X).is_none());
     s.set_frame(4);
     let e = s.visible_elements()[0].clone();
-    assert!((e.color.alpha - 0.625).abs() < 1e-5 && (e.transform.decompose().sx - 1.5).abs() < 1e-4);
+    assert!((e.color.alpha() - 0.625).abs() < 1e-5 && (e.transform.decompose().sx - 1.5).abs() < 1e-4);
     // Non-tweenable edits change the object itself, whatever the frame.
     run(&mut s, "edit.select_all", json!({}));
     run(&mut s, "element.set_fill", json!({"color": "#ff0000"}));

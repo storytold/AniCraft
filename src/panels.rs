@@ -3,7 +3,7 @@
 use crate::app::{App, Tool};
 use crate::icons::{self, Icon};
 use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, section, text, to_color32, with_type};
-use anicraft_engine::doc::{ElementKind, LibraryItem, Paint, Rgba, SymbolKind, evaluate_layer_elements};
+use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, Paint, Rgba, SymbolKind, evaluate_layer_elements};
 use crate::a11y::{self, Named};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
@@ -275,6 +275,43 @@ pub(crate) fn live(app: &mut App, label: &str, id: &str, p: Value) {
     app.run(id, p);
 }
 
+/// A symbol's 9-slice guides (ADR 0055): Animate's "Enable guides for 9-slice scaling" and,
+/// when on, where the four guides are (in the symbol's space; also dragged on the stage while
+/// the symbol is open). `place` keeps two copies of the controls apart (Library, Properties).
+pub(crate) fn scale_grid_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::SymbolId, place: &str) {
+    let Some(grid) = app.s.doc.symbol(id).map(|s| s.scale_grid) else { return };
+    let mut on = grid.is_some();
+    ui.push_id(place, |ui| {
+        let tip = tr!("Scaled instances keep the corners outside the guides unscaled, stretch the edges one way and the centre both ways (for buttons and panels). Edit the symbol to drag the guides");
+        if crate::theme::checkbox(ui, &mut on, tr!("Enable guides for 9-slice scaling")).on_hover_text(tip).changed() {
+            app.run("symbol.set_scale_grid", json!({"symbol": id.0, "on": on}));
+        }
+        let Some(g) = grid else { return };
+        let limit = anicraft_engine::doc::MAX_GRID_COORD;
+        let (mut l, mut r, mut t, mut b) = (g.left, g.right, g.top, g.bottom);
+        let mut changed = None;
+        row(ui, tr!("Guides x"), |ui| {
+            if ui.add(egui::DragValue::new(&mut l).range(-limit..=g.right).speed(0.5).max_decimals(1)).named(tr!("Left 9-slice guide")).changed() {
+                changed = Some(("left", l));
+            }
+            if ui.add(egui::DragValue::new(&mut r).range(g.left..=limit).speed(0.5).max_decimals(1)).named(tr!("Right 9-slice guide")).changed() {
+                changed = Some(("right", r));
+            }
+        });
+        row(ui, tr!("Guides y"), |ui| {
+            if ui.add(egui::DragValue::new(&mut t).range(-limit..=g.bottom).speed(0.5).max_decimals(1)).named(tr!("Top 9-slice guide")).changed() {
+                changed = Some(("top", t));
+            }
+            if ui.add(egui::DragValue::new(&mut b).range(g.top..=limit).speed(0.5).max_decimals(1)).named(tr!("Bottom 9-slice guide")).changed() {
+                changed = Some(("bottom", b));
+            }
+        });
+        if let Some((key, v)) = changed {
+            live(app, tr_noop!("Move 9-Slice Guide"), "symbol.set_scale_grid", json!({"symbol": id.0, key: v}));
+        }
+    });
+}
+
 /// A property row for values: proportional label (left-aligned column), monospace fields.
 fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     crate::theme::form_row(ui, crate::theme::FORM_LABEL_DOCK, label, |ui| with_type(ui, Type::Data, add));
@@ -289,7 +326,9 @@ pub fn right(app: &mut App, ui: &mut egui::Ui) {
     let h = ui.available_height();
     let dock = ui.max_rect();
     // Dock sections are layout bands; each folds away to give the others room.
-    let props = egui::ScrollArea::vertical().id_salt("props").max_height(h * 0.56).auto_shrink([false, true]).show(ui, |ui| {
+    // The Movie Explorer's tree needs room: Properties gives some up while it shows.
+    let props_share = if app.explorer.tab == crate::movie_explorer::DockTab::Explorer { 0.4 } else { 0.56 };
+    let props = egui::ScrollArea::vertical().id_salt("props").max_height(h * props_share).auto_shrink([false, true]).show(ui, |ui| {
         crate::theme::section_with_header(ui, "dock_properties", Section::Band, tr!("Properties"), None, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| properties(app, ui));
         })
@@ -301,13 +340,21 @@ pub fn right(app: &mut App, ui: &mut egui::Ui) {
     // Ctrl+F6 lands on the Properties and Library headers; each panel owns the dock down to the
     // next one (Align goes with Properties, History with the Library).
     let split = ui.cursor().top();
-    let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, tr!("Library"), None, |ui| {
+    // The Library and the Movie Explorer share the band, as tabs (ADR 0058).
+    let explorer = app.explorer.tab == crate::movie_explorer::DockTab::Explorer;
+    let title = if explorer { tr!("Movie Explorer") } else { tr!("Library") };
+    let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, title, None, |ui| {
         // The Library scrolls on its own, so a short window still reaches every row (History's
         // header stays below it).
         let room = (ui.available_height() - 48.0).max(120.0);
-        egui::ScrollArea::vertical().id_salt("library_dock").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
-            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
-        });
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 0 }).show(ui, |ui| crate::movie_explorer::tabs(app, ui));
+        if explorer {
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 4)).show(ui, |ui| crate::movie_explorer::panel(app, ui));
+        } else {
+            egui::ScrollArea::vertical().id_salt("library_dock").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
+            });
+        }
     });
     section(ui, "dock_history", Section::Band, tr!("History"), None, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| history(app, ui));
@@ -431,6 +478,9 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             (n, l) => trn!("{n} element {on_layers}", "{n} elements {on_layers}", n, on_layers = trn!("on {n} layer", "on {n} layers", l)),
         };
         section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, &sel));
+    } else if let Some((id, name)) = app.s.editing_symbol().and_then(|id| app.s.doc.symbol(id).map(|x| (id, x.name.clone()))) {
+        // Inside a symbol, nothing selected: the symbol's own settings (ADR 0055).
+        section(ui, "prop_symbol", Section::Rule, &tr!("Symbol: {name}", name = name), None, |ui| scale_grid_props(app, ui, id, "open"));
     } else {
         section(ui, "prop_document", Section::Rule, tr!("Document"), None, |ui| document_props(app, ui));
     }
@@ -479,6 +529,81 @@ pub(crate) fn element_title(doc: &anicraft_engine::doc::Document, e: &anicraft_e
 fn mixed(ui: &mut egui::Ui, differs: bool) {
     if differs {
         ui.label(text(Type::Caption, tr!("mixed")).color(T.text_faint)).on_hover_text(tr!("The selected elements differ here; it shows the first one's. A change applies to all of them"));
+    }
+}
+
+/// The colour effect (ADR 0056): Animate's Style menu, then the chosen style's controls. Each
+/// change sets that value on every selected element (ADR 0053), as one undo step per drag.
+fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: crate::mixed::ColorMixed) {
+    let current = fx.style();
+    row_prose(ui, tr!("Colour effect"), |ui| {
+        egui::ComboBox::from_id_salt("prop_color_style").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
+            for st in ColorStyle::ALL {
+                if ui.selectable_label(st == current, crate::i18n::t(st.label())).clicked() && (st != current || m.style) {
+                    app.run("element.set_color_effect", json!({"style": st.key()}));
+                }
+            }
+        })
+        .response
+        .set_name(tr!("Colour effect style"));
+        mixed(ui, m.style);
+    });
+    let pct = a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() };
+    let set = |app: &mut App, p: Value| live(app, tr_noop!("Colour Effect"), "element.set_color_effect", p);
+    match *fx {
+        ColorEffect::None => {}
+        ColorEffect::Alpha(a) => {
+            let mut v = a * 100.0;
+            row(ui, tr!("Alpha"), |ui| {
+                if a11y::slider(ui, &mut v, 0.0..=100.0, tr!("Alpha"), pct).changed() {
+                    set(app, json!({"alpha": v}));
+                }
+                mixed(ui, m.alpha);
+            });
+        }
+        ColorEffect::Brightness(b) => {
+            let mut v = b * 100.0;
+            row(ui, tr!("Brightness"), |ui| {
+                if a11y::slider(ui, &mut v, -100.0..=100.0, tr!("Brightness"), pct).changed() {
+                    set(app, json!({"brightness": v}));
+                }
+                mixed(ui, m.brightness);
+            });
+        }
+        ColorEffect::Tint { color, amount } => {
+            let mut c = rgb(color);
+            row(ui, tr!("Tint"), |ui| {
+                if ui.color_edit_button_srgb(&mut c).named(tr!("Tint colour")).changed() {
+                    set(app, json!({"tint": hex(c)}));
+                }
+                ui.label(text(Type::Data, hex(c)));
+                mixed(ui, m.tint);
+            });
+            let mut v = amount * 100.0;
+            row(ui, tr!("Tint amount"), |ui| {
+                if a11y::slider(ui, &mut v, 0.0..=100.0, tr!("Tint amount"), pct).changed() {
+                    set(app, json!({"tint_amount": v}));
+                }
+                mixed(ui, m.tint_amount);
+            });
+        }
+        ColorEffect::Advanced(t) => {
+            // Each channel: its multiplier in percent, then the offset added (−255..255).
+            let channels = [(tr!("Red"), tr!("Red multiplier"), tr!("Red offset"), "red"), (tr!("Green"), tr!("Green multiplier"), tr!("Green offset"), "green"), (tr!("Blue"), tr!("Blue multiplier"), tr!("Blue offset"), "blue"), (tr!("Alpha"), tr!("Alpha multiplier"), tr!("Alpha offset"), "alpha")];
+            for (i, (label, mul_name, off_name, key)) in channels.into_iter().enumerate() {
+                let mut mv = t.mul.get(i).copied().unwrap_or(1.0) * 100.0;
+                let mut ov = t.add.get(i).copied().unwrap_or(0.0) * 255.0;
+                row(ui, label, |ui| {
+                    if ui.add(egui::DragValue::new(&mut mv).suffix(" %").speed(0.5).range(-100.0..=100.0).max_decimals(0)).named(mul_name).changed() {
+                        set(app, json!({format!("{key}_multiplier"): mv}));
+                    }
+                    if ui.add(egui::DragValue::new(&mut ov).custom_formatter(|v, _| format!("{v:+.0}")).speed(1.0).range(-255.0..=255.0).max_decimals(0)).named(off_name).changed() {
+                        set(app, json!({format!("{key}_offset"): ov}));
+                    }
+                    mixed(ui, m.advanced.get(i).copied().unwrap_or(false) || m.advanced.get(i + 4).copied().unwrap_or(false));
+                });
+            }
+        }
     }
 }
 
@@ -531,13 +656,9 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             }
             mixed(ui, m.rotation);
         });
-        let mut alpha = e.color.alpha * 100.0;
-        row(ui, tr!("Alpha"), |ui| {
-            if a11y::slider(ui, &mut alpha, 0.0..=100.0, tr!("Alpha"), a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() }).changed() {
-                live(app, tr_noop!("Alpha"), "element.set_alpha", json!({"alpha": alpha / 100.0}));
-            }
-            mixed(ui, m.alpha);
-        });
+        if !matches!(e.kind, ElementKind::Camera) {
+            colour_effect_rows(app, ui, &e.color, m.color);
+        }
         // Blending and filters, on movie clips and buttons as in Animate.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
@@ -609,6 +730,11 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 .on_hover_text(tr!("Show another symbol here, keeping position, colour effect, filters and name"))
                 .set_name(tr!("Swap Symbol"));
                 mixed(ui, m.symbol);
+            });
+            // 9-slice scaling is the symbol's (ADR 0055): on here, it is on for every instance.
+            let sym_id = *symbol;
+            row_prose(ui, tr!("Scaling"), |ui| {
+                ui.vertical(|ui| scale_grid_props(app, ui, sym_id, "instance"));
             });
             // The class scripts know the symbol by (kept, not run; ADR 0013), in documents
             // that use scripts.
@@ -1979,5 +2105,7 @@ fn ease_curve(ui: &mut egui::Ui, e: anicraft_engine::doc::Easing) {
 }
 
 fn library(app: &mut App, ui: &mut egui::Ui) {
-    crate::library::panel(app, ui);
+    // Where the panel is, for files dropped on it (ADR 0059).
+    let r = ui.scope(|ui| crate::library::panel(app, ui)).response.rect;
+    app.library.drop_zone.panel = Some(r);
 }

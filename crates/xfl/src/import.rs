@@ -5,24 +5,25 @@
 //! and keyframes with durations, labels and classic tweens with their ease; shapes (solid,
 //! linear and radial fills, solid, dashed and dotted strokes with their caps, joints and
 //! miter limit), groups (flattened), rectangle and oval
-//! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
+//! primitives; symbol instances with their matrix, colour effect (every style, ADR 0056), loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
 //! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014);
 //! frame scripts, symbol linkage classes and the document class, kept verbatim (ADR 0013 tier
 //! 1); frame scripts in the ActionScript 3.0 subset run in Test Movie (tier 2), and the report
-//! lists which run and which are only kept.
-//! Everything else (sound, motion tweens with property curves, unknown filters,
-//! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
+//! lists which run and which are only kept; sounds whose file is in the package as WAV, Ogg
+//! Vorbis or MP3, and the sounds on frames that use them, buttons' states included (ADR 0057).
+//! Everything else (sounds and bitmaps kept only in Animate's own storage, sound effects,
+//! motion tweens with property curves, unknown filters) is counted in the report instead of guessed at,
 //! and so is whatever is drawn the nearest way AniCraft can (ragged, stipple and hatched
-//! strokes, reflecting gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
+//! strokes, reflecting gradients, …). The self-authored corpus in `tests/corpus/` covers
 //! every feature listed here, with golden renders (ADR 0035).
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, SourceScript,
+    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
@@ -114,6 +115,7 @@ const MAX_SYMBOLS: usize = 20_000;
 const MAX_LAYERS: usize = 5_000;
 const MAX_FRAME: u32 = 100_000;
 const MAX_BITMAPS: usize = 10_000;
+const MAX_SOUNDS: usize = 10_000;
 
 /// Bitmap fill matrices scale image pixels by twips (1/20 px): `a = 20` is one pixel per pixel.
 const TWIPS: f32 = 20.0;
@@ -130,6 +132,8 @@ struct Builder<'a> {
     language: Language,
     /// Library item name → bitmap id, for the bitmaps that could be read.
     bitmaps: HashMap<String, BitmapId>,
+    /// Library item name → sound id, for the sounds whose file is in the package (ADR 0057).
+    sounds: HashMap<String, anicraft_doc::SoundId>,
     report: Report,
     /// The fonts text is laid out with; the computer's, found on the first text field.
     fonts: Option<&'a Fonts>,
@@ -408,25 +412,34 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// An instance's `Color`: alpha, tint, or brightness (a tint towards white or black by that
-    /// amount, which is the same colour change). Other channel multipliers and offsets
-    /// (Animate's Advanced style) keep only their alpha, and are reported.
+    /// An instance's `Color` (ADR 0056): Animate's style comes from which attributes it has: a
+    /// tint (`tintMultiplier`, `tintColor`), a brightness (`brightness`, −1..1), Advanced (any
+    /// channel's multiplier other than 1 or an offset, −255..255), or alpha alone. Values are
+    /// clamped into Animate's ranges.
     fn color_effect(&mut self, c: &X) -> ColorEffect {
-        let mut fx = ColorEffect { alpha: c.f32("alphaMultiplier").unwrap_or(1.0).clamp(0.0, 1.0), ..ColorEffect::default() };
-        if let Some(t) = c.f32("tintMultiplier") {
-            fx.tint = color(c, "tintColor", "__none");
-            fx.tint_amount = t.clamp(0.0, 1.0);
+        let mul = |k: &str| c.f32(k).filter(|v| v.is_finite()).unwrap_or(1.0);
+        let off = |k: &str| c.f32(k).filter(|v| v.is_finite()).unwrap_or(0.0) / 255.0;
+        let alpha = mul("alphaMultiplier");
+        let fx = if let Some(t) = c.f32("tintMultiplier") {
+            let tint = ColorEffect::Tint { color: color(c, "tintColor", "__none").with_alpha(1.0), amount: t };
+            if alpha != 1.0 { tint.with_alpha(alpha) } else { tint }
         } else if let Some(b) = c.f32("brightness").filter(|b| *b != 0.0) {
-            fx.tint = if b > 0.0 { Rgba::WHITE } else { Rgba::BLACK };
-            fx.tint_amount = b.abs().min(1.0);
+            let bright = ColorEffect::Brightness(b);
+            if alpha != 1.0 { bright.with_alpha(alpha) } else { bright }
         } else {
-            let multiplied = ["redMultiplier", "greenMultiplier", "blueMultiplier"].iter().any(|k| c.f32(k).is_some_and(|v| v != 1.0));
-            let offset = ["redOffset", "greenOffset", "blueOffset", "alphaOffset"].iter().any(|k| c.f32(k).is_some_and(|v| v != 0.0));
-            if multiplied || offset {
-                self.report.skip("advanced colour effects (only alpha kept)");
+            let t = ColorTransform {
+                mul: [mul("redMultiplier"), mul("greenMultiplier"), mul("blueMultiplier"), alpha],
+                add: [off("redOffset"), off("greenOffset"), off("blueOffset"), off("alphaOffset")],
+            };
+            if t.changes_colour() || t.add[3] != 0.0 {
+                ColorEffect::Advanced(t)
+            } else if alpha != 1.0 {
+                ColorEffect::Alpha(alpha)
+            } else {
+                ColorEffect::None
             }
-        }
-        fx
+        };
+        fx.sanitized()
     }
 
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
@@ -550,6 +563,9 @@ impl<'a> Builder<'a> {
                 // Frame scripts are kept verbatim (ADR 0013 tier 1); those in the subset run.
                 if let Some(a) = f.child("Actionscript") {
                     k.script = self.frame_script(a);
+                }
+                if let Some(name) = f.attr("soundName").filter(|n| !n.trim().is_empty()) {
+                    k.sound = self.frame_sound(f, name);
                 }
                 let mut els = Vec::new();
                 self.elements(f.list("elements"), &Affine::IDENTITY, &mut els, 0);
@@ -720,6 +736,71 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    /// Reads the document's sound library items (ADR 0057). Like a bitmap, each one's sound is
+    /// looked for as the original file in `LIBRARY/` and then as its data file in `bin/`, and is
+    /// used when it is a WAV, Ogg Vorbis or MP3 file. Animate's own encoding of the data file is
+    /// not public, so those sounds are reported instead (ADR 0039).
+    fn register_sounds(&mut self, root: &X) -> Result<(), XflError> {
+        for item in root.list("media").iter().filter(|i| i.name == "DOMSoundItem").take(MAX_SOUNDS) {
+            let Some(name) = item.attr("name").filter(|n| !self.sounds.contains_key(*n)) else { continue };
+            let mut candidates = Vec::new();
+            if let Some(href) = item.attr("href") {
+                candidates.push(format!("LIBRARY/{href}"));
+            }
+            if let Some(data) = item.attr("soundDataHRef") {
+                candidates.push(format!("bin/{data}"));
+            }
+            let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(256).collect();
+            let mut found_data = false;
+            let mut sound = None;
+            for path in candidates {
+                let Some(bytes) = (self.read)(&path)? else { continue };
+                found_data = true;
+                if let Ok(s) = anicraft_doc::Sound::from_data(anicraft_doc::SoundId(0), short.clone(), bytes) {
+                    sound = Some(s);
+                    break;
+                }
+            }
+            match sound {
+                Some(mut s) => {
+                    s.id = anicraft_doc::SoundId(self.doc.alloc_id());
+                    self.place_in_folder(name, anicraft_doc::LibraryItem::Sound(s.id));
+                    self.sounds.insert(name.to_string(), s.id);
+                    self.doc.sounds.push(Arc::new(s));
+                }
+                None if found_data => self.report.skip("sounds stored in Animate's own format"),
+                None => self.report.skip("missing sound files"),
+            }
+        }
+        Ok(())
+    }
+
+    /// The sound on a frame (`soundName`, the library item), with its sync (`soundSync`: event,
+    /// start, stop or stream) and repeats (`soundLoopMode` loop or repeat, `soundLoop` times).
+    /// Buttons' frames included: they play as the pointer changes the button's state.
+    fn frame_sound(&mut self, f: &X, name: &str) -> Option<FrameSound> {
+        let Some(id) = self.sounds.get(name).copied() else {
+            self.report.skip("frame sounds whose sound isn't in the package");
+            return None;
+        };
+        let mut fs = FrameSound::new(id);
+        fs.sync = match f.attr("soundSync").map(str::trim) {
+            Some("start") => SoundSync::Start,
+            Some("stop") => SoundSync::Stop,
+            Some("stream") => SoundSync::Stream,
+            _ => SoundSync::Event,
+        };
+        fs.looping = f.attr("soundLoopMode").map(str::trim) == Some("loop");
+        fs.repeat = f.u32("soundLoop").unwrap_or(1).clamp(1, anicraft_doc::sound::MAX_REPEAT);
+        if f.attr("soundEffect").is_some_and(|e| !matches!(e.trim(), "" | "none")) || f.child("SoundEnvelope").is_some() {
+            self.report.skip("sound effects and envelopes (played without)");
+        }
+        if f.attr("inPoint44").is_some() || f.attr("outPoint44").is_some() {
+            self.report.skip("sound in and out points (played whole)");
+        }
+        Some(fs)
+    }
+
     /// Allocates ids for every symbol the document lists, parsing their files.
     fn register_symbols(&mut self, root: &X) -> Result<(), XflError> {
         let mut seen = HashSet::new();
@@ -769,6 +850,26 @@ impl<'a> Builder<'a> {
         Some(l)
     }
 
+    /// A symbol's 9-slice guides (ADR 0055): `scaleGridLeft`, `scaleGridRight`, `scaleGridTop`
+    /// and `scaleGridBottom` on the `DOMSymbolItem`, in the symbol's space, written when its
+    /// guides are on. All four or none; guides given the wrong way round are put in order.
+    fn scale_grid(&mut self, item: &X) -> Option<ScaleGrid> {
+        let keys = ["scaleGridLeft", "scaleGridRight", "scaleGridTop", "scaleGridBottom"];
+        if keys.iter().all(|k| item.attr(k).is_none()) {
+            return None;
+        }
+        let v: Vec<f32> = keys.iter().filter_map(|k| item.f32(k)).collect();
+        let grid = match v[..] {
+            [l, r, t, b] => Some(ScaleGrid { left: l.min(r), right: l.max(r), top: t.min(b), bottom: t.max(b) }),
+            _ => None,
+        };
+        let grid = grid.filter(|g| g.check().is_ok());
+        if grid.is_none() {
+            self.report.skip("9-slice guides that aren't usable (left out)");
+        }
+        grid
+    }
+
     /// The script settings of the package's publish profile (`PublishSettings.xml`): the
     /// language its frame scripts are written in (`ActionScriptVersion`; 3 when the file
     /// doesn't say) and the document class (`DocumentClass`). The profile marked current is
@@ -803,7 +904,8 @@ impl<'a> Builder<'a> {
                 None => Timeline { layers: vec![Arc::new(Layer::new(LayerId(self.doc.alloc_id()), "Layer 1"))] },
             };
             let short = name.rsplit('/').next().unwrap_or(&name).to_string();
-            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, timeline }));
+            let scale_grid = self.scale_grid(&item);
+            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, scale_grid, scale_grid_kept: None, timeline }));
             self.place_in_folder(&name, anicraft_doc::LibraryItem::Symbol(id));
         }
     }
@@ -847,7 +949,7 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     if root.name != "DOMDocument" {
         return Err(XflError::NotXfl(format!("the root element is <{}>", root.name)));
     }
-    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), language: Language::ActionScript3, bitmaps: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
+    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), language: Language::ActionScript3, bitmaps: HashMap::new(), sounds: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
     b.publish_settings()?;
     // Only symbols keep a script class yet.
     for _ in root.list("media").iter().filter(|m| m.attr("linkageClassName").is_some_and(|c| !c.trim().is_empty())) {
@@ -863,6 +965,7 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     };
     b.register_folders(&root);
     b.register_bitmaps(&root)?;
+    b.register_sounds(&root)?;
     b.register_symbols(&root)?;
     b.build_symbols();
     // Every DOMTimeline is a scene, in order.

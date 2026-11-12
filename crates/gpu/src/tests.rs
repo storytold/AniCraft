@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::binning::{self as bn, Binned, PAINT_VEC4S, TILE, piece_cover, solid_of};
-use anicraft_doc::{BlendMode, ColorEffect, DisplayItem, ElementId, ElementKind, GradientStop, Group, LayerId, LayerKind, Paint, Rgba, Stroke, sample};
+use anicraft_doc::{BlendMode, ColorEffect, ColorTransform, DisplayItem, ElementId, ElementKind, GradientStop, Group, LayerId, LayerKind, Paint, Rgba, Stroke, sample};
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_render::{paint::Premul, render};
 use std::sync::OnceLock;
@@ -22,7 +22,7 @@ fn item(path: Path, fill: Paint) -> DisplayItem {
         fill: Some(fill),
         stroke: None,
         fill_rule: FillRule::NonZero,
-        color: ColorEffect::default(),
+        color: ColorTransform::IDENTITY,
         layer: LayerId(0),
         element: ElementId(0),
         outline: None,
@@ -125,7 +125,7 @@ fn scenes() -> Vec<(&'static str, DisplayList, View)> {
     out.push(("styled strokes", list(vec![dashed, zig, dots]), view(160, 100, Some(Rgba::WHITE))));
     // Larger than the surface on every side; colour effects (onion-skin style tint and alpha).
     let mut huge = item(Path::ellipse(50.0, 40.0, 300.0, 200.0), Paint::Solid(red));
-    huge.color = ColorEffect { alpha: 0.5, tint: Rgba::hex(0x4cd07d), tint_amount: 0.7 };
+    huge.color = ColorTransform::alpha(0.5).concat(&ColorTransform::tint(Rgba::hex(0x4cd07d), 0.7));
     out.push(("off-surface", list(vec![huge]), view(100, 80, Some(Rgba::WHITE))));
     out.push(("outlines", outlined(), view(150, 110, Some(Rgba::WHITE))));
     out.extend(composited_scenes());
@@ -448,7 +448,7 @@ fn composited_sample() -> anicraft_doc::Document {
                 for k in &mut l.keyframes {
                     for e in &mut Arc::make_mut(k).elements {
                         let e = Arc::make_mut(e);
-                        e.color.alpha = if i == 0 { 0.6 } else { 0.5 };
+                        e.color = e.color.with_alpha(if i == 0 { 0.6 } else { 0.5 });
                         if let ElementKind::Symbol { blend, .. } = &mut e.kind
                             && i == 0
                         {
@@ -463,6 +463,27 @@ fn composited_sample() -> anicraft_doc::Document {
         }
     }
     doc
+}
+
+/// A rounded panel with 9-slice guides, placed stretched, scaled up and turned.
+fn nine_slice_sample() -> anicraft_doc::Document {
+    use anicraft_doc::{Element, ElementId, ElementKind, Keyframe, Layer, LayerId, ScaleGrid, Shape, Stroke, Symbol, SymbolId, SymbolKind, Timeline};
+    let mut d = anicraft_doc::Document { stage: anicraft_doc::Stage { width: 320, height: 200, ..Default::default() }, ..Default::default() };
+    let mut shape = Shape::filled(Path::rounded_rect(0.0, 0.0, 60.0, 30.0, 8.0), Paint::Solid(Rgba::hex(0x2a9d8f)));
+    shape.stroke = Some(Stroke::new(Rgba::hex(0x264653), 2.0));
+    let el = |id, transform, kind| std::sync::Arc::new(Element { id: ElementId(id), name: String::new(), transform, color: ColorEffect::default(), kind });
+    let mut k = Keyframe::new(0, 1);
+    k.elements.push(el(2, Affine::IDENTITY, ElementKind::Shape(shape)));
+    let mut l = Layer::new(LayerId(3), "art");
+    l.keyframes = vec![std::sync::Arc::new(k)];
+    d.library.push(std::sync::Arc::new(Symbol { id: SymbolId(4), name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: Some(ScaleGrid { left: 8.0, right: 52.0, top: 8.0, bottom: 22.0 }), timeline: Timeline { layers: vec![std::sync::Arc::new(l)] } }));
+    let inst = |id, xf| el(id, xf, ElementKind::Symbol { symbol: SymbolId(4), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() });
+    let mut k = Keyframe::new(0, 1);
+    k.elements.push(inst(5, Affine::translate(10.0, 10.0).mul(&Affine::scale(4.5, 1.2))));
+    k.elements.push(inst(6, Affine::translate(30.0, 70.0).mul(&Affine::scale(2.0, 3.5))));
+    k.elements.push(inst(7, Affine::translate(220.0, 90.0).mul(&Affine::rotate(0.5)).mul(&Affine::scale(1.5, 2.5))));
+    std::sync::Arc::make_mut(&mut d.timeline_mut(0).layers[0]).keyframes = vec![std::sync::Arc::new(k)];
+    d
 }
 
 #[test]
@@ -480,6 +501,10 @@ fn binned_coverage_matches_the_oracle_on_the_cpu() {
     for (f, s) in [(0u32, 0.4f32), (30, 0.6)] {
         all.push(("composited sample", anicraft_doc::evaluate(&comp, f), View::stage(&comp, s)));
     }
+    // A 9-sliced instance (ADR 0055) reaches the stage through evaluation: cut outlines, strokes
+    // at their own width.
+    let nine = nine_slice_sample();
+    all.push(("9-slice", anicraft_doc::evaluate(&nine, 0), View::stage(&nine, 0.7)));
     for (name, dl, v) in all {
         let (scene, _) = prepare_scene(&dl, &v).unwrap();
         let b = binning::bin(&scene, v.width, v.height).unwrap();
@@ -753,7 +778,7 @@ fn gpu_hands_back_what_it_does_not_draw_and_stays_usable() {
             })
             .collect();
         let mut it = in_group(item(Path::rect(2.0, 2.0, 8.0, 8.0), Paint::Solid(Rgba::BLACK)), depth as u32 - 1);
-        it.color.alpha = 0.5;
+        it.color = ColorTransform::alpha(0.5);
         DisplayList { items: vec![it], clip_parents: Vec::new(), groups }
     };
     let deep = nested(MAX_FILTER_DEPTH + 1);
@@ -815,12 +840,16 @@ fn bitmap_scenes() -> Vec<(&'static str, DisplayList, View)> {
         ("bitmap magnified, mirrored", list(vec![bitmap_item(Path::rect(0.0, 0.0, 64.0, 48.0), &c, false, Affine { m: [-1.7, 0.0, 0.0, 1.6, 66.0, -1.3] })]), view(64, 48, white)),
         ("one-pixel bitmap", list(vec![bitmap_item(Path::rect(5.5, 5.5, 20.0, 20.0), &b, true, Affine::scale(7.0, 7.0))]), view(32, 32, white)),
     ];
-    // Colour effects: tint and alpha per tap, and a NaN tint (sanitized to 0 as the oracle does).
+    // Colour effects: tint and alpha per tap, and a NaN multiplier (a channel of 0, as the oracle
+    // draws it).
     let mut tinted = bitmap_item(Path::rect(0.0, 0.0, 60.0, 40.0), &c, true, Affine::scale(0.7, 0.9));
-    tinted.color = ColorEffect { alpha: 0.6, tint: Rgba::new(0.2, 0.9, 0.1, 1.0), tint_amount: 0.4 };
+    tinted.color = ColorTransform::alpha(0.6).concat(&ColorTransform::tint(Rgba::new(0.2, 0.9, 0.1, 1.0), 0.4));
     let mut nan = bitmap_item(Path::rect(30.0, 10.0, 30.0, 30.0), &a, false, Affine::scale(2.0, 2.0));
-    nan.color = ColorEffect { alpha: 1.0, tint: Rgba::new(f32::NAN, 0.5, 0.5, 1.0), tint_amount: 0.3 };
-    out.push(("bitmap colour effects", list(vec![tinted, nan]), view(64, 48, Some(Rgba::new(0.1, 0.1, 0.3, 1.0)))));
+    nan.color = ColorTransform { mul: [f32::NAN, 0.7, 0.7, 1.0], add: [0.0, 0.15, 0.15, 0.0] };
+    // Advanced (ADR 0056): a negative multiplier, offsets and an alpha offset.
+    let mut advanced = bitmap_item(Path::rect(4.0, 20.0, 40.0, 26.0), &a, true, Affine::scale(1.3, 1.1));
+    advanced.color = ColorTransform { mul: [-1.0, 0.5, 0.2, 0.6], add: [1.0, 0.1, 0.4, 0.2] };
+    out.push(("bitmap colour effects", list(vec![tinted, nan, advanced]), view(64, 48, Some(Rgba::new(0.1, 0.1, 0.3, 1.0)))));
     // A short (malformed) buffer: transparent past its end; an empty image draws nothing.
     let short = Arc::new(anicraft_doc::Pixels { width: 4, height: 4, rgba: vec![200; 20] });
     let empty = Arc::new(anicraft_doc::Pixels { width: 0, height: 3, rgba: Vec::new() });

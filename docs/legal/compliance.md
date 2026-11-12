@@ -21,8 +21,13 @@ AniCraft is **MIT OR Apache-2.0**, the same as its sibling PhotoCraft (`LICENSE-
 Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD, BSL-1.0,
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
-"source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed
-(no unknown registries or git).
+"source-available" and unknown licences are **not allowed**. Crates.io and the explicitly allowlisted Storytold shared library repository are allowed;
+unknown registries and git sources remain denied. The native update checker uses `craft-update`
+(MIT OR Apache-2.0), pinned to a commit of `storytold/craft-libs`; its HTTP, verification and
+platform installer code are shared with the other Craft apps. A narrowly approved exception
+accepts `webpki-root-certs` 1.0.12 under CDLA-Permissive-2.0 for Mozilla certificate data pulled
+in by the HTTPS verifier. It applies only to that data crate and version; the code licence
+allowlist is unchanged.
 
 ```sh
 cargo deny check licenses bans sources   # policy in deny.toml; must pass before every commit
@@ -49,6 +54,13 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   `wasm-encoder`/`wast` (Apache-2.0 WITH LLVM-exception). No new licence. Plug-ins are the
   user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
   `examples/plugins` (MIT OR Apache-2.0).
+
+### Find and Replace (2026-11-11, ADR 0058)
+
+New crates, from crates.io: `regex` 1 with `regex-syntax` and `regex-automata` (MIT OR
+Apache-2.0) and `aho-corasick` (Unlicense OR MIT), built with only the `std`, `perf`,
+`unicode-case` and `unicode-perl` features. They match Find and Replace's patterns in linear
+time with size limits. No new licence.
 
 ### Interface languages (2026-11-10, ADR 0040)
 

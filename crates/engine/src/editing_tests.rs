@@ -106,6 +106,59 @@ fn opening_from_the_library_and_guards() {
     assert!(s.editing.is_empty());
 }
 
+/// The sample's Play button open from the Library (at the stage's centre, 640 × 360): its face is
+/// 220 × 80, its Hit frame 240 × 100.
+fn open_button(hit: Option<(anicraft_doc::Rgba, f32)>) -> Session {
+    let mut s = Session::new(anicraft_doc::sample::interactive());
+    let id = s.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::Button).map(|x| x.id).unwrap_or_else(|| panic!("a button"));
+    run(&mut s, "symbol.edit", json!({"symbol": id.0}));
+    s.hit_area = hit;
+    s
+}
+
+#[test]
+fn an_open_button_shows_its_hit_area_over_its_other_states() {
+    let red = anicraft_doc::Rgba::new(1.0, 0.0, 0.0, 1.0);
+    let render = |s: &Session| {
+        let pic = s.stage_picture();
+        anicraft_render::render_frame(&pic.doc, pic.frame, 1.0).unwrap_or_else(|e| panic!("{e}"))
+    };
+    let plain = render(&open_button(None));
+    let mut s = open_button(Some((red, 0.5)));
+    assert_eq!(s.hit_overlay(), Some((red, 0.5)), "on the Up frame");
+    let shown = render(&s);
+    let px = |p: &anicraft_render::Pixmap, x: u32, y: u32| p.pixel(x, y).unwrap_or_else(|| panic!("({x}, {y}) in the picture"));
+    // Inside the Hit frame but outside the face (x = 640 + 115): the background, half red now.
+    let (bg, over) = (px(&plain, 755, 360), px(&shown, 755, 360));
+    for c in 0..3 {
+        let want = bg[c] * 0.5 + if c == 0 { 0.5 } else { 0.0 };
+        assert!((over[c] - want).abs() < 0.02, "channel {c}: {over:?} vs {want} (background {bg:?})");
+    }
+    // Over the face (blue) and its arrow (white) alike: half red over what the state shows.
+    for (x, y) in [(600, 360), (640, 360)] {
+        let (art, over) = (px(&plain, x, y), px(&shown, x, y));
+        for c in 0..3 {
+            let want = art[c] * 0.5 + if c == 0 { 0.5 } else { 0.0 };
+            assert!((over[c] - want).abs() < 0.02, "({x}, {y}) channel {c}: {over:?} vs {want}");
+        }
+    }
+    // Outside the Hit frame: untouched.
+    assert_eq!(px(&shown, 775, 360), px(&plain, 775, 360));
+    // On the Hit frame itself, nothing over it; it isn't in the document either.
+    s.set_frame(3);
+    assert_eq!(s.hit_overlay(), None);
+    let on_hit = render(&s);
+    s.hit_area = None;
+    assert_eq!(on_hit.to_rgba8(), render(&s).to_rgba8());
+    assert_eq!(s.doc.library.len(), anicraft_doc::sample::interactive().library.len());
+    // Only buttons: a movie clip open shows none.
+    let mut s = Session::new(anicraft_doc::sample::interactive());
+    let clip = s.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::MovieClip).map(|x| x.id).unwrap_or_else(|| panic!("a clip"));
+    run(&mut s, "symbol.edit", json!({"symbol": clip.0}));
+    s.hit_area = Some((red, 0.5));
+    assert_eq!(s.hit_overlay(), None);
+}
+
 #[test]
 fn the_stage_shows_the_open_symbol_in_place_over_the_dimmed_stage() {
     let (mut s, _, _) = boxed();

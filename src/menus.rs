@@ -140,6 +140,13 @@ fn ui_item(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>
 fn registry_items(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSpec]) {
     for spec in cmds.iter().filter(|c| c.menu == top) {
         item(app, ui, spec);
+        if spec.id == "file.open" {
+            // Below Open, as in Animate: the recent files, and the start screen (ADR 0059).
+            ui.menu_button(tr!("Open Recent"), |ui| crate::recent::menu(app, ui));
+            if ui_item(ui, tr!("Start Screen"), "", None) {
+                crate::start::open(app);
+            }
+        }
     }
     let mut subs: Vec<&str> = Vec::new();
     for c in cmds {
@@ -261,13 +268,24 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             if ui_item(ui, tr!("Actions"), app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
                 app.show_actions = !app.show_actions;
             }
+            use crate::movie_explorer::DockTab;
+            if ui_item(ui, tr!("Library"), "", Some(app.explorer.tab == DockTab::Library)) {
+                app.explorer.tab = DockTab::Library;
+            }
+            if ui_item(ui, tr!("Movie Explorer"), app.keymap.primary("view.movie_explorer").unwrap_or(""), Some(app.explorer.tab == DockTab::Explorer)) {
+                crate::movie_explorer::open(app);
+            }
             ui.separator();
             if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion.ghosts)) {
                 crate::onion::toggle_ghosts(app);
             }
-            ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library")));
+            ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library and Movie Explorer")));
         }
         "Help" => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if ui_item(ui, tr!("Check for Updates…"), "", None) {
+                app.updates.check(ui.ctx());
+            }
             if ui_item(ui, tr!("Command Palette…"), "Ctrl+K", None) {
                 app.palette = Some(crate::dialogs::Palette::default());
             }

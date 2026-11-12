@@ -40,7 +40,10 @@
       return scratch.isPointInStroke(stagePath(path, m), x, y);
     },
   };
-  const player = new AniCraft.Player(movie, host);
+  // Each page load gets its own Math.random() sequence (a movie's, not for security); the
+  // player itself is deterministic.
+  const seed = Date.now() % 4294967296;
+  const player = new AniCraft.Player(movie, host, seed);
 
   function stagePath(path, m) {
     const out = new Path2D();
@@ -110,16 +113,45 @@
     if (p.b !== undefined) {
       const im = images[p.b];
       if (!im || !im.complete || !im.naturalWidth) return "rgba(128,128,128,1)";
-      const key = f;
+      // A colour effect beyond alpha draws the bitmap's pixels through it (ADR 0056), as the
+      // renderer does: once per bitmap and effect while the effect stays the same.
+      const recolour = AniCraft.recolours(fx);
+      const key = recolour ? f + ":" + fx.join(",") : f;
       let pat = patterns.get(key);
       if (!pat) {
-        pat = g.createPattern(im, p.rep ? "repeat" : "no-repeat");
+        if (patterns.size > 256) patterns.clear();
+        pat = g.createPattern(recolour ? recoloured(im, fx) : im, p.rep ? "repeat" : "no-repeat");
         if (pat && p.m && pat.setTransform) pat.setTransform(new DOMMatrix(p.m));
         patterns.set(key, pat);
       }
       return pat;
     }
     return null;
+  }
+
+  // `im`'s pixels through colour transform `fx`, on a canvas of its size.
+  function recoloured(im, fx) {
+    const c = document.createElement("canvas");
+    c.width = im.naturalWidth;
+    c.height = im.naturalHeight;
+    const g = c.getContext("2d");
+    g.drawImage(im, 0, 0);
+    let px;
+    try {
+      px = g.getImageData(0, 0, c.width, c.height);
+    } catch (e) {
+      return im;
+    }
+    const d = px.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const o = AniCraft.applyEffect(fx, [d[i] / 255, d[i + 1] / 255, d[i + 2] / 255, d[i + 3] / 255]);
+      d[i] = Math.round(o[0] * 255);
+      d[i + 1] = Math.round(o[1] * 255);
+      d[i + 2] = Math.round(o[2] * 255);
+      d[i + 3] = Math.round(o[3] * 255);
+    }
+    g.putImageData(px, 0, 0);
+    return c;
   }
 
   function draw() {
@@ -150,7 +182,7 @@
           const style = paintStyle(g, it.f, it.c);
           if (style) {
             const bitmap = movie.paints[it.f] && movie.paints[it.f].b !== undefined;
-            g.globalAlpha = bitmap ? Math.min(Math.max(it.c[0], 0), 1) : 1;
+            g.globalAlpha = bitmap && !AniCraft.recolours(it.c) ? Math.min(Math.max(it.c[3], 0), 1) : 1;
             set(g, it.m);
             g.fillStyle = style;
             // A bitmap without Allow Smoothing keeps hard pixel edges (ADR 0050).
@@ -327,7 +359,19 @@
     report(player.input([{ type: "leave" }]));
     draw();
   });
-  window.addEventListener("keydown", audioOn);
+  // Keys go to the movie's keyboard listeners (ActionScript key codes are the browser's).
+  function key(type, e) {
+    if (e.repeat && type === "keyup") return;
+    report(player.input([{ type: type, code: e.keyCode }]));
+    // Arrows and space would scroll the page; a movie that listens for keys keeps them.
+    if (player.st.stage.some((l) => l.ev === "key_down" || l.ev === "key_up") && [32, 37, 38, 39, 40].indexOf(e.keyCode) >= 0) e.preventDefault();
+    draw();
+  }
+  window.addEventListener("keydown", (e) => {
+    audioOn();
+    key("keydown", e);
+  });
+  window.addEventListener("keyup", (e) => key("keyup", e));
   window.addEventListener("resize", resize);
 
   const dt = 1000 / movie.stage.fps;

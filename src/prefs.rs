@@ -90,7 +90,19 @@ pub struct Prefs {
     pub autosave_edits: u32,
     /// Onion skin options (ADR 0047), kept from session to session.
     pub onion: OnionPrefs,
+    /// Publish Settings presets, by name (ADR 0060): yours on this computer, for any document.
+    pub publish_presets: std::collections::BTreeMap<String, anicraft_engine::doc::publish::PublishProfile>,
+    /// File › Open Recent and the start screen's list (ADR 0059): pinned favourites, then the
+    /// last 10 documents opened or saved.
+    #[serde(deserialize_with = "lenient_recent")]
+    pub recent: anicraft_engine::cmds_recent::RecentFiles,
+    /// Show the start screen when AniCraft starts without a document to open (ADR 0059).
+    pub start_screen: bool,
 }
+
+/// Most publish presets kept, and the longest name one has.
+pub const MAX_PUBLISH_PRESETS: usize = 100;
+pub const MAX_PRESET_NAME: usize = 64;
 
 /// Onion skin options that carry over between sessions (ADR 0047). Whether onion skin and Edit
 /// Multiple Frames are on, and anchored markers, last for the session only, as in Animate.
@@ -140,8 +152,24 @@ impl Default for Prefs {
             autosave_secs: 60,
             autosave_edits: 25,
             onion: OnionPrefs::default(),
+            publish_presets: Default::default(),
+            recent: Default::default(),
+            start_screen: true,
         }
     }
+}
+
+/// The recent files as written, skipping entries that aren't one (a hand-edited file): one bad
+/// entry must not reset every preference.
+fn lenient_recent<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_engine::cmds_recent::RecentFiles, D::Error> {
+    use anicraft_engine::cmds_recent::{RecentFile, RecentFiles};
+    let v = serde_json::Value::deserialize(d)?;
+    let list: Vec<serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a.into_iter().take(1000).collect(),
+        _ => Vec::new(),
+    };
+    let good: Vec<RecentFile> = list.into_iter().filter_map(|x| serde_json::from_value::<RecentFile>(x).ok()).collect();
+    Ok(serde_json::from_value::<RecentFiles>(serde_json::to_value(good).unwrap_or_default()).unwrap_or_default())
 }
 
 /// Autosave intervals offered in Preferences: `(seconds, label)`.
@@ -171,6 +199,16 @@ impl Prefs {
         self.autosave_edits = self.autosave_edits.min(*AUTOSAVE_EDITS_RANGE.end());
         self.onion.before = self.onion.before.min(ONION_REACH_MAX);
         self.onion.after = self.onion.after.min(ONION_REACH_MAX);
+        self.publish_presets = std::mem::take(&mut self.publish_presets)
+            .into_iter()
+            .filter(|(name, _)| !name.trim().is_empty() && name.chars().count() <= MAX_PRESET_NAME)
+            .take(MAX_PUBLISH_PRESETS)
+            .map(|(name, mut p)| {
+                p.sanitize();
+                (name, p)
+            })
+            .collect();
+        self.recent = std::mem::take(&mut self.recent).sanitized();
         self
     }
 
@@ -244,6 +282,24 @@ mod tests {
     }
 
     #[test]
+    fn publish_presets_round_trip_and_hostile_ones_are_dropped() {
+        let mut gif = anicraft_engine::doc::publish::PublishProfile::default();
+        gif.gif.enabled = true;
+        gif.gif.scale = 0.5;
+        let mut p = Prefs::default();
+        p.publish_presets.insert("Web small".into(), gif.clone());
+        let back = Prefs::from_json(&serde_json::to_string(&p).unwrap());
+        assert_eq!(back.publish_presets.get("Web small"), Some(&gif));
+        let hostile = format!(r#"{{"publish_presets": {{"": {{}}, "{}": {{}}, "ok": {{"gif": {{"scale": 1e30}}, "audio": {{"bits": 3}}}}, "junk": 5}}}}"#, "n".repeat(100));
+        let p = Prefs::from_json(&hostile);
+        assert!(p.publish_presets.is_empty() || p.publish_presets.len() == 1, "{:?}", p.publish_presets.keys());
+        if let Some(ok) = p.publish_presets.get("ok") {
+            assert_eq!((ok.gif.scale, ok.audio.bits), (anicraft_engine::doc::publish::MAX_PUBLISH_SCALE, 16));
+        }
+        assert_eq!(Prefs::from_json(r#"{"publish_presets": {"": {}, "a": {"gif": {"enabled": true}}}}"#).publish_presets.len(), 1);
+    }
+
+    #[test]
     fn broken_or_hostile_files_fall_back_to_defaults() {
         assert_eq!(Prefs::from_json("not json"), Prefs::default());
         let p = Prefs::from_json(r#"{"ui_scale": 99, "ui_font": {"System": ""}, "unknown": 1}"#);
@@ -273,5 +329,16 @@ mod tests {
         let p = Prefs::from_json(r#"{"autosave": false, "autosave_secs": 1, "autosave_edits": 99999999}"#);
         assert!(!p.autosave);
         assert_eq!((p.autosave_secs, p.autosave_edits), (15, 1000));
+        // Older files have no recent files and show the start screen (ADR 0059); a list
+        // someone edited by hand is cleaned up.
+        let p = Prefs::from_json(r#"{"ui_scale": 1.25}"#);
+        assert!(p.recent.is_empty() && p.start_screen);
+        let p = Prefs::from_json(r#"{"recent": [{"path": "a.anicraft"}, {"path": "a.anicraft"}, {"path": ""}, 7], "start_screen": false}"#);
+        let paths: Vec<_> = p.recent.entries().iter().map(|e| e.path.display().to_string()).collect();
+        assert_eq!(paths, ["a.anicraft"], "bad entries are skipped, the rest kept");
+        assert!(!p.start_screen, "and the other preferences with them");
+        let p = Prefs::from_json(r#"{"recent": [{"path": "b.anicraft"}, {"path": "a.anicraft", "pinned": true}, {"path": "b.anicraft"}]}"#);
+        let paths: Vec<_> = p.recent.entries().iter().map(|e| (e.path.display().to_string(), e.pinned)).collect();
+        assert_eq!(paths, [("a.anicraft".to_string(), true), ("b.anicraft".to_string(), false)]);
     }
 }
