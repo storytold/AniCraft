@@ -1274,6 +1274,35 @@ impl App {
                     crate::test_movie::demo_pointer(self);
                 }
             }
+            Some(which @ ("textfields" | "testtext")) => {
+                // Dynamic and input text fields (ADR 0066): a score a script sets, a name field
+                // and a multiline notes field. `textfields` selects the name field for its
+                // Properties; `testtext` plays it in Test Movie with a name typed and Enter
+                // pressed, the notes field focused with a word selected.
+                self.perform("file.new", json!({"width": 640, "height": 400}));
+                // i18n-exempt: document content
+                let fields = [("Score: 0", "dynamic", "score_txt", 40.0, 40.0, 30.0, 360.0, 44.0, "single"), ("", "input", "name_txt", 40.0, 130.0, 22.0, 360.0, 34.0, "single"), ("Notes wrap at the width of the field, and viewers can type more.", "input", "notes_txt", 40.0, 200.0, 18.0, 360.0, 110.0, "multiline")];
+                for (text, kind, name, x, y, size, w, h, lines) in fields {
+                    self.run("text.create", json!({"text": text, "type": kind, "x": x, "y": y, "size": size, "color": "#264653"}));
+                    self.run("instance.set_name", json!({"name": name}));
+                    self.run("text.field", json!({"width": w, "height": h, "lines": lines, "border": kind == "input", "background": kind == "input", "max_chars": if name == "name_txt" { 24 } else { 0 }}));
+                }
+                // i18n-exempt: script source, document content
+                let code = "stop();\nscore_txt.text = \"Type your name, then press Enter\";\nstage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);\n\nfunction onKey(e:KeyboardEvent):void {\n\tif (e.keyCode == Keyboard.ENTER && name_txt.length > 0) {\n\t\tscore_txt.text = \"Hello, \" + name_txt.text + \"!\";\n\t}\n}\n";
+                self.run("layer.new", json!({}));
+                self.run("script.set", json!({"frame": 0, "text": code, "language": "actionscript3"}));
+                if which == "textfields" {
+                    self.run("layer.select", json!({"index": 1}));
+                    if let Some(id) = self.s.visible_elements().iter().find(|e| e.name == "name_txt").map(|e| e.id.0) {
+                        self.run("element.select", json!({"ids": [id]}));
+                    }
+                } else {
+                    // Floating inside the editor, so the screenshot shows it (this run only).
+                    self.prefs.test_movie_window = false;
+                    crate::test_movie::open(self);
+                    crate::test_movie::demo_typing(self);
+                }
+            }
             Some("exporthtml") => {
                 // File › Export › Export HTML Canvas… on the interactive sample (the in-app
                 // prompt: screenshots never open native dialogs).

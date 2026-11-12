@@ -3,7 +3,7 @@
 use crate::app::{App, Tool};
 use crate::icons::{self, Icon};
 use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, section, text, to_color32, with_type};
-use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, Paint, Rgba, SymbolKind, evaluate_layer_elements};
+use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, LineType, Paint, Rgba, SymbolKind, TextKind, evaluate_layer_elements};
 use crate::a11y::{self, Named};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
@@ -516,6 +516,7 @@ pub(crate) fn element_title(doc: &anicraft_engine::doc::Document, e: &anicraft_e
             None => tr!("Graphic: missing").to_string(),
         },
         ElementKind::Camera => tr!("Camera").to_string(),
+        ElementKind::Text(t) if t.text.trim().is_empty() => text_kind_label(t.kind()).to_string(),
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             let more = if t.text.chars().count() > first.chars().count() { "…" } else { "" };
@@ -779,9 +780,12 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         }
         if let ElementKind::Text(t) = &e.kind {
             ui.add_space(4.0);
+            text_field_rows(app, ui, e, t);
             let mut st = anicraft_engine::cmds_text::TextStyle { font: t.font.clone(), size: t.size, bold: t.bold, italic: t.italic, color: t.color, align: t.align, letter_spacing: t.letter_spacing, line_spacing: t.line_spacing };
+            // A field's lines wrap by its line type, at its box (rows above); static text by width.
             let mut width = t.width;
-            if let Some((label, p)) = text_style_rows(app, ui, &mut st, Some(&mut width)) {
+            let wrap = if t.field.is_some() { None } else { Some(&mut width) };
+            if let Some((label, p)) = text_style_rows(app, ui, &mut st, wrap) {
                 live(app, label, "text.edit", p);
             }
             row_prose(ui, tr!("Text"), |ui| {
@@ -875,6 +879,106 @@ fn bitmap_row(app: &mut App, ui: &mut egui::Ui, current: anicraft_engine::doc::B
         .set_name(tr!("Swap Bitmap"));
         mixed(ui, differs);
     });
+}
+
+/// A text type's name, as the Properties panel shows it.
+pub(crate) fn text_kind_label(kind: TextKind) -> &'static str {
+    match kind {
+        TextKind::Static => tr!("Static text"),
+        TextKind::Dynamic => tr!("Dynamic text"),
+        TextKind::Input => tr!("Input text"),
+    }
+}
+
+/// A line type's name, as the Properties panel shows it.
+pub(crate) fn line_type_label(lines: LineType) -> &'static str {
+    match lines {
+        LineType::Single => tr!("Single line"),
+        LineType::Multiline => tr!("Multiline"),
+        LineType::MultilineNoWrap => tr!("Multiline no wrap"),
+        LineType::Password => tr!("Password"),
+    }
+}
+
+/// Text type (Static, Dynamic, Input) and, for dynamic and input fields, the instance name
+/// scripts use, the line type, the box and the options (ADR 0066), where Animate's Properties
+/// has them: at the top of a text field's properties.
+fn text_field_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, t: &anicraft_engine::doc::TextBlock) {
+    let kind = t.kind();
+    row_prose(ui, tr!("Text type"), |ui| {
+        egui::ComboBox::from_id_salt("prop_text_type").selected_text(text_kind_label(kind)).show_ui(ui, |ui| {
+            for k in TextKind::ALL {
+                if ui.selectable_label(k == kind, text_kind_label(k)).clicked() && k != kind {
+                    app.run("text.field", json!({"type": k.key()}));
+                }
+            }
+        })
+        .response
+        .on_hover_text(tr!("Static text is drawn as laid out. Scripts set dynamic text while the movie plays; viewers type into input text."))
+        .set_name(tr!("Text type"));
+    });
+    let Some(f) = &t.field else { return };
+    let mut name = e.name.clone();
+    row_prose(ui, tr!("Instance"), |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0).hint_text(tr!("instance name"))).named(tr!("Instance name"));
+        if r.on_hover_text(tr!("The name scripts use for the field, as in score_txt.text = \"10\" (letters, digits and _)")).changed() {
+            live(app, tr_noop!("Instance name"), "instance.set_name", json!({"element": e.id.0, "name": name}));
+        }
+    });
+    row_prose(ui, tr!("Lines"), |ui| {
+        egui::ComboBox::from_id_salt("prop_text_lines").selected_text(line_type_label(f.lines)).show_ui(ui, |ui| {
+            for l in LineType::ALL {
+                // A password hides what is typed, so only input text has one.
+                if l == LineType::Password && kind != TextKind::Input {
+                    continue;
+                }
+                if ui.selectable_label(l == f.lines, line_type_label(l)).clicked() && l != f.lines {
+                    app.run("text.field", json!({"lines": l.key()}));
+                }
+            }
+        })
+        .response
+        .set_name(tr!("Line type"));
+    });
+    let (mut w, mut h) = (t.box_width, t.box_height);
+    row(ui, tr!("Box"), |ui| {
+        if ui.add(egui::DragValue::new(&mut w).prefix("W ").suffix(" px").speed(0.5).range(1.0..=100_000.0).max_decimals(1)).named(tr!("Field width")).changed() {
+            live(app, tr_noop!("Field size"), "text.field", json!({"width": w}));
+        }
+        if ui.add(egui::DragValue::new(&mut h).prefix("H ").suffix(" px").speed(0.5).range(1.0..=100_000.0).max_decimals(1)).named(tr!("Field height")).changed() {
+            live(app, tr_noop!("Field size"), "text.field", json!({"height": h}));
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        // Animate's "Show border around text": a line round a filled box.
+        let mut border = f.border;
+        if crate::theme::checkbox(ui, &mut border, tr!("Show border")).on_hover_text(tr!("Draw a line round the field and fill its box")).changed() {
+            app.run("text.field", json!({"border": border, "background": border}));
+        }
+        if kind == TextKind::Dynamic {
+            let mut sel = f.selectable;
+            if crate::theme::checkbox(ui, &mut sel, tr!("Selectable")).on_hover_text(tr!("Viewers can select the text while the movie plays")).changed() {
+                app.run("text.field", json!({"selectable": sel}));
+            }
+        }
+    });
+    if kind == TextKind::Input {
+        let mut max = f.max_chars;
+        row(ui, tr!("Max characters"), |ui| {
+            if ui.add(egui::DragValue::new(&mut max).speed(0.2).range(0..=anicraft_engine::doc::MAX_FIELD_CHARS as u32)).named(tr!("Max characters")).on_hover_text(tr!("Most characters a viewer may type (0: no limit)")).changed() {
+                live(app, tr_noop!("Max characters"), "text.field", json!({"max_chars": max}));
+            }
+            if max == 0 {
+                ui.label(text(Type::Caption, tr!("no limit")).color(T.text_faint));
+            }
+        });
+    }
+    if !f.variable.is_empty() {
+        row(ui, tr!("Variable"), |ui| {
+            ui.label(text(Type::Data, f.variable.as_str())).on_hover_text(tr!("Kept from the Animate document: an ActionScript 1.0 or 2.0 variable, which doesn't run here"));
+        });
+    }
+    ui.add_space(4.0);
 }
 
 /// A movie clip or button instance's name (what actions address it by) and its events, as at

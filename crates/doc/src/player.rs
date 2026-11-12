@@ -467,6 +467,30 @@ pub fn hit(doc: &Document, st: &PlayerState, p: Vec2) -> Option<InstancePath> {
     hit_in(doc, st, &tree(doc, st), p)
 }
 
+/// The text field at stage point `p` the viewer can click into, topmost first (ADR 0066): what
+/// a window shows a text cursor over.
+pub fn field_at(doc: &Document, st: &PlayerState, p: Vec2) -> Option<InstancePath> {
+    field_hit(&tree(doc, st), p).map(|(_, path)| path)
+}
+
+/// The topmost focusable field node at `p`, with its index.
+fn field_hit(nodes: &[Node], p: Vec2) -> Option<(usize, InstancePath)> {
+    for (i, n) in nodes.iter().enumerate().rev() {
+        if n.kind != NodeKind::Text || !n.hittable {
+            continue;
+        }
+        let Some((t, f)) = n.field() else { continue };
+        if !f.focusable() {
+            continue;
+        }
+        let Some(q) = n.xf.inverse().map(|m| m.apply(p)) else { continue };
+        if q.x >= 0.0 && q.y >= 0.0 && q.x <= t.box_width && q.y <= t.box_height {
+            return Some((i, n.path.clone()));
+        }
+    }
+    None
+}
+
 /// The frame of a button's timeline, `len` frames long, that answers the pointer: the Hit
 /// frame (the fourth) when it has one, otherwise the Up frame.
 pub fn hit_frame(len: u32) -> u32 {
@@ -1385,20 +1409,7 @@ impl<'a, 'h> Run<'a, 'h> {
 
     /// The topmost field at stage point `p` the viewer can use, with its node's index.
     fn field_at(&self, p: Vec2) -> Option<(usize, InstancePath)> {
-        for (i, n) in self.nodes.iter().enumerate().rev() {
-            if n.kind != NodeKind::Text || !n.hittable {
-                continue;
-            }
-            let Some((t, f)) = n.field() else { continue };
-            if !f.focusable() {
-                continue;
-            }
-            let Some(q) = n.xf.inverse().map(|m| m.apply(p)) else { continue };
-            if q.x >= 0.0 && q.y >= 0.0 && q.x <= t.box_width && q.y <= t.box_height {
-                return Some((i, n.path.clone()));
-            }
-        }
-        None
+        field_hit(&self.nodes, p)
     }
 
     /// Field `path`'s block and its place on the stage.

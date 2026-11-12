@@ -966,6 +966,13 @@ pub fn element_label(doc: &Document, e: &Element) -> String {
             None => "Graphic: missing".to_string(),
         },
         ElementKind::Camera => "Camera".to_string(),
+        // An empty field (an input field waiting for the viewer) is named by its type.
+        ElementKind::Text(t) if t.text.trim().is_empty() => match t.kind() {
+            anicraft_doc::TextKind::Static => "Static text",
+            anicraft_doc::TextKind::Dynamic => "Dynamic text",
+            anicraft_doc::TextKind::Input => "Input text",
+        }
+        .to_string(),
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             format!("Text: {first}{}", if t.text.chars().count() > first.chars().count() { "…" } else { "" })
