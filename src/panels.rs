@@ -107,17 +107,68 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             app.run("draw.snap_to_objects", json!({}));
         }
         ui.add_space(10.0);
-        // fill / stroke swatches
-        let st = &app.s.style;
-        let (r, _) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::hover());
-        let back = Rect::from_min_size(r.left_top() + vec2(14.0, 14.0), vec2(24.0, 24.0));
-        let front = Rect::from_min_size(r.left_top() + vec2(2.0, 2.0), vec2(24.0, 24.0));
-        ui.painter().rect_filled(back, T.rc(), if st.use_fill { to_color32(st.fill) } else { T.field });
-        ui.painter().rect_stroke(back, T.rc(), Stroke::new(1.0, T.border), StrokeKind::Inside);
-        ui.painter().rect_filled(front, T.rc(), T.panel);
-        ui.painter().rect_stroke(front.shrink(1.0), T.rc(), Stroke::new(5.0, if st.use_stroke { to_color32(st.stroke) } else { T.field }), StrokeKind::Inside);
-        ui.painter().rect_stroke(front, T.rc(), Stroke::new(1.0, T.border), StrokeKind::Inside);
+        tool_swatches(app, ui);
     });
+}
+
+/// The stroke and fill swatches under the tools, as in Animate: the stroke's frame at the top
+/// left, the fill behind it. A click on either opens the colour picker (#246); the colour is
+/// the tools' (what they draw next) and, with shapes selected, theirs too.
+fn tool_swatches(app: &mut App, ui: &mut egui::Ui) {
+    let (r, _) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::hover());
+    let back = Rect::from_min_size(r.left_top() + vec2(14.0, 14.0), vec2(24.0, 24.0));
+    let front = Rect::from_min_size(r.left_top() + vec2(2.0, 2.0), vec2(24.0, 24.0));
+    // The fill first, so the stroke's frame (on top) takes the clicks where they overlap.
+    let fill_resp = ui.interact(back, ui.id().with("tool_fill"), Sense::click());
+    let stroke_resp = ui.interact(front, ui.id().with("tool_stroke"), Sense::click());
+    let st = &app.s.style;
+    let hot = |r: &egui::Response| if r.hovered() { T.selection } else { T.border };
+    ui.painter().rect_filled(back, T.rc(), if st.use_fill { to_color32(st.fill) } else { T.field });
+    ui.painter().rect_stroke(back, T.rc(), Stroke::new(1.0, hot(&fill_resp)), StrokeKind::Inside);
+    ui.painter().rect_filled(front, T.rc(), T.panel);
+    ui.painter().rect_stroke(front.shrink(1.0), T.rc(), Stroke::new(5.0, if st.use_stroke { to_color32(st.stroke) } else { T.field }), StrokeKind::Inside);
+    ui.painter().rect_stroke(front, T.rc(), Stroke::new(1.0, hot(&stroke_resp)), StrokeKind::Inside);
+    for (fill, resp) in [(true, fill_resp), (false, stroke_resp)] {
+        let name = if fill { tr!("Fill colour") } else { tr!("Stroke colour") };
+        a11y::control(ui, &resp, WidgetType::ColorButton, &name, None);
+        let resp = resp.on_hover_text(if fill { tr!("Fill colour: click to pick the colour shapes are filled with") } else { tr!("Stroke colour: click to pick the colour of lines and outlines") });
+        let st = &app.s.style;
+        let (colour, mut none) = if fill { (st.fill, !st.use_fill) } else { (st.stroke, !st.use_stroke) };
+        let mut c = rgba(colour);
+        let was = none;
+        if fill && std::mem::take(&mut app.open_fill_swatch) {
+            egui::Popup::open_id(ui.ctx(), resp.id.with("colour_popup"));
+        }
+        if crate::colour::popup_for(ui, &resp, resp.id.with("colour_popup"), &mut c, false, Some(&mut none)) {
+            // No Colour toggled says which; a colour picked turns the colour back on.
+            let none = none != was && none;
+            let pick = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 1.0);
+            let style = &mut app.s.style;
+            if fill {
+                style.use_fill = !none;
+                if !none {
+                    style.set_fill_color(pick);
+                }
+            } else {
+                style.use_stroke = !none;
+                if !none {
+                    style.stroke = pick;
+                }
+            }
+            // Selected shapes take it too (one undo step for a drag in the mixer).
+            let shapes = app.s.selected_elements().iter().any(|(_, e)| matches!(e.kind, ElementKind::Shape(_)));
+            if shapes {
+                let colour = if none { Value::Null } else { json!(hex([c[0], c[1], c[2]])) };
+                let (label, id, p) = if fill { (tr_noop!("Fill colour"), "element.set_fill", json!({"color": colour})) } else { (tr_noop!("Stroke colour"), "element.set_stroke", json!({"color": colour})) };
+                live(app, label, id, p);
+            }
+        }
+    }
+}
+
+fn rgba(c: Rgba) -> [u8; 4] {
+    let [r, g, b] = rgb(c);
+    [r, g, b, 255]
 }
 
 // ----- edit bar & status ------------------------------------------------------------------
@@ -576,7 +627,7 @@ fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: cra
         ColorEffect::Tint { color, amount } => {
             let mut c = rgb(color);
             row(ui, tr!("Tint"), |ui| {
-                if ui.color_edit_button_srgb(&mut c).named(tr!("Tint colour")).changed() {
+                if crate::colour::button(ui, &mut c).named(tr!("Tint colour")).changed() {
                     set(app, json!({"tint": hex(c)}));
                 }
                 ui.label(text(Type::Data, hex(c)));
@@ -803,7 +854,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             row(ui, tr!("Fill"), |ui| {
                 let is_grad = matches!(sh.fill, Some(Paint::Linear { .. } | Paint::Radial { .. }));
                 let mut c = rgb(fill.unwrap_or(Rgba::WHITE));
-                if ui.color_edit_button_srgb(&mut c).named(tr!("Fill colour")).changed() {
+                if crate::colour::button(ui, &mut c).named(tr!("Fill colour")).changed() {
                     live(app, tr_noop!("Fill colour"), "element.set_fill", json!({"color": hex(c)}));
                 }
                 let mut on = fill.is_some();
@@ -821,7 +872,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             let mut sc = rgb(sh.stroke.as_ref().map_or(app.s.style.stroke, |s| s.color));
             let mut sw = sh.stroke.as_ref().map_or(0.0, |s| s.width);
             row(ui, tr!("Stroke"), |ui| {
-                if ui.color_edit_button_srgb(&mut sc).named(tr!("Stroke colour")).changed() {
+                if crate::colour::button(ui, &mut sc).named(tr!("Stroke colour")).changed() {
                     live(app, tr_noop!("Stroke colour"), "element.set_stroke", json!({"color": hex(sc)}));
                 }
                 if ui.add(egui::DragValue::new(&mut sw).suffix(" px").speed(0.1).range(0.0..=200.0).max_decimals(1)).named(tr!("Stroke width")).changed() {
@@ -1139,7 +1190,7 @@ fn shadow_rows(ui: &mut egui::Ui, fname: &str, strength: &mut f32, color: &mut R
             *changed = Some(tr_noop!("Filter strength"));
         }
         let mut c = rgb(*color);
-        if ui.color_edit_button_srgb(&mut c).named(&tr!("{filter} colour", filter = fname)).on_hover_text(tr!("Colour")).changed() {
+        if crate::colour::button(ui, &mut c).named(&tr!("{filter} colour", filter = fname)).on_hover_text(tr!("Colour")).changed() {
             *color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, color.a);
             *changed = Some(tr_noop!("Filter colour"));
         }
@@ -1195,7 +1246,7 @@ fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
     let s = c.sanitized();
     let b = |v: f32| (v * 255.0).round() as u8;
     let mut px = [b(s.r), b(s.g), b(s.b), b(s.a)];
-    let r = ui.color_edit_button_srgba_unmultiplied(&mut px).named(name).on_hover_text(name);
+    let r = crate::colour::button_alpha(ui, &mut px).named(name).on_hover_text(name);
     if r.changed() {
         *c = Rgba::new(f32::from(px[0]) / 255.0, f32::from(px[1]) / 255.0, f32::from(px[2]) / 255.0, f32::from(px[3]) / 255.0);
     }
@@ -1310,7 +1361,7 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
             if pinned {
                 // Colour only: this stop stays transparent.
                 let mut c = rgb(st.color);
-                if ui.color_edit_button_srgb(&mut c).named(&tr!("{filter} stop colour", filter = fname)).on_hover_text(tr!("Stop colour (this stop stays transparent)")).changed() {
+                if crate::colour::button(ui, &mut c).named(&tr!("{filter} stop colour", filter = fname)).on_hover_text(tr!("Stop colour (this stop stays transparent)")).changed() {
                     st.color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 0.0);
                     *changed = Some(tr_noop!("Colour stop"));
                 }
@@ -1364,7 +1415,7 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
             out = Some((tr_noop!("Font size"), json!({"size": st.size})));
         }
         let mut c = rgb(st.color);
-        if ui.color_edit_button_srgb(&mut c).named(tr!("Text colour")).on_hover_text(tr!("Text colour")).changed() {
+        if crate::colour::button(ui, &mut c).named(tr!("Text colour")).on_hover_text(tr!("Text colour")).changed() {
             st.color = Rgba::hex(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]));
             out = Some((tr_noop!("Text colour"), json!({"color": hex(c)})));
         }
@@ -1441,7 +1492,7 @@ fn camera_props(app: &mut App, ui: &mut egui::Ui) {
     let mut tint = rgb(cam.tint);
     let mut amount = cam.tint_amount * 100.0;
     row(ui, tr!("Tint"), |ui| {
-        let a = ui.color_edit_button_srgb(&mut tint).named(tr!("Camera tint colour"));
+        let a = crate::colour::button(ui, &mut tint).named(tr!("Camera tint colour"));
         let b = ui.add(egui::DragValue::new(&mut amount).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Camera tint amount"));
         if a.changed() || b.changed() {
             live(app, tr_noop!("Camera Tint"), "camera.set", json!({"tint": hex(tint), "tint_amount": amount}));
@@ -1534,7 +1585,7 @@ fn document_props(app: &mut App, ui: &mut egui::Ui) {
         });
         let mut bg = rgb(st.background);
         row(ui, tr!("Stage"), |ui| {
-            if ui.color_edit_button_srgb(&mut bg).named(tr!("Stage colour")).changed() {
+            if crate::colour::button(ui, &mut bg).named(tr!("Stage colour")).changed() {
                 live(app, tr_noop!("Stage colour"), "doc.set_stage", json!({"background": hex(bg)}));
             }
             ui.label(text(Type::Data, trn!("{n} frame", "{n} frames", app.s.frame_count())).color(T.text_faint));
@@ -1868,7 +1919,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     if !ink {
         row(ui, tr!("Fill"), |ui| {
             let mut c = rgb(st.fill);
-            if ui.color_edit_button_srgb(&mut c).named(tr!("Fill colour")).changed() {
+            if crate::colour::button(ui, &mut c).named(tr!("Fill colour")).changed() {
                 st.set_fill_color(Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0));
             }
             // A gradient or bitmap picked with the Eyedropper (ADR 0034): the swatch shows its
@@ -1890,7 +1941,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     if !fills {
         row(ui, tr!("Stroke"), |ui| {
             let mut c = rgb(st.stroke);
-            if ui.color_edit_button_srgb(&mut c).named(tr!("Stroke colour")).changed() {
+            if crate::colour::button(ui, &mut c).named(tr!("Stroke colour")).changed() {
                 st.stroke = Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0);
             }
             if !ink {

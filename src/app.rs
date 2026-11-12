@@ -387,6 +387,8 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
+    /// Opens the Tools bar's fill swatch picker on the next frame (the `swatches` screenshot).
+    pub open_fill_swatch: bool,
     /// The bone picked on the stage (ADR 0043; view state).
     pub bone_sel: Option<anicraft_engine::doc::BoneId>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
@@ -615,6 +617,7 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
+            open_fill_swatch: false,
             bone_sel: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
@@ -1771,6 +1774,10 @@ impl App {
                 {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
                 }
+            }
+            Some("swatches") => {
+                // The fill swatch's colour picker open.
+                self.open_fill_swatch = true;
             }
             Some("width") => {
                 // A tapered brush-like stroke being shaped with the Width tool: one width point
