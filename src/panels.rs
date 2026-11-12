@@ -2,7 +2,7 @@
 
 use crate::app::{App, Tool};
 use crate::icons::{self, Icon};
-use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, section, text, to_color32, with_type};
+use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, color_edit_button_srgb, color_edit_button_srgba_unmultiplied, section, text, to_color32, with_type};
 use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, LineType, Paint, Rgba, SymbolKind, TextKind, evaluate_layer_elements};
 use crate::a11y::{self, Named};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
@@ -575,7 +575,7 @@ fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: cra
         ColorEffect::Tint { color, amount } => {
             let mut c = rgb(color);
             row(ui, tr!("Tint"), |ui| {
-                if ui.color_edit_button_srgb(&mut c).named(tr!("Tint colour")).changed() {
+                if color_edit_button_srgb(ui, &mut c).named(tr!("Tint colour")).changed() {
                     set(app, json!({"tint": hex(c)}));
                 }
                 ui.label(text(Type::Data, hex(c)));
@@ -802,7 +802,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             row(ui, tr!("Fill"), |ui| {
                 let is_grad = matches!(sh.fill, Some(Paint::Linear { .. } | Paint::Radial { .. }));
                 let mut c = rgb(fill.unwrap_or(Rgba::WHITE));
-                if ui.color_edit_button_srgb(&mut c).named(tr!("Fill colour")).changed() {
+                if color_edit_button_srgb(ui, &mut c).named(tr!("Fill colour")).changed() {
                     live(app, tr_noop!("Fill colour"), "element.set_fill", json!({"color": hex(c)}));
                 }
                 let mut on = fill.is_some();
@@ -820,7 +820,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             let mut sc = rgb(sh.stroke.as_ref().map_or(app.s.style.stroke, |s| s.color));
             let mut sw = sh.stroke.as_ref().map_or(0.0, |s| s.width);
             row(ui, tr!("Stroke"), |ui| {
-                if ui.color_edit_button_srgb(&mut sc).named(tr!("Stroke colour")).changed() {
+                if color_edit_button_srgb(ui, &mut sc).named(tr!("Stroke colour")).changed() {
                     live(app, tr_noop!("Stroke colour"), "element.set_stroke", json!({"color": hex(sc)}));
                 }
                 if ui.add(egui::DragValue::new(&mut sw).suffix(" px").speed(0.1).range(0.0..=200.0).max_decimals(1)).named(tr!("Stroke width")).changed() {
@@ -1138,7 +1138,7 @@ fn shadow_rows(ui: &mut egui::Ui, fname: &str, strength: &mut f32, color: &mut R
             *changed = Some(tr_noop!("Filter strength"));
         }
         let mut c = rgb(*color);
-        if ui.color_edit_button_srgb(&mut c).named(&tr!("{filter} colour", filter = fname)).on_hover_text(tr!("Colour")).changed() {
+        if color_edit_button_srgb(ui, &mut c).named(&tr!("{filter} colour", filter = fname)).on_hover_text(tr!("Colour")).changed() {
             *color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, color.a);
             *changed = Some(tr_noop!("Filter colour"));
         }
@@ -1194,7 +1194,7 @@ fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
     let s = c.sanitized();
     let b = |v: f32| (v * 255.0).round() as u8;
     let mut px = [b(s.r), b(s.g), b(s.b), b(s.a)];
-    let r = ui.color_edit_button_srgba_unmultiplied(&mut px).named(name).on_hover_text(name);
+    let r = color_edit_button_srgba_unmultiplied(ui, &mut px).named(name).on_hover_text(name);
     if r.changed() {
         *c = Rgba::new(f32::from(px[0]) / 255.0, f32::from(px[1]) / 255.0, f32::from(px[2]) / 255.0, f32::from(px[3]) / 255.0);
     }
@@ -1309,7 +1309,7 @@ fn ramp_editor(ui: &mut egui::Ui, fname: &str, stops: &mut Vec<anicraft_engine::
             if pinned {
                 // Colour only: this stop stays transparent.
                 let mut c = rgb(st.color);
-                if ui.color_edit_button_srgb(&mut c).named(&tr!("{filter} stop colour", filter = fname)).on_hover_text(tr!("Stop colour (this stop stays transparent)")).changed() {
+                if color_edit_button_srgb(ui, &mut c).named(&tr!("{filter} stop colour", filter = fname)).on_hover_text(tr!("Stop colour (this stop stays transparent)")).changed() {
                     st.color = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 0.0);
                     *changed = Some(tr_noop!("Colour stop"));
                 }
@@ -1363,7 +1363,7 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
             out = Some((tr_noop!("Font size"), json!({"size": st.size})));
         }
         let mut c = rgb(st.color);
-        if ui.color_edit_button_srgb(&mut c).named(tr!("Text colour")).on_hover_text(tr!("Text colour")).changed() {
+        if color_edit_button_srgb(ui, &mut c).named(tr!("Text colour")).on_hover_text(tr!("Text colour")).changed() {
             st.color = Rgba::hex(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]));
             out = Some((tr_noop!("Text colour"), json!({"color": hex(c)})));
         }
@@ -1440,7 +1440,7 @@ fn camera_props(app: &mut App, ui: &mut egui::Ui) {
     let mut tint = rgb(cam.tint);
     let mut amount = cam.tint_amount * 100.0;
     row(ui, tr!("Tint"), |ui| {
-        let a = ui.color_edit_button_srgb(&mut tint).named(tr!("Camera tint colour"));
+        let a = color_edit_button_srgb(ui, &mut tint).named(tr!("Camera tint colour"));
         let b = ui.add(egui::DragValue::new(&mut amount).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Camera tint amount"));
         if a.changed() || b.changed() {
             live(app, tr_noop!("Camera Tint"), "camera.set", json!({"tint": hex(tint), "tint_amount": amount}));
@@ -1517,7 +1517,7 @@ fn document_props(app: &mut App, ui: &mut egui::Ui) {
         });
         let mut bg = rgb(st.background);
         row(ui, tr!("Stage"), |ui| {
-            if ui.color_edit_button_srgb(&mut bg).named(tr!("Stage colour")).changed() {
+            if color_edit_button_srgb(ui, &mut bg).named(tr!("Stage colour")).changed() {
                 live(app, tr_noop!("Stage colour"), "doc.set_stage", json!({"background": hex(bg)}));
             }
             ui.label(text(Type::Data, trn!("{n} frame", "{n} frames", app.s.frame_count())).color(T.text_faint));
@@ -1845,7 +1845,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     if !ink {
         row(ui, tr!("Fill"), |ui| {
             let mut c = rgb(st.fill);
-            if ui.color_edit_button_srgb(&mut c).named(tr!("Fill colour")).changed() {
+            if color_edit_button_srgb(ui, &mut c).named(tr!("Fill colour")).changed() {
                 st.set_fill_color(Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0));
             }
             // A gradient or bitmap picked with the Eyedropper (ADR 0034): the swatch shows its
@@ -1867,7 +1867,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     if !fills {
         row(ui, tr!("Stroke"), |ui| {
             let mut c = rgb(st.stroke);
-            if ui.color_edit_button_srgb(&mut c).named(tr!("Stroke colour")).changed() {
+            if color_edit_button_srgb(ui, &mut c).named(tr!("Stroke colour")).changed() {
                 st.stroke = Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0);
             }
             if !ink {

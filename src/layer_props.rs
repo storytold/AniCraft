@@ -5,7 +5,7 @@
 
 use crate::a11y::Named;
 use crate::app::App;
-use crate::theme::{FORM_LABEL_DIALOG, Type, form_row, text, to_color32};
+use crate::theme::{FORM_LABEL_DIALOG, Type, color_edit_button_srgb, form_row, text, to_color32};
 use anicraft_engine::doc::{LayerId, LayerKind, MAX_LAYER_HEIGHT, Rgba};
 use egui::Key;
 use serde_json::{Value, json};
@@ -128,7 +128,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
             });
         });
         form_row(ui, FORM_LABEL_DIALOG, tr!("Outline colour"), |ui| {
-            ui.color_edit_button_srgb(&mut d.color).named(tr!("Outline colour")).on_hover_text(tr!("The colour of the layer's outlines and of its bar on the timeline"));
+            color_edit_button_srgb(ui, &mut d.color).named(tr!("Outline colour")).on_hover_text(tr!("The colour of the layer's outlines and of its bar on the timeline"));
         });
         if kind != LayerKind::Camera && kind != LayerKind::Folder {
             form_row(ui, FORM_LABEL_DIALOG, tr!("Outlines"), |ui| {

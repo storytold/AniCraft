@@ -6,6 +6,7 @@
 //! blocks, playhead, selection). Corners follow the role of a shape, not one global value:
 //! structure is square, controls are softened slightly, floating surfaces are rounder.
 
+use crate::a11y::Named;
 use egui::{Color32, CornerRadius, Shadow, Stroke, Visuals};
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -663,3 +664,296 @@ pub const HIT_AREA_ALPHA: f32 = 0.35;
 pub fn hit_area() -> (anicraft_engine::doc::Rgba, f32) {
     (to_rgba(T.hit_area), HIT_AREA_ALPHA)
 }
+
+fn color_button(ui: &mut egui::Ui, color: Color32, open: bool) -> egui::Response {
+    let size = ui.spacing().interact_size;
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ColorButton, ui.is_enabled(), ""));
+
+    if ui.is_rect_visible(rect) {
+        let visuals = if open {
+            &ui.visuals().widgets.open
+        } else {
+            ui.style().interact(&response)
+        };
+        let rect = rect.expand(visuals.expansion);
+
+        egui::color_picker::show_color_at(ui.painter(), color, rect);
+
+        let corner_radius = visuals.corner_radius;
+        ui.painter().rect_stroke(rect, corner_radius, visuals.bg_stroke, egui::StrokeKind::Inside);
+    }
+
+    response
+}
+
+/// Parses `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa` (leading `#` optional).
+fn parse_hex_color(s: &str, has_alpha: bool) -> Option<[u8; 4]> {
+    let s = s.trim().trim_start_matches('#');
+    if !s.is_ascii() {
+        return None;
+    }
+    match s.len() {
+        3 => {
+            let r = u8::from_str_radix(&s[0..1], 16).ok()? * 17;
+            let g = u8::from_str_radix(&s[1..2], 16).ok()? * 17;
+            let b = u8::from_str_radix(&s[2..3], 16).ok()? * 17;
+            Some([r, g, b, 255])
+        }
+        4 if has_alpha => {
+            let r = u8::from_str_radix(&s[0..1], 16).ok()? * 17;
+            let g = u8::from_str_radix(&s[1..2], 16).ok()? * 17;
+            let b = u8::from_str_radix(&s[2..3], 16).ok()? * 17;
+            let a = u8::from_str_radix(&s[3..4], 16).ok()? * 17;
+            Some([r, g, b, a])
+        }
+        4 => {
+            let r = u8::from_str_radix(&s[0..1], 16).ok()? * 17;
+            let g = u8::from_str_radix(&s[1..2], 16).ok()? * 17;
+            let b = u8::from_str_radix(&s[2..3], 16).ok()? * 17;
+            Some([r, g, b, 255])
+        }
+        6 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            Some([r, g, b, 255])
+        }
+        8 if has_alpha => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            let a = u8::from_str_radix(&s[6..8], 16).ok()?;
+            Some([r, g, b, a])
+        }
+        8 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            Some([r, g, b, 255])
+        }
+        _ => None,
+    }
+}
+
+fn color_edit_button_srgba_inner(
+    ui: &mut egui::Ui,
+    color: &mut Color32,
+    alpha: egui::color_picker::Alpha,
+) -> egui::Response {
+    let mut button_response = color_button(ui, *color, false);
+    let popup_id = button_response.id.with("color_picker_popup");
+    let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    if open {
+        let visuals = &ui.visuals().widgets.open;
+        let rect = button_response.rect.expand(visuals.expansion);
+        ui.painter().rect_stroke(rect, visuals.corner_radius, visuals.bg_stroke, egui::StrokeKind::Inside);
+    }
+
+    const COLOR_SLIDER_WIDTH: f32 = 275.0;
+
+    egui::Popup::menu(&button_response)
+        .id(popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.spacing_mut().slider_width = COLOR_SLIDER_WIDTH;
+
+            let mut hsva = ui
+                .data(|d| d.get_temp::<(Color32, egui::ecolor::Hsva)>(popup_id))
+                .filter(|(c, _)| *c == *color)
+                .map(|(_, h)| h)
+                .unwrap_or_else(|| egui::ecolor::Hsva::from(*color));
+
+            let mut changed = egui::color_picker::color_picker_hsva_2d(ui, &mut hsva, alpha);
+
+            let new_color = if alpha == egui::color_picker::Alpha::Opaque {
+                Color32::from(egui::ecolor::Hsva { a: 1.0, ..hsva })
+            } else {
+                Color32::from(hsva)
+            };
+
+            let current_hex = if alpha == egui::color_picker::Alpha::Opaque || new_color.a() == 255 {
+                format!("#{:02x}{:02x}{:02x}", new_color.r(), new_color.g(), new_color.b())
+            } else {
+                format!("#{:02x}{:02x}{:02x}{:02x}", new_color.r(), new_color.g(), new_color.b(), new_color.a())
+            };
+
+            let hex_id = popup_id.with("hex");
+            let mut hex_text = ui.data(|d| d.get_temp::<String>(hex_id)).unwrap_or_else(|| current_hex.clone());
+            if changed {
+                hex_text = current_hex.clone();
+                ui.data_mut(|d| d.remove_temp::<String>(hex_id));
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(text(Type::Caption, tr!("Hex")));
+                let r = with_type(ui, Type::Data, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut hex_text)
+                            .id(hex_id)
+                            .desired_width(76.0)
+                            .char_limit(9),
+                    )
+                })
+                .named(tr!("Hex colour"));
+
+                if r.changed() {
+                    ui.data_mut(|d| d.insert_temp(hex_id, hex_text.clone()));
+                }
+
+                let enter = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if r.lost_focus() || enter {
+                    if let Some([cr, cg, cb, ca]) = parse_hex_color(&hex_text, alpha != egui::color_picker::Alpha::Opaque) {
+                        let parsed = if alpha == egui::color_picker::Alpha::Opaque {
+                            Color32::from_rgb(cr, cg, cb)
+                        } else {
+                            Color32::from_rgba_unmultiplied(cr, cg, cb, ca)
+                        };
+                        if parsed != new_color {
+                            hsva = egui::ecolor::Hsva::from(parsed);
+                            changed = true;
+                        }
+                    }
+                    ui.data_mut(|d| d.remove_temp::<String>(hex_id));
+                    if enter {
+                        ui.memory_mut(|m| m.surrender_focus(hex_id));
+                    }
+                }
+            });
+
+            let final_color = if alpha == egui::color_picker::Alpha::Opaque {
+                Color32::from(egui::ecolor::Hsva { a: 1.0, ..hsva })
+            } else {
+                Color32::from(hsva)
+            };
+
+            ui.data_mut(|d| d.insert_temp(popup_id, (final_color, hsva)));
+
+            if changed || final_color != *color {
+                *color = final_color;
+                button_response.mark_changed();
+            }
+        });
+
+    button_response
+}
+
+/// Shows a button with the given sRGB color.
+/// If the user clicks the button, a full color picker with a Hex field is shown.
+pub fn color_edit_button_srgb(ui: &mut egui::Ui, srgb: &mut [u8; 3]) -> egui::Response {
+    let mut srgba = Color32::from_rgb(srgb[0], srgb[1], srgb[2]);
+    let response = color_edit_button_srgba_inner(ui, &mut srgba, egui::color_picker::Alpha::Opaque);
+    srgb[0] = srgba.r();
+    srgb[1] = srgba.g();
+    srgb[2] = srgba.b();
+    response
+}
+
+/// Shows a button with the given Color32 color.
+/// If the user clicks the button, a full color picker with a Hex field is shown.
+pub fn color_edit_button_srgba(ui: &mut egui::Ui, srgba: &mut Color32) -> egui::Response {
+    color_edit_button_srgba_inner(ui, srgba, egui::color_picker::Alpha::OnlyBlend)
+}
+
+/// Shows a button with the given unmultiplied sRGBA color.
+/// If the user clicks the button, a full color picker with a Hex field is shown.
+pub fn color_edit_button_srgba_unmultiplied(ui: &mut egui::Ui, srgba: &mut [u8; 4]) -> egui::Response {
+    let mut c = Color32::from_rgba_unmultiplied(srgba[0], srgba[1], srgba[2], srgba[3]);
+    let response = color_edit_button_srgba_inner(ui, &mut c, egui::color_picker::Alpha::OnlyBlend);
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    *srgba = [r, g, b, a];
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_selector_palette_shows_and_edits_hex() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut color = [0x4f, 0xa3, 0xff];
+
+        // Frame 1: render button and allocate size
+        let mut button_rect = egui::Rect::NOTHING;
+        let mut button_id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let resp = color_edit_button_srgb(ui, &mut color);
+            button_rect = resp.rect;
+            button_id = resp.id;
+        });
+        out.textures_delta.clear();
+
+        // Frame 2: simulate click on the button to open popup
+        let mut raw_input = egui::RawInput::default();
+        raw_input.events.push(egui::Event::PointerButton {
+            pos: button_rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        raw_input.events.push(egui::Event::PointerButton {
+            pos: button_rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let mut out = ctx.run_ui(raw_input, |ui| {
+            color_edit_button_srgb(ui, &mut color);
+        });
+        out.textures_delta.clear();
+
+        // Frame 3: popup is now open; verify Hex field is present and displays current hex
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            color_edit_button_srgb(ui, &mut color);
+        });
+        out.textures_delta.clear();
+
+        let update = out.platform_output.accesskit_update.expect("AccessKit update");
+        let hex_field = update.nodes.iter().find(|(_, n)| {
+            n.label() == Some("Hex colour") || n.value() == Some("#4fa3ff")
+        });
+        assert!(hex_field.is_some(), "the colour selector palette is missing a field for hexadecimal colour values");
+        let node = &hex_field.unwrap().1;
+        assert_eq!(node.value(), Some("#4fa3ff"));
+
+        // Frame 4: edit hex field to a new color and press Enter
+        let popup_id = button_id.with("color_picker_popup");
+        let hex_id = popup_id.with("hex");
+        ctx.data_mut(|d| d.insert_temp(hex_id, "#ff6b4a".to_string()));
+        ctx.memory_mut(|m| m.request_focus(hex_id));
+        let mut enter_input = egui::RawInput::default();
+        enter_input.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let mut out = ctx.run_ui(enter_input, |ui| {
+            let resp = color_edit_button_srgb(ui, &mut color);
+            assert!(resp.changed());
+        });
+        out.textures_delta.clear();
+
+        assert_eq!(color, [0xff, 0x6b, 0x4a]);
+    }
+
+    #[test]
+    fn test_parse_hex_color() {
+        assert_eq!(parse_hex_color("#fff", false), Some([255, 255, 255, 255]));
+        assert_eq!(parse_hex_color("000", false), Some([0, 0, 0, 255]));
+        assert_eq!(parse_hex_color("#ff6b4a", false), Some([0xff, 0x6b, 0x4a, 255]));
+        assert_eq!(parse_hex_color("ff6b4a", false), Some([0xff, 0x6b, 0x4a, 255]));
+        assert_eq!(parse_hex_color("#ff6b4a80", true), Some([0xff, 0x6b, 0x4a, 0x80]));
+        assert_eq!(parse_hex_color("#ff6b4a80", false), Some([0xff, 0x6b, 0x4a, 255]));
+        assert_eq!(parse_hex_color("#f6a8", true), Some([0xff, 0x66, 0xaa, 0x88]));
+        assert_eq!(parse_hex_color("#f6a8", false), Some([0xff, 0x66, 0xaa, 255]));
+        assert_eq!(parse_hex_color("invalid", false), None);
+        assert_eq!(parse_hex_color("🎨", false), None);
+        assert_eq!(parse_hex_color("", false), None);
+    }
+}
+
