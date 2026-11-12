@@ -2,26 +2,34 @@
 //! tip sweeps, in the fill colour. Off Object Drawing it is a raw shape that merges with the
 //! drawing (ADR 0031), placed by the paint mode.
 
-use crate::cmds_draw::{MAX_EXTENT, object_param};
+use crate::brush_library::{BUILTIN, BrushLibrary, BrushPreset, MAX_FILE_BYTES, MAX_USER_PRESETS, builtin, builtin_hint, clean_name};
+use crate::cmds_draw::{MAX_EXTENT, add_shape, object_param};
 use crate::merge::{self, Order};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, Paint, Shape};
-use anicraft_geom::brush::{MAX_SAMPLES, Sample, Tip, TipShape, outline};
+use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, MAX_WIDTH_POINTS, Paint, Rgba, Shape, Stroke, WidthPoint, WidthProfile};
+use anicraft_geom::brush::{MAX_SAMPLES, Sample, Tip, TipShape, centre_stroke, outline_shaped};
 use anicraft_geom::{Affine, FillRule, PathCmd, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![CommandSpec {
-        id: "draw.brush",
-        label: "Brush Stroke",
-        menu: "",
-        shortcut: None,
-        params: "{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), mode?: normal|fills|behind (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas), color? (default: the fill colour), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
-        mutates: true,
-        run: draw_brush,
-    }]
+    let c = |id, label, params, mutates, run| CommandSpec { id, label, menu: "", shortcut: None, params, mutates, run };
+    vec![
+        c(
+            "draw.brush",
+            "Brush Stroke",
+            "{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
+            true,
+            draw_brush as crate::RunFn,
+        ),
+        c("brush.preset_list", "Brush Presets", "{} the built-in brushes and yours, with their settings", false, preset_list),
+        c("brush.preset_save", "Save Brush", "{name, from? (a preset to start from; default: the plain brush), size?, shape?, angle?, roundness?, smoothing?, curve?, pressure_size?, pressure_opacity?, taper_start?, taper_end?, spacing?, jitter? (as draw.brush)} saves a brush of your own (replacing yours of that name; kept in your preferences)", false, preset_save),
+        c("brush.preset_rename", "Rename Brush", "{name, to}", false, preset_rename),
+        c("brush.preset_delete", "Delete Brush", "{name} deletes a brush of your own (asks first: it can't be undone)", false, preset_delete),
+        c("brush.preset_export", "Export Brushes", "{path, names? (default: all yours)} writes your brushes to a brush set file (JSON)", false, preset_export),
+        c("brush.preset_import", "Import Brushes", "{path} adds the brushes in a brush set file to yours (a name you have already gets a number)", false, preset_import),
+    ]
 }
 
 /// Brush sizes, in stage units.
@@ -132,22 +140,48 @@ pub(crate) fn tip(p: &Value) -> Result<Tip> {
     Ok(Tip { shape, size, angle, roundness: roundness / 100.0 })
 }
 
+/// The brush a command paints with: its `preset` (or the plain brush) with the params' own
+/// settings on top.
+pub fn brush_param(s: &Session, p: &Value) -> Result<BrushPreset> {
+    let base = match opt_str(p, "preset")? {
+        Some(name) => s.brushes.find(name).ok_or_else(|| EngineError::Param(format!("no brush named '{name}' (brush.preset_list lists them)")))?,
+        None => BrushPreset::default(),
+    };
+    base.with_params(p)
+}
+
+/// The stroke's opacity factor when pressure drives it: the average mapped pressure.
+pub fn pressure_opacity(b: &BrushPreset, pts: &[Sample]) -> f32 {
+    if !b.pressure_opacity || pts.is_empty() {
+        return 1.0;
+    }
+    (pts.iter().map(|x| b.curve.map(x.pressure)).sum::<f32>() / pts.len() as f32).clamp(0.05, 1.0)
+}
+
 fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
     let pts = bounded_samples(p)?;
-    let tip = tip(p)?;
+    let b = brush_param(s, p)?;
+    let tip = b.tip();
     let size = tip.size;
-    let smoothing = ranged(p, "smoothing", 0.0..=100.0, 50.0)?;
+    let as_stroke = opt_bool(p, "as_stroke")?.unwrap_or(false);
     let unit = ranged(p, "unit", 0.001..=1000.0, 1.0)?;
     let mode_key = opt_str(p, "mode")?.unwrap_or("normal");
     let mode = PaintMode::from_key(mode_key).ok_or_else(|| EngineError::Param(format!("unknown paint mode '{mode_key}' (normal, fills or behind)")))?;
-    let color = opt_color(p, "color")?.unwrap_or(s.style.fill);
+    let color = opt_color(p, "color")?.unwrap_or(if as_stroke { s.style.stroke } else { s.style.fill });
+    let color = Rgba { a: color.a * pressure_opacity(&b, &pts), ..color };
     let object = object_param(s, p)?;
+    // Pressure through the curve (ADR 0068) before it sizes the tip.
+    let pts: Vec<Sample> = pts.iter().map(|x| Sample { at: x.at, pressure: b.size_pressure(x.pressure) }).collect();
 
     // Smoothing and accuracy are screen distances, so a stroke looks the same at any zoom: at 50
     // the centre line may wander 3.3 screen points from the hand, at 0 a third of a point.
     // The outline is fitted within a third of a screen point, or a hundredth of the size for
     // small brushes (so a small dab is still round).
-    let path = outline(&pts, &tip, unit * (0.3 + smoothing * 0.06), (unit * 0.35).min(size * 0.01));
+    let (smoothing, tol) = (unit * (0.3 + b.smoothing * 0.06), (unit * 0.35).min(size * 0.01));
+    if as_stroke {
+        return paint_stroke(s, &pts, &b, smoothing, tol, color, object);
+    }
+    let path = outline_shaped(&pts, &tip, &b.shaping(), smoothing, tol);
     if !path.cmds.iter().any(|c| matches!(c, PathCmd::CubicTo(..) | PathCmd::LineTo(..))) {
         return Err(EngineError::Param("the stroke is too small to paint".into()));
     }
@@ -177,4 +211,195 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
     s.select_only(merged);
     let ids: Vec<u64> = s.selection.id_list();
     Ok(json!({"element": ids.first(), "elements": ids, "mode": mode.key(), "merged": true}))
+}
+
+/// Width points a Paint Brush stroke's profile is simplified from (evenly along its length).
+const PROFILE_SAMPLES: usize = 256;
+/// How closely the simplified profile follows the brush's widths (a factor of the size).
+const PROFILE_TOLERANCE: f32 = 0.015;
+
+/// The Paint Brush (ADR 0068): the smoothed centre line as a stroke of the brush's size in the
+/// stroke colour, its width profile following the pressure and tapers, so the Width tool edits
+/// it afterwards. A stroke of one width is a plain line and merges like the Pencil's.
+fn paint_stroke(s: &mut Session, pts: &[Sample], b: &BrushPreset, smoothing: f32, tol: f32, color: Rgba, object: bool) -> Result<Value> {
+    let (path, factors) = centre_stroke(pts, &b.shaping(), smoothing, tol * 0.25, PROFILE_SAMPLES);
+    if !path.cmds.iter().any(|c| matches!(c, PathCmd::CubicTo(..) | PathCmd::LineTo(..))) {
+        return Err(EngineError::Param("the stroke is too short to draw a line".into()));
+    }
+    let kept = simplify_profile(&factors, PROFILE_TOLERANCE, MAX_WIDTH_POINTS);
+    let profile = WidthProfile::new(kept.iter().map(|(t, f)| WidthPoint::new(*t, *f, *f)).collect());
+    let stroke = Stroke::new(color, b.size).with_profile(profile);
+    let c = path.bounds().center();
+    let mut v = add_shape(s, "paint_brush", path.transformed(&Affine::translate(-c.x, -c.y)), c, None, Some(stroke), object)?;
+    v["width_points"] = json!(kept.len());
+    Ok(v)
+}
+
+/// The fewest of `pts` (`(t, factor)`, sorted) that stay within `tol` of the rest by straight
+/// lines between them (Ramer–Douglas–Peucker), widening the tolerance until at most `max` are
+/// kept. The ends always stay.
+pub fn simplify_profile(pts: &[(f32, f32)], tol: f32, max: usize) -> Vec<(f32, f32)> {
+    let n = pts.len();
+    if n <= 2 {
+        return pts.to_vec();
+    }
+    let mut tol = tol.max(1e-4);
+    for _ in 0..12 {
+        let mut keep = vec![false; n];
+        if let Some(k) = keep.first_mut() {
+            *k = true;
+        }
+        if let Some(k) = keep.last_mut() {
+            *k = true;
+        }
+        let mut stack = vec![(0usize, n - 1)];
+        while let Some((a, z)) = stack.pop() {
+            let (Some(pa), Some(pz)) = (pts.get(a), pts.get(z)) else { continue };
+            let mut worst = (0.0f32, a);
+            for i in a + 1..z {
+                let Some(q) = pts.get(i) else { continue };
+                let t = if pz.0 - pa.0 > 1e-9 { (q.0 - pa.0) / (pz.0 - pa.0) } else { 0.0 };
+                let d = (q.1 - (pa.1 + (pz.1 - pa.1) * t)).abs();
+                if d > worst.0 {
+                    worst = (d, i);
+                }
+            }
+            if worst.0 > tol {
+                if let Some(k) = keep.get_mut(worst.1) {
+                    *k = true;
+                }
+                stack.push((a, worst.1));
+                stack.push((worst.1, z));
+            }
+        }
+        let out: Vec<(f32, f32)> = pts.iter().zip(&keep).filter(|(_, k)| **k).map(|(p, _)| *p).collect();
+        if out.len() <= max.max(2) {
+            return out;
+        }
+        tol *= 1.6;
+    }
+    // Still too many (a wildly varying pressure): evenly spaced points.
+    let m = max.max(2);
+    (0..m).filter_map(|i| pts.get(i * (n - 1) / (m - 1))).copied().collect()
+}
+
+// ----- the brush library (ADR 0068) ---------------------------------------------------------
+
+fn preset_json(p: &BrushPreset, key: Option<&str>) -> Value {
+    let mut v = p.params();
+    v["name"] = json!(p.name);
+    v["builtin"] = json!(key.is_some());
+    if let Some(k) = key {
+        v["key"] = json!(k);
+        v["hint"] = json!(builtin_hint(k));
+    }
+    v
+}
+
+fn preset_list(s: &mut Session, _: &Value) -> Result<Value> {
+    let mut list: Vec<Value> = BUILTIN.iter().filter_map(|(k, _)| builtin(k).map(|p| preset_json(&p, Some(k)))).collect();
+    list.extend(s.brushes.user().iter().map(|p| preset_json(p, None)));
+    Ok(json!({"presets": list, "yours": s.brushes.user().len()}))
+}
+
+fn preset_save(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_req(p, "name")?;
+    let base = match opt_str(p, "from")? {
+        Some(from) => s.brushes.find(from).ok_or_else(|| EngineError::Param(format!("no brush named '{from}'")))?,
+        None => BrushPreset::default(),
+    };
+    let b = BrushPreset { name: name.to_string(), ..base.with_params(p)? };
+    let replaced = s.brushes.save(b)?;
+    let saved = clean_name(name).and_then(|n| s.brushes.position(&n)).and_then(|i| s.brushes.user().get(i)).map(|x| x.name.clone());
+    Ok(json!({"name": saved, "replaced": replaced, "yours": s.brushes.user().len()}))
+}
+
+fn preset_rename(s: &mut Session, p: &Value) -> Result<Value> {
+    let to = s.brushes.rename(str_req(p, "name")?, str_req(p, "to")?)?;
+    Ok(json!({"name": to}))
+}
+
+fn preset_delete(s: &mut Session, p: &Value) -> Result<Value> {
+    let gone = s.brushes.delete(str_req(p, "name")?)?;
+    Ok(json!({"deleted": gone.name, "yours": s.brushes.user().len()}))
+}
+
+fn preset_export(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = std::path::PathBuf::from(str_req(p, "path")?);
+    let chosen: Vec<BrushPreset> = match p.get("names") {
+        None | Some(Value::Null) => s.brushes.user().to_vec(),
+        Some(Value::Array(names)) => names
+            .iter()
+            .take(MAX_USER_PRESETS * 2)
+            .map(|n| {
+                let n = n.as_str().ok_or_else(|| EngineError::Param("param 'names' must be a list of brush names".into()))?;
+                s.brushes.find(n).ok_or_else(|| EngineError::Param(format!("no brush named '{n}'")))
+            })
+            .collect::<Result<_>>()?,
+        Some(_) => return Err(EngineError::Param("param 'names' must be a list of brush names".into())),
+    };
+    if chosen.is_empty() {
+        return Err(EngineError::State("there are no brushes of your own to export yet (save one first)".into()));
+    }
+    let text = BrushLibrary::file_json(&chosen);
+    crate::vfs::write(&path, text.as_bytes())?;
+    Ok(json!({"written": path.display().to_string(), "brushes": chosen.len(), "bytes": text.len()}))
+}
+
+fn preset_import(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = std::path::PathBuf::from(str_req(p, "path")?);
+    if crate::vfs::len(&path)? > MAX_FILE_BYTES {
+        return Err(EngineError::Param(format!("{} is too large to be a brush set", path.display())));
+    }
+    let found = BrushLibrary::parse_file(&crate::vfs::read_to_string(&path)?)?;
+    if found.is_empty() {
+        return Err(EngineError::Param("the brush set has no brushes in it".into()));
+    }
+    let mut names = Vec::with_capacity(found.len());
+    for b in found {
+        match s.brushes.add_unique(b) {
+            Ok(n) => names.push(n),
+            Err(e) if names.is_empty() => return Err(e),
+            // The library filled up part way: say what came in.
+            Err(_) => break,
+        }
+    }
+    Ok(json!({"imported": names, "yours": s.brushes.user().len()}))
+}
+
+/// Where a preview's stroke runs on a `w` × `h` area: an S across it, the pressure swelling
+/// in the middle (so pressure, curves and tapers show).
+pub fn preview_points(w: f32, h: f32) -> Vec<[f32; 3]> {
+    (0..=48)
+        .map(|i| {
+            let t = i as f32 / 48.0;
+            let x = w * (0.1 + 0.8 * t);
+            let y = h * (0.5 - 0.22 * (t * std::f32::consts::TAU).sin());
+            [x, y, 0.25 + 0.75 * (t * std::f32::consts::PI).sin()]
+        })
+        .collect()
+}
+
+/// A brush's stroke preview, drawn by the CPU renderer on a transparent `w` × `h` image (in
+/// pixels; `scale` pixels per point): the preview stroke in `color`, the brush's size kept
+/// where it fits (between 2 and 40 % of the height). `as_stroke` previews the Paint Brush.
+pub fn preview(preset: &BrushPreset, as_stroke: bool, w: u32, h: u32, scale: f32, color: Rgba) -> Result<anicraft_render::Pixmap> {
+    let scale = if scale.is_finite() { scale.clamp(0.25, 8.0) } else { 1.0 };
+    let (pw, ph) = (w as f32 / scale, h as f32 / scale);
+    if !(pw >= 8.0 && ph >= 8.0 && w <= 4096 && h <= 4096) {
+        return Err(EngineError::Param("a brush preview is 8 to 4096 pixels across".into()));
+    }
+    let mut doc = anicraft_doc::Document::default();
+    doc.stage.width = pw.ceil() as u32;
+    doc.stage.height = ph.ceil() as u32;
+    let mut scratch = Session::new(doc);
+    let mut params = BrushPreset { size: preset.size.clamp(2.0, (ph * 0.4).max(2.0)), ..preset.clone() }.params();
+    params["points"] = json!(preview_points(pw, ph));
+    params["color"] = json!(format!("#{:02x}{:02x}{:02x}", (color.r.clamp(0.0, 1.0) * 255.0).round() as u8, (color.g.clamp(0.0, 1.0) * 255.0).round() as u8, (color.b.clamp(0.0, 1.0) * 255.0).round() as u8));
+    params["object"] = json!(true);
+    params["as_stroke"] = json!(as_stroke);
+    scratch.execute("draw.brush", &params)?;
+    let dl = anicraft_doc::evaluate(&scratch.doc, 0);
+    let view = anicraft_render::View { transform: Affine::scale(scale, scale), width: w, height: h, background: None };
+    Ok(anicraft_render::render(&dl, &view)?.0)
 }

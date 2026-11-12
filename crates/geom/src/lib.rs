@@ -10,6 +10,7 @@ pub mod clip;
 pub mod edit;
 pub mod morph;
 pub mod planar;
+pub mod pressure;
 pub mod raw;
 pub mod slice;
 mod fit;

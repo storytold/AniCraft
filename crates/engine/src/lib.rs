@@ -25,6 +25,7 @@ mod cmds_path;
 pub mod cmds_raw;
 pub mod cmds_rawsub;
 mod cmds_rawpoints;
+pub mod brush_library;
 pub mod cmds_recent;
 pub mod cmds_template;
 mod cmds_recovery;
@@ -326,6 +327,9 @@ pub struct Session {
     /// session, not the document: they survive New and Open. The desktop app keeps them in its
     /// preferences.
     pub recent: cmds_recent::RecentFiles,
+    /// The user's own brush presets (ADR 0068). Like recent files they belong to the session
+    /// and survive New and Open; the desktop app keeps them in its preferences.
+    pub brushes: brush_library::BrushLibrary,
 }
 
 /// Each piece of a marquee's cut, with the shape it was cut from.
@@ -395,6 +399,7 @@ impl Session {
             job: None,
             published: std::collections::BTreeSet::new(),
             recent: cmds_recent::RecentFiles::default(),
+            brushes: brush_library::BrushLibrary::default(),
         }
     }
 
@@ -477,8 +482,10 @@ impl Session {
         let clipboard = std::mem::take(&mut self.clipboard);
         let plugins = std::mem::take(&mut self.plugins);
         let recent = std::mem::take(&mut self.recent);
+        let brushes = std::mem::take(&mut self.brushes);
         *self = Session::new(doc);
         self.recent = recent;
+        self.brushes = brushes;
         // The clipboard survives New/Open, so artwork can move between documents.
         self.clipboard = clipboard;
         self.plugins = plugins;
@@ -1019,6 +1026,8 @@ mod rawpoints_tests;
 mod editing_tests;
 #[cfg(test)]
 mod brush_tests;
+#[cfg(test)]
+mod brush_library_tests;
 #[cfg(test)]
 mod web_tests;
 #[cfg(test)]
