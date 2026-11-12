@@ -436,17 +436,19 @@ fn grain(p: P) -> f64 {
         z ^= z >> 31;
         (z >> 11) as f64 / (1u64 << 53) as f64
     }
-    fn octave(p: P, size: f64, salt: i64) -> f64 {
+    // Each octave reads its own lattice rows (`layer` shifts them far apart), so the two
+    // octaves are independent.
+    fn octave(p: P, size: f64, layer: i64) -> f64 {
         let (u, v) = (p.0 / size, p.1 / size);
         let (x0, y0) = (u.floor(), v.floor());
         let s = |t: f64| t * t * (3.0 - 2.0 * t);
         let (sx, sy) = (s(u - x0), s(v - y0));
-        let (xi, yi) = (x0.clamp(-1e15, 1e15) as i64, (y0.clamp(-1e15, 1e15) as i64) ^ salt);
+        let (xi, yi) = (x0.clamp(-1e15, 1e15) as i64, (y0.clamp(-1e15, 1e15) as i64).wrapping_add(layer << 52));
         let top = hash(xi, yi) + (hash(xi + 1, yi) - hash(xi, yi)) * sx;
         let bottom = hash(xi, yi + 1) + (hash(xi + 1, yi + 1) - hash(xi, yi + 1)) * sx;
         top + (bottom - top) * sy
     }
-    (octave(p, 0.5, 0) * 2.0 + octave(p, 0.2, 0x5bd1_e995)) / 3.0
+    (octave(p, 0.5, 0) * 2.0 + octave(p, 0.2, 1)) / 3.0
 }
 
 /// Drops points closer than `gap` to the last kept one (the last point always stays).
