@@ -108,9 +108,9 @@ fn rect_params(p: &Value) -> Result<(f32, f32, f32, f32)> {
 /// (Object Drawing), it merges with the raw shapes it touches (ADR 0031), and the pieces of it
 /// that come out are selected.
 pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, fill: Option<Paint>, stroke: Option<Stroke>, object: bool) -> Result<Value> {
-    // A gradient or bitmap from the fill swatch is in stage space: it stays where it is on the
-    // stage (Animate's Lock Fill after the Eyedropper).
-    let fill = fill.map(|f| f.transformed(&Affine::translate(-origin.x, -origin.y)));
+    // A gradient or bitmap from the fill swatch is in stage space: with Lock Fill it stays where
+    // it is on the stage, else it is fitted to the new shape (ADR 0074).
+    let fill = fill.map(|f| if s.style.lock_fill || matches!(f, Paint::Solid(_)) { f.transformed(&Affine::translate(-origin.x, -origin.y)) } else { f.fitted(&local.bounds()) });
     let merge = !object && crate::merge::can_merge(stroke.as_ref());
     let id = ElementId(s.doc.alloc_id());
     let el = Element {

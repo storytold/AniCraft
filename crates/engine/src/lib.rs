@@ -205,9 +205,13 @@ pub(crate) fn pick_index(dl: &DisplayList, p: Vec2, slop: f32, ok: impl Fn(usize
 #[derive(Clone, Debug)]
 pub struct ToolStyle {
     pub fill: anicraft_doc::Rgba,
-    /// The fill swatch holds a gradient or a bitmap (picked with the Eyedropper, ADR 0034), in
-    /// stage space; `fill` is then its representative colour. `None`: the solid `fill`.
+    /// The fill swatch holds a gradient or a bitmap (set in the Colour panel or picked with the
+    /// Eyedropper, ADR 0034 and 0074), in stage space; `fill` is then its representative colour.
+    /// `None`: the solid `fill`.
     pub fill_paint: Option<anicraft_doc::Paint>,
+    /// Lock Fill (ADR 0074): a gradient or bitmap from the swatch is poured where it lies on the
+    /// stage, so it runs on across shapes. Off, each shape gets it fitted to its own bounds.
+    pub lock_fill: bool,
     pub stroke: anicraft_doc::Rgba,
     pub stroke_width: f32,
     pub use_fill: bool,
@@ -229,7 +233,7 @@ pub struct ToolStyle {
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, line: anicraft_doc::StrokeStyle::default(), object_drawing: true, snap_objects: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, lock_fill: false, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, line: anicraft_doc::StrokeStyle::default(), object_drawing: true, snap_objects: true }
     }
 }
 
@@ -237,6 +241,13 @@ impl ToolStyle {
     /// The fill swatch's paint, in stage space.
     pub fn fill_paint(&self) -> anicraft_doc::Paint {
         self.fill_paint.clone().unwrap_or(anicraft_doc::Paint::Solid(self.fill))
+    }
+    /// The fill swatch's paint for a shape whose space is `to_local` from the stage and whose
+    /// outline has the local `bounds`: with Lock Fill, the stage-space paint carried into the
+    /// shape; without, a gradient or bitmap fitted to the bounds (as Animate pours them).
+    pub fn fill_paint_for(&self, to_local: &anicraft_geom::Affine, bounds: &anicraft_geom::Rect) -> anicraft_doc::Paint {
+        let paint = self.fill_paint();
+        if self.lock_fill || matches!(paint, anicraft_doc::Paint::Solid(_)) { paint.transformed(to_local) } else { paint.fitted(bounds) }
     }
     /// Sets the fill swatch to a solid colour (dropping a picked gradient or bitmap).
     pub fn set_fill_color(&mut self, c: anicraft_doc::Rgba) {
@@ -1036,6 +1047,8 @@ mod web_tests;
 mod erase_tests;
 #[cfg(test)]
 mod eyedropper_tests;
+#[cfg(test)]
+mod gradient_tests;
 #[cfg(test)]
 mod selection_tests;
 #[cfg(test)]
