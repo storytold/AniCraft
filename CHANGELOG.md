@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+* **Templates, SVG into the Library, and drops on the timeline** (ADR 0065, M8).
+  * **File › New from Template** and the start screen's new **Templates** row: Leaderboard banner
+    728 × 90, Rectangle banner 300 × 250, Social square 1080 × 1080 at 30 fps, Storyboard 16:9 (six
+    labelled panels), Character turnaround and a Lip-sync mouth chart. Each has named layers and
+    guides on a locked guide layer (they show while drawing and never export). They open as new,
+    untitled documents with a drawing layer active.
+  * **File › Save as Template** keeps the open document, with a picture, under a name and a
+    category in your settings folder. It shows under "My templates" on the start screen, with
+    Delete. Replacing or deleting a template asks first.
+  * **SVG into the Library**: dropping an SVG on the Library, or File › Import › Import to Library,
+    makes one graphic symbol named after the file, in the folder under the pointer.
+  * **Drops on the timeline**: a sound dropped on a layer's frame goes onto that keyframe. An image
+    or SVG goes onto that layer at that frame, in a new keyframe if needed. Either way it is one undo
+    step, and a highlight shows the cell. Locked layers, folders and the camera say why they won't
+    take it.
+  * The timeline's layer footer keeps its Move Down button in every language.
+  * Headless: `file.new_from_template`, `file.templates`, `file.save_as_template`,
+    `file.delete_template`, and `file.drop` with `to: "timeline"`.
+  * Exact drop positions from the desktop still wait for winit 0.31 (eframe 0.37 is still on 0.30).
 * **Test Movie in its own window, and opening documents on macOS** (ADR 0062, M8).
   * **Control › Test Movie** (Ctrl+Enter) now opens in a **window of its own** on the desktop,
     as in Animate. It is sized to the stage at 100 % (smaller if that wouldn't fit the
