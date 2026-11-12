@@ -197,7 +197,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
             layer.kind = LayerKind::Armature;
             // Bones show in the layer colour: a green that reads on light and dark artwork.
             layer.color = Rgba::hex(0x2fb67c);
-            layer.armature = Some(Arc::new(Armature { bones: vec![bone] }));
+            layer.armature = Some(Arc::new(Armature { bones: vec![bone], skin: None }));
             let mut k = Keyframe::new(start, end.saturating_sub(start).max(1));
             k.elements = vec![f.el.clone(), t.el.clone()];
             k.tween = Some(Tween::default());
