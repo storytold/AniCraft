@@ -391,34 +391,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Select | Tool::Transform if multi => crate::onion::drag_start(app, sp, shift, zoom),
                 // On an armature, a drag poses it (ADR 0043).
                 Tool::Select if let Some(d) = crate::bone_tool::select_drag_start(app, xf, press) => d,
-                // Raw shapes (ADR 0041): an unselected corner or end moves, an unselected segment
-                // or fill edge bends; anything else is picked (unless it already is) and moved.
-                Tool::Select => match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
-                    Some((_, Grab::Point { at })) => {
-                        app.s.begin_gesture(tr_noop!("Move Point"));
-                        app.raw_points = serde_json::Value::Null;
-                        app.raw_with.clear();
-                        app.raw_touched.clear();
-                        Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
-                    }
-                    Some((layer, Grab::Segment { id, cmd, t, .. })) => {
-                        if layer != app.s.layer {
-                            app.s.layer = layer;
-                            app.s.selection.clear();
-                        }
-                        app.s.begin_gesture(tr_noop!("Bend"));
-                        app.raw_touched.clear();
-                        Drag::Bend { id, cmd, t, last: sp }
-                    }
-                    Some((layer, Grab::Fill { id } | Grab::Object { id })) => {
-                        if !app.s.selection.contains(layer, id) {
-                            app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
-                        }
-                        app.s.begin_gesture(tr_noop!("Move"));
-                        Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
-                    }
-                    None => Drag::Marquee { start: sp, cur: sp },
-                },
+                Tool::Select => select_press(app, sp, shift, command, zoom),
                 Tool::Transform => {
                     let zone = sel_rect.and_then(|r| xf_zone(r, press));
                     match (zone, sel_bounds) {
@@ -601,15 +574,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.drop_raw();
                 app.s.end_gesture();
             }
-            Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => {
-                // What the drag changed merges again with what it touches, in the same step.
-                if !app.raw_touched.is_empty() {
-                    let ids = std::mem::take(&mut app.raw_touched);
-                    app.run("raw.merge", json!({"ids": ids}));
-                }
-                app.raw_points = serde_json::Value::Null;
-                app.s.end_gesture();
-            }
+            Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => end_raw_drag(app),
             Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
             Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
@@ -1095,6 +1060,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = pointer.filter(|p| canvas.contains(*p))
         && let Some((_, grab)) = app.s.raw_grab(to_v(to_stage(p)), GRAB_EDGE / zoom, GRAB_POINT / zoom)
     {
+        // With Ctrl (⌘) an edge takes a new corner point: the corner mark.
+        let grab = match grab {
+            Grab::Segment { at, .. } if command => Grab::Point { at },
+            g => g,
+        };
         grab_mark(&painter, p, grab);
     }
 
@@ -1210,6 +1180,67 @@ fn move_raw_point(app: &mut App, c: Pos2, zoom: f32) {
         app.raw_points = points.clone();
         touched(app, &serde_json::Value::Array(ids));
     }
+}
+
+/// A Selection-tool press at `sp` (stage) on raw shapes (ADR 0041): an unselected corner or end
+/// moves, an unselected segment or fill edge bends; anything else is picked (unless it already
+/// is) and moved. With `corner` (Ctrl, ⌘ on macOS) a segment gets a new corner point where it
+/// was pressed and the drag moves that point, so the edge peaks there in straight lines.
+fn select_press(app: &mut App, sp: Pos2, shift: bool, corner: bool, zoom: f32) -> Drag {
+    let start_point = |app: &mut App, at: Vec2| {
+        app.raw_points = serde_json::Value::Null;
+        app.raw_with.clear();
+        app.raw_touched.clear();
+        Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
+    };
+    match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
+        Some((_, Grab::Point { at })) => {
+            app.s.begin_gesture(tr_noop!("Move Point"));
+            start_point(app, at)
+        }
+        Some((layer, Grab::Segment { id, cmd, t, at })) => {
+            if layer != app.s.layer {
+                app.s.layer = layer;
+                app.s.selection.clear();
+            }
+            if corner {
+                // The new point and its move are one undo step. If no point can go there, the
+                // press bends the edge, as without Ctrl.
+                app.s.begin_gesture(tr_noop!("Add Corner Point"));
+                if let Ok(v) = app.s.execute("raw.add_point", &json!({"x": at.x, "y": at.y, "slop": GRAB_EDGE / zoom})) {
+                    let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).map(|x| x as f32);
+                    if let (Some(x), Some(y)) = (f("x"), f("y")) {
+                        let drag = start_point(app, Vec2::new(x, y));
+                        touched(app, &v["changed"]);
+                        return drag;
+                    }
+                }
+                app.s.end_gesture();
+            }
+            app.s.begin_gesture(tr_noop!("Bend"));
+            app.raw_touched.clear();
+            Drag::Bend { id, cmd, t, last: sp }
+        }
+        Some((layer, Grab::Fill { id } | Grab::Object { id })) => {
+            if !app.s.selection.contains(layer, id) {
+                app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
+            }
+            app.s.begin_gesture(tr_noop!("Move"));
+            Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
+        }
+        None => Drag::Marquee { start: sp, cur: sp },
+    }
+}
+
+/// The end of a drag that bent an edge or moved raw points or handles: what it changed merges
+/// again with what it touches, in the same step.
+fn end_raw_drag(app: &mut App) {
+    if !app.raw_touched.is_empty() {
+        let ids = std::mem::take(&mut app.raw_touched);
+        app.run("raw.merge", json!({"ids": ids}));
+    }
+    app.raw_points = serde_json::Value::Null;
+    app.s.end_gesture();
 }
 
 /// Where a command's result says the drag snapped.
@@ -1612,5 +1643,97 @@ mod xf_tests {
         assert_eq!(xf_zone(r, pos2(312.0, 212.0)), Some(XfKind::Rotate));
         assert_eq!(xf_zone(r, pos2(200.0, 150.0)), Some(XfKind::Move));
         assert_eq!(xf_zone(r, pos2(500.0, 500.0)), None);
+    }
+}
+
+/// The Selection tool's press and drag on a raw rectangle, headless (issue #200).
+#[cfg(test)]
+mod select_press_tests {
+    use super::*;
+    use anicraft_engine::doc::{Element, ElementKind};
+    use std::sync::Arc;
+
+    fn app_with_rect() -> App {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::Document::default());
+        // Screenshot mode: default preferences, nothing saved.
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        app.tool = Tool::Select;
+        let steps = [
+            ("draw.object_drawing", json!({"on": false})),
+            ("draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 80, "fill": "#ff0000", "stroke": "#000000"})),
+            ("edit.deselect", json!({})),
+        ];
+        for (id, p) in steps {
+            app.s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        app
+    }
+
+    fn fill(app: &App) -> Arc<Element> {
+        let fills: Vec<Arc<Element>> = app.s.visible_elements().into_iter().filter(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.merge && sh.fill.is_some())).collect();
+        assert_eq!(fills.len(), 1, "one raw fill");
+        fills[0].clone()
+    }
+
+    fn area(e: &Element) -> f32 {
+        let ElementKind::Shape(sh) = &e.kind else { return 0.0 };
+        sh.path
+            .flatten(&e.transform, 0.01)
+            .iter()
+            .map(|pl| {
+                let n = pl.points.len();
+                (0..n).map(|i| pl.points[i].cross(pl.points[(i + 1) % n])).sum::<f32>() * 0.5
+            })
+            .sum::<f32>()
+            .abs()
+    }
+
+    /// Presses on the top edge's middle, drags it 30 up and lets go, as the stage does.
+    fn drag_top_edge(app: &mut App, ctrl: bool) {
+        app.drag = select_press(app, pos2(50.0, 0.0), false, ctrl, 1.0);
+        let to = pos2(50.0, -30.0);
+        match app.drag {
+            Drag::RawPoint { .. } => move_raw_point(app, to, 1.0),
+            Drag::Bend { id, cmd, t, last } => {
+                let d = to - last;
+                let p = json!({"id": id.0, "cmd": cmd, "t": t, "x": last.x, "y": last.y, "dx": d.x, "dy": d.y, "merge": false});
+                let v = app.run("path.bend_segment", p).expect("the edge bends");
+                touched(app, &v["changed"]);
+            }
+            d => panic!("a press on the edge starts {d:?}"),
+        }
+        end_raw_drag(app);
+        app.drag = Drag::None;
+    }
+
+    #[test]
+    fn ctrl_drag_on_an_edge_makes_a_corner_point_with_straight_sides() {
+        let mut app = app_with_rect();
+        drag_top_edge(&mut app, true);
+        let f = fill(&app);
+        // The rectangle and the triangle (0, 0), (50, -30), (100, 0): 8000 + 1500.
+        assert!((area(&f) - 9500.0).abs() < 1.0, "straight sides up to the peak: area {}", area(&f));
+        let ElementKind::Shape(sh) = &f.kind else { unreachable!() };
+        let peak = Vec2::new(50.0, -30.0);
+        assert!(sh.path.anchors().iter().any(|(_, p)| f.transform.apply(*p).distance(peak) < 1e-3), "a point at the peak");
+        // Halfway up each side lies on the straight line to the peak.
+        for side in [Vec2::new(25.0, -15.0), Vec2::new(75.0, -15.0)] {
+            assert!(sh.path.distance_to_edge(side, &f.transform) < 0.05, "{side:?} on the outline");
+        }
+        // One undo step takes the point and its move back.
+        app.s.execute("edit.undo", &json!({})).expect("undo");
+        assert!((area(&fill(&app)) - 8000.0).abs() < 1.0, "the plain rectangle again");
+    }
+
+    #[test]
+    fn a_plain_drag_on_an_edge_still_bends_it() {
+        let mut app = app_with_rect();
+        drag_top_edge(&mut app, false);
+        let f = fill(&app);
+        // A smooth bend through (50, -30): both control points 40 up, so 8000 + 100 · 40 / 2.
+        assert!((area(&f) - 10000.0).abs() < 1.0, "a curve: area {}", area(&f));
+        let ElementKind::Shape(sh) = &f.kind else { unreachable!() };
+        assert!(!sh.path.anchors().iter().any(|(_, p)| f.transform.apply(*p).distance(Vec2::new(50.0, -30.0)) < 1.0), "no new point");
     }
 }
