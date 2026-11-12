@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::binning::{self as bn, Binned, PAINT_VEC4S, TILE, piece_cover, solid_of};
-use anicraft_doc::{BlendMode, ColorEffect, ColorTransform, DisplayItem, ElementId, ElementKind, GradientStop, Group, LayerId, LayerKind, Paint, Rgba, Stroke, sample};
+use anicraft_doc::{BlendMode, ColorEffect, ColorTransform, DisplayItem, ElementId, ElementKind, GradientStop, Group, LayerId, LayerKind, MaskMode, Paint, Rgba, Stroke, sample};
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_render::{paint::Premul, render};
 use std::sync::OnceLock;
@@ -254,6 +254,39 @@ fn composited_scenes() -> Vec<(&'static str, DisplayList, View)> {
         groups: vec![group(Some(1), 0.5, BlendMode::Normal), group(Some(1), 0.5, BlendMode::Difference)],
     };
     out.push(("malformed links", dl, view(50, 50, Some(Rgba::WHITE))));
+    // Soft masks (ADR 0070): an alpha gradient fading a shape out, a luminance mask with a
+    // stroke and overlapping faded art, and a soft mask inside a coverage one.
+    let fade = Paint::Linear { start: Vec2::new(10.0, 0.0), end: Vec2::new(110.0, 0.0), stops: stops(&[(0.0, Rgba::new(1.0, 1.0, 1.0, 0.0)), (1.0, Rgba::new(0.2, 0.9, 0.4, 1.0))]) };
+    let soft_art = |path: Path, paint: Paint, clip: u32| {
+        let mut m = item(path, paint);
+        m.masks = Some(clip);
+        m
+    };
+    let mut ring = soft_art(Path::ellipse(60.0, 50.0, 30.0, 26.0), Paint::Solid(Rgba::new(0.5, 0.5, 0.5, 0.7)), 1);
+    ring.stroke = Some(Stroke::new(Rgba::WHITE, 6.0));
+    let mut faded = soft_art(Path::rect(50.0, 10.0, 60.0, 30.0), Paint::Solid(Rgba::new(0.9, 0.2, 0.1, 1.0)), 1);
+    faded.color = ColorTransform::alpha(0.6);
+    let mut inner = soft_art(Path::rect(0.0, 0.0, 120.0, 100.0), Paint::Solid(Rgba::new(1.0, 1.0, 1.0, 0.5)), 3);
+    inner.clip = Some(2);
+    let mut dl = DisplayList {
+        items: vec![
+            item(Path::rect(0.0, 0.0, 120.0, 100.0), Paint::Solid(Rgba::new(0.95, 0.9, 0.8, 1.0))),
+            clipped(item(Path::rect(0.0, 0.0, 120.0, 50.0), grad()), 0),
+            soft_art(Path::rect(10.0, 0.0, 100.0, 60.0), fade, 0),
+            clipped(item(Path::rect(0.0, 30.0, 120.0, 70.0), Paint::Solid(red)), 1),
+            ring,
+            faded,
+            clipped(item(Path::star(60.0, 60.0, 40.0, 15.0, 5), Paint::Solid(blue)), 3),
+            mask(Path::rect(20.0, 40.0, 50.0, 60.0), 2),
+            inner,
+        ],
+        clip_parents: vec![None, None, None, Some(2)],
+        ..Default::default()
+    };
+    dl.set_clip_mode(0, MaskMode::Alpha);
+    dl.set_clip_mode(1, MaskMode::Luminance);
+    dl.set_clip_mode(3, MaskMode::Alpha);
+    out.push(("soft masks", dl, view(120, 100, Some(Rgba::WHITE))));
     out
 }
 
@@ -270,6 +303,7 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
             let mut c = bg;
             let mut stack: Vec<Premul> = Vec::new();
             let (mut mask, mut level) = (1.0f32, 0.0f32);
+            let (mut level_mode, mut level_colour) = (0u32, [0.0f32; 4]);
             for i in 0..count {
                 let e = b.entries_at as usize + (start + i) * 4;
                 let (op, first, n, bd) = (b.index[e] as usize, b.index[e + 1] as usize, b.index[e + 2] as usize, b.index[e + 3]);
@@ -291,10 +325,13 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                     }
                     bn::LEVEL_BEGIN => {
                         level = 0.0;
+                        level_mode = b.index[e + 1];
+                        level_colour = [0.0; 4];
                         continue;
                     }
                     bn::LEVEL_END => {
-                        mask *= level;
+                        let mode = [MaskMode::Coverage, MaskMode::Alpha, MaskMode::Luminance][level_mode as usize];
+                        mask *= if mode.is_soft() { mode.reveal(level_colour) } else { level };
                         continue;
                     }
                     k => assert_eq!(k & bn::CTRL, 0, "unknown control entry {k:x}"),
@@ -302,18 +339,7 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                 let hd = op * 4;
                 let mut cov = entry_cover(&b.geo[first..first + n], bd, b.op_heads[hd + 1], lx, ly);
                 let flags = b.op_heads[hd + 3];
-                if flags & bn::ART != 0 {
-                    let k = cov.clamp(0.0, 1.0);
-                    level = level + k - level * k;
-                    continue;
-                }
-                if flags & bn::CLIPPED != 0 {
-                    cov *= mask;
-                }
-                if cov <= 1e-4 {
-                    continue;
-                }
-                let s = match b.op_heads[hd] {
+                let shade = || match b.op_heads[hd] {
                     0 => solid_of(b, op),
                     kind => {
                         let base = op * PAINT_VEC4S;
@@ -326,6 +352,28 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                         b.paints[b.op_heads[hd + 2] as usize + i]
                     }
                 };
+                if flags & bn::ART != 0 {
+                    if level_mode != 0 {
+                        if cov > 1e-4 {
+                            let s = shade();
+                            let sa = s[3] * cov;
+                            for k in 0..4 {
+                                level_colour[k] = s[k] * cov + level_colour[k] * (1.0 - sa);
+                            }
+                        }
+                        continue;
+                    }
+                    let k = cov.clamp(0.0, 1.0);
+                    level = level + k - level * k;
+                    continue;
+                }
+                if flags & bn::CLIPPED != 0 {
+                    cov *= mask;
+                }
+                if cov <= 1e-4 {
+                    continue;
+                }
+                let s = shade();
                 let sa = s[3] * cov;
                 for k in 0..4 {
                     c[k] = s[k] * cov + c[k] * (1.0 - sa);
