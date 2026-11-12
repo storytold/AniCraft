@@ -427,7 +427,7 @@ pub struct App {
     title: String,
     /// Keyboard shortcuts in effect (defaults plus the user's changes) and their lookup table.
     pub keymap: keymap::Keymap,
-    shortcuts: Vec<(Modifiers, Key, &'static str)>,
+    pub(crate) shortcuts: Vec<(Modifiers, Key, &'static str)>,
     /// The shortcut editor is waiting for a key press: global shortcuts pause.
     pub key_capture: Option<dialogs::KeyCapture>,
     /// Crash-recovery autosave and the copies earlier sessions left behind (ADR 0015).
@@ -671,6 +671,16 @@ impl App {
                 self.status_err(crate::i18n::t_dyn(&e.to_string()).into_owned());
                 None
             }
+        }
+    }
+
+    /// Something the system asked of the app outside its windows (ADR 0062): documents open as
+    /// a drop on the window does, through the unsaved-changes guard; a quit goes through the
+    /// close guard.
+    pub fn system_request(&mut self, ctx: &egui::Context, r: platform::SystemRequest) {
+        match r {
+            platform::SystemRequest::Open(files) => crate::drop::open_from_system(self, &files),
+            platform::SystemRequest::Quit => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close),
         }
     }
 
@@ -1069,6 +1079,12 @@ impl App {
                         {"type": "gradient_glow", "blur_x": 28, "blur_y": 28, "quality": 2, "distance": 0, "stops": [{"offset": 0, "color": "#ffffff00"}, {"offset": 0.55, "color": "#ffd36b"}, {"offset": 1, "color": "#ff4d3d"}]},
                     ]}),
                 );
+            }
+            Some("testmovieinside") => {
+                // Test Movie floating inside the editor (ADR 0062), as where there can't be a
+                // window of its own; for this run only (screenshot runs never save preferences).
+                self.prefs.test_movie_window = false;
+                self.open_panel(Some("testmovie"));
             }
             Some(which @ ("actions" | "testmovie")) => {
                 // The interactive sample: its Play button selected with the Actions panel on
@@ -2235,16 +2251,7 @@ impl App {
             })
         });
         if let Some(img) = image {
-            let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
-            let result = anicraft_render::encode_png(img.size[0] as u32, img.size[1] as u32, &rgba).map_err(|e| e.to_string()).and_then(|png| {
-                if let Some(dir) = shot.path.parent()
-                    && !dir.as_os_str().is_empty()
-                {
-                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                }
-                std::fs::write(&shot.path, png).map_err(|e| e.to_string())
-            });
-            match result {
+            match write_screenshot(&shot.path, &img) {
                 Ok(()) => println!("screenshot saved to {}", shot.path.display()),
                 Err(e) => eprintln!("screenshot failed: {e}"),
             }
@@ -2382,6 +2389,18 @@ pub(crate) fn app_mark(ctx: &egui::Context) -> egui::TextureHandle {
     tex
 }
 
+/// Writes a window's screenshot as a PNG (screenshot runs), making its folder if needed.
+pub(crate) fn write_screenshot(path: &std::path::Path, img: &egui::ColorImage) -> Result<(), String> {
+    let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+    let png = anicraft_render::encode_png(img.size[0] as u32, img.size[1] as u32, &rgba).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, png).map_err(|e| e.to_string())
+}
+
 /// Opens a file or folder with the operating system's default handler.
 pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
     // Tests click every control (`i18n::tests`): they never start another program.
@@ -2408,6 +2427,8 @@ impl eframe::App for App {
     /// A clean exit (saved, or the user chose Don't Save) removes this session's recovery
     /// copy; otherwise the work is written once more and offered at the next start.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // The Test Movie window's place, for next time (ADR 0062).
+        crate::test_movie::remember_place(self);
         let clean = !self.s.is_dirty() || self.allow_close || self.shot.is_some();
         self.recovery.finish(&self.s, clean);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2434,6 +2455,10 @@ impl App {
         self.poll_font_scan(&ctx);
         if let Some(p) = platform::picked_file() {
             self.open_picked(p);
+        }
+        // Documents the system handed over while running (macOS: Finder, the Dock; ADR 0062).
+        for r in platform::take_requests() {
+            self.system_request(&ctx, r);
         }
         if self.glyph_check {
             // Fonts installed last frame are live now: can they draw the macOS key symbols?

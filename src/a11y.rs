@@ -97,6 +97,15 @@ pub fn name_title_bar<R>(shown: &Option<egui::InnerResponse<R>>, title: &str) {
     }
 }
 
+/// Names the title bar of the window `ui` is drawn in (a window egui made itself, such as its
+/// stand-in for a viewport where there is no window system).
+pub fn name_own_title_bar(ui: &egui::Ui, title: &str) {
+    ui.ctx().accesskit_node_builder(ui.layer_id().id.with("__title_click"), |node| {
+        node.set_role(egui::accesskit::Role::TitleBar);
+        node.set_label(title);
+    });
+}
+
 /// How a [`slider`]'s number reads.
 #[derive(Clone, Copy, Default)]
 pub struct SliderLook {
@@ -352,9 +361,14 @@ mod tests {
         for tool in [Tool::Bone, Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
-        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple", "library", "librarymenu", "edittransform", "onionsymbol", "layerprops", "frameview", "layercolour", "timelinepolish", "convert", "mixed", "bitmap", "nineslice", "nineslicedit", "find", "explorer", "publish", "publishreport", "publishanim", "start", "drop", "droplibrary"] {
+        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple", "library", "librarymenu", "edittransform", "onionsymbol", "layerprops", "frameview", "layercolour", "timelinepolish", "convert", "mixed", "bitmap", "nineslice", "nineslicedit", "find", "explorer", "publish", "publishreport", "publishanim", "start", "drop", "droplibrary", "testmovie", "testmovieinside"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
+        // Test Movie in a window of its own (ADR 0062): its controls, named in that window.
+        found.extend(check("test movie window", |a, ctx| {
+            ctx.set_embed_viewports(false);
+            a.open_panel(Some("testmovie"));
+        }));
         // The layer depth row shows on artwork layers once the scene has a camera.
         found.extend(check("layer depth", |a, _| {
             a.open_panel(Some("camera"));

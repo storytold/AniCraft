@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Test Movie in its own window, and opening documents on macOS** (ADR 0062, M8).
+  * **Control › Test Movie** (Ctrl+Enter) now opens in a **window of its own** on the desktop,
+    as in Animate. It is sized to the stage at 100 % (smaller if that wouldn't fit the
+    screen), titled with the document's name, and opens where it was last. It takes the
+    keyboard when it opens. **Esc** or **Ctrl+W (⌘W)** closes it, Ctrl+Enter restarts it in
+    place, and the editor's Ctrl and Alt shortcuts still work from it.
+  * In the web build, and wherever the system can't open another window, it floats inside the
+    editor as before and says why. **Preferences › Test Movie** keeps it inside the editor if
+    you prefer. On Wayland the desktop places the window, so it can't come back where it was
+    (Preferences says so).
+  * **macOS:** double-clicking a `.anicraft`, `.fla` or `.xfl` in Finder, dropping it on the
+    Dock icon, or choosing Open With › AniCraft opens it, whether AniCraft is running or
+    not. If there are unsaved changes it asks first, and the Dock's Quit asks to save too.
+    This uses the small `fmv-macos-events` crate (MIT OR Apache-2.0), so AniCraft's own code
+    stays free of `unsafe`. Still to be checked on a Mac (the list is in ADR 0062).
+  * Windows and Linux already open a double-clicked document from the command line; a test
+    now covers it.
+
 * **Timeline polish** (ADR 0061, M1).
   * A **per-layer onion skin toggle** in each layer row (Alt-click: this layer only, again:
     every layer). Layers left out show only their playhead frame; Edit Multiple Frames still

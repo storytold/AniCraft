@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 # An application, not a library: not published to crates.io.
 publish = false
 repository = "https://github.com/storytold/AniCraft"
-rust-version = "1.90"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anicraft-geom = { path = "crates/geom" }
@@ -115,6 +115,14 @@ eframe = { workspace = true, features = ["links"] }
 rfd.workspace = true
 # Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
 cpal = { version = "0.18", optional = true }
+
+# macOS hands a double-clicked document to the app as an Apple Event, which winit 0.30 doesn't
+# deliver (ADR 0062). This small crate (MIT OR Apache-2.0, ~170 lines, read in full) registers the
+# open-documents and quit handlers with AppKit and hands us plain paths, so our code stays free of
+# `unsafe`. Pinned exactly: it is young, and a new version is read again before it comes in. Its
+# objc2 / objc2-app-kit / objc2-foundation are the versions wgpu already brings on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+fmv-macos-events = "=0.1.0"
 
 # The web build (ADR 0036, docs/web.md). The window draws with WebGL2 (glow): every current
 # browser has it, the stage is drawn on the CPU there, and leaving wgpu out keeps the download
