@@ -448,6 +448,12 @@ pub struct App {
     pub tl_refocus: bool,
     /// The menu bar from the keyboard: Alt, F10 and the arrows (ADR 0064).
     pub menu_keys: menus::MenuKeys,
+    /// What the system last said about contrast (ADR 0064): `None` until it has, or if it
+    /// can't. Screenshot runs never ask, so they look the same everywhere.
+    pub system_contrast: Option<bool>,
+    /// The system's contrast setting being read off the UI thread, and when it last was.
+    contrast_probe: Option<std::sync::mpsc::Receiver<Option<bool>>>,
+    contrast_asked: Option<f64>,
     /// The start screen, while it is up (ADR 0059).
     pub start: Option<crate::start::StartScreen>,
     /// Files dragged over and dropped onto the window (ADR 0059).
@@ -455,6 +461,9 @@ pub struct App {
     /// Recent files' pictures for the start screen.
     pub thumbs: crate::recent::Thumbs,
 }
+
+/// How often (seconds) the system's contrast setting is asked again (ADR 0064).
+const SYSTEM_CONTRAST_EVERY: f64 = 4.0;
 
 /// How finished this version is, shown next to the version number (docs/release.md). English:
 /// translated where the interface shows it (`--version` prints it as is).
@@ -624,6 +633,9 @@ impl App {
             tl_heard: None,
             tl_refocus: false,
             menu_keys: Default::default(),
+            system_contrast: None,
+            contrast_probe: None,
+            contrast_asked: None,
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
@@ -718,7 +730,7 @@ impl App {
         crate::i18n::set_language(&self.prefs.language);
         ctx.request_repaint();
         ctx.set_zoom_factor(self.prefs.ui_scale);
-        theme::apply_palette(ctx, self.prefs.theme);
+        theme::apply_palette(ctx, self.prefs.palette(self.system_contrast));
         crate::onion::refresh_colors(self);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
@@ -758,7 +770,10 @@ impl App {
             return;
         }
         let mut p = self.prefs.clone();
-        p.theme = theme.unwrap_or(p.theme);
+        if let Some(t) = theme {
+            p.theme = t;
+            p.theme_follows_system = Some(false);
+        }
         p.ui_scale = scale.unwrap_or(p.ui_scale);
         self.prefs = p.sanitized();
         self.apply_prefs(ctx);
@@ -781,6 +796,66 @@ impl App {
             && let Err(e) = self.prefs.save()
         {
             self.status_err(tr!("Could not save preferences: {e}", e = e));
+        }
+    }
+
+    /// Follows the system's contrast setting (ADR 0064): asks it on a worker now and then (at
+    /// start, every few seconds, and when the window comes back to the front), and switches the
+    /// palette in the same frame the answer changes, while Preferences says "Follow system".
+    fn follow_system_contrast(&mut self, ctx: &egui::Context) {
+        if self.shot.is_some() {
+            return;
+        }
+        if let Some(rx) = &self.contrast_probe {
+            match rx.try_recv() {
+                Ok(v) => {
+                    self.contrast_probe = None;
+                    self.set_system_contrast(ctx, v);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.contrast_probe = None,
+            }
+        }
+        let (now, came_back) = ctx.input(|i| (i.time, i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))));
+        let due = self.contrast_asked.is_none_or(|t| now - t >= SYSTEM_CONTRAST_EVERY || came_back);
+        if !due {
+            return;
+        }
+        self.contrast_asked = Some(now);
+        let (tx, rx) = std::sync::mpsc::channel();
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = {
+            let ctx2 = ctx.clone();
+            std::thread::Builder::new()
+                .name("anicraft-contrast".into())
+                .spawn(move || {
+                    let _ = tx.send(platform::system_high_contrast());
+                    ctx2.request_repaint();
+                })
+                .is_ok()
+        };
+        // (No threads in a browser: the media query answers at once.)
+        #[cfg(target_arch = "wasm32")]
+        let started = tx.send(platform::system_high_contrast()).is_ok();
+        if started {
+            self.contrast_probe = Some(rx);
+        }
+        // Ask again later even if nothing else happens.
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(SYSTEM_CONTRAST_EVERY));
+    }
+
+    /// What the system says about contrast: the palette follows at once, if it follows.
+    pub fn set_system_contrast(&mut self, ctx: &egui::Context, v: Option<bool>) {
+        if v == self.system_contrast {
+            return;
+        }
+        let before = self.prefs.palette(self.system_contrast);
+        self.system_contrast = v;
+        let after = self.prefs.palette(v);
+        if after != before {
+            theme::apply_palette(ctx, after);
+            crate::onion::refresh_colors(self);
+            ctx.request_repaint();
         }
     }
 
@@ -2498,6 +2573,7 @@ impl App {
         }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
+        self.follow_system_contrast(&ctx);
         if let Some(p) = platform::picked_file() {
             self.open_picked(p);
         }

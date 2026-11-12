@@ -622,10 +622,9 @@ mod tests {
         frame(&ctx, &mut app, input(1.0));
         assert_eq!(focused(&ctx), Some(tops[0]), "an Alt tap focuses File");
         key(&ctx, &mut app, Key::Escape, M::NONE);
-        // Alt+H opens Help from the stage; an item chosen with Enter runs and the keyboard goes
-        // back to the stage.
+        // Alt+H opens Help from the stage; an item chosen with Enter runs (and its Enter goes no
+        // further than the item).
         focus_stage(&ctx, &mut app);
-        let stage = focused(&ctx);
         key(&ctx, &mut app, Key::H, M::ALT);
         frame(&ctx, &mut app, input(1.0));
         let help = crate::menus::TOP_MENUS.iter().position(|t| *t == "Help").unwrap_or(0);
@@ -656,6 +655,23 @@ mod tests {
         assert!(app.view.zoom > zoom, "Zoom In ran");
         assert_eq!(focused(&ctx), stage, "the keyboard went back to the stage");
         assert_eq!(app.tool, crate::app::Tool::Select, "Alt+V opened View; it didn't pick the Selection tool's V");
+    }
+
+    #[test]
+    fn the_palette_follows_the_system_contrast_setting_in_the_same_frame() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        app.set_system_contrast(&ctx, Some(true));
+        let followed = crate::theme::palette();
+        app.set_system_contrast(&ctx, Some(false));
+        let back = crate::theme::palette();
+        // Chosen by hand: the system's setting no longer changes it.
+        let mut p = app.prefs.clone();
+        p.theme_follows_system = Some(false);
+        app.set_prefs(&ctx, p);
+        app.set_system_contrast(&ctx, Some(true));
+        let manual = crate::theme::palette();
+        crate::theme::apply_palette(&egui::Context::default(), crate::theme::Palette::Graphite);
+        assert_eq!((followed, back, manual), (crate::theme::Palette::HighContrast, crate::theme::Palette::Graphite, crate::theme::Palette::Graphite));
     }
 
     #[test]

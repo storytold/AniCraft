@@ -124,6 +124,11 @@ cpal = { version = "0.18", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 fmv-macos-events = "=0.1.0"
 
+# The system's high-contrast setting (ADR 0064): one registry value. MIT, already in the tree
+# through craft-update.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 # The web build (ADR 0036, docs/web.md). The window draws with WebGL2 (glow): every current
 # browser has it, the stage is drawn on the CPU there, and leaving wgpu out keeps the download
 # smaller. The browser glue is wasm-bindgen's (MIT OR Apache-2.0), already under eframe's web
@@ -135,7 +140,7 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 # In the browser the page's language (navigator.languages) is the system's.
 sys-locale = { version = "0.3", features = ["js"] }
-web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "DomRect", "DragEvent", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
+web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "DomRect", "DragEvent", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "MediaQueryList", "Navigator", "Storage", "Url", "Window", "console"] }
 
 [build-dependencies]
 # Embeds the app icon in anicraft.exe on Windows (build.rs); does nothing on other targets.
