@@ -56,6 +56,18 @@ fn read_fmt(c: &[u8]) -> Option<Fmt> {
     Some(f)
 }
 
+/// Ids of the non-audio chunks that commonly follow the `data` chunk.
+const TRAILING_IDS: [&[u8; 4]; 12] = [b"LIST", b"fact", b"id3 ", b"ID3 ", b"cue ", b"JUNK", b"PEAK", b"bext", b"smpl", b"iXML", b"inst", b"PAD "];
+
+/// Whether a known chunk header (a listed id and a size field) starts at `at`. The size is not
+/// checked against the file: a damaged or truncated chunk is still a chunk.
+fn chunk_follows(d: &[u8], at: usize) -> bool {
+    match (d.get(at..at + 4), u32_at(d, at + 4)) {
+        (Some(id), Some(_)) => TRAILING_IDS.iter().any(|k| k.as_slice() == id),
+        _ => false,
+    }
+}
+
 /// Decodes a WAV file.
 pub fn decode(data: &[u8]) -> Result<Pcm, AudioError> {
     if data.get(0..4) != Some(b"RIFF") || data.get(8..12) != Some(b"WAVE") {
@@ -70,8 +82,12 @@ pub fn decode(data: &[u8]) -> Result<Pcm, AudioError> {
         let chunk = data.get(start..end).unwrap_or(&[]);
         match id {
             b"fmt " => fmt = read_fmt(chunk),
-            // Streamed files may give 0 or 0xFFFFFFFF as the size: the data runs to the end.
-            b"data" => body = Some(if size == 0 || size == u32::MAX { data.get(start..).unwrap_or(&[]) } else { chunk }),
+            // Streamed files may give 0 or 0xFFFFFFFF as the size: the data runs to the end. A 0
+            // that is followed by another chunk is a genuinely empty chunk.
+            b"data" => {
+                let streamed = size == u32::MAX || (size == 0 && !chunk_follows(data, start));
+                body = Some(if streamed { data.get(start..).unwrap_or(&[]) } else { chunk });
+            }
             _ => {}
         }
         if body.is_some() && fmt.is_some() {
@@ -176,6 +192,32 @@ pub fn encode(rate: u32, channels: u16, samples: &[f32], bits: Bits) -> Vec<u8> 
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_data_chunk_before_another_chunk_is_not_audio() {
+        let mut w = encode(8000, 1, &[], Bits::Int16);
+        w.extend_from_slice(b"LIST\x08\0\0\0INFOabcd");
+        assert_eq!(decode(&w), Err(AudioError::Empty));
+        // A following chunk whose size overruns the file is still a chunk.
+        let mut w = encode(8000, 1, &[], Bits::Int16);
+        w.extend_from_slice(b"LIST\x00\x10\0\0INFOabcd");
+        assert_eq!(decode(&w), Err(AudioError::Empty));
+    }
+
+    #[test]
+    fn size_zero_data_chunk_that_is_last_runs_to_the_end() {
+        let mut w = encode(8000, 1, &[], Bits::Int16);
+        w.extend_from_slice(&[0x00, 0x40, 0x00, 0xC0]);
+        let pcm = decode(&w).unwrap();
+        assert_eq!(pcm.samples, vec![0.5, -0.5]);
+    }
+
+    #[test]
+    fn size_zero_data_chunk_starting_with_printable_bytes_is_still_audio() {
+        let mut w = encode(8000, 1, &[], Bits::Int16);
+        w.extend_from_slice(b"abcdefgh");
+        assert_eq!(decode(&w).unwrap().samples.len(), 4);
+    }
 
     #[test]
     fn sixteen_bit_round_trips_bit_exactly() {
