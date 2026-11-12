@@ -1840,6 +1840,12 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
     }
 }
 
+/// Tools that only ever draw or paint a line, in the stroke colour: Properties shows no fill
+/// for them, nor a stroke on/off (#252).
+pub(crate) fn stroke_only(tool: Tool) -> bool {
+    matches!(tool, Tool::InkBottle | Tool::PaintBrush | Tool::Pencil | Tool::Line)
+}
+
 fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     if app.tool == Tool::Eraser {
         eraser_props(app, ui);
@@ -1854,10 +1860,10 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     let mut st = app.s.style.clone();
-    // Each tool shows only what it uses: the bucket and the brush always fill, the ink bottle
-    // always strokes.
+    // Each tool shows only what it uses: the bucket and the brush always fill; the ink bottle,
+    // the Pencil and the Line tool always stroke and never fill (#252).
     // The Paint Brush (ADR 0068) draws in the stroke colour at its own size and profile.
-    let (fills, ink) = (matches!(app.tool, Tool::PaintBucket | Tool::Brush), matches!(app.tool, Tool::InkBottle | Tool::PaintBrush));
+    let (fills, ink) = (matches!(app.tool, Tool::PaintBucket | Tool::Brush), stroke_only(app.tool));
     let brush_line = app.tool == Tool::PaintBrush;
     if !ink {
         row(ui, tr!("Fill"), |ui| {
@@ -2246,4 +2252,28 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     // Where the panel is, for files dropped on it (ADR 0059).
     let r = ui.scope(|ui| crate::library::panel(app, ui)).response.rect;
     app.library.drop_zone.panel = Some(r);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #252: the Pencil and the Line tool never fill, whatever the fill swatch says, so their
+    /// Properties show no Fill row; the Pen and the shape tools still fill.
+    #[test]
+    fn stroke_only_tools_never_fill() {
+        let mut s = anicraft_engine::Session::default();
+        s.style.use_fill = true;
+        let pts: Vec<[f32; 2]> = (0..20).map(|i| [i as f32 * 5.0, (i % 4) as f32 * 6.0]).collect();
+        // A loop back to where it began, too.
+        let loop_pts: Vec<[f32; 2]> = (0..=24).map(|i| { let a = i as f32 / 24.0 * std::f32::consts::TAU; [200.0 + 40.0 * a.cos(), 200.0 + 40.0 * a.sin()] }).collect();
+        for (id, p) in [("draw.freehand", json!({"points": pts})), ("draw.freehand", json!({"points": loop_pts})), ("draw.line", json!({"x0": 0, "y0": 0, "x1": 90, "y1": 40}))] {
+            s.execute(id, &p).expect("drawn");
+        }
+        assert!(s.visible_elements().iter().all(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.fill.is_none() && sh.stroke.is_some())));
+        assert!(stroke_only(Tool::Pencil) && stroke_only(Tool::Line) && stroke_only(Tool::InkBottle) && stroke_only(Tool::PaintBrush));
+        for t in [Tool::Pen, Tool::Rect, Tool::Oval, Tool::Star, Tool::Brush, Tool::PaintBucket] {
+            assert!(!stroke_only(t), "{t:?} fills");
+        }
+    }
 }
