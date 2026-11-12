@@ -645,8 +645,14 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             });
         }
         row(ui, tr!("Scale"), |ui| {
-            let a = ui.add(egui::DragValue::new(&mut sx).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named(tr!("Scale width"));
-            let b = ui.add(egui::DragValue::new(&mut sy).suffix(" %").speed(0.5).range(1.0..=10000.0).max_decimals(1)).named(tr!("Scale height"));
+            // Negative is a mirror (Flip). Only edits are clamped: a scale merely shown is never
+            // rewritten (#116). The engine refuses a scale too near zero.
+            let a = ui
+                .add(egui::DragValue::new(&mut sx).suffix(" %").speed(0.5).range(-10000.0..=10000.0).clamp_existing_to_range(false).max_decimals(1))
+                .named(tr!("Scale width"));
+            let b = ui
+                .add(egui::DragValue::new(&mut sy).suffix(" %").speed(0.5).range(-10000.0..=10000.0).clamp_existing_to_range(false).max_decimals(1))
+                .named(tr!("Scale height"));
             if a.changed() || b.changed() {
                 live(app, tr_noop!("Scale"), "element.set_transform", json!({"sx": sx / 100.0, "sy": sy / 100.0}));
             }
@@ -2229,4 +2235,81 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     // Where the panel is, for files dropped on it (ADR 0059).
     let r = ui.scope(|ui| crate::library::panel(app, ui)).response.rect;
     app.library.drop_zone.panel = Some(r);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use anicraft_engine::Session;
+    use anicraft_engine::geom::Affine;
+    use serde_json::json;
+
+    /// A few headless frames of the whole window, Properties panel included.
+    fn frames(ctx: &egui::Context, app: &mut App) {
+        let input =
+            || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), ..Default::default() };
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(input(), |ui| app.frame(ui));
+            out.textures_delta.clear();
+        }
+    }
+
+    fn transform(app: &App) -> Affine {
+        app.s.visible_elements().first().map(|e| e.transform).unwrap_or_default()
+    }
+
+    /// #116: the Scale fields show a flipped (negative) or very large scale as it is. Showing
+    /// it never writes a clamped value back (that squashed a flipped shape to 1 %).
+    #[test]
+    fn showing_a_flipped_or_huge_scale_leaves_it_alone() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, Session::default(), Some(std::path::PathBuf::from("unused.png")));
+        app.run("draw.rect", json!({"x": 100, "y": 100, "w": 200, "h": 80}));
+        frames(&ctx, &mut app);
+        let b0 = app.s.selection_bounds();
+        app.run("modify.flip_v", json!({}));
+        frames(&ctx, &mut app);
+        let t = transform(&app);
+        assert!((t.m[0] - 1.0).abs() < 1e-4 && (t.m[3] + 1.0).abs() < 1e-4, "flipped vertically, not squashed: {t:?}");
+        app.run("modify.flip_h", json!({}));
+        frames(&ctx, &mut app);
+        let t = transform(&app);
+        assert!((t.m[0] + 1.0).abs() < 1e-4 && (t.m[3] + 1.0).abs() < 1e-4, "flipped both ways: {t:?}");
+        let b1 = app.s.selection_bounds();
+        assert!((b1.width() - b0.width()).abs() < 0.5 && (b1.height() - b0.height()).abs() < 0.5, "same size: {b0:?} vs {b1:?}");
+        // Bigger than the fields' range (10000 %): kept too.
+        app.run("modify.transform", json!({"a": 150, "b": 0, "c": 0, "d": 150, "e": 0, "f": 0}));
+        frames(&ctx, &mut app);
+        let t = transform(&app);
+        assert!((t.m[0] + 150.0).abs() < 1e-2 && (t.m[3] + 150.0).abs() < 1e-2, "{t:?}");
+        // A scale of zero is still refused, and leaves the shape as it was.
+        assert!(app.s.execute("element.set_transform", &json!({"sy": 0})).is_err());
+        assert!(app.s.execute("modify.transform", &json!({"a": 1, "b": 0, "c": 0, "d": 0, "e": 0, "f": 0})).is_err());
+        assert_eq!(transform(&app), t);
+    }
+
+    /// #116: dragging the bottom edge of the transform box up past the top edge mirrors the
+    /// shape; the Properties panel doesn't squash it back to 1 %.
+    #[test]
+    fn dragging_an_edge_past_the_opposite_one_mirrors() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, Session::default(), Some(std::path::PathBuf::from("unused.png")));
+        app.run("draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 50}));
+        frames(&ctx, &mut app);
+        // The bottom edge goes from y 50 to y -50, past the top edge.
+        let m = crate::stage::xf_total(
+            crate::app::XfKind::Scale { hx: 0, hy: 1 },
+            [0.0, 0.0, 100.0, 50.0],
+            egui::pos2(50.0, 50.0),
+            egui::pos2(50.0, -50.0),
+            false,
+            false,
+        );
+        assert!(m.m[3] < -0.5, "the drag itself mirrors: {m:?}");
+        let [a, b, c, d, e, f] = m.m;
+        assert!(app.s.execute("modify.transform", &json!({"a": a, "b": b, "c": c, "d": d, "e": e, "f": f})).is_ok());
+        frames(&ctx, &mut app);
+        let t = transform(&app);
+        assert!((t.m[0] - 1.0).abs() < 1e-4 && (t.m[3] - m.m[3]).abs() < 1e-3, "still mirrored as dragged: {t:?}");
+    }
 }
