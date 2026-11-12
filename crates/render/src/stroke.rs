@@ -656,7 +656,7 @@ pub fn outline_variable_strokes(dl: &DisplayList) -> std::borrow::Cow<'_, Displa
             items.push(DisplayItem { path: std::sync::Arc::new(outline), transform: Affine::IDENTITY, fill: Some(anicraft_doc::Paint::Solid(st.color)), stroke: None, fill_rule: anicraft_geom::FillRule::NonZero, image: None, ..it.clone() });
         }
     }
-    std::borrow::Cow::Owned(DisplayList { items, clip_parents: dl.clip_parents.clone(), groups: dl.groups.clone() })
+    std::borrow::Cow::Owned(DisplayList { clip_modes: dl.clip_modes.clone(), items, clip_parents: dl.clip_parents.clone(), groups: dl.groups.clone() })
 }
 
 #[cfg(test)]

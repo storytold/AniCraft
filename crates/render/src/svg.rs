@@ -477,10 +477,10 @@ mod tests {
         let mut b = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::IDENTITY }));
         b.image = Some(px);
         b.color = ColorTransform::alpha(0.5);
-        let svg = to_svg(&DisplayList { items: vec![b.clone()], ..Default::default() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![b.clone()], ..Default::default() }, &stage());
         assert!(svg.contains("fill-opacity=\"0.5\"") && !svg.contains("feColorMatrix"), "{svg}");
         b.color = ColorTransform { mul: [-1.0, 0.5, 1.0, 0.8], add: [1.0, 0.25, 0.0, 0.1] };
-        let svg = to_svg(&DisplayList { items: vec![b], ..Default::default() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![b], ..Default::default() }, &stage());
         assert!(svg.contains("<feColorMatrix type=\"matrix\" values=\"-1 0 0 0 1 0 0.5 0 0 0.25 0 0 1 0 0 0 0 0 0.8 0.1\"/>"), "{svg}");
         assert!(svg.contains("filter=\"url(#cm") && !svg.contains("fill-opacity"), "{svg}");
     }
@@ -492,7 +492,7 @@ mod tests {
         a.stroke = Some(Stroke::new(Rgba::BLACK, 3.0));
         a.color = ColorTransform::alpha(0.5);
         a.fill_rule = FillRule::EvenOdd;
-        let svg = to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
         assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\">"));
         assert!(svg.contains("<rect width=\"100\" height=\"50\" fill=\"#ffffff\"/>"), "background");
         assert!(svg.contains("d=\"M5 7L25 7L25 27L5 27Z\" fill=\"#ff0000\" fill-opacity=\"0.5\" fill-rule=\"evenodd\""), "{svg}");
@@ -507,7 +507,7 @@ mod tests {
             let mut a = item(Path::line(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)), None);
             a.transform = Affine::scale(2.0, 2.0);
             a.stroke = Some(st);
-            to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage())
+            to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage())
         };
         // The default style is written as before: round, no dashes.
         let svg = svg_of(Stroke::new(Rgba::BLACK, 3.0));
@@ -527,7 +527,7 @@ mod tests {
     fn variable_width_strokes_are_written_as_filled_outlines() {
         let mut a = item(Path::line(Vec2::new(0.0, 10.0), Vec2::new(80.0, 10.0)), Some(Paint::Solid(Rgba::hex(0xff0000))));
         a.stroke = Some(Stroke::new(Rgba::hex(0x0000ff), 6.0).with_profile(anicraft_doc::ProfilePreset::TaperBoth.profile()));
-        let svg = to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
         assert!(!svg.contains("stroke-width"), "no SVG stroke: {svg}");
         assert!(svg.contains("fill=\"#0000ff\""), "the outline is filled in the stroke colour");
         assert!(svg.contains("fill=\"#ff0000\""), "the shape's own fill stays");
@@ -544,7 +544,7 @@ mod tests {
         outer.masks = Some(0);
         let mut inner = item(Path::ellipse(25.0, 25.0, 10.0, 10.0), Some(Paint::Solid(Rgba::BLACK)));
         inner.masks = Some(1);
-        let svg = to_svg(&DisplayList { items: vec![g, outer, inner], clip_parents: vec![None, Some(0)], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![g, outer, inner], clip_parents: vec![None, Some(0)], groups: Vec::new() }, &stage());
         assert!(svg.contains("gradientTransform=\"matrix(1 0 0 1 20 0)\" x1=\"0\" y1=\"0\" x2=\"10\" y2=\"0\""), "{svg}");
         assert!(svg.contains("<stop offset=\"1\" stop-color=\"#ffffff\" stop-opacity=\"0.25\"/>"));
         assert!(svg.contains("<clipPath id=\"c1\" clipPathUnits=\"userSpaceOnUse\" clip-path=\"url(#c0)\">"), "nested clip");
@@ -566,7 +566,7 @@ mod tests {
         let clear = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Solid(Rgba::TRANSPARENT)));
         let mut lost = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Solid(Rgba::BLACK)));
         lost.clip = Some(7);
-        let svg = to_svg(&DisplayList { items: vec![bad, empty, clear, lost], clip_parents: vec![Some(3)], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![bad, empty, clear, lost], clip_parents: vec![Some(3)], groups: Vec::new() }, &stage());
         assert_eq!(svg.matches("<path").count(), 1, "{svg}");
         assert!(svg.contains("<clipPath id=\"c0\" clipPathUnits=\"userSpaceOnUse\"></clipPath>"), "a malformed clip clips everything");
         assert!(!svg.contains("NaN") && !svg.contains("inf"));
@@ -599,7 +599,7 @@ mod group_tests {
             image: None,
             smooth: true,
         };
-        let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };
+        let dl = DisplayList { clip_modes: Vec::new(), items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };
         let svg = to_svg(&dl, &Stage { width: 4, height: 4, fps: 24.0, background: Rgba::WHITE });
         assert!(svg.contains("<g opacity=\"0.5\">") && svg.contains("<g opacity=\"0.25\">"), "{svg}");
         assert_eq!(svg.matches("<g ").count(), svg.matches("</g>").count(), "balanced");

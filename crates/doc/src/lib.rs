@@ -820,7 +820,58 @@ pub struct Layer {
     /// An armature layer's bones (ADR 0043); `None` on every other kind of layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armature: Option<Arc<Armature>>,
+    /// How a mask layer's artwork reveals what it masks (ADR 0070): its fill area (Animate's
+    /// masks), or its opacity or brightness (soft masks). Ignored on other kinds of layer.
+    #[serde(default, skip_serializing_if = "MaskMode::is_coverage")]
+    pub mask_mode: MaskMode,
 }
+
+/// How a mask layer's artwork reveals the layers it masks (ADR 0070).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskMode {
+    /// Its fills' area, fully opaque: colours, opacity and strokes don't matter (as in Animate).
+    #[default]
+    Coverage,
+    /// Its artwork as drawn (fills, strokes, gradients, bitmaps, opacity): the artwork's
+    /// opacity reveals (Animate users get this with alpha-gradient masks; SVG `mask-type: alpha`).
+    Alpha,
+    /// Its artwork's brightness times its opacity reveals: white shows, black hides (SVG's
+    /// default `mask`). Luminance uses the sRGB coefficients 0.2125, 0.7154, 0.0721.
+    Luminance,
+}
+
+impl MaskMode {
+    pub const ALL: [MaskMode; 3] = [MaskMode::Coverage, MaskMode::Alpha, MaskMode::Luminance];
+    pub fn is_coverage(&self) -> bool {
+        *self == MaskMode::Coverage
+    }
+    /// Whether the artwork's colours and opacity count (not just its area).
+    pub fn is_soft(self) -> bool {
+        self != MaskMode::Coverage
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            MaskMode::Coverage => "coverage",
+            MaskMode::Alpha => "alpha",
+            MaskMode::Luminance => "luminance",
+        }
+    }
+    pub fn from_key(k: &str) -> Option<MaskMode> {
+        MaskMode::ALL.into_iter().find(|m| m.key() == k)
+    }
+    /// How much a premultiplied colour reveals in this mode, `0..=1`.
+    pub fn reveal(self, premul: [f32; 4]) -> f32 {
+        let v = match self {
+            MaskMode::Coverage | MaskMode::Alpha => premul[3],
+            MaskMode::Luminance => LUMA[0] * premul[0] + LUMA[1] * premul[1] + LUMA[2] * premul[2],
+        };
+        if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+    }
+}
+
+/// The luminance coefficients of a luminance mask (SVG's `luminanceToAlpha`, on sRGB values).
+pub const LUMA: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
@@ -892,6 +943,7 @@ impl Layer {
             volume: 1.0,
             muted: false,
             armature: None,
+            mask_mode: MaskMode::Coverage,
         }
     }
     /// The row height in normal rows, `1..=MAX_LAYER_HEIGHT` whatever a file says.
