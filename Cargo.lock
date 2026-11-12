@@ -219,6 +219,7 @@ name = "anicraft"
 version = "0.2.1"
 dependencies = [
  "anicraft-audio",
+ "anicraft-cli",
  "anicraft-doc",
  "anicraft-engine",
  "anicraft-geom",
@@ -269,6 +270,7 @@ dependencies = [
  "anicraft-geom",
  "anicraft-guide",
  "anicraft-render",
+ "getrandom 0.3.4",
  "serde_json",
 ]
 

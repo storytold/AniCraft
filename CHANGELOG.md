@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Remote control: assistants edit the open window live** (ADR 0070).
+  * `anicraft --control 9878` opens AniCraft as usual and lets an assistant edit the document you
+    have open, through a port on this computer only. Its edits appear at once and undo with
+    Ctrl+Z, like yours; the status bar says "Remote control on (port 9878)" while it is open. Also
+    `ANICRAFT_CONTROL_PORT`.
+  * `anicraft-cli mcp --bridge 9878`: the MCP server's five tools, acting on that window. It starts
+    before AniCraft is open, connects on the first call, says how to start AniCraft when it isn't
+    running, and reconnects after AniCraft is reopened.
+  * No setup: each run makes a fresh token and writes it to `control.json` in AniCraft's settings
+    folder (only you can read it), where the bridge finds it. `ANICRAFT_CONTROL_TOKEN` overrides it.
+  * While you drag, the assistant's edits wait until you let go, so the two never share an undo step.
+  * The protocol (`docs/control-protocol.md`): JSON lines on `127.0.0.1`; `hello`, `tools.list`,
+    `tools.call`; anything that isn't a JSON request (such as a web page's request to localhost) is
+    refused.
+
 * **The user guide** (ADR 0069, M8).
   * **Help › User Guide** opens AniCraft's guide in your browser. It comes with the app, so it
     works offline; the web editor serves it beside the editor. It is also in the command palette.

@@ -6,6 +6,10 @@
 //! frame as a picture. Everything still goes through `Session::execute`, so undo, validation
 //! and the confirmation tiers (ADR 0004: `"confirm": true` before irreversible loss) apply to
 //! an assistant exactly as to the app.
+//!
+//! The same tools drive the desktop app live (ADR 0070): the app runs [`call_tool`] on its own
+//! session for requests from its control port, and `anicraft-cli mcp --bridge <port>` is this
+//! server with a [`Backend`] that forwards each tool call there (`crate::control`).
 
 use anicraft_engine::{Session, commands};
 use serde_json::{Value, json};
@@ -20,7 +24,8 @@ const MAX_PICTURE_EDGE: f32 = 2048.0;
 /// Most steps in one `anicraft_run_script` call.
 const MAX_STEPS: usize = 10_000;
 
-const INSTRUCTIONS: &str = "AniCraft is a 2D animation studio. Every edit is a command: call \
+/// The headless server's instructions (an in-process document no one sees).
+pub const INSTRUCTIONS: &str = "AniCraft is a 2D animation studio. Every edit is a command: call \
 anicraft_commands to find one (filter by words such as 'tween' or 'export'), then anicraft_run \
 with its id and params, or anicraft_run_script for several in order. Frames in params are \
 0-based. Commands act on the current scene, layer, frame and selection, which anicraft_document \
@@ -28,7 +33,8 @@ reports. Use anicraft_render to see a frame. Edits can be undone with edit.undo.
 would lose work or replace a file refuse until params include \"confirm\": true; ask the person \
 before confirming.";
 
-fn tools() -> Value {
+/// The tools, as `tools/list` returns them. The desktop app's control port lists the same.
+pub fn tools() -> Value {
     json!([
         {
             "name": "anicraft_commands",
@@ -95,21 +101,46 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.into()}})
 }
 
-fn text_result(v: &Value, is_error: bool) -> Value {
+/// A tool result holding `v` as text (pretty JSON unless it is a string).
+pub fn text_result(v: &Value, is_error: bool) -> Value {
     let text = if let Value::String(s) = v { s.clone() } else { serde_json::to_string_pretty(v).unwrap_or_default() };
     json!({"content": [{"type": "text", "text": text}], "isError": is_error})
 }
 
+/// Where tools run: a session, and how a command runs on it. The headless server uses the
+/// [`Session`] itself; the desktop app runs commands through its own follow-up (the status
+/// line, the view a new document resets), as for the person's own edits.
+pub trait Host {
+    fn session(&self) -> &Session;
+    /// Runs one command; the error is the engine's message.
+    fn execute(&mut self, id: &str, params: &Value) -> Result<Value, String>;
+}
+
+impl Host for Session {
+    fn session(&self) -> &Session {
+        self
+    }
+    fn execute(&mut self, id: &str, params: &Value) -> Result<Value, String> {
+        Session::execute(self, id, params).map_err(|e| e.to_string())
+    }
+}
+
+/// Whether a tool can change the document (the app holds these back while the person is in
+/// the middle of a drag or typing, so the two edits never share an undo step).
+pub fn tool_changes_document(name: &str) -> bool {
+    !matches!(name, "anicraft_commands" | "anicraft_document" | "anicraft_render")
+}
+
 /// Runs one tool. Tool failures are results with `isError` (so the assistant can read and
 /// correct them); only malformed calls are protocol errors.
-fn call_tool(s: &mut Session, name: &str, args: &Value) -> Result<Value, String> {
-    let run = |s: &mut Session, step: &Value| -> Result<Value, String> {
+pub fn call_tool<H: Host + ?Sized>(h: &mut H, name: &str, args: &Value) -> Result<Value, String> {
+    let run = |h: &mut H, step: &Value| -> Result<Value, String> {
         let id = step.get("command").and_then(Value::as_str).ok_or("missing \"command\"")?;
         let params = step.get("params").cloned().unwrap_or_else(|| json!({}));
         if !params.is_object() {
             return Err(format!("{id}: \"params\" must be an object"));
         }
-        s.execute(id, &params).map_err(|e| format!("{id}: {e}"))
+        h.execute(id, &params).map_err(|e| format!("{id}: {e}"))
     };
     Ok(match name {
         "anicraft_commands" => {
@@ -125,8 +156,11 @@ fn call_tool(s: &mut Session, name: &str, args: &Value) -> Result<Value, String>
                 .collect();
             text_result(&Value::Array(list), false)
         }
-        "anicraft_run" => match run(s, args) {
-            Ok(v) => text_result(&json!({"result": v, "revision": s.revision, "frame": s.frame, "scene": s.scene}), false),
+        "anicraft_run" => match run(h, args) {
+            Ok(v) => {
+                let s = h.session();
+                text_result(&json!({"result": v, "revision": s.revision, "frame": s.frame, "scene": s.scene}), false)
+            }
             Err(e) => text_result(&Value::String(e), true),
         },
         "anicraft_run_script" => {
@@ -136,15 +170,17 @@ fn call_tool(s: &mut Session, name: &str, args: &Value) -> Result<Value, String>
             }
             let mut results = Vec::with_capacity(steps.len());
             for (i, step) in steps.iter().enumerate() {
-                match run(s, step) {
+                match run(h, step) {
                     Ok(v) => results.push(v),
                     Err(e) => return Ok(text_result(&json!({"failed_step": i + 1, "error": e, "done": results}), true)),
                 }
             }
+            let s = h.session();
             text_result(&json!({"results": results, "revision": s.revision, "frame": s.frame}), false)
         }
-        "anicraft_document" => text_result(&s.info(), false),
+        "anicraft_document" => text_result(&h.session().info(), false),
         "anicraft_render" => {
+            let s = h.session();
             let frame = match args.get("frame") {
                 None | Some(Value::Null) => s.frame,
                 Some(v) => v.as_u64().and_then(|f| u32::try_from(f).ok()).ok_or("\"frame\" must be a whole number from 0")?,
@@ -173,8 +209,26 @@ fn call_tool(s: &mut Session, name: &str, args: &Value) -> Result<Value, String>
     })
 }
 
+/// What answers `tools/call`: the in-process session (headless), or the desktop app through
+/// its control port (`--bridge`, `crate::control::Bridge`).
+pub trait Backend {
+    /// The `instructions` the server gives the assistant at `initialize`.
+    fn instructions(&self) -> &'static str;
+    /// A `tools/call` result, or the message of a protocol error (a malformed call).
+    fn call(&mut self, name: &str, args: &Value) -> Result<Value, String>;
+}
+
+impl Backend for Session {
+    fn instructions(&self) -> &'static str {
+        INSTRUCTIONS
+    }
+    fn call(&mut self, name: &str, args: &Value) -> Result<Value, String> {
+        call_tool(self, name, args)
+    }
+}
+
 /// Answers one JSON-RPC message; `None` for notifications (and responses), which get no reply.
-pub fn handle(s: &mut Session, line: &str) -> Option<Value> {
+pub fn handle<B: Backend + ?Sized>(s: &mut B, line: &str) -> Option<Value> {
     let msg: Value = match serde_json::from_str(line.trim_start_matches('\u{feff}')) {
         Ok(v) => v,
         Err(e) => return Some(error(Value::Null, -32700, format!("parse error: {e}"))),
@@ -198,7 +252,7 @@ pub fn handle(s: &mut Session, line: &str) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "anicraft", "title": "AniCraft", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": INSTRUCTIONS
+                "instructions": s.instructions()
             })
         }
         "ping" => json!({}),
@@ -206,7 +260,7 @@ pub fn handle(s: &mut Session, line: &str) -> Option<Value> {
         "tools/call" => {
             let Some(name) = params.get("name").and_then(Value::as_str) else { return Some(error(id, -32602, "tools/call needs a tool \"name\"")) };
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-            match call_tool(s, name, &args) {
+            match s.call(name, &args) {
                 Ok(v) => v,
                 Err(e) => return Some(error(id, -32602, e)),
             }
@@ -218,7 +272,7 @@ pub fn handle(s: &mut Session, line: &str) -> Option<Value> {
 
 /// The stdio loop: one message per line in, one reply per line out, until stdin closes.
 /// Nothing but protocol messages is written to `out` (logs would corrupt the stream).
-pub fn serve<R: BufRead, W: Write>(s: &mut Session, input: R, out: &mut W) -> std::io::Result<()> {
+pub fn serve<B: Backend + ?Sized, R: BufRead, W: Write>(s: &mut B, input: R, out: &mut W) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
