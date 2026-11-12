@@ -81,6 +81,8 @@ pub fn label(f: PublishFormat) -> &'static str {
     crate::i18n::t(match f {
         PublishFormat::Html => tr_noop!("HTML canvas"),
         PublishFormat::Gif => tr_noop!("Animated GIF"),
+        PublishFormat::Apng => tr_noop!("Animated PNG"),
+        PublishFormat::Webp => tr_noop!("Animated WebP"),
         PublishFormat::Video => tr_noop!("Video"),
         PublishFormat::Lottie => tr_noop!("Lottie"),
         PublishFormat::SpriteSheet => tr_noop!("Sprite sheet"),
@@ -96,6 +98,8 @@ fn about(f: PublishFormat) -> &'static str {
     crate::i18n::t(match f {
         PublishFormat::Html => tr_noop!("One web page that plays the movie, buttons and actions included."),
         PublishFormat::Gif => tr_noop!("An animated GIF, with exact frame timing."),
+        PublishFormat::Apng => tr_noop!("An animated PNG: full colour and real transparency, for the web and chat apps."),
+        PublishFormat::Webp => tr_noop!("An animated WebP, lossless: full colour and real transparency, smaller than PNG."),
         PublishFormat::Video => tr_noop!("WebM or MP4 video, made with your ffmpeg (ffmpeg.org)."),
         PublishFormat::Lottie => tr_noop!("A Lottie animation (JSON) for web and apps."),
         PublishFormat::SpriteSheet => tr_noop!("Frames in a grid on one PNG, with a JSON frame map beside it."),
@@ -402,6 +406,23 @@ fn scale_row(app: &mut App, ui: &mut egui::Ui, f: PublishFormat, scale: f32) {
     });
 }
 
+/// How many times it plays: forever, or a count.
+fn plays_row(app: &mut App, ui: &mut egui::Ui, f: PublishFormat, plays: u32) {
+    let mut forever = plays == 0;
+    form_row(ui, FORM_LABEL_DIALOG, tr!("Playback"), |ui| {
+        if crate::theme::checkbox(ui, &mut forever, tr!("Loop forever")).on_hover_text(tr!("Off: it plays the number of times you set, then stops on the last frame")).changed() {
+            set(app, f, "loop", json!(if forever { 0 } else { 1 }), false);
+        }
+        if !forever {
+            let mut n = plays.max(1);
+            ui.label(text(Type::Label, tr!("Plays")));
+            if ui.add(egui::DragValue::new(&mut n).range(1..=anicraft_engine::doc::publish::MAX_PLAYS).speed(0.1)).named(tr!("Plays")).changed() {
+                set(app, f, "loop", json!(n), true);
+            }
+        }
+    });
+}
+
 /// Which movie frames: all of them, or from one to another (shown 1-based, as the timeline).
 fn range_row(app: &mut App, ui: &mut egui::Ui, f: PublishFormat, r: FrameRange) {
     let total = app.s.doc.frame_count();
@@ -466,6 +487,13 @@ fn options(app: &mut App, ui: &mut egui::Ui, f: PublishFormat) {
             range_row(app, ui, f, p.gif.range);
             scale_row(app, ui, f, p.gif.scale);
             check(app, ui, f, "loop", p.gif.looping, tr!("Loop"), tr!("Off: it plays once and stops on the last frame"));
+        }
+        PublishFormat::Apng | PublishFormat::Webp => {
+            let (range, scale, plays, background) = if f == PublishFormat::Apng { (p.apng.range, p.apng.scale, p.apng.plays, p.apng.background) } else { (p.webp.range, p.webp.scale, p.webp.plays, p.webp.background) };
+            range_row(app, ui, f, range);
+            scale_row(app, ui, f, scale);
+            plays_row(app, ui, f, plays);
+            check(app, ui, f, "background", background, tr!("Stage colour as background"), tr!("Off: transparent"));
         }
         PublishFormat::Video => {
             range_row(app, ui, f, p.video.range);
