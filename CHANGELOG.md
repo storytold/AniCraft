@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+* **The user guide** (ADR 0069, M8).
+  * **Help › User Guide** opens AniCraft's guide in your browser. It comes with the app, so it
+    works offline; the web editor serves it beside the editor. It is also in the command palette.
+  * Eighteen chapters written for artists, from getting started, drawing, symbols, the timeline and
+    tweens to masks, the camera and bones, text, images and sound, interactivity, exporting and
+    Publish, opening Animate files, preferences and accessibility, plug-ins, working headless, and
+    troubleshooting, plus **Coming from Animate**, which maps Animate's panels, tools and shortcuts
+    to AniCraft's.
+  * A **command reference** and a **shortcut reference** (with the macOS keys beside the others),
+    generated from AniCraft itself, so they always match the version you have.
+  * `anicraft-cli guide --out <folder>` writes the guide as HTML pages.
+  * On macOS, the fixed keys that hold a key while dragging ("Space+Drag") keep that key in their
+    label.
+
 * **Dynamic and input text fields** (ADR 0066, M5).
   * **Properties › Text type**: Static, Dynamic or Input text, as in Animate. Dynamic and input
     fields have an **instance name**, a **line type** (single line, multiline, multiline no wrap,

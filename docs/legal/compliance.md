@@ -69,6 +69,14 @@ two Apple Event handlers (open documents, quit) and an observer, and returns pat
 main-thread inbox. It has no network, file or process access, and no build script. Read any
 new version in full before it comes in.
 
+### The user guide (2026-11-11, ADR 0069)
+
+New crates, from crates.io: `pulldown-cmark` 0.13 (MIT) with `pulldown-cmark-escape` (MIT),
+`unicase` (MIT OR Apache-2.0), `bitflags` and `memchr`, already in the tree. Default features
+off (no command-line binary). It turns the user guide's Markdown into the bundled HTML book. The
+guide's screenshots are original work (ATTRIBUTION.md). The guide names Adobe and Animate only
+nominatively, with the non-affiliation line on every page. No new licence.
+
 ### Find and Replace (2026-11-11, ADR 0058)
 
 New crates, from crates.io: `regex` 1 with `regex-syntax` and `regex-automata` (MIT OR
