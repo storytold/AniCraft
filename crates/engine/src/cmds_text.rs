@@ -230,11 +230,8 @@ pub(crate) fn lay_out_on_path(text: &str, style: &TextStyle, on: &TextPath) -> R
         TextAlign::Right => Align::Right,
     };
     let offset = if on.offset.is_finite() { on.offset.clamp(-MAX_PATH_OFFSET, MAX_PATH_OFFSET) } else { 0.0 };
-    let set = anicraft_text::on_path(&layout.glyphs, &on.path, anicraft_text::PathPlacement { offset, flip: on.flip, align }).ok_or_else(|| EngineError::State("the path has no length to set text along".into()))?;
-    // The box: the path and the glyphs, from the origin.
-    let b = set.outline.bounds().union(&on.path.bounds());
-    let shift = if b.min.x.is_finite() && b.min.y.is_finite() { b.min } else { Vec2::ZERO };
-    let back = Affine::translate(-shift.x, -shift.y);
+    let set = anicraft_text::on_path_boxed(&layout.glyphs, &on.path, anicraft_text::PathPlacement { offset, flip: on.flip, align }).ok_or_else(|| EngineError::State("the path has no length to set text along".into()))?;
+    let shift = set.shift;
     let block = TextBlock {
         text: text.to_string(),
         font: layout.family,
@@ -246,11 +243,11 @@ pub(crate) fn lay_out_on_path(text: &str, style: &TextStyle, on: &TextPath) -> R
         letter_spacing: style.letter_spacing,
         line_spacing: style.line_spacing,
         width: None,
-        outline: Arc::new(set.outline.transformed(&back)),
-        box_width: if b.width().is_finite() { b.width().max(0.0) } else { 0.0 },
-        box_height: if b.height().is_finite() { b.height().max(0.0) } else { 0.0 },
+        outline: Arc::new(set.outline),
+        box_width: set.width,
+        box_height: set.height,
         field: None,
-        on_path: Some(TextPath { path: on.path.transformed(&back), offset, flip: on.flip }),
+        on_path: Some(TextPath { path: set.path, offset, flip: on.flip }),
     };
     Ok((block, note, shift))
 }

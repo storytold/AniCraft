@@ -1558,6 +1558,47 @@ fn soft_masks_round_trip_through_svg_onto_soft_mask_layers() {
 }
 
 #[test]
+fn the_soft_mask_and_text_path_fixture_imports_with_its_goldens() {
+    // crates/svg/fixtures/soft-masks-text-paths.svg (ADR 0070): pixel values worked out from
+    // the drawing itself.
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-fixture-0070-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("fixture.svg");
+    std::fs::write(&svg, include_str!("../../svg/fixtures/soft-masks-text-paths.svg")).unwrap();
+    let mut s = Session::default();
+    run(&mut s, "file.new", json!({"width": 200, "height": 100}));
+    run(&mut s, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    let tl = s.doc.timeline(s.scene);
+    let mut modes: Vec<anicraft_doc::MaskMode> = tl.layers.iter().filter(|l| l.kind == anicraft_doc::LayerKind::Mask).map(|l| l.mask_mode).collect();
+    modes.sort_by_key(|m| m.key());
+    assert_eq!(modes, [anicraft_doc::MaskMode::Alpha, anicraft_doc::MaskMode::Luminance]);
+    let pm = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
+    let px = |x, y| pm.pixel(x, y).unwrap();
+    // Alpha mask: red fades out left to right, x 25 → 1 − 25.5 / 100.
+    for (x, y) in [(25u32, 10u32), (75, 10)] {
+        let want = 1.0 - (x as f32 + 0.5) / 100.0;
+        assert!((px(x, y)[0] - want).abs() < 6e-3 && px(x, y)[1] < 1e-3, "({x}, {y}): {:?} vs {want}", px(x, y));
+    }
+    // Luminance mask: #808080 shows 128 / 255 of the green.
+    assert!((px(150, 95)[1] - 128.0 / 255.0).abs() < 3e-3 && px(150, 95)[0] < 1e-3, "{:?}", px(150, 95));
+    // The text follows the arc, centred on it, when this computer has fonts.
+    if !anicraft_text::Fonts::get().families().is_empty() {
+        let els: Vec<std::sync::Arc<anicraft_doc::Element>> = s.timeline().layers.iter().filter_map(|l| anicraft_doc::evaluate_layer_elements(l, 0)).flat_map(|(_, e)| e.into_owned()).collect();
+        let text = els.into_iter().find_map(|e| match &e.kind {
+            anicraft_doc::ElementKind::Text(t) => Some((e.transform, t.clone())),
+            _ => None,
+        });
+        let (xf, t) = text.expect("the text");
+        assert_eq!(t.text, "on the arc");
+        let on = t.on_path.as_ref().expect("on its path");
+        assert!(t.align == anicraft_doc::TextAlign::Center && on.offset > 50.0);
+        let b = t.outline.bounds().transformed(&xf);
+        assert!((b.center().x - 100.0).abs() < 4.0 && b.min.y > 20.0 && b.max.y < 70.0, "{b:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn imported_svg_text_is_editable_text() {
     if anicraft_text::Fonts::get().families().is_empty() {
         return;

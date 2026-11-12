@@ -168,6 +168,29 @@ pub fn on_path(glyphs: &[PlacedGlyph], path: &Path, how: PathPlacement) -> Optio
     Some(out)
 }
 
+/// Text on a path in a box of its own, as text blocks keep it (ADR 0070): the glyphs set along
+/// the path, then the glyphs and the path moved together so their bounds start at the origin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoxedPathText {
+    pub outline: Path,
+    pub path: Path,
+    pub width: f32,
+    pub height: f32,
+    /// Where the box's origin is in the path's space: what to translate by to put it back.
+    pub shift: Vec2,
+    pub hidden: usize,
+}
+
+/// [`on_path`], boxed ([`BoxedPathText`]).
+pub fn on_path_boxed(glyphs: &[PlacedGlyph], path: &Path, how: PathPlacement) -> Option<BoxedPathText> {
+    let set = on_path(glyphs, path, how)?;
+    let b = set.outline.bounds().union(&path.bounds());
+    let shift = if b.min.x.is_finite() && b.min.y.is_finite() { b.min } else { Vec2::ZERO };
+    let back = anicraft_geom::Affine::translate(-shift.x, -shift.y);
+    let size = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    Some(BoxedPathText { outline: set.outline.transformed(&back), path: path.transformed(&back), width: size(b.width()), height: size(b.height()), shift, hidden: set.hidden })
+}
+
 /// Whether a path's first subpath ends with a close.
 fn first_subpath_closed(path: &Path) -> bool {
     for (i, c) in path.cmds.iter().enumerate() {
