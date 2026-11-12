@@ -221,7 +221,8 @@ pub enum Drag {
     Eraser,
     /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
     /// `sub`; `start` is its left and right width when the drag began.
-    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
+    /// `index` is the grabbed width point (None: one the drag adds at `t`).
+    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: Option<usize>, t: f32, grip: crate::widthtool::Grip, start: (f32, f32) },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
