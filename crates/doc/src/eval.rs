@@ -430,6 +430,8 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
             // In the player, a symbol instance has its own path, and maybe properties a script set.
             let child = match (&el.kind, play) {
                 (ElementKind::Symbol { .. }, Some(p)) => Some(p.child(el.id)),
+                // So is a dynamic or input text field (ADR 0066).
+                (ElementKind::Text(t), Some(p)) if t.field.is_some() => Some(p.child(el.id)),
                 _ => None,
             };
             let set;
@@ -478,23 +480,36 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                         },
                     });
                 }
-                ElementKind::Text(t) => out.items.push(DisplayItem {
-                    path: t.outline.clone(),
-                    transform: xf,
-                    fill: Some(Paint::Solid(t.color)),
-                    stroke: None,
-                    fill_rule: FillRule::NonZero,
-                    color,
-                    layer: root_layer,
-                    element: root_el,
-                    outline: layer_outline,
-                    clip,
-                    masks,
-                    guide,
-                    group: cx.group,
-                    image: None,
-                    smooth: true,
-                }),
+                ElementKind::Text(t) => {
+                    let item = |path: Arc<Path>, transform: Affine, fill: Option<Paint>, stroke: Option<Stroke>, clip: Option<u32>, masks: Option<u32>| DisplayItem {
+                        path,
+                        transform,
+                        fill,
+                        stroke,
+                        fill_rule: FillRule::NonZero,
+                        color,
+                        layer: root_layer,
+                        element: root_el,
+                        outline: layer_outline,
+                        clip,
+                        masks,
+                        guide,
+                        group: cx.group,
+                        image: None,
+                        smooth: true,
+                    };
+                    match &t.field {
+                        // Mask artwork: a field's text masks; its box and border don't.
+                        Some(f) if masks.is_none() => {
+                            let live = child.as_ref().map(|c| (c.state.fields.get(&c.path), c.state.focus.as_deref() == Some(c.path.as_slice())));
+                            field_items(t, f, live, xf, clip, out, item);
+                        }
+                        _ => {
+                            let path = child.as_ref().and_then(|c| c.state.fields.get(&c.path)).and_then(|s| s.look.as_ref()).map_or_else(|| t.outline.clone(), |l| l.outline.clone());
+                            out.items.push(item(path, xf, Some(Paint::Solid(t.color)), None, clip, masks));
+                        }
+                    }
+                }
                 ElementKind::Camera => {}
                 ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } => {
                     let Some(sym) = doc.symbol(*symbol) else { continue };
@@ -533,6 +548,67 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                 }
             }
         }
+    }
+}
+
+/// The highlight behind selected text in a focused field.
+pub const SELECTION: Rgba = Rgba::new(0.62, 0.78, 1.0, 1.0);
+
+/// A dynamic or input field's items (ADR 0066): its background, its text cut to its box, the
+/// selection and caret when it has the keyboard, and its border. `live` is its state in the
+/// player (and whether it is focused); without one, it shows its authored outline.
+fn field_items(t: &crate::TextBlock, f: &crate::TextField, live: Option<(Option<&crate::field::FieldState>, bool)>, xf: Affine, clip: Option<u32>, out: &mut DisplayList, item: impl Fn(Arc<Path>, Affine, Option<Paint>, Option<Stroke>, Option<u32>, Option<u32>) -> DisplayItem) {
+    let (w, h) = (t.box_width.max(0.0), t.box_height.max(0.0));
+    let rect = Arc::new(Path::rect(0.0, 0.0, w, h));
+    if f.background {
+        out.items.push(item(rect.clone(), xf, Some(Paint::Solid(f.background_color)), None, clip, None));
+    }
+    // The box clips what is inside it.
+    let inner = out.clip_parents.len() as u32;
+    out.clip_parents.push(clip);
+    out.items.push(item(rect.clone(), xf, Some(Paint::Solid(Rgba::BLACK)), None, clip, Some(inner)));
+    let (state, focused) = live.unwrap_or((None, false));
+    let scroll = state.map_or(anicraft_geom::Vec2::ZERO, |s| s.scroll);
+    let text_xf = xf.mul(&Affine::translate(-scroll.x, -scroll.y));
+    let look = state.and_then(|s| s.look.as_deref());
+    // The selection, under the text.
+    if let (true, Some(st), Some(look)) = (focused, state, look) {
+        let (a, b) = st.selection();
+        if a != b {
+            for (row, l) in look.lines.iter().enumerate() {
+                let (from, to) = (a.max(l.start), b.min(l.end));
+                if from > to || (from == to && !(a <= l.end && b > l.end)) {
+                    continue;
+                }
+                let (x0, x1) = (l.x_at(from), if b > l.end { l.x_at(l.end) + t.size * 0.25 } else { l.x_at(to) });
+                let y = row as f32 * look.line_height;
+                let r = Path::rect(crate::FIELD_GUTTER + x0, crate::FIELD_GUTTER + y, (x1 - x0).max(0.0), look.line_height);
+                out.items.push(item(Arc::new(r), text_xf, Some(Paint::Solid(SELECTION)), None, Some(inner), None));
+            }
+        }
+    }
+    // The text: laid out by the player when it changed, else the authored outline (a field whose
+    // text changed but couldn't be laid out shows none).
+    let outline = match (state.and_then(|s| s.text.as_ref()), look) {
+        (_, Some(l)) => Some(l.outline.clone()),
+        (None, None) => Some(t.outline.clone()),
+        (Some(_), None) => None,
+    };
+    if let Some(path) = outline {
+        out.items.push(item(path, text_xf, Some(Paint::Solid(t.color)), None, Some(inner), None));
+    }
+    // The caret, in an input field with the keyboard and nothing selected.
+    if let (true, Some(st), crate::TextKind::Input) = (focused, state, f.kind)
+        && st.caret == st.anchor
+    {
+        let (at, lh) = look.map_or((anicraft_geom::Vec2::ZERO, t.size * 1.2), |l| (l.caret_at(st.caret), l.line_height));
+        let r = Path::rect(crate::FIELD_GUTTER + at.x - 0.5, crate::FIELD_GUTTER + at.y, 1.0, lh);
+        out.items.push(item(Arc::new(r), text_xf, Some(Paint::Solid(t.color)), None, Some(inner), None));
+    }
+    if f.border {
+        let mut s = Stroke::new(f.border_color, 1.0);
+        s.style.join = crate::Join::Miter;
+        out.items.push(item(rect, xf, None, Some(s), clip, None));
     }
 }
 

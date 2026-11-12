@@ -705,3 +705,109 @@ fn scripted_play_is_deterministic() {
     assert!(!a.1.is_empty());
     assert_eq!(a, b);
 }
+
+// ----- text fields (ADR 0066) ---------------------------------------------------------------
+
+/// A host that lays fields out in a 10 px monospace (the fonts live above this crate).
+struct Mono;
+
+impl ScriptHost for Mono {
+    fn run(&mut self, _: &PluginScript, _: &ScriptContext<'_>) -> ScriptRun {
+        ScriptRun::default()
+    }
+    fn lay_out_field(&mut self, block: &TextBlock, shown: &str) -> Option<FieldLook> {
+        let f = block.field.as_ref()?;
+        Some(crate::field::mono_look(shown, 10.0, 10.0, f.wrap_width(block.box_width)))
+    }
+}
+
+fn field(id: u64, name: &str, text: &str, kind: TextKind, x: f32, y: f32) -> Arc<Element> {
+    let block = TextBlock { text: text.into(), font: "Mono".into(), size: 10.0, bold: false, italic: false, color: Rgba::BLACK, align: crate::TextAlign::Left, letter_spacing: 0.0, line_spacing: 0.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0, 8.0)), box_width: 104.0, box_height: 14.0, field: Some(TextField { border: true, ..TextField::new(kind) }) };
+    Arc::new(Element { id: ElementId(id), name: name.into(), transform: Affine::translate(x, y), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(block)) })
+}
+
+fn field_doc(script: &str) -> Document {
+    let fields = vec![field(5, "score_txt", "0", TextKind::Dynamic, 10.0, 10.0), field(6, "name_txt", "", TextKind::Input, 10.0, 50.0), field(7, "", "", TextKind::Input, 10.0, 90.0)];
+    doc(vec![layer(1, vec![as3(kf(0, 1, fields, vec![], ""), script)])], vec![])
+}
+
+fn text_of(st: &PlayerState, id: u64) -> Option<String> {
+    st.fields.get(&vec![ElementId(id)]).and_then(|f| f.text.clone())
+}
+
+#[test]
+fn scripts_set_and_read_dynamic_text() {
+    let d = field_doc("stop();\nvar n:int = 0;\nscore_txt.text = \"Score: \" + n;\nscore_txt.appendText(\"!\");\ntrace(score_txt.text, score_txt.length, name_txt.text == \"\");\nscore_txt.x = 20;\nghost_txt.text = \"x\";");
+    let s = start(&d, &mut Mono);
+    assert_eq!(text_of(&s.state, 5).as_deref(), Some("Score: 0!"));
+    assert!(s.output.contains(&"Score: 0! 9 true".to_string()), "{:?}", s.output);
+    assert!(s.output.iter().any(|l| l.contains("no instance named “ghost_txt”")), "{:?}", s.output);
+    // Laid out by the host, drawn in place of the authored outline, where the script moved it.
+    let look = s.state.fields.get(&vec![ElementId(5)]).and_then(|f| f.look.clone()).expect("laid out");
+    assert_eq!(look.lines[0].end, 9);
+    let dl = evaluate_player(&d, &s.state);
+    assert!(dl.items.iter().any(|i| Arc::ptr_eq(&i.path, &look.outline) && i.transform.m[4] == 20.0));
+    // Without a host that can lay out, the text is still set and read; it draws only its box.
+    let s2 = start(&d, &mut NoScripts);
+    assert_eq!(text_of(&s2.state, 5).as_deref(), Some("Score: 0!"));
+    // Static text and other instances aren't fields.
+    let d = field_doc("hero.text = \"x\";");
+    assert!(start(&d, &mut Mono).output.iter().any(|l| l.contains("no instance named “hero”")));
+}
+
+#[test]
+fn the_viewer_types_into_input_fields_and_scripts_read_it() {
+    let d = field_doc("stop();\nstage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);\nfunction onKey(e:KeyboardEvent):void {\n  if (e.keyCode == Keyboard.ENTER) { score_txt.text = \"Hello, \" + name_txt.text; }\n}");
+    let mut h = Mono;
+    let s = start(&d, &mut h);
+    // A click in the input field gives it the keyboard; typing goes in, editing keys edit.
+    let mut ev = vec![Event::Down(Vec2::new(20.0, 55.0)), Event::Up(Vec2::new(20.0, 55.0))];
+    ev.extend("Adx".chars().map(Event::Char));
+    ev.extend([Event::KeyDown(8), Event::KeyDown(37), Event::Char('a'), Event::KeyDown(35), Event::Char('!')]);
+    let s = input(&d, &s.state, &ev, &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(6)]));
+    assert_eq!(text_of(&s.state, 6).as_deref(), Some("Aad!"));
+    // Shift+Home selects; typing replaces it; Enter reaches the stage's key listener too.
+    let s = input(&d, &s.state, &[Event::KeyDown(16), Event::KeyDown(36), Event::KeyUp(16), Event::Char('B'), Event::Char('o'), Event::KeyDown(13)], &mut h);
+    assert_eq!(text_of(&s.state, 6).as_deref(), Some("Bo"));
+    assert_eq!(text_of(&s.state, 5).as_deref(), Some("Hello, Bo"));
+    // The focused field draws its caret; a click elsewhere takes the keyboard away.
+    let caret = |st: &PlayerState| evaluate_player(&d, st).items.iter().filter(|i| i.fill.is_some() && i.masks.is_none() && i.path.bounds().width() <= 1.01 && i.path.bounds().height() > 5.0).count();
+    assert_eq!(caret(&s.state), 1);
+    let s = input(&d, &s.state, &[Event::Down(Vec2::new(300.0, 300.0)), Event::Up(Vec2::new(300.0, 300.0)), Event::Char('z')], &mut h);
+    assert_eq!(s.state.focus, None);
+    assert_eq!(text_of(&s.state, 6).as_deref(), Some("Bo"), "no field, no typing");
+    assert_eq!(caret(&s.state), 0);
+    // A dynamic field takes no typing; Tab goes from input field to input field.
+    let s = input(&d, &s.state, &[Event::Down(Vec2::new(20.0, 15.0)), Event::Up(Vec2::new(20.0, 15.0)), Event::Char('q')], &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(5)]), "a selectable dynamic field can be focused");
+    assert_eq!(text_of(&s.state, 5).as_deref(), Some("Hello, Bo"));
+    let s = input(&d, &s.state, &[Event::Down(Vec2::new(20.0, 55.0)), Event::Up(Vec2::new(20.0, 55.0)), Event::KeyDown(9)], &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(7)]));
+    let s = input(&d, &s.state, &[Event::KeyDown(9)], &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(6)]), "Tab wraps round");
+    assert_eq!(s.state.fields.get(&vec![ElementId(6)]).map(|f| f.selection()), Some((0, 2)), "and selects the field's text");
+}
+
+#[test]
+fn fields_draw_their_box_and_the_authored_text_everywhere() {
+    let d = field_doc("");
+    // The authoring frame and the player draw the authored outline, a border, inside a clip.
+    for dl in [evaluate(&d, 0), evaluate_player(&d, &start(&d, &mut NoScripts).state)] {
+        let texts = dl.items.iter().filter(|i| i.path.bounds() == Path::rect(2.0, 2.0, 8.0, 8.0).bounds() && i.masks.is_none()).count();
+        assert_eq!(texts, 3);
+        assert_eq!(dl.items.iter().filter(|i| i.stroke.is_some()).count(), 3, "three borders");
+        assert_eq!(dl.items.iter().filter(|i| i.masks.is_some()).count(), 3, "each box clips its text");
+        assert_eq!(dl.clip_parents.len(), 3);
+    }
+}
+
+#[test]
+fn typing_is_deterministic() {
+    let d = field_doc("stop();");
+    let ev: Vec<Event> = [Event::Down(Vec2::new(30.0, 55.0)), Event::Up(Vec2::new(30.0, 55.0))].into_iter().chain("deterministic".chars().map(Event::Char)).chain([Event::KeyDown(16), Event::KeyDown(37), Event::KeyDown(37), Event::Char('X')]).collect();
+    let a = step(&d, &start(&d, &mut Mono).state, &ev, &mut Mono);
+    let b = step(&d, &start(&d, &mut Mono).state, &ev, &mut Mono);
+    assert_eq!(a, b);
+    assert_eq!(text_of(&a.state, 6).as_deref(), Some("deterministX"));
+}

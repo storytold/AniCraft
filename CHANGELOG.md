@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+* **Dynamic and input text fields** (ADR 0066, M5).
+  * **Properties › Text type**: Static, Dynamic or Input text, as in Animate. Dynamic and input
+    fields have an **instance name**, a **line type** (single line, multiline, multiline no wrap,
+    password), a fixed **box**, **Show border**, **Selectable** and **Max characters**.
+  * **Scripts** set and read fields: `score_txt.text = "Score: " + n`, `appendText`, `.length`.
+  * **Test Movie**: click an input field and type. Caret, selection with Shift and the pointer,
+    Backspace, Delete, the arrows, Home, End, Enter in multiline fields, Tab to the next field,
+    Select All, Copy, paste and input methods. Screen readers find fields as text inputs.
+  * **HTML canvas export**: input fields are real text inputs over the movie (input methods, the
+    on-screen keyboard and the clipboard work), and text that scripts set is drawn in the
+    browser. Authored text is drawn exactly as in AniCraft.
+  * **Animate files**: dynamic and input fields come across as fields, with their names, boxes,
+    borders and line types (they used to become static text).
+  * Every other export and the stage draw fields with their authored text, box and border.
+  * `text.field`, `text.create {type}` and `control.test_movie` `text` and `select_all` events
+    for agents and the CLI.
 * **Templates, SVG into the Library, and drops on the timeline** (ADR 0065, M8).
   * **File › New from Template** and the start screen's new **Templates** row: Leaderboard banner
     728 × 90, Rectangle banner 300 × 250, Social square 1080 × 1080 at 30 fps, Storyboard 16:9 (six

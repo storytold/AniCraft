@@ -73,6 +73,48 @@ pub struct Layout {
     /// From the top of the box to the first line's baseline (pixels), for placing text by its
     /// baseline, as SVG does.
     pub ascent: f32,
+    /// Where a caret can stand, one entry per laid-out line, top first (ADR 0066: text fields
+    /// that viewers type into).
+    pub carets: Vec<CaretLine>,
+}
+
+/// One laid-out line's characters and caret positions. Indices count `char`s of the whole text
+/// (line breaks included); `x` is from the box's left edge, alignment applied.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CaretLine {
+    /// The first character on the line and the boundary after its last (a wrapped line's
+    /// trailing spaces belong to it; a line break belongs to neither line).
+    pub start: u32,
+    pub end: u32,
+    /// `(index, x)` of the boundaries glyphs start at and of the line's end, ascending.
+    pub stops: Vec<(u32, f32)>,
+}
+
+impl CaretLine {
+    /// The caret's x at character boundary `i` on this line: at the glyph starting there, or
+    /// after the line's last glyph, or (inside a ligature) at the glyph it is part of.
+    pub fn x_at(&self, i: u32) -> f32 {
+        let mut x = self.stops.first().map_or(0.0, |s| s.1);
+        for &(c, sx) in &self.stops {
+            if c > i {
+                break;
+            }
+            x = sx;
+        }
+        x
+    }
+
+    /// The boundary nearest to `x` on this line.
+    pub fn index_at(&self, x: f32) -> u32 {
+        let mut best = (self.start, f32::INFINITY);
+        for &(c, sx) in &self.stops {
+            let d = (sx - x).abs();
+            if d < best.1 {
+                best = (c, d);
+            }
+        }
+        best.0.clamp(self.start, self.end)
+    }
 }
 
 /// What a font name written by another program means on this computer: a PostScript name
@@ -299,8 +341,25 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
 
     // Lines: paragraphs at line breaks, each wrapped at spaces to the width if there is one.
     let mut lines: Vec<(f32, Vec<(Glyph, f32)>)> = Vec::new();
-    for para in text.split('\n') {
-        let para = para.strip_suffix('\r').unwrap_or(para);
+    // Per line: the character index its paragraph starts at, the paragraph's length in
+    // characters, and the byte → character map of the paragraph (shared by its lines).
+    let mut spans: Vec<(u32, u32, Arc<Vec<u32>>)> = Vec::new();
+    let mut para_start = 0u32;
+    for raw in text.split('\n') {
+        let para = raw.strip_suffix('\r').unwrap_or(raw);
+        let mut to_char = vec![0u32; para.len() + 1];
+        let mut n = 0u32;
+        for (b, _) in para.char_indices() {
+            if let Some(slot) = to_char.get_mut(b) {
+                *slot = n;
+            }
+            n += 1;
+        }
+        if let Some(last) = to_char.last_mut() {
+            *last = n;
+        }
+        let to_char = Arc::new(to_char);
+        let lines_before = lines.len();
         let mut buffer = harfrust::UnicodeBuffer::new();
         buffer.push_str(para);
         buffer.guess_segment_properties();
@@ -355,6 +414,10 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
         }
         let width = line.last().map_or(0.0, |(g, gx)| gx + g.advance);
         lines.push((width, line));
+        for _ in lines_before..lines.len() {
+            spans.push((para_start, n, to_char.clone()));
+        }
+        para_start += raw.chars().count() as u32 + 1;
     }
 
     let box_width = style.width.unwrap_or_else(|| lines.iter().map(|(w, _)| *w).fold(0.0, f32::max));
@@ -374,7 +437,56 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
         }
     }
     let height = (lines.len().max(1) as f32 - 1.0) * line_height + (metrics.ascent - metrics.descent);
-    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing, lines: lines.len().max(1), line_height, ascent })
+    let carets = caret_lines(&lines, &spans, box_width, style.align);
+    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing, lines: lines.len().max(1), line_height, ascent, carets })
+}
+
+/// The caret positions of laid-out lines (see [`CaretLine`]).
+fn caret_lines(lines: &[(f32, Vec<(Glyph, f32)>)], spans: &[(u32, u32, Arc<Vec<u32>>)], box_width: f32, align: Align) -> Vec<CaretLine> {
+    let mut out: Vec<CaretLine> = Vec::with_capacity(lines.len());
+    for (row, ((width, line), (pstart, plen, to_char))) in lines.iter().zip(spans).enumerate() {
+        let shift = match align {
+            Align::Left => 0.0,
+            Align::Center => (box_width - width) * 0.5,
+            Align::Right => box_width - width,
+        };
+        let ch = |cluster: usize| pstart + to_char.get(cluster).copied().unwrap_or(*plen).min(*plen);
+        // A paragraph's first line starts with it; a wrapped line at its first glyph.
+        let first_of_para = row == 0 || spans.get(row - 1).is_none_or(|p| p.0 != *pstart);
+        let start = if first_of_para { *pstart } else { line.first().map_or(*pstart, |(g, _)| ch(g.cluster)) };
+        let mut stops: Vec<(u32, f32)> = line.iter().map(|(g, gx)| (ch(g.cluster), shift + gx)).collect();
+        stops.sort_by_key(|s| s.0);
+        stops.dedup_by_key(|s| s.0);
+        if first_of_para && stops.first().is_none_or(|s| s.0 > start) {
+            stops.insert(0, (start, shift));
+        }
+        // The boundary after the last glyph (its trailing spaces, if any, follow it).
+        if let Some(&(c, _)) = stops.last() {
+            stops.push((c + 1, shift + width));
+        }
+        out.push(CaretLine { start, end: start, stops });
+        // The previous line of the same paragraph ends where this one starts.
+        if !first_of_para && let Some(prev) = out.len().checked_sub(2).and_then(|i| out.get_mut(i)) {
+            prev.end = start;
+        }
+    }
+    // The last line of each paragraph ends with it.
+    for (row, (pstart, plen, _)) in spans.iter().enumerate() {
+        let last_of_para = spans.get(row + 1).is_none_or(|p| p.0 != *pstart);
+        if last_of_para && let Some(l) = out.get_mut(row) {
+            l.end = pstart + plen;
+        }
+    }
+    for l in &mut out {
+        l.end = l.end.max(l.start);
+        let end = l.end;
+        l.stops.retain(|s| s.0 <= end);
+        if l.stops.last().is_none_or(|s| s.0 < end) {
+            let x = l.stops.last().map_or(0.0, |s| s.1);
+            l.stops.push((end, x));
+        }
+    }
+    out
 }
 
 /// Draws glyph outlines (font space, y up) into a path (pixels, y down) at a pen position.
@@ -530,5 +642,30 @@ mod tests {
         assert!(one.ascent > 10.0 && one.ascent < one.height, "{} in {}", one.ascent, one.height);
         let b = one.outline.bounds();
         assert!(b.max.y > one.ascent - 1.0 && b.min.y < one.ascent, "glyphs sit on the baseline: {b:?}");
+    }
+
+    #[test]
+    fn carets_stand_at_every_boundary_line_by_line() {
+        let Some(fonts) = fonts() else { return };
+        let l = fonts.layout("ab
+cd", &style(20.0)).unwrap();
+        assert_eq!(l.carets.len(), 2);
+        let (a, b) = (&l.carets[0], &l.carets[1]);
+        assert_eq!((a.start, a.end, b.start, b.end), (0, 2, 3, 5), "the line break belongs to neither line");
+        assert_eq!(a.x_at(0), 0.0);
+        assert!(a.x_at(1) > 0.0 && a.x_at(2) > a.x_at(1));
+        assert!((a.x_at(2) - fonts.layout("ab", &style(20.0)).unwrap().width).abs() < 0.01, "after the last glyph");
+        assert_eq!(a.index_at(-5.0), 0);
+        assert_eq!(a.index_at(1000.0), 2);
+        assert_eq!(b.index_at(a.x_at(1)), 4, "the same place on the next line");
+        // Wrapped lines: the space stays on the first line, the next word starts the second.
+        let w = fonts.layout("aaa bbb", &Style { width: Some(fonts.layout("aaa b", &style(20.0)).unwrap().width), ..style(20.0) }).unwrap();
+        assert_eq!(w.carets.len(), 2);
+        assert_eq!((w.carets[0].start, w.carets[0].end, w.carets[1].start, w.carets[1].end), (0, 4, 4, 7));
+        // Empty text has one line with one place for the caret; centred text starts mid-box.
+        let e = fonts.layout("", &style(20.0)).unwrap();
+        assert_eq!(e.carets, vec![CaretLine { start: 0, end: 0, stops: vec![(0, 0.0)] }]);
+        let c = fonts.layout("", &Style { width: Some(100.0), align: Align::Center, ..style(20.0) }).unwrap();
+        assert_eq!(c.carets[0].x_at(0), 50.0);
     }
 }

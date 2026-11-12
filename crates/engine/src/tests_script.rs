@@ -3,7 +3,7 @@
 
 use crate::{Session, format};
 use anicraft_doc::actions::{FrameScript, Language};
-use anicraft_doc::{LayerKind, SymbolId, SymbolKind, sample};
+use anicraft_doc::{ElementKind, LayerKind, SymbolId, SymbolKind, sample};
 use serde_json::{Value, json};
 
 const AS3: &str = "import flash.events.MouseEvent;\r\n\tstop(); // “wait”\n";
@@ -214,4 +214,48 @@ fn scripts_link_through_their_timeline_and_test_movie_plays_keys() {
     for bad in [json!({"tick": 1, "type": "key_down"}), json!({"tick": 1, "type": "key_down", "key": 0}), json!({"tick": 1, "type": "key_up", "key": "WIGGLE"})] {
         assert!(s.execute("control.test_movie", &json!({"events": [bad]})).is_err());
     }
+}
+
+/// Dynamic and input text fields (ADR 0066), end to end through commands: Text type, instance
+/// names, the file format, and a headless Test Movie that types into a field.
+#[test]
+fn text_fields_are_made_named_saved_and_typed_into() {
+    if anicraft_text::Fonts::get().families().is_empty() {
+        return; // A computer without fonts: the player tests cover fields with a test layout.
+    }
+    let mut s = Session::default();
+    let ok = |s: &mut Session, id: &str, p: Value| s.execute(id, &p).unwrap_or_else(|e| panic!("{id} {p}: {e}"));
+    ok(&mut s, "text.create", json!({"text": "0", "x": 20, "y": 20, "size": 20}));
+    assert!(s.execute("instance.set_name", &json!({"name": "score_txt"})).unwrap_err().to_string().contains("static text has no instance name"));
+    assert!(s.execute("text.field", &json!({"type": "dynamic", "lines": "password"})).unwrap_err().to_string().contains("only input text"));
+    ok(&mut s, "text.field", json!({"type": "dynamic", "width": 200, "border": true}));
+    ok(&mut s, "instance.set_name", json!({"name": "score_txt"}));
+    let field = |s: &Session, name: &str| s.doc.timeline(0).layers[0].keyframes[0].elements.iter().find(|e| e.name == name).cloned().unwrap();
+    let ElementKind::Text(t) = &field(&s, "score_txt").kind else { panic!("text") };
+    assert_eq!((t.kind(), t.box_width), (anicraft_doc::TextKind::Dynamic, 200.0));
+    assert!(t.outline.bounds().min.x >= anicraft_doc::FIELD_GUTTER - 0.5, "the text sits inside the gutter");
+    // An empty input field, with a script reading it when Enter is pressed.
+    ok(&mut s, "text.create", json!({"text": "", "type": "input", "x": 20, "y": 80, "size": 20}));
+    ok(&mut s, "text.field", json!({"width": 200, "height": 30, "max_chars": 5}));
+    ok(&mut s, "instance.set_name", json!({"name": "name_txt"}));
+    ok(&mut s, "script.set", json!({"frame": 0, "text": "stop();\nstage.addEventListener(KeyboardEvent.KEY_DOWN, k);\nfunction k(e:KeyboardEvent):void { if (e.keyCode == Keyboard.ENTER) { score_txt.text = \"Hi \" + name_txt.text; trace(name_txt.length); } }"}));
+    // Saved and opened again, the fields are the same.
+    let dir = std::env::temp_dir().join(format!("anicraft-fields-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("fields.anicraft");
+    ok(&mut s, "file.save", json!({"path": file.display().to_string()}));
+    let mut back = Session::default();
+    ok(&mut back, "file.open", json!({"path": file.display().to_string()}));
+    assert_eq!(field(&back, "name_txt").kind, field(&s, "name_txt").kind);
+    std::fs::remove_dir_all(&dir).ok();
+    // Headless Test Movie: click the input field, type past its limit, press Enter.
+    let v = ok(&mut back, "control.test_movie", json!({"frames": 3, "events": [{"tick": 1, "type": "click", "x": 40, "y": 92}, {"tick": 1, "type": "text", "text": "Adalovelace"}, {"tick": 2, "type": "key", "key": "ENTER"}]}));
+    let fields = v["state"]["fields"].as_array().unwrap();
+    let text_of = |n: &str| fields.iter().find(|f| f["name"] == n).map(|f| f["text"].clone()).unwrap();
+    assert_eq!(text_of("name_txt"), "Adalo", "at most 5 characters");
+    assert_eq!(text_of("score_txt"), "Hi Adalo");
+    assert!(v["output"].as_array().unwrap().iter().any(|l| l["line"] == "5"), "{}", v["output"]);
+    assert!(back.execute("control.test_movie", &json!({"events": [{"type": "text"}]})).is_err());
+    // Plug-ins may set text types (document content, like the rest of text.*).
+    assert!(crate::cmds_plugin::plugin_may_call("text.field").is_ok());
 }

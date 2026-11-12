@@ -17,6 +17,12 @@
 //! opens and when clicked), keys go to the movie's keyboard listeners as ActionScript key
 //! codes, Tab and the arrows included; shortcuts with Ctrl (⌘ on macOS) still reach the app,
 //! and Esc or Ctrl+W (⌘W) closes the window.
+//!
+//! Its text fields (ADR 0066): a click in an input field (or a selectable dynamic one) gives it
+//! the keyboard; typing, pasting and the system's input methods go into it, Ctrl+A (⌘A) selects
+//! its text and Ctrl+C (⌘C) copies the selection, while the editing keys also reach the movie's
+//! key listeners. Screen readers find each field as a text input (or a label, for dynamic text)
+//! with its instance name and text.
 
 use crate::app::App;
 use crate::icons::Icon;
@@ -121,6 +127,8 @@ pub struct TestMovie {
     skipped: usize,
     /// The movie takes the keyboard the next time it is drawn.
     focus: bool,
+    /// Shift was held last frame (the movie hears key code 16 when it changes).
+    shift: bool,
     /// Show Hit Areas: every button's hit area drawn over the movie (ADR 0057).
     pub hit_areas: bool,
     /// The window of its own's size and place, once worked out (ADR 0062).
@@ -172,7 +180,7 @@ pub fn open(app: &mut App) {
     let old = app.test_movie.as_ref();
     let hit_areas = old.is_some_and(|t| t.hit_areas);
     let (placement, last_pos) = (old.and_then(|t| t.placement), old.and_then(|t| t.last_pos));
-    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, name, ms: 0.0, voices: Vec::new(), audio: false, skipped, focus: true, hit_areas, placement, last_pos };
+    let mut tm = TestMovie { doc, movie, paused: false, acc: 0.0, texture: None, shown: None, pointer: None, down: false, name, ms: 0.0, voices: Vec::new(), audio: false, skipped, focus: true, shift: false, hit_areas, placement, last_pos };
     // Sound only when there is some, and never in screenshot runs or tests.
     if sound::has_sounds(&tm.doc) && app.shot.is_none() {
         tm.resume(&mut app.sound);
@@ -413,6 +421,10 @@ fn body(tm: &mut TestMovie, plugins: &anicraft_engine::plugins::Registry, out: &
     let k = (avail.x / sw.max(1.0)).min(avail.y / sh.max(1.0)).max(0.01);
     let size = egui::vec2(sw * k, sh * k);
     let (outer, _) = ui.allocate_exact_size(egui::vec2(avail.x, size.y), egui::Sense::hover());
+    let rect = egui::Rect::from_center_size(outer.center(), size);
+    // The text fields, for screen readers: made before the movie surface so the surface keeps
+    // the pointer (ADR 0066).
+    field_nodes(ui, tm, rect, k);
     let resp = ui.interact(outer, surface_id(), egui::Sense::click_and_drag());
     crate::a11y::surface(ui, &resp, tr!("The movie: point, click and type to play it"));
     if tm.focus || resp.is_pointer_button_down_on() {
@@ -423,7 +435,6 @@ fn body(tm: &mut TestMovie, plugins: &anicraft_engine::plugins::Registry, out: &
     if resp.has_focus() {
         ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false }));
     }
-    let rect = egui::Rect::from_center_size(outer.center(), size);
     // The pointer, in stage coordinates, to the player.
     let mut events = Vec::new();
     let to_stage = |p: egui::Pos2| Vec2::new((p.x - rect.left()) / k, (p.y - rect.top()) / k);
@@ -447,25 +458,63 @@ fn body(tm: &mut TestMovie, plugins: &anicraft_engine::plugins::Registry, out: &
         tm.pointer = inside.then_some(p);
     }
     tm.down = down && (tm.down || inside);
-    // The keyboard, while the movie has it (Ctrl/⌘ shortcuts stay the app's).
+    // The keyboard, while the movie has it (Ctrl/⌘ shortcuts stay the app's, except Select All,
+    // Copy and Paste while a text field has the keyboard).
     if resp.has_focus() {
+        let field = tm.movie.state.focus.is_some();
+        let shift = ui.input(|i| i.modifiers.shift);
+        if shift != tm.shift {
+            tm.shift = shift;
+            events.push(if shift { Event::KeyDown(16) } else { Event::KeyUp(16) });
+        }
+        if field {
+            let select_all = ui.input_mut(|i| {
+                // The app's own Copy and Paste would act on the stage instead.
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::C);
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::V);
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)
+            });
+            if select_all {
+                events.push(Event::SelectAll);
+            }
+        }
+        let mut copy = false;
         ui.input(|i| {
             for e in &i.events {
-                if let egui::Event::Key { key, pressed, modifiers, .. } = e
-                    && !modifiers.command
-                    && *key != egui::Key::Escape
-                    && let Some(code) = key_code(*key)
-                {
-                    events.push(if *pressed { Event::KeyDown(code) } else { Event::KeyUp(code) });
+                match e {
+                    egui::Event::Key { key, pressed, modifiers, .. } if !modifiers.command && *key != egui::Key::Escape => {
+                        if let Some(code) = key_code(*key) {
+                            events.push(if *pressed { Event::KeyDown(code) } else { Event::KeyUp(code) });
+                        }
+                    }
+                    // Typing, pasting and input methods go into the field with the keyboard.
+                    egui::Event::Text(t) | egui::Event::Paste(t) | egui::Event::Ime(egui::ImeEvent::Commit(t)) => events.extend(t.chars().take(anicraft_engine::player::MAX_TYPED).map(Event::Char)),
+                    egui::Event::Copy => copy = field,
+                    _ => {}
                 }
             }
         });
+        if copy && let Some(text) = selected_text(tm) {
+            ctx.copy_text(text);
+        }
     }
     let mut runner = ScriptRunner::new(plugins);
     tm.movie.input(&tm.doc, &events, &mut runner);
     tm.feed(out);
     if inside && tm.movie.state.hover.is_some() {
         ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    } else if inside && let Some(p) = tm.pointer
+        && anicraft_engine::doc::player::field_at(&tm.doc, &tm.movie.state, p).is_some()
+    {
+        ctx.set_cursor_icon(egui::CursorIcon::Text);
+    }
+    // The system's input methods compose where the focused field is.
+    if resp.has_focus()
+        && let Some(r) = focused_rect(tm, rect, k)
+    {
+        let password = focused_block(tm).and_then(|t| t.field.as_ref().map(|f| f.lines == anicraft_engine::doc::LineType::Password)).unwrap_or(false);
+        let purpose = if password { egui::IMEPurpose::Password } else { egui::IMEPurpose::Normal };
+        ctx.output_mut(|o| o.ime = Some(egui::output::IMEOutput { purpose, rect: r, cursor_rect: egui::Rect::from_min_size(r.left_bottom(), egui::vec2(1.0, 1.0)), should_interrupt_composition: false }));
     }
     // ---- time: the document's frame rate, kept by the sound while it plays ----
     if !tm.paused {
@@ -553,6 +602,91 @@ fn body(tm: &mut TestMovie, plugins: &anicraft_engine::plugins::Registry, out: &
         });
     });
     restart
+}
+
+/// `--open testtext` (screenshots): a name typed into the name field and Enter pressed (the
+/// script greets it), then the notes field clicked and a word selected with Shift; paused there.
+pub fn demo_typing(app: &mut App) {
+    let plugins = &app.s.plugins;
+    let Some(tm) = app.test_movie.as_mut() else { return };
+    let mut r = ScriptRunner::new(plugins);
+    let name = Vec2::new(60.0, 147.0);
+    let mut ev = vec![Event::Move(name), Event::Down(name), Event::Up(name)];
+    // i18n-exempt: what the viewer types, document content
+    ev.extend("Ada Lovelace".chars().map(Event::Char));
+    ev.extend([Event::KeyDown(13), Event::KeyUp(13)]);
+    let notes = Vec2::new(380.0, 228.0);
+    ev.extend([Event::Down(notes), Event::Up(notes), Event::KeyDown(16), Event::KeyDown(37), Event::KeyDown(37), Event::KeyDown(37), Event::KeyDown(37), Event::KeyUp(16)]);
+    tm.movie.input(&tm.doc, &ev, &mut r);
+    tm.paused = true;
+}
+
+/// The block of the field that has the keyboard.
+fn focused_block(tm: &TestMovie) -> Option<Arc<anicraft_engine::doc::TextBlock>> {
+    let path = tm.movie.state.focus.as_ref()?;
+    anicraft_engine::doc::player::tree(&tm.doc, &tm.movie.state).into_iter().find(|n| &n.path == path)?.text
+}
+
+/// The focused field's selected text (Copy).
+fn selected_text(tm: &TestMovie) -> Option<String> {
+    let t = focused_block(tm)?;
+    let path = tm.movie.state.focus.as_ref()?;
+    // A password's text is never copied.
+    if t.field.as_ref().is_some_and(|f| f.lines == anicraft_engine::doc::LineType::Password) {
+        return None;
+    }
+    let s = tm.movie.state.fields.get(path).map(|f| f.selected(&t)).unwrap_or_default();
+    (!s.is_empty()).then_some(s)
+}
+
+/// A field's box on screen, for the picture at `rect` drawn `k` points per stage pixel.
+fn screen_rect(n: &anicraft_engine::doc::player::Node, t: &anicraft_engine::doc::TextBlock, rect: egui::Rect, k: f32) -> egui::Rect {
+    let b = anicraft_engine::geom::Rect::new(0.0, 0.0, t.box_width, t.box_height).transformed(&n.xf);
+    egui::Rect::from_min_max(rect.min + egui::vec2(b.min.x, b.min.y) * k, rect.min + egui::vec2(b.max.x, b.max.y) * k)
+}
+
+/// The focused field's box on screen.
+fn focused_rect(tm: &TestMovie, rect: egui::Rect, k: f32) -> Option<egui::Rect> {
+    let path = tm.movie.state.focus.as_ref()?;
+    let nodes = anicraft_engine::doc::player::tree(&tm.doc, &tm.movie.state);
+    let n = nodes.iter().find(|n| &n.path == path)?;
+    let (t, _) = n.field()?;
+    Some(screen_rect(n, t, rect, k))
+}
+
+/// Each text field on the stage as a node screen readers find: an input field as a text input
+/// (a password as a password input, a multiline one as a multiline input) and a dynamic field as
+/// a label, named by its instance name, with its text as its value (ADR 0066).
+fn field_nodes(ui: &mut egui::Ui, tm: &TestMovie, rect: egui::Rect, k: f32) {
+    use anicraft_engine::doc::{LineType, TextKind};
+    use egui::accesskit::Role;
+    let st = &tm.movie.state;
+    for n in anicraft_engine::doc::player::tree(&tm.doc, st).iter().filter(|n| n.hittable).take(256) {
+        let Some((t, f)) = n.field() else { continue };
+        let r = screen_rect(n, t, rect, k).intersect(rect);
+        if !r.is_positive() {
+            continue;
+        }
+        let id = surface_id().with(("field", &n.path));
+        ui.interact(r, id, egui::Sense::hover());
+        let value = st.fields.get(&n.path).map_or(t.text.as_str(), |x| x.value(t));
+        let shown = f.shown(value);
+        let role = match (f.kind, f.lines) {
+            (TextKind::Input, LineType::Password) => Role::PasswordInput,
+            (TextKind::Input, LineType::Multiline | LineType::MultilineNoWrap) => Role::MultilineTextInput,
+            (TextKind::Input, _) => Role::TextInput,
+            _ => Role::Label,
+        };
+        let name = if n.name.is_empty() { tr!("Text field").to_string() } else { n.name.clone() };
+        ui.ctx().accesskit_node_builder(id, |node| {
+            node.set_role(role);
+            node.set_label(name.as_str());
+            node.set_value(shown.as_str());
+            if st.focus.as_ref() == Some(&n.path) {
+                node.set_selected(true);
+            }
+        });
+    }
 }
 
 /// `--open testmovie` (screenshots): the sample's Play button clicked, the show played through

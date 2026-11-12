@@ -19,12 +19,18 @@
 //! outside the ActionScript subset. Scripts in the subset (ADR 0013 tiers 2 and 2.5) come
 //! across as the same script IR the Rust player runs (as JSON), with each timeline's functions
 //! and variable types, and `player.js` evaluates it the same way.
+//!
+//! Dynamic and input text fields (ADR 0066) are instances the player names, like movie clips.
+//! Their authored text is its outline, as everywhere; text a script or the viewer changes is
+//! drawn by the page with the browser's fonts, and the viewer types into an input field through
+//! a real `<input>` or `<textarea>` over the canvas (so editing, selection, IME and screen
+//! readers are the browser's own).
 
 use crate::stroke::stroke_outline;
 use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::player::TimelineRef;
-use anicraft_doc::{BlendMode, ColorTransform, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
+use anicraft_doc::{BlendMode, ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -97,6 +103,7 @@ const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
 const NINE_SLICE: &str = "9-slice scaling (scaled as a whole)";
 const OUTSIDE_CALLS: &str = "script calls that reach outside the movie (ignored)";
+const FIELD_FONTS: &str = "text fields (their authored text keeps its outlines; text a script or the viewer changes is drawn with the browser's fonts)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
 fn num(v: f32, scale: f64) -> Value {
@@ -381,6 +388,71 @@ impl<'a> Bake<'a> {
         Value::Object(o)
     }
 
+    /// A dynamic or input text field (ADR 0066): `tf` holds what the player and the page need,
+    /// `id`, `n` (its instance name), `m` and `c` as on a symbol instance. In `tf`: `k` its kind
+    /// (`dynamic` or `input`), `ln` its line type, `w` × `h` its box, `sel` selectable, `mx` the
+    /// most characters the viewer may type (when limited), `t` the authored text and `p` its
+    /// outline (drawn like any path until the text changes), the paints `f` (text), `kp` (the
+    /// box as a clip) and `bg` (background, when on), `bd` the border `[r, g, b, a, 1]` and `bk`
+    /// its style (when on), the paths `r` (the box) and `cr` (the caret, as the player draws it
+    /// before a layout), and `font` what the page draws changed text with: `family`, `size`,
+    /// `bold`, `italic`, `align`, `ls` letter and `lsp` line spacing.
+    fn field(&mut self, el: &Element, t: &anicraft_doc::TextBlock, f: &anicraft_doc::TextField) -> Value {
+        // The browser lays out text a script or the viewer changed with its own fonts.
+        self.notes.entry(FIELD_FONTS).or_default().insert(el.id.0);
+        // As the evaluator draws a field (eval.rs `field_items`).
+        let (w, h) = (t.box_width.max(0.0), t.box_height.max(0.0));
+        let rect = Arc::new(Path::rect(0.0, 0.0, w, h));
+        let caret = Arc::new(Path::rect(FIELD_GUTTER - 0.5, FIELD_GUTTER, 1.0, t.size * 1.2));
+        let align = match t.align {
+            TextAlign::Left => "left",
+            TextAlign::Center => "center",
+            TextAlign::Right => "right",
+        };
+        let size = if t.size.is_finite() && t.size > 0.0 { t.size } else { 12.0 };
+        let mut o = json!({
+            "k": f.kind.key(),
+            "ln": f.lines.key(),
+            "w": coord(w),
+            "h": coord(h),
+            "sel": f.selectable,
+            "t": t.text,
+            "p": self.path(&t.outline),
+            "r": self.path(&rect),
+            "cr": self.path(&caret),
+            "f": self.paint(&Paint::Solid(t.color)),
+            "kp": self.paint(&Paint::Solid(Rgba::BLACK)),
+            "font": {"family": t.font, "size": num(size, 1e3), "bold": t.bold, "italic": t.italic, "align": align, "ls": num(t.letter_spacing, 1e3), "lsp": num(t.line_spacing, 1e3)},
+        });
+        if f.max_chars > 0 {
+            o["mx"] = json!(f.max_chars.min(MAX_FIELD_CHARS as u32));
+        }
+        if f.background {
+            o["bg"] = json!(self.paint(&Paint::Solid(f.background_color)));
+        }
+        if f.border {
+            let mut s = anicraft_doc::Stroke::new(f.border_color, 1.0);
+            s.style.join = Join::Miter;
+            let mut bd = color(s.color);
+            bd.push(num(s.width, 1e3));
+            o["bd"] = Value::Array(bd);
+            o["bk"] = line_style(&s);
+        }
+        let mut item = Map::new();
+        item.insert("tf".into(), o);
+        item.insert("id".into(), json!(el.id.0));
+        if !el.name.is_empty() {
+            item.insert("n".into(), json!(el.name));
+        }
+        if let Some(m) = matrix(&el.transform) {
+            item.insert("m".into(), m);
+        }
+        if let Some(c) = effect(&el.color.transform()) {
+            item.insert("c".into(), c);
+        }
+        Value::Object(item)
+    }
+
     /// The items of one element on `layer` at frame `f` (its keyframe starts at `start`).
     fn element(&mut self, el: &Element, layer: &Layer, f: u32, start: u32, out: &mut Vec<Value>) {
         if !el.transform.is_finite() {
@@ -407,10 +479,16 @@ impl<'a> Bake<'a> {
             }
             // The camera is the view, not artwork (ADR 0027): it is baked into the layers.
             ElementKind::Camera => {}
-            ElementKind::Text(t) => {
-                let fill = Paint::Solid(t.color);
-                out.push(self.shape(&t.outline, &el.transform, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
-            }
+            ElementKind::Text(t) => match &t.field {
+                Some(f) => {
+                    let item = self.field(el, t, f);
+                    out.push(item);
+                }
+                None => {
+                    let fill = Paint::Solid(t.color);
+                    out.push(self.shape(&t.outline, &el.transform, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
+                }
+            },
             ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events } => {
                 let (Some(&y), Some(sym)) = (self.symbols.get(symbol), self.doc.symbol(*symbol)) else { return };
                 let len = sym.timeline.frame_count();

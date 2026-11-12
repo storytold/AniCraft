@@ -7,10 +7,14 @@
 //! becomes one block per run of consecutive lines that share a style, stacked as Animate
 //! stacks them; a line that mixes styles takes the style most of its characters have, and the
 //! report says so.
+//!
+//! Dynamic and input fields (ADR 0066) become one field each, whatever their runs: a field is one
+//! instance that scripts and the viewer use, so it takes its main style, keeps its instance name,
+//! line type, border, selectability and maximum length, and the report counts them as running.
 
 use crate::import::{Report, color};
 use crate::xml::Element as X;
-use anicraft_doc::{Rgba, TextAlign, TextBlock};
+use anicraft_doc::{LineType, Rgba, TextAlign, TextBlock, TextField, TextKind};
 use anicraft_geom::Vec2;
 use anicraft_text::{Align, FaceMatch, Fonts, TextError};
 use std::collections::HashMap;
@@ -86,6 +90,20 @@ struct Flags {
     shifted: bool,
 }
 
+impl Flags {
+    fn report(&self, report: &mut Report) {
+        if self.justified {
+            report.skip("justified text (drawn left-aligned)");
+        }
+        if self.indented {
+            report.skip("first-line indents");
+        }
+        if self.shifted {
+            report.skip("superscript and subscript (drawn on the line)");
+        }
+    }
+}
+
 /// A line of the field: its pieces, each with the style of the run it came from.
 type Line = Vec<(String, usize)>;
 
@@ -113,9 +131,6 @@ fn main_style(line: &Line) -> (usize, bool) {
 /// Lays out one text field. Fonts are looked up once per face name (`faces`); missing ones go
 /// into the report.
 pub fn field(el: &X, fonts: &Fonts, faces: &mut HashMap<String, FaceMatch>, report: &mut Report) -> Vec<Placed> {
-    if el.name != "DOMStaticText" {
-        report.skip("dynamic and input text fields (imported as static text)");
-    }
     if el.attr("orientation").is_some_and(|o| o != "horizontal") {
         report.skip("vertical text (drawn horizontal)");
     }
@@ -163,6 +178,10 @@ pub fn field(el: &X, fonts: &Fonts, faces: &mut HashMap<String, FaceMatch>, repo
     if cut {
         report.skip("text cut to 100,000 characters per field");
     }
+    if el.name != "DOMStaticText" {
+        flags.report(report);
+        return text_field(el, fonts, faces, report, &lines, &styles).into_iter().collect();
+    }
     // Trailing empty lines draw nothing.
     while lines.last().is_some_and(|l| l.iter().all(|(t, _)| t.trim().is_empty())) {
         lines.pop();
@@ -170,15 +189,7 @@ pub fn field(el: &X, fonts: &Fonts, faces: &mut HashMap<String, FaceMatch>, repo
     if lines.is_empty() || styles.is_empty() {
         return Vec::new();
     }
-    if flags.justified {
-        report.skip("justified text (drawn left-aligned)");
-    }
-    if flags.indented {
-        report.skip("first-line indents");
-    }
-    if flags.shifted {
-        report.skip("superscript and subscript (drawn on the line)");
-    }
+    flags.report(report);
 
     // Consecutive lines in the same style make one block.
     let mut blocks: Vec<(usize, String)> = Vec::new();
@@ -252,6 +263,7 @@ pub fn field(el: &X, fonts: &Fonts, faces: &mut HashMap<String, FaceMatch>, repo
             outline: Arc::new(layout.outline),
             box_width: layout.width,
             box_height: layout.height,
+            field: None,
         };
         out.push(Placed { block, offset: Vec2::new(origin.x + st.left_margin, origin.y + y) });
         y += layout.lines as f32 * layout.line_height;
@@ -268,4 +280,93 @@ pub fn field(el: &X, fonts: &Fonts, faces: &mut HashMap<String, FaceMatch>, repo
         }
     }
     out
+}
+
+/// A dynamic or input field (ADR 0066): one block in the field's main style, its box from the
+/// field's `width` and `height` (or the text's size, for an auto-size field), its text laid out
+/// inside the gutter. Empty fields are kept (an empty input field is the usual kind).
+fn text_field(el: &X, fonts: &Fonts, faces: &mut HashMap<String, FaceMatch>, report: &mut Report, lines: &[Line], styles: &[RunStyle]) -> Option<Placed> {
+    let kind = if el.name == "DOMInputText" { TextKind::Input } else { TextKind::Dynamic };
+    report.run(if kind == TextKind::Input { "input text fields" } else { "dynamic text fields" });
+    let all: Line = lines.iter().flatten().cloned().collect();
+    let (s, mixed) = main_style(&all);
+    if mixed {
+        report.skip("text fields with mixed text styles (drawn in their main style)");
+    }
+    let st = styles.get(s).cloned().unwrap_or_else(|| run_style(None, &mut Flags::default()));
+    let text: String = lines.iter().map(|l| l.iter().map(|(t, _)| t.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    let text = text.trim_end_matches('\n').to_string();
+    let line_type = match el.attr("lineType") {
+        Some("multiline") => LineType::Multiline,
+        Some("multiline no wrap") => LineType::MultilineNoWrap,
+        Some("password") if kind == TextKind::Input => LineType::Password,
+        _ => LineType::Single,
+    };
+    let border = el.bool("border").unwrap_or(false);
+    let variable: String = el.attr("variableName").unwrap_or("").trim().chars().take(anicraft_doc::MAX_FIELD_NAME).collect();
+    if !variable.is_empty() {
+        report.keep("text field variables (ActionScript 1.0 and 2.0)");
+    }
+    if el.bool("renderAsHTML").unwrap_or(false) {
+        report.skip("text fields rendered as HTML (drawn as plain text)");
+    }
+    let max_chars = el.f32("maxCharacters").filter(|n| n.is_finite() && *n > 0.0).map_or(0, |n| n.min(anicraft_doc::MAX_FIELD_CHARS as f32) as u32);
+    // Animate's "show border" draws a black line round a white box.
+    let field = TextField { lines: line_type, selectable: el.bool("isSelectable").unwrap_or(true), border, background: border, max_chars, variable, ..TextField::new(kind) };
+    let auto = el.bool("autoExpand").unwrap_or(false);
+    let width = el.f32("width").filter(|w| w.is_finite() && *w > 0.0).map(|w| w.min(100_000.0));
+    let face = faces.entry(st.face.clone()).or_insert_with(|| fonts.find_face(&st.face)).clone();
+    let wrap = width.and_then(|w| field.wrap_width(w - st.left_margin - st.right_margin));
+    let style = anicraft_text::Style {
+        family: face.family.clone().unwrap_or_default(),
+        size: st.size,
+        bold: st.bold || face.bold,
+        italic: st.italic || face.italic,
+        align: match st.align {
+            TextAlign::Left => Align::Left,
+            TextAlign::Center => Align::Center,
+            TextAlign::Right => Align::Right,
+        },
+        letter_spacing: st.letter_spacing,
+        line_spacing: st.line_spacing,
+        width: wrap.or(if auto { None } else { width.map(|w| (w - 2.0 * GUTTER - st.left_margin - st.right_margin).max(1.0)).filter(|_| st.align != TextAlign::Left) }),
+    };
+    let shown = field.shown(&text);
+    let (outline, family, tw, th) = match fonts.layout(&shown, &style) {
+        Ok(l) => {
+            if face.family.is_none() && !face.wanted.is_empty() {
+                report.missing_fonts.insert(face.wanted.clone());
+                report.fallback_font.get_or_insert_with(|| l.family.clone());
+            }
+            let moved = l.outline.transformed(&anicraft_geom::Affine::translate(GUTTER + st.left_margin, GUTTER));
+            (moved, l.family, l.width, l.height)
+        }
+        Err(e) => {
+            report.skip(if e == TextError::NoFonts { "text fields (no fonts on this computer)" } else { "text cut to 100,000 characters per field" });
+            (anicraft_geom::Path::new(), face.wanted.clone(), 0.0, st.size * 1.2)
+        }
+    };
+    let box_width = match (width, auto) {
+        (Some(w), false) => w,
+        (Some(w), true) => w.max(tw + 2.0 * GUTTER),
+        (None, _) => tw + 2.0 * GUTTER,
+    };
+    let box_height = el.f32("height").filter(|h| h.is_finite() && *h > 0.0).map_or(th + 2.0 * GUTTER, |h| h.min(100_000.0));
+    let block = TextBlock {
+        text,
+        font: family,
+        size: style.size,
+        bold: style.bold,
+        italic: style.italic,
+        color: st.color,
+        align: st.align,
+        letter_spacing: st.letter_spacing,
+        line_spacing: st.line_spacing,
+        width: wrap,
+        outline: Arc::new(outline),
+        box_width,
+        box_height,
+        field: Some(field),
+    };
+    Some(Placed { block, offset: Vec2::new(el.f32("left").unwrap_or(0.0), el.f32("top").unwrap_or(0.0)) })
 }

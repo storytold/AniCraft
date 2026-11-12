@@ -11,7 +11,9 @@
 // The movie data (see crates/render/src/html.rs): every timeline's frames are baked (tweens,
 // easing, motion paths and shape morphs already evaluated), so this file never interpolates.
 // A frame is a list of layers, bottom first; a layer holds items: shapes (a path, a paint, a
-// stroke) and symbol instances (a symbol, its element id, its name and event handlers).
+// stroke), symbol instances (a symbol, its element id, its name and event handlers) and text
+// fields (ADR 0066: a box, the authored text and its outline, and the font changed text is drawn
+// with), which are instances too: scripts name them, set their text and read it back.
 "use strict";
 var AniCraft = (function () {
   // Budgets, as in the Rust player: a go-to loop ends in a message, not a hang.
@@ -23,7 +25,7 @@ var AniCraft = (function () {
   const MAX_SOUNDS_PER_STEP = 256;
   const MAX_SYMBOL_DEPTH = 32;
   const MAX_LISTENERS_PER_INSTANCE = 16;
-  const ROOT = 0, GRAPHIC = 1, CLIP = 2, BUTTON = 3;
+  const ROOT = 0, GRAPHIC = 1, CLIP = 2, BUTTON = 3, TEXT = 4;
   const KINDS = { graphic: GRAPHIC, movieclip: CLIP, button: BUTTON };
   const I = [1, 0, 0, 1, 0, 0];
   const NO_EFFECT = [1, 1, 1, 1, 0, 0, 0, 0];
@@ -34,6 +36,14 @@ var AniCraft = (function () {
   // `p · q`: apply q first, then p (Affine::mul).
   function mul(p, q) {
     return [p[0] * q[0] + p[2] * q[1], p[1] * q[0] + p[3] * q[1], p[0] * q[2] + p[2] * q[3], p[1] * q[2] + p[3] * q[3], p[0] * q[4] + p[2] * q[5] + p[4], p[1] * q[4] + p[3] * q[5] + p[5]];
+  }
+  // `m`⁻¹ applied to (x, y) (Affine::inverse), or null when `m` can't be undone.
+  function inverseApply(m, x, y) {
+    const det = m[0] * m[3] - m[1] * m[2];
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
+    const ia = m[3] / det, ib = -m[1] / det, ic = -m[2] / det, id = m[0] / det;
+    const e = -(ia * m[4] + ic * m[5]), f = -(ib * m[4] + id * m[5]);
+    return [ia * x + ic * y + e, ib * x + id * y + f];
   }
   function finite(m) {
     return m.every(Number.isFinite);
@@ -155,7 +165,7 @@ var AniCraft = (function () {
   // ----- the player state ------------------------------------------------------------------------
 
   function newState(seed) {
-    return { scene: 0, root: { frame: 0, playing: true }, clips: new Dict(), props: new Dict(), listeners: new Dict(), stage: [], vars: new Dict(), rng: seededRng(seed || 0), mouse: { x: 0, y: 0 }, seq: 0, pointer: null, down: false, hover: null, pressed: null, tick: 0 };
+    return { scene: 0, root: { frame: 0, playing: true }, clips: new Dict(), props: new Dict(), listeners: new Dict(), stage: [], vars: new Dict(), rng: seededRng(seed || 0), mouse: { x: 0, y: 0 }, seq: 0, pointer: null, down: false, hover: null, pressed: null, tick: 0, fields: new Dict(), focus: null, shift: false, selecting: false };
   }
   // The label at or before `frame` (ActionScript's `currentLabel`), or null.
   function currentLabel(tl, frame) {
@@ -245,6 +255,16 @@ var AniCraft = (function () {
       const gain = out[parent].gain * (L.sg === undefined ? 1 : L.sg);
       for (const e of L.e) {
         if (out.length >= MAX_NODES) return;
+        // Dynamic and input text fields are instances scripts can name (static text isn't).
+        if (e.tf) {
+          const path = base.concat([e.id]);
+          const key = keyOf(path);
+          const ov = st.props.get(key);
+          const shown = !ov || ov.visible !== false;
+          const m = ov ? override(ov, e.m, e.c).m : e.m || I;
+          out.push({ path: path, key: key, parent: parent, owner: owner, name: e.n || "", sym: -1, kind: TEXT, frame: 0, frames: 0, xf: mul(lxf, m), local: e.m || I, alpha: e.c ? e.c[3] : 1, hittable: hit && shown, events: null, gain: gain, tf: e.tf });
+          continue;
+        }
         if (e.y === undefined) continue;
         const sym = M.symbols[e.y];
         if (!sym) continue;
@@ -326,7 +346,9 @@ var AniCraft = (function () {
   }
   function evalElement(M, e, cx, clip, masks, dl, play, v) {
     let m = e.m || I, fx = e.c || NO_EFFECT, child = null;
-    if (e.y !== undefined && play) {
+    // In the player a symbol instance (and a text field) has its own path, and maybe
+    // properties a script set.
+    if ((e.y !== undefined || e.tf) && play) {
       child = { st: play.st, path: play.path.concat([e.id]) };
       const ov = play.st.props.get(keyOf(child.path));
       if (ov) {
@@ -337,6 +359,7 @@ var AniCraft = (function () {
       }
     }
     const xf = mul(cx.xf, m);
+    if (e.tf) return evalField(e.tf, e.n || "", xf, concat(cx.c, fx), cx.group, clip, masks, dl, child, v);
     if (e.y === undefined) {
       const it = { p: e.p, m: xf, f: e.f === undefined ? -1 : e.f, s: e.s || null, k: e.k || null, eo: !!e.eo, c: concat(cx.c, fx), clip: clip, masks: masks, group: cx.group };
       dl.items.push(it);
@@ -365,6 +388,38 @@ var AniCraft = (function () {
     const inner = { xf: xf, c: color, depth: cx.depth + 1, clip: clip, masks: masks, group: group };
     evalTimeline(M, sym.tl, local, inner, dl, child, v);
     if (v && group !== cx.group) v.groupEnd(group, dl.groups[group]);
+  }
+
+  // A dynamic or input field's items (eval.rs `field_items`): its background, the box as a clip
+  // around its text (the authored outline until the text changes; the page draws changed text
+  // with the browser's fonts), the caret where the player draws one, and its border. `v.field`,
+  // when the visitor has it, hears the field as one (with its state) in place of its items.
+  function evalField(tf, name, xf, color, group, clip, masks, dl, play, v) {
+    const mk = (p, f, s, k, cl, ms) => ({ p: p, m: xf, f: f, s: s, k: k, eo: false, c: color, clip: cl, masks: ms, group: group });
+    // Mask artwork: a field's text masks; its box and border don't.
+    if (masks !== null) {
+      const it = mk(tf.p, tf.f, null, null, clip, masks);
+      dl.items.push(it);
+      if (v) v.item(it);
+      return;
+    }
+    const key = play ? keyOf(play.path) : null;
+    const fs = play ? play.st.fields.get(key) : undefined;
+    const focused = !!play && play.st.focus !== null && samePath(play.st.focus, play.path);
+    const text = fs && fs.text !== null ? fs.text : null;
+    const items = [];
+    if (tf.bg !== undefined) items.push(mk(tf.r, tf.bg, null, null, clip, null));
+    const inner = dl.clips.length;
+    dl.clips.push(clip);
+    items.push(mk(tf.r, tf.kp, null, null, clip, inner));
+    // Changed text has no outline here (it isn't laid out): the page draws it.
+    if (text === null) items.push(mk(tf.p, tf.f, null, null, inner, null));
+    if (focused && fs && tf.k === "input" && fs.caret === fs.anchor) items.push(mk(tf.cr, tf.f, null, null, inner, null));
+    if (tf.bd) items.push(mk(tf.r, -1, tf.bd, tf.bk || null, clip, null));
+    for (const it of items) dl.items.push(it);
+    if (!v) return;
+    if (v.field) v.field({ tf: tf, name: name, m: xf, c: color, clip: clip, group: group, key: key, text: text, focused: focused, items: items });
+    else for (const it of items) v.item(it);
   }
 
   // ----- hit testing (player.rs `hit_in`) --------------------------------------------------------
@@ -417,7 +472,13 @@ var AniCraft = (function () {
   const MAX_LABEL_CHARS = 256;
   const PROP_NAMES = { x: "x", y: "y", alpha: "alpha", visible: "visible", rotation: "rotation", scale_x: "scaleX", scale_y: "scaleY" };
   const PROP_LABELS = { x: "x", y: "y", alpha: "alpha", visible: "visible", rotation: "rotation", scale_x: "scale x", scale_y: "scale y" };
-  const READ_NAMES = { current_frame: "currentFrame", total_frames: "totalFrames", current_label: "currentLabel", mouse_x: "mouseX", mouse_y: "mouseY", name: "name" };
+  const READ_NAMES = { current_frame: "currentFrame", total_frames: "totalFrames", current_label: "currentLabel", mouse_x: "mouseX", mouse_y: "mouseY", name: "name", text: "text", length: "length" };
+  // Longest text a field holds (code points, as lib.rs `MAX_FIELD_CHARS`).
+  const MAX_FIELD_CHARS = 16384;
+  // How messages name a kind of instance (player.rs `kind_name`).
+  function kindName(k) {
+    return ["the main timeline", "a graphic", "a movie clip", "a button", "a text field"][k] || "an instance";
+  }
 
   // Marsaglia's xorshift128, seeded as player.rs `Rng::seeded`.
   function seededRng(seed) {
@@ -766,6 +827,7 @@ var AniCraft = (function () {
   Vm.prototype.load = function (to, fr) {
     if (to.k === "local") return fr.locals[to.i];
     if (to.k === "var") return this.wrap(this.w.read(to.n));
+    if (to.k === "text") return this.wrap(this.w.get(to.at, "text"));
     return this.wrap(this.w.get(to.at, to.p));
   };
   Vm.prototype.store = function (to, v, fr) {
@@ -777,6 +839,11 @@ var AniCraft = (function () {
     if (to.k === "var") {
       this.wrap(this.w.write(to.n, v));
       return this.wrap(this.w.read(to.n));
+    }
+    if (to.k === "text") {
+      if (v === null || v === undefined) this.err("`text` is set to text, not " + String(v));
+      this.lift(this.line, this.w.setText(to.at, String(v)));
+      return v;
     }
     const n = +v;
     if (!Number.isFinite(n)) this.err("`" + PROP_NAMES[to.p] + "` is set to a number, not " + shown(v));
@@ -960,6 +1027,19 @@ var AniCraft = (function () {
     const a = { op: "set_property", t: segsOf(at.path), p: p, v: v, pl: PROP_LABELS[p], d: "Set " + PROP_LABELS[p] + " to " + rustNum(v) + on };
     return this.act(at.base || "this", a);
   };
+  // `field.text = …` (player.rs `set_text`).
+  Script.prototype.setText = function (at, text) {
+    if (!this.r.budget()) return null;
+    const f = this.from();
+    if (f.err !== undefined) return f.err;
+    const i = this.r.place(f.ok, this.ev, at);
+    if (i.err !== undefined) return i.err;
+    const n = i.ok === null ? undefined : this.r.nodes[i.ok];
+    if (!n) return "the stage isn't a text field";
+    if (n.kind !== TEXT) return "“" + n.name + "” is " + kindName(n.kind) + ", not a text field";
+    this.r.setFieldText(n.path, text);
+    return undefined;
+  };
   Script.prototype.trace = function (line) {
     if (this.r.budget()) this.r.out(line);
   };
@@ -1013,8 +1093,11 @@ var AniCraft = (function () {
   // hitIn). `start()` shows the first frame, `step(events)` moves one frame on, `input(events)`
   // routes pointer events between frames; each returns { output, sounds }: the lines the movie
   // wrote (traces, and why an action could not run) and the sounds of the keyframes entered.
-  // Events: { type: "move" | "down" | "up", x, y } (stage pixels), { type: "leave" }, or
-  // { type: "keydown" | "keyup", code } (an ActionScript key code). `seed` seeds Math.random().
+  // Events: { type: "move" | "down" | "up", x, y } (stage pixels), { type: "leave" },
+  // { type: "keydown" | "keyup", code, dom } (an ActionScript key code; `dom`: it comes from one
+  // of the page's field elements, which has edited the field already), and, for the tests' small
+  // editing mirror, { type: "char", text } and { type: "selectall" } (see "text fields" below).
+  // `seed` seeds Math.random().
   function Player(movie, host, seed) {
     this.M = load(movie);
     this.host = host;
@@ -1047,6 +1130,50 @@ var AniCraft = (function () {
     for (const e of (events || []).slice(0, MAX_EVENTS_PER_STEP)) r.event(e);
     return r.finish();
   };
+  // The node of the field at instance-path key `key` on the stage now, or null.
+  Player.prototype.fieldNode = function (key) {
+    const n = tree(this.M, this.st).find((x) => x.key === key && x.kind === TEXT);
+    return n || null;
+  };
+  // The viewer changed input field `key`'s text in the page's element: the text the field keeps
+  // (the element's value as the editor would let it in), or null when there is no such input
+  // field. No script runs: listeners hear the keys, as they do in the Rust player.
+  Player.prototype.typed = function (key, value) {
+    const n = this.fieldNode(key);
+    if (n === null || n.tf.k !== "input") return null;
+    const v = typedText(n.tf, String(value === null || value === undefined ? "" : value));
+    let fs = this.st.fields.get(key);
+    if (!fs) {
+      fs = newField(n.path);
+      this.st.fields.set(key, fs);
+    }
+    fs.text = v;
+    fs.caret = fs.anchor = Array.from(v).length;
+    return v;
+  };
+  // The keyboard went to field `key` (an input field, or a selectable dynamic one, on the stage
+  // and reachable), or away from every field (null). True when the field has it.
+  Player.prototype.focus = function (key) {
+    const st = this.st;
+    st.selecting = false;
+    const n = key === null || key === undefined ? null : this.fieldNode(key);
+    if (n === null || !n.hittable || !focusable(n.tf)) {
+      st.focus = null;
+      return false;
+    }
+    st.focus = n.path;
+    if (!st.fields.has(n.key)) {
+      const fs = newField(n.path);
+      fs.caret = fs.anchor = Array.from(n.tf.t).length;
+      st.fields.set(n.key, fs);
+    }
+    return true;
+  };
+  // Field `key`'s text now (what a script or the viewer set, or the authored text), or null.
+  Player.prototype.fieldText = function (key) {
+    const n = this.fieldNode(key);
+    return n === null ? null : fieldValue(this.st.fields.get(key), n.tf);
+  };
   // What the player shows now (see evaluate).
   Player.prototype.evaluate = function (v) {
     return evaluate(this.M, this.st, v);
@@ -1064,7 +1191,8 @@ var AniCraft = (function () {
     const kind = (v) => (v === undefined ? "u" : v === null ? "null" : typeof v === "boolean" ? "b" : typeof v === "number" ? "n" : "s");
     const vars = Array.from(st.vars.values()).sort((a, b) => comparePaths(a.path, b.path)).map((x) => [x.path, Object.keys(x.v).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((k) => [k, kind(x.v[k]) + ":" + String(x.v[k])])]);
     const stage = st.stage.map((x) => [x.ev, x.owner, x.k]);
-    return { scene: st.scene, frame: st.root.frame, playing: st.root.playing, clips: clips, props: props, listeners: listeners, stage: stage, vars: vars, hover: st.hover, pressed: st.pressed, down: st.down };
+    const fields = Array.from(st.fields.values()).sort((a, b) => comparePaths(a.path, b.path)).map((f) => [f.path, f.text, f.caret, f.anchor]);
+    return { scene: st.scene, frame: st.root.frame, playing: st.root.playing, clips: clips, props: props, listeners: listeners, stage: stage, vars: vars, hover: st.hover, pressed: st.pressed, down: st.down, fields: fields, focus: st.focus, selecting: st.selecting, shift: st.shift };
   };
 
   function Run(player) {
@@ -1165,7 +1293,13 @@ var AniCraft = (function () {
       else st.listeners.set(k, kept);
     }
     st.stage = st.stage.filter((l) => all.has(keyOf(l.owner)));
+    // A timeline's variables go with its instance, and a field's text with the field.
     for (const k of Array.from(st.vars.keys())) if (!all.has(k)) st.vars.delete(k);
+    for (const k of Array.from(st.fields.keys())) if (!all.has(k)) st.fields.delete(k);
+    if (st.focus !== null && !all.has(keyOf(st.focus))) {
+      st.focus = null;
+      st.selecting = false;
+    }
     if (st.hover !== null && !all.has(keyOf(st.hover))) st.hover = null;
     if (st.pressed !== null && !all.has(keyOf(st.pressed))) st.pressed = null;
   };
@@ -1398,7 +1532,15 @@ var AniCraft = (function () {
           return { ok: short(st.mouse.y) };
         case "name":
           return { ok: "root1" };
+        case "text":
+        case "length":
+          return { err: "the main timeline isn't a text field" };
       }
+    }
+    if (p === "text" || p === "length") {
+      if (n.kind !== TEXT) return { err: "“" + n.name + "” is " + kindName(n.kind) + ", not a text field" };
+      const v = fieldValue(st.fields.get(n.key), n.tf);
+      return { ok: p === "text" ? v : v.length };
     }
     const ov = st.props.get(n.key) || {};
     const m = n.local;
@@ -1434,7 +1576,7 @@ var AniCraft = (function () {
         return { ok: short(p === "mouse_x" ? (x[3] * px - x[2] * py) / dt : (x[0] * py - x[1] * px) / dt) };
       }
     }
-    if (n.kind !== CLIP) return { err: "“" + n.name + "” is " + (n.kind === BUTTON ? "a button" : "a graphic") + "; only movie clips and the main timeline have frames" };
+    if (n.kind !== CLIP) return { err: "“" + n.name + "” is " + kindName(n.kind) + "; only movie clips and the main timeline have frames" };
     if (p === "current_frame") return { ok: n.frame + 1 };
     if (p === "total_frames") return { ok: n.frames };
     const s = this.M.symbols[n.sym];
@@ -1463,7 +1605,7 @@ var AniCraft = (function () {
     if (!node) return;
     const ok = event === "enter_frame" ? node.kind !== GRAPHIC : node.kind === BUTTON || node.kind === CLIP;
     if (!ok) {
-      const why = node.kind === ROOT ? "the main timeline doesn't get pointer events here" : "“" + node.name + "” is a graphic; only buttons and movie clips get pointer events";
+      const why = node.kind === ROOT ? "the main timeline doesn't get pointer events here" : "“" + node.name + "” is " + kindName(node.kind) + "; only buttons and movie clips get pointer events";
       return this.out(what + ": " + why);
     }
     let list = st.listeners.get(node.key);
@@ -1539,10 +1681,7 @@ var AniCraft = (function () {
     if (i < 0) return this.out(a.d + ": " + err);
     const node = this.nodes[i];
     if (!node) return;
-    if (node.kind !== ROOT && node.kind !== CLIP) {
-      const what = node.kind === BUTTON ? "a button" : "a graphic";
-      return this.out(a.d + ": “" + node.name + "” is " + what + "; only movie clips and the main timeline have a playhead");
-    }
+    if (node.kind !== ROOT && node.kind !== CLIP) return this.out(a.d + ": “" + node.name + "” is " + kindName(node.kind) + "; only movie clips and the main timeline have a playhead");
     const path = node.path, frame = node.frame, frames = Math.max(node.frames, 1);
     switch (a.op) {
       case "stop":
@@ -1628,9 +1767,24 @@ var AniCraft = (function () {
     switch (e.type) {
       case "move":
         this.pointer(e);
+        // Dragging in the focused field selects.
+        if (st.selecting && st.down) this.pointField(true);
         break;
       case "down": {
         this.pointer(e);
+        // A field the viewer can use takes the press (unless a button is above it): it gets
+        // the keyboard. Anywhere else the focused field loses it.
+        const h = st.hover !== null ? this.indexOf(st.hover) : -1;
+        const f = this.fieldAt(e.x, e.y);
+        if (f !== null && (h < 0 || f[0] > h)) {
+          st.focus = f[1];
+          st.down = true;
+          st.selecting = true;
+          this.pointField(false);
+          break;
+        }
+        st.focus = null;
+        st.selecting = false;
         const before = this.pointerNow();
         st.down = true;
         st.pressed = st.hover;
@@ -1640,6 +1794,12 @@ var AniCraft = (function () {
         break;
       }
       case "up": {
+        if (st.selecting) {
+          st.selecting = false;
+          st.down = false;
+          this.pointer(e);
+          break;
+        }
         this.pointer(e);
         const before = this.pointerNow();
         st.down = false;
@@ -1657,13 +1817,214 @@ var AniCraft = (function () {
       case "leave":
         this.pointer(null);
         break;
+      // Keys edit the focused field, then go to the stage's listeners as well. A key the page
+      // sends from one of its own field elements (`dom`) has edited that element already.
       case "keydown":
+        if (e.code === 16) st.shift = true;
+        if (!e.dom) this.fieldKey(e.code);
         this.key("key_down", e.code);
         break;
       case "keyup":
+        if (e.code === 16) st.shift = false;
         this.key("key_up", e.code);
         break;
+      case "char":
+        this.editField((ed) => ed.insert(String(e.text || "")));
+        break;
+      case "selectall":
+        this.editField((ed) => ed.key("select_all", false));
+        break;
     }
+  };
+
+  // ----- text fields (player.rs, field.rs; ADR 0066) -------------------------------------------
+  //
+  // In the browser the viewer types into a real <input> or <textarea> that canvas.js lays over
+  // each input field: the browser does the editing, selection, IME and clipboard, and tells the
+  // player the new text (`Player.typed`) and where the keyboard is (`Player.focus`). What
+  // follows is a deliberately small mirror of field.rs's editor, for the `char`, `selectall` and
+  // editing-key events the tests send: it edits as the Rust player does before it has laid the
+  // text out (no line or glyph positions: Home and Up go to the start, End and Down to the end,
+  // and a click puts the caret at the end), which is all the tests compare.
+
+  // A field's text: what a script or the viewer set, or the authored text.
+  function fieldValue(fs, tf) {
+    return fs && fs.text !== null ? fs.text : tf.t;
+  }
+  function multiline(tf) {
+    return tf.ln === "multiline" || tf.ln === "multiline_no_wrap";
+  }
+  // An input field, or a selectable dynamic one (TextField::focusable).
+  function focusable(tf) {
+    return tf.k === "input" || (tf.k === "dynamic" && tf.sel !== false);
+  }
+  // Text a script sets, as a field keeps it (field.rs `fit`): ActionScript's line ends as line
+  // breaks, at most MAX_FIELD_CHARS characters.
+  function fit(text) {
+    return Array.from(text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")).slice(0, MAX_FIELD_CHARS).join("");
+  }
+  // Text the viewer typed into the page's element, as the editor would let it in: no control
+  // characters, no line breaks in a one-line field, at most the field's character limit.
+  function typedText(tf, text) {
+    const one = !multiline(tf);
+    const cs = Array.from(text.replace(/\r\n?/g, "\n")).filter((c) => !rustControl(c) || (c === "\n" && !one));
+    const max = tf.mx > 0 ? Math.min(tf.mx, MAX_FIELD_CHARS) : MAX_FIELD_CHARS;
+    return cs.slice(0, max).join("");
+  }
+  function newField(path) {
+    return { path: path, text: null, caret: 0, anchor: 0 };
+  }
+  // The caret and selection back inside the text (player.rs `relayout`, without a layout).
+  function clampField(fs, tf) {
+    const n = Array.from(fieldValue(fs, tf)).length;
+    fs.caret = Math.min(fs.caret, n);
+    fs.anchor = Math.min(fs.anchor, n);
+  }
+  const EDIT_KEYS = { 37: "left", 39: "right", 38: "up", 40: "down", 36: "home", 35: "end", 8: "backspace", 46: "delete", 13: "enter" };
+
+  // field.rs `Editor`, without a layout. Indices count code points (Rust `char`s).
+  function Editor(tf, fs) {
+    this.tf = tf;
+    this.fs = fs;
+  }
+  Editor.prototype.len = function () {
+    return Array.from(fieldValue(this.fs, this.tf)).length;
+  };
+  Editor.prototype.editable = function () {
+    return this.tf.k === "input";
+  };
+  Editor.prototype.selection = function () {
+    return [Math.min(this.fs.caret, this.fs.anchor), Math.max(this.fs.caret, this.fs.anchor)];
+  };
+  // Replaces the selection with `s`; true when the text changed.
+  Editor.prototype.insert = function (s) {
+    if (!this.editable()) return false;
+    const one = !multiline(this.tf);
+    let add = Array.from(s).filter((c) => !rustControl(c) || (c === "\n" && !one));
+    const [a, b] = this.selection();
+    const value = Array.from(fieldValue(this.fs, this.tf));
+    const kept = value.length - (b - a);
+    let room = this.tf.mx > 0 ? Math.max(this.tf.mx - kept, 0) : Infinity;
+    room = Math.min(room, Math.max(MAX_FIELD_CHARS - kept, 0));
+    if (add.length > room) add = add.slice(0, room);
+    if (add.length === 0 && a === b) return false;
+    this.fs.text = value.slice(0, a).concat(add, value.slice(b)).join("");
+    this.fs.caret = a + add.length;
+    this.fs.anchor = this.fs.caret;
+    return true;
+  };
+  // One editing key; `shift` extends the selection with caret moves. True when the text changed.
+  Editor.prototype.key = function (e, shift) {
+    const len = this.len();
+    const fs = this.fs;
+    const [a, b] = this.selection();
+    const moved = (to, sh) => {
+      fs.caret = Math.min(to, len);
+      if (!sh) fs.anchor = fs.caret;
+      return false;
+    };
+    switch (e) {
+      case "select_all":
+        fs.anchor = 0;
+        fs.caret = len;
+        return false;
+      case "left":
+        return !shift && a !== b ? moved(a, false) : moved(Math.max(fs.caret - 1, 0), shift);
+      case "right":
+        return !shift && a !== b ? moved(b, false) : moved(fs.caret + 1, shift);
+      case "home":
+      case "up":
+        return moved(0, shift);
+      case "end":
+      case "down":
+        return moved(len, shift);
+      case "backspace":
+      case "delete":
+        if (!this.editable()) return false;
+        if (a !== b) return this.insert("");
+        if (e === "backspace") {
+          if (a === 0) return false;
+          fs.anchor = a - 1;
+          return this.insert("");
+        }
+        if (b >= len) return false;
+        fs.anchor = a;
+        fs.caret = b + 1;
+        return this.insert("");
+      case "enter":
+        return multiline(this.tf) ? this.insert("\n") : false;
+    }
+    return false;
+  };
+
+  // The topmost field at stage point (x, y) the viewer can use: [node index, path] or null.
+  Run.prototype.fieldAt = function (x, y) {
+    for (let i = this.nodes.length - 1; i >= 0; i--) {
+      const n = this.nodes[i];
+      if (n.kind !== TEXT || !n.hittable || !focusable(n.tf)) continue;
+      const q = inverseApply(n.xf, x, y);
+      if (q !== null && q[0] >= 0 && q[1] >= 0 && q[0] <= n.tf.w && q[1] <= n.tf.h) return [i, n.path];
+    }
+    return null;
+  };
+  // The focused field's node, or null.
+  Run.prototype.focusedField = function () {
+    if (this.st.focus === null) return null;
+    const n = this.nodes[this.indexOf(this.st.focus)];
+    return n && n.kind === TEXT ? n : null;
+  };
+  // Runs an edit on the focused field (its state made the first time it is needed).
+  Run.prototype.editField = function (go) {
+    const n = this.focusedField();
+    if (n === null) return;
+    let fs = this.st.fields.get(n.key);
+    if (!fs) {
+      fs = newField(n.path);
+      this.st.fields.set(n.key, fs);
+    }
+    clampField(fs, n.tf);
+    if (go(new Editor(n.tf, fs))) clampField(fs, n.tf);
+  };
+  // The pointer in the focused field: without a layout the caret goes to the end (`extend`:
+  // keeping the selection's other end).
+  Run.prototype.pointField = function (extend) {
+    this.editField((ed) => {
+      ed.fs.caret = ed.len();
+      if (!extend) ed.fs.anchor = ed.fs.caret;
+      return false;
+    });
+  };
+  // A key down for the focused field: an edit, or Tab to the next input field.
+  Run.prototype.fieldKey = function (code) {
+    const st = this.st;
+    if (st.focus === null) return;
+    if (code === 9) {
+      const inputs = this.nodes.filter((n) => n.hittable && n.kind === TEXT && n.tf.k === "input").map((n) => n.path);
+      const at = inputs.findIndex((p) => samePath(p, st.focus));
+      const n = inputs.length;
+      if (n > 0) {
+        const next = at < 0 ? 0 : st.shift ? (at + n - 1) % n : (at + 1) % n;
+        st.focus = inputs[next];
+        this.editField((ed) => ed.key("select_all", false));
+      }
+      return;
+    }
+    const e = EDIT_KEYS[code];
+    if (e === undefined) return;
+    const shift = st.shift;
+    this.editField((ed) => ed.key(e, shift));
+  };
+  // A script sets field `path`'s text.
+  Run.prototype.setFieldText = function (path, text) {
+    const n = this.nodes[this.indexOf(path)];
+    if (!n || n.kind !== TEXT) return;
+    let fs = this.st.fields.get(n.key);
+    if (!fs) {
+      fs = newField(n.path);
+      this.st.fields.set(n.key, fs);
+    }
+    fs.text = fit(text);
+    clampField(fs, n.tf);
   };
   // Moves the pointer: what it leaves gets Out, what it reaches gets Over.
   Run.prototype.pointer = function (p) {

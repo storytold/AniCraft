@@ -14,6 +14,7 @@ pub mod camera;
 mod filter;
 mod easing;
 mod eval;
+pub mod field;
 mod hints;
 pub mod nine_slice;
 pub mod library;
@@ -467,6 +468,149 @@ pub struct TextBlock {
     /// The layout box.
     pub box_width: f32,
     pub box_height: f32,
+    /// A dynamic or input text field (ADR 0066); `None`: static text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<TextField>,
+}
+
+impl TextBlock {
+    /// What kind of text it is: static, dynamic or input.
+    pub fn kind(&self) -> TextKind {
+        self.field.as_ref().map_or(TextKind::Static, |f| f.kind)
+    }
+}
+
+/// Animate's three text types (ADR 0066).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextKind {
+    /// Drawn as laid out; scripts can't reach it.
+    #[default]
+    Static,
+    /// Scripts set and read its text (`field.text`) while the movie plays.
+    Dynamic,
+    /// The viewer types into it while the movie plays; scripts read what was typed.
+    Input,
+}
+
+impl TextKind {
+    pub const ALL: [TextKind; 3] = [TextKind::Static, TextKind::Dynamic, TextKind::Input];
+    pub fn key(self) -> &'static str {
+        match self {
+            TextKind::Static => "static",
+            TextKind::Dynamic => "dynamic",
+            TextKind::Input => "input",
+        }
+    }
+    pub fn from_key(s: &str) -> Option<TextKind> {
+        TextKind::ALL.into_iter().find(|k| k.key() == s.trim().to_ascii_lowercase())
+    }
+}
+
+/// A field's line type, as Animate's Properties name them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineType {
+    /// One line: Enter types nothing, the text scrolls sideways to keep the caret in view.
+    #[default]
+    Single,
+    /// Lines wrap at the field's width.
+    Multiline,
+    /// Lines break only where the text does.
+    MultilineNoWrap,
+    /// One line, drawn as `*` (input fields).
+    Password,
+}
+
+impl LineType {
+    pub const ALL: [LineType; 4] = [LineType::Single, LineType::Multiline, LineType::MultilineNoWrap, LineType::Password];
+    pub fn key(self) -> &'static str {
+        match self {
+            LineType::Single => "single",
+            LineType::Multiline => "multiline",
+            LineType::MultilineNoWrap => "multiline_no_wrap",
+            LineType::Password => "password",
+        }
+    }
+    pub fn from_key(s: &str) -> Option<LineType> {
+        let s = s.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        LineType::ALL.into_iter().find(|k| k.key() == s)
+    }
+    /// More than one line (Enter starts a new one).
+    pub fn multiline(self) -> bool {
+        matches!(self, LineType::Multiline | LineType::MultilineNoWrap)
+    }
+}
+
+/// The inset of text in a field's box, on every side, in pixels (as Animate's fields have).
+pub const FIELD_GUTTER: f32 = 2.0;
+/// Longest text a field holds (characters).
+pub const MAX_FIELD_CHARS: usize = 16_384;
+/// Longest instance or variable name (characters).
+pub const MAX_FIELD_NAME: usize = 256;
+
+/// A dynamic or input text field (ADR 0066): how it is drawn and how the viewer may use it. The
+/// element's name is its instance name; the block's text is what it shows before a script or the
+/// viewer changes it. Its box is the block's `box_width` × `box_height` (fixed, not the text's
+/// size), and its outline is the shown text laid out [`FIELD_GUTTER`] inside the box, so
+/// everything that draws or measures text works on fields unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextField {
+    pub kind: TextKind,
+    #[serde(default)]
+    pub lines: LineType,
+    /// The viewer can select its text (dynamic fields; input fields always can).
+    #[serde(default = "yes")]
+    pub selectable: bool,
+    /// A line around the box, and a fill behind the text.
+    #[serde(default)]
+    pub border: bool,
+    #[serde(default = "black")]
+    pub border_color: Rgba,
+    #[serde(default)]
+    pub background: bool,
+    #[serde(default = "white")]
+    pub background_color: Rgba,
+    /// Most characters the viewer may type (0: no limit).
+    #[serde(default)]
+    pub max_chars: u32,
+    /// The ActionScript 1/2 variable the field shows (kept from Animate documents, not run).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub variable: String,
+}
+
+fn black() -> Rgba {
+    Rgba::BLACK
+}
+fn white() -> Rgba {
+    Rgba::WHITE
+}
+
+impl TextField {
+    /// A single-line field of `kind`.
+    pub fn new(kind: TextKind) -> TextField {
+        TextField { kind, lines: LineType::Single, selectable: true, border: false, border_color: Rgba::BLACK, background: false, background_color: Rgba::WHITE, max_chars: 0, variable: String::new() }
+    }
+
+    /// The width text wraps at in a box `box_width` wide, if its lines wrap.
+    pub fn wrap_width(&self, box_width: f32) -> Option<f32> {
+        (self.lines == LineType::Multiline).then(|| (box_width - 2.0 * FIELD_GUTTER).max(1.0))
+    }
+
+    /// What a field shows for `text`: `*` for each character of a password.
+    pub fn shown(&self, text: &str) -> String {
+        if self.lines == LineType::Password && self.kind == TextKind::Input { text.chars().map(|_| '*').collect() } else { text.to_string() }
+    }
+
+    /// The viewer can focus it: an input field, or a selectable dynamic one.
+    pub fn focusable(&self) -> bool {
+        self.kind == TextKind::Input || (self.kind == TextKind::Dynamic && self.selectable)
+    }
+
+    /// Values in range: names cut to length, at most [`MAX_FIELD_CHARS`] typed.
+    pub fn sanitized(&self) -> TextField {
+        TextField { max_chars: self.max_chars.min(MAX_FIELD_CHARS as u32), variable: self.variable.chars().take(MAX_FIELD_NAME).collect(), ..self.clone() }
+    }
 }
 
 /// An instance on a keyframe.

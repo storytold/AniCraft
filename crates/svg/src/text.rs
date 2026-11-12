@@ -291,6 +291,7 @@ impl<'a> Builder<'a> {
             outline: Arc::new(layout.outline),
             box_width: layout.width,
             box_height: layout.height,
+            field: None,
         };
         Ok(Some((block, ascent)))
     }
