@@ -105,6 +105,9 @@ pub struct Prefs {
     pub recent: anicraft_engine::cmds_recent::RecentFiles,
     /// Show the start screen when AniCraft starts without a document to open (ADR 0059).
     pub start_screen: bool,
+    /// Brushes of your own (ADR 0068), for the Brush and the Paint Brush.
+    #[serde(deserialize_with = "lenient_brushes")]
+    pub brushes: anicraft_engine::brush_library::BrushLibrary,
     /// Test Movie plays in a window of its own (ADR 0062); off, or where a system can't open
     /// one, it floats inside the editor.
     pub test_movie_window: bool,
@@ -170,6 +173,7 @@ impl Default for Prefs {
             publish_presets: Default::default(),
             recent: Default::default(),
             start_screen: true,
+            brushes: Default::default(),
             test_movie_window: true,
             test_movie_pos: None,
         }
@@ -187,6 +191,16 @@ fn lenient_recent<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_eng
     };
     let good: Vec<RecentFile> = list.into_iter().filter_map(|x| serde_json::from_value::<RecentFile>(x).ok()).collect();
     Ok(serde_json::from_value::<RecentFiles>(serde_json::to_value(good).unwrap_or_default()).unwrap_or_default())
+}
+
+/// Your brushes as written, skipping entries that aren't one (a hand-edited file).
+fn lenient_brushes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_engine::brush_library::BrushLibrary, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    let list: Vec<serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a,
+        _ => Vec::new(),
+    };
+    Ok(anicraft_engine::brush_library::BrushLibrary::from_values(list))
 }
 
 /// Autosave intervals offered in Preferences: `(seconds, label)`.
@@ -241,6 +255,7 @@ impl Prefs {
             })
             .collect();
         self.recent = std::mem::take(&mut self.recent).sanitized();
+        self.brushes = std::mem::take(&mut self.brushes).sanitized();
         self.test_movie_pos = self.test_movie_pos.filter(|[x, y]| x.is_finite() && y.is_finite() && x.abs() < 1e5 && y.abs() < 1e5);
         self
     }

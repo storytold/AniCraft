@@ -660,6 +660,10 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             if ui_item(ui, tr!("Movie Explorer"), app.keymap.primary("view.movie_explorer").unwrap_or(""), Some(app.explorer.tab == DockTab::Explorer)) {
                 crate::movie_explorer::open(app);
             }
+            // Brush presets with previews, and your own (ADR 0068).
+            if ui_item(ui, tr!("Brush Library"), "", Some(app.brush_lib.open)) {
+                crate::brush_panel::toggle(app);
+            }
             ui.separator();
             if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion.ghosts)) {
                 crate::onion::toggle_ghosts(app);

@@ -292,6 +292,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let xf = crate::pathtools::Xf { origin, zoom };
     // Pen pressure, when a tablet reports it (the Brush tool's width follows it).
     let pressure = crate::brushtool::frame_pressure(ui.ctx());
+    let now = ui.input(|i| i.time);
     // The motion path takes the pointer with the selection tools (ADR 0030): its ends and
     // handles before the object under them, the path itself only where no object is.
     let mp_tools = matches!(app.tool, Tool::Select | Tool::Subselect) && !panning && !preview;
@@ -339,7 +340,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -448,7 +449,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
                 }
-                Tool::Brush => crate::brushtool::start(app, to_v(sp), pressure),
+                Tool::Brush | Tool::PaintBrush => crate::brushtool::start(app, to_v(sp), pressure, now),
                 // With the Faucet on, the eraser deletes on a click instead.
                 Tool::Eraser if !app.eraser.faucet => crate::erasertool::start(app, to_v(sp)),
                 Tool::Pen | Tool::Text | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Eraser => Drag::None,
@@ -586,8 +587,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
             }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
-            (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf),
-            (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf),
+            (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf, now),
+            (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf, now),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
             _ => {}
@@ -652,7 +653,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tool::Brush if !panning => {
                     // A click paints a dab.
-                    crate::brushtool::start(app, to_v(sp), pressure);
+                    crate::brushtool::start(app, to_v(sp), pressure, now);
                     crate::brushtool::commit(app, xf);
                 }
                 Tool::Eraser if !panning => {
