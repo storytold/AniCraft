@@ -255,6 +255,36 @@ mod tests {
         assert_eq!(labels(&plan(Some(Auto), Dx12, WINDOWS, None)), ["wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"], "--renderer wgpu is automatic");
     }
 
+    /// Each attempt sets the window up as it says: OpenGL through glow, the others through
+    /// wgpu on their interface and GPU.
+    #[test]
+    fn each_attempt_sets_up_the_window_as_it_says() {
+        use eframe::egui_wgpu::{WgpuSetup, wgpu};
+        let setup = |a: Attempt| {
+            let o = a.options(eframe::NativeOptions::default());
+            let wgpu = match o.wgpu_options.wgpu_setup {
+                WgpuSetup::CreateNew(c) => Some((c.instance_descriptor.backends, c.power_preference)),
+                _ => None,
+            };
+            (o.renderer, wgpu)
+        };
+        assert_eq!(setup(Attempt { backend: OpenGl, low_power: false }).0, eframe::Renderer::Glow);
+        assert_eq!(setup(Attempt { backend: Dx12, low_power: true }), (eframe::Renderer::Wgpu, Some((wgpu::Backends::DX12, wgpu::PowerPreference::LowPower))));
+        assert_eq!(setup(Attempt { backend: Vulkan, low_power: false }).1.map(|w| w.0), Some(wgpu::Backends::VULKAN));
+        assert_eq!(setup(Attempt { backend: Metal, low_power: false }).1.map(|w| w.0), Some(wgpu::Backends::METAL));
+        assert_eq!(setup(Attempt { backend: Auto, low_power: false }).0, eframe::Renderer::Wgpu);
+        assert_eq!(Attempt { backend: OpenGl, low_power: true }.label(), "OpenGL", "OpenGL has no GPU choice");
+    }
+
+    #[test]
+    fn panics_read_as_text() {
+        assert_eq!(panic_text(&"static"), "static");
+        assert_eq!(panic_text(&String::from("owned")), "owned");
+        assert_eq!(panic_text(&42), "a panic");
+        // No window: logged as OpenGL, never a panic (nothing is logged without `begin`).
+        log_adapter(None);
+    }
+
     /// #207: when the last start died inside a driver (nothing to catch), that way goes last.
     #[test]
     fn the_way_the_last_start_died_in_goes_last() {

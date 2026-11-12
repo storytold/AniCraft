@@ -1504,6 +1504,74 @@ mod pattern_tests {
         }
     }
 
+    fn item(path: Path, fill: bool, stroke: Option<f32>) -> anicraft_engine::doc::DisplayItem {
+        use anicraft_engine::doc::{ColorTransform, DisplayItem, ElementId, LayerId, Paint, Rgba, Stroke};
+        DisplayItem {
+            path: std::sync::Arc::new(path),
+            transform: Affine::IDENTITY,
+            fill: fill.then_some(Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0))),
+            stroke: stroke.map(|w| Stroke::new(Rgba::new(0.0, 0.0, 0.0, 1.0), w)),
+            fill_rule: FillRule::NonZero,
+            color: ColorTransform::IDENTITY,
+            layer: LayerId(0),
+            element: ElementId(0),
+            outline: None,
+            clip: None,
+            masks: None,
+            guide: false,
+            group: None,
+            image: None,
+            smooth: true,
+        }
+    }
+
+    /// A wide stroke is shaded over its whole outline (beyond the fill), a hairline gets dots
+    /// along it, and nothing off the view is drawn.
+    #[test]
+    fn strokes_are_shaded_wide_as_spans_and_hairlines_as_dots() {
+        let clip = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 400.0));
+        let square = || Path::rect(100.0, 100.0, 200.0, 200.0);
+        let (mut spans, mut dots, mut budget) = (Vec::new(), egui::Mesh::default(), MAX_DOTS);
+        selection_pattern(&mut spans, &mut dots, &item(square(), false, Some(20.0)), &Affine::IDENTITY, clip, &mut budget);
+        assert!(spans.iter().any(|r| r.min.x < 100.0) && !spans.iter().any(|r| r.contains(pos2(200.0, 200.0))), "the outline only, its outer half included");
+        assert!(dots.vertices.is_empty());
+        let mut spans = Vec::new();
+        selection_pattern(&mut spans, &mut dots, &item(square(), true, Some(0.5)), &Affine::IDENTITY, clip, &mut budget);
+        assert!(spans.iter().any(|r| r.contains(pos2(200.0, 200.0))), "the fill");
+        let n = dots.vertices.len() / 4;
+        assert!((250..=290).contains(&n), "a dot every {GAP} along the 800-long hairline: {n}");
+        // Wholly off the view: nothing.
+        let (mut spans, mut dots) = (Vec::new(), egui::Mesh::default());
+        selection_pattern(&mut spans, &mut dots, &item(Path::rect(900.0, 900.0, 50.0, 50.0), true, Some(0.5)), &Affine::IDENTITY, clip, &mut budget);
+        assert!(spans.is_empty() && dots.vertices.is_empty());
+        // The pattern mesh maps each span to the repeating tile.
+        let mut mesh = egui::Mesh::default();
+        pattern_mesh(&mut mesh, &[Rect::from_min_max(pos2(-1.5, -1.5), pos2(4.5, 1.5))]);
+        assert_eq!(mesh.vertices.first().map(|v| v.uv), Some(pos2(0.0, 0.0)));
+        assert_eq!(mesh.vertices.last().map(|v| v.uv), Some(pos2(1.0, 0.5)));
+    }
+
+    /// The whole window, headless, with a big selected raw shape zoomed in (`--open selectzoom`):
+    /// the pattern is drawn with its texture, made once for the theme's colour.
+    #[test]
+    fn a_selected_raw_shape_draws_its_pattern_in_the_window() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        app.open_panel(Some("selectzoom"));
+        assert!(!app.s.selection.is_empty() && app.view.zoom == 4.0);
+        let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 940.0))), ..Default::default() };
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(input(), |ui| app.frame(ui));
+            out.textures_delta.clear();
+        }
+        let first = app.stage_cache.pattern.as_ref().map(|(c, t)| (*c, t.id()));
+        assert_eq!(first.map(|f| f.0), Some(T.selection));
+        let mut out = ctx.run_ui(input(), |ui| app.frame(ui));
+        out.textures_delta.clear();
+        assert_eq!(app.stage_cache.pattern.as_ref().map(|(c, t)| (*c, t.id())), first, "made once");
+    }
+
     /// The tile's dots sit on the screen grid in the old checker: dark where the row and column
     /// numbers add up to an even number.
     #[test]
