@@ -181,6 +181,9 @@ pub struct StageView {
     /// The canvas size and zoom of the last fit: while the view is still as fitted, it fits
     /// again when the canvas changes size (window resized, panels or interface scale changed).
     pub fitted: Option<(egui::Vec2, f32)>,
+    /// View › Clip Content Outside the Stage (#251): hide artwork on the pasteboard (it is still
+    /// there, and still exported only where it is on the stage). Off: it shows, as in Animate.
+    pub clip_to_stage: bool,
 }
 
 /// In-progress pointer gesture on the stage.
@@ -560,7 +563,7 @@ impl App {
             updates: Default::default(),
             s: session,
             tool: Tool::Select,
-            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
+            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None, clip_to_stage: false },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
             hint_menu: None,
@@ -1064,6 +1067,17 @@ impl App {
                 self.view.fit = false;
                 self.view.zoom = 3.0;
                 self.view.pan = egui::vec2(1200.0, 300.0);
+            }
+            Some("pasteboard") | Some("clipped") => {
+                // Artwork half off the stage (#245); `clipped`: Clip Content Outside the Stage on
+                // (#251). Zoomed out so the pasteboard shows around the stage.
+                let w = self.s.doc.stage.width as f32;
+                self.run("draw.ellipse", json!({"x": -160.0, "y": 40.0, "w": 260.0, "h": 200.0}));
+                self.run("draw.rect", json!({"x": w - 80.0, "y": 260.0, "w": 240.0, "h": 120.0}));
+                self.view.fit = false;
+                self.view.zoom = 0.55;
+                self.view.pan = egui::Vec2::ZERO;
+                self.view.clip_to_stage = which == Some("clipped");
             }
             Some("prefs") => {
                 self.show_prefs = true;
@@ -2261,6 +2275,13 @@ impl App {
                 return;
             }
             self.prompt = Some(Prompt { title, cmd: id, key, text });
+            return;
+        }
+        // F5, F6 and F7 work as in Animate: at the playhead with no frame selection, F5 extends
+        // every layer that reaches it; on one frame the playhead moves on to what was made.
+        if let Some(p) = timeline::insert_key_params(self, id) {
+            self.request(id, p);
+            timeline::follow_playhead(self);
             return;
         }
         // Frame commands act on the frame selection (F5 over 3 frames on 2 layers inserts 3

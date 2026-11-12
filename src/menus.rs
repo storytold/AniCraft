@@ -604,6 +604,9 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
                 crate::onion::toggle_edit_multiple(app);
             }
             ui.menu_button(tr!("Onion Skin Options"), |ui| crate::onion::menu(app, ui));
+            if ui_item(ui, tr!("Clip Content Outside the Stage"), "", Some(app.view.clip_to_stage)) {
+                app.view.clip_to_stage = !app.view.clip_to_stage;
+            }
             if ui_item(ui, tr!("Preview Through Camera"), "", Some(app.camera_preview)) {
                 app.toggle_camera_preview();
             }

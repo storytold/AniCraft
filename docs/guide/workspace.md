@@ -16,7 +16,7 @@ AniCraft has a single window with fixed, docked panels:
 | Area | Where | What it's for |
 |---|---|---|
 | Menu bar | top | Every command, grouped as in Animate: File, Edit, View, Insert, Modify, Commands, Control, Window, Help. On macOS there's also the AniCraft menu, with About, Settings… and Quit. |
-| Edit bar | above the stage | The scene menu, the path to the symbol you're editing, the active layer, the stage size, an **Onion skin** switch and the zoom menu. |
+| Edit bar | above the stage | The scene menu, the path to the symbol you're editing, the active layer, the stage size, an **Onion skin** switch, the **Clip content outside the stage** button and the zoom menu. |
 | Tools | left | The drawing and editing tools, the **Snap to Objects** magnet, and the current fill and stroke colours. |
 | Stage | middle | Your artwork. The stage rectangle is what the movie shows. You can draw on the grey area around it too. |
 | Timeline and Motion Editor | bottom | Layers, frames and playback. The **Motion Editor** tab beside it shows a motion tween's property curves. |
@@ -91,6 +91,16 @@ lets you change them (see [Preferences, shortcuts and accessibility](preferences
 | Fit the whole stage in the window | **View › Fit in Window** (**Ctrl+0**, or **Ctrl+2**) |
 | See the stage at actual size | **View › 100%** (**Ctrl+1**) |
 | Jump to a set zoom | the zoom menu at the right of the edit bar: Fit in window, 25 % to 800 % |
+
+### The pasteboard
+
+The grey area around the stage is the **pasteboard**. You can draw, paste and park artwork
+there, as in Animate: notes for yourself, spare drawings, or a background wider than the stage
+that a tween slides across. Only what is on the stage shows in Test Movie and in exports.
+
+To hide everything outside the stage while you work, click **Clip content outside the stage**
+(the frame with crop marks, left of the zoom menu), or choose **View › Clip Content Outside the
+Stage**. The artwork is still there; click again to see it.
 
 ### Rulers, grids and guides
 
