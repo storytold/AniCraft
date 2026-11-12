@@ -19,6 +19,7 @@ your hand.
 | Selection | **V** | Select, move and bend artwork |
 | Subselection | **A** | Edit points and curve handles |
 | Free Transform | **Q** | Scale, rotate and move |
+| Gradient Transform | **F** | Move, turn and stretch a gradient or bitmap fill |
 | Width | **U** | Vary a line's thickness along it |
 | Bone | **M** | Join symbol instances into a poseable armature |
 | Pen | **P** | Draw precise curves point by point |
@@ -175,11 +176,47 @@ corner can get before it's bevelled.
 
 ### Gradients and bitmap fills
 
-AniCraft draws linear and radial gradients and bitmap fills, and keeps them from Animate
-files and SVG drawings you import. There isn't a gradient editor for fills yet, so you can't
-make a new gradient from scratch in AniCraft. You can reuse one, though: pick it up with the
-Eyedropper and pour it with the Paint Bucket. A picked gradient stays where it was on the
-stage, so it carries on across every shape you pour it into.
+The **Colour** section of Properties sets a fill's type: **Solid colour**, **Linear
+gradient**, **Radial gradient** or **Bitmap fill**. With a shape selected it changes that
+shape's fill; with a drawing tool in your hand it sets what new shapes, the Paint Bucket and
+the Brush pour.
+
+A gradient shows as a bar with its colour stops under it:
+
+* **Click the bar** to add a stop there. **Drag a stop** to move it, or drag it down off the
+  bar to remove it. A gradient has 2 to 15 stops.
+* Click a stop to edit it below the bar: its colour and opacity, its **hex** value (type
+  `#rrggbb`, or `#rrggbbaa` with opacity) and its **Position**.
+* From the keyboard, **Tab** to a stop, move it with the **arrow keys** (**Shift** for bigger
+  steps) and press **Delete** to remove it. The bar itself adds a stop in the widest gap.
+* **Overflow** sets what shows past the ends: **Extend** (the end colours carry on),
+  **Reflect** (the ramp mirrors back and forth) or **Repeat**.
+* **Linear RGB** mixes the colours in linear light, for brighter, more even blends.
+* A radial gradient has a **Focal point**: where its ramp starts, from the centre.
+
+Editing the stops never moves a gradient. A shape that gets a new kind of fill gets it fitted
+to its own bounds: a linear gradient runs across its width, a radial one is centred and
+touches its longer side, and a bitmap tiles from its top-left corner.
+
+The **Gradient Transform** tool (**F**) changes where a gradient or bitmap fill lies. Click a
+shape with one to show its handles:
+
+| Handle | Linear | Radial | Bitmap | What a drag does |
+|---|---|---|---|---|
+| Round dot in the middle | ✓ | ✓ | ✓ | Moves the fill |
+| Square | ✓ | ✓ | ✓ (left and bottom) | Changes its width (bitmap: width or height) |
+| Circle with a dot | | ✓ | ✓ (corner) | Changes its size |
+| Knob | ✓ | ✓ | ✓ | Turns it (**Shift**: 15° steps) |
+| Triangle | | ✓ | | Moves the focal point along its axis |
+| Diamonds | | | ✓ (top and right) | Skews it |
+
+Each drag is one undo step. Gradients and bitmap fills from Animate files and SVG drawings
+keep their overflow, Linear RGB, focal point and shape.
+
+**Lock Fill** (in the Paint Bucket's and the Brush's options) pours the fill where it lies on
+the stage instead of fitting it to each shape, so one gradient runs on across many shapes.
+When you pick up a gradient or bitmap with the Eyedropper, Lock Fill turns on, so it stays
+where it was.
 
 ### Paint Bucket, Ink Bottle and Eyedropper
 
@@ -293,7 +330,7 @@ on its symbol (see [Symbols and the Library](symbols-and-library.md#9-slice-scal
 
 ## Not there yet
 
-Not in AniCraft yet: rulers, a grid and guides; grouping (**Ctrl+G**); a gradient editor and
-a Colour panel with swatches; PolyStar's Polygon option; the Paint Selection and Paint Inside
+Not in AniCraft yet: rulers, a grid and guides; grouping (**Ctrl+G**); gradient and bitmap
+strokes, and saved colour and gradient swatches; PolyStar's Polygon option; the Paint Selection and Paint Inside
 brush modes, brush libraries and tilt; erasing inside symbols; and Animate's ragged, stipple
 and hatched line styles (drawn solid when you open an Animate file).

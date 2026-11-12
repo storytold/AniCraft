@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+* **Gradient editor, the Gradient Transform tool and Lock Fill** (M1, ADR 0074; #208, #203).
+  * **Added**: a **Colour** section in Properties for the selected fill, or the fill swatch while
+    a drawing tool is in hand: Solid colour, Linear gradient, Radial gradient or Bitmap fill; a
+    bar of colour stops (click to add, drag to move, drag off to remove; arrow keys and Delete
+    on a focused stop), each stop's colour, opacity, hex and position; overflow (Extend,
+    Reflect, Repeat), Linear RGB and a radial gradient's focal point.
+  * **Added**: the **Gradient Transform** tool (**F**): move, turn, stretch and resize a gradient,
+    move a radial gradient's focal point, and scale, turn and skew a bitmap fill. Each drag is
+    one undo step.
+  * **Added**: **Lock Fill** for the Paint Bucket and the Brush. Without it, gradients and bitmaps
+    are fitted to each shape, as in Animate; the Eyedropper turns it on for what it picks.
+  * **Added**: commands `paint.set_fill`, `paint.transform_fill` and `paint.lock_fill`, for
+    scripts, the CLI and MCP.
+  * **Improved**: gradients keep their overflow, Linear RGB, focal point and elliptical shape
+    from Animate files and SVG drawings, on the GPU stage and in SVG export (HTML canvas draws
+    them as near as canvas can). Radial gradients on skewed shapes are now drawn exactly.
 * **Filters, Subtract and Invert in HTML canvas export** (ADR 0072, M6). Exported web pages now
   show every filter (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel and Adjust
   Color, with inner, knockout, hide object and Inner/Outer/Full) and the Subtract and Invert blend

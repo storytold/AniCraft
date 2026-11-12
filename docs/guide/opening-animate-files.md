@@ -83,8 +83,6 @@ each) and any fonts that are missing.
 
 These come across, but look a little different from Animate, and the report counts them:
 
-* repeating and reflecting gradients (drawn padded), radial gradient focal points (drawn
-  centred), elliptical radial gradients (drawn round) and linear-RGB gradients;
 * gradient and bitmap strokes (drawn in one colour);
 * ragged, stipple and hatched strokes (drawn solid);
 * reverse loop modes (played forward) and extra spins on classic tweens (turned the shortest

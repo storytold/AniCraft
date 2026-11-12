@@ -26,7 +26,7 @@ most of them; they are always there.
 | Output | The Output panel inside Test Movie. |
 | Align | The Align section on the right, and **Modify › Align**. |
 | History | The History section on the right. |
-| Color and Swatches | The Fill and Stroke rows in Properties, and in each drawing tool's options. |
+| Color and Swatches | The Fill and Stroke rows in Properties, and in each drawing tool's options. The **Colour** section of Properties is the Color panel's fill: type, gradient stops, overflow, Linear RGB (no saved swatches yet). |
 | Transform and Info | Position, scale and rotation rows in Properties, and the Free Transform tool. |
 | Scene | The scene menu at the top left of the stage, **Insert › Scene** and **Modify › Scene**. |
 | Find and Replace | **Edit › Find and Replace** (**Ctrl+F**). |
@@ -44,6 +44,7 @@ Each tool has the key you already know.
 | Selection | **V** | Selects raw strokes and fills with the dot pattern; drag an edge to bend it. |
 | Subselection | **A** | Points and handles, on raw drawings and drawing objects. |
 | Free Transform | **Q** | Scale, rotate and move; Shift and Alt as you'd expect. |
+| Gradient Transform | **F** | Its own button (no flyouts yet). Gradient and bitmap fills, with Lock Fill. |
 | Width | **U** | Variable-width strokes, with profiles in Properties. |
 | Bone | **M** | Joins symbol instances into an armature, or draws bones inside a shape. |
 | Bind | **Shift+M** | Chooses which points of a shape follow which bone. |
@@ -64,7 +65,7 @@ Each tool has the key you already know.
 | Zoom | **Z** | |
 | Object Drawing | **J** | Toggles between merge drawing and drawing objects. |
 
-Not in AniCraft yet: the Lasso, Polygon and Magic Wand tools, Gradient Transform, the 3D tools,
+Not in AniCraft yet: the Lasso, Polygon and Magic Wand tools, the 3D tools,
 Asset Warp, the Paint Brush and Fluid Brush, Deco and the Spray Brush. More on the tools in
 [Drawing](drawing.md).
 
