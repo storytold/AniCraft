@@ -451,6 +451,9 @@ pub struct App {
     /// What the system last said about contrast (ADR 0064): `None` until it has, or if it
     /// can't. Screenshot runs never ask, so they look the same everywhere.
     pub system_contrast: Option<bool>,
+    /// Keys to press, a few frames apart (screenshots of keyboard states).
+    pub key_script: std::collections::VecDeque<(Key, Modifiers)>,
+    key_script_wait: u8,
     /// The system's contrast setting being read off the UI thread, and when it last was.
     contrast_probe: Option<std::sync::mpsc::Receiver<Option<bool>>>,
     contrast_asked: Option<f64>,
@@ -634,6 +637,8 @@ impl App {
             tl_refocus: false,
             menu_keys: Default::default(),
             system_contrast: None,
+            key_script: Default::default(),
+            key_script_wait: 0,
             contrast_probe: None,
             contrast_asked: None,
             start: None,
@@ -799,6 +804,28 @@ impl App {
         }
     }
 
+    /// Presses `keys` once the window has settled, a few frames apart.
+    fn script_keys(&mut self, keys: impl IntoIterator<Item = (Key, Modifiers)>) {
+        self.key_script.extend(keys);
+        self.key_script_wait = 10;
+    }
+
+    /// The next scripted key press, once the frames before it have settled.
+    fn press_scripted_key(&mut self, ctx: &egui::Context) {
+        if self.key_script.is_empty() {
+            return;
+        }
+        ctx.request_repaint();
+        if self.key_script_wait > 0 {
+            self.key_script_wait -= 1;
+            return;
+        }
+        if let Some((key, modifiers)) = self.key_script.pop_front() {
+            ctx.input_mut(|i| i.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }));
+            self.key_script_wait = 3;
+        }
+    }
+
     /// Follows the system's contrast setting (ADR 0064): asks it on a worker now and then (at
     /// start, every few seconds, and when the window comes back to the front), and switches the
     /// palette in the same frame the answer changes, while Preferences says "Follow system".
@@ -907,7 +934,11 @@ impl App {
     }
 
     pub fn open_panel(&mut self, which: Option<&str>) {
+        use egui::{Key as K, Modifiers as M};
         match which {
+            // Keyboard states for screenshots (ADR 0064): keys pressed a few frames apart.
+            Some("stagekeys") => self.script_keys([(K::F6, M::COMMAND), (K::Tab, M::NONE), (K::Space, M::NONE), (K::ArrowRight, M::NONE)]),
+            Some("menukeys") => self.script_keys([(K::F10, M::NONE), (K::ArrowRight, M::NONE), (K::ArrowDown, M::NONE), (K::ArrowDown, M::NONE)]),
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
             Some("shortcuts") => self.show_shortcuts = true,
             Some("lastscene") => {
@@ -2587,6 +2618,7 @@ impl App {
             platform::set_mac_glyphs(ok);
             self.glyph_check = false;
         }
+        self.press_scripted_key(&ctx);
         self.handle_shortcuts(&ctx);
         timeline::announce(self, &ctx);
         // Switching away from a path tool keeps its work: a Pen path in progress is finished.
