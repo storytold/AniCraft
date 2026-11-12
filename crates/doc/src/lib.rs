@@ -22,6 +22,7 @@ pub mod path_table;
 pub mod width;
 pub mod stroke_style;
 pub mod player;
+pub mod publish;
 pub mod sample;
 pub mod sound;
 
@@ -1144,6 +1145,9 @@ pub struct Document {
     /// (ADR 0013 tier 1); empty when there is none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub document_class: String,
+    /// File › Publish Settings: the formats Publish writes and their options (ADR 0060).
+    #[serde(default, skip_serializing_if = "publish_is_default")]
+    pub publish: Arc<publish::PublishProfile>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
 }
@@ -1167,6 +1171,8 @@ struct DocumentFile {
     library_tree: Arc<LibraryTree>,
     #[serde(default)]
     document_class: String,
+    #[serde(default)]
+    publish: Arc<publish::PublishProfile>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -1177,7 +1183,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, next_id: f.next_id }
     }
 }
 
@@ -1189,18 +1195,22 @@ fn library_tree_is_empty(t: &Arc<LibraryTree>) -> bool {
     t.is_empty()
 }
 
+fn publish_is_default(p: &Arc<publish::PublishProfile>) -> bool {
+    p.is_default()
+}
+
 /// What `timeline(i)` returns for a scene that does not exist (never for a sanitized document).
 static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree)
+        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -1305,6 +1315,11 @@ impl Document {
         // Script class names are text nothing runs yet; ones that aren't names are dropped.
         if !self.document_class.is_empty() && !actions::valid_class_name(&self.document_class) {
             self.document_class.clear();
+        }
+        let mut publish = (*self.publish).clone();
+        publish.sanitize();
+        if publish != *self.publish {
+            self.publish = Arc::new(publish);
         }
         for sym in &mut self.library {
             max_id = max_id.max(sym.id.0);

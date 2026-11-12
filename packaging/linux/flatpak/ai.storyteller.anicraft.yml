@@ -19,6 +19,12 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: anicraft
 finish-args:
+  # Honor the launcher's pinned and nightly version choices before offering updates.
+  - --filesystem=xdg-data/ArtCraft/versions:ro
+  # Release checks and downloads use HTTPS.
+  - --share=network
+  # Verified update helpers run through flatpak-spawn --host.
+  - --talk-name=org.freedesktop.Flatpak
   # Display: Wayland first; X11 only when no Wayland compositor is running.
   - --socket=wayland
   - --socket=fallback-x11
@@ -35,7 +41,6 @@ finish-args:
   - --filesystem=xdg-documents
   - --filesystem=xdg-pictures
   - --filesystem=xdg-videos
-  # Deliberately not granted: network (AniCraft never uses it) and home/host filesystem access.
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 modules:

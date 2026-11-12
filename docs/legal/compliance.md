@@ -21,8 +21,13 @@ AniCraft is **MIT OR Apache-2.0**, the same as its sibling PhotoCraft (`LICENSE-
 Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD, BSL-1.0,
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
-"source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed
-(no unknown registries or git).
+"source-available" and unknown licences are **not allowed**. Crates.io and the explicitly allowlisted Storytold shared library repository are allowed;
+unknown registries and git sources remain denied. The native update checker uses `craft-update`
+(MIT OR Apache-2.0), pinned to a commit of `storytold/craft-libs`; its HTTP, verification and
+platform installer code are shared with the other Craft apps. A narrowly approved exception
+accepts `webpki-root-certs` 1.0.12 under CDLA-Permissive-2.0 for Mozilla certificate data pulled
+in by the HTTPS verifier. It applies only to that data crate and version; the code licence
+allowlist is unchanged.
 
 ```sh
 cargo deny check licenses bans sources   # policy in deny.toml; must pass before every commit
@@ -89,6 +94,15 @@ under MIT/Apache-2.0), as a dev-dependency of `anicraft-render`: the tests run t
 page's player in it. Nothing of it is in the app or the CLI. No new licence. The page's
 JavaScript is our own code (`crates/render/src/html/`), MIT OR Apache-2.0 like the rest, and
 uses no npm packages.
+
+### Animated PNG and WebP (2026-11-11, ADR 0063)
+
+New crate, from crates.io: `image-webp` 0.2 (lossless WebP encoding and decoding in pure Rust,
+`#![forbid(unsafe_code)]`, MIT OR Apache-2.0). Its dependencies, `byteorder-lite` (Unlicense
+OR MIT) and `quick-error` (MIT OR Apache-2.0), were already in the tree. No new licence. APNG frames use the `png` crate already in
+the tree. There is no lossy WebP yet: the only lossy encoders on crates.io bind the C libwebp
+library, which this project does not build. APNG and WebP are both royalty-free (see the
+codec table).
 
 ### Sound (2026-11-09, ADR 0020)
 

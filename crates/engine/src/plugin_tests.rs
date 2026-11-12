@@ -136,6 +136,8 @@ fn plugins_cannot_reach_files_history_the_clipboard_or_other_plugins() {
     let forbidden = [
         save.as_str(),
         r#"{"op":"command","id":"file.export_png","params":{"path":"x.png"}}"#,
+        r#"{"op":"command","id":"file.export_apng","params":{"path":"x.png"}}"#,
+        r#"{"op":"command","id":"file.export_webp","params":{"path":"x.webp"}}"#,
         r#"{"op":"command","id":"plugin.run","params":{"id":"org.test.sneaky"}}"#,
         r#"{"op":"command","id":"plugin.remove","params":{"id":"org.test.sneaky","confirm":true}}"#,
         r#"{"op":"command","id":"edit.undo"}"#,
@@ -170,6 +172,8 @@ fn every_command_namespace_has_a_plugin_policy() {
         let verdict = plugin_may_call(c.id);
         match ns {
             "file" | "plugin" | "control" | "prefs" => assert!(verdict.is_err(), "{} must be refused", c.id),
+            // Publish Settings (ADR 0060): read yes, change no (it says what Publish writes).
+            "publish" => assert_eq!(verdict.is_ok(), c.id == "publish.settings_get", "{}", c.id),
             _ => assert!(verdict.is_ok() || matches!(c.id, "edit.undo" | "edit.redo") || c.id.contains("copy") || c.id.contains("cut") || c.id.contains("paste"), "{} has no plug-in policy (add its namespace to plugin_may_call)", c.id),
         }
     }

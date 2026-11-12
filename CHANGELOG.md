@@ -17,6 +17,45 @@
   * Headless: `layer.set_onion`, `layer.set_color`, `layer.set_height`, `layer.set_properties`,
     `layer.properties`. Saved in the document with defaults left out, so older files open as
     before. XFL import reads a layer's height.
+* **Animated PNG and animated WebP export** (ADR 0063, M4).
+  * **File › Export › Export Animated PNG…** and **Export Animated WebP…** make full-colour
+    animations with real transparency, for the web and chat apps, where a GIF has 256 colours
+    and hard edges. WebP is lossless. Both are transparent by default; turn on the stage colour
+    as background if you want it. Loop forever, play once, or play a set number of times.
+  * Every frame is exactly what AniCraft renders. Frames that repeat the one before are stored
+    once and shown longer, and each later frame stores only the rectangle that changed, so
+    holds and small motions cost little.
+  * Timing is exact: APNG delays are fractions of the frame rate (29.97 fps stays 29.97), and
+    WebP's milliseconds never drift.
+  * Both are in **Publish Settings** (Animated PNG, Animated WebP) with frames, scale, loop and
+    background; in a browser they download. Headless: `file.export_apng`, `file.export_webp`
+    and `anicraft-cli apng` / `webp`.
+  * On the sample (48 frames, 1280 × 720) the APNG is 2.0 MB and the WebP 1.8 MB, against the
+    GIF's 1.4 MB, which has only 256 colours; both take less time to make than the GIF.
+
+* **Publish Settings and Publish** (ADR 0060, M8).
+  * **File › Publish Settings** (Ctrl+Shift+F12) is a window that stays open while you work.
+    It lists every format AniCraft exports (HTML canvas, animated GIF, video, Lottie, sprite
+    sheet, PNG sequence, PNG, SVG, audio), each with a checkbox. The selected format shows
+    its output name and the same options its File › Export command has. The settings are
+    saved **in the document** and every change can be undone. Older files open with the HTML
+    page on.
+  * Output names are relative to the document's folder, and `{name}` stands for the
+    document's name (`web/{name}.html`). Each name is checked as you type and the full path
+    is shown below it. A name can't point outside the document's folder, and two formats
+    can't write the same file.
+  * **File › Publish** (Shift+F12) writes every format that is on, in the background. A
+    window shows each format's progress and has a Cancel button. A single report then lists
+    what each format wrote, skipped (video in a browser, audio with no sounds), left out
+    (Lottie's and the HTML page's notes) or why it failed. One failing format doesn't stop
+    the others.
+  * Publishing over files that are already there asks once. After that, the files this
+    session published are replaced without asking.
+  * **Presets**: save the settings under a name, apply them to any document, or delete them.
+    Presets are kept in your preferences.
+  * In a browser, the files go to your downloads, as one ZIP when there are several.
+  * Headless: `publish.settings_get`, `publish.settings_set` and `file.publish`, which returns
+    the report. Publishing the sample in six formats takes 0.64 s.
 * **Files from the desktop, recent files and a start screen** (ADR 0059, M8).
   * **Drop files onto the window**: `.anicraft`, `.fla` and `.xfl` open (asking first over
     unsaved work); SVG drawings, PNG and JPEG images and WAV, Ogg and MP3 sounds dropped on the

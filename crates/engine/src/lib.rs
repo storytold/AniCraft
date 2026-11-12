@@ -5,6 +5,7 @@
 //! JSON params, so headless and interactive behaviour cannot drift apart.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod anim;
 mod cmds_actions;
 mod cmds_bone;
 pub mod cmds_brush;
@@ -48,6 +49,7 @@ pub mod render_service;
 pub mod selection;
 pub mod params;
 pub mod player;
+pub mod publish;
 pub mod vfs;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
@@ -80,6 +82,9 @@ pub enum EngineError {
     Render(#[from] anicraft_render::RenderError),
     #[error("{0}")]
     NeedsConfirmation(String),
+    /// A running publish was cancelled (ADR 0060).
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -113,6 +118,7 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(publish::specs());
     v.extend(cmds_recent::specs());
     v.extend(cmds_drop::specs());
     v.extend(cmds_recovery::specs());
@@ -311,6 +317,10 @@ pub struct Session {
     pub hit_area: Option<(anicraft_doc::Rgba, f32)>,
     /// The last picture of an open symbol in place, by its key (ADR 0045).
     picture_cache: RefCell<Option<(u64, Arc<editing::StagePicture>)>>,
+    /// A publish this session runs: its Cancel and frame count, which exports check (ADR 0060).
+    pub job: Option<Arc<publish::Control>>,
+    /// Files this session's publishes wrote: publishing again replaces them without asking.
+    pub published: std::collections::BTreeSet<PathBuf>,
     /// The files opened and saved last, and pinned favourites (ADR 0059). They belong to the
     /// session, not the document: they survive New and Open. The desktop app keeps them in its
     /// preferences.
@@ -381,6 +391,8 @@ impl Session {
             gesture_cut: None,
             hit_area: None,
             picture_cache: RefCell::new(None),
+            job: None,
+            published: std::collections::BTreeSet::new(),
             recent: cmds_recent::RecentFiles::default(),
         }
     }

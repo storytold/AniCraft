@@ -230,6 +230,24 @@ frames 12, 30 and 48) with hairlines: onion ±5 outlines **17.1 ms** against 14.
   table in step. The GPU stage's are `BUDGETS` in `crates/gpu/examples/gpu_bench.rs`
   (`--check`; the CLI has no GPU).
 
+## Animated PNG and WebP (2026-11-11, ADR 0063)
+
+The sample, all 48 frames, release build, Windows 10, 32 threads
+(`cargo test --release -p anicraft-engine anim::tests::sizes -- --ignored --nocapture`).
+Times include rendering every frame.
+
+| Export | 1280 × 720 | Time | 640 × 360 | Time |
+|---|---|---|---|---|
+| Animated GIF (256 colours, 1-bit alpha) | 1464 KB | 421 ms | 660 KB | 110 ms |
+| Animated PNG | 2019 KB | 183 ms | 741 KB | 52 ms |
+| Animated WebP, lossless | 1829 KB | 130 ms | 666 KB | 36 ms |
+
+The sample moves something in every frame, so all 48 frames are stored. Its sky is a full-stage
+shape, so the transparent and stage-colour exports come out the same size. Compressing each
+APNG frame at the `png` crate's best level instead of its default brought the file from 3387 KB
+to 2019 KB for 25 % more time. The frames compress in parallel, which is why both formats are
+faster than GIF, whose LZW coding runs on one thread.
+
 ## Sound (2026-11-09, ADR 0020)
 
 Release build, Windows 10, one 120-second 48 kHz stereo sine, through `anicraft-cli run`

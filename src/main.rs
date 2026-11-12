@@ -28,6 +28,7 @@ mod autosave;
 mod brushtool;
 mod envelope;
 mod find_panel;
+mod publish_panel;
 mod erasertool;
 mod bone_tool;
 mod camera_tool;
@@ -40,6 +41,8 @@ mod icons;
 mod keymap;
 mod library;
 mod menus;
+#[cfg(not(target_arch = "wasm32"))]
+mod updates;
 mod mixed;
 mod motion_editor;
 mod movie_explorer;
@@ -121,6 +124,9 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         Box::new(move |cc| {
             let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);
+            if a.shot.is_none() {
+                a.show_update_outcome_on_start();
+            }
             // No document to open: the start screen, unless it was switched off (ADR 0059).
             if starting_fresh && a.prefs.start_screen {
                 start::open(&mut a);
@@ -145,6 +151,13 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    if let Some(result) = updates::finish_helper() {
+        let failed = result.is_err();
+        if let Err(error) = result {
+            eprintln!("Update failed: {error}");
+        }
+        std::process::exit(i32::from(failed));
+    }
     let mut shot: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
     let mut open: Option<String> = None;
@@ -192,7 +205,7 @@ fn main() -> eframe::Result {
             }
             "--help" | "-h" => {
                 println!( // i18n-exempt: the --help console text
-                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testscript|button|testhits|exporthtml|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
+                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testscript|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
                      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
                      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
                      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\

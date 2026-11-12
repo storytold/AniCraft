@@ -277,6 +277,8 @@ pub const SHOT_FRAMES: u32 = 120;
 pub use anicraft_engine::doc::LibraryItem;
 
 pub struct App {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) updates: crate::updates::Updates,
     pub s: Session,
     pub tool: Tool,
     pub view: StageView,
@@ -395,6 +397,8 @@ pub struct App {
     pub show_actions: bool,
     /// Edit › Find and Replace (Ctrl+F) and its results (ADR 0058).
     pub find: crate::find_panel::FindState,
+    /// File › Publish Settings and the publish running or last run (ADR 0060).
+    pub publish: crate::publish_panel::PublishState,
     /// Window › Movie Explorer, the Library dock's other tab (ADR 0058).
     pub explorer: crate::movie_explorer::ExplorerView,
     pub actions: crate::actions_panel::State,
@@ -466,6 +470,12 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 impl App {
+    /// Show the last update's result once the native window begins drawing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_update_outcome_on_start(&mut self) {
+        self.updates.startup();
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
         #[cfg_attr(not(gpu_stage), allow(unused_mut))]
         let mut app = App::with_context(&cc.egui_ctx, session, shot);
@@ -499,6 +509,8 @@ impl App {
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
+            #[cfg(not(target_arch = "wasm32"))]
+            updates: Default::default(),
             s: session,
             tool: Tool::Select,
             view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
@@ -572,6 +584,7 @@ impl App {
             show_plugins: false,
             show_actions: false,
             find: Default::default(),
+            publish: Default::default(),
             explorer: Default::default(),
             actions: crate::actions_panel::State::default(),
             test_movie: None,
@@ -800,6 +813,8 @@ impl App {
                 let last = self.s.doc.scenes.len().saturating_sub(1);
                 self.run("scene.select", json!({"scene": last}));
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Some("updates") => self.updates.request(),
             Some("files") => self.show_files = true,
             Some("start") => {
                 // The start screen with sample recent files (one pinned, one missing).
@@ -831,6 +846,34 @@ impl App {
                 self.find.text = "ball".into();
                 self.find.with = "planet".into();
                 crate::find_panel::step(self, true);
+            }
+            Some("publish") | Some("publishreport") => {
+                // Publish Settings (ADR 0060) on the sample, saved in a temporary folder: the GIF
+                // on and its options showing; or the report of publishing it (the HTML page and
+                // a small GIF, the soundtrack skipped: the sample has no sounds).
+                let dir = std::env::temp_dir().join("anicraft-publish-shot");
+                let _ = std::fs::create_dir_all(&dir);
+                self.s.path = Some(dir.join("walk.anicraft"));
+                self.run("publish.settings_set", json!({"format": "gif", "enabled": true, "scale": 0.5, "from": 0, "to": 23}));
+                self.run("publish.settings_set", json!({"format": "audio", "enabled": true}));
+                self.prefs.publish_presets.insert("Web banner".into(), (*self.s.doc.publish).clone()); // i18n-exempt: a sample preset name the user typed
+                self.publish.selected = anicraft_engine::doc::publish::PublishFormat::Gif;
+                if which == Some("publish") {
+                    crate::publish_panel::open(self);
+                } else {
+                    crate::publish_panel::publish_now(self);
+                }
+            }
+            Some("publishanim") => {
+                // Publish Settings with the animated PNG on (ADR 0063): played three times,
+                // transparent, the WebP on beside it.
+                let dir = std::env::temp_dir().join("anicraft-publish-shot");
+                let _ = std::fs::create_dir_all(&dir);
+                self.s.path = Some(dir.join("walk.anicraft"));
+                self.run("publish.settings_set", json!({"format": "apng", "enabled": true, "loop": 3}));
+                self.run("publish.settings_set", json!({"format": "webp", "enabled": true}));
+                self.publish.selected = anicraft_engine::doc::publish::PublishFormat::Apng;
+                crate::publish_panel::open(self);
             }
             Some("explorer") => {
                 // The Movie Explorer tab (ADR 0058), its first rows open: scene, layers, keyframes
@@ -1566,6 +1609,11 @@ impl App {
 
     /// Runs a command and reports the outcome; routine destructive edits say how to undo.
     pub fn perform(&mut self, id: &str, params: Value) -> Option<Value> {
+        if id == "file.publish" {
+            // File › Publish runs in the background, with its own progress view (ADR 0060).
+            crate::publish_panel::start(self, &params);
+            return None;
+        }
         let selected = self.s.selection.len();
         // A browser's autosaved copy opens as a file (ADR 0036): it is a restore all the same.
         let restored = autosave::restored_session(id, &params);
@@ -1694,6 +1742,16 @@ impl App {
                 let done = trn!("Exported {path} ({n} frame, {kb} KB): open it in a web browser.", "Exported {path} ({n} frames, {kb} KB): open it in a web browser.", v["frames"].as_u64().unwrap_or(0), path = v["written"].as_str().unwrap_or(""), kb = kb);
                 self.status_ok(format!("{done}{report}"));
             }
+            "file.export_apng" | "file.export_webp" => {
+                // Frames identical to the one before are kept once, with a longer delay.
+                let kb = v["bytes"].as_u64().unwrap_or(0).div_ceil(1024);
+                let n = v["frames"].as_u64().unwrap_or(0);
+                let stored = v["stored_frames"].as_u64().unwrap_or(n);
+                let path = v["written"].as_str().unwrap_or("");
+                let done = trn!("Exported {path} ({n} frame, {kb} KB).", "Exported {path} ({n} frames, {kb} KB).", n, path = path, kb = kb);
+                let held = if stored < n { format!(" {}", tr!("Frames that repeat the one before are stored once, shown longer.")) } else { String::new() };
+                self.status_ok(format!("{done}{held}"));
+            }
             "file.export_lottie" => {
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let done = trn!("Exported {path} ({n} frame, {layers} layers).", "Exported {path} ({n} frames, {layers} layers).", v["frames"].as_u64().unwrap_or(0), path = v["written"].as_str().unwrap_or(""), layers = v["layers"]);
@@ -1793,6 +1851,12 @@ impl App {
             crate::find_panel::open(self);
             return;
         }
+        if id == "publish.settings_get" {
+            // File › Publish Settings (Ctrl+Shift+F12): its window (headless, the command
+            // returns the settings).
+            crate::publish_panel::open(self);
+            return;
+        }
         if id == "control.test_movie" {
             // Control › Test Movie: the player in its own window (headless, the command plays
             // the movie and reports).
@@ -1829,6 +1893,8 @@ impl App {
             "file.export_png" => Some((tr_noop!("Export frame as PNG"), "path", format!("frame_{:04}.png", self.s.frame + 1))),
             "file.export_png_sequence" => Some((tr_noop!("Export PNG sequence to folder"), "dir", "frames".to_string())),
             "file.export_gif" => Some((tr_noop!("Export animated GIF"), "path", "animation.gif".to_string())),
+            "file.export_apng" => Some((tr_noop!("Export animated PNG (full colour, transparent)"), "path", "animation.png".to_string())),
+            "file.export_webp" => Some((tr_noop!("Export animated WebP (lossless, transparent)"), "path", "animation.webp".to_string())),
             "file.export_svg" => Some((tr_noop!("Export frame as SVG"), "path", format!("frame_{:04}.svg", self.s.frame + 1))),
             "file.export_sprite_sheet" => Some((tr_noop!("Export sprite sheet (PNG + JSON frame map)"), "path", "sprites.png".to_string())),
             "file.export_video" => Some((tr_noop!("Export video (.webm or .mp4, made with your ffmpeg)"), "path", "animation.webm".to_string())),
@@ -2340,6 +2406,8 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let clean = !self.s.is_dirty() || self.allow_close || self.shot.is_some();
         self.recovery.finish(&self.s, clean);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.updates.finish();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2351,6 +2419,13 @@ impl App {
     /// One frame of the whole interface. Needs no window, so tests run it headless.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let safe = crate::updates::safe_to_install(self);
+            if self.updates.show(&ctx, safe) {
+                return;
+            }
+        }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
         if let Some(p) = platform::picked_file() {
@@ -2432,6 +2507,7 @@ impl App {
         crate::plugins_ui::show(self, &ctx);
         crate::actions_panel::show(self, &ctx);
         crate::find_panel::show(self, &ctx);
+        crate::publish_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
 

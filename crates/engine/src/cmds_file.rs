@@ -75,6 +75,24 @@ pub fn specs() -> Vec<CommandSpec> {
             run: export_gif,
         },
         CommandSpec {
+            id: "file.export_apng",
+            label: "Export Animated PNG…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.png or .apng), from?, to? (movie frames: every scene in order), scale?, loop? (true (default): forever; false: once; or how many times it plays), background? (default false: transparent), confirm?}",
+            mutates: false,
+            run: |s, p| crate::anim::export(s, p, crate::anim::Kind::Apng),
+        },
+        CommandSpec {
+            id: "file.export_webp",
+            label: "Export Animated WebP…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.webp; lossless), from?, to? (movie frames: every scene in order), scale?, loop? (true (default): forever; false: once; or how many times it plays), background? (default false: transparent), confirm?}",
+            mutates: false,
+            run: |s, p| crate::anim::export(s, p, crate::anim::Kind::Webp),
+        },
+        CommandSpec {
             id: "file.export_lottie",
             label: "Export Lottie Animation…",
             menu: "File/Export",
@@ -207,7 +225,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"saved": path.display().to_string()}))
 }
 
-fn scale_param(p: &Value) -> Result<f32> {
+pub(crate) fn scale_param(p: &Value) -> Result<f32> {
     match opt_f32(p, "scale")? {
         None => Ok(1.0),
         Some(v) if v > 0.0 && v <= 8.0 => Ok(v),
@@ -462,7 +480,16 @@ fn export_sprite_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Frames render in parallel, then go onto the sheet in order.
     let doc = &s.doc;
-    let frames: Vec<anicraft_render::Pixmap> = (from..=to).into_par_iter().map(|f| render(&anicraft_doc::evaluate(doc, f), &view).map(|(pm, _)| pm)).collect::<std::result::Result<_, _>>()?;
+    // A publish counts the frames, and stops between them when cancelled (ADR 0060).
+    let job = s.job.as_deref();
+    let frames: Vec<anicraft_render::Pixmap> = (from..=to)
+        .into_par_iter()
+        .map(|f| {
+            let (pm, _) = render(&anicraft_doc::evaluate(doc, f), &view)?;
+            crate::publish::tick(job, 1)?;
+            Ok(pm)
+        })
+        .collect::<Result<_>>()?;
     let mut sheet = anicraft_render::Pixmap::new(sheet_w as u32, sheet_h as u32)?;
     let stride = sheet_w as usize;
     let delays = gif_delays(n, doc.stage.fps);
@@ -590,6 +617,7 @@ fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
         text
     });
     let doc = &s.doc;
+    let job = s.job.as_deref();
     let mut written = 0u32;
     let mut failure: Option<EngineError> = None;
     if let Some(mut stdin) = child.stdin.take() {
@@ -608,11 +636,22 @@ fn export_video(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 written += 1;
             }
+            if let Err(e) = crate::publish::tick(job, batch.len() as u64) {
+                failure = Some(e);
+                break;
+            }
         }
+    }
+    if matches!(failure, Some(EngineError::Cancelled)) {
+        // Cancelled while publishing: ffmpeg stops, and its unfinished file goes.
+        let _ = child.kill();
     }
     let status = child.wait()?;
     let log = messages.join().unwrap_or_default();
     if let Some(e) = failure {
+        if matches!(e, EngineError::Cancelled) {
+            let _ = crate::vfs::remove_file(&path);
+        }
         return Err(e);
     }
     if !status.success() || written != to - from + 1 {
@@ -639,6 +678,7 @@ fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {
     // Output is identical to a serial export. Files are written here, on the command's thread,
     // where `vfs` knows whether they go to disk or to the browser (ADR 0036).
     let doc = &s.doc;
+    let job = s.job.as_deref();
     let mut files = 0usize;
     let frames: Vec<u32> = (from..=to).collect();
     for batch in frames.chunks(64) {
@@ -647,6 +687,7 @@ fn export_sequence(s: &mut Session, p: &Value) -> Result<Value> {
             crate::vfs::write(&dir.join(format!("frame_{:05}.png", f + 1)), png)?;
             files += 1;
         }
+        crate::publish::tick(job, batch.len() as u64)?;
     }
     Ok(json!({"frames": files, "dir": dir.display().to_string()}))
 }
@@ -746,6 +787,7 @@ fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Render and colour-quantize frames in parallel; encode in order.
     let doc = &s.doc;
+    let job = s.job.as_deref();
     let delays = gif_delays(n as usize, doc.stage.fps);
     let frames: Vec<gif::Frame<'static>> = (from..to.saturating_add(1))
         .into_par_iter()
@@ -755,6 +797,7 @@ fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {
             let mut rgba = pm.to_rgba8();
             let mut frame = gif::Frame::from_rgba_speed(w, h, &mut rgba, 10);
             frame.delay = delay;
+            crate::publish::tick(job, 1)?;
             Ok(frame)
         })
         .collect::<Result<Vec<_>>>()?;
