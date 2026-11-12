@@ -304,6 +304,50 @@ fn combine_refuses_what_it_cannot_combine() {
 }
 
 #[test]
+fn ctrl_drag_pulls_a_sharp_corner_out_of_a_line() {
+    // What the Selection tool's Ctrl-drag runs (issue #200): a point where the edge was grabbed,
+    // then that point moved, in one gesture.
+    let mut s = Session::new(anicraft_doc::Document::default());
+    run(&mut s, "draw.object_drawing", json!({"on": false}));
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": "#ff0000", "stroke": "#000000"}));
+    run(&mut s, "edit.deselect", json!({}));
+    s.begin_gesture("Pull Corner");
+    let v = run(&mut s, "raw.add_point", json!({"x": 50, "y": 0.4, "slop": 3}));
+    let (x, y) = (v["x"].as_f64().unwrap_or(-1.0), v["y"].as_f64().unwrap_or(-1.0));
+    assert!((x - 50.0).abs() < 0.5 && y.abs() < 1e-3, "{v}");
+    run(&mut s, "raw.move_point", json!({"x": x, "y": y, "to_x": 50, "to_y": -40, "merge": false}));
+    let ids: Vec<u64> = top(&s).iter().map(|e| e.id.0).collect();
+    run(&mut s, "raw.merge", json!({"ids": ids}));
+    s.end_gesture();
+    // The fill gained a triangle 100 wide and 40 high: straight sides meeting at a sharp point.
+    let fill = top(&s).into_iter().find(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.fill.is_some())).unwrap_or_else(|| panic!("fill"));
+    let ElementKind::Shape(sh) = &fill.kind else { panic!("shape") };
+    assert!((even_odd_area(&sh.path, &fill.transform) - 12_000.0).abs() < 0.5);
+    assert!(sh.path.cmds.iter().all(|c| !matches!(c, anicraft_geom::PathCmd::CubicTo(..) | anicraft_geom::PathCmd::QuadTo(..))), "straight lines, no curve: {:?}", sh.path.cmds);
+    assert!(s.history_len() >= 2);
+    run(&mut s, "edit.undo", json!({}));
+    let fill = top(&s).into_iter().find(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.fill.is_some())).unwrap_or_else(|| panic!("fill"));
+    let ElementKind::Shape(sh) = &fill.kind else { panic!("shape") };
+    assert!((even_odd_area(&sh.path, &fill.transform) - 10_000.0).abs() < 0.5, "one undo step");
+}
+
+#[test]
+fn alt_drag_copies_leave_the_original_whole() {
+    // What the Selection tool's Alt-drag runs: a copy in place, moved, dropped into the drawing.
+    let mut s = Session::new(anicraft_doc::Document::default());
+    run(&mut s, "draw.object_drawing", json!({"on": false}));
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "element.pick", json!({"x": 50, "y": 50}));
+    s.begin_gesture("Copy");
+    run(&mut s, "edit.duplicate", json!({"dx": 0, "dy": 0}));
+    run(&mut s, "element.translate", json!({"dx": 200, "dy": 0}));
+    run(&mut s, "draw.drop", json!({}));
+    s.end_gesture();
+    let a: Vec<f64> = areas(&s);
+    assert!(a.len() == 2 && a.iter().all(|x| (x - 10_000.0).abs() < 0.5), "{a:?}");
+}
+
+#[test]
 fn groups_draw_their_colour_effect_and_fade_as_one() {
     let (mut s, ids) = three();
     run(&mut s, "element.select", json!({"ids": ids.map(|i| i.0)}));

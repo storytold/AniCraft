@@ -116,6 +116,8 @@ This page is generated from the editor's shortcut map, so it always matches the 
 | Arrange › Send to Back | Ctrl+Shift+Down | ⇧⌘↓ |
 | Convert to Symbol… | F8 | F8 |
 | Break Apart | Ctrl+B | ⌘B |
+| Group | Ctrl+G | ⌘G |
+| Ungroup | Ctrl+Shift+G | ⇧⌘G |
 | Transform › Rotate 90° CW | Ctrl+Shift+9 | ⇧⌘9 |
 | Transform › Rotate 90° CCW | Ctrl+Shift+7 | ⇧⌘7 |
 | Transform › Remove Transform | Ctrl+Shift+Z | ⇧⌘Z |
