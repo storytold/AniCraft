@@ -20,7 +20,7 @@ mod cmds_motion;
 mod cmds_hints;
 mod cmds_layer;
 pub mod cmds_library;
-mod cmds_paint;
+pub mod cmds_paint;
 mod cmds_path;
 pub mod cmds_raw;
 pub mod cmds_rawsub;

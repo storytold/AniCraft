@@ -21,6 +21,7 @@ This page is generated from the editor's shortcut map, so it always matches the 
 | Selection | V | V |
 | Subselection | A | A |
 | Free Transform | Q | Q |
+| Gradient Transform | F | F |
 | Width | U | U |
 | Bone | M | M |
 | Bind | Shift+M | ⇧M |

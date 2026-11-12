@@ -63,6 +63,7 @@ pub enum Icon {
     Image,
     Type,
     Width,
+    GradientTransform,
     Sound,
     SoundOff,
     Camera,
@@ -79,7 +80,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 61] = [
+    pub const ALL: [Icon; 62] = [
         Icon::ClipStage,
         Icon::InsertFrame,
         Icon::InsertKeyframe,
@@ -92,6 +93,7 @@ impl Icon {
         Icon::SoundOff,
         Icon::Camera,
         Icon::Width,
+        Icon::GradientTransform,
         Icon::Sound,
         Icon::Guide,
         Icon::Image,
@@ -158,6 +160,8 @@ impl Icon {
             Icon::Transform => ("scaling", false),
             // A stroke swelling and tapering, with a width point across it (AniCraft original).
             Icon::Width => ("anicraft-width", false),
+            // A box of gradient bands with a turning knob on its corner (AniCraft original).
+            Icon::GradientTransform => ("anicraft-gradient-transform", false),
             Icon::Pen => ("pen-tool", false),
             Icon::Pencil => ("pencil", false),
             // A round brush: handle, ferrule and a painted tip (AniCraft original, on Lucide's grid).
@@ -284,6 +288,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-distribute-v", include_str!("../assets/icons/anicraft-distribute-v.svg")),
     ("anicraft-mask", include_str!("../assets/icons/anicraft-mask.svg")),
     ("anicraft-width", include_str!("../assets/icons/anicraft-width.svg")),
+    ("anicraft-gradient-transform", include_str!("../assets/icons/anicraft-gradient-transform.svg")),
     ("anicraft-brush", include_str!("../assets/icons/anicraft-brush.svg")),
     ("anicraft-eraser", include_str!("../assets/icons/anicraft-eraser.svg")),
     ("anicraft-paint-brush", include_str!("../assets/icons/anicraft-paint-brush.svg")),

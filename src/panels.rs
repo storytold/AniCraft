@@ -16,6 +16,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Select => Icon::Select,
         Tool::Subselect => Icon::Subselect,
         Tool::Transform => Icon::Transform,
+        Tool::GradientTransform => Icon::GradientTransform,
         Tool::Width => Icon::Width,
         Tool::Pen => Icon::Pen,
         Tool::Text => Icon::Type,
@@ -450,6 +451,12 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         let title = tr!("{tool} tool", tool = crate::i18n::t(app.tool.label()));
         section(ui, "prop_tool", Section::Rule, &title, None, |ui| tool_props(app, ui));
     }
+    // ---- Colour (ADR 0074): the selected fill, else the swatch the fill tools pour ----
+    let filled = app.s.selected_elements().iter().any(|(l, e)| *l == app.s.layer && matches!(&e.kind, ElementKind::Shape(sh) if sh.fill.is_some()));
+    let fill_tool = matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Pen | Tool::Brush | Tool::PaintBucket);
+    if fill_tool && !filled {
+        section(ui, "prop_colour", Section::Rule, tr!("Colour"), None, |ui| crate::colour_panel::panel(app, ui));
+    }
     // ---- Snap to Objects for the tools that drag points and selections (ADR 0042) ----
     if matches!(app.tool, Tool::Select | Tool::Subselect | Tool::Transform) {
         let title = tr!("{tool} tool", tool = crate::i18n::t(app.tool.label()));
@@ -485,6 +492,9 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             (n, l) => trn!("{n} element {on_layers}", "{n} elements {on_layers}", n, on_layers = trn!("on {n} layer", "on {n} layers", l)),
         };
         section(ui, "prop_selection", Section::Rule, &title, None, |ui| selection_props(app, ui, e, &sel));
+        if filled {
+            section(ui, "prop_colour", Section::Rule, tr!("Colour"), None, |ui| crate::colour_panel::panel(app, ui));
+        }
     } else if let Some((id, name)) = app.s.editing_symbol().and_then(|id| app.s.doc.symbol(id).map(|x| (id, x.name.clone()))) {
         // Inside a symbol, nothing selected: the symbol's own settings (ADR 0055).
         section(ui, "prop_symbol", Section::Rule, &tr!("Symbol: {name}", name = name), None, |ui| scale_grid_props(app, ui, id, "open"));
@@ -1235,7 +1245,7 @@ fn side_rows(ui: &mut egui::Ui, fname: &str, side: &mut anicraft_engine::doc::Fi
 }
 
 /// A colour swatch with opacity (Animate's bevel colours carry alpha). True when changed.
-fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
+pub(crate) fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
     let s = c.sanitized();
     let b = |v: f32| (v * 255.0).round() as u8;
     let mut px = [b(s.r), b(s.g), b(s.b), b(s.a)];
@@ -1918,7 +1928,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
                     Paint::Bitmap { .. } => tr!("Bitmap fill"),
                     Paint::Solid(_) => tr!("Solid"),
                 };
-                ui.label(text(Type::Caption, what)).on_hover_text(tr!("Picked with the Eyedropper. It stays where it was on the stage (lock fill). Pick a colour to fill with a solid colour again."));
+                ui.label(text(Type::Caption, what)).on_hover_text(tr!("Set in the Colour panel or picked with the Eyedropper. Pick a colour here to fill with a solid colour again."));
             }
             if !fills {
                 crate::theme::checkbox(ui, &mut st.use_fill, "").named(tr!("Fill")).on_hover_text(tr!("Fill on/off"));
@@ -1951,6 +1961,13 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         {
             st.line = line;
         }
+    }
+    // Lock Fill (ADR 0074): a gradient or bitmap runs on across shapes instead of being fitted
+    // to each one. The Eyedropper turns it on for what it picks, as in Animate.
+    if matches!(app.tool, Tool::PaintBucket | Tool::Brush) {
+        row_prose(ui, tr!("Lock fill"), |ui| {
+            crate::theme::checkbox(ui, &mut st.lock_fill, "").named(tr!("Lock fill")).on_hover_text(tr!("On: a gradient or bitmap is poured where it lies on the stage, so it runs on across shapes. Off: each shape gets it fitted to its own bounds."));
+        });
     }
     // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush) {
