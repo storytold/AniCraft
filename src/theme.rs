@@ -690,7 +690,8 @@ fn color_button(ui: &mut egui::Ui, color: Color32, open: bool) -> egui::Response
 /// Parses `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa` (leading `#` optional).
 fn parse_hex_color(s: &str, has_alpha: bool) -> Option<[u8; 4]> {
     let s = s.trim().trim_start_matches('#');
-    if !s.is_ascii() {
+    // Hex digits only: `from_str_radix` would also take a leading `+` ("#+f0000").
+    if !s.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
     match s.len() {
@@ -869,6 +870,16 @@ pub fn color_edit_button_srgba_unmultiplied(ui: &mut egui::Ui, srgba: &mut [u8; 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_field_accepts_only_hex_digits() {
+        assert_eq!(parse_hex_color("#4fa3ff", false), Some([0x4f, 0xa3, 0xff, 255]));
+        assert_eq!(parse_hex_color("fff", false), Some([255, 255, 255, 255]));
+        assert_eq!(parse_hex_color("#11223344", true), Some([0x11, 0x22, 0x33, 0x44]));
+        for bad in ["#+f0000", "+ff", "#ff 000", "#gg0000", "#12345", "", "#", "#ff00€"] {
+            assert_eq!(parse_hex_color(bad, true), None, "{bad:?} is not a colour");
+        }
+    }
 
     #[test]
     fn color_selector_palette_shows_and_edits_hex() {
