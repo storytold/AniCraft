@@ -184,18 +184,54 @@ fn gradient_rows(app: &mut App, ui: &mut egui::Ui, stops: &[GradientStop], sprea
     }
 }
 
+/// Where stop `i` may move: between its neighbours, so the order (and the pick) stays.
+fn room(stops: &[GradientStop], i: usize) -> (f32, f32) {
+    let lo = i.checked_sub(1).and_then(|j| stops.get(j)).map_or(0.0, |s| s.offset);
+    let hi = stops.get(i + 1).map_or(1.0, |s| s.offset);
+    (lo.min(hi), hi.max(lo))
+}
+
+/// Moves stop `i` to `offset`, held between its neighbours.
+fn move_stop(stops: &mut [GradientStop], i: usize, offset: f32) {
+    let (lo, hi) = room(stops, i);
+    if let Some(s) = stops.get_mut(i) {
+        s.offset = if offset.is_finite() { offset.clamp(lo, hi) } else { s.offset };
+    }
+}
+
+/// The middle of the widest gap between stops: where the keyboard adds one.
+fn widest_gap(stops: &[GradientStop]) -> f32 {
+    stops.windows(2).filter_map(|w| if let [a, b] = w { Some((b.offset - a.offset, (a.offset + b.offset) / 2.0)) } else { None }).max_by(|a, b| a.0.total_cmp(&b.0)).map_or(0.5, |g| g.1)
+}
+
+/// Adds a stop at `t` in the colour the ramp has there; its index, or `None` when the gradient
+/// is full.
+fn add_stop(stops: &mut Vec<GradientStop>, t: f32) -> Option<usize> {
+    if stops.len() >= MAX_GRADIENT_STOPS {
+        return None;
+    }
+    let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.5 };
+    let i = stops.iter().position(|s| s.offset > t).unwrap_or(stops.len());
+    let color = ramp_at(stops, t);
+    stops.insert(i, GradientStop { offset: t, color });
+    Some(i)
+}
+
+/// Removes stop `i` unless only two are left. True when it went.
+fn remove_stop(stops: &mut Vec<GradientStop>, i: usize) -> bool {
+    if stops.len() <= 2 || i >= stops.len() {
+        return false;
+    }
+    stops.remove(i);
+    true
+}
+
 /// What the bar did.
 fn stop_bar(ui: &mut egui::Ui, stops: &mut Vec<GradientStop>) -> Option<&'static str> {
     let sel_id = ui.id().with("fill_stop");
     let tear_id = ui.id().with("fill_stop_tear");
     let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0).min(stops.len().saturating_sub(1));
     let mut changed = None;
-    // Each stop moves between its neighbours, so the order (and the pick) stays.
-    let room = |stops: &[GradientStop], i: usize| -> (f32, f32) {
-        let lo = i.checked_sub(1).and_then(|j| stops.get(j)).map_or(0.0, |s| s.offset);
-        let hi = stops.get(i + 1).map_or(1.0, |s| s.offset);
-        (lo.min(hi), hi.max(lo))
-    };
     let can_remove = stops.len() > 2;
     let w = ui.available_width().clamp(120.0, 240.0);
     let (strip, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click());
@@ -249,10 +285,7 @@ fn stop_bar(ui: &mut egui::Ui, stops: &mut Vec<GradientStop>) -> Option<&'static
             let off_bar = can_remove && (pt.y - track.center().y).abs() > TEAR_OFF && (pt.y - strip.center().y).abs() > TEAR_OFF;
             tearing = off_bar.then_some(i);
             if !off_bar {
-                let (lo, hi) = room(stops, i);
-                if let Some(s) = stops.get_mut(i) {
-                    s.offset = ((pt.x - strip.left()) / strip.width()).clamp(lo, hi);
-                }
+                move_stop(stops, i, (pt.x - strip.left()) / strip.width());
                 changed = Some(tr_noop!("Move colour stop"));
             }
         }
@@ -266,10 +299,7 @@ fn stop_bar(ui: &mut egui::Ui, stops: &mut Vec<GradientStop>) -> Option<&'static
             let step = if shift { 0.1 } else { 0.01 };
             let d = if right { step } else if left { -step } else { 0.0 };
             if d != 0.0 {
-                let (lo, hi) = room(stops, i);
-                if let Some(s) = stops.get_mut(i) {
-                    s.offset = (s.offset + d).clamp(lo, hi);
-                }
+                move_stop(stops, i, off + d);
                 changed = Some(tr_noop!("Move colour stop"));
             }
             if del && can_remove {
@@ -292,18 +322,18 @@ fn stop_bar(ui: &mut egui::Ui, stops: &mut Vec<GradientStop>) -> Option<&'static
         }
         None => d.remove::<usize>(tear_id),
     });
-    if resp.clicked() && stops.len() < MAX_GRADIENT_STOPS {
+    if resp.clicked() {
         // Where the pointer clicked; from the keyboard or a screen reader, the middle of the
         // widest gap.
-        let gap = stops.windows(2).filter_map(|w| if let [a, b] = w { Some((b.offset - a.offset, (a.offset + b.offset) / 2.0)) } else { None }).max_by(|a, b| a.0.total_cmp(&b.0)).map_or(0.5, |g| g.1);
-        let t = resp.interact_pointer_pos().map_or(gap, |at| ((at.x - strip.left()) / strip.width()).clamp(0.0, 1.0));
-        let i = stops.iter().position(|s| s.offset > t).unwrap_or(stops.len());
-        stops.insert(i, GradientStop { offset: t, color: ramp_at(stops, t) });
-        sel = i;
-        changed = Some(tr_noop!("Add colour stop"));
+        let t = resp.interact_pointer_pos().map_or_else(|| widest_gap(stops), |at| (at.x - strip.left()) / strip.width());
+        if let Some(i) = add_stop(stops, t) {
+            sel = i;
+            changed = Some(tr_noop!("Add colour stop"));
+        }
     }
-    if let Some(i) = remove.take().filter(|i| *i < stops.len() && stops.len() > 2) {
-        stops.remove(i);
+    if let Some(i) = remove.take()
+        && remove_stop(stops, i)
+    {
         sel = sel.min(stops.len().saturating_sub(1));
         changed = Some(tr_noop!("Remove colour stop"));
     }
@@ -328,8 +358,9 @@ fn stop_bar(ui: &mut egui::Ui, stops: &mut Vec<GradientStop>) -> Option<&'static
             }
         });
     }
-    if let Some(i) = remove.filter(|i| *i < stops.len() && stops.len() > 2) {
-        stops.remove(i);
+    if let Some(i) = remove
+        && remove_stop(stops, i)
+    {
         sel = sel.min(stops.len().saturating_sub(1));
         changed = Some(tr_noop!("Remove colour stop"));
     }
@@ -340,4 +371,82 @@ fn stop_bar(ui: &mut egui::Ui, stops: &mut Vec<GradientStop>) -> Option<&'static
     }
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Tool;
+    use std::path::PathBuf;
+
+    fn stop(offset: f32, c: u32) -> GradientStop {
+        GradientStop { offset, color: Rgba::hex(c) }
+    }
+
+    #[test]
+    fn stops_are_added_moved_and_removed_in_order() {
+        let mut st = vec![stop(0.0, 0x000000), stop(1.0, 0xffffff)];
+        // Added where asked, in the ramp's colour there, in order.
+        assert_eq!(add_stop(&mut st, 0.25), Some(1));
+        assert!((st[1].color.r - 0.25).abs() < 1e-6);
+        assert_eq!(widest_gap(&st), 0.625);
+        assert_eq!(add_stop(&mut st, f32::NAN), Some(2), "a bad position lands in the middle");
+        // A stop moves only between its neighbours.
+        move_stop(&mut st, 1, 0.9);
+        assert_eq!(st[1].offset, 0.5);
+        move_stop(&mut st, 1, -1.0);
+        assert_eq!(st[1].offset, 0.0);
+        move_stop(&mut st, 9, 0.5);
+        // Full at 15 stops; never fewer than 2.
+        while add_stop(&mut st, 0.7).is_some() {}
+        assert_eq!(st.len(), MAX_GRADIENT_STOPS);
+        while remove_stop(&mut st, 0) {}
+        assert_eq!(st.len(), 2);
+        assert!(!remove_stop(&mut st, 5));
+        assert_eq!(hex(Rgba::new(1.0, 0.0, 0.0, 0.5)), "#ff000080");
+        assert_eq!(hex(Rgba::hex(0x00ff00)), "#00ff00");
+    }
+
+    /// Draws a few frames of the whole window.
+    fn frames(ctx: &egui::Context, app: &mut App) {
+        let screen = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 1400.0))), ..Default::default() };
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(screen.clone(), |ui| app.frame(ui));
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn the_panel_shows_every_kind_of_fill_and_edits_through_the_command() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::default(), Some(PathBuf::from("unused.png")));
+        app.run("draw.rect", json!({"x": 10, "y": 10, "w": 100, "h": 80, "fill": "#ff0000", "stroke": null}));
+        app.tool = Tool::Select;
+        // Solid, linear, radial (with its focal point) and a bitmap, each drawn without fault.
+        frames(&ctx, &mut app);
+        assert!(matches!(current(&app), (Paint::Solid(_), true)));
+        for kind in ["linear", "radial"] {
+            set(&mut app, "Fill", false, json!({"type": kind, "spread": "repeat", "linear_rgb": true}));
+            frames(&ctx, &mut app);
+        }
+        let png = anicraft_engine::render::encode_png(2, 2, &[200; 16]).unwrap_or_default();
+        let id = app.s.doc.alloc_id();
+        app.s.doc.bitmaps.push(std::sync::Arc::new(anicraft_engine::doc::Bitmap::from_png(anicraft_engine::doc::BitmapId(id), "tile.png", png).unwrap()));
+        set(&mut app, "Fill", false, json!({"type": "bitmap", "bitmap": id}));
+        frames(&ctx, &mut app);
+        assert!(matches!(current(&app).0, Paint::Bitmap { .. }));
+        // A live edit (a drag) is one undo step however many frames it takes.
+        let steps = app.s.history_len();
+        for c in ["#112233", "#445566", "#778899"] {
+            set(&mut app, "Fill colour", true, json!({"type": "solid", "color": c}));
+        }
+        app.s.end_gesture();
+        assert_eq!(app.s.history_len(), steps + 1);
+        // Nothing selected and a fill tool in hand: the swatch.
+        app.run("edit.deselect", json!({}));
+        app.tool = Tool::PaintBucket;
+        frames(&ctx, &mut app);
+        assert!(!current(&app).1);
+        assert_eq!(stops_json(&[stop(0.0, 0xff0000)])[0]["color"], "#ff0000");
+    }
 }

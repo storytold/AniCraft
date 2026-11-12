@@ -762,14 +762,12 @@ fn transform_fill(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let doc = s.doc.clone();
     let mut frames = Vec::new();
-    let mut merged = Vec::new();
     for e in s.editable_keyframe()?.elements_mut_where(|id| targets.contains(&id)) {
         let (Some(cur), Some(to_local)) = (fill_frame(&doc, e), e.transform.inverse()) else { continue };
         let f = new_frame(&cur, p)?;
         if !f.is_finite() || f.determinant().abs() < 1e-6 {
             return Err(EngineError::Param("that would flatten the fill to nothing".into()));
         }
-        let id = e.id;
         let ElementKind::Shape(sh) = &mut e.kind else { continue };
         let Some(fill) = &sh.fill else { continue };
         let mut new = fill.with_frame(&to_local.mul(&f), image_size(&doc, fill));
@@ -777,21 +775,15 @@ fn transform_fill(s: &mut Session, p: &Value) -> Result<Value> {
             *slot = v;
         }
         frames.push(json!(f.m));
-        if sh.fill.as_ref() != Some(&new) {
-            sh.fill = Some(new);
-            if sh.merge {
-                merged.push(id);
-            }
-        }
+        // Only where the fill lies changes, so a raw fill stays the shape it is (no re-merge:
+        // its id holds through a drag, and a moved gradient matches no neighbour's anyway).
+        sh.fill = Some(new);
     }
     if frames.is_empty() {
         return Err(EngineError::State(match only {
             Some(_) => "that shape has no gradient or bitmap fill on the active layer at this frame".into(),
             None => "none of the selected shapes has a gradient or bitmap fill".into(),
         }));
-    }
-    if !merged.is_empty() {
-        crate::cmds_raw::remerge_in_place(s, &merged)?;
     }
     Ok(json!({"changed": frames.len(), "frames": frames}))
 }

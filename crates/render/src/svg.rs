@@ -539,6 +539,28 @@ mod tests {
     }
 
     #[test]
+    fn gradient_options_are_written_exactly() {
+        // ADR 0074: spread, linear RGB, the focal point and the ellipse's matrix.
+        let two = vec![GradientStop { offset: 0.0, color: Rgba::BLACK }, GradientStop { offset: 1.0, color: Rgba::WHITE }];
+        let mut rad = Paint::radial(Vec2::ZERO, 1.0, two.clone()).with_frame(&Affine { m: [20.0, 0.0, 0.0, 10.0, 30.0, 30.0] }, None);
+        if let Paint::Radial { focal, spread, linear_rgb, .. } = &mut rad {
+            *focal = 0.5;
+            *spread = anicraft_doc::Spread::Repeat;
+            *linear_rgb = true;
+        }
+        let mut lin = Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), two);
+        if let Paint::Linear { spread, .. } = &mut lin {
+            *spread = anicraft_doc::Spread::Reflect;
+        }
+        let items = vec![item(Path::rect(0.0, 0.0, 60.0, 60.0), Some(rad)), item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(lin))];
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items, clip_parents: vec![], groups: Vec::new() }, &stage());
+        assert!(svg.contains("spreadMethod=\"repeat\"") && svg.contains("spreadMethod=\"reflect\""), "{svg}");
+        assert!(svg.contains("color-interpolation=\"linearRGB\""), "{svg}");
+        assert!(svg.contains("fx=\"40\" fy=\"30\""), "focal point half way along the ring's x axis: {svg}");
+        assert!(svg.contains("matrix(1 0 0 0.5 0 15)"), "the ellipse in the gradient transform: {svg}");
+    }
+
+    #[test]
     fn bitmaps_take_colour_effects_as_a_colour_matrix() {
         // ADR 0056: alpha alone is fill-opacity; anything more is an feColorMatrix on the image.
         let px = Arc::new(anicraft_doc::Pixels { width: 1, height: 1, rgba: vec![10, 20, 30, 255] });

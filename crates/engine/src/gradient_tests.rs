@@ -226,3 +226,19 @@ fn lock_fill_runs_one_gradient_across_shapes() {
     assert!(near(&stage_frame(&s, b), &Affine { m: [50.0, 0.0, 0.0, 50.0, 350.0, 150.0] }));
     assert!(s.execute("paint.lock_fill", &json!({"on": "yes"})).is_err());
 }
+
+#[test]
+fn a_raw_fill_keeps_its_id_through_a_drag_of_its_gradient() {
+    // The editor draws raw (merge) shapes; the Gradient Transform tool addresses one by id
+    // through every step of a drag, so moving where its fill lies never re-merges it.
+    let mut s = Session::default();
+    s.style.object_drawing = false;
+    let a = square(&mut s, 100.0);
+    run(&mut s, "paint.set_fill", json!({"type": "radial"}));
+    let id = s.selection.id_list().first().copied().unwrap_or(a);
+    for k in 1..=3 {
+        let r = run(&mut s, "paint.transform_fill", json!({"element": id, "frame": [50.0 + 10.0 * k as f32, 0, 0, 50, 150, 150]}));
+        assert_eq!(r["changed"], 1, "step {k}");
+    }
+    assert!(near(&stage_frame(&s, id), &Affine { m: [80.0, 0.0, 0.0, 50.0, 150.0, 150.0] }));
+}

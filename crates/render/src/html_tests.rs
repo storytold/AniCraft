@@ -1371,3 +1371,47 @@ fn the_pages_filters_survive_broken_data() {
     let out = js_json(&mut js, "(function () { var b = new Float32Array([0.5, 0, 0, 0.5, 1, 1, 1, 1]); AniCraftFilters.apply(b, 2, 1, [null, 3, {k: 'sparkle'}, {k: 'adjust', m: [1]}, {k: 'blur', x: 'wide', y: NaN, q: -4}, {k: 'shadow'}, {k: 'bevel', st: 'x'}, {k: 'gglow', st: [[0.5]]}], NaN); AniCraftFilters.apply(b, 3, 1, [{k: 'blur', x: 2, y: 2, q: 1}], 1); AniCraftFilters.blendImage(new Uint8ClampedArray(4), new Uint8ClampedArray(8), NaN, 'invert'); return [Array.from(b).every(isFinite), AniCraftFilters.region(new Uint8ClampedArray(16), 2, 2, 5)]; })()");
     assert_eq!(out, json!([true, null]));
 }
+
+#[test]
+fn gradient_options_are_drawn_the_nearest_way_canvas_can() {
+    // ADR 0074: canvas gradients only pad, so reflect and repeat lay the ramp end to end.
+    let two = vec![GradientStop { offset: 0.0, color: Rgba::BLACK }, GradientStop { offset: 1.0, color: Rgba::WHITE }];
+    let (copies, st) = spread_stops(&two, anicraft_doc::Spread::Pad, false, false);
+    assert_eq!((copies, st.len()), (0, 2));
+    let (copies, st) = spread_stops(&two, anicraft_doc::Spread::Repeat, false, false);
+    let n = 2 * copies + 1;
+    assert!(copies > 0 && st.len() == 2 * n && st.len() <= 255);
+    // A linear ramp is the middle copy, forwards.
+    assert_eq!((st[2 * copies].offset, st[2 * copies].color), (copies as f32 / n as f32, Rgba::BLACK));
+    let (_, st) = spread_stops(&two, anicraft_doc::Spread::Reflect, false, false);
+    assert_eq!(st[2 * copies + 2].color, Rgba::WHITE, "the copy after it runs backwards");
+    // A radial one has no inside of its centre: the ramp comes first, then its copies.
+    let (_, out) = spread_stops(&two, anicraft_doc::Spread::Reflect, false, true);
+    assert_eq!((out[0].offset, out[0].color, out[2].color), (0.0, Rgba::BLACK, Rgba::WHITE));
+    // Linear RGB is sampled into stops: the midpoint is the linear-light grey (≈ 0.735).
+    let (_, lin) = spread_stops(&two, anicraft_doc::Spread::Pad, true, false);
+    let mid = lin.iter().find(|s| (s.offset - 0.5).abs() < 1e-6).expect("a stop at the middle");
+    assert!((mid.color.r - 0.735).abs() < 0.01, "{:?}", mid.color);
+    // Through the export: the radial's focal point and the reflected linear's longer span.
+    let mut lin_p = Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), two.clone());
+    if let Paint::Linear { spread, .. } = &mut lin_p {
+        *spread = anicraft_doc::Spread::Reflect;
+    }
+    let mut rad = Paint::radial(Vec2::new(50.0, 50.0), 20.0, two);
+    if let Paint::Radial { focal, .. } = &mut rad {
+        *focal = 0.5;
+    }
+    let mut doc = Document::default();
+    let shape = |id: u64, p: Paint| Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 100.0, 100.0), p)) });
+    {
+        let k = Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap();
+        k.elements = vec![shape(80, lin_p), shape(81, rad)];
+    }
+    let m = movie(&doc, &HtmlOptions::default());
+    let paints = m.json["paints"].as_array().cloned().unwrap_or_default();
+    let l = paints.iter().find(|p| p.get("l").is_some()).expect("the linear gradient");
+    assert!(l["l"][0].as_f64().unwrap() < -9.0 && l["l"][2].as_f64().unwrap() > 19.0, "{l}");
+    let r = paints.iter().find(|p| p.get("r").is_some()).expect("the radial gradient");
+    assert_eq!(r["f"], json!([60, 50]));
+    assert_eq!(r["r"][2], json!(20));
+}

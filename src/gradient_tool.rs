@@ -290,6 +290,74 @@ mod tests {
         a.m.iter().zip(b.m).all(|(x, y)| (x - y).abs() < 1e-3)
     }
 
+    fn frames(ctx: &egui::Context, app: &mut App) {
+        let screen = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 1000.0))), ..Default::default() };
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(screen.clone(), |ui| app.frame(ui));
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn a_drag_on_a_handle_is_one_undo_step_on_every_kind_of_fill() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::default(), Some(std::path::PathBuf::from("unused.png")));
+        let xf = Xf { origin: pos2(0.0, 0.0), zoom: 1.0 };
+        app.tool = Tool::GradientTransform;
+        // A solid fill has no handles: picking it says how to get a gradient.
+        app.run("draw.rect", json!({"x": 100, "y": 100, "w": 200, "h": 100, "fill": "#ff0000", "stroke": null}));
+        pick(&mut app, pos2(150.0, 150.0), xf);
+        assert!(target(&app).is_none());
+        let png = anicraft_engine::render::encode_png(4, 2, &[200; 32]).unwrap_or_default();
+        let id = app.s.doc.alloc_id();
+        app.s.doc.bitmaps.push(std::sync::Arc::new(anicraft_engine::doc::Bitmap::from_png(anicraft_engine::doc::BitmapId(id), "tile.png", png).unwrap()));
+        for (kind, extra) in [("linear", json!({})), ("radial", json!({"focal": 0.3})), ("bitmap", json!({"bitmap": id}))] {
+            let mut p = json!({"type": kind});
+            if let (Some(o), Some(e)) = (p.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            app.run("paint.set_fill", p);
+            frames(&ctx, &mut app);
+            let t = target(&app).expect("a gradient or bitmap to transform");
+            // Every handle shows, with a cursor that says what it does.
+            for (g, u) in handles(&t) {
+                let at = xf.to_screen(t.frame.apply(u));
+                assert_eq!(hit(&t, at, xf), Some(g), "{kind} {g:?}");
+                assert_ne!(cursor(&app, Some(at), xf), CursorIcon::Default);
+            }
+            // Grab the width handle and pull it out: the fill widens, in one step.
+            let (_, w) = handles(&t).into_iter().find(|(g, _)| *g == Grip::Width).expect("a width handle");
+            let press = xf.to_screen(t.frame.apply(w));
+            let steps = app.s.history_len();
+            let d = drag_start(&mut app, press, xf);
+            assert!(matches!(d, Drag::Gradient { grip: Grip::Width, .. }), "{kind}: {d:?}");
+            app.drag = d;
+            frames(&ctx, &mut app);
+            for k in 1..=3 {
+                let to = t.frame.apply(w * (1.0 + 0.2 * k as f32));
+                drag_to(&mut app, d, to, false);
+            }
+            assert_eq!(cursor(&app, None, xf), CursorIcon::ResizeHorizontal);
+            app.drag = Drag::None;
+            drag_end(&mut app);
+            assert_eq!(app.s.history_len(), steps + 1, "{kind}: one step");
+            let after = target(&app).expect("still a fill");
+            let len = |f: &Affine| Vec2::new(f.m[0], f.m[1]).length();
+            assert!((len(&after.frame) / len(&t.frame) - 1.6).abs() < 1e-3, "{kind}: {:?}", after.frame);
+        }
+        // The focal point slides along the radial gradient's axis.
+        app.run("paint.set_fill", json!({"type": "radial", "focal": 0.0}));
+        let t = target(&app).expect("radial");
+        let press = xf.to_screen(t.frame.apply(Vec2::ZERO));
+        let d = Drag::Gradient { id: t.id, grip: Grip::Focal, frame: t.frame, press: pos2(press.x, press.y) };
+        drag_to(&mut app, d, t.frame.apply(Vec2::new(0.5, 0.4)), false);
+        assert!((target(&app).expect("radial").focal - 0.5).abs() < 1e-4);
+        // A press away from any handle selects what is under it; on nothing, deselects.
+        assert_eq!(drag_start(&mut app, pos2(5.0, 5.0), xf), Drag::None);
+        assert!(app.s.selection.is_empty());
+        frames(&ctx, &mut app);
+    }
+
     #[test]
     fn handle_drags_make_the_frames_animate_does() {
         // A ring of radius 50 round (100, 100).
