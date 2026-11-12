@@ -36,6 +36,22 @@ group takes it out of the mask.
 * A mask moves with its whole group when you reorder layers. Masks work inside folders and inside
   symbols too.
 
+### Soft masks
+
+A mask doesn't have to have hard edges. Double-click the mask layer's icon (or right-click it and
+choose **Properties…**) and pick a **Mask type**:
+
+* **Shape**: the mask's fills reveal fully, whatever their colour or opacity. This is what
+  Animate's masks do, and it's the default.
+* **Alpha**: the mask's opacity reveals. Fill the mask with a gradient that goes to transparent
+  and the artwork fades out with it; a shape at 50 % opacity shows the artwork at half strength.
+  Strokes, bitmaps and colour effects on the mask count too.
+* **Luminance**: the mask's brightness reveals: white shows, black hides, greys show partly.
+  This is how SVG masks work.
+
+Soft masks show on the stage and in Test Movie, and export to SVG, Lottie (as track mattes) and
+HTML.
+
 ## Guide layers
 
 A **guide** layer holds artwork that helps you draw, such as a layout sketch, a grid or safe

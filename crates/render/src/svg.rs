@@ -9,7 +9,8 @@
 //! * colour effects (every style, ADR 0056) are baked into every colour and stop, and drawn
 //!   on bitmaps through an `feColorMatrix` (alpha alone as `fill-opacity`);
 //! * masks become `clipPath`s (fill areas only, nested through `clip-path` on the clip), and an
-//!   empty mask clips everything, as on the stage;
+//!   empty mask clips everything, as on the stage; soft masks (ADR 0070) become `mask`s with
+//!   their `mask-type` (alpha, or the default luminance), their artwork drawn as it looks;
 //! * outline-mode layers are hairlines in the layer colour;
 //! * variable-width strokes are filled outlines: the polygons the renderer fills.
 //!
@@ -31,12 +32,37 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
     // Each bitmap is embedded once (by its pixels), then used by every fill that shows it.
     let mut images: Vec<(usize, bool, String)> = Vec::new();
 
-    // Clips, in order (a parent always precedes its children; anything else clips all).
+    // Clips, in order (a parent always precedes its children; anything else clips all). A
+    // coverage clip is a `clipPath`; a soft one (ADR 0070) a `mask` with its `mask-type`, its
+    // artwork drawn as it looks inside whatever clips the mask itself.
     for (i, parent) in dl.clip_parents.iter().enumerate() {
         let parent = parent.filter(|&p| (p as usize) < i);
         let malformed = dl.clip_parents.get(i).copied().flatten().is_some() && parent.is_none();
+        let mode = dl.clip_mode(i as u32);
+        if mode.is_soft() {
+            let kind = if mode == anicraft_doc::MaskMode::Alpha { " mask-type=\"alpha\"" } else { "" };
+            let mut art = String::new();
+            if !malformed {
+                for item in dl.items.iter().filter(|it| it.masks == Some(i as u32) && !it.guide) {
+                    if let Some(d) = stage_path(item) {
+                        draw(item, &d, "", &mut art, &mut defs, &mut grad, &mut images);
+                    }
+                }
+            }
+            let _ = write!(defs, "<mask id=\"c{i}\" maskUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\"{kind}>");
+            match parent {
+                Some(p) => {
+                    let _ = write!(defs, "<g{}>{art}</g>", clip_attrs(dl, p));
+                }
+                None => defs.push_str(&art),
+            }
+            defs.push_str("</mask>");
+            continue;
+        }
         let _ = write!(defs, "<clipPath id=\"c{i}\" clipPathUnits=\"userSpaceOnUse\"");
-        if let Some(p) = parent {
+        // A clip path can only be clipped by another clip path; a soft parent is applied
+        // where the clip is used ([`clip_attrs`]).
+        if let Some(p) = parent.filter(|&p| !dl.clip_mode(p).is_soft()) {
             let _ = write!(defs, " clip-path=\"url(#c{p})\"");
         }
         defs.push('>');
@@ -76,30 +102,8 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
             let _ = write!(body, "<g opacity=\"{}\"{style}{filter}>", num(a));
             open.push(g);
         }
-        let clip = item.clip.filter(|&c| (c as usize) < dl.clip_parents.len()).map(|c| format!(" clip-path=\"url(#c{c})\"")).unwrap_or_default();
-        if let Some(color) = item.outline {
-            // Outline mode: a hairline in the layer colour, no fill.
-            let _ = write!(body, "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"1\"{clip}/>", color_attrs("stroke", color));
-            continue;
-        }
-        if let Some(fill) = &item.fill
-            && let Some(paint) = paint_attr(fill, &item.transform, &item.color, &mut defs, &mut grad, item.image.as_ref().map(|px| (px, item.smooth)), &mut images)
-        {
-            let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
-        }
-        if let Some(st) = &item.stroke {
-            let width = st.width * item.transform.mean_scale();
-            if width.is_finite() && width > 0.0 {
-                let c = item.color.apply(st.color);
-                let _ = write!(
-                    body,
-                    "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"{}\"{}{clip}/>",
-                    color_attrs("stroke", c),
-                    num(width),
-                    style_attrs(st, item.transform.mean_scale())
-                );
-            }
-        }
+        let clip = item.clip.filter(|&c| (c as usize) < dl.clip_parents.len()).map(|c| clip_attrs(dl, c)).unwrap_or_default();
+        draw(item, &d, &clip, &mut body, &mut defs, &mut grad, &mut images);
     }
     for _ in open {
         body.push_str("</g>");
@@ -118,6 +122,47 @@ pub fn to_svg(dl: &DisplayList, stage: &Stage) -> String {
     out.push_str(&body);
     out.push_str("</svg>\n");
     out
+}
+
+/// What clips something drawn in clip `c`: `clip-path` for a coverage clip (its coverage
+/// parents chained in the `clipPath`s) and `mask` for the first soft clip on the way out (which
+/// carries every clip around it), or `mask` alone when `c` is soft.
+fn clip_attrs(dl: &DisplayList, c: u32) -> String {
+    if dl.clip_mode(c).is_soft() {
+        return format!(" mask=\"url(#c{c})\"");
+    }
+    let mut out = format!(" clip-path=\"url(#c{c})\"");
+    let mut at = c;
+    for _ in 0..dl.clip_parents.len() {
+        let Some(p) = dl.clip_parents.get(at as usize).copied().flatten().filter(|&p| p < at) else { break };
+        if dl.clip_mode(p).is_soft() {
+            let _ = write!(out, " mask=\"url(#c{p})\"");
+            break;
+        }
+        at = p;
+    }
+    out
+}
+
+/// One item's fill and stroke (or its outline-mode hairline), clipped by `clip`'s attributes.
+fn draw(item: &DisplayItem, d: &str, clip: &str, body: &mut String, defs: &mut String, grad: &mut usize, images: &mut Vec<(usize, bool, String)>) {
+    if let Some(color) = item.outline {
+        // Outline mode: a hairline in the layer colour, no fill.
+        let _ = write!(body, "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"1\"{clip}/>", color_attrs("stroke", color));
+        return;
+    }
+    if let Some(fill) = &item.fill
+        && let Some(paint) = paint_attr(fill, &item.transform, &item.color, defs, grad, item.image.as_ref().map(|px| (px, item.smooth)), images)
+    {
+        let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
+    }
+    if let Some(st) = &item.stroke {
+        let width = st.width * item.transform.mean_scale();
+        if width.is_finite() && width > 0.0 {
+            let c = item.color.apply(st.color);
+            let _ = write!(body, "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"{}\"{}{clip}/>", color_attrs("stroke", c), num(width), style_attrs(st, item.transform.mean_scale()));
+        }
+    }
 }
 
 /// The item's path in stage space, or `None` when it has no geometry or a broken transform.
@@ -477,10 +522,10 @@ mod tests {
         let mut b = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::IDENTITY }));
         b.image = Some(px);
         b.color = ColorTransform::alpha(0.5);
-        let svg = to_svg(&DisplayList { items: vec![b.clone()], ..Default::default() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![b.clone()], ..Default::default() }, &stage());
         assert!(svg.contains("fill-opacity=\"0.5\"") && !svg.contains("feColorMatrix"), "{svg}");
         b.color = ColorTransform { mul: [-1.0, 0.5, 1.0, 0.8], add: [1.0, 0.25, 0.0, 0.1] };
-        let svg = to_svg(&DisplayList { items: vec![b], ..Default::default() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![b], ..Default::default() }, &stage());
         assert!(svg.contains("<feColorMatrix type=\"matrix\" values=\"-1 0 0 0 1 0 0.5 0 0 0.25 0 0 1 0 0 0 0 0 0.8 0.1\"/>"), "{svg}");
         assert!(svg.contains("filter=\"url(#cm") && !svg.contains("fill-opacity"), "{svg}");
     }
@@ -492,7 +537,7 @@ mod tests {
         a.stroke = Some(Stroke::new(Rgba::BLACK, 3.0));
         a.color = ColorTransform::alpha(0.5);
         a.fill_rule = FillRule::EvenOdd;
-        let svg = to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
         assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\">"));
         assert!(svg.contains("<rect width=\"100\" height=\"50\" fill=\"#ffffff\"/>"), "background");
         assert!(svg.contains("d=\"M5 7L25 7L25 27L5 27Z\" fill=\"#ff0000\" fill-opacity=\"0.5\" fill-rule=\"evenodd\""), "{svg}");
@@ -507,7 +552,7 @@ mod tests {
             let mut a = item(Path::line(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)), None);
             a.transform = Affine::scale(2.0, 2.0);
             a.stroke = Some(st);
-            to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage())
+            to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage())
         };
         // The default style is written as before: round, no dashes.
         let svg = svg_of(Stroke::new(Rgba::BLACK, 3.0));
@@ -527,7 +572,7 @@ mod tests {
     fn variable_width_strokes_are_written_as_filled_outlines() {
         let mut a = item(Path::line(Vec2::new(0.0, 10.0), Vec2::new(80.0, 10.0)), Some(Paint::Solid(Rgba::hex(0xff0000))));
         a.stroke = Some(Stroke::new(Rgba::hex(0x0000ff), 6.0).with_profile(anicraft_doc::ProfilePreset::TaperBoth.profile()));
-        let svg = to_svg(&DisplayList { items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![a], clip_parents: vec![], groups: Vec::new() }, &stage());
         assert!(!svg.contains("stroke-width"), "no SVG stroke: {svg}");
         assert!(svg.contains("fill=\"#0000ff\""), "the outline is filled in the stroke colour");
         assert!(svg.contains("fill=\"#ff0000\""), "the shape's own fill stays");
@@ -544,12 +589,43 @@ mod tests {
         outer.masks = Some(0);
         let mut inner = item(Path::ellipse(25.0, 25.0, 10.0, 10.0), Some(Paint::Solid(Rgba::BLACK)));
         inner.masks = Some(1);
-        let svg = to_svg(&DisplayList { items: vec![g, outer, inner], clip_parents: vec![None, Some(0)], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![g, outer, inner], clip_parents: vec![None, Some(0)], groups: Vec::new() }, &stage());
         assert!(svg.contains("gradientTransform=\"matrix(1 0 0 1 20 0)\" x1=\"0\" y1=\"0\" x2=\"10\" y2=\"0\""), "{svg}");
         assert!(svg.contains("<stop offset=\"1\" stop-color=\"#ffffff\" stop-opacity=\"0.25\"/>"));
         assert!(svg.contains("<clipPath id=\"c1\" clipPathUnits=\"userSpaceOnUse\" clip-path=\"url(#c0)\">"), "nested clip");
         assert!(svg.contains("clip-path=\"url(#c1)\"/>"), "the masked shape is clipped");
         assert_eq!(svg.matches("<path").count(), 3, "mask artwork is only in the clip paths");
+    }
+
+    #[test]
+    fn soft_masks_become_masks_with_their_type() {
+        use anicraft_doc::MaskMode;
+        // Clip 0: coverage. Clip 1: alpha, inside clip 0. Clip 2: luminance, inside clip 1.
+        // Clip 3: coverage inside clip 2 (a clip path can't hold a mask: the item gets both).
+        let shape = |clip| {
+            let mut s = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Solid(Rgba::BLACK)));
+            s.clip = Some(clip);
+            s
+        };
+        let art = |c: u32, color: Rgba| {
+            let mut a = item(Path::rect(0.0, 0.0, 50.0, 50.0), Some(Paint::Solid(color)));
+            a.masks = Some(c);
+            a
+        };
+        let mut faded = art(1, Rgba::new(1.0, 0.0, 0.0, 0.5));
+        faded.stroke = Some(anicraft_doc::Stroke::new(Rgba::WHITE, 2.0));
+        let mut dl = DisplayList { items: vec![shape(1), shape(2), shape(3), art(0, Rgba::BLACK), faded, art(2, Rgba::WHITE), art(3, Rgba::BLACK)], clip_parents: vec![None, Some(0), Some(1), Some(2)], ..Default::default() };
+        dl.set_clip_mode(1, MaskMode::Alpha);
+        dl.set_clip_mode(2, MaskMode::Luminance);
+        let svg = to_svg(&dl, &stage());
+        assert!(svg.contains("<mask id=\"c1\" maskUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"100\" height=\"50\" mask-type=\"alpha\"><g clip-path=\"url(#c0)\">"), "{svg}");
+        assert!(svg.contains("<mask id=\"c2\" maskUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"100\" height=\"50\"><g mask=\"url(#c1)\">"), "luminance is the default type: {svg}");
+        // A soft mask's artwork keeps its paint, opacity and stroke.
+        assert!(svg.contains("fill=\"#ff0000\" fill-opacity=\"0.5\"") && svg.contains("stroke=\"#ffffff\" stroke-width=\"2\""), "{svg}");
+        // Masked shapes: by the mask, or by the clip path plus the first mask around it.
+        assert!(svg.contains("mask=\"url(#c1)\"/>") && svg.contains("mask=\"url(#c2)\"/>"));
+        assert!(svg.contains("<clipPath id=\"c3\" clipPathUnits=\"userSpaceOnUse\">"), "no clip-path to a mask: {svg}");
+        assert!(svg.contains("clip-path=\"url(#c3)\" mask=\"url(#c2)\"/>"), "{svg}");
     }
 
     #[test]
@@ -566,7 +642,7 @@ mod tests {
         let clear = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Solid(Rgba::TRANSPARENT)));
         let mut lost = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Solid(Rgba::BLACK)));
         lost.clip = Some(7);
-        let svg = to_svg(&DisplayList { items: vec![bad, empty, clear, lost], clip_parents: vec![Some(3)], groups: Vec::new() }, &stage());
+        let svg = to_svg(&DisplayList { clip_modes: Vec::new(), items: vec![bad, empty, clear, lost], clip_parents: vec![Some(3)], groups: Vec::new() }, &stage());
         assert_eq!(svg.matches("<path").count(), 1, "{svg}");
         assert!(svg.contains("<clipPath id=\"c0\" clipPathUnits=\"userSpaceOnUse\"></clipPath>"), "a malformed clip clips everything");
         assert!(!svg.contains("NaN") && !svg.contains("inf"));
@@ -599,7 +675,7 @@ mod group_tests {
             image: None,
             smooth: true,
         };
-        let dl = DisplayList { items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };
+        let dl = DisplayList { clip_modes: Vec::new(), items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };
         let svg = to_svg(&dl, &Stage { width: 4, height: 4, fps: 24.0, background: Rgba::WHITE });
         assert!(svg.contains("<g opacity=\"0.5\">") && svg.contains("<g opacity=\"0.25\">"), "{svg}");
         assert_eq!(svg.matches("<g ").count(), svg.matches("</g>").count(), "balanced");

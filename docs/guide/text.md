@@ -104,6 +104,29 @@ Not there yet for fields: formatted (HTML) text, different styles inside one fie
 change a field's colour or format, listening for each change as the viewer types, Cut,
 double-clicking to select a word, a blinking caret and scrolling a field with the mouse wheel.
 
+## Text on a path
+
+Static text can follow the outline of a shape: an arc, a circle, a wave.
+
+1. Select the text block.
+2. In **Properties**, under **Path**, click **Attach to Path**.
+3. Click the shape on the stage. (Press **Esc** to give up.)
+
+The text now runs along a copy of the shape's outline, standing on it. The shape itself stays as
+it was: delete or hide it if you only want the text. With a shape and the text both selected,
+**Modify › Text › Attach Text to Path** does the same in one go.
+
+* **Offset** moves the text along the path. The text's alignment says how: left-aligned text
+  starts at the offset, centred text is centred on it, right-aligned text ends at it.
+* **Flip** runs the text the other way along the path, on its other side (under an arc instead
+  of over it).
+* **Release** turns it back into a line of text where it started.
+
+Changing the words, font, size or spacing keeps the text on its path. On a closed shape the text
+wraps round; on an open one, letters that would run past the ends don't show. The selected text
+shows the path it follows. Text on a path is always static text, and it is drawn from its own
+outlines like all text, so it looks the same on every computer.
+
 ## Turning text into shapes
 
 To reshape the letters themselves, select the text and choose **Modify › Break Apart**

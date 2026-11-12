@@ -80,3 +80,9 @@ and from self-authored drawings.
 * Not yet: soft (luminance and alpha) masks, booleans between two curved clips, per-character
   positions and rotation, text on a path, multi-line blocks from stacked chunks, dashes
   (another track owns strokes), images and style sheets.
+
+## Note (2026-11-12): soft masks, text paths, per-character positions
+
+ADR 0070 imports soft masks onto soft mask layers (luminance by default, `mask-type: alpha`),
+`textPath` onto text on a path, and per-character `x`, `y`, `dx`, `dy` and `rotate` where they
+are simple (a block per positioned character).
