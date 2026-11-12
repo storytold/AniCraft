@@ -95,7 +95,7 @@ fn open_session(file: Option<&Path>) -> (Session, Option<String>) {
 /// `--theme` / `--scale`: the look for this run only (screenshots of high contrast or 200 %),
 /// over the saved preferences, without saving them.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Look {
     theme: Option<theme::Palette>,
     scale: Option<f32>,
@@ -121,6 +121,8 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         "AniCraft",
         options,
         Box::new(move |cc| {
+            // A document the system hands over while AniCraft is idle wakes it (ADR 0062).
+            platform::wake_on_requests(&cc.egui_ctx);
             let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);
             if a.shot.is_none() {
@@ -148,6 +150,77 @@ fn main() {
     web::start();
 }
 
+/// What the command line asks for. A plain argument is the document to open: how Windows
+/// (`"%1"` in the MSI's file association) and Linux (`Exec=anicraft %f` in the desktop entry)
+/// hand over a double-clicked document. macOS sends it as an Apple Event instead (ADR 0062).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Default, PartialEq)]
+struct Args {
+    shot: Option<PathBuf>,
+    file: Option<PathBuf>,
+    open: Option<String>,
+    renderer: Option<String>,
+    look: Look,
+    /// `--version` / `--help`: print and leave.
+    print: Option<Print>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, PartialEq)]
+enum Print {
+    Version,
+    Help,
+}
+
+/// Reads the arguments (without the program name). `Err` is the message for a bad one.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut out = Args::default();
+    let mut args = args.into_iter();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--screenshot" => out.shot = Some(PathBuf::from(args.next().ok_or("--screenshot needs a file name")?)), // i18n-exempt: a console message
+            "--open" => out.open = args.next(),
+            "--renderer" => out.renderer = args.next(),
+            "--theme" => match args.next().as_deref() {
+                Some("graphite") => out.look.theme = Some(theme::Palette::Graphite),
+                Some("high-contrast") => out.look.theme = Some(theme::Palette::HighContrast),
+                other => return Err(format!("--theme takes graphite or high-contrast, not {}", other.unwrap_or("nothing"))), // i18n-exempt: a console message
+            },
+            "--scale" => match args.next().and_then(|s| s.trim_end_matches('%').parse::<f32>().ok()) {
+                Some(pct) if pct.is_finite() => out.look.scale = Some(pct / 100.0),
+                _ => return Err("--scale takes a percentage, such as 150".into()), // i18n-exempt: a console message
+            },
+            "--lang" => match args.next() {
+                Some(code) if i18n::known(&code) => out.look.lang = Some(code),
+                other => {
+                    let offered: Vec<&str> = i18n::offered().into_iter().map(|(c, _)| c).collect();
+                    return Err(format!("--lang takes auto, pseudo or a language this build has ({}), not {}", offered.join(", "), other.as_deref().unwrap_or("nothing"))); // i18n-exempt: a console message
+                }
+            },
+            // Printed by the release packaging checks and for bug reports.
+            "--version" | "-V" => out.print = Some(Print::Version),
+            "--help" | "-h" => out.print = Some(Print::Help),
+            // Not a file: what older macOS added when Finder started an app.
+            other if platform::is_system_argument(other) => {}
+            other => out.file = Some(PathBuf::from(other)),
+        }
+    }
+    Ok(out)
+}
+
+/// `--help` (the console's text, in English).
+#[cfg(not(target_arch = "wasm32"))]
+// i18n-exempt: the --help console text
+const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|button|testhits|exporthtml|publish|publishreport|sound|envelope|library|librarymenu|colour]\n\
+     --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
+     --open       shows a panel at start (handy with --screenshot for visual checks)\n\
+     ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\
+     --theme      the interface palette for this run (not saved)\n\
+     --scale      the interface scale for this run, 75 to 200 (not saved)\n\
+     --lang       the interface language for this run (not saved); pseudo tests the layout\n\
+     Headless use: anicraft-cli --help";
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     if let Some(result) = updates::finish_helper() {
@@ -157,71 +230,32 @@ fn main() -> eframe::Result {
         }
         std::process::exit(i32::from(failed));
     }
-    let mut shot: Option<PathBuf> = None;
-    let mut file: Option<PathBuf> = None;
-    let mut open: Option<String> = None;
-    let mut renderer_arg: Option<String> = None;
-    let mut look = Look::default();
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--screenshot" => match args.next() {
-                Some(p) => shot = Some(PathBuf::from(p)),
-                None => {
-                    eprintln!("--screenshot needs a file name");
-                    std::process::exit(2);
-                }
-            },
-            "--open" => open = args.next(),
-            "--renderer" => renderer_arg = args.next(),
-            "--theme" => match args.next().as_deref() {
-                Some("graphite") => look.theme = Some(theme::Palette::Graphite),
-                Some("high-contrast") => look.theme = Some(theme::Palette::HighContrast),
-                other => {
-                    eprintln!("--theme takes graphite or high-contrast, not {}", other.unwrap_or("nothing"));
-                    std::process::exit(2);
-                }
-            },
-            "--scale" => match args.next().and_then(|s| s.trim_end_matches('%').parse::<f32>().ok()) {
-                Some(pct) if pct.is_finite() => look.scale = Some(pct / 100.0),
-                _ => {
-                    eprintln!("--scale takes a percentage, such as 150");
-                    std::process::exit(2);
-                }
-            },
-            "--lang" => match args.next() {
-                Some(code) if i18n::known(&code) => look.lang = Some(code),
-                other => {
-                    let offered: Vec<&str> = i18n::offered().into_iter().map(|(c, _)| c).collect();
-                    eprintln!("--lang takes auto, pseudo or a language this build has ({}), not {}", offered.join(", "), other.as_deref().unwrap_or("nothing"));
-                    std::process::exit(2);
-                }
-            },
-            // Printed by the release packaging checks and for bug reports.
-            "--version" | "-V" => {
-                println!("AniCraft {} ({})", env!("CARGO_PKG_VERSION"), app::RELEASE_STAGE);
-                return Ok(());
-            }
-            "--help" | "-h" => {
-                println!( // i18n-exempt: the --help console text
-                    "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testscript|button|testhits|exporthtml|publish|publishreport|sound|envelope|library|librarymenu|colour]\n\
-                     --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
-                     --open       shows a panel at start (handy with --screenshot for visual checks)\n\
-                     ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\
-                     --theme      the interface palette for this run (not saved)\n\
-                     --scale      the interface scale for this run, 75 to 200 (not saved)\n\
-                     --lang       the interface language for this run (not saved); pseudo tests the layout\n\
-                     Headless use: anicraft-cli --help"
-                );
-                return Ok(());
-            }
-            other => file = Some(PathBuf::from(other)),
+    let args = match parse_args(std::env::args().skip(1)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
         }
+    };
+    match args.print {
+        Some(Print::Version) => {
+            println!("AniCraft {} ({})", env!("CARGO_PKG_VERSION"), app::RELEASE_STAGE);
+            return Ok(());
+        }
+        Some(Print::Help) => {
+            println!("{HELP}");
+            return Ok(());
+        }
+        None => {}
     }
+    let Args { shot, file, open, renderer, look, .. } = args;
+    // macOS hands documents over as Apple Events, the one that launched the app included: listen
+    // from before the event loop starts until it ends (ADR 0062).
+    let _documents = platform::listen_for_documents();
 
     // wgpu first (Vulkan/Metal/DX12). If it cannot start (old GPU, VM, missing drivers, common
     // on some Linux setups) retry once with OpenGL, unless the user forced a backend.
-    let forced = platform::forced_renderer(renderer_arg.as_deref());
+    let forced = platform::forced_renderer(renderer.as_deref());
     let first = forced.unwrap_or(eframe::Renderer::Wgpu);
     match run(first, file.as_deref(), shot.clone(), open.clone(), look.clone()) {
         Err(e) if forced.is_none() && first == eframe::Renderer::Wgpu => {
@@ -229,6 +263,45 @@ fn main() -> eframe::Result {
             run(eframe::Renderer::Glow, file.as_deref(), shot, open, look)
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod args_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Args {
+        parse_args(args.iter().map(|a| a.to_string())).unwrap_or_else(|e| panic!("{args:?}: {e}"))
+    }
+
+    /// Windows (`"%1"`) and Linux (`%f`) hand a double-clicked document over as the one plain
+    /// argument, spaces and all; it opens through `file.open`, as File › Open does.
+    #[test]
+    fn a_double_clicked_document_arrives_on_the_command_line_and_opens() {
+        for path in [r"C:\Users\Ana Lima\My Films\walk cycle.anicraft", "/home/ana/Films/old scene.fla", "/home/ana/Films/Scene/DOMDocument.xfl", "relative.anicraft"] {
+            assert_eq!(parse(&[path]).file, Some(PathBuf::from(path)), "{path}");
+        }
+        // The process serial number older macOS added is not a file.
+        assert_eq!(parse(&["-psn_0_1234567"]).file, None);
+        let a = parse(&["walk.anicraft", "--screenshot", "shots/x.png", "--open", "testmovie"]);
+        assert_eq!((a.file, a.shot, a.open.as_deref()), (Some(PathBuf::from("walk.anicraft")), Some(PathBuf::from("shots/x.png")), Some("testmovie")));
+        assert!(parse_args(["--scale".to_string(), "lots".to_string()]).is_err());
+        assert!(parse_args(["--screenshot".to_string()]).is_err());
+        assert_eq!(parse(&["--version"]).print, Some(Print::Version));
+        // And the file opens: the session starts with it, not the sample.
+        let dir = std::env::temp_dir().join(format!("anicraft-shell-args-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("walk cycle.anicraft");
+        let mut s = Session::new(anicraft_engine::doc::sample::interactive());
+        s.execute("file.save", &serde_json::json!({"path": path.display().to_string()})).unwrap();
+        let file = parse(&[&path.display().to_string()]).file;
+        let (opened, _) = open_session(file.as_deref());
+        assert_eq!(opened.path.as_deref(), Some(path.as_path()));
+        assert!(opened.doc == s.doc, "the document on the command line, not the sample");
+        // A file that isn't there: the sample, never a crash.
+        let (fallback, _) = open_session(Some(&dir.join("missing.anicraft")));
+        assert!(fallback.path.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

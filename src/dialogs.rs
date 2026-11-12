@@ -504,6 +504,23 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                     form_note(ui, LW, text(Type::Caption, tr!("The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom.")));
                 });
 
+                // Test Movie in a window of its own, or inside the editor (ADR 0062).
+                section(ui, "prefs_test_movie", Section::Rule, tr!("Test Movie"), None, |ui| {
+                    form_row(ui, LW, tr!("Window"), |ui| {
+                        ui.vertical(|ui| {
+                            crate::theme::checkbox(ui, &mut p.test_movie_window, text(Type::Body, tr!("Play Test Movie in a window of its own")));
+                            let note = match crate::platform::movie_host(ui.ctx().embed_viewports(), true) {
+                                crate::platform::MovieHost::Inside(why) => why.note().map(crate::i18n::t),
+                                crate::platform::MovieHost::Window if !crate::platform::window_positions() => Some(tr!("Off: it floats inside the editor. On Wayland the desktop places the window, so it can't open where it was last.")),
+                                crate::platform::MovieHost::Window => Some(tr!("Off: it floats inside the editor. The window opens where it was last.")),
+                            };
+                            if let Some(note) = note {
+                                form_note(ui, toggle_indent, text(Type::Caption, note));
+                            }
+                        });
+                    });
+                });
+
                 section(ui, "prefs_files", Section::Rule, tr!("Files"), None, |ui| {
                     form_row(ui, LW, tr!("File dialogs"), |ui| {
                         ui.vertical(|ui| {

@@ -343,6 +343,19 @@ pub fn run(app: &mut App, files: &[PathBuf], spot: Spot) {
     }
 }
 
+/// Files the system asked the running app to open (macOS: a double-click in Finder, a drop on
+/// the Dock icon, Open With; ADR 0062). The first document opens as a drop on the window would,
+/// through the unsaved-changes guard; nothing is imported this way.
+pub fn open_from_system(app: &mut App, files: &[PathBuf]) {
+    let files: Vec<PathBuf> = files.iter().take(anicraft_engine::cmds_drop::MAX_DROPPED).cloned().collect();
+    if files.iter().any(|f| kind_of(f) == DropKind::Document) {
+        app.playing = false;
+        run(app, &files, Spot::Window);
+    } else if let Some(f) = files.first() {
+        app.status_err(tr!("Can't open {file}: {why}", file = crate::recent::display_name(f), why = refusal(DropKind::Unsupported, DropTarget::Window, false)));
+    }
+}
+
 /// A name for a file the browser describes only by its type while it is dragged.
 fn guess_name(mime: &str) -> &'static str {
     match mime {
@@ -534,5 +547,53 @@ mod tests {
         // A document over unsaved work asks first.
         run(&mut app, &[dir.join("other.anicraft")], Spot::Stage(0.0, 0.0));
         assert!(app.confirm.is_some());
+    }
+
+    /// Documents the system hands the running app (macOS Finder, the Dock; ADR 0062) arrive as
+    /// requests, are read at the start of a frame, and open through the unsaved-changes guard.
+    #[test]
+    fn documents_the_system_hands_over_open_through_the_guard() {
+        use crate::platform::{SystemRequest, push_request};
+        let dir = std::env::temp_dir().join(format!("anicraft-shell-system-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (walk, other) = (dir.join("walk.anicraft"), dir.join("other.anicraft"));
+        for f in [&walk, &other] {
+            let mut s = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+            s.execute("file.save", &json!({"path": f.display().to_string()})).unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::new(anicraft_engine::doc::sample::demo()), Some(PathBuf::from("unused.png")));
+        crate::start::open(&mut app);
+        let frame = |app: &mut App| {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 940.0))), ..Default::default() }, |ui| app.frame(ui));
+            out.textures_delta.clear();
+            out
+        };
+        // At launch (macOS sends the launching document this way too): the start screen gives
+        // way to it; a picture beside it is left out, and the status says so.
+        push_request(SystemRequest::Open(vec![dir.join("photo.png"), walk.clone()]));
+        frame(&mut app);
+        assert_eq!(app.s.path.as_deref(), Some(walk.as_path()));
+        assert!(app.start.is_none(), "the start screen gave way");
+        assert!(app.status.as_ref().is_some_and(|s| s.text.contains("photo.png")), "{:?}", app.status.as_ref().map(|s| &s.text));
+        // While running, over unsaved work: it asks first, and nothing changes until it's answered.
+        app.run("layer.new", json!({}));
+        assert!(app.s.is_dirty());
+        push_request(SystemRequest::Open(vec![other.clone()]));
+        frame(&mut app);
+        assert!(app.confirm.as_ref().is_some_and(|c| c.id == "file.open"), "the unsaved-changes guard asks");
+        assert_eq!(app.s.path.as_deref(), Some(walk.as_path()));
+        app.confirm = None;
+        // Only files AniCraft can't open: one clear message, nothing else.
+        push_request(SystemRequest::Open(vec![dir.join("notes.txt")]));
+        frame(&mut app);
+        assert!(app.status.as_ref().is_some_and(|s| s.error && s.text.contains("notes.txt")));
+        assert!(app.confirm.is_none());
+        // The Dock's Quit closes the editor's window, which the close guard intercepts.
+        push_request(SystemRequest::Quit);
+        let out = frame(&mut app);
+        let closes = out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close));
+        assert!(closes, "a quit request closes the editor's window");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

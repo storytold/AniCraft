@@ -98,6 +98,12 @@ pub struct Prefs {
     pub recent: anicraft_engine::cmds_recent::RecentFiles,
     /// Show the start screen when AniCraft starts without a document to open (ADR 0059).
     pub start_screen: bool,
+    /// Test Movie plays in a window of its own (ADR 0062); off, or where a system can't open
+    /// one, it floats inside the editor.
+    pub test_movie_window: bool,
+    /// Where the Test Movie window was last, in points (its top-left corner); `None` until it
+    /// has been opened where the system says where windows are.
+    pub test_movie_pos: Option<[f32; 2]>,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -155,6 +161,8 @@ impl Default for Prefs {
             publish_presets: Default::default(),
             recent: Default::default(),
             start_screen: true,
+            test_movie_window: true,
+            test_movie_pos: None,
         }
     }
 }
@@ -209,6 +217,7 @@ impl Prefs {
             })
             .collect();
         self.recent = std::mem::take(&mut self.recent).sanitized();
+        self.test_movie_pos = self.test_movie_pos.filter(|[x, y]| x.is_finite() && y.is_finite() && x.abs() < 1e5 && y.abs() < 1e5);
         self
     }
 
@@ -337,6 +346,14 @@ mod tests {
         let paths: Vec<_> = p.recent.entries().iter().map(|e| e.path.display().to_string()).collect();
         assert_eq!(paths, ["a.anicraft"], "bad entries are skipped, the rest kept");
         assert!(!p.start_screen, "and the other preferences with them");
+        // Older files open Test Movie in its own window, with no remembered place (ADR 0062);
+        // a place someone broke by hand is forgotten, not used.
+        let p = Prefs::from_json(r#"{"ui_scale": 1.25}"#);
+        assert!(p.test_movie_window && p.test_movie_pos.is_none());
+        let p = Prefs::from_json(r#"{"test_movie_window": false, "test_movie_pos": [120.5, 80]}"#);
+        assert_eq!((p.test_movie_window, p.test_movie_pos), (false, Some([120.5, 80.0])));
+        assert_eq!(Prefs::from_json(r#"{"test_movie_pos": [1e9, 0]}"#).test_movie_pos, None);
+        assert_eq!(Prefs::from_json(&serde_json::to_string(&p).unwrap()), p, "both survive saving");
         let p = Prefs::from_json(r#"{"recent": [{"path": "b.anicraft"}, {"path": "a.anicraft", "pinned": true}, {"path": "b.anicraft"}]}"#);
         let paths: Vec<_> = p.recent.entries().iter().map(|e| (e.path.display().to_string(), e.pinned)).collect();
         assert_eq!(paths, [("a.anicraft".to_string(), true), ("b.anicraft".to_string(), false)]);

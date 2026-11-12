@@ -587,9 +587,14 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
             a.run("element.set_color_effect", serde_json::json!({"style": style}));
         }));
     }
-    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "start"] {
+    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "start", "testmovie", "testmovieinside"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
+    // Test Movie in a window of its own (ADR 0062; egui stands in for the window system here).
+    found.extend(click_everything("test movie window", |a, ctx| {
+        ctx.set_embed_viewports(false);
+        a.open_panel(Some("testmovie"));
+    }));
     for tool in [crate::app::Tool::Brush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {
         found.extend(click_everything(&format!("{tool:?}"), |a, _| a.tool = tool));
     }
@@ -777,7 +782,7 @@ fn screen_reader_names_are_translated_too() {
     found.extend(untranslated_names("library item", |a, _| {
         a.library_sel = a.s.doc.library.first().map(|s| crate::app::LibraryItem::Symbol(s.id));
     }));
-    for panel in ["start", "drop", "droplibrary", "select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "scriptproblems", "testmovie", "testscript", "exporthtml", "envelope"] {
+    for panel in ["start", "drop", "droplibrary", "select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "scriptproblems", "testmovie", "testmovieinside", "testscript", "exporthtml", "envelope"] {
         found.extend(untranslated_names(panel, |a, _| a.open_panel(Some(panel))));
     }
     assert!(found.is_empty(), "{} screen-reader names not translated in the pseudo-locale:\n{}", found.len(), found.join("\n"));
