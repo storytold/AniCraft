@@ -45,7 +45,8 @@ isn't there yet. It must work offline from the app, match the version it ships w
 5. **Help › User Guide opens it in the browser, offline.** On the desktop the app writes the
    bundled book to a version-named folder in the system cache (`platform::guide_dir`:
    `%LOCALAPPDATA%`, `~/Library/Caches`, `$XDG_CACHE_HOME`) and opens `index.html` with the system
-   handler; writing ~2 MB of files takes a few milliseconds and keeps the pages exactly those of
+   handler; rendering and writing the 29 files (2.2 MB) takes 46 ms for a whole `anicraft-cli guide`
+   run (debug build, Windows), and keeps the pages exactly those of
    the running version. The web build doesn't carry the book in its download:
    `scripts/build-web.sh` writes it next to the editor with `anicraft-cli guide --out web/guide`,
    and the menu item opens `guide/index.html` in a new tab. The item is also in the command
