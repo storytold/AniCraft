@@ -40,6 +40,8 @@ mod icons;
 mod keymap;
 mod library;
 mod menus;
+#[cfg(not(target_arch = "wasm32"))]
+mod updates;
 mod mixed;
 mod motion_editor;
 mod movie_explorer;
@@ -121,6 +123,9 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         Box::new(move |cc| {
             let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);
+            if a.shot.is_none() {
+                a.show_update_outcome_on_start();
+            }
             // No document to open: the start screen, unless it was switched off (ADR 0059).
             if starting_fresh && a.prefs.start_screen {
                 start::open(&mut a);
@@ -145,6 +150,13 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    if let Some(result) = updates::finish_helper() {
+        let failed = result.is_err();
+        if let Err(error) = result {
+            eprintln!("Update failed: {error}");
+        }
+        std::process::exit(i32::from(failed));
+    }
     let mut shot: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
     let mut open: Option<String> = None;

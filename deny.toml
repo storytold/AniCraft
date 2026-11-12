@@ -29,6 +29,12 @@ confidence-threshold = 0.93
 crate = "epaint_default_fonts"
 allow = ["OFL-1.1", "Ubuntu-font-1.0"]
 
+# Approved for the Mozilla certificate data pulled in by the shared HTTPS updater.
+# The exception applies to this data crate and version, not application code.
+[[licenses.exceptions]]
+crate = "webpki-root-certs@=1.0.12"
+allow = ["CDLA-Permissive-2.0"]
+
 [licenses.private]
 # Our own workspace crates are MIT OR Apache-2.0 (checked by `cargo deny` like any other crate).
 ignore = false
@@ -42,6 +48,8 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# Shared updater implementation, pinned to a reviewed commit in Cargo.toml.
+allow-git = ["https://github.com/storytold/craft-libs"]
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 [advisories]

@@ -282,6 +282,10 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library and Movie Explorer")));
         }
         "Help" => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if ui_item(ui, tr!("Check for Updates…"), "", None) {
+                app.updates.check(ui.ctx());
+            }
             if ui_item(ui, tr!("Command Palette…"), "Ctrl+K", None) {
                 app.palette = Some(crate::dialogs::Palette::default());
             }

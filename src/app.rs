@@ -277,6 +277,8 @@ pub const SHOT_FRAMES: u32 = 120;
 pub use anicraft_engine::doc::LibraryItem;
 
 pub struct App {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) updates: crate::updates::Updates,
     pub s: Session,
     pub tool: Tool,
     pub view: StageView,
@@ -462,6 +464,12 @@ pub const VIEW_SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 impl App {
+    /// Show the last update's result once the native window begins drawing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_update_outcome_on_start(&mut self) {
+        self.updates.startup();
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, shot: Option<PathBuf>) -> App {
         #[cfg_attr(not(gpu_stage), allow(unused_mut))]
         let mut app = App::with_context(&cc.egui_ctx, session, shot);
@@ -495,6 +503,8 @@ impl App {
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
+            #[cfg(not(target_arch = "wasm32"))]
+            updates: Default::default(),
             s: session,
             tool: Tool::Select,
             view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
@@ -794,6 +804,8 @@ impl App {
                 let last = self.s.doc.scenes.len().saturating_sub(1);
                 self.run("scene.select", json!({"scene": last}));
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Some("updates") => self.updates.request(),
             Some("files") => self.show_files = true,
             Some("start") => {
                 // The start screen with sample recent files (one pinned, one missing).
@@ -2337,6 +2349,8 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let clean = !self.s.is_dirty() || self.allow_close || self.shot.is_some();
         self.recovery.finish(&self.s, clean);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.updates.finish();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2348,6 +2362,13 @@ impl App {
     /// One frame of the whole interface. Needs no window, so tests run it headless.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let safe = crate::updates::safe_to_install(self);
+            if self.updates.show(&ctx, safe) {
+                return;
+            }
+        }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
         if let Some(p) = platform::picked_file() {

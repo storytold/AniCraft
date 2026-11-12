@@ -6,7 +6,7 @@ default-members = [".", "crates/*"]
 [workspace.package]
 # 0.1.0 is the early alpha (release stage in src/app.rs, RELEASE_STAGE); see CHANGELOG.md
 # and docs/release.md.
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 # An application, not a library: not published to crates.io.
@@ -107,7 +107,9 @@ web-time.workspace = true
 sys-locale = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe.workspace = true
+craft-update = { git = "https://github.com/storytold/craft-libs", rev = "6ac2a6a34ae83fc0f0bfb25a569ba6388b72266a" }
+
+eframe = { workspace = true, features = ["links"] }
 rfd.workspace = true
 # Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
 cpal = { version = "0.18", optional = true }
