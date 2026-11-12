@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* **Fixed**: with the Selection tool, Ctrl-dragging (⌘ on macOS) a raw line or fill edge bent it
+  into a smooth curve, as a plain drag does. It now adds a corner point where you pressed and
+  drags it, so the two sides run straight to the point (issue #200).
 * **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
   tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
   macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip

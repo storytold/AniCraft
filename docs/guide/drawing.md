@@ -84,6 +84,8 @@ With the **Selection** tool (**V**) on merged drawing:
   changing anything, the drawing is whole again.
 * **Drag an unselected line** or the edge of a fill to **bend** it into a curve through the
   pointer. Its ends stay put.
+* **Ctrl-drag** (**⌘-drag** on a Mac) a line or the edge of a fill to add a **corner point**
+  where you pressed and pull it: the two sides become straight lines to the point.
 * **Drag an unselected corner or end** to move it. Every shape that shares the point moves
   with it, so the drawing stays joined.
 * **Drag a fill** to move just that fill, without its outline. Drag anything already selected
