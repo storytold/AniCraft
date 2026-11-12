@@ -246,7 +246,9 @@ impl Path {
             return Path::rect(x, y, w, h);
         }
         let k = r * (1.0 - KAPPA);
-        let (x1, y1) = (x + w, y + h);
+        // Normalise negative sizes by swapping the corners.
+        let (x, x1) = if w < 0.0 { (x + w, x) } else { (x, x + w) };
+        let (y, y1) = if h < 0.0 { (y + h, y) } else { (y, y + h) };
         let mut p = Path::new();
         p.move_to(Vec2::new(x + r, y))
             .line_to(Vec2::new(x1 - r, y))
@@ -498,6 +500,15 @@ pub fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rounded_rect_negative_size_matches_rect_bounds() {
+        for (w, h) in [(-10.0, 10.0), (10.0, -10.0), (-10.0, -10.0)] {
+            let b = Path::rounded_rect(0.0, 0.0, w, h, 2.0).bounds();
+            let e = Path::rect(0.0, 0.0, w, h).bounds();
+            assert_eq!((b.min, b.max), (e.min, e.max), "w={w} h={h}");
+        }
+    }
 
     #[test]
     fn flatten_rect_is_closed_polygon() {
