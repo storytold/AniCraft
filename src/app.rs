@@ -434,6 +434,9 @@ pub struct App {
     fonts_rx: Option<std::sync::mpsc::Receiver<prefs::SystemFonts>>,
     /// Re-check which glyphs the active fonts have (after fonts change).
     glyph_check: bool,
+    /// A copy or cut ran: the system clipboard gets a note at the end of the frame, so the next
+    /// Ctrl/⌘+V reaches the app (egui-winit sends a paste only when the clipboard holds text).
+    copied: bool,
     /// Document revision at the end of the last frame (edits schedule a repaint).
     last_revision: u64,
     title: String,
@@ -640,6 +643,7 @@ impl App {
             system_fonts: None,
             fonts_rx: None,
             glyph_check: true,
+            copied: false,
             last_revision: 0,
             title: String::new(),
             keymap,
@@ -713,7 +717,12 @@ impl App {
             platform::deliver(anicraft_engine::vfs::take_written());
         }
         match result {
-            Ok(v) => Some(v),
+            Ok(v) => {
+                if matches!(id, "edit.copy" | "edit.cut" | "timeline.copy_frames" | "timeline.cut_frames" | "frames.copy" | "frames.cut") {
+                    self.copied = true;
+                }
+                Some(v)
+            }
             Err(e) => {
                 // The engine's English, translated when a catalog has that exact message.
                 self.status_err(crate::i18n::t_dyn(&e.to_string()).into_owned());
@@ -2407,6 +2416,10 @@ impl App {
             }
             return;
         }
+        // (A browser sends these keys as presses already, with its clipboard events after.)
+        if !platform::WEB {
+            ctx.input_mut(clipboard_keys_as_presses);
+        }
         let control = keys == crate::a11y::Keyboard::Control;
         if !control {
             crate::motion_path::consume_keys(self, ctx);
@@ -2918,6 +2931,12 @@ impl App {
         crate::brush_panel::sync(self);
         // A browser asks before leaving a page with unsaved work (its close guard).
         platform::set_unsaved(self.s.is_dirty());
+        // Copied artwork or frames: the system clipboard says so, as any copy replaces what it
+        // held, and so the next Ctrl/⌘+V comes through (issue #197). A browser sends that key
+        // press whatever its clipboard holds.
+        if std::mem::take(&mut self.copied) && !platform::WEB {
+            ctx.copy_text(tr!("Copied from AniCraft").to_string());
+        }
 
         // An edit late in this frame (after the stage drew) must be shown without waiting for
         // the next input event: egui only repaints on demand. This was the "drag commits after a
@@ -2926,6 +2945,119 @@ impl App {
             self.last_revision = self.s.revision;
             ctx.request_repaint();
         }
+    }
+}
+
+/// On the desktop egui-winit turns Ctrl/⌘+X, C and V (and Shift+Delete, Ctrl+Insert and
+/// Shift+Insert on Windows) into `Event::Cut`, `Event::Copy` and `Event::Paste` instead of key
+/// presses, so the keymap never saw them (issue #197). Outside a text field they are shortcuts
+/// like any other: each becomes its key press again, with the modifiers held (Ctrl+Shift+V is
+/// Paste in Place), and the keymap decides what it runs. The events stay for egui.
+fn clipboard_keys_as_presses(i: &mut egui::InputState) {
+    // Without Ctrl/⌘ it was Shift+Delete, Ctrl+Insert, Shift+Insert or a Cut/Copy/Paste key.
+    let modifiers = if i.modifiers.command { i.modifiers } else { Modifiers::COMMAND };
+    let keys: Vec<Key> = i
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            egui::Event::Cut => Some(Key::X),
+            egui::Event::Copy => Some(Key::C),
+            egui::Event::Paste(_) => Some(Key::V),
+            _ => None,
+        })
+        .collect();
+    i.events.extend(keys.into_iter().map(|key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }));
+}
+
+/// Ctrl/⌘+X, C and V on the stage (issue #197). On the desktop egui-winit hands them over as
+/// `Event::Cut`, `Event::Copy` and `Event::Paste`, never as key presses, so these tests send
+/// exactly that.
+#[cfg(test)]
+mod clipboard_key_tests {
+    use super::App;
+    use egui::{Event, Modifiers, RawInput, Rect, pos2, vec2};
+
+    fn app() -> (egui::Context, App) {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+        let app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        (ctx, app)
+    }
+
+    /// The keys held (as egui-winit reports them, first) and the events of one frame.
+    fn input(modifiers: Modifiers, events: Vec<Event>) -> RawInput {
+        let events = std::iter::once(Event::ModifiersChanged(modifiers)).chain(events).collect();
+        RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 940.0))), events, ..Default::default() }
+    }
+
+    /// One frame; what it asked the system clipboard to hold.
+    fn frame(ctx: &egui::Context, app: &mut App, input: RawInput) -> Vec<String> {
+        let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+        out.textures_delta.clear();
+        out.platform_output.commands.into_iter().filter_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t) } else { None }).collect()
+    }
+
+    /// Elements on the playhead's frame, every layer.
+    fn elements(app: &App) -> usize {
+        app.s.timeline().layers.iter().filter_map(|l| l.keyframe_at(app.s.frame)).map(|k| k.elements.len()).sum()
+    }
+
+    fn ctrl() -> Modifiers {
+        Modifiers::CTRL | Modifiers::COMMAND
+    }
+
+    #[test]
+    fn ctrl_c_x_and_v_copy_cut_and_paste_the_selected_artwork() {
+        let (ctx, mut app) = app();
+        for _ in 0..3 {
+            frame(&ctx, &mut app, input(Modifiers::NONE, vec![]));
+        }
+        app.run("edit.select_all", serde_json::json!({}));
+        assert!(!app.s.selection.is_empty(), "the sample has artwork to select");
+        let before = elements(&app);
+        // Ctrl+C copies, and puts something on the system clipboard, so the next Ctrl+V
+        // reaches the app even when the clipboard held no text before.
+        let copied = frame(&ctx, &mut app, input(ctrl(), vec![Event::Copy]));
+        assert!(!app.s.clipboard.is_empty(), "Ctrl+C copied the selection");
+        assert!(copied.iter().any(|t| !t.is_empty()), "the system clipboard holds text: {copied:?}");
+        assert_eq!(elements(&app), before, "copying changes nothing");
+        // Ctrl+V pastes a copy (whatever text the system clipboard holds).
+        let steps = app.s.history().undo_len();
+        frame(&ctx, &mut app, input(ctrl(), vec![Event::Paste("AniCraft artwork".into())]));
+        assert!(elements(&app) > before, "Ctrl+V pasted the artwork");
+        assert_eq!(app.s.history().undo_len(), steps + 1, "one undo step");
+        // Ctrl+Shift+V is Paste in Place.
+        let pasted = elements(&app);
+        frame(&ctx, &mut app, input(ctrl() | Modifiers::SHIFT, vec![Event::Paste("AniCraft artwork".into())]));
+        assert!(elements(&app) > pasted, "Ctrl+Shift+V pasted in place");
+        // Ctrl+X cuts what is selected (the pasted copy).
+        let now = elements(&app);
+        frame(&ctx, &mut app, input(ctrl(), vec![Event::Cut]));
+        assert!(elements(&app) < now, "Ctrl+X cut the selection");
+    }
+
+    #[test]
+    fn a_text_field_keeps_its_own_copy_and_paste() {
+        let (ctx, mut app) = app();
+        let mut text = String::new();
+        let run = |app: &mut App, text: &mut String, input: RawInput| {
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.text_edit_singleline(text).request_focus();
+                app.frame(ui);
+            });
+            out.textures_delta.clear();
+        };
+        for _ in 0..3 {
+            run(&mut app, &mut text, input(Modifiers::NONE, vec![]));
+        }
+        assert!(ctx.text_edit_focused(), "the field has the keyboard");
+        app.run("edit.select_all", serde_json::json!({}));
+        let before = elements(&app);
+        run(&mut app, &mut text, input(ctrl(), vec![Event::Copy]));
+        assert!(app.s.clipboard.is_empty(), "Ctrl+C in a text field does not copy artwork");
+        run(&mut app, &mut text, input(ctrl(), vec![Event::Paste("hello".into())]));
+        assert_eq!(text, "hello", "the field took the paste");
+        assert_eq!(elements(&app), before, "and the stage did not");
     }
 }
 
