@@ -21,6 +21,7 @@ pub enum Tool {
     Text,
     Pencil,
     Brush,
+    PaintBrush,
     Eraser,
     Rect,
     Oval,
@@ -66,7 +67,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 20] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 21] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -79,6 +80,7 @@ impl Tool {
             Tool::Text => tr_noop!("Text"),
             Tool::Pencil => tr_noop!("Pencil"),
             Tool::Brush => tr_noop!("Brush"),
+            Tool::PaintBrush => tr_noop!("Paint Brush"),
             Tool::Eraser => tr_noop!("Eraser"),
             Tool::Rect => tr_noop!("Rectangle"),
             Tool::Oval => tr_noop!("Oval"),
@@ -104,6 +106,7 @@ impl Tool {
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
             Tool::Brush => Some("B"),
+            Tool::PaintBrush => Some("Y"),
             Tool::Eraser => Some("E"),
             Tool::Rect => Some("R"),
             Tool::Oval => Some("O"),
@@ -125,7 +128,8 @@ impl Tool {
             Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape, a merged drawing's line or a motion path to add a point to it. Points snap to points and lines while Snap to Objects is on."),
             Tool::Text => tr_noop!("Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too."),
             Tool::Pencil => tr_noop!("Drag to draw freehand. The options bar sets Smooth, Straighten or Ink."),
-            Tool::Brush => tr_noop!("Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode."),
+            Tool::Brush => tr_noop!("Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the brush, its shape, pressure, smoothing and paint mode."),
+            Tool::PaintBrush => tr_noop!("Drag to draw a line in the stroke colour whose width follows the pen's pressure and the brush's tapers. Shape it afterwards with the Width tool. [ and ] change the size; the options set the brush and its pressure curve."),
             Tool::Eraser => tr_noop!("Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage."),
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
@@ -269,6 +273,8 @@ pub struct Shot {
     pub path: PathBuf,
     pub frames: u32,
     pub requested: bool,
+    /// Scaled down to this width when written (`--shot-width`).
+    pub width: Option<u32>,
 }
 
 pub const SHOT_FRAMES: u32 = 120;
@@ -356,6 +362,12 @@ pub struct App {
     /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
     /// when there is one) and the pen's last pressure (ADR 0033).
     pub brush: crate::brushtool::BrushOptions,
+    /// The Paint Brush's options (ADR 0068), its own as in Animate.
+    pub paint_brush: crate::brushtool::BrushOptions,
+    /// When the last sample came (seconds), for Velocity.
+    pub brush_clock: f64,
+    /// Window › Brush Library and the brush pickers (ADR 0068).
+    pub brush_lib: crate::brush_panel::BrushLibraryView,
     pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
     pub pen_pressure: Option<f32>,
     /// Eraser tool options (ADR 0034); its stroke's samples are `brush_samples`.
@@ -531,6 +543,7 @@ impl App {
         let mut session = session;
         // Open Recent is the session's list, kept in the preferences (ADR 0059).
         session.recent = prefs.recent.clone();
+        session.brushes = prefs.brushes.clone();
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
@@ -560,7 +573,7 @@ impl App {
             show_about: false,
             show_files: false,
             show_licenses: false,
-            shot: shot.map(|path| Shot { path, frames: 0, requested: false }),
+            shot: shot.map(|path| Shot { path, frames: 0, requested: false, width: None }),
             cursor_stage: None,
             tl_scroll: 0.0,
             tl_cell_w: timeline::CELL_DEFAULT,
@@ -584,6 +597,9 @@ impl App {
             snap_ring: None,
             pencil_mode: pathtools::PencilMode::default(),
             brush: crate::brushtool::BrushOptions::default(),
+            paint_brush: crate::brushtool::BrushOptions::paint_brush(),
+            brush_clock: 0.0,
+            brush_lib: crate::brush_panel::BrushLibraryView::default(),
             brush_samples: Vec::new(),
             pen_pressure: None,
             eraser: crate::erasertool::EraserOptions::default(),
@@ -785,6 +801,14 @@ impl App {
         p.ui_scale = scale.unwrap_or(p.ui_scale);
         self.prefs = p.sanitized();
         self.apply_prefs(ctx);
+    }
+
+    /// Help › User Guide: the bundled guide in the browser (ADR 0069).
+    pub fn open_user_guide(&mut self) {
+        match platform::open_user_guide() {
+            Ok(()) => self.status_ok(tr!("Opened the user guide in your browser")),
+            Err(e) => self.status_err(e),
+        }
     }
 
     pub fn open_prefs(&mut self) {
@@ -1480,6 +1504,48 @@ impl App {
                     self.tool = Tool::Select;
                 }
             }
+            Some(which @ ("brushlibrary" | "brushcurve" | "paintbrush")) => {
+                // The brush library (ADR 0068): a page with a stroke of every built-in brush
+                // (pressure swelling in the middle), each named, and one of the user's own. The
+                // library open on it ("brushlibrary"), the pressure curve editor in Properties
+                // ("brushcurve"), or Paint Brush lines of varying width ("paintbrush").
+                self.run("layer.new", json!({"name": "Brushes"}));
+                self.run("draw.object_drawing", json!({"on": true}));
+                self.run("brush.preset_save", json!({"name": "Wet Ink", "from": "ink_pen", "size": 9, "curve": [[0, 0], [0.4, 0.75], [1, 1]]})); // i18n-exempt: a sample brush name
+                let wave = |y: f32, x0: f32, len: f32| -> Vec<[f32; 3]> {
+                    (0..=60)
+                        .map(|i| {
+                            let t = i as f32 / 60.0;
+                            [x0 + t * len, y + (t * std::f32::consts::TAU).sin() * 14.0, 0.25 + 0.75 * (t * std::f32::consts::PI).sin()]
+                        })
+                        .collect()
+                };
+                let mut names: Vec<String> = anicraft_engine::brush_library::BUILTIN.iter().map(|(k, _)| (*k).to_string()).collect();
+                names.push("Wet Ink".into()); // i18n-exempt: a sample brush name
+                let as_stroke = which == "paintbrush";
+                for (i, name) in names.iter().enumerate() {
+                    let y = 70.0 + i as f32 * 78.0;
+                    self.run("draw.brush", json!({"points": wave(y, 330.0, 560.0), "preset": name, "color": "#1b2a4a", "as_stroke": as_stroke}));
+                    let label = anicraft_engine::brush_library::BUILTIN.iter().find(|(k, _)| k == name).map_or(name.as_str(), |(_, n)| n);
+                    self.run("text.create", json!({"x": 60, "y": y - 14.0, "text": label, "size": 22, "color": "#3a4150"}));
+                }
+                self.run("edit.deselect", json!({}));
+                if as_stroke {
+                    self.tool = Tool::Width;
+                } else {
+                    self.tool = Tool::Brush;
+                    if let Some(p) = anicraft_engine::brush_library::builtin("ink_pen") {
+                        crate::brush_panel::choose(self, &p);
+                    }
+                    self.brush.curve = anicraft_engine::geom::pressure::PressureCurve::new(&[[0.0, 0.0], [0.35, 0.62], [0.7, 0.8], [1.0, 1.0]]);
+                    self.brush_lib.open = which == "brushlibrary";
+                    if which == "brushlibrary"
+                        && let Some(p) = anicraft_engine::brush_library::builtin("chalk")
+                    {
+                        crate::brush_panel::choose(self, &p);
+                    }
+                }
+            }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
                 // calligraphic tip at 45°, square dabs, and a pink stroke painted behind a raw
@@ -2103,10 +2169,13 @@ impl App {
             "file.import_to_library" => Some((tr_noop!("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)"), "path", "sound.wav".to_string())),
             "file.import" => Some((tr_noop!("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)"), "path", "drawing.svg".to_string())),
             "plugin.install" => Some((tr_noop!("Install plug-in (.wasm file)"), "path", "plugin.wasm".to_string())),
+            // A brush set (ADR 0068): your brushes as a small JSON file.
+            "brush.preset_export" => Some((tr_noop!("Export your brushes (a brush set file)"), "path", "brushes.json".to_string())),
+            "brush.preset_import" => Some((tr_noop!("Import brushes (a brush set file)"), "path", "brushes.json".to_string())),
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
-            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || id == "plugin.install");
+            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "brush.preset_export" | "brush.preset_import"));
             if is_file && platform::WEB && platform::reads_file(id) {
                 // The browser's file picker (ADR 0036). The file arrives on a later frame
                 // (`open_picked`); a save or export asks for the download's name below.
@@ -2463,6 +2532,10 @@ impl App {
             })
         });
         if let Some(img) = image {
+            let img = match shot.width {
+                Some(w) => shrink(&img, w as usize),
+                None => (*img).clone(),
+            };
             match write_screenshot(&shot.path, &img) {
                 Ok(()) => println!("screenshot saved to {}", shot.path.display()),
                 Err(e) => eprintln!("screenshot failed: {e}"),
@@ -2613,6 +2686,67 @@ pub(crate) fn write_screenshot(path: &std::path::Path, img: &egui::ColorImage) -
     std::fs::write(path, png).map_err(|e| e.to_string())
 }
 
+/// A screenshot scaled down to `width` pixels across (kept when it is already narrower), each
+/// pixel the area-weighted mean of the ones it covers: sharp text, no aliasing.
+pub(crate) fn shrink(img: &egui::ColorImage, width: usize) -> egui::ColorImage {
+    let [w, h] = img.size;
+    if width == 0 || width >= w || h == 0 {
+        return img.clone();
+    }
+    let height = ((h * width + w / 2) / w).max(1);
+    // One axis at a time: per target pixel, the source pixels it covers and how much.
+    let taps = |from: usize, to: usize| -> Vec<Vec<(usize, f32)>> {
+        let scale = from as f32 / to as f32;
+        (0..to)
+            .map(|i| {
+                let (a, b) = (i as f32 * scale, (i + 1) as f32 * scale);
+                let mut v = Vec::new();
+                let mut j = a.floor() as usize;
+                while (j as f32) < b && j < from {
+                    let cover = (b.min(j as f32 + 1.0) - a.max(j as f32)).max(0.0) / scale;
+                    v.push((j, cover));
+                    j += 1;
+                }
+                v
+            })
+            .collect()
+    };
+    let (tx, ty) = (taps(w, width), taps(h, height));
+    let src: Vec<[f32; 4]> = img.pixels.iter().map(|c| c.to_srgba_unmultiplied().map(f32::from)).collect();
+    let mix = |acc: &mut [f32; 4], p: &[f32; 4], wgt: f32| {
+        for (a, v) in acc.iter_mut().zip(p) {
+            *a += v * wgt;
+        }
+    };
+    let mut rows = vec![[0.0f32; 4]; width * h];
+    for y in 0..h {
+        for (x, t) in tx.iter().enumerate() {
+            let mut acc = [0.0f32; 4];
+            for &(sx, wgt) in t {
+                if let Some(p) = src.get(y * w + sx) {
+                    mix(&mut acc, p, wgt);
+                }
+            }
+            if let Some(o) = rows.get_mut(y * width + x) {
+                *o = acc;
+            }
+        }
+    }
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for t in &ty {
+        for x in 0..width {
+            let mut acc = [0.0f32; 4];
+            for &(sy, wgt) in t {
+                if let Some(p) = rows.get(sy * width + x) {
+                    mix(&mut acc, p, wgt);
+                }
+            }
+            rgba.extend(acc.map(|v| v.round().clamp(0.0, 255.0) as u8));
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([width, height], &rgba)
+}
+
 /// Opens a file or folder with the operating system's default handler.
 pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
     // Tests click every control (`i18n::tests`): they never start another program.
@@ -2752,6 +2886,7 @@ impl App {
         crate::plugins_ui::show(self, &ctx);
         crate::actions_panel::show(self, &ctx);
         crate::find_panel::show(self, &ctx);
+        crate::brush_panel::show(self, &ctx);
         crate::publish_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
@@ -2780,6 +2915,7 @@ impl App {
         autosave::tick(self, &ctx);
         // Open Recent changed (an open, a save, a pin): into the preferences.
         crate::recent::sync(self);
+        crate::brush_panel::sync(self);
         // A browser asks before leaving a page with unsaved work (its close guard).
         platform::set_unsaved(self.s.is_dirty());
 
@@ -2790,5 +2926,28 @@ impl App {
             self.last_revision = self.s.revision;
             ctx.request_repaint();
         }
+    }
+}
+
+#[cfg(test)]
+mod shrink_tests {
+    use super::shrink;
+    use egui::{Color32, ColorImage};
+
+    #[test]
+    fn shrinking_averages_the_area_and_keeps_the_aspect() {
+        // 4 × 2: two black columns, two white: halved, one black pixel and one white per row.
+        let px = [Color32::BLACK, Color32::BLACK, Color32::WHITE, Color32::WHITE];
+        let img = ColorImage::new([4, 2], px.iter().chain(px.iter()).copied().collect());
+        let out = shrink(&img, 2);
+        assert_eq!(out.size, [2, 1]);
+        assert_eq!(out.pixels, vec![Color32::BLACK, Color32::WHITE]);
+        // A third of the way: the middle pixel mixes both halves.
+        let wide = ColorImage::new([3, 3], [Color32::BLACK, Color32::from_gray(90), Color32::WHITE].repeat(3));
+        let two = shrink(&wide, 2);
+        assert_eq!(two.size, [2, 2]);
+        assert_eq!(two.pixels[0], Color32::from_gray(30));
+        // Never enlarged.
+        assert_eq!(shrink(&img, 10).size, [4, 2]);
     }
 }

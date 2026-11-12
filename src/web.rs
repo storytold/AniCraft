@@ -477,3 +477,9 @@ pub fn discard(id: &str) {
     storage_remove(&meta_key(id));
     storage_remove(&doc_key(id));
 }
+
+/// Opens a page served beside the editor (the user guide) in a new tab.
+pub fn open_page(url: &str) -> Result<(), String> {
+    let window = web_sys::window().ok_or_else(|| tr!("this page has no window").to_string())?;
+    window.open_with_url_and_target(url, "_blank").map(|_| ()).map_err(|_| tr!("the browser didn't open {url}", url = url).to_string())
+}

@@ -49,6 +49,9 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'wasm-bindgen failed' }
 Copy-Item (Join-Path $Root 'packaging\web\index.html') (Join-Path $Out 'index.html')
 Copy-Item (Join-Path $Root 'assets\app-icon\hicolor\128x128\apps\ai.storyteller.anicraft.png') (Join-Path $Out 'anicraft.png')
+# The user guide beside the editor: Help › User Guide opens guide/index.html (ADR 0069).
+cargo run -q -p anicraft-cli -- guide --out (Join-Path $Out 'guide')
+if ($LASTEXITCODE -ne 0) { throw 'writing the user guide failed' }
 
 $Bytes = (Get-Item (Join-Path $Out 'anicraft_bg.wasm')).Length
 Write-Host ("web\ is ready: anicraft_bg.wasm is {0} KB." -f [math]::Floor($Bytes / 1024))

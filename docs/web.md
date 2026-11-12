@@ -27,6 +27,7 @@ scripts\build-web.ps1         # Windows PowerShell
 | `anicraft.js` | wasm-bindgen's loader |
 | `anicraft_bg.wasm` | the editor, about 9 MB (3.3 MB gzipped) |
 | `anicraft.png` | the page icon |
+| `guide/` | the user guide as HTML pages (`anicraft-cli guide`), opened by Help › User Guide |
 
 A plain `cargo build --target wasm32-unknown-unknown` (the whole workspace, default features)
 also works: that is what CI checks.

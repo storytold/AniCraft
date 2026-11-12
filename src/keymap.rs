@@ -53,6 +53,7 @@ pub fn tool_id(t: Tool) -> &'static str {
         Tool::Text => "tool.text",
         Tool::Pencil => "tool.pencil",
         Tool::Brush => "tool.brush",
+        Tool::PaintBrush => "tool.paint_brush",
         Tool::Eraser => "tool.eraser",
         Tool::Rect => "tool.rectangle",
         Tool::Oval => "tool.oval",

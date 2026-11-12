@@ -164,7 +164,12 @@ pub fn shortcut_label_for(os: Os, s: &str, glyphs: bool) -> String {
         (k, _) => k,
     };
     // Apple order: Control, Option, Shift, Command. Our "Ctrl" is the command modifier.
+    // Held keys that aren't modifiers ("Space+Drag") stay as words, first.
     let mut out = String::new();
+    for held in mods.split('+').filter(|m| !m.is_empty() && !matches!(*m, "Alt" | "Shift" | "Ctrl")) {
+        out.push_str(held);
+        out.push('+');
+    }
     for (name, glyph, text) in [("Alt", "⌥", "Option+"), ("Shift", "⇧", "Shift+"), ("Ctrl", "⌘", "Cmd+")] {
         if has(name) {
             out.push_str(if glyphs { glyph } else { text });
@@ -199,6 +204,36 @@ pub fn recovery_dir() -> Option<PathBuf> {
 /// Whether the recovery folder was chosen explicitly (screenshot runs only touch it then).
 pub fn recovery_dir_overridden() -> bool {
     std::env::var_os("ANICRAFT_RECOVERY_DIR").is_some_and(|v| !v.is_empty())
+}
+
+/// Where Help › User Guide writes the bundled book (ADR 0069): the system's cache folder
+/// (%LOCALAPPDATA%, ~/Library/Caches, $XDG_CACHE_HOME or ~/.cache), else the temporary folder.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn guide_dir() -> PathBuf {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let cache = match OS {
+        Os::Windows => env("LOCALAPPDATA").map(|p| p.join("AniCraft")),
+        Os::Mac => env("HOME").map(|p| p.join("Library").join("Caches").join("AniCraft")), // i18n-exempt: folder names
+        Os::Web => None,
+        Os::Linux | Os::Other => env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache"))).map(|p| p.join("anicraft")),
+    };
+    cache.unwrap_or_else(|| std::env::temp_dir().join("AniCraft")).join(format!("guide-{}", env!("CARGO_PKG_VERSION"))) // i18n-exempt: a folder name
+}
+
+/// Help › User Guide (ADR 0069): the book bundled in the app, written to [`guide_dir`] and
+/// opened in the default browser, so it works offline. The web build serves the same pages
+/// beside the editor (`scripts/build-web.sh`) and opens them in a new tab.
+pub fn open_user_guide() -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = guide_dir();
+        anicraft_guide::write_site(&dir).map_err(|e| tr!("could not write the user guide to {path}: {e}", path = dir.display(), e = e))?;
+        crate::app::open_in_system(&dir.join("index.html"))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::web::open_page("guide/index.html")
+    }
 }
 
 /// Where settings are kept, for Preferences (in the interface language).
@@ -536,13 +571,14 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         // Opening also imports .fla archives and .xfl packages.
         "file.open" => (tr_noop!("Documents"), &["anicraft", "fla", "xfl"]),
         "plugin.install" => (tr_noop!("WebAssembly plug-in"), &["wasm"]),
+        "brush.preset_export" | "brush.preset_import" => (tr_noop!("Brush set"), &["json"]),
         _ => (tr_noop!("AniCraft document"), &["anicraft"]),
     }
 }
 
 /// Commands that read a file the user picks (the others write one, or a folder of them).
 pub fn reads_file(cmd: &str) -> bool {
-    matches!(cmd, "file.open" | "plugin.install" | "file.import" | "file.import_to_library")
+    matches!(cmd, "file.open" | "plugin.install" | "file.import" | "file.import_to_library" | "brush.preset_import")
 }
 
 /// Shows the platform's own dialog (Windows common dialog, macOS panel, Linux XDG portal), with
@@ -616,6 +652,8 @@ mod tests {
         assert_eq!(shortcut_label_for(Os::Mac, "Delete", true), "⌫");
         assert_eq!(shortcut_label_for(Os::Mac, "F6", true), "F6");
         assert_eq!(shortcut_label_for(Os::Mac, "Ctrl++", true), "⌘+");
+        assert_eq!(shortcut_label_for(Os::Mac, "Space+Drag", true), "Space+Drag");
+        assert_eq!(shortcut_label_for(Os::Mac, "Shift+Click", true), "⇧Click");
     }
 
     #[test]

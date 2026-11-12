@@ -145,6 +145,12 @@ fn all_keys() -> BTreeSet<Key> {
         add(m.label());
         add(m.hint());
     }
+    // The brush library (ADR 0068): built-in brushes, their hints and the pressure curves.
+    for (k, n) in anicraft_engine::brush_library::BUILTIN {
+        add(n);
+        add(anicraft_engine::brush_library::builtin_hint(k));
+    }
+    anicraft_engine::geom::pressure::CURVE_PRESETS.iter().for_each(|(_, l)| add(l));
     keys
 }
 
@@ -588,7 +594,7 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
             a.run("element.set_color_effect", serde_json::json!({"style": style}));
         }));
     }
-    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside", "templates", "savetemplate"] {
+    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside", "templates", "savetemplate", "brushlibrary", "brushcurve"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
     // Test Movie in a window of its own (ADR 0062; egui stands in for the window system here).
@@ -596,7 +602,7 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
         ctx.set_embed_viewports(false);
         a.open_panel(Some("testmovie"));
     }));
-    for tool in [crate::app::Tool::Brush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {
+    for tool in [crate::app::Tool::Brush, crate::app::Tool::PaintBrush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {
         found.extend(click_everything(&format!("{tool:?}"), |a, _| a.tool = tool));
     }
     assert!(found.is_empty(), "{} things in plain English after using the controls:\n{}", found.len(), found.join("\n"));

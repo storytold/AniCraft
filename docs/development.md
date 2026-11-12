@@ -23,6 +23,22 @@ Sound output (ADR 0020) uses `cpal`, which on Linux and the BSDs builds against 
 (Arch, FreeBSD). `cargo build --no-default-features` leaves sound output out (playback is
 silent; import, waveforms and audio export still work). Tests never open an audio device.
 
+### The user guide
+
+The user guide is Markdown in `docs/guide/` (ADR 0069); `crates/guide` bundles it as HTML for
+Help › User Guide, and `cargo run -p anicraft-cli -- guide --out <folder>` writes the pages.
+`cargo test` checks every link, anchor and picture and that every chapter is reachable from
+`index.md`; a new chapter needs its line in `PAGES` (`crates/guide/src/lib.rs`) and a link
+from the contents. The command and shortcut references in `docs/guide/reference/` are
+generated: when a command or a default key changes, a test fails until you run
+
+```sh
+ANICRAFT_BLESS_GUIDE=1 cargo test -p anicraft guide_reference
+```
+
+and commit the result. The pictures come from `scripts/guide-shots.sh` (or `.ps1`), which runs
+`--screenshot --open <state> --shot-width 1100`; look at each one before committing it.
+
 ### GPU stage
 
 The stage draws on the graphics card by default (ADR 0032; the shell's `gpu-stage` feature is

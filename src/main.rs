@@ -25,6 +25,7 @@ mod a11y;
 mod actions_panel;
 mod app;
 mod autosave;
+mod brush_panel;
 mod brushtool;
 mod envelope;
 mod find_panel;
@@ -104,6 +105,9 @@ struct Look {
     scale: Option<f32>,
     /// `--lang`: a locale code, `auto` or `pseudo` (ADR 0040).
     lang: Option<String>,
+    /// `--shot-width`: the screenshot scaled down to this many pixels across (the user guide's
+    /// pictures, ADR 0069).
+    shot_width: Option<u32>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -128,6 +132,9 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
             platform::wake_on_requests(&cc.egui_ctx);
             let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);
+            if let Some(s) = a.shot.as_mut() {
+                s.width = look.shot_width;
+            }
             if a.shot.is_none() {
                 a.show_update_outcome_on_start();
             }
@@ -185,6 +192,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--screenshot" => out.shot = Some(PathBuf::from(args.next().ok_or("--screenshot needs a file name")?)), // i18n-exempt: a console message
             "--open" => out.open = args.next(),
             "--renderer" => out.renderer = args.next(),
+            "--shot-width" => match args.next().and_then(|s| s.parse::<u32>().ok()) {
+                Some(w) if (64..=8192).contains(&w) => out.look.shot_width = Some(w),
+                _ => return Err("--shot-width takes a width in pixels, from 64 to 8192".into()), // i18n-exempt: a console message
+            },
             "--theme" => match args.next().as_deref() {
                 Some("graphite") => out.look.theme = Some(theme::Palette::Graphite),
                 Some("high-contrast") => out.look.theme = Some(theme::Palette::HighContrast),
@@ -215,9 +226,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
 /// `--help` (the console's text, in English).
 #[cfg(not(target_arch = "wasm32"))]
 // i18n-exempt: the --help console text
-const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
+const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png [--shot-width <px>]] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|brushlibrary|brushcurve|paintbrush|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
+     --shot-width scales the screenshot down to this width (the user guide's pictures)\n\
      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\
      --theme      the interface palette for this run (not saved)\n\
      --scale      the interface scale for this run, 75 to 200 (not saved)\n\
@@ -290,6 +302,8 @@ mod args_tests {
         assert_eq!((a.file, a.shot, a.open.as_deref()), (Some(PathBuf::from("walk.anicraft")), Some(PathBuf::from("shots/x.png")), Some("testmovie")));
         assert!(parse_args(["--scale".to_string(), "lots".to_string()]).is_err());
         assert!(parse_args(["--screenshot".to_string()]).is_err());
+        assert_eq!(parse(&["--screenshot", "a.png", "--shot-width", "1200"]).look.shot_width, Some(1200));
+        assert!(parse_args(["--shot-width".to_string(), "9".to_string()]).is_err());
         assert_eq!(parse(&["--version"]).print, Some(Print::Version));
         // And the file opens: the session starts with it, not the sample.
         let dir = std::env::temp_dir().join(format!("anicraft-shell-args-{}", std::process::id()));
@@ -308,6 +322,8 @@ mod args_tests {
     }
 }
 
+#[cfg(test)]
+mod guide_reference_tests;
 #[cfg(test)]
 mod guidelines_tests;
 #[cfg(test)]

@@ -8,6 +8,39 @@
   them, and a newer push cancels the older run. Their first run
   found one macOS-only failure: the screen-reader translation tests treated the macOS app
   menu's title, the product name, as untranslated.
+* **The user guide** (ADR 0069, M8).
+  * **Help › User Guide** opens AniCraft's guide in your browser. It comes with the app, so it
+    works offline; the web editor serves it beside the editor. It is also in the command palette.
+  * Eighteen chapters written for artists, from getting started, drawing, symbols, the timeline and
+    tweens to masks, the camera and bones, text, images and sound, interactivity, exporting and
+    Publish, opening Animate files, preferences and accessibility, plug-ins, working headless, and
+    troubleshooting, plus **Coming from Animate**, which maps Animate's panels, tools and shortcuts
+    to AniCraft's.
+  * A **command reference** and a **shortcut reference** (with the macOS keys beside the others),
+    generated from AniCraft itself, so they always match the version you have.
+  * `anicraft-cli guide --out <folder>` writes the guide as HTML pages.
+  * On macOS, the fixed keys that hold a key while dragging ("Space+Drag") keep that key in their
+    label.
+* **Brush library, pressure curves and the Paint Brush** (ADR 0068, M7).
+  * **Window › Brush Library**: seven built-in brushes, each with a stroke preview drawn by the
+    renderer: Pencil, Ink Pen, Flat Calligraphy, Round Taper, Marker, Chalk (a ragged edge that
+    is the same every time) and Dotted. They are all made of parameters, with no bitmaps. A click
+    sets the brush in hand.
+  * **Your own brushes**: Save Brush keeps the brush in hand under a name, in your preferences.
+    Right-click to rename or delete one (deleting asks first). Import… and Export… move a brush
+    set between computers as a small JSON file.
+  * **Pressure curves**: an editor in Properties maps pen pressure to the size and, optionally,
+    to the stroke's opacity. It has Linear, Soft and Firm presets, or your own points.
+  * **Shaping**: tapers at the start and end, dab spacing and a rough edge, in Properties.
+  * **Velocity**: without a pen, drawing faster draws thinner (off by default).
+  * **Paint Brush (Y)**: draws a line in the stroke colour whose width follows the pressure and
+    tapers, as a width profile you can reshape with the Width tool.
+  * Headless: `brush.preset_list`, `brush.preset_save`, `brush.preset_rename`,
+    `brush.preset_delete`, `brush.preset_export`, `brush.preset_import`; `preset`, `curve`,
+    `pressure_size`, `pressure_opacity`, `taper_start`, `taper_end`, `spacing`, `jitter` and
+    `as_stroke` on `draw.brush`.
+  * Pen tilt isn't read yet: egui doesn't report it.
+
 * **Dynamic and input text fields** (ADR 0066, M5).
   * **Properties › Text type**: Static, Dynamic or Input text, as in Animate. Dynamic and input
     fields have an **instance name**, a **line type** (single line, multiline, multiline no wrap,

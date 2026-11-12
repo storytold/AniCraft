@@ -164,6 +164,7 @@ cargo run --release -p anicraft-cli -- render --sample --frame 12 --out frame12.
 cargo run --release -p anicraft-cli -- render-seq --sample --out-dir frames --scale 0.5
 cargo run --release -p anicraft-cli -- gif --sample --out animation.gif
 cargo run --release -p anicraft-cli -- commands         # the command registry as JSON
+cargo run --release -p anicraft-cli -- guide --out guide  # the user guide as HTML pages
 cargo run --release -p anicraft-cli -- exec --sample draw.rect '{"x":10,"y":10,"w":80,"h":40}' --save out.anicraft
 cargo run --release -p anicraft-cli -- serve --sample   # JSON-lines on stdin/stdout
 cargo test                                              # all crates
@@ -214,6 +215,11 @@ src/            L5  egui shell (app, menus, stage, timeline, panels, theme)
 ```
 
 No code below `src/` depends on egui, eframe or windowing libraries.
+
+**New to AniCraft?** The [**user guide**](docs/guide/index.md) is written for artists: getting started, every
+workflow, a chapter for people [coming from Animate](docs/guide/coming-from-animate.md), and generated
+[command](docs/guide/reference/commands.md) and [shortcut](docs/guide/reference/shortcuts.md) references. It also
+opens offline from **Help › User Guide**.
 
 Agent and contributor rules (clean room, the asset policy, no panics in shipped code) are in [`AGENTS.md`](AGENTS.md).
 [`docs/requirements.md`](docs/requirements.md) has the scope, [`docs/architecture.md`](docs/architecture.md) the design,
