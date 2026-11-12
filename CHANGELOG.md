@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+* **Accessibility, second pass** (ADR 0064, M8).
+  * **Select on the stage from the keyboard.** With the stage focused (Ctrl+F6), Tab goes to
+    its elements, and a ring shows the focused one on the artwork.
+    * Tab, Shift+Tab and the arrows move between elements.
+    * Enter or Space selects one; Shift+Enter or Shift+Space adds it to the selection or
+      takes it out.
+    * Esc goes back to the stage.
+  * **Screen readers hear what is on the stage.** While the stage has focus, its elements are
+    a list ("Rectangle", "Text: Hello", "ball · Graphic: Ball"), each with its layer, place,
+    size, on-screen bounds and whether it is selected.
+  * **The active layer's frames are a list too.** Each item reads "Frames 1–24: keyframe ·
+    motion tween · label “walk”", and activating one moves the playhead there.
+  * **The timeline from the keyboard.** On the focused timeline, the arrows move the playhead
+    and the active layer, and each move is announced.
+  * **The menu bar from the keyboard** on Windows and Linux.
+    * Press and let go of Alt, or press F10. Then the arrows, Enter and Esc work as in other
+      applications.
+    * Alt+F, Alt+E and the rest open a menu directly. While Alt is held, each title shows its
+      letter underlined.
+  * **Follow system** is the new default theme. AniCraft switches to high contrast while
+    Windows uses a contrast theme, macOS has Increase Contrast on, the Linux desktop asks for
+    high contrast, or the browser prefers more contrast. Choosing Graphite or High contrast
+    keeps that palette.
+  * Headless: `element.select` takes `toggle`.
+
 * **Test Movie in its own window, and opening documents on macOS** (ADR 0062, M8).
   * **Control › Test Movie** (Ctrl+Enter) now opens in a **window of its own** on the desktop,
     as in Animate. It is sized to the stage at 100 % (smaller if that wouldn't fit the

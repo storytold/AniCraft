@@ -58,6 +58,7 @@ mod scale_grid;
 mod sound;
 mod shape_hints;
 mod stage;
+mod stage_a11y;
 mod start;
 mod test_movie;
 mod theme;

@@ -437,6 +437,243 @@ mod tests {
         assert!(app.playing, "Enter on the focused stage plays");
     }
 
+    /// Presses `key` and lets a frame pass for focus to settle. Returns the last frame's tree.
+    fn key(ctx: &egui::Context, app: &mut App, key: egui::Key, modifiers: egui::Modifiers) -> Option<TreeUpdate> {
+        frame(ctx, app, press(key, modifiers));
+        frame(ctx, app, input(1.0)).platform_output.accesskit_update
+    }
+
+    fn focus_stage(ctx: &egui::Context, app: &mut App) {
+        while focused_region(ctx) != Some(Region::Stage) {
+            key(ctx, app, egui::Key::F6, egui::Modifiers::COMMAND);
+        }
+    }
+
+    fn node(t: &TreeUpdate, id: egui::Id) -> Option<&Node> {
+        t.nodes.iter().find(|(n, _)| *n == id.accesskit_id()).map(|(_, n)| n)
+    }
+
+    #[test]
+    fn the_stage_lists_its_elements_and_selects_them_from_the_keyboard() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        // Unfocused, the stage has no element nodes: the tree stays small.
+        assert!(app.stage_nav.focused(&ctx).is_none());
+        focus_stage(&ctx, &mut app);
+        app.run("edit.deselect", serde_json::json!({}));
+        let (items, total) = crate::stage_a11y::items(&app);
+        assert!(items.len() >= 2 && total == items.len(), "the sample frame has a few elements: {items:?}");
+        // Tab goes into the list, to the first element.
+        let t = key(&ctx, &mut app, egui::Key::Tab, egui::Modifiers::NONE).unwrap_or_else(|| panic!("no tree"));
+        let first = app.stage_nav.focused(&ctx).unwrap_or_else(|| panic!("Tab on the stage focuses an element"));
+        assert_eq!(first, (items[0].layer, items[0].element));
+        let n = node(&t, crate::stage_a11y::node_id(first.0, first.1)).unwrap_or_else(|| panic!("the element has a node"));
+        assert_eq!(n.role(), Role::ListBoxOption);
+        assert_eq!(n.label(), Some(items[0].name.as_str()));
+        assert_eq!(n.is_selected(), Some(false));
+        assert!(n.bounds().is_some_and(|b| b.x1 > b.x0 || b.y1 > b.y0) || items[0].bounds.is_empty(), "bounds on screen");
+        assert_eq!(t.focus, crate::stage_a11y::node_id(first.0, first.1).accesskit_id(), "the reader's focus is on it");
+        // The list box is the canvas's child, and its options are the list's.
+        let list = t.nodes.iter().find(|(_, n)| n.role() == Role::ListBox && n.children().contains(&crate::stage_a11y::node_id(first.0, first.1).accesskit_id()));
+        assert!(list.is_some(), "the options sit in a list box");
+        let canvas = t.nodes.iter().find(|(_, n)| n.role() == Role::Canvas && n.label().is_some_and(|l| l.starts_with("Stage"))).map(|(_, n)| n);
+        assert!(canvas.is_some_and(|c| list.is_some_and(|(id, _)| c.children().contains(id))), "the list box is the stage's child");
+        // Space selects it alone; the arrows move on without nudging; Shift+Space adds the next.
+        key(&ctx, &mut app, egui::Key::Space, egui::Modifiers::NONE);
+        assert!(app.s.selection.contains(first.0, first.1) && app.s.selection.len() == 1);
+        let before = crate::stage_a11y::items(&app).0.iter().map(|i| i.bounds).collect::<Vec<_>>();
+        key(&ctx, &mut app, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        let second = app.stage_nav.focused(&ctx).unwrap_or_else(|| panic!("an element has focus"));
+        assert_eq!(second, (items[1].layer, items[1].element));
+        assert_eq!(crate::stage_a11y::items(&app).0.iter().map(|i| i.bounds).collect::<Vec<_>>(), before, "the arrows moved focus, not the artwork");
+        key(&ctx, &mut app, egui::Key::Space, egui::Modifiers::SHIFT);
+        assert!(app.s.selection.contains(second.0, second.1) && app.s.selection.contains(first.0, first.1));
+        let t = key(&ctx, &mut app, egui::Key::Space, egui::Modifiers::SHIFT).unwrap_or_else(|| panic!("no tree"));
+        assert!(!app.s.selection.contains(second.0, second.1) && app.s.selection.len() == 1, "Shift+Space again takes it out");
+        assert_eq!(node(&t, crate::stage_a11y::node_id(first.0, first.1)).and_then(Node::is_selected), Some(true));
+        // Left from the first wraps to the last; Enter selects it alone.
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        let last = items.last().map(|i| (i.layer, i.element));
+        assert_eq!(app.stage_nav.focused(&ctx), last);
+        key(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+        assert!(!app.playing, "Enter on an element selects, it doesn't play");
+        // The sample's sky is on a locked layer: listed (unavailable), never selected.
+        assert!(items.last().is_some_and(|i| i.locked));
+        assert!(app.s.selection.contains(first.0, first.1) && app.s.selection.len() == 1, "a locked element isn't selected");
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        key(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+        let before_last = items.get(items.len() - 2).map(|i| (i.layer, i.element));
+        assert!(before_last.is_some_and(|(l, e)| app.s.selection.contains(l, e)) && app.s.selection.len() == 1, "Enter selects it alone");
+        // Esc goes back to the stage itself.
+        key(&ctx, &mut app, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(app.stage_nav.focused(&ctx).is_none());
+        assert_eq!(focused_region(&ctx), Some(Region::Stage));
+        assert_eq!(keyboard(&ctx), Keyboard::App, "the stage has the keyboard again: arrows nudge");
+    }
+
+    #[test]
+    fn stage_elements_and_timeline_frames_pass_the_audit() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        focus_stage(&ctx, &mut app);
+        let t = key(&ctx, &mut app, egui::Key::Tab, egui::Modifiers::NONE).unwrap_or_else(|| panic!("no tree"));
+        assert!(t.nodes.iter().filter(|(_, n)| n.role() == Role::ListBoxOption).count() >= 2);
+        let found = audit(&t);
+        assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    #[test]
+    fn the_focused_timeline_moves_and_announces_the_playhead_and_layer_and_lists_its_spans() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        while focused_region(&ctx) != Some(Region::Timeline) {
+            key(&ctx, &mut app, egui::Key::F6, egui::Modifiers::COMMAND);
+        }
+        app.run("layer.select", serde_json::json!({"index": 0}));
+        app.tl_refocus = true;
+        frame(&ctx, &mut app, input(1.0));
+        frame(&ctx, &mut app, input(1.0));
+        let (frame0, layer0) = (app.s.frame, app.s.layer);
+        let t = key(&ctx, &mut app, egui::Key::ArrowRight, egui::Modifiers::NONE).unwrap_or_else(|| panic!("no tree"));
+        assert_eq!(app.s.frame, frame0 + 1, "Right is the next frame");
+        let said = app.status.as_ref().map(|s| s.text.clone()).unwrap_or_default();
+        assert!(said.starts_with(&format!("Frame {}", frame0 + 2)), "announced: {said}");
+        // The active layer's spans are list items under its frame grid, the playhead's selected.
+        let items: Vec<&Node> = t.nodes.iter().filter(|(_, n)| n.role() == Role::ListItem).map(|(_, n)| n).collect();
+        assert!(!items.is_empty(), "the active layer's spans are listed");
+        assert!(items.iter().all(|n| n.label().is_some_and(|l| l.starts_with("Frame"))), "{:?}", items.iter().map(|n| n.label()).collect::<Vec<_>>());
+        assert_eq!(items.iter().filter(|n| n.is_selected() == Some(true)).count(), 1, "one span holds the playhead");
+        let grid = t.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l.starts_with("Frames of")) && !n.children().is_empty());
+        assert!(grid.is_some(), "the list sits under the active layer's frame grid");
+        assert!(audit(&t).is_empty(), "{}", audit(&t).join("\n"));
+        // Left goes back; Down moves to the next layer and keeps the keyboard on the timeline.
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        assert_eq!(app.s.frame, frame0);
+        key(&ctx, &mut app, egui::Key::ArrowDown, egui::Modifiers::NONE);
+        assert_ne!(app.s.layer, layer0, "Down is the layer below");
+        assert_eq!(app.s.timeline().layers.iter().position(|l| l.id == app.s.layer), Some(1));
+        assert_eq!((focused_region(&ctx), keyboard(&ctx)), (Some(Region::Timeline), Keyboard::App), "the new row has the keyboard");
+        key(&ctx, &mut app, egui::Key::ArrowUp, egui::Modifiers::NONE);
+        assert_eq!(app.s.layer, layer0);
+        let said = app.status.as_ref().map(|s| s.text.clone()).unwrap_or_default();
+        let name = app.s.timeline().layer(layer0).map(|l| l.name.clone()).unwrap_or_default();
+        assert!(said.contains(&name), "the layer is announced: {said}");
+    }
+
+    #[test]
+    fn access_keys_take_the_first_free_letter() {
+        let keys = crate::menus::access_keys(&["File", "Edit", "View", "Insert", "Modify", "Commands", "Control", "Window", "Help"]);
+        let letters: String = keys.iter().map(|k| k.map_or('-', |(_, c)| c)).collect();
+        assert_eq!(letters, "FEVIMCOWH", "Control takes its O, as in Animate");
+        assert_eq!(crate::menus::access_keys(&["Fichier", "Édition", "Ändern", "日本"]), vec![Some((0, 'F')), Some((1, 'D')), Some((1, 'N')), None]);
+    }
+
+    #[test]
+    fn the_menu_bar_works_from_the_keyboard() {
+        if !crate::menus::MenuKeys::available() {
+            return; // macOS keeps its own menu conventions (ADR 0064).
+        }
+        use egui::{Key, Modifiers as M};
+        let (_, mut app, ctx) = tree(|_, _| {});
+        let tops = app.menu_keys.top_ids().to_vec();
+        assert_eq!(tops.len(), crate::menus::TOP_MENUS.len());
+        let focused = |ctx: &egui::Context| ctx.memory(|m| m.focused());
+        let open = |ctx: &egui::Context, i: usize| egui::Popup::is_id_open(ctx, tops[i].with("popup"));
+        // F10 focuses File; the titles show their access keys.
+        let t = key(&ctx, &mut app, Key::F10, M::NONE).unwrap_or_else(|| panic!("no tree"));
+        assert_eq!(focused(&ctx), Some(tops[0]));
+        assert!(app.menu_keys.show_keys);
+        assert_eq!(node(&t, tops[0]).and_then(Node::access_key), Some("Alt+F"));
+        // Right: Edit; Down opens it on its first item; Down, Up and Up wrap round.
+        key(&ctx, &mut app, Key::ArrowRight, M::NONE);
+        assert_eq!(focused(&ctx), Some(tops[1]));
+        key(&ctx, &mut app, Key::ArrowDown, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(open(&ctx, 1), "Down opens Edit");
+        let items = app.menu_keys.open_items(&ctx);
+        assert!(items.len() > 3, "Edit has items: {}", items.len());
+        assert_eq!(focused(&ctx), items.first().copied(), "on its first item");
+        key(&ctx, &mut app, Key::ArrowDown, M::NONE);
+        assert_eq!(focused(&ctx), items.get(1).copied());
+        key(&ctx, &mut app, Key::ArrowUp, M::NONE);
+        key(&ctx, &mut app, Key::ArrowUp, M::NONE);
+        assert_eq!(focused(&ctx), items.last().copied(), "Up from the first wraps to the last");
+        assert_eq!(keyboard(&ctx), Keyboard::Control, "the menu keeps Enter and the arrows");
+        // Right on an item: the next menu, open, on its first item.
+        key(&ctx, &mut app, Key::ArrowRight, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(open(&ctx, 2) && !open(&ctx, 1), "Right goes on to View");
+        assert_eq!(focused(&ctx), app.menu_keys.open_items(&ctx).first().copied());
+        // Esc closes the menu, back on its title; Esc again leaves the bar.
+        key(&ctx, &mut app, Key::Escape, M::NONE);
+        assert!(!open(&ctx, 2));
+        assert_eq!(focused(&ctx), Some(tops[2]));
+        key(&ctx, &mut app, Key::Escape, M::NONE);
+        assert_eq!(focused(&ctx), None, "nothing had focus before");
+        assert!(!app.menu_keys.show_keys);
+        // Alt pressed and let go alone also focuses the bar (and again leaves it).
+        let mods = |m: M| {
+            let mut i = input(1.0);
+            i.events.push(egui::Event::ModifiersChanged(m));
+            i
+        };
+        frame(&ctx, &mut app, mods(M::ALT));
+        frame(&ctx, &mut app, input(1.0));
+        assert!(app.menu_keys.show_keys, "titles are underlined while Alt is held");
+        frame(&ctx, &mut app, mods(M::NONE));
+        frame(&ctx, &mut app, input(1.0));
+        assert_eq!(focused(&ctx), Some(tops[0]), "an Alt tap focuses File");
+        key(&ctx, &mut app, Key::Escape, M::NONE);
+        // Alt+H opens Help from the stage; an item chosen with Enter runs (and its Enter goes no
+        // further than the item).
+        focus_stage(&ctx, &mut app);
+        key(&ctx, &mut app, Key::H, M::ALT);
+        frame(&ctx, &mut app, input(1.0));
+        let help = crate::menus::TOP_MENUS.iter().position(|t| *t == "Help").unwrap_or(0);
+        assert!(open(&ctx, help), "Alt+H opens Help");
+        let t = frame(&ctx, &mut app, input(1.0)).platform_output.accesskit_update.unwrap_or_else(|| panic!("no tree"));
+        let found = audit(&t);
+        assert!(found.is_empty(), "the open menu passes the audit:\n{}", found.join("\n"));
+        let palette = app.menu_keys.open_items(&ctx).into_iter().position(|id| node(&t, id).and_then(Node::label).is_some_and(|l| l.starts_with("Command Palette")));
+        let palette = palette.unwrap_or_else(|| panic!("Help has Command Palette…"));
+        while app.menu_keys.open_items(&ctx).iter().position(|id| Some(*id) == focused(&ctx)) != Some(palette) {
+            key(&ctx, &mut app, Key::ArrowDown, M::NONE);
+        }
+        key(&ctx, &mut app, Key::Enter, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(app.palette.is_some(), "Enter ran the item");
+        assert!(!open(&ctx, help));
+        app.palette = None;
+        // View's first item is Zoom In: chosen with Enter, it zooms and the keyboard goes back
+        // to the stage.
+        focus_stage(&ctx, &mut app);
+        let stage = focused(&ctx);
+        let zoom = app.view.zoom;
+        key(&ctx, &mut app, Key::V, M::ALT);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(open(&ctx, 2), "Alt+V opens View");
+        key(&ctx, &mut app, Key::Enter, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(app.view.zoom > zoom, "Zoom In ran");
+        assert_eq!(focused(&ctx), stage, "the keyboard went back to the stage");
+        assert_eq!(app.tool, crate::app::Tool::Select, "Alt+V opened View; it didn't pick the Selection tool's V");
+    }
+
+    #[test]
+    fn the_palette_follows_the_system_contrast_setting_in_the_same_frame() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        app.set_system_contrast(&ctx, Some(true));
+        let followed = crate::theme::palette();
+        app.set_system_contrast(&ctx, Some(false));
+        let back = crate::theme::palette();
+        // Chosen by hand: the system's setting no longer changes it.
+        let mut p = app.prefs.clone();
+        p.theme_follows_system = Some(false);
+        app.set_prefs(&ctx, p);
+        app.set_system_contrast(&ctx, Some(true));
+        let manual = crate::theme::palette();
+        crate::theme::apply_palette(&egui::Context::default(), crate::theme::Palette::Graphite);
+        assert_eq!((followed, back, manual), (crate::theme::Palette::HighContrast, crate::theme::Palette::Graphite, crate::theme::Palette::Graphite));
+    }
+
     #[test]
     fn ctrl_f6_moves_focus_through_the_panels_and_back() {
         let (_, mut app, ctx) = tree(|_, _| {});

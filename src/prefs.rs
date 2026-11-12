@@ -63,8 +63,13 @@ pub struct Prefs {
     pub language: String,
     pub ui_font: FontChoice,
     pub data_font: FontChoice,
-    /// Graphite or high contrast (ADR 0022).
+    /// Graphite or high contrast (ADR 0022), when chosen by hand.
     pub theme: crate::theme::Palette,
+    /// Follow the system's contrast setting (ADR 0064): high contrast while the system asks for
+    /// more contrast, graphite otherwise. `None` (files from before): it follows, unless the
+    /// file chose high contrast.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme_follows_system: Option<bool>,
     /// Interface scale (1.0 = 100%).
     pub ui_scale: f32,
     pub render_mode: RenderMode,
@@ -150,6 +155,7 @@ impl Default for Prefs {
             ui_font: FontChoice::Bundled,
             data_font: FontChoice::Bundled,
             theme: crate::theme::Palette::Graphite,
+            theme_follows_system: None,
             ui_scale: 1.0,
             render_mode: RenderMode::Auto,
             stage_renderer: StageRenderer::Gpu,
@@ -192,6 +198,21 @@ pub const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
 pub const GAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
 
 impl Prefs {
+    /// Whether the theme follows the system's contrast setting ("Follow system", the default).
+    pub fn follows_system(&self) -> bool {
+        self.theme_follows_system.unwrap_or(self.theme != crate::theme::Palette::HighContrast)
+    }
+
+    /// The palette to draw with, given what the system says about contrast (`None`: it
+    /// doesn't say, or hasn't yet).
+    pub fn palette(&self, system_high_contrast: Option<bool>) -> crate::theme::Palette {
+        match (self.follows_system(), system_high_contrast) {
+            (true, Some(true)) => crate::theme::Palette::HighContrast,
+            (true, _) => crate::theme::Palette::Graphite,
+            (false, _) => self.theme,
+        }
+    }
+
     pub fn sanitized(mut self) -> Prefs {
         self.ui_scale = if self.ui_scale.is_finite() { self.ui_scale.clamp(*SCALE_RANGE.start(), *SCALE_RANGE.end()) } else { 1.0 };
         self.timeline_start_gap = if self.timeline_start_gap.is_finite() { self.timeline_start_gap.clamp(*GAP_RANGE.start(), *GAP_RANGE.end()) } else { 0.0 };
@@ -280,6 +301,28 @@ impl SystemFonts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_theme_follows_the_system_unless_one_was_chosen() {
+        use crate::theme::Palette;
+        // New installs, and files from before ADR 0064 that kept the default, follow the system.
+        for p in [Prefs::default(), Prefs::from_json(r#"{"theme": "Graphite"}"#)] {
+            assert!(p.follows_system());
+            assert_eq!(p.palette(Some(true)), Palette::HighContrast);
+            assert_eq!(p.palette(Some(false)), Palette::Graphite);
+            assert_eq!(p.palette(None), Palette::Graphite, "a system that doesn't say: graphite");
+        }
+        // A file that chose high contrast keeps it whatever the system says.
+        let hc = Prefs::from_json(r#"{"theme": "HighContrast"}"#);
+        assert!(!hc.follows_system());
+        assert_eq!(hc.palette(Some(false)), Palette::HighContrast);
+        // Graphite chosen by hand stays graphite; the choice survives a round trip.
+        let manual = Prefs { theme_follows_system: Some(false), ..Prefs::default() };
+        assert_eq!(manual.palette(Some(true)), Palette::Graphite);
+        let back = Prefs::from_json(&serde_json::to_string(&manual).unwrap_or_default());
+        assert_eq!(back.theme_follows_system, Some(false));
+        assert!(!serde_json::to_string(&Prefs::default()).unwrap_or_default().contains("theme_follows_system"), "nothing new written until chosen");
+    }
 
     #[test]
     fn system_font_scan_is_safe_and_loads_a_face() {

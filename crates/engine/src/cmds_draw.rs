@@ -23,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         c("edit.delete", "Clear", "Edit", Some("Delete"), "{} (on every layer with selected items)", true, delete_selection),
         c("edit.duplicate", "Duplicate", "Edit", Some("Ctrl+D"), "{dx?, dy?} (each copy on its original's layer)", true, |s, p| s.each_layer(true, |s| duplicate(s, p))),
-        c("element.select", "Select Elements", "", None, "{ids: [..], add?: bool, layer?} selects elements on any visible, unlocked layer at the playhead (ids are unique; `layer` looks only there); the active layer becomes the first one's unless it has some of them", false, select),
+        c("element.select", "Select Elements", "", None, "{ids: [..], add?: bool, toggle?: bool, layer?} selects elements on any visible, unlocked layer at the playhead (ids are unique; `layer` looks only there); `toggle` takes each one that is selected out of the selection and adds the others (Shift+Space on a stage element); the active layer becomes the first one's unless it has some of them", false, select),
         c("element.pick", "Select at Point", "", None, "{x, y, add?: bool} the topmost element there on a visible, unlocked layer; `add` (Shift) adds it to the selection, or lets go of it, on any layer", false, pick),
         c("element.translate", "Move", "", None, "{dx, dy, snap?, from?: [x, y]} moves the selection, on every layer; with `snap` (a distance) one of its corners or ends (the nearest to `from`) then snaps onto a point, line or fill edge of the rest within that distance", true, translate),
         c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, |s, p| s.each_layer(true, |s| set_transform(s, p))),
@@ -210,6 +210,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param(format!("param 'ids' has more than {MAX_SELECT} ids")));
     }
     let add = opt_bool(p, "add")?.unwrap_or(false);
+    let toggle = opt_bool(p, "toggle")?.unwrap_or(false);
     // Where each element is at the playhead: on `layer`, else the active layer first, then the
     // others top to bottom.
     let order: Vec<LayerId> = match opt_u64(p, "layer")?.map(LayerId) {
@@ -234,11 +235,17 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         }
         picked.push((l, id));
     }
-    if !add {
-        s.selection.clear();
-    }
-    for &(l, id) in &picked {
-        s.selection.insert(l, id);
+    if toggle {
+        for &(l, id) in &picked {
+            s.selection.toggle(l, id);
+        }
+    } else {
+        if !add {
+            s.selection.clear();
+        }
+        for &(l, id) in &picked {
+            s.selection.insert(l, id);
+        }
     }
     // As a click does: the active layer is where the artwork is.
     if let Some(&(l, _)) = picked.first()
