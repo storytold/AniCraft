@@ -199,7 +199,21 @@ pub fn unavailable(cmd: &str) -> Option<&'static str> {
     match cmd {
         "file.export_video" => Some(tr_noop!("Video export runs ffmpeg, which a web browser can't start: use the desktop app, or export an animated GIF or a PNG sequence")),
         "plugin.install" | "plugin.remove" | "plugin.reload" => Some(tr_noop!("Plug-ins are installed into a folder on your computer: use the desktop app")),
+        "file.save_as_template" => Some(tr_noop!("Your templates are kept in a folder on your computer: use the desktop app (the built-in templates work here)")),
         _ => None,
+    }
+}
+
+/// Where the user's templates live (ADR 0065): `Templates` in the settings folder, one folder
+/// per category. `ANICRAFT_TEMPLATES_DIR` points it elsewhere (tests, screenshots, portable
+/// installs). None in a browser, which has no folders to keep them in.
+pub fn templates_dir() -> Option<PathBuf> {
+    if WEB {
+        return None;
+    }
+    match std::env::var_os("ANICRAFT_TEMPLATES_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => Some(PathBuf::from(d)),
+        None => config_dir().map(|d| d.join("Templates")), // i18n-exempt: a folder name
     }
 }
 
@@ -451,7 +465,7 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
         "file.export_lottie" => (tr_noop!("Lottie animation"), &["json"]),
         "file.export_html" => (tr_noop!("Web page"), &["html", "htm"]),
         "file.import" => (tr_noop!("Drawing, image or sound"), &["svg", "png", "jpg", "jpeg", "wav", "ogg", "mp3"]),
-        "file.import_to_library" => (tr_noop!("Sound or image"), &["wav", "ogg", "mp3", "png", "jpg", "jpeg"]),
+        "file.import_to_library" => (tr_noop!("Sound, image or drawing"), &["wav", "ogg", "mp3", "png", "jpg", "jpeg", "svg"]),
         "file.export_audio" => (tr_noop!("WAV sound"), &["wav"]),
         "file.export_sprite_sheet" => (tr_noop!("PNG sprite sheet"), &["png"]),
         "file.export_video" => (tr_noop!("Video (WebM or MP4)"), &["webm", "mp4"]),

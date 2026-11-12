@@ -74,8 +74,8 @@ fn every_built_in_template_opens_untitled_and_survives_a_save() {
         assert!(s.path.is_none() && !s.is_dirty(), "{id}: a new, untitled document");
         assert_eq!((u64::from(s.doc.stage.width), u64::from(s.doc.stage.height)), (t["width"].as_u64().unwrap(), t["height"].as_u64().unwrap()));
         // Drawing works straight away on a drawing layer, and it saves and opens again.
-        let target = s.timeline().layers.iter().find(|l| l.kind == anicraft_doc::LayerKind::Normal && !l.locked).map(|l| l.id).unwrap();
-        s.layer = target;
+        let active = s.active_layer().unwrap();
+        assert!(active.kind == anicraft_doc::LayerKind::Normal && !active.locked, "{id}: the active layer takes drawing");
         run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 20, "h": 20}));
         let path = dir.join(format!("{id}.anicraft"));
         run(&mut s, "file.save_as", json!({"path": path.display().to_string()}));
@@ -83,7 +83,7 @@ fn every_built_in_template_opens_untitled_and_survives_a_save() {
         run(&mut s, "file.open", json!({"path": path.display().to_string()}));
         assert!(s.doc == saved, "{id}: round trip");
         // Thumbnails render (the shell draws these on the start screen).
-        let png = crate::cmds_recent::thumbnail_png(&anicraft_doc::templates::with_guides_shown(&s.doc)).unwrap();
+        let png = crate::cmds_template::picture_png(&s.doc).unwrap();
         assert!(png.len() > 100);
     }
     let mut s = Session::default();

@@ -244,13 +244,28 @@ fn lip_sync() -> Document {
     d
 }
 
-/// A copy of `doc` with its guide layers drawn as artwork: a template's picture shows its
-/// guides, which output never does.
-pub fn with_guides_shown(doc: &Document) -> Document {
+/// A copy of `doc` with its guide layers drawn as artwork, their lines `widen` times as wide: a
+/// template's picture shows its guides (which output never does), and a small picture needs
+/// them wider to see them.
+pub fn with_guides_shown(doc: &Document, widen: f32) -> Document {
+    let widen = if widen.is_finite() { widen.clamp(1.0, 16.0) } else { 1.0 };
     let show = |tl: &mut Timeline| {
         for l in &mut tl.layers {
-            if l.kind == LayerKind::Guide {
-                Arc::make_mut(l).kind = LayerKind::Normal;
+            if l.kind != LayerKind::Guide {
+                continue;
+            }
+            let l = Arc::make_mut(l);
+            l.kind = LayerKind::Normal;
+            for k in &mut l.keyframes {
+                for e in &mut Arc::make_mut(k).elements {
+                    if let ElementKind::Shape(sh) = &e.kind
+                        && let Some(st) = &sh.stroke
+                    {
+                        let mut sh = sh.clone();
+                        sh.stroke = Some(Stroke { width: st.width * widen, ..st.clone() });
+                        Arc::make_mut(e).kind = ElementKind::Shape(sh);
+                    }
+                }
             }
         }
     };
@@ -291,7 +306,7 @@ mod tests {
             }
             // Guides never render; the picture with them shown is not blank.
             assert!(crate::evaluate(&d, 0).items.iter().all(|i| i.guide || tl.layer(i.layer).is_some_and(|l| l.kind != LayerKind::Guide)));
-            assert!(crate::evaluate(&with_guides_shown(&d), 0).items.iter().any(|i| !i.guide), "{}", t.id);
+            assert!(crate::evaluate(&with_guides_shown(&d, 4.0), 0).items.iter().any(|i| !i.guide), "{}", t.id);
         }
         // The sizes the task asks for.
         let size = |id: &str| find(id).map(|t| (t.build)().stage).map(|s| (s.width, s.height, s.fps));

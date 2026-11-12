@@ -116,6 +116,14 @@ pub fn user_templates(folder: &Path) -> Vec<UserTemplate> {
     out
 }
 
+/// A template's picture: its first frame fitting the recent files' thumbnail size, guides
+/// drawn, their lines widened to stay visible at that size.
+pub fn picture_png(doc: &anicraft_doc::Document) -> Result<Vec<u8>> {
+    let (w, h) = (doc.stage.width.max(1) as f32, doc.stage.height.max(1) as f32);
+    let scale = (crate::cmds_recent::THUMB_W as f32 / w).min(crate::cmds_recent::THUMB_H as f32 / h).min(1.0);
+    crate::cmds_recent::thumbnail_png(&templates::with_guides_shown(doc, 1.5 / scale.max(1e-3)))
+}
+
 fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     let (doc, name) = match (opt_str(p, "template")?, opt_str(p, "path")?) {
         (Some(id), None) => {
@@ -134,6 +142,10 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // A new document: untitled, so Save asks for a name and never writes over the template.
     s.replace_document(doc, None);
+    // Ready to draw: the top layer that takes artwork is active (not a locked guide).
+    if let Some(l) = s.timeline().layers.iter().find(|l| l.kind == anicraft_doc::LayerKind::Normal && !l.locked) {
+        s.layer = l.id;
+    }
     let mut info = s.info();
     info["template"] = json!(name);
     Ok(info)
@@ -171,7 +183,7 @@ fn save_as_template(s: &mut Session, p: &Value) -> Result<Value> {
     format::save(&s.doc, &path)?;
     // Its picture shows the guides too (they are much of what a template is).
     let thumb = thumbnail_path(&path);
-    let picture = crate::cmds_recent::thumbnail_png(&templates::with_guides_shown(&s.doc)).and_then(|png| Ok(crate::vfs::write(&thumb, png)?));
+    let picture = picture_png(&s.doc).and_then(|png| Ok(crate::vfs::write(&thumb, png)?));
     Ok(json!({"path": path.display().to_string(), "thumbnail": picture.is_ok().then(|| thumb.display().to_string())}))
 }
 

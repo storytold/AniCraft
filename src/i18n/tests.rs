@@ -587,7 +587,7 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
             a.run("element.set_color_effect", serde_json::json!({"style": style}));
         }));
     }
-    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside"] {
+    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside", "templates", "savetemplate"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
     // Test Movie in a window of its own (ADR 0062; egui stands in for the window system here).
@@ -782,7 +782,7 @@ fn screen_reader_names_are_translated_too() {
     found.extend(untranslated_names("library item", |a, _| {
         a.library_sel = a.s.doc.library.first().map(|s| crate::app::LibraryItem::Symbol(s.id));
     }));
-    for panel in ["start", "drop", "droplibrary", "select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "scriptproblems", "testmovie", "testmovieinside", "testscript", "exporthtml", "envelope"] {
+    for panel in ["start", "drop", "droplibrary", "select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "scriptproblems", "testmovie", "testmovieinside", "testscript", "exporthtml", "envelope", "templates", "savetemplate", "droptimeline"] {
         found.extend(untranslated_names(panel, |a, _| a.open_panel(Some(panel))));
     }
     assert!(found.is_empty(), "{} screen-reader names not translated in the pseudo-locale:\n{}", found.len(), found.join("\n"));
