@@ -13,7 +13,7 @@
 //! (512 px tiles drawn in parallel, as the render service does, until finished); and how far
 //! the GPU-binned picture is from the oracle's.
 
-use anicraft_doc::{Bitmap, BitmapId, ColorEffect, DisplayList, Document, Element, ElementId, ElementKind, Filter, FilterSide, Keyframe, Layer, LayerId, LayerKind, Paint, Pixels, Rgba, Shape, evaluate, sample};
+use anicraft_doc::{Bitmap, BitmapId, ColorEffect, ColorTransform, DisplayList, Document, Element, ElementId, ElementKind, Filter, FilterSide, Keyframe, Layer, LayerId, LayerKind, Paint, Pixels, Rgba, Shape, evaluate, sample};
 use anicraft_geom::{FillRule, Path};
 use anicraft_gpu::{Binning, GpuRenderer, compare_premul8};
 use anicraft_geom::Affine;
@@ -54,7 +54,7 @@ fn composited() -> Document {
             0 | 1 => {
                 for k in &mut l.keyframes {
                     for e in &mut Arc::make_mut(k).elements {
-                        Arc::make_mut(e).color.alpha = 0.6;
+                        Arc::make_mut(e).color = ColorEffect::Alpha(0.6);
                     }
                 }
             }
@@ -172,7 +172,7 @@ fn onion_list(doc: &Document, frame: u32, mode: Onion) -> DisplayList {
             let color = if is_past { past } else { future };
             let mut part = evaluate(doc, f);
             for item in &mut part.items {
-                item.color = item.color.concat(&ColorEffect { alpha, tint: color, tint_amount: 0.8 });
+                item.color = item.color.concat(&ColorTransform::alpha(alpha).concat(&ColorTransform::tint(color, 0.8)));
                 if mode == Onion::Outlines && item.masks.is_none() {
                     item.outline = Some(color.with_alpha(alpha));
                 }

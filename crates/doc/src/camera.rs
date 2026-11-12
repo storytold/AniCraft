@@ -11,7 +11,7 @@
 //! keeping its size (so a layer at depth 0 moves with the stage, a far background barely moves).
 //! Everything here is pure: the camera at a frame is a function of the document.
 
-use crate::{ColorEffect, Element, ElementId, ElementKind, Layer, LayerKind, Rgba, Stage, Timeline, evaluate_layer_elements};
+use crate::{ColorEffect, ColorTransform, Element, ElementId, ElementKind, Layer, LayerKind, Rgba, Stage, Timeline, evaluate_layer_elements};
 use anicraft_geom::{Affine, Decomposed, Vec2};
 
 /// Smallest and largest camera zoom (5 % to 2,000 %).
@@ -55,13 +55,17 @@ impl Camera {
         let center = Vec2::new(fin(d.tx, rest.center.x), fin(d.ty, rest.center.y));
         let zoom = fin(d.sx.abs(), 1.0).clamp(MIN_ZOOM, MAX_ZOOM);
         let rotation = fin(d.rotation, 0.0);
-        let c = el.color;
-        Camera { center, zoom, rotation, tint: c.tint.sanitized(), tint_amount: fin(c.tint_amount, 0.0).clamp(0.0, 1.0) }
+        // The camera's colour effect is a tint (ADR 0027); other styles leave the view as it is.
+        let (tint, amount) = match el.color {
+            ColorEffect::Tint { color, amount } => (color.sanitized(), fin(amount, 0.0).clamp(0.0, 1.0)),
+            _ => (Rgba::WHITE, 0.0),
+        };
+        Camera { center, zoom, rotation, tint, tint_amount: amount }
     }
 
     /// The camera element holding this camera (for commands).
     pub fn to_element(&self, id: ElementId) -> Element {
-        Element { id, name: String::new(), transform: self.transform(), color: ColorEffect { alpha: 1.0, tint: self.tint, tint_amount: self.tint_amount }, kind: ElementKind::Camera }
+        Element { id, name: String::new(), transform: self.transform(), color: ColorEffect::Tint { color: self.tint, amount: self.tint_amount }, kind: ElementKind::Camera }
     }
 
     /// The camera on the stage: `T(centre) · R(rotation) · S(zoom)`.
@@ -70,8 +74,8 @@ impl Camera {
     }
 
     /// The colour effect the camera puts on everything it shows.
-    pub fn color(&self) -> ColorEffect {
-        ColorEffect { alpha: 1.0, tint: self.tint, tint_amount: self.tint_amount }
+    pub fn color(&self) -> ColorTransform {
+        ColorTransform::tint(self.tint, self.tint_amount)
     }
 
     /// Stage space → output space for a layer `depth` pixels behind the stage: the camera's
@@ -219,7 +223,7 @@ mod tests {
     fn hostile_cameras_stay_finite() {
         let mut el = Camera::rest(&stage()).to_element(ElementId(1));
         el.transform = Affine { m: [f32::NAN, 0.0, 0.0, f32::INFINITY, f32::NAN, 1e30] };
-        el.color.tint_amount = f32::NAN;
+        el.color = ColorEffect::Tint { color: Rgba::WHITE, amount: f32::NAN };
         let c = Camera::of_element(&el, &stage());
         assert!(c.view(&stage(), 0.0).is_finite());
         assert!((MIN_ZOOM..=MAX_ZOOM).contains(&c.zoom));

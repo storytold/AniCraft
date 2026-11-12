@@ -2,7 +2,7 @@
 //!
 //! A classic tween interpolates a whole keyframe into the next one. A motion tween instead
 //! belongs to one keyframe span and one object in it (its *target*). Each property (x, y,
-//! scale, rotation, skew, alpha, tint) may have a [`Track`] of property keyframes anywhere in
+//! scale, rotation, skew, and the colour effect's alpha, brightness, tint and advanced values) may have a [`Track`] of property keyframes anywhere in
 //! the span; between two keys the value follows the segment's [`Easing`], which may be a custom
 //! cubic Bézier. A property without a track keeps the target's own value (its *base*: how it
 //! looks on the span's first frame). Evaluation is pure: [`MotionTween::apply`] maps the base
@@ -21,7 +21,7 @@
 //! time the whole path when only the ends are pinned. Anchors that aren't pinned shape the path
 //! only.
 
-use crate::{Element, ElementId, Easing};
+use crate::{ColorEffect, ColorStyle, ColorTransform, Element, ElementId, Easing, Rgba};
 use anicraft_geom::edit::ANCHOR;
 use anicraft_geom::walk::CurveWalk;
 use anicraft_geom::{Affine, Decomposed, Path, PathCmd, Vec2};
@@ -35,7 +35,7 @@ pub const MAX_KEYS: usize = 10_000;
 pub const MAX_PATH_SEGMENTS: usize = 1_000;
 
 /// A property a motion tween animates. Values are in the units the Motion Editor shows:
-/// pixels, percent and degrees.
+/// pixels, percent, degrees, and 0–255 for colour channels and offsets (as Animate shows them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Property {
@@ -49,13 +49,64 @@ pub enum Property {
     Rotation,
     /// Degrees of horizontal skew, within ±89.
     Skew,
-    /// Colour effect: opacity and tint amount, percent.
+    /// Colour effect (ADR 0056), by style. Alpha: opacity, percent.
     Alpha,
+    /// Brightness, −100..=100 %.
+    Brightness,
+    /// Tint amount, percent, and the tint colour's channels, 0–255.
     Tint,
+    TintRed,
+    TintGreen,
+    TintBlue,
+    /// Advanced: each channel's multiplier, −100..=100 %, and offset, −255..=255.
+    RedMultiplier,
+    GreenMultiplier,
+    BlueMultiplier,
+    AlphaMultiplier,
+    RedOffset,
+    GreenOffset,
+    BlueOffset,
+    AlphaOffset,
 }
 
+/// How many properties there are.
+pub const PROPERTIES: usize = 20;
+
 impl Property {
-    pub const ALL: [Property; 8] = [Property::X, Property::Y, Property::ScaleX, Property::ScaleY, Property::Rotation, Property::Skew, Property::Alpha, Property::Tint];
+    pub const ALL: [Property; PROPERTIES] = [
+        Property::X,
+        Property::Y,
+        Property::ScaleX,
+        Property::ScaleY,
+        Property::Rotation,
+        Property::Skew,
+        Property::Alpha,
+        Property::Brightness,
+        Property::Tint,
+        Property::TintRed,
+        Property::TintGreen,
+        Property::TintBlue,
+        Property::RedMultiplier,
+        Property::GreenMultiplier,
+        Property::BlueMultiplier,
+        Property::AlphaMultiplier,
+        Property::RedOffset,
+        Property::GreenOffset,
+        Property::BlueOffset,
+        Property::AlphaOffset,
+    ];
+
+    /// The Advanced properties: multipliers then offsets, red first.
+    pub const ADVANCED: [Property; 8] = [
+        Property::RedMultiplier,
+        Property::GreenMultiplier,
+        Property::BlueMultiplier,
+        Property::AlphaMultiplier,
+        Property::RedOffset,
+        Property::GreenOffset,
+        Property::BlueOffset,
+        Property::AlphaOffset,
+    ];
 
     /// The name used in files and commands (`x`, `scale_x`, `alpha`…).
     pub fn key(self) -> &'static str {
@@ -67,7 +118,19 @@ impl Property {
             Property::Rotation => "rotation",
             Property::Skew => "skew",
             Property::Alpha => "alpha",
+            Property::Brightness => "brightness",
             Property::Tint => "tint",
+            Property::TintRed => "tint_red",
+            Property::TintGreen => "tint_green",
+            Property::TintBlue => "tint_blue",
+            Property::RedMultiplier => "red_multiplier",
+            Property::GreenMultiplier => "green_multiplier",
+            Property::BlueMultiplier => "blue_multiplier",
+            Property::AlphaMultiplier => "alpha_multiplier",
+            Property::RedOffset => "red_offset",
+            Property::GreenOffset => "green_offset",
+            Property::BlueOffset => "blue_offset",
+            Property::AlphaOffset => "alpha_offset",
         }
     }
 
@@ -80,24 +143,49 @@ impl Property {
             Property::Rotation => "Rotation",
             Property::Skew => "Skew",
             Property::Alpha => "Alpha",
+            Property::Brightness => "Brightness",
             Property::Tint => "Tint",
+            Property::TintRed => "Tint red",
+            Property::TintGreen => "Tint green",
+            Property::TintBlue => "Tint blue",
+            Property::RedMultiplier => "Red multiplier",
+            Property::GreenMultiplier => "Green multiplier",
+            Property::BlueMultiplier => "Blue multiplier",
+            Property::AlphaMultiplier => "Alpha multiplier",
+            Property::RedOffset => "Red offset",
+            Property::GreenOffset => "Green offset",
+            Property::BlueOffset => "Blue offset",
+            Property::AlphaOffset => "Alpha offset",
         }
     }
 
     pub fn unit(self) -> &'static str {
         match self {
             Property::X | Property::Y => "px",
-            Property::ScaleX | Property::ScaleY | Property::Alpha | Property::Tint => "%",
+            Property::ScaleX | Property::ScaleY | Property::Alpha | Property::Brightness | Property::Tint => "%",
+            Property::RedMultiplier | Property::GreenMultiplier | Property::BlueMultiplier | Property::AlphaMultiplier => "%",
             Property::Rotation | Property::Skew => "°",
+            Property::TintRed | Property::TintGreen | Property::TintBlue | Property::RedOffset | Property::GreenOffset | Property::BlueOffset | Property::AlphaOffset => "",
         }
     }
 
     /// The Motion Editor's groups: Position, Transform, Colour effect.
     pub fn group(self) -> &'static str {
+        match self.style() {
+            None if matches!(self, Property::X | Property::Y) => "Position",
+            None => "Transform",
+            Some(_) => "Colour effect",
+        }
+    }
+
+    /// The colour effect style a colour property belongs to (`None` for position and transform).
+    pub fn style(self) -> Option<ColorStyle> {
         match self {
-            Property::X | Property::Y => "Position",
-            Property::ScaleX | Property::ScaleY | Property::Rotation | Property::Skew => "Transform",
-            Property::Alpha | Property::Tint => "Colour effect",
+            Property::X | Property::Y | Property::ScaleX | Property::ScaleY | Property::Rotation | Property::Skew => None,
+            Property::Alpha => Some(ColorStyle::Alpha),
+            Property::Brightness => Some(ColorStyle::Brightness),
+            Property::Tint | Property::TintRed | Property::TintGreen | Property::TintBlue => Some(ColorStyle::Tint),
+            Property::RedMultiplier | Property::GreenMultiplier | Property::BlueMultiplier | Property::AlphaMultiplier | Property::RedOffset | Property::GreenOffset | Property::BlueOffset | Property::AlphaOffset => Some(ColorStyle::Advanced),
         }
     }
 
@@ -108,6 +196,7 @@ impl Property {
             "scaley" => "scale_y",
             "rotate" => "rotation",
             "opacity" => "alpha",
+            "tint_amount" => "tint",
             other => other,
         };
         Property::ALL.into_iter().find(|p| p.key() == s)
@@ -121,6 +210,9 @@ impl Property {
             Property::Rotation => -100_000.0..=100_000.0,
             Property::Skew => -89.0..=89.0,
             Property::Alpha | Property::Tint => 0.0..=100.0,
+            Property::Brightness | Property::RedMultiplier | Property::GreenMultiplier | Property::BlueMultiplier | Property::AlphaMultiplier => -100.0..=100.0,
+            Property::TintRed | Property::TintGreen | Property::TintBlue => 0.0..=255.0,
+            Property::RedOffset | Property::GreenOffset | Property::BlueOffset | Property::AlphaOffset => -255.0..=255.0,
         }
     }
 
@@ -129,7 +221,7 @@ impl Property {
     }
 
     fn is_transform(self) -> bool {
-        !matches!(self, Property::Alpha | Property::Tint)
+        self.style().is_none()
     }
 
     fn clamp(self, v: f32) -> f32 {
@@ -140,13 +232,57 @@ impl Property {
 
 /// Every property's value, indexed like [`Property::ALL`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Props(pub [f32; 8]);
+pub struct Props(pub [f32; PROPERTIES]);
 
 impl Props {
-    /// An element's own values.
+    /// An element's own values. Colour properties come from its colour effect's style; the
+    /// other styles' properties hold their rest values (alpha 100 %, brightness 0, tint 0 % of
+    /// white, Advanced 100 % and 0).
     pub fn of(el: &Element) -> Props {
         let d = el.transform.decompose();
-        Props([d.tx, d.ty, d.sx * 100.0, d.sy * 100.0, d.rotation.to_degrees(), d.skew.atan().to_degrees(), el.color.alpha * 100.0, el.color.tint_amount * 100.0])
+        let mut p = Props([0.0; PROPERTIES]);
+        for (q, v) in [(Property::X, d.tx), (Property::Y, d.ty), (Property::ScaleX, d.sx * 100.0), (Property::ScaleY, d.sy * 100.0), (Property::Rotation, d.rotation.to_degrees()), (Property::Skew, d.skew.atan().to_degrees())] {
+            p.set(q, v);
+        }
+        p.set_colour(&el.color);
+        p
+    }
+
+    /// Sets the colour properties from `fx`, as [`Props::of`] does.
+    fn set_colour(&mut self, fx: &ColorEffect) {
+        let (mut alpha, mut bright, mut tint, mut rgb, mut adv) = (1.0, 0.0, 0.0, Rgba::WHITE, ColorTransform::IDENTITY);
+        match *fx {
+            ColorEffect::None => {}
+            ColorEffect::Alpha(a) => alpha = a,
+            ColorEffect::Brightness(b) => bright = b,
+            ColorEffect::Tint { color, amount } => (tint, rgb) = (amount, color),
+            ColorEffect::Advanced(t) => adv = t,
+        }
+        self.set(Property::Alpha, alpha * 100.0);
+        self.set(Property::Brightness, bright * 100.0);
+        self.set(Property::Tint, tint * 100.0);
+        self.set(Property::TintRed, rgb.r * 255.0);
+        self.set(Property::TintGreen, rgb.g * 255.0);
+        self.set(Property::TintBlue, rgb.b * 255.0);
+        let values = adv.mul.iter().map(|m| m * 100.0).chain(adv.add.iter().map(|a| a * 255.0));
+        for (q, v) in Property::ADVANCED.into_iter().zip(values) {
+            self.set(q, v);
+        }
+    }
+
+    /// The colour effect of the styles in `styles` from these values (the other styles' values
+    /// are left out): one style alone is that style; several compose into Advanced (ADR 0056).
+    pub fn color_effect(&self, styles: &[ColorStyle]) -> ColorEffect {
+        let v = |p: Property| p.clamp(self.get(p));
+        let on = |s: ColorStyle| styles.contains(&s);
+        let alpha = on(ColorStyle::Alpha).then(|| v(Property::Alpha) / 100.0);
+        let bright = on(ColorStyle::Brightness).then(|| v(Property::Brightness) / 100.0);
+        let tint = on(ColorStyle::Tint).then(|| (Rgba::new(v(Property::TintRed) / 255.0, v(Property::TintGreen) / 255.0, v(Property::TintBlue) / 255.0, 1.0), v(Property::Tint) / 100.0));
+        let adv = on(ColorStyle::Advanced).then(|| {
+            let [rm, gm, bm, am, ro, go, bo, ao] = Property::ADVANCED.map(v);
+            ColorTransform { mul: [rm, gm, bm, am].map(|m| m / 100.0), add: [ro, go, bo, ao].map(|a| a / 255.0) }
+        });
+        ColorEffect::compose(alpha, bright, tint, adv).sanitized()
     }
     pub fn get(&self, p: Property) -> f32 {
         self.0.get(p.index()).copied().unwrap_or(0.0)
@@ -891,13 +1027,27 @@ impl MotionTween {
                 el.transform = m;
             }
         }
-        if let Some(t) = self.track(Property::Alpha).and_then(|t| t.value_at(frame)) {
-            el.color.alpha = (t / 100.0).clamp(0.0, 1.0);
-        }
-        if let Some(t) = self.track(Property::Tint).and_then(|t| t.value_at(frame)) {
-            el.color.tint_amount = (t / 100.0).clamp(0.0, 1.0);
+        // Colour: the styles keyed here and the target's own, composed (ADR 0056).
+        if self.tracks.iter().any(|t| !t.property.is_transform()) {
+            el.color = props.color_effect(&self.colour_styles(&base.color));
         }
         el
+    }
+
+    /// The colour effect styles the target shows over the span. As in Animate, a motion tween
+    /// has one colour effect: the style its colour properties are keyed in, replacing the
+    /// target's own (which shows while none are keyed). Keys in several styles (older files
+    /// keyed alpha and tint together) compose into Advanced.
+    pub fn colour_styles(&self, own: &ColorEffect) -> Vec<ColorStyle> {
+        let mut out: Vec<ColorStyle> = Vec::new();
+        let keyed = self.tracks.iter().filter_map(|t| t.property.style());
+        let own = (own.style() != ColorStyle::None && !self.tracks.iter().any(|t| t.property.style().is_some())).then_some(own.style());
+        for s in keyed.chain(own) {
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        out
     }
 
     /// Sets property `p`'s key at `frame`. A property's first key also gets a key on the span's
@@ -1083,7 +1233,7 @@ mod tests {
         m.set_key(Property::Alpha, 10, 0.0, 100.0);
         let at5 = m.apply(&base, 5.0);
         assert_eq!(at5.transform, base.transform, "colour-only tween keeps the transform bit for bit");
-        assert!((at5.color.alpha - 0.5).abs() < 1e-6);
+        assert!((at5.color.alpha() - 0.5).abs() < 1e-6 && at5.color.style() == ColorStyle::Alpha);
     }
 
     #[test]
@@ -1167,7 +1317,7 @@ mod tests {
     fn property_keys_round_trip() {
         for p in Property::ALL {
             assert_eq!(Property::from_key(p.key()), Some(p));
-            assert!(!p.label().is_empty() && !p.unit().is_empty() && !p.group().is_empty());
+            assert!(!p.label().is_empty() && (!p.unit().is_empty() || p.range() == (0.0..=255.0) || p.range() == (-255.0..=255.0)) && !p.group().is_empty());
         }
         assert_eq!(Property::from_key("Scale X"), Some(Property::ScaleX));
         assert_eq!(Property::from_key("nope"), None);

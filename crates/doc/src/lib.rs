@@ -9,30 +9,35 @@ pub use anicraft_actions as actions;
 
 pub mod armature;
 mod bitmap;
+mod color_effect;
 pub mod camera;
 mod filter;
 mod easing;
 mod eval;
 mod hints;
+pub mod nine_slice;
 pub mod library;
 pub mod motion;
 pub mod path_table;
 pub mod width;
 pub mod stroke_style;
 pub mod player;
+pub mod publish;
 pub mod sample;
 pub mod sound;
 
 pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
-pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
+pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_decode, base64_encode, decode_png, image_to_png};
 pub use easing::Easing;
+pub use color_effect::{ADVANCED_ADD, ADVANCED_MUL, ColorEffect, ColorStyle, ColorTransform};
 pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
 pub use library::{FolderId, LibraryEntry, LibraryFolder, LibraryItem, LibraryTree, NameError};
-pub use motion::{MotionTween, OnPath, Pin, PinError, Property, PropertyKey, Props, Track, motion_path};
+pub use motion::{MotionTween, OnPath, PROPERTIES, Pin, PinError, Property, PropertyKey, Props, Track, motion_path};
 pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
 pub use camera::Camera;
+pub use nine_slice::symbol_box;
 pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, evaluate_timeline_at, guide_walk, instance_start};
 pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, Language, PluginScript, SourceScript};
@@ -461,44 +466,6 @@ pub struct TextBlock {
     /// The layout box.
     pub box_width: f32,
     pub box_height: f32,
-}
-
-/// Colour effect applied to an element and everything inside it.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ColorEffect {
-    /// Alpha multiplier `0..=1`.
-    pub alpha: f32,
-    /// Tint colour mixed in by `tint_amount`.
-    pub tint: Rgba,
-    pub tint_amount: f32,
-}
-
-impl Default for ColorEffect {
-    fn default() -> Self {
-        ColorEffect { alpha: 1.0, tint: Rgba::WHITE, tint_amount: 0.0 }
-    }
-}
-
-impl ColorEffect {
-    /// Effect of `inner` nested inside `self`.
-    pub fn concat(&self, inner: &ColorEffect) -> ColorEffect {
-        // Tints compose by keeping the stronger one; alpha multiplies.
-        let (tint, amount) = if inner.tint_amount >= self.tint_amount { (inner.tint, inner.tint_amount) } else { (self.tint, self.tint_amount) };
-        ColorEffect { alpha: self.alpha * inner.alpha, tint, tint_amount: amount }
-    }
-    pub fn lerp(&self, o: &ColorEffect, t: f32) -> ColorEffect {
-        ColorEffect {
-            alpha: anicraft_geom::lerp(self.alpha, o.alpha, t),
-            tint: self.tint.lerp(o.tint, t),
-            tint_amount: anicraft_geom::lerp(self.tint_amount, o.tint_amount, t),
-        }
-    }
-    pub fn apply(&self, c: Rgba) -> Rgba {
-        let k = self.tint_amount.clamp(0.0, 1.0);
-        let mut out = c.lerp(self.tint.with_alpha(c.a), k);
-        out.a = c.a * self.alpha.clamp(0.0, 1.0);
-        out
-    }
 }
 
 /// An instance on a keyframe.
@@ -1019,8 +986,52 @@ pub struct Symbol {
     /// The class scripts know the symbol by (Animate's "linkage"), kept as text (ADR 0013).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linkage: Option<Linkage>,
+    /// Guides for 9-slice scaling (ADR 0055): an instance scaled keeps the corners outside them
+    /// unscaled. `None`: the symbol scales as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_grid: Option<ScaleGrid>,
+    /// The guides as they were when 9-slice scaling was switched off (ADR 0057): switching it on
+    /// again brings them back where they were. Only kept, never drawn or applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_grid_kept: Option<ScaleGrid>,
     pub timeline: Timeline,
 }
+
+/// The four 9-slice guides of a symbol (ADR 0055), in the symbol's own space: two vertical
+/// lines at `x = left` and `x = right`, two horizontal ones at `y = top` and `y = bottom`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScaleGrid {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl ScaleGrid {
+    /// Guides a quarter of the way in from each edge of `bounds` (what turning guides on gives).
+    pub fn inset(bounds: &Rect) -> ScaleGrid {
+        let (w, h) = (bounds.width() * 0.25, bounds.height() * 0.25);
+        ScaleGrid { left: bounds.min.x + w, right: bounds.max.x - w, top: bounds.min.y + h, bottom: bounds.max.y - h }
+    }
+
+    /// Whether the guides are usable: finite, within the format's range, and in order.
+    pub fn check(&self) -> Result<(), String> {
+        let v = [self.left, self.right, self.top, self.bottom];
+        if !v.iter().all(|x| x.is_finite() && x.abs() <= MAX_GRID_COORD) {
+            return Err(format!("9-slice guides must be numbers within ±{MAX_GRID_COORD}"));
+        }
+        if self.left > self.right {
+            return Err("the left 9-slice guide must not be right of the right one".into());
+        }
+        if self.top > self.bottom {
+            return Err("the top 9-slice guide must not be below the bottom one".into());
+        }
+        Ok(())
+    }
+}
+
+/// Largest 9-slice guide coordinate accepted from files and commands.
+pub const MAX_GRID_COORD: f32 = 1_000_000.0;
 
 /// A symbol's script class: what scripts create it by, and the class it extends. Kept with
 /// the document and shown, never run (ADR 0013 tier 1).
@@ -1104,6 +1115,9 @@ pub struct Document {
     /// (ADR 0013 tier 1); empty when there is none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub document_class: String,
+    /// File › Publish Settings: the formats Publish writes and their options (ADR 0060).
+    #[serde(default, skip_serializing_if = "publish_is_default")]
+    pub publish: Arc<publish::PublishProfile>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
 }
@@ -1127,6 +1141,8 @@ struct DocumentFile {
     library_tree: Arc<LibraryTree>,
     #[serde(default)]
     document_class: String,
+    #[serde(default)]
+    publish: Arc<publish::PublishProfile>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -1137,7 +1153,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, next_id: f.next_id }
     }
 }
 
@@ -1149,18 +1165,22 @@ fn library_tree_is_empty(t: &Arc<LibraryTree>) -> bool {
     t.is_empty()
 }
 
+fn publish_is_default(p: &Arc<publish::PublishProfile>) -> bool {
+    p.is_default()
+}
+
 /// What `timeline(i)` returns for a scene that does not exist (never for a sanitized document).
 static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree)
+        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -1266,10 +1286,23 @@ impl Document {
         if !self.document_class.is_empty() && !actions::valid_class_name(&self.document_class) {
             self.document_class.clear();
         }
+        let mut publish = (*self.publish).clone();
+        publish.sanitize();
+        if publish != *self.publish {
+            self.publish = Arc::new(publish);
+        }
         for sym in &mut self.library {
             max_id = max_id.max(sym.id.0);
             if sym.linkage.as_ref().is_some_and(|l| l.check().is_err()) {
                 Arc::make_mut(sym).linkage = None;
+            }
+            // 9-slice guides that aren't usable are dropped: the symbol scales as a whole.
+            if sym.scale_grid.as_ref().is_some_and(|g| g.check().is_err()) {
+                Arc::make_mut(sym).scale_grid = None;
+            }
+            // Kept guides (ADR 0057) only while 9-slice is off, and only usable ones.
+            if sym.scale_grid_kept.as_ref().is_some_and(|g| sym.scale_grid.is_some() || g.check().is_err()) {
+                Arc::make_mut(sym).scale_grid_kept = None;
             }
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {

@@ -14,11 +14,13 @@
 //! frames entered, instances walked, output lines), so a `goto` loop ends in a message instead
 //! of a hang.
 
-use crate::actions::as3::{Listener, ScriptOp};
+use crate::actions::as3::ir::{Base, Function, ListenEvent, Place, Prop, Value};
+use crate::actions::as3::run::{self, Stop, World};
+use crate::actions::as3::{Compiled, Decls, Problem};
 use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Seg, Target};
 use crate::eval::{Play, evaluate_guided, evaluate_symbol, guide_walk};
 use crate::sound::Started;
-use crate::{Document, Element, ElementId, ElementKind, LayerKind, MAX_SYMBOL_DEPTH, SymbolId, SymbolKind, Timeline};
+use crate::{BlendMode, ColorTransform, DisplayList, Document, Element, ElementId, ElementKind, Group, LayerKind, MAX_SYMBOL_DEPTH, Rgba, SoundSync, SymbolId, SymbolKind, Timeline};
 use anicraft_geom::{Affine, Vec2};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -40,6 +42,13 @@ pub const MAX_OUTPUT_PER_STEP: usize = 1_000;
 pub const MAX_EVENTS_PER_STEP: usize = 256;
 /// Most listeners scripts add to one instance.
 pub const MAX_LISTENERS_PER_INSTANCE: usize = 16;
+/// Most listeners scripts add to the stage.
+pub const MAX_STAGE_LISTENERS: usize = 64;
+/// Script fuel one step may use, all scripts and listeners together (each run has at most
+/// [`run::FUEL_PER_RUN`]).
+pub const MAX_FUEL_PER_STEP: u64 = 1_000_000;
+/// The random generator's seed when none is given.
+pub const DEFAULT_SEED: u64 = 0;
 
 /// A timeline's playhead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,22 +111,60 @@ impl Overrides {
             }
         }
         if let Some(a) = self.alpha {
-            e.color.alpha = a;
+            e.color = e.color.with_alpha(a);
         }
         e
     }
 }
 
-/// A mouse listener a script added to an instance (ADR 0013 tier 2): it lives while the
-/// instance (and the script's timeline) stay on the stage.
+/// A listener a script added to an instance or the stage (ADR 0013 tiers 2 and 2.5): it lives
+/// while the instance (and the script's timeline) stay on the stage.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listening {
-    pub event: ButtonEvent,
-    /// The timeline whose script added it: the actions run there.
+    pub event: ListenEvent,
+    /// The timeline whose script added it: the function runs there.
     pub owner: InstancePath,
     /// The function's name: the same function for the same event is added once.
     pub function: String,
-    pub actions: Arc<Vec<Action>>,
+    pub func: Arc<Function>,
+    /// When it was added (enter-frame listeners run in this order).
+    pub seq: u64,
+}
+
+/// The movie's random numbers (`Math.random()`): Marsaglia's xorshift128, seeded, so a movie
+/// with the same seed and input always plays the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rng(pub [u32; 4]);
+
+impl Rng {
+    pub fn seeded(seed: u64) -> Rng {
+        let lo = (seed & 0xffff_ffff) as u32;
+        let hi = (seed >> 32) as u32;
+        let mut s = [lo ^ 0x9e37_79b9, hi ^ 0x243f_6a88, 0xb7e1_5162, 0x3c6e_f372];
+        if s == [0; 4] {
+            s[0] = 1;
+        }
+        Rng(s)
+    }
+    fn next_u32(&mut self) -> u32 {
+        let [x, y, z, w] = self.0;
+        let t = x ^ (x << 11);
+        let w2 = w ^ (w >> 19) ^ (t ^ (t >> 8));
+        self.0 = [y, z, w, w2];
+        w2
+    }
+    /// The next number in [0, 1), from 53 random bits.
+    pub fn next_f64(&mut self) -> f64 {
+        let a = f64::from(self.next_u32() >> 5);
+        let b = f64::from(self.next_u32() >> 6);
+        (a * 67_108_864.0 + b) / 9_007_199_254_740_992.0
+    }
+}
+
+impl Default for Rng {
+    fn default() -> Self {
+        Rng::seeded(DEFAULT_SEED)
+    }
 }
 
 /// Everything that changes while a movie plays.
@@ -130,8 +177,18 @@ pub struct PlayerState {
     pub clips: BTreeMap<InstancePath, ClipState>,
     /// Properties actions have set, per instance.
     pub props: BTreeMap<InstancePath, Overrides>,
-    /// Mouse listeners scripts added, per instance, in the order added.
+    /// Listeners scripts added, per instance, in the order added.
     pub listeners: BTreeMap<InstancePath, Vec<Listening>>,
+    /// Listeners on the stage (keyboard and enter-frame), in the order added.
+    pub stage: Vec<Listening>,
+    /// Each timeline instance's variables (ADR 0052), by name.
+    pub vars: BTreeMap<InstancePath, BTreeMap<String, Value>>,
+    /// The random generator.
+    pub rng: Rng,
+    /// The last pointer position seen (`mouseX`/`mouseY` keep it when the pointer leaves).
+    pub mouse: Vec2,
+    /// Listeners added so far (each one's `seq`).
+    pub seq: u64,
     /// The pointer in stage space (`None` when it is outside the movie), and whether it is down.
     pub pointer: Option<Vec2>,
     pub down: bool,
@@ -144,6 +201,11 @@ pub struct PlayerState {
 }
 
 impl PlayerState {
+    /// A state before the first frame, with the random generator seeded.
+    pub fn seeded(seed: u64) -> PlayerState {
+        PlayerState { rng: Rng::seeded(seed), ..PlayerState::default() }
+    }
+
     /// The frame a movie clip instance shows (`len` frames long).
     pub fn clip_frame(&self, path: &[ElementId], len: u32) -> u32 {
         self.clips.get(path).map_or(0, |c| c.frame).min(len.max(1) - 1)
@@ -152,18 +214,60 @@ impl PlayerState {
     /// The frame a button shows: Up (0), Over (1) under the pointer, Down (2) while pressed on
     /// it; a button whose timeline is shorter shows its last frame.
     pub fn button_frame(&self, path: &[ElementId], len: u32) -> u32 {
-        let over = self.hover.as_deref() == Some(path);
-        let f = match (over, self.down && self.pressed.as_deref() == Some(path)) {
-            (true, true) => 2,
-            (true, false) => 1,
-            (false, _) => 0,
+        let f = match self.button_state(path) {
+            ButtonState::Down => 2,
+            ButtonState::Over => 1,
+            ButtonState::Up | ButtonState::OutDown => 0,
         };
         f.min(len.max(1) - 1)
+    }
+
+    /// Where the pointer leaves a button: [`ButtonState`].
+    pub fn button_state(&self, path: &[ElementId]) -> ButtonState {
+        ButtonState::of(self.hover.as_deref(), self.pressed.as_deref(), self.down, path)
     }
 
     /// A timeline's playhead: the main timeline's for the empty path.
     pub fn playhead(&self, path: &[ElementId]) -> Option<ClipState> {
         if path.is_empty() { Some(self.root) } else { self.clips.get(path).copied() }
+    }
+}
+
+/// Where the pointer is for one button, as the SWF file format names a button's states: away
+/// (Up), over it (Over), pressed on it (Down), or pressed on it and dragged off (shown Up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonState {
+    Up,
+    Over,
+    Down,
+    OutDown,
+}
+
+impl ButtonState {
+    /// The state of the button at `path` with the pointer over `hover`, pressed on `pressed`,
+    /// and down or not.
+    pub fn of(hover: Option<&[ElementId]>, pressed: Option<&[ElementId]>, down: bool, path: &[ElementId]) -> ButtonState {
+        match (hover == Some(path), down && pressed == Some(path)) {
+            (true, true) => ButtonState::Down,
+            (true, false) => ButtonState::Over,
+            (false, true) => ButtonState::OutDown,
+            (false, false) => ButtonState::Up,
+        }
+    }
+}
+
+/// The frame of a button whose sound plays when the button goes from state `from` to `to`
+/// (ADR 0057), as the SWF format's button sounds are kept: the Over frame's going over it, the
+/// Up frame's leaving it, the Down frame's pressing it, and the Hit frame's letting go over it.
+/// Dragging off a pressed button and back plays nothing.
+pub fn button_sound_frame(from: ButtonState, to: ButtonState) -> Option<u32> {
+    use ButtonState::*;
+    match (from, to) {
+        (Up, Over) => Some(1),
+        (Over, Up) => Some(0),
+        (Over, Down) => Some(2),
+        (Down, Over) => Some(3),
+        _ => None,
     }
 }
 
@@ -175,6 +279,9 @@ pub enum Event {
     Up(Vec2),
     /// The pointer left the movie.
     Leave,
+    /// A key went down (or repeats) and came up, by its ActionScript key code.
+    KeyDown(u32),
+    KeyUp(u32),
 }
 
 /// The state after a step, what the movie wrote to the Output panel (traces, and why an
@@ -215,6 +322,10 @@ pub struct Node {
     pub frames: u32,
     /// Local → stage.
     pub xf: Affine,
+    /// The instance's own transform and alpha in its parent, as the timeline gives them (before
+    /// properties scripts set).
+    pub local: Affine,
+    pub alpha: f32,
     /// Pointer events can reach it (visible, not mask artwork).
     pub hittable: bool,
     pub events: Vec<EventHandler>,
@@ -261,8 +372,13 @@ impl ScriptHost for NoScripts {
 
 /// The movie at its first frame, with the first frame's actions run.
 pub fn start(doc: &Document, host: &mut dyn ScriptHost) -> Step {
+    start_seeded(doc, DEFAULT_SEED, host)
+}
+
+/// [`start`], with `Math.random()` seeded by `seed`.
+pub fn start_seeded(doc: &Document, seed: u64, host: &mut dyn ScriptHost) -> Step {
     host.begin_step();
-    let mut r = Run::new(doc, PlayerState::default(), host);
+    let mut r = Run::new(doc, PlayerState::seeded(seed), host);
     r.refresh();
     r.pending.push_front(Vec::new());
     r.settle();
@@ -278,6 +394,9 @@ pub fn step(doc: &Document, state: &PlayerState, events: &[Event], host: &mut dy
     r.refresh();
     r.remember_graphics();
     r.advance();
+    // Enter-frame listeners hear the new frame before its frame scripts run (as ActionScript
+    // dispatches `enterFrame` before frame scripts).
+    r.enter_frame();
     r.settle();
     for e in events.iter().take(MAX_EVENTS_PER_STEP) {
         r.event(*e);
@@ -303,7 +422,7 @@ pub fn input(doc: &Document, state: &PlayerState, events: &[Event], host: &mut d
 /// drawing order (parents before their contents).
 pub fn tree(doc: &Document, st: &PlayerState) -> Vec<Node> {
     let tl = doc.timeline(st.scene);
-    let mut out = vec![Node { path: Vec::new(), parent: None, owner: 0, name: String::new(), symbol: None, kind: NodeKind::Root, frame: st.root.frame, frames: tl.frame_count(), xf: Affine::IDENTITY, hittable: true, events: Vec::new(), gain: 1.0 }];
+    let mut out = vec![Node { path: Vec::new(), parent: None, owner: 0, name: String::new(), symbol: None, kind: NodeKind::Root, frame: st.root.frame, frames: tl.frame_count(), xf: Affine::IDENTITY, local: Affine::IDENTITY, alpha: 1.0, hittable: true, events: Vec::new(), gain: 1.0 }];
     // The main timeline is seen through its camera (ADR 0027): instances are where the pointer
     // sees them.
     let camera = tl.camera_at(st.root.frame, &doc.stage);
@@ -314,6 +433,62 @@ pub fn tree(doc: &Document, st: &PlayerState) -> Vec<Node> {
 /// The button (or movie clip with event handlers) at stage point `p`, topmost first.
 pub fn hit(doc: &Document, st: &PlayerState, p: Vec2) -> Option<InstancePath> {
     hit_in(doc, st, &tree(doc, st), p)
+}
+
+/// The frame of a button's timeline, `len` frames long, that answers the pointer: the Hit
+/// frame (the fourth) when it has one, otherwise the Up frame.
+pub fn hit_frame(len: u32) -> u32 {
+    if len > 3 { 3 } else { 0 }
+}
+
+/// The area of a button with timeline `tl` that answers the pointer, placed by `xf`: its
+/// [`hit_frame`]'s artwork without guides and mask artwork (masks don't cut hit areas, and
+/// shapes count however faint they are drawn). The hit test and Test Movie's hit-area overlay
+/// both use it.
+pub fn hit_area(doc: &Document, tl: &Timeline, xf: Affine) -> DisplayList {
+    let mut dl = evaluate_symbol(doc, tl, hit_frame(tl.frame_count()), xf, None);
+    dl.items.retain(|i| !i.guide && i.masks.is_none());
+    for i in &mut dl.items {
+        i.clip = None;
+    }
+    for g in &mut dl.groups {
+        g.clip = None;
+    }
+    dl
+}
+
+/// `dl` drawn as one translucent area: every item filled and stroked in `tint` at full
+/// strength, composited together and laid over what is below at `alpha`, so overlapping shapes
+/// don't darken each other.
+pub fn tinted(dl: DisplayList, tint: Rgba, alpha: f32) -> DisplayList {
+    let mut out = DisplayList::default();
+    let alpha = if alpha.is_finite() { alpha.clamp(0.0, 1.0) } else { 1.0 };
+    out.groups.push(Group { parent: None, alpha, blend: BlendMode::default(), filters: Arc::from(Vec::new()), clip: None });
+    out.append(dl);
+    for g in out.groups.iter_mut().skip(1) {
+        g.alpha = 1.0;
+        g.blend = BlendMode::default();
+        g.filters = Arc::from(Vec::new());
+        g.parent = Some(g.parent.unwrap_or(0));
+    }
+    for it in &mut out.items {
+        it.color = ColorTransform::tint(tint, 1.0);
+        it.outline = None;
+        it.group = Some(it.group.unwrap_or(0));
+    }
+    out
+}
+
+/// Every button's hit area at `st`, each a translucent area in `tint` (Test Movie's Show Hit
+/// Areas): where the pointer finds the buttons, drawn over the movie.
+pub fn hit_overlay(doc: &Document, st: &PlayerState, tint: Rgba, alpha: f32) -> DisplayList {
+    let mut out = DisplayList::default();
+    for n in tree(doc, st).iter().filter(|n| n.kind == NodeKind::Button && n.hittable) {
+        if let Some(sym) = n.symbol.and_then(|s| doc.symbol(s)) {
+            out.append(tinted(hit_area(doc, &sym.timeline, n.xf), tint, alpha));
+        }
+    }
+    out
 }
 
 /// Whether timeline layer `index` takes part in playback: shown, not a folder or guide, not in
@@ -358,7 +533,7 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
             };
             let idx = out.len();
             let node_xf = layer_xf.mul(&e.transform);
-            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, hittable: hit && shown, events: events.clone(), gain });
+            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, local: el.transform, alpha: el.color.alpha(), hittable: hit && shown, events: events.clone(), gain });
             // Names inside a movie clip (or a button's states) are its own; a graphic's
             // contents belong to the timeline the graphic is on.
             let inner_owner = if kind == NodeKind::Graphic { owner } else { idx };
@@ -375,9 +550,7 @@ fn hit_in(doc: &Document, st: &PlayerState, nodes: &[Node], p: Vec2) -> Option<I
         }
         let Some(sym) = n.symbol.and_then(|s| doc.symbol(s)) else { continue };
         let dl = if n.kind == NodeKind::Button {
-            // The Hit frame (the fourth) when the button has one; otherwise the Up frame.
-            let f = if n.frames > 3 { 3 } else { 0 };
-            evaluate_symbol(doc, &sym.timeline, f, n.xf, None)
+            hit_area(doc, &sym.timeline, n.xf)
         } else {
             evaluate_symbol(doc, &sym.timeline, n.frame, n.xf, Some(&Play { state: st, path: n.path.clone() }))
         };
@@ -423,11 +596,16 @@ struct Run<'a, 'h> {
     /// The frame each graphic showed when the step began: one that shows another frame at
     /// its end has entered it (and starts its sounds).
     graphics: BTreeMap<InstancePath, u32>,
+    /// Each timeline's declarations (ADR 0052), made the first time a script there
+    /// needs them.
+    decls: BTreeMap<TimelineRef, Arc<Decls>>,
+    /// Script fuel left this step.
+    fuel: u64,
 }
 
 impl<'a, 'h> Run<'a, 'h> {
     fn new(doc: &'a Document, st: PlayerState, host: &'h mut dyn ScriptHost) -> Self {
-        Run { doc, st, host, nodes: Vec::new(), dirty: true, pending: VecDeque::new(), actions: 0, enters: 0, halted: false, output: Vec::new(), dropped: 0, sounds: Vec::new(), graphics: BTreeMap::new() }
+        Run { doc, st, host, nodes: Vec::new(), dirty: true, pending: VecDeque::new(), actions: 0, enters: 0, halted: false, output: Vec::new(), dropped: 0, sounds: Vec::new(), graphics: BTreeMap::new(), decls: BTreeMap::new(), fuel: MAX_FUEL_PER_STEP }
     }
 
     fn remember_graphics(&mut self) {
@@ -437,12 +615,55 @@ impl<'a, 'h> Run<'a, 'h> {
     /// The sounds on keyframes of `tl` starting at `frame` (every layer but guides, as the
     /// soundtrack has them), at volume `gain` times their layer's.
     fn sounds_at(&mut self, tl: &Timeline, frame: u32, gain: f32) {
+        self.sounds_on(tl, frame, gain, false);
+    }
+
+    /// [`Run::sounds_at`]; on a button's frame (`button`) a stream sound plays as an event,
+    /// since a button's frame has no span to stream over (ADR 0057).
+    fn sounds_on(&mut self, tl: &Timeline, frame: u32, gain: f32, button: bool) {
         for layer in tl.layers.iter().filter(|l| !matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera)) {
             let Some(k) = layer.keyframe_starting_at(frame).and_then(|i| layer.keyframes.get(i)) else { continue };
             if let Some(fs) = &k.sound
                 && self.sounds.len() < MAX_SOUNDS_PER_STEP
             {
-                self.sounds.push(Started { sound: fs.clone(), gain: gain * layer.sound_gain(), span: k.duration });
+                let mut sound = fs.clone();
+                if button && sound.sync == SoundSync::Stream {
+                    sound.sync = SoundSync::Event;
+                }
+                self.sounds.push(Started { sound, gain: gain * layer.sound_gain(), span: k.duration });
+            }
+        }
+    }
+
+    /// Where the pointer is, for [`Run::button_sounds`]: what it is over, what it went down
+    /// on, and whether it is down.
+    fn pointer_now(&self) -> (Option<InstancePath>, Option<InstancePath>, bool) {
+        (self.st.hover.clone(), self.st.pressed.clone(), self.st.down)
+    }
+
+    /// Starts the sounds of the buttons whose state changed since `before` ([`pointer_now`]
+    /// then): the frame [`button_sound_frame`] gives for each change.
+    ///
+    /// [`pointer_now`]: Run::pointer_now
+    fn button_sounds(&mut self, before: (Option<InstancePath>, Option<InstancePath>, bool)) {
+        if before == self.pointer_now() {
+            return;
+        }
+        self.refresh();
+        let (h, p, d) = &before;
+        let mut paths: Vec<InstancePath> = Vec::new();
+        for path in [h, p, &self.st.hover, &self.st.pressed].into_iter().flatten() {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+        for path in paths {
+            let from = ButtonState::of(h.as_deref(), p.as_deref(), *d, &path);
+            let Some(frame) = button_sound_frame(from, self.st.button_state(&path)) else { continue };
+            let Some(n) = self.index_of(&path).and_then(|i| self.nodes.get(i)).filter(|n| n.kind == NodeKind::Button) else { continue };
+            let (gain, symbol) = (n.gain, n.symbol);
+            if let Some(sym) = symbol.and_then(|s| self.doc.symbol(s)) {
+                self.sounds_on(&sym.timeline, frame, gain, true);
             }
         }
     }
@@ -492,6 +713,9 @@ impl<'a, 'h> Run<'a, 'h> {
             list.retain(|l| all.contains(&l.owner));
             all.contains(p) && !list.is_empty()
         });
+        self.st.stage.retain(|l| all.contains(&l.owner));
+        // A timeline's variables go with its instance.
+        self.st.vars.retain(|p, _| all.contains(p));
         for slot in [&mut self.st.hover, &mut self.st.pressed] {
             if slot.as_ref().is_some_and(|p| !all.contains(p)) {
                 *slot = None;
@@ -600,7 +824,7 @@ impl<'a, 'h> Run<'a, 'h> {
                 // than a line every time the playhead passes.
                 FrameScript::Source(src) => {
                     if let Ok(c) = src.compiled() {
-                        self.run_ops(path, &c.ops);
+                        self.run_script(path, frame, c);
                     }
                 }
             }
@@ -630,43 +854,254 @@ impl<'a, 'h> Run<'a, 'h> {
         }
     }
 
-    /// Runs a compiled script's steps (ADR 0013 tier 2), each one action of the budget.
-    fn run_ops(&mut self, owner: &[ElementId], ops: &[ScriptOp]) {
-        for op in ops {
-            if !self.budget() {
+    /// The declarations of the timeline node `i` is (the main timeline's span every scene).
+    fn decls_of(&mut self, i: usize) -> Arc<Decls> {
+        let key = match self.nodes.get(i) {
+            Some(Node { kind: NodeKind::MovieClip, symbol: Some(s), .. }) => TimelineRef::Symbol(*s),
+            _ => TimelineRef::Root,
+        };
+        let doc = self.doc;
+        self.decls.entry(key).or_insert_with(|| Arc::new(decls(doc, key))).clone()
+    }
+
+    /// Runs a compiled frame script on timeline `owner` (ADR 0052): when every name
+    /// it takes from other frames is there, its statements run with the fuel the step has left.
+    fn run_script(&mut self, owner: &[ElementId], frame: u32, c: &'a Compiled) {
+        let Some(i) = self.index_of(owner) else { return };
+        let d = self.decls_of(i);
+        // A script whose names don't link doesn't run (Test Movie lists why at the start).
+        if !d.problems(c).is_empty() {
+            return;
+        }
+        let where_ = format!("Script on frame {} of {}", u64::from(frame) + 1, self.timeline_name(i));
+        self.run_code(owner, d, None, &where_, |w, fuel| run::run_script(w, &c.body, &c.inner, fuel));
+    }
+
+    /// Runs code on timeline `owner` with this step's fuel; writes why it stopped early.
+    fn run_code(&mut self, owner: &[ElementId], decls: Arc<Decls>, ev: Option<EventInfo>, where_: &str, go: impl FnOnce(&mut dyn World, u64) -> (u64, Result<(), Stop>)) {
+        if self.halted {
+            return;
+        }
+        if self.fuel == 0 {
+            self.halt(&format!("scripts ran more than {MAX_FUEL_PER_STEP} steps"));
+            return;
+        }
+        let fuel = self.fuel.min(run::FUEL_PER_RUN);
+        let mut w = Script { r: self, owner: owner.to_vec(), decls, ev };
+        let (used, r) = go(&mut w, fuel);
+        self.fuel = self.fuel.saturating_sub(used);
+        match r {
+            Ok(()) | Err(Stop::Halt) => {}
+            Err(e) => self.out(format!("{where_} stopped: {}", e.describe())),
+        }
+    }
+
+    /// How Output names a timeline: the main timeline, or the instance-name path of a clip.
+    fn timeline_name(&self, i: usize) -> String {
+        if i == 0 {
+            return "the main timeline".into();
+        }
+        let mut names = Vec::new();
+        let mut cur = i;
+        for _ in 0..=MAX_SYMBOL_DEPTH {
+            let Some(n) = self.nodes.get(cur) else { break };
+            if n.kind == NodeKind::Root {
+                break;
+            }
+            names.push(if n.name.is_empty() { "?" } else { n.name.as_str() });
+            cur = n.owner;
+        }
+        names.reverse();
+        names.join(".")
+    }
+
+    /// Calls listener `l` with the event.
+    fn call_listener(&mut self, l: &Listening, ev: EventInfo) {
+        self.refresh();
+        let Some(i) = self.index_of(&l.owner) else { return };
+        let d = self.decls_of(i);
+        let f = l.func.clone();
+        let where_ = format!("Listener {}", l.function);
+        self.run_code(&l.owner, d, Some(ev), &where_, |w, fuel| run::run_listener(w, &f, fuel));
+    }
+
+    /// Every enter-frame listener, in the order they were added.
+    fn enter_frame(&mut self) {
+        self.refresh();
+        let mut all: Vec<(Option<InstancePath>, Listening)> = self.st.listeners.iter().flat_map(|(p, list)| list.iter().filter(|l| l.event == ListenEvent::EnterFrame).map(|l| (Some(p.clone()), l.clone()))).collect();
+        all.extend(self.st.stage.iter().filter(|l| l.event == ListenEvent::EnterFrame).map(|l| (None, l.clone())));
+        all.sort_by_key(|(_, l)| l.seq);
+        for (at, l) in all {
+            if self.halted {
                 return;
             }
-            match op {
-                ScriptOp::Action(a) => self.exec(owner, a, true),
-                ScriptOp::Listen(l) => self.listen(owner, l),
+            self.call_listener(&l, EventInfo { key: None, target: at.clone(), current: at });
+            self.settle();
+        }
+    }
+
+    /// A key event: the stage's listeners for it, in the order added.
+    fn key(&mut self, event: ListenEvent, code: u32) {
+        let list: Vec<Listening> = self.st.stage.iter().filter(|l| l.event == event).cloned().collect();
+        for l in list {
+            if self.halted {
+                return;
+            }
+            self.call_listener(&l, EventInfo { key: Some(code), target: None, current: None });
+            self.settle();
+        }
+    }
+
+    /// The node an instance name stands for, from timeline node `from` (`Ok(None)`: the stage).
+    fn place(&self, from: usize, ev: Option<&EventInfo>, at: &Place) -> Result<Option<usize>, String> {
+        let base = match at.base {
+            Base::This => from,
+            Base::Stage => {
+                return if at.path.is_this() { Ok(None) } else { Err("instances on the stage are named from the main timeline (root)".into()) };
+            }
+            Base::Target | Base::Current => {
+                let Some(ev) = ev else { return Err("there's no event here".into()) };
+                let p = if at.base == Base::Target { &ev.target } else { &ev.current };
+                match p {
+                    None if at.path.is_this() => return Ok(None),
+                    None => return Err("the event's target is the stage".into()),
+                    Some(p) => self.index_of(p).ok_or("the event's target has left the stage")?,
+                }
+            }
+        };
+        self.resolve(base, &at.path).map(Some)
+    }
+
+    /// The path of the node `base` starts from (for actions on the event's target).
+    fn base_path(&self, owner: &[ElementId], ev: Option<&EventInfo>, base: Base) -> Result<InstancePath, String> {
+        match base {
+            Base::This => Ok(owner.to_vec()),
+            Base::Stage => Err("the stage has no playhead".into()),
+            Base::Target | Base::Current => {
+                let Some(ev) = ev else { return Err("there's no event here".into()) };
+                let p = if base == Base::Target { &ev.target } else { &ev.current };
+                p.clone().ok_or_else(|| "the event's target is the stage".into())
             }
         }
     }
 
-    /// `addEventListener`: the instance the listener's target names gets it (once per
-    /// function and event).
-    fn listen(&mut self, owner: &[ElementId], l: &Listener) {
+    /// A property of node `i` (`None`: the stage).
+    fn property(&self, i: Option<usize>, p: Prop) -> Result<Value, String> {
+        let num = |v: f64| Ok(Value::Num(v));
+        let Some(i) = i else {
+            return match p {
+                Prop::MouseX => num(short(self.st.mouse.x)),
+                Prop::MouseY => num(short(self.st.mouse.y)),
+                _ => Err(format!("the stage's `{}` isn't supported here", p.name())),
+            };
+        };
+        let Some(n) = self.nodes.get(i) else { return Err("the instance is gone".into()) };
+        if n.kind == NodeKind::Root {
+            return match p {
+                Prop::X | Prop::Y | Prop::Rotation => num(0.0),
+                Prop::Alpha | Prop::ScaleX | Prop::ScaleY => num(1.0),
+                Prop::Visible => Ok(Value::Bool(true)),
+                Prop::CurrentFrame => num(f64::from(self.st.root.frame) + 1.0),
+                Prop::TotalFrames => num(self.doc.scenes.iter().map(|s| f64::from(s.timeline.frame_count())).sum()),
+                Prop::CurrentLabel => Ok(current_label(self.doc.timeline(self.st.scene), self.st.root.frame)),
+                Prop::MouseX => num(short(self.st.mouse.x)),
+                Prop::MouseY => num(short(self.st.mouse.y)),
+                Prop::Name => Ok(Value::str("root1")),
+            };
+        }
+        let ov = self.st.props.get(&n.path).copied().unwrap_or_default();
+        let d = decompose64(&n.local);
+        let deg = 180.0 / std::f64::consts::PI;
+        let pick = |o: Option<f32>, v: f64| num(o.map_or(fround_short(v), short));
+        match p {
+            Prop::X => pick(ov.x, d[0]),
+            Prop::Y => pick(ov.y, d[1]),
+            Prop::ScaleX => pick(ov.scale_x, d[2]),
+            Prop::ScaleY => pick(ov.scale_y, d[3]),
+            Prop::Rotation => pick(ov.rotation, d[4] * deg),
+            Prop::Alpha => num(short(ov.alpha.unwrap_or(n.alpha))),
+            Prop::Visible => Ok(Value::Bool(ov.visible != Some(false))),
+            Prop::Name => Ok(Value::str(&n.name)),
+            Prop::MouseX | Prop::MouseY => {
+                let m = n.xf.m.map(f64::from);
+                let det = m[0] * m[3] - m[1] * m[2];
+                if det == 0.0 || !det.is_finite() {
+                    return num(0.0);
+                }
+                let (x, y) = (f64::from(self.st.mouse.x) - m[4], f64::from(self.st.mouse.y) - m[5]);
+                let v = if p == Prop::MouseX { (m[3] * x - m[2] * y) / det } else { (m[0] * y - m[1] * x) / det };
+                num(fround_short(v))
+            }
+            Prop::CurrentFrame | Prop::TotalFrames | Prop::CurrentLabel => {
+                if n.kind != NodeKind::MovieClip {
+                    let what = if n.kind == NodeKind::Button { "a button" } else { "a graphic" };
+                    return Err(format!("“{}” is {what}; only movie clips and the main timeline have frames", n.name));
+                }
+                match p {
+                    Prop::CurrentFrame => num(f64::from(n.frame) + 1.0),
+                    Prop::TotalFrames => num(f64::from(n.frames)),
+                    _ => Ok(n.symbol.and_then(|s| self.doc.symbol(s)).map_or(Value::Null, |s| current_label(&s.timeline, n.frame))),
+                }
+            }
+        }
+    }
+
+    /// `addEventListener` / `removeEventListener` from timeline `owner`.
+    fn listen(&mut self, owner: &[ElementId], ev: Option<&EventInfo>, at: &Place, event: ListenEvent, f: &Arc<Function>, add: bool) {
         self.refresh();
         let Some(from) = self.index_of(owner) else { return };
-        let what = format!("Listen for {} ({})", l.event.key(), l.target);
-        let i = match self.resolve(from, &l.target) {
+        let what = format!("{} for {} ({at})", if add { "Listen" } else { "Stop listening" }, event.key());
+        let i = match self.place(from, ev, at) {
             Ok(i) => i,
             Err(e) => return self.out(format!("{what}: {e}")),
         };
+        let seq = self.st.seq;
+        let item = Listening { event, owner: owner.to_vec(), function: f.name.clone(), func: f.clone(), seq };
+        let same = |x: &Listening| x.event == event && x.owner == owner && x.function == f.name;
+        let Some(i) = i else {
+            // The stage: keyboard and enter-frame listeners.
+            if add {
+                if self.st.stage.iter().any(same) {
+                    return;
+                }
+                if self.st.stage.len() >= MAX_STAGE_LISTENERS {
+                    return self.out(format!("{what}: the stage already has {MAX_STAGE_LISTENERS} listeners"));
+                }
+                self.st.seq += 1;
+                self.st.stage.push(item);
+            } else {
+                self.st.stage.retain(|x| !same(x));
+            }
+            return;
+        };
         let Some(node) = self.nodes.get(i) else { return };
-        if !matches!(node.kind, NodeKind::Button | NodeKind::MovieClip) {
+        let ok = match event {
+            ListenEvent::EnterFrame => node.kind != NodeKind::Graphic,
+            _ => matches!(node.kind, NodeKind::Button | NodeKind::MovieClip),
+        };
+        if !ok {
             let why = if node.kind == NodeKind::Root { "the main timeline doesn't get pointer events here".to_string() } else { format!("“{}” is a graphic; only buttons and movie clips get pointer events", node.name) };
             return self.out(format!("{what}: {why}"));
         }
         let (path, name) = (node.path.clone(), node.name.clone());
+        if !add {
+            if let Some(list) = self.st.listeners.get_mut(&path) {
+                list.retain(|x| !same(x));
+                if list.is_empty() {
+                    self.st.listeners.remove(&path);
+                }
+            }
+            return;
+        }
         let list = self.st.listeners.entry(path).or_default();
-        if list.iter().any(|x| x.event == l.event && x.owner == owner && x.function == l.function) {
+        if list.iter().any(same) {
             return;
         }
         if list.len() >= MAX_LISTENERS_PER_INSTANCE {
             return self.out(format!("{what}: “{name}” already has {MAX_LISTENERS_PER_INSTANCE} listeners"));
         }
-        list.push(Listening { event: l.event, owner: owner.to_vec(), function: l.function.clone(), actions: l.actions.clone() });
+        list.push(item);
+        self.st.seq += 1;
     }
 
     /// The node `target` names, seen from timeline node `from`.
@@ -816,18 +1251,22 @@ impl<'a, 'h> Run<'a, 'h> {
             Event::Move(p) => self.pointer(Some(p)),
             Event::Down(p) => {
                 self.pointer(Some(p));
+                let before = self.pointer_now();
                 self.st.down = true;
                 self.st.pressed = self.st.hover.clone();
                 self.dirty = true;
+                self.button_sounds(before);
                 if let Some(h) = self.st.hover.clone() {
                     self.fire(&h, ButtonEvent::Press);
                 }
             }
             Event::Up(p) => {
                 self.pointer(Some(p));
+                let before = self.pointer_now();
                 self.st.down = false;
                 let pressed = self.st.pressed.take();
                 self.dirty = true;
+                self.button_sounds(before);
                 if let Some(h) = self.st.hover.clone() {
                     self.fire(&h, ButtonEvent::Release);
                     if pressed.as_ref() == Some(&h) {
@@ -836,6 +1275,8 @@ impl<'a, 'h> Run<'a, 'h> {
                 }
             }
             Event::Leave => self.pointer(None),
+            Event::KeyDown(k) => self.key(ListenEvent::KeyDown, k),
+            Event::KeyUp(k) => self.key(ListenEvent::KeyUp, k),
         }
     }
 
@@ -843,10 +1284,15 @@ impl<'a, 'h> Run<'a, 'h> {
     fn pointer(&mut self, p: Option<Vec2>) {
         self.refresh();
         self.st.pointer = p;
+        if let Some(p) = p {
+            self.st.mouse = p;
+        }
         let now = p.and_then(|p| hit_in(self.doc, &self.st, &self.nodes, p));
         if now != self.st.hover {
+            let before = self.pointer_now();
             let old = std::mem::replace(&mut self.st.hover, now.clone());
             self.dirty = true;
+            self.button_sounds(before);
             if let Some(o) = old {
                 self.fire(&o, ButtonEvent::Out);
             }
@@ -863,15 +1309,16 @@ impl<'a, 'h> Run<'a, 'h> {
         let Some(n) = self.index_of(path).and_then(|i| self.nodes.get(i)) else { return };
         let handler = n.events.iter().find(|h| h.event == event).map(|h| h.actions.clone());
         let owner_path = self.nodes.get(n.owner).map(|o| o.path.clone());
-        let listeners: Vec<(InstancePath, Arc<Vec<Action>>)> = self.st.listeners.get(path).map(|l| l.iter().filter(|l| l.event == event).map(|l| (l.owner.clone(), l.actions.clone())).collect()).unwrap_or_default();
+        let le = ListenEvent::from_mouse(event);
+        let listeners: Vec<Listening> = self.st.listeners.get(path).map(|l| l.iter().filter(|l| l.event == le).cloned().collect()).unwrap_or_default();
         if handler.is_none() && listeners.is_empty() {
             return;
         }
         if let (Some(actions), Some(owner)) = (handler, owner_path) {
             self.run_list(&owner, &actions, false);
         }
-        for (owner, actions) in listeners {
-            self.run_list(&owner, &actions, true);
+        for l in listeners {
+            self.call_listener(&l, EventInfo { key: None, target: Some(path.to_vec()), current: Some(path.to_vec()) });
         }
         self.settle();
     }
@@ -896,6 +1343,193 @@ impl<'a, 'h> Run<'a, 'h> {
             self.output.push(format!("… {n} more lines"));
         }
         Step { state: self.st, output: self.output, sounds: self.sounds }
+    }
+}
+
+/// The event a listener is handling: the key code of a keyboard event, and its target and
+/// current target (`None`: the stage).
+#[derive(Clone, Debug, PartialEq)]
+struct EventInfo {
+    key: Option<u32>,
+    target: Option<InstancePath>,
+    current: Option<InstancePath>,
+}
+
+/// A timeline whose scripts share declarations: the main timeline (every scene) or a movie
+/// clip symbol's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TimelineRef {
+    Root,
+    Symbol(SymbolId),
+}
+
+/// The compiled frame scripts of a timeline that plays them, in frame order (top layer first
+/// within a frame).
+pub fn timeline_scripts(tl: &Timeline) -> Vec<(u32, usize, &Compiled)> {
+    let mut out = Vec::new();
+    for (index, layer) in tl.layers.iter().enumerate() {
+        if !plays(tl, index) {
+            continue;
+        }
+        for k in &layer.keyframes {
+            if let Some(FrameScript::Source(src)) = &k.script
+                && let Ok(c) = src.compiled()
+            {
+                out.push((k.start, index, c));
+            }
+        }
+    }
+    out.sort_by_key(|(f, l, _)| (*f, *l));
+    out
+}
+
+/// A timeline's declarations: every function and variable its frame scripts declare (the main
+/// timeline's from every scene, in scene order).
+pub fn decls(doc: &Document, which: TimelineRef) -> Decls {
+    match which {
+        TimelineRef::Root => Decls::build(doc.scenes.iter().flat_map(|s| timeline_scripts(&s.timeline)).map(|(_, _, c)| c)),
+        TimelineRef::Symbol(id) => match doc.symbol(id) {
+            Some(s) if s.kind == SymbolKind::MovieClip => Decls::build(timeline_scripts(&s.timeline).into_iter().map(|(_, _, c)| c)),
+            _ => Decls::default(),
+        },
+    }
+}
+
+/// Why a compiled script on timeline `which` doesn't run there: names it takes from other
+/// frames that the timeline doesn't declare, and declarations that clash.
+pub fn link_problems(doc: &Document, which: TimelineRef, c: &Compiled) -> Vec<Problem> {
+    decls(doc, which).problems(c)
+}
+
+/// The label at or before `frame` (ActionScript's `currentLabel`), or `null`.
+fn current_label(tl: &Timeline, frame: u32) -> Value {
+    let mut firsts: BTreeMap<&str, u32> = BTreeMap::new();
+    for k in tl.layers.iter().flat_map(|l| l.keyframes.iter()).filter(|k| !k.label.is_empty()) {
+        let e = firsts.entry(k.label.as_str()).or_insert(k.start);
+        *e = (*e).min(k.start);
+    }
+    let mut best: Option<(&str, u32)> = None;
+    for (l, f) in firsts {
+        if f <= frame && best.is_none_or(|(_, b)| f > b) {
+            best = Some((l, f));
+        }
+    }
+    best.map_or(Value::Null, |(l, _)| Value::str(l))
+}
+
+/// An `f32` as the shortest decimal that reads back as it (what the HTML player sees after
+/// the export writes it as JSON): reads give `0.1`, not `0.10000000149011612`.
+fn short(v: f32) -> f64 {
+    if !v.is_finite() {
+        return f64::from(v);
+    }
+    format!("{v}").parse().unwrap_or(f64::from(v))
+}
+
+/// A computed value at `f32` precision, written shortest.
+fn fround_short(v: f64) -> f64 {
+    short(v as f32)
+}
+
+/// `[tx, ty, sx, sy, rotation]` of a transform in `f64` (the same steps as `Affine::decompose`
+/// and the HTML player's `decompose`), from its components written shortest.
+fn decompose64(m: &Affine) -> [f64; 5] {
+    let [a, b, c, d, e, f] = m.m.map(short);
+    let sx = (a * a + b * b).sqrt();
+    let r = b.atan2(a);
+    let det = a * d - b * c;
+    let sy = if sx > 1e-12 { det / sx } else { (c * c + d * d).sqrt() };
+    [e, f, sx, sy, r]
+}
+
+/// A running script's view of the movie (ADR 0052).
+struct Script<'r, 'a, 'h> {
+    r: &'r mut Run<'a, 'h>,
+    /// The timeline the script belongs to.
+    owner: InstancePath,
+    decls: Arc<Decls>,
+    ev: Option<EventInfo>,
+}
+
+impl Script<'_, '_, '_> {
+    fn from(&mut self) -> Result<usize, String> {
+        self.r.refresh();
+        self.r.index_of(&self.owner).ok_or_else(|| "the script's timeline has left the stage".into())
+    }
+}
+
+impl World for Script<'_, '_, '_> {
+    fn act(&mut self, base: Base, action: &Action) -> Result<(), Option<String>> {
+        if !self.r.budget() {
+            return Err(None);
+        }
+        let path = self.r.base_path(&self.owner, self.ev.as_ref(), base).map_err(Some)?;
+        self.r.exec(&path, action, true);
+        if self.r.halted { Err(None) } else { Ok(()) }
+    }
+
+    fn get(&mut self, at: &Place, p: Prop) -> Result<Value, String> {
+        let from = self.from()?;
+        let i = self.r.place(from, self.ev.as_ref(), at)?;
+        self.r.property(i, p)
+    }
+
+    fn set(&mut self, at: &Place, p: Property, v: f64) -> Result<(), Option<String>> {
+        if at.base == Base::Stage {
+            return Err(Some("the stage's properties can't be set here".into()));
+        }
+        // In range (as the property keeps it), and never -0, so messages read the same here
+        // and in the HTML player.
+        let (lo, hi) = p.range();
+        let v = v.clamp(lo, hi) + 0.0;
+        self.act(at.base, &Action::SetProperty { target: at.path.clone(), property: p, value: v })
+    }
+
+    fn trace(&mut self, line: String) {
+        if self.r.budget() {
+            self.r.out(line);
+        }
+    }
+
+    fn read(&mut self, name: &str) -> Result<Value, String> {
+        if let Some(v) = self.r.st.vars.get(&self.owner).and_then(|m| m.get(name)) {
+            return Ok(v.clone());
+        }
+        self.decls.vars.get(name).map(|t| t.default_value()).ok_or_else(|| format!("`{name}` isn't a variable of this timeline"))
+    }
+
+    fn write(&mut self, name: &str, v: Value) -> Result<(), String> {
+        let t = *self.decls.vars.get(name).ok_or_else(|| format!("`{name}` isn't a variable of this timeline"))?;
+        self.r.st.vars.entry(self.owner.clone()).or_default().insert(name.to_string(), t.coerce(v));
+        Ok(())
+    }
+
+    fn function(&mut self, name: &str) -> Option<Arc<Function>> {
+        self.decls.functions.get(name).cloned()
+    }
+
+    fn listen(&mut self, at: &Place, ev: ListenEvent, f: &Arc<Function>, add: bool) -> Result<(), Option<String>> {
+        if !self.r.budget() {
+            return Err(None);
+        }
+        let owner = self.owner.clone();
+        self.r.listen(&owner, self.ev.as_ref(), at, ev, f, add);
+        Ok(())
+    }
+
+    fn random(&mut self) -> f64 {
+        self.r.st.rng.next_f64()
+    }
+
+    fn same(&mut self, a: &Place, b: &Place) -> Result<bool, String> {
+        let from = self.from()?;
+        let x = self.r.place(from, self.ev.as_ref(), a)?;
+        let y = self.r.place(from, self.ev.as_ref(), b)?;
+        Ok(x == y)
+    }
+
+    fn key_code(&mut self) -> Result<f64, String> {
+        self.ev.as_ref().and_then(|e| e.key).map(f64::from).ok_or_else(|| "this isn't a keyboard event".into())
     }
 }
 

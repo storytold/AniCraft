@@ -55,6 +55,13 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
   `examples/plugins` (MIT OR Apache-2.0).
 
+### Find and Replace (2026-11-11, ADR 0058)
+
+New crates, from crates.io: `regex` 1 with `regex-syntax` and `regex-automata` (MIT OR
+Apache-2.0) and `aho-corasick` (Unlicense OR MIT), built with only the `std`, `perf`,
+`unicode-case` and `unicode-perl` features. They match Find and Replace's patterns in linear
+time with size limits. No new licence.
+
 ### Interface languages (2026-11-10, ADR 0040)
 
 New crate: `sys-locale` 0.3 (MIT OR Apache-2.0, crates.io), which reads the system's interface

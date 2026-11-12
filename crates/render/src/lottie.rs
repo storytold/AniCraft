@@ -4,7 +4,8 @@
 //! Frame-accurate rather than re-keyed: each frame is evaluated, and every piece of artwork
 //! that persists from frame to frame (same layer, element and path structure) becomes one
 //! shape layer, its outline baked into stage space. Whatever changes (outline, colours,
-//! gradient points, stroke width, opacity, masks) is written as hold keyframes at the frames
+//! gradient points, stroke width, opacity, masks; colour effects of every style are baked into
+//! the colours, ADR 0056) is written as hold keyframes at the frames
 //! where it changes, so any Lottie player shows exactly AniCraft's frames. Strokes keep their
 //! caps, joins, miter limit and dashes (dash lengths scaled like the width, dots as zero-length
 //! round dashes; ADR 0046); variable-width strokes are filled outlines (the polygons the
@@ -672,6 +673,26 @@ mod tests {
         let part = parse(&to_lottie(&doc, "part", 10, 19, false));
         assert_eq!(part["op"], 10);
         assert!(part["layers"].as_array().unwrap().iter().all(|l| l["ty"] == 4), "transparent: no stage layer");
+    }
+
+    #[test]
+    fn every_colour_effect_style_is_baked_into_the_colours() {
+        // ADR 0056: Lottie has no colour transform, so the effect is in each fill colour (and
+        // tweening effects become colour keyframes); nothing is reported lost.
+        use anicraft_doc::{ColorEffect, ColorTransform, Document, Element, ElementId, ElementKind, Shape};
+        let mut doc = Document::default();
+        let fx = ColorEffect::Advanced(ColorTransform { mul: [-1.0, 0.5, 1.0, 1.0], add: [1.0, 0.0, 0.0, 0.0] });
+        let shape = Shape::filled(Path::rect(0.0, 0.0, 20.0, 20.0), Paint::Solid(Rgba::new(0.2, 0.4, 0.6, 1.0)));
+        let el = Element { id: ElementId(77), name: String::new(), transform: Affine::IDENTITY, color: fx, kind: ElementKind::Shape(shape) };
+        let layer = std::sync::Arc::make_mut(&mut doc.timeline_mut(0).layers[0]);
+        layer.keyframe_mut(0).unwrap().elements.push(std::sync::Arc::new(el));
+        let e = to_lottie(&doc, "fx", 0, 0, false);
+        let v = parse(&e);
+        let it = v["layers"][0]["shapes"][0]["it"].as_array().unwrap();
+        let fill = it.iter().find(|i| i["ty"] == "fl").expect("a fill");
+        let c: Vec<f64> = fill["c"]["k"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        assert!((c[0] - 0.8).abs() < 1e-3 && (c[1] - 0.2).abs() < 1e-3 && (c[2] - 0.6).abs() < 1e-3, "{c:?}");
+        assert!(e.report.is_empty(), "nothing lost: {:?}", e.report);
     }
 
     #[test]

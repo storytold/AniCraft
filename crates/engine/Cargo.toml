@@ -21,6 +21,7 @@ thiserror.workspace = true
 rayon.workspace = true
 web-time.workspace = true
 gif.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 # Decodes exported sheets in tests (already in the tree through the renderer).

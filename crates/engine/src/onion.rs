@@ -19,7 +19,7 @@
 //! program; nothing was copied.
 
 use crate::{CommandSpec, MAX_FRAME, Result, Session};
-use anicraft_doc::{ColorEffect, DisplayList, Document, ElementId, LayerId, LayerKind, Rgba, Timeline};
+use anicraft_doc::{ColorTransform, DisplayList, Document, ElementId, LayerId, LayerKind, Rgba, Timeline};
 use anicraft_geom::{Rect, Vec2};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
@@ -168,12 +168,12 @@ impl OnionSkin {
     }
 
     /// The colour effect an onion frame gets, and the outline colour (when outlines are on).
-    pub fn look(&self, past: bool, distance: u32, reach: u32) -> (ColorEffect, Option<Rgba>) {
+    pub fn look(&self, past: bool, distance: u32, reach: u32) -> (ColorTransform, Option<Rgba>) {
         let alpha = self.alpha(distance, reach);
         let color = if past { self.past } else { self.future };
         let (tint, tint_amount) = if self.tint { (color, TINT_AMOUNT) } else { (Rgba::WHITE, 0.0) };
         let outline = self.outlines.then(|| color.with_alpha(alpha * color.a.clamp(0.0, 1.0)));
-        (ColorEffect { alpha, tint, tint_amount }, outline)
+        (ColorTransform::alpha(alpha).concat(&ColorTransform::tint(tint, tint_amount)), outline)
     }
 
     /// A hash of everything that changes the picture, for render-cache keys.

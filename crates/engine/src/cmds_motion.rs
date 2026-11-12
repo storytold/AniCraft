@@ -15,7 +15,7 @@
 use crate::cmds_timeline::target;
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, Keyframe, Layer, LayerId, LayerKind, MotionTween, Pin, PinError, Property, Props};
+use anicraft_doc::{Element, ElementId, Keyframe, Layer, LayerId, LayerKind, MotionTween, Pin, PinError, Property, Props};
 use anicraft_geom::{Affine, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|tint, value (px, %, °), frame?, layer?}", true, set_key as crate::RunFn),
+        c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)", true, set_key as crate::RunFn),
         c("motion.remove_key", "Remove Property Keyframe", "", None, "{property? (default: every property), frame?, layer?}", true, remove_key),
         c("motion.set_ease", "Property Ease", "", None, "{easing, property? (default: every property), frame? (inside the segment), layer?}", true, set_ease),
         c("motion.info", "Motion Tween", "", None, "{layer?, frame?} → the span's properties, keys, eases and values at the frame, its motion path, its anchors pinned to frames (pins) and where the object is", false, info),
@@ -111,7 +111,7 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
         let v = was.get(p) + d;
         if e.offset == 0 && m.track(p).is_none() {
             new_base.set(p, v);
-            if matches!(p, Property::Alpha | Property::Tint) {
+            if p.style().is_some() {
                 base_color = true;
             } else {
                 base_xf = true;
@@ -120,8 +120,8 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
             m.set_key(p, e.offset, v, base_props.get(p));
         }
     }
-    let tracks_xf = m.tracks.iter().any(|t| !matches!(t.property, Property::Alpha | Property::Tint));
-    let tracks_color = m.tracks.iter().any(|t| matches!(t.property, Property::Alpha | Property::Tint));
+    let tracks_xf = m.tracks.iter().any(|t| t.property.style().is_none());
+    let tracks_color = m.tracks.iter().any(|t| t.property.style().is_some());
     let mut base = after;
     // Exact where nothing is keyed on the first frame: the edited object is the new base.
     base.transform = match (base_xf, e.offset == 0 && !tracks_xf) {
@@ -131,8 +131,9 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     };
     base.color = match (base_color, e.offset == 0 && !tracks_color) {
         (true, true) => base.color,
-        (true, false) => ColorEffect { alpha: (new_base.get(Property::Alpha) / 100.0).clamp(0.0, 1.0), tint: base.color.tint, tint_amount: (new_base.get(Property::Tint) / 100.0).clamp(0.0, 1.0) },
-        (false, _) => ColorEffect { tint: base.color.tint, ..e.base.color },
+        // The edit's style, from the new values (ADR 0056).
+        (true, false) => new_base.color_effect(&[base.color.style()]),
+        (false, _) => e.base.color,
     };
     if let Some(slot) = kf.elements.get_mut(idx) {
         *slot = Arc::new(base);

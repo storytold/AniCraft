@@ -55,6 +55,7 @@ fn import(case: &str) -> (Document, Report) {
 /// package uses on purpose.
 const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("bitmaps", &[("instances of missing bitmaps", 1), ("missing bitmap files", 1)]),
+    ("colour", &[]),
     ("filters", &[("unknown filters", 1)]),
     (
         "gradients",
@@ -69,13 +70,14 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("guides", &[]),
     ("interactive", &[]),
     ("masks", &[]),
+    ("nineslice", &[("9-slice guides that aren't usable (left out)", 1)]),
     ("primitives", &[]),
     ("scenes", &[("frame comments", 1)]),
     ("scripts", &[]),
     ("shapes", &[]),
     (
         "symbols",
-        &[("advanced colour effects (only alpha kept)", 1), ("instances of missing symbols", 1), ("missing library files", 1), ("reverse loop modes (played forward)", 1)],
+        &[("instances of missing symbols", 1), ("missing library files", 1), ("reverse loop modes (played forward)", 1)],
     ),
     ("text", &[("dynamic and input text fields (imported as static text)", 2), ("text fields (no fonts on this computer)", 4)]),
     ("tweens", &[("motion tweens (kept as keyframes)", 1), ("tween spins (turned the shortest way)", 1)]),
@@ -83,7 +85,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
 
 /// What each package keeps without running (ADR 0013 tier 1: scripts outside the subset, and
 /// class names); packages not listed keep nothing.
-const KEPT: &[(&str, &[(&str, usize)])] = &[("bitmaps", &[("library folders", 1)]), ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]), ("symbols", &[("library folders", 1)])];
+const KEPT: &[(&str, &[(&str, usize)])] = &[("bitmaps", &[("library folders", 1)]), ("nineslice", &[("library folders", 1)]), ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]), ("symbols", &[("library folders", 1)])];
 
 /// The frame scripts each package brings that run (ADR 0013 tier 2: in the subset).
 const RUNS: &[(&str, &[(&str, usize)])] = &[
@@ -174,14 +176,33 @@ fn symbols_keep_their_kinds_loop_modes_and_colour_effects() {
     let loops = &doc.timeline(0).layers[2].keyframes[0].elements;
     let modes: Vec<(LoopMode, u32)> = loops.iter().filter_map(|e| if let ElementKind::Symbol { loop_mode, first_frame, .. } = &e.kind { Some((*loop_mode, *first_frame)) } else { None }).collect();
     assert_eq!(modes, [(LoopMode::Loop, 0), (LoopMode::PlayOnce, 1), (LoopMode::SingleFrame, 2), (LoopMode::PlayOnce, 3), (LoopMode::Loop, 0)]);
-    let fx: Vec<_> = doc.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| (e.color.alpha, e.color.tint, e.color.tint_amount)).collect();
-    use anicraft_doc::Rgba;
-    assert_eq!(fx[0].0, 0.4);
-    assert_eq!((fx[1].1, fx[1].2), (Rgba::hex(0x0000ff), 0.7));
-    assert_eq!((fx[2].1, fx[2].2), (Rgba::WHITE, 0.6), "brightness up is a tint towards white");
-    assert_eq!((fx[3].1, fx[3].2), (Rgba::BLACK, 0.5), "brightness down is a tint towards black");
-    assert_eq!((fx[4].0, fx[4].2), (0.8, 0.0), "advanced: alpha kept");
+    let fx: Vec<ColorEffect> = doc.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| e.color).collect();
+    use anicraft_doc::{ColorEffect, ColorTransform, Rgba};
+    assert_eq!(fx[0], ColorEffect::Alpha(0.4));
+    assert_eq!(fx[1], ColorEffect::Tint { color: Rgba::hex(0x0000ff), amount: 0.7 });
+    assert_eq!(fx[2], ColorEffect::Brightness(0.6));
+    assert_eq!(fx[3], ColorEffect::Brightness(-0.5));
+    assert_eq!(fx[4], ColorEffect::Advanced(ColorTransform { mul: [0.2, 1.0, 1.0, 0.8], add: [0.0, 120.0 / 255.0, 0.0, 0.0] }), "advanced: every channel");
     assert_eq!(doc.timeline(0).layers[1].keyframes[0].elements[0].name, "spinner", "a movie clip keeps its instance name");
+}
+
+#[test]
+fn colour_effects_come_across_in_every_style() {
+    use anicraft_doc::{ColorEffect, ColorTransform, Rgba};
+    let (doc, _) = import("colour");
+    let fx: Vec<ColorEffect> = doc.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| e.color).collect();
+    assert_eq!(fx[0], ColorEffect::None);
+    assert_eq!(fx[1], ColorEffect::Brightness(0.5));
+    assert_eq!(fx[2], ColorEffect::Tint { color: Rgba::hex(0xE9C46A), amount: 0.6 });
+    assert_eq!(fx[3], ColorEffect::Advanced(ColorTransform { mul: [-1.0, 0.5, 1.0, 1.0], add: [1.0, 0.0, -60.0 / 255.0, 0.0] }));
+    assert_eq!(fx[4], ColorEffect::Alpha(0.25));
+    assert_eq!(fx[5], ColorEffect::Brightness(-0.4));
+    let pair = doc.library.iter().find(|s| s.name == "Pair").expect("Pair");
+    assert_eq!(pair.timeline.layers[0].keyframes[0].elements[0].color, ColorEffect::Tint { color: Rgba::hex(0xFF0000), amount: 0.5 });
+    let ends = |l: usize| (doc.timeline(0).layers[l].keyframes[0].elements[0].color.style(), doc.timeline(0).layers[l].keyframes[1].elements[0].color.style());
+    use anicraft_doc::ColorStyle;
+    assert_eq!(ends(1), (ColorStyle::Tint, ColorStyle::Advanced));
+    assert_eq!(ends(2), (ColorStyle::Brightness, ColorStyle::Brightness));
 }
 
 #[test]
@@ -196,6 +217,16 @@ fn tweens_keep_their_kinds_eases_and_hints() {
     assert!(hints[0].start.distance(anicraft_geom::Vec2::new(20.0, 120.0)) < 0.01 && hints[0].end.distance(anicraft_geom::Vec2::new(270.0, 115.0)) < 0.01, "{hints:?}");
     assert!(doc.timeline(0).layers[4].keyframes[0].tween.is_none(), "a motion tween stays a keyframe");
     assert_eq!(doc.frame_count(), 13);
+}
+
+#[test]
+fn nineslice_guides_come_across_in_the_symbols_space() {
+    let (doc, _) = import("nineslice");
+    let grid = |name: &str| doc.library.iter().find(|s| s.name == name).and_then(|s| s.scale_grid);
+    assert_eq!(grid("Panel"), Some(anicraft_doc::ScaleGrid { left: 10.0, right: 90.0, top: 10.0, bottom: 30.0 }));
+    assert_eq!(grid("Pip"), None);
+    assert_eq!(grid("Half"), None, "one guide alone isn't a grid");
+    assert_eq!(doc.library.iter().find(|s| s.name == "Panel").map(|s| s.kind), Some(SymbolKind::MovieClip));
 }
 
 #[test]

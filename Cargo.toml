@@ -56,6 +56,9 @@ egui = "0.36"
 # `Instant` and `SystemTime` that work in the browser too (std's panic on wasm32-unknown-unknown);
 # on other targets a re-export of std::time (MIT OR Apache-2.0; already in the tree via winit).
 web-time = "1"
+# Find and Replace's pattern matching (ADR 0058): linear time, with size limits on what a
+# pattern compiles to (MIT OR Apache-2.0). Unicode case folding and word boundaries only.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -122,7 +125,7 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 # In the browser the page's language (navigator.languages) is the system's.
 sys-locale = { version = "0.3", features = ["js"] }
-web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
+web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "DomRect", "DragEvent", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
 
 [build-dependencies]
 # Embeds the app icon in anicraft.exe on Windows (build.rs); does nothing on other targets.

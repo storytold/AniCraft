@@ -167,7 +167,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         let lim = 1_000_000.0;
         c.center = Vec2::new(c.center.x.clamp(-lim, lim), c.center.y.clamp(-lim, lim));
         el.transform = c.transform();
-        el.color = c.color();
+        el.color = c.to_element(el.id).color;
         Ok(c)
     })();
     s.layer = layer;

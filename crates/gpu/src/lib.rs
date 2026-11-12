@@ -426,7 +426,7 @@ impl GpuRenderer {
     /// symbol within the parity target. Catches drivers that build the pipelines but compute
     /// garbage.
     fn self_test(&self) -> Result<(), GpuError> {
-        use anicraft_doc::{ColorEffect, DisplayItem, ElementId, Filter, Group, LayerId, Paint, Pixels, Rgba};
+        use anicraft_doc::{ColorTransform, DisplayItem, ElementId, Filter, Group, LayerId, Paint, Pixels, Rgba};
         use anicraft_geom::{Affine, FillRule, Path};
         let item = |path: Path, fill: Paint| DisplayItem {
             path: Arc::new(path),
@@ -434,7 +434,7 @@ impl GpuRenderer {
             fill: Some(fill),
             stroke: None,
             fill_rule: FillRule::NonZero,
-            color: ColorEffect::default(),
+            color: ColorTransform::IDENTITY,
             layer: LayerId(0),
             element: ElementId(0),
             outline: None,
