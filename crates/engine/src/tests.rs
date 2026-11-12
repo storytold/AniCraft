@@ -623,6 +623,11 @@ fn panic_hunt_every_command() {
         json!({"from": 10, "to": 12, "head": [0, 0], "tail": [1e30, 0], "name": "x".repeat(300)}),
         json!({"from": 12, "to": 10, "head": [5], "tail": "x", "bone": u64::MAX}),
         json!({"from": 11, "to": 13, "head": [-1e6, 1e6], "layer": 101}),
+        // Shape armatures (ADR 0071): the shaped session's tail is 3, its bones 100 and 103.
+        json!({"shape": 3, "head": [1e30, 0], "tail": [-1e30, 0], "parent": 103, "points": [0, 1, u64::MAX], "mode": "add"}),
+        json!({"shape": 3, "head": [150, 150], "tail": [150, 150], "bone": 103, "points": (0..30).collect::<Vec<_>>(), "mode": "remove"}),
+        json!({"parent": 100, "tail": [250, 290], "bone": 100, "points": [], "mode": "auto", "points_": true}),
+        json!({"bone": 100, "points": ["a", -1, 1e30], "mode": 7}),
         // Edit Multiple Frames (ADR 0047): ranges past the end or reversed, items that aren't
         // there or aren't triples, moves at the limits.
         json!({"first": 0, "last": 99_999, "dx": 1e7, "dy": -1e7, "items": [[0, 0, 1], "x", [u64::MAX, u64::MAX, u64::MAX]]}),
@@ -691,6 +696,19 @@ fn panic_hunt_every_command() {
     }
     assert_eq!((b1, b2), (100, 102), "the hostile params name these bones");
     rig.set_frame(4);
+    // A shape armature: a tail with two bones, bent at frame 8, a point bound by hand (ADR 0071).
+    let mut shaped = Session::default();
+    shaped.style.object_drawing = false;
+    shaped.execute("draw.rect", &json!({"x": 100, "y": 140, "w": 200, "h": 20})).unwrap();
+    shaped.doc.next_id = 100;
+    let tail = shaped.doc.timeline(0).layers[0].keyframes[0].elements[0].id.0;
+    let sb1 = shaped.execute("bone.add_in_shape", &json!({"shape": tail, "head": [100, 150], "tail": [200, 150]})).unwrap()["bone"].as_u64().unwrap();
+    let sb2 = shaped.execute("bone.add_in_shape", &json!({"parent": sb1, "tail": [300, 150]})).unwrap()["bone"].as_u64().unwrap();
+    for (id, p) in [("bone.pose", json!({"bone": sb2, "angle": 60, "frame": 8})), ("bone.bind", json!({"bone": sb1, "points": [0], "mode": "add"}))] {
+        shaped.execute(id, &p).unwrap();
+    }
+    assert_eq!((tail, sb1, sb2), (3, 100, 103), "the hostile params name these");
+    shaped.set_frame(4);
     // Raw drawings and an object on two layers, selected on both through a marquee's cut that
     // is still provisional (ADR 0041, 0044).
     let mut layered = Session::default();
@@ -785,7 +803,7 @@ fn panic_hunt_every_command() {
     if let Some(id) = button.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::Button).map(|x| x.id) {
         button.execute("symbol.edit", &json!({"symbol": id.0})).unwrap();
     }
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, layered, in_symbol, keyed, library, button] {
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, layered, in_symbol, keyed, library, button] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
