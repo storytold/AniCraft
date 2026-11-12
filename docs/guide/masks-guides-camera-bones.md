@@ -139,8 +139,12 @@ called inverse kinematics.
 2. Pick the **Bone** tool (**M**).
 3. Drag from one instance (for example, the upper arm) to the next (the forearm). A bone joins
    them, and both move to a new **armature** layer, shown with a bone icon in the timeline.
-4. To continue the chain, drag from the end of the last bone to the next instance (the hand).
-5. To branch, drag from any instance of the armature to another one.
+4. To continue the chain, drag from the last instance (the forearm) to the next one (the
+   hand). The new bone always starts at the end of the bone before it, wherever on the
+   instance you began, so the chain stays joined.
+5. To branch, drag from any instance of the armature to another one. Branches from the first
+   instance (the root, such as a torso) start where you begin the drag; branches from any other
+   instance start at its joint.
 
 Bones show on the stage as wedges, from a round joint to their end, in the armature layer's
 colour. Click a bone to select it.
@@ -149,9 +153,10 @@ colour. Click a bone to select it.
 
 With the **Selection** tool (**V**):
 
-* drag a bone or an instance, and the bones above it turn so it follows the pointer. If the point
-  is out of reach, the chain stretches straight towards it;
-* drag the root instance to move the whole armature.
+* drag a bone or an instance, and the bones above it turn so the point you grabbed follows the
+  pointer (drag a bone's end to pull the end). If the point is out of reach, the chain stretches
+  straight towards it;
+* drag the root instance, or the joint its first bone starts at, to move the whole armature.
 
 Each drag is one undo step.
 
