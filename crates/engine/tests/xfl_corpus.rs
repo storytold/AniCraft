@@ -42,6 +42,7 @@ const FRAMES: &[(&str, &[u32])] = &[
     ("shapes", &[0]),
     ("symbols", &[0, 5]),
     ("text", &[0]),
+    ("textfields", &[0]),
     ("tweens", &[0, 6, 12]),
 ];
 
@@ -126,6 +127,10 @@ const PROBES: &[(&str, u32, f32, f32, u32)] = &[
     ("scripts", 4, 160.0, 90.0, 0xE76F51),
     ("scripts", 4, 240.0, 90.0, 0xF4F1EA),
     ("text", 0, 300.0, 80.0, 0xE9EDC9),
+    // Fields draw their box (white behind a border) with no fonts at all (ADR 0066).
+    ("text", 0, 290.0, 134.0, 0xFFFFFF),
+    ("textfields", 0, 100.0, 30.0, 0xFFFFFF),
+    ("textfields", 0, 300.0, 170.0, 0xF4F1EA),
 ];
 
 fn import(case: &str) -> Document {
@@ -218,7 +223,7 @@ fn every_package_opens_with_file_open_and_round_trips_through_the_file_format() 
 fn raw_shapes_open_raw_merged_and_unchanged_to_the_eye() {
     let mut failures = Vec::new();
     let (mut raw_total, mut merged_total) = (0, 0);
-    for (case, frames) in FRAMES.iter().filter(|(c, _)| !matches!(*c, "text")) {
+    for (case, frames) in FRAMES.iter().filter(|(c, _)| !matches!(*c, "text" | "textfields")) {
         let mut s = Session::default();
         let info = s.execute("file.open", &json!({"path": corpus().join(case).display().to_string()})).unwrap_or_else(|e| panic!("{case}: {e}"));
         let raw = s.doc.scenes.iter().flat_map(|sc| sc.timeline.layers.iter()).chain(s.doc.library.iter().flat_map(|sym| sym.timeline.layers.iter())).flat_map(|l| l.keyframes.iter()).flat_map(|k| k.elements.iter()).filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).count();

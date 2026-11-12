@@ -2,7 +2,7 @@
 
 use crate::import::{Report, XflError, import_with, import_with_fonts};
 use crate::text::GUTTER;
-use anicraft_doc::{Document, Element, ElementKind, Paint, Rgba, TextAlign, TextBlock, evaluate};
+use anicraft_doc::{Document, Element, ElementKind, LineType, Paint, Rgba, TextAlign, TextBlock, TextKind, evaluate};
 use anicraft_text::Fonts;
 use std::sync::Arc;
 
@@ -129,22 +129,41 @@ fn missing_fonts_fall_back_and_are_reported() {
 }
 
 #[test]
-fn dynamic_and_input_text_come_across_as_static_text_and_are_reported() {
+fn dynamic_and_input_text_become_fields_with_their_names() {
     let Some((fonts, _)) = fonts() else { return };
     let field = format!(
-        r#"<DOMDynamicText name="score" width="100"><textRuns>{}</textRuns></DOMDynamicText><DOMInputText name="answer"><textRuns>{}</textRuns></DOMInputText><DOMStaticText orientation="vertical left to right"><textRuns>{}</textRuns></DOMStaticText>"#,
+        r#"<DOMDynamicText name="score" width="100" height="22" border="true" isSelectable="false"><matrix><Matrix tx="10" ty="20"/></matrix><textRuns>{}</textRuns></DOMDynamicText><DOMInputText name="answer" lineType="password" maxCharacters="8" variableName="_root.pw" width="120" height="20"><textRuns>{}</textRuns></DOMInputText><DOMInputText name="notes" lineType="multiline" width="150" height="60"/><DOMStaticText orientation="vertical left to right"><textRuns>{}</textRuns></DOMStaticText>"#,
         run("0", r#"size="16""#),
         run("type here", r#"size="16" alignment="justify""#),
         run("down", r#"size="16" indent="5" characterPosition="superscript""#)
     );
     let (doc, report) = import_doc(&doc_with(&field), fonts);
     let t = texts(&doc);
-    assert_eq!(t.iter().map(|(e, _)| e.name.as_str()).collect::<Vec<_>>(), ["score", "answer", ""], "instance names are kept");
-    assert_eq!(t[1].1.align, TextAlign::Left);
-    for (what, n) in [("dynamic and input text fields (imported as static text)", 2), ("justified text (drawn left-aligned)", 1), ("vertical text (drawn horizontal)", 1), ("first-line indents", 1), ("superscript and subscript (drawn on the line)", 1)] {
+    assert_eq!(t.iter().map(|(e, _)| e.name.as_str()).collect::<Vec<_>>(), ["score", "answer", "notes", ""], "instance names are kept");
+    let kinds: Vec<TextKind> = t.iter().map(|(_, b)| b.kind()).collect();
+    assert_eq!(kinds, [TextKind::Dynamic, TextKind::Input, TextKind::Input, TextKind::Static]);
+    // The box is the field's; the text sits in the gutter, the element at the field's matrix.
+    let (score, sb) = &t[0];
+    assert_eq!((sb.box_width, sb.box_height), (100.0, 22.0));
+    assert_eq!(score.transform.translation(), anicraft_geom::Vec2::new(10.0, 20.0));
+    assert!(sb.outline.bounds().min.x >= GUTTER - 0.5, "{:?}", sb.outline.bounds());
+    let f = sb.field.as_ref().unwrap();
+    assert!(f.border && f.background && !f.selectable);
+    let f = t[1].1.field.as_ref().unwrap();
+    assert_eq!((f.lines, f.max_chars, f.variable.as_str()), (LineType::Password, 8, "_root.pw"));
+    assert_eq!(t[1].1.text, "type here", "the value is kept; it is drawn as stars");
+    let n = &t[2].1;
+    assert_eq!((n.text.as_str(), n.field.as_ref().map(|f| f.lines), n.box_height), ("", Some(LineType::Multiline), 60.0), "an empty input field is kept");
+    assert_eq!(report.runs.get("dynamic text fields"), Some(&1));
+    assert_eq!(report.runs.get("input text fields"), Some(&2));
+    assert_eq!(report.kept.get("text field variables (ActionScript 1.0 and 2.0)"), Some(&1));
+    for (what, n) in [("justified text (drawn left-aligned)", 1), ("vertical text (drawn horizontal)", 1), ("first-line indents", 1), ("superscript and subscript (drawn on the line)", 1)] {
         assert_eq!(report.skipped.get(what), Some(&n), "{what}: {report:?}");
     }
     assert!(report.missing_fonts.is_empty(), "no face asks for the default family");
+    // Every non-interactive render draws the authored text in its box, with its border.
+    let dl = evaluate(&doc, 0);
+    assert!(dl.items.iter().any(|i| i.stroke.is_some()), "the border");
 }
 
 #[test]

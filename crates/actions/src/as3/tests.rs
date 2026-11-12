@@ -30,6 +30,8 @@ struct Mock {
     rng: u32,
     key: Option<f64>,
     frame: u32,
+    /// Text fields' text, by name.
+    texts: BTreeMap<String, String>,
 }
 
 impl World for Mock {
@@ -48,6 +50,10 @@ impl World for Mock {
             Prop::CurrentFrame => Value::Num(f64::from(self.frame + 1)),
             Prop::Name => Value::str(&at.to_string()),
             Prop::Visible => Value::Bool(true),
+            Prop::Text | Prop::Length => {
+                let t = self.texts.get(&at.path.0).ok_or_else(|| format!("“{at}” isn't a text field"))?;
+                if p == Prop::Text { Value::str(t) } else { Value::Num(text_len(t) as f64) }
+            }
             p => Value::Num(self.props.get(&(at.path.0.clone(), p.name())).copied().unwrap_or(0.0)),
         })
     }
@@ -63,6 +69,14 @@ impl World for Mock {
         })
         .map_or("?", Prop::name);
         self.props.insert((at.path.0.clone(), name), v);
+        Ok(())
+    }
+    fn set_text(&mut self, at: &Place, text: String) -> Result<(), Option<String>> {
+        if !self.texts.contains_key(&at.path.0) {
+            return Err(Some(format!("“{at}” isn't a text field")));
+        }
+        self.log.push(format!("text {at} = {text}"));
+        self.texts.insert(at.path.0.clone(), text);
         Ok(())
     }
     fn trace(&mut self, line: String) {
@@ -499,4 +513,41 @@ fn a_full_budget_runs_quickly() {
     eprintln!("{used} fuel in {ms:.2} ms");
     assert_eq!(r, Err(Stop::Fuel));
     assert!(ms < 500.0, "{ms} ms");
+}
+
+#[test]
+fn scripts_set_append_and_read_text_fields() {
+    let src = r#"
+        var n:int = 3;
+        score_txt.text = "Score: " + n;
+        score_txt.appendText("!");
+        score_txt.text += "?";
+        trace(score_txt.text, score_txt.length);
+        panel.name_txt.text = String(score_txt.length * 2);
+        var text:String = "a variable named text";
+        trace(text);
+    "#;
+    let c = ok(src);
+    let mut m = Mock { decls: Decls::build([&c]), ..Mock::default() };
+    m.texts.insert("score_txt".into(), String::new());
+    m.texts.insert("panel.name_txt".into(), "x".into());
+    let (_, r) = run::run_script(&mut m, &c.body, &c.inner, run::FUEL_PER_RUN);
+    assert_eq!(r, Ok(()));
+    assert_eq!(m.texts["score_txt"], "Score: 3!?");
+    assert_eq!(m.texts["panel.name_txt"], "20");
+    assert!(m.log.contains(&"Score: 3!? 10".to_string()), "{:?}", m.log);
+    assert!(m.log.contains(&"a variable named text".to_string()), "a bare `text` stays a variable");
+    // Setting null stops the script with a message; `this.text` and the stage aren't fields.
+    let (_, r, _) = {
+        let c = ok("score_txt.text = null;");
+        let mut m = Mock { decls: Decls::build([&c]), ..Mock::default() };
+        m.texts.insert("score_txt".into(), String::new());
+        let (_, r) = run::run_script(&mut m, &c.body, &c.inner, run::FUEL_PER_RUN);
+        ((), r, ())
+    };
+    assert!(matches!(r, Err(Stop::Error { ref message, .. }) if message.contains("not null")), "{r:?}");
+    assert!(err("this.text = 'x';").2.contains("isn't a text field"));
+    assert!(err("stage.text = 'x';").2.contains("text field") || err("stage.text = 'x';").2.contains("stage"));
+    assert!(err("a_txt.appendText();").2.contains("one argument"));
+    assert!(err("a_txt.length = 3;").2.contains("can only be read"));
 }

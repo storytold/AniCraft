@@ -1340,7 +1340,7 @@ fn opening_an_xfl_folder_imports_it_untitled() {
     assert_eq!((s.doc.stage.width, s.doc.stage.fps), (320, 12.0));
     assert_eq!(s.doc.timeline(s.scene).layers[0].name, "Art");
     assert_eq!(s.doc.frame_count(), 6);
-    assert!(v["report"].as_str().unwrap().contains("1 dynamic and input text fields (imported as static text)"), "{v}");
+    assert!(v["report"].as_str().unwrap().contains("Runs in Test Movie: 1 dynamic text fields"), "{v}");
     assert!(s.path.is_none(), "imported documents are untitled: Save never writes over the original");
     assert!(s.execute("file.save", &json!({})).is_err());
     // It renders.
@@ -1363,6 +1363,8 @@ fn opening_an_xfl_folder_imports_it_untitled() {
         run(&mut back, "file.open", json!({"path": file.display().to_string()}));
         let ElementKind::Text(t) = &back.doc.timeline(0).layers[0].keyframes[0].elements.iter().find(|e| e.id == text.id).unwrap().kind else { panic!("text") };
         assert_eq!((t.text.as_str(), t.size, t.bold), ("Hello again", 20.0, true));
+        assert_eq!(t.kind(), anicraft_doc::TextKind::Dynamic, "a dynamic field stays one (ADR 0066)");
+        assert_eq!((t.box_width, t.field.as_ref().map(|f| f.lines)), (200.0, Some(anicraft_doc::LineType::Single)));
     }
     std::fs::remove_dir_all(&dir).ok();
 }

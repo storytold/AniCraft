@@ -21,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("actions.set", "Set Actions", "", None, "{actions: [{op: stop|play|goto_and_play|goto_and_stop|next_frame|prev_frame|next_scene|prev_scene|trace|set_property, target?, frame?, scene?, message?, property?, value?}] | plugin: id, entry?, symbol?: id (a movie clip's timeline), layer?, frame?} sets what the keyframe at the frame runs; or {element, event: click|press|release|over|out, actions} sets an instance's event handler. An empty list clears it", true, set),
         c("actions.clear", "Clear Actions", "", None, "{symbol?, layer?, frame?} clears the keyframe's actions; {element, event?} clears an instance's handlers (one event, or all)", true, clear),
         c("actions.list", "List Actions", "", None, "{} every keyframe with actions or a frame script and every instance with event handlers, in every scene and symbol", false, list),
-        c("instance.set_name", "Instance Name", "", None, "{element?: id (default: the selected instance), name: letters, digits, _ or $, not starting with a digit; \"\" clears} names a movie clip or button instance for actions", true, set_name),
+        c("instance.set_name", "Instance Name", "", None, "{element?: id (default: the selected instance), name: letters, digits, _ or $, not starting with a digit; \"\" clears} names a movie clip or button instance, or a dynamic or input text field, for actions and scripts", true, set_name),
     ]
 }
 
@@ -232,7 +232,14 @@ fn set_name(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param(format!("“{name}” can't be an instance name: use letters, digits, _ or $ (no spaces), not starting with a digit, at most {} characters", actions::MAX_NAME_CHARS)));
     }
     let e = instance_mut(s, p)?.clone();
-    interactive_kind(s, &e)?;
+    // Dynamic and input text fields take names too (ADR 0066); static text has none.
+    match &e.kind {
+        ElementKind::Text(t) if t.field.is_some() => {}
+        ElementKind::Text(_) => return Err(EngineError::State("static text has no instance name: make it dynamic or input text first (Properties › Text type)".into())),
+        _ => {
+            interactive_kind(s, &e)?;
+        }
+    }
     let el = instance_mut(s, p)?;
     el.name = name.clone();
     Ok(json!({"element": el.id.0, "name": name}))

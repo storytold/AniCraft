@@ -404,7 +404,8 @@ impl<'a> Builder<'a> {
         let name: String = el.attr("name").unwrap_or("").chars().take(256).collect();
         for (i, p) in crate::text::field(el, fonts, &mut self.faces, &mut self.report).into_iter().enumerate() {
             let mut e = Element { id: ElementId(self.doc.alloc_id()), name: String::new(), transform: m.mul(&Affine::translate(p.offset.x, p.offset.y)), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(p.block)) };
-            // A dynamic or input field's instance name goes on its first block.
+            // A dynamic or input field's instance name goes on it (its first block for static
+            // text, which keeps the name for a later conversion).
             if i == 0 {
                 e.name.clone_from(&name);
             }

@@ -79,19 +79,28 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
         "symbols",
         &[("instances of missing symbols", 1), ("missing library files", 1), ("reverse loop modes (played forward)", 1)],
     ),
-    ("text", &[("dynamic and input text fields (imported as static text)", 2), ("text fields (no fonts on this computer)", 4)]),
+    ("text", &[("text fields (no fonts on this computer)", 4)]),
+    ("textfields", &[("text fields (no fonts on this computer)", 4)]),
     ("tweens", &[("motion tweens (kept as keyframes)", 1), ("tween spins (turned the shortest way)", 1)]),
 ];
 
 /// What each package keeps without running (ADR 0013 tier 1: scripts outside the subset, and
 /// class names); packages not listed keep nothing.
-const KEPT: &[(&str, &[(&str, usize)])] = &[("bitmaps", &[("library folders", 1)]), ("nineslice", &[("library folders", 1)]), ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]), ("symbols", &[("library folders", 1)])];
+const KEPT: &[(&str, &[(&str, usize)])] = &[
+    ("bitmaps", &[("library folders", 1)]),
+    ("nineslice", &[("library folders", 1)]),
+    ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]),
+    ("symbols", &[("library folders", 1)]),
+    ("textfields", &[("text field variables (ActionScript 1.0 and 2.0)", 1)]),
+];
 
 /// The frame scripts each package brings that run (ADR 0013 tier 2: in the subset).
 const RUNS: &[(&str, &[(&str, usize)])] = &[
     ("interactive", &[("frame scripts in ActionScript 3.0", 4)]),
     ("scenes", &[("frame scripts in ActionScript 3.0", 2)]),
     ("scripts", &[("frame scripts in ActionScript 3.0", 2)]),
+    ("text", &[("dynamic text fields", 1), ("input text fields", 1)]),
+    ("textfields", &[("dynamic text fields", 1), ("frame scripts in ActionScript 3.0", 1), ("input text fields", 3)]),
 ];
 
 #[test]
@@ -331,8 +340,17 @@ fn text_fields_become_blocks_with_this_computers_fonts() {
         .collect();
     let want = [("", "Corpus", 28.0, true), ("", "self-authored, line two", 12.0, false), ("", "A fixed-width field wraps its words onto lines.", 11.0, false), ("score", "Score 0042", 18.0, false), ("answer", "type here", 14.0, false)];
     assert_eq!(blocks.iter().map(|(n, t, s, b)| (n.as_str(), t.as_str(), *s, *b)).collect::<Vec<_>>(), want);
-    assert_eq!(report.skipped.get("dynamic and input text fields (imported as static text)"), Some(&2));
+    assert_eq!(report.runs.get("dynamic text fields"), Some(&1), "fields run in Test Movie (ADR 0066)");
     assert!(!report.skipped.contains_key("text fields (no fonts on this computer)"));
+    // The text fields package: fields with their boxes, kinds and names, laid out in the box.
+    let (doc, _) = import_files(&files("textfields"), fonts).unwrap();
+    let fields: Vec<(String, anicraft_doc::TextKind, f32, f32)> = doc.timeline(0).layers[1].keyframes[0]
+        .elements
+        .iter()
+        .filter_map(|e| if let ElementKind::Text(t) = &e.kind { Some((e.name.clone(), t.kind(), t.box_width, t.box_height)) } else { None })
+        .collect();
+    use anicraft_doc::TextKind::{Dynamic, Input};
+    assert_eq!(fields, [("score_txt".into(), Dynamic, 200.0, 28.0), ("name_txt".into(), Input, 200.0, 24.0), ("notes_txt".into(), Input, 140.0, 64.0), ("pw_txt".into(), Input, 120.0, 24.0)]);
 }
 
 /// A small deterministic generator (xorshift), so a failing variant can be found again.

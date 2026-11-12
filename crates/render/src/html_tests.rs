@@ -189,6 +189,8 @@ fn js_events(events: &[Event]) -> String {
             Event::Leave => json!({"type": "leave"}),
             Event::KeyDown(k) => json!({"type": "keydown", "code": k}),
             Event::KeyUp(k) => json!({"type": "keyup", "code": k}),
+            Event::Char(c) => json!({"type": "char", "text": c.to_string()}),
+            Event::SelectAll => json!({"type": "selectall"}),
         })
         .collect();
     Value::Array(list).to_string()

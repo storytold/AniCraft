@@ -49,6 +49,8 @@ pub trait World {
     fn get(&mut self, at: &Place, p: Prop) -> Result<Value, String>;
     /// Sets an instance property.
     fn set(&mut self, at: &Place, p: Property, v: f64) -> Result<(), Option<String>>;
+    /// Sets a text field's text (ADR 0066).
+    fn set_text(&mut self, at: &Place, text: String) -> Result<(), Option<String>>;
     fn trace(&mut self, line: String);
     /// A timeline variable's value, and writing one (the world knows its type).
     fn read(&mut self, name: &str) -> Result<Value, String>;
@@ -347,6 +349,7 @@ impl Vm<'_> {
                 };
                 self.w.get(at, prop).map_err(|message| Stop::Error { line: self.line, message })
             }
+            LValue::Text { at } => self.w.get(at, Prop::Text).map_err(|message| Stop::Error { line: self.line, message }),
         }
     }
 
@@ -371,6 +374,13 @@ impl Vm<'_> {
                     return self.err(format!("`{}` is set to a number, not {}", prop_name(*p), shown(&v)));
                 }
                 self.w.set(at, *p, n).map_err(|e| lift(self.line, e))?;
+                Ok(v)
+            }
+            LValue::Text { at } => {
+                if matches!(v, Value::Null | Value::Undefined) {
+                    return self.err(format!("`text` is set to text, not {}", v.text()));
+                }
+                self.w.set_text(at, v.text()).map_err(|e| lift(self.line, e))?;
                 Ok(v)
             }
         }
