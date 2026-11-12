@@ -174,7 +174,8 @@ impl Dash {
     }
 
     /// The pattern as stored, cleaned up (a file, a command): lengths finite and in range, an
-    /// odd count repeated, at most [`MAX_DASH_ENTRIES`], the offset within one period.
+    /// odd count repeated whole (so the dash/gap alternation holds where the pattern wraps), at
+    /// most [`MAX_DASH_ENTRIES`] read, the offset within one period.
     /// `None` when it draws solid (no gaps, or nothing at all to repeat).
     pub fn sanitized(self) -> Option<Dash> {
         match self {
@@ -183,7 +184,6 @@ impl Dash {
                 if v.len() % 2 == 1 {
                     let again = v.clone();
                     v.extend(again);
-                    v.truncate(MAX_DASH_ENTRIES);
                 }
                 let period: f32 = v.iter().sum();
                 let gaps: f32 = v.iter().skip(1).step_by(2).sum();
@@ -317,6 +317,16 @@ mod tests {
         let long = Dash::Dashed { lengths: vec![1.0; 99].into(), offset: 0.0 }.sanitized().unwrap();
         assert!(matches!(long, Dash::Dashed { lengths, .. } if lengths.len() == MAX_DASH_ENTRIES));
         assert_eq!(Dash::dotted(f32::NAN), Some(Dash::Dotted { spacing: 0.0 }));
+    }
+
+    #[test]
+    fn odd_dash_patterns_repeat_whole() {
+        for n in (9..=15).step_by(2) {
+            let base: Vec<f32> = (1..=n).map(|i| i as f32).collect();
+            let d = Dash::Dashed { lengths: base.clone().into(), offset: 0.0 }.sanitized().unwrap();
+            let want: Vec<f32> = base.iter().chain(base.iter()).copied().collect();
+            assert_eq!(d, Dash::Dashed { lengths: want.into(), offset: 0.0 }, "n = {n}");
+        }
     }
 
     #[test]
