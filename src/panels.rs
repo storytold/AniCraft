@@ -130,7 +130,7 @@ fn tool_swatches(app: &mut App, ui: &mut egui::Ui) {
     ui.painter().rect_stroke(front, T.rc(), Stroke::new(1.0, hot(&stroke_resp)), StrokeKind::Inside);
     for (fill, resp) in [(true, fill_resp), (false, stroke_resp)] {
         let name = if fill { tr!("Fill colour") } else { tr!("Stroke colour") };
-        a11y::control(ui, &resp, WidgetType::ColorButton, &name, None);
+        a11y::control(ui, &resp, WidgetType::ColorButton, name, None);
         let resp = resp.on_hover_text(if fill { tr!("Fill colour: click to pick the colour shapes are filled with") } else { tr!("Stroke colour: click to pick the colour of lines and outlines") });
         let st = &app.s.style;
         let (colour, mut none) = if fill { (st.fill, !st.use_fill) } else { (st.stroke, !st.use_stroke) };

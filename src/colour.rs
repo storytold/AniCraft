@@ -156,13 +156,13 @@ fn button_inner(ui: &mut egui::Ui, c: &mut [u8; 4], alpha: bool) -> Response {
 /// Opens the picker under `anchor` when it is clicked, and shows it while open. True when the
 /// colour changed. `none`, when given, offers No Colour (true: none); picking a colour turns it
 /// off again.
-pub fn popup_for(ui: &egui::Ui, anchor: &Response, popup: Id, c: &mut [u8; 4], alpha: bool, mut none: Option<&mut bool>) -> bool {
+pub fn popup_for(ui: &egui::Ui, anchor: &Response, popup: Id, c: &mut [u8; 4], alpha: bool, none: Option<&mut bool>) -> bool {
     if anchor.clicked() {
         new_session(ui.ctx());
     }
     let mut changed = false;
     egui::Popup::menu(anchor).id(popup).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        changed = picker(ui, popup, c, alpha, none.as_deref_mut());
+        changed = picker(ui, popup, c, alpha, none);
     });
     changed
 }
