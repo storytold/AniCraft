@@ -446,6 +446,8 @@ pub struct App {
     pub tl_heard: Option<(anicraft_engine::doc::LayerId, u32)>,
     /// The arrows moved the active layer: its row takes keyboard focus when drawn.
     pub tl_refocus: bool,
+    /// The menu bar from the keyboard: Alt, F10 and the arrows (ADR 0064).
+    pub menu_keys: menus::MenuKeys,
     /// The start screen, while it is up (ADR 0059).
     pub start: Option<crate::start::StartScreen>,
     /// Files dragged over and dropped onto the window (ADR 0059).
@@ -621,6 +623,7 @@ impl App {
             stage_nav: Default::default(),
             tl_heard: None,
             tl_refocus: false,
+            menu_keys: Default::default(),
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
@@ -2112,6 +2115,12 @@ impl App {
         if self.modal_open() || self.key_capture.is_some() {
             return;
         }
+        // Alt+letter opens a menu (ADR 0064), before the tool letters: egui would match those
+        // with Alt held too.
+        let alt_bound = |k: Key| self.shortcuts.iter().any(|(m, key, _)| *key == k && m.alt && !m.ctrl && !m.command && !m.shift);
+        let mut menu_keys = std::mem::take(&mut self.menu_keys);
+        menu_keys.access_key(ctx, alt_bound);
+        self.menu_keys = menu_keys;
         // Palette, shortcut sheet, preferences and quit work even while a text field has focus.
         // Preferences: Ctrl+U (the shortcut Animate users know) and Ctrl/⌘+, (platform norm).
         let (palette, sheet, prefs_key, quit) = ctx.input_mut(|i| {

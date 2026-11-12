@@ -559,6 +559,106 @@ mod tests {
     }
 
     #[test]
+    fn access_keys_take_the_first_free_letter() {
+        let keys = crate::menus::access_keys(&["File", "Edit", "View", "Insert", "Modify", "Commands", "Control", "Window", "Help"]);
+        let letters: String = keys.iter().map(|k| k.map_or('-', |(_, c)| c)).collect();
+        assert_eq!(letters, "FEVIMCOWH", "Control takes its O, as in Animate");
+        assert_eq!(crate::menus::access_keys(&["Fichier", "Édition", "Ändern", "日本"]), vec![Some((0, 'F')), Some((1, 'D')), Some((1, 'N')), None]);
+    }
+
+    #[test]
+    fn the_menu_bar_works_from_the_keyboard() {
+        if !crate::menus::MenuKeys::available() {
+            return; // macOS keeps its own menu conventions (ADR 0064).
+        }
+        use egui::{Key, Modifiers as M};
+        let (_, mut app, ctx) = tree(|_, _| {});
+        let tops = app.menu_keys.top_ids().to_vec();
+        assert_eq!(tops.len(), crate::menus::TOP_MENUS.len());
+        let focused = |ctx: &egui::Context| ctx.memory(|m| m.focused());
+        let open = |ctx: &egui::Context, i: usize| egui::Popup::is_id_open(ctx, tops[i].with("popup"));
+        // F10 focuses File; the titles show their access keys.
+        let t = key(&ctx, &mut app, Key::F10, M::NONE).unwrap_or_else(|| panic!("no tree"));
+        assert_eq!(focused(&ctx), Some(tops[0]));
+        assert!(app.menu_keys.show_keys);
+        assert_eq!(node(&t, tops[0]).and_then(Node::access_key), Some("Alt+F"));
+        // Right: Edit; Down opens it on its first item; Down, Up and Up wrap round.
+        key(&ctx, &mut app, Key::ArrowRight, M::NONE);
+        assert_eq!(focused(&ctx), Some(tops[1]));
+        key(&ctx, &mut app, Key::ArrowDown, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(open(&ctx, 1), "Down opens Edit");
+        let items = app.menu_keys.open_items(&ctx);
+        assert!(items.len() > 3, "Edit has items: {}", items.len());
+        assert_eq!(focused(&ctx), items.first().copied(), "on its first item");
+        key(&ctx, &mut app, Key::ArrowDown, M::NONE);
+        assert_eq!(focused(&ctx), items.get(1).copied());
+        key(&ctx, &mut app, Key::ArrowUp, M::NONE);
+        key(&ctx, &mut app, Key::ArrowUp, M::NONE);
+        assert_eq!(focused(&ctx), items.last().copied(), "Up from the first wraps to the last");
+        assert_eq!(keyboard(&ctx), Keyboard::Control, "the menu keeps Enter and the arrows");
+        // Right on an item: the next menu, open, on its first item.
+        key(&ctx, &mut app, Key::ArrowRight, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(open(&ctx, 2) && !open(&ctx, 1), "Right goes on to View");
+        assert_eq!(focused(&ctx), app.menu_keys.open_items(&ctx).first().copied());
+        // Esc closes the menu, back on its title; Esc again leaves the bar.
+        key(&ctx, &mut app, Key::Escape, M::NONE);
+        assert!(!open(&ctx, 2));
+        assert_eq!(focused(&ctx), Some(tops[2]));
+        key(&ctx, &mut app, Key::Escape, M::NONE);
+        assert_eq!(focused(&ctx), None, "nothing had focus before");
+        assert!(!app.menu_keys.show_keys);
+        // Alt pressed and let go alone also focuses the bar (and again leaves it).
+        let mods = |m: M| {
+            let mut i = input(1.0);
+            i.events.push(egui::Event::ModifiersChanged(m));
+            i
+        };
+        frame(&ctx, &mut app, mods(M::ALT));
+        frame(&ctx, &mut app, input(1.0));
+        assert!(app.menu_keys.show_keys, "titles are underlined while Alt is held");
+        frame(&ctx, &mut app, mods(M::NONE));
+        frame(&ctx, &mut app, input(1.0));
+        assert_eq!(focused(&ctx), Some(tops[0]), "an Alt tap focuses File");
+        key(&ctx, &mut app, Key::Escape, M::NONE);
+        // Alt+H opens Help from the stage; an item chosen with Enter runs and the keyboard goes
+        // back to the stage.
+        focus_stage(&ctx, &mut app);
+        let stage = focused(&ctx);
+        key(&ctx, &mut app, Key::H, M::ALT);
+        frame(&ctx, &mut app, input(1.0));
+        let help = crate::menus::TOP_MENUS.iter().position(|t| *t == "Help").unwrap_or(0);
+        assert!(open(&ctx, help), "Alt+H opens Help");
+        let t = frame(&ctx, &mut app, input(1.0)).platform_output.accesskit_update.unwrap_or_else(|| panic!("no tree"));
+        let found = audit(&t);
+        assert!(found.is_empty(), "the open menu passes the audit:\n{}", found.join("\n"));
+        let palette = app.menu_keys.open_items(&ctx).into_iter().position(|id| node(&t, id).and_then(Node::label).is_some_and(|l| l.starts_with("Command Palette")));
+        let palette = palette.unwrap_or_else(|| panic!("Help has Command Palette…"));
+        while app.menu_keys.open_items(&ctx).iter().position(|id| Some(*id) == focused(&ctx)) != Some(palette) {
+            key(&ctx, &mut app, Key::ArrowDown, M::NONE);
+        }
+        key(&ctx, &mut app, Key::Enter, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(app.palette.is_some(), "Enter ran the item");
+        assert!(!open(&ctx, help));
+        app.palette = None;
+        // View's first item is Zoom In: chosen with Enter, it zooms and the keyboard goes back
+        // to the stage.
+        focus_stage(&ctx, &mut app);
+        let stage = focused(&ctx);
+        let zoom = app.view.zoom;
+        key(&ctx, &mut app, Key::V, M::ALT);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(open(&ctx, 2), "Alt+V opens View");
+        key(&ctx, &mut app, Key::Enter, M::NONE);
+        frame(&ctx, &mut app, input(1.0));
+        assert!(app.view.zoom > zoom, "Zoom In ran");
+        assert_eq!(focused(&ctx), stage, "the keyboard went back to the stage");
+        assert_eq!(app.tool, crate::app::Tool::Select, "Alt+V opened View; it didn't pick the Selection tool's V");
+    }
+
+    #[test]
     fn ctrl_f6_moves_focus_through_the_panels_and_back() {
         let (_, mut app, ctx) = tree(|_, _| {});
         let mut seen = Vec::new();

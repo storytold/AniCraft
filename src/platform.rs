@@ -69,6 +69,12 @@ fn keys_os() -> Os {
     if OS == Os::Web && WEB_ON_MAC.load(Ordering::Relaxed) { Os::Mac } else { OS }
 }
 
+/// Whether Alt and F10 reach the menu bar (ADR 0064): on Windows, Linux and the web, as their
+/// applications do, but not on a Mac (in a browser or not), whose menu conventions differ.
+pub fn menu_bar_keys() -> bool {
+    keys_os() != Os::Mac
+}
+
 pub fn set_mac_glyphs(available: bool) {
     MAC_GLYPHS.store(available, Ordering::Relaxed);
 }

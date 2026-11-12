@@ -478,6 +478,25 @@ pub fn color(t: Type) -> Color32 {
     }
 }
 
+/// A menu title with its access key underlined (ADR 0064), as Windows and Linux show it while
+/// Alt is held or the menu bar has the keyboard. `at`: the character (not byte) to underline.
+pub fn access_key_label(s: &str, at: Option<usize>) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let plain = egui::TextFormat { font_id: font(Type::Body), color: Color32::PLACEHOLDER, ..Default::default() };
+    let marked = egui::TextFormat { underline: Stroke::new(1.0, T.text), ..plain.clone() };
+    let cut = |n: usize| s.char_indices().nth(n).map_or(s.len(), |(b, _)| b);
+    match at {
+        Some(i) if i < s.chars().count() => {
+            let (a, b) = (cut(i), cut(i + 1));
+            job.append(s.get(..a).unwrap_or(""), 0.0, plain.clone());
+            job.append(s.get(a..b).unwrap_or(""), 0.0, marked);
+            job.append(s.get(b..).unwrap_or(""), 0.0, plain);
+        }
+        _ => job.append(s, 0.0, plain),
+    }
+    job
+}
+
 /// Text in a role: font, size, colour (and weight for titles and headings).
 pub fn text(t: Type, s: impl Into<String>) -> egui::RichText {
     let rt = egui::RichText::new(s).font(font(t)).color(color(t));
