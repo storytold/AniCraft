@@ -1,6 +1,6 @@
 [package]
 name = "anicraft-cli"
-description = "AniCraft L4: headless CLI and JSON-lines control channel for agents and pipelines"
+description = "AniCraft L4: headless CLI, MCP server and the desktop app's live control channel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,9 @@ anicraft-render.workspace = true
 anicraft-geom.workspace = true
 anicraft-guide.workspace = true
 serde_json.workspace = true
+# The live control port's per-run token (ADR 0070): the operating system's random numbers.
+# MIT OR Apache-2.0, already in the tree.
+getrandom = "0.3"
 
 [lints]
 workspace = true

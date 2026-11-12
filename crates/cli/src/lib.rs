@@ -2,6 +2,7 @@
 //! server (`mcp`). Every operation goes through the engine's command registry.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod control;
 pub mod mcp;
 
 use anicraft_engine::{Session, commands, format};
@@ -33,6 +34,9 @@ USAGE:
         {\"id\":1,\"cmd\":\"draw.rect\",\"params\":{\"x\":10,\"y\":10,\"w\":50,\"h\":50}}
   anicraft-cli mcp [file|--sample]       Model Context Protocol server on stdin/stdout,
                                          for AI assistants (see docs/mcp.md)
+  anicraft-cli mcp --bridge <port>       the same tools, acting live on the AniCraft window
+                                         started with `anicraft --control <port>`
+                                         (docs/control-protocol.md)
   anicraft-cli --version
 
   --plugins <folder>   loads the WebAssembly plug-ins in a folder first (also the
@@ -241,6 +245,16 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             Ok(String::new())
         }
         "mcp" => {
+            if let Some(target) = a.flag("bridge") {
+                if src.is_some() || a.flag("plugins").is_some() {
+                    return Err("mcp --bridge acts on the open AniCraft window: it takes no file or --plugins".into());
+                }
+                let mut b = control::Bridge::new(control::parse_bridge_target(target)?);
+                let stdin = std::io::stdin();
+                let mut stdout = std::io::stdout();
+                mcp::serve(&mut b, stdin.lock(), &mut stdout).map_err(|e| e.to_string())?;
+                return Ok(String::new());
+            }
             let mut s = session(&a, src)?;
             let stdin = std::io::stdin();
             let mut stdout = std::io::stdout();

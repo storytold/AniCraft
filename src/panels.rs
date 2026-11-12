@@ -208,6 +208,13 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
             let small = |t: String| text(Type::Data, t).color(T.text_faint);
             ui.label(small(tr!("undo {steps} · {size} MB", steps = app.s.history().undo_len(), size = format!("{:.1}", app.s.history().bytes() as f32 / (1024.0 * 1024.0)))));
             ui.add_space(12.0);
+            // An assistant can edit this window (ADR 0070): always in view while that is so.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(port) = crate::remote::port(app) {
+                ui.label(text(Type::Label, tr!("Remote control on (port {port})", port = port)).color(T.text_faint))
+                    .on_hover_text(tr!("An assistant can edit this document through a control port on this computer. Its edits appear here at once and undo like your own. Started with --control; close AniCraft to turn it off."));
+                ui.add_space(12.0);
+            }
             if let Some(a) = crate::autosave::status(app, now) {
                 ui.label(small(a)).on_hover_text(tr!("A recovery copy of your unsaved work. If AniCraft closes unexpectedly, the next start offers it back."));
                 ui.add_space(12.0);

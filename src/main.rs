@@ -3,6 +3,7 @@
 //! ```text
 //! anicraft [file.anicraft] [--screenshot out.png] [--renderer wgpu|gl] [--open <panel>]
 //!          [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo]
+//!          [--control <port>]
 //! anicraft --version
 //! ```
 //! `--screenshot` starts normally, draws ~120 frames, saves the window as PNG and exits.
@@ -55,6 +56,8 @@ mod platform;
 mod plugins_ui;
 mod prefs;
 mod recent;
+#[cfg(not(target_arch = "wasm32"))]
+mod remote;
 mod scale_grid;
 mod sound;
 mod shape_hints;
@@ -111,7 +114,7 @@ struct Look {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look) -> eframe::Result {
+fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look, control: Option<u16>) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: platform::viewport(egui::ViewportBuilder::default().with_title("AniCraft").with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0])),
         renderer,
@@ -143,6 +146,10 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
                 start::open(&mut a);
             }
             a.preview_look(&cc.egui_ctx, look.theme, look.scale);
+            // `--control`: an assistant can edit this window live (ADR 0070).
+            if let Some(port) = control {
+                remote::start(&mut a, &cc.egui_ctx, port);
+            }
             a.open_panel(open.as_deref());
             // An imported document says what came across, as opening it from the menu does.
             if let Some(r) = report {
@@ -171,6 +178,8 @@ struct Args {
     open: Option<String>,
     renderer: Option<String>,
     look: Look,
+    /// `--control <port>`: the live control port (ADR 0070).
+    control: Option<u16>,
     /// `--version` / `--help`: print and leave.
     print: Option<Print>,
 }
@@ -191,6 +200,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         match a.as_str() {
             "--screenshot" => out.shot = Some(PathBuf::from(args.next().ok_or("--screenshot needs a file name")?)), // i18n-exempt: a console message
             "--open" => out.open = args.next(),
+            // i18n-exempt: a console message
+            "--control" => out.control = Some(anicraft_cli::control::parse_port(&args.next().unwrap_or_default()).map_err(|e| format!("--control: {e}"))?),
             "--renderer" => out.renderer = args.next(),
             "--shot-width" => match args.next().and_then(|s| s.parse::<u32>().ok()) {
                 Some(w) if (64..=8192).contains(&w) => out.look.shot_width = Some(w),
@@ -226,7 +237,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
 /// `--help` (the console's text, in English).
 #[cfg(not(target_arch = "wasm32"))]
 // i18n-exempt: the --help console text
-const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png [--shot-width <px>]] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|brushlibrary|brushcurve|paintbrush|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
+const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png [--shot-width <px>]] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--control <port>] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|brushlibrary|brushcurve|paintbrush|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
      --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
      --shot-width scales the screenshot down to this width (the user guide's pictures)\n\
@@ -234,6 +245,8 @@ const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--sc
      --theme      the interface palette for this run (not saved)\n\
      --scale      the interface scale for this run, 75 to 200 (not saved)\n\
      --lang       the interface language for this run (not saved); pseudo tests the layout\n\
+     --control    lets an assistant edit this window live through a port on this computer\n\
+                  (also ANICRAFT_CONTROL_PORT; 9878 by convention; see docs/control-protocol.md)\n\
      Headless use: anicraft-cli --help";
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -263,7 +276,21 @@ fn main() -> eframe::Result {
         }
         None => {}
     }
-    let Args { shot, file, open, renderer, look, .. } = args;
+    let Args { shot, file, open, renderer, look, control, .. } = args;
+    // ANICRAFT_CONTROL_PORT when there is no --control; a bad port stops here, before a window.
+    let control = match control {
+        Some(p) => Some(p),
+        None => match std::env::var(anicraft_cli::control::PORT_ENV).ok().filter(|v| !v.trim().is_empty()) {
+            Some(v) => match anicraft_cli::control::parse_port(&v) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("{}: {e}", anicraft_cli::control::PORT_ENV);
+                    std::process::exit(2);
+                }
+            },
+            None => None,
+        },
+    };
     // macOS hands documents over as Apple Events, the one that launched the app included: listen
     // from before the event loop starts until it ends (ADR 0062).
     let _documents = platform::listen_for_documents();
@@ -272,10 +299,10 @@ fn main() -> eframe::Result {
     // on some Linux setups) retry once with OpenGL, unless the user forced a backend.
     let forced = platform::forced_renderer(renderer.as_deref());
     let first = forced.unwrap_or(eframe::Renderer::Wgpu);
-    match run(first, file.as_deref(), shot.clone(), open.clone(), look.clone()) {
+    match run(first, file.as_deref(), shot.clone(), open.clone(), look.clone(), control) {
         Err(e) if forced.is_none() && first == eframe::Renderer::Wgpu => {
             eprintln!("GPU backend (wgpu) failed to start: {e}. Retrying with OpenGL.");
-            run(eframe::Renderer::Glow, file.as_deref(), shot, open, look)
+            run(eframe::Renderer::Glow, file.as_deref(), shot, open, look, control)
         }
         other => other,
     }
@@ -305,6 +332,11 @@ mod args_tests {
         assert_eq!(parse(&["--screenshot", "a.png", "--shot-width", "1200"]).look.shot_width, Some(1200));
         assert!(parse_args(["--shot-width".to_string(), "9".to_string()]).is_err());
         assert_eq!(parse(&["--version"]).print, Some(Print::Version));
+        // `--control <port>` (ADR 0070): a port from 1 to 65535, or an error before any window.
+        assert_eq!(parse(&["--control", "9878"]).control, Some(9878));
+        for bad in [&["--control"][..], &["--control", "0"], &["--control", "99999"], &["--control", "port"]] {
+            assert!(parse_args(bad.iter().map(|a| a.to_string())).is_err(), "{bad:?}");
+        }
         // And the file opens: the session starts with it, not the sample.
         let dir = std::env::temp_dir().join(format!("anicraft-shell-args-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
