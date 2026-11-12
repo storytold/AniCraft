@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* **Filters, Subtract and Invert in HTML canvas export** (ADR 0072, M6). Exported web pages now
+  show every filter (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel and Adjust
+  Color, with inner, knockout, hide object and Inner/Outer/Full) and the Subtract and Invert blend
+  modes as AniCraft draws them, in every browser: the page runs a port of AniCraft's own filters
+  over the symbol's pixels instead of the browser's effects, and shadows and glows reach onto the
+  stage from symbols beside it. A filtered symbol that doesn't change is filtered once. Tested
+  against AniCraft's renderer pixel by pixel (35 filter set-ups at three view scales, within
+  1/1000) and checked in a browser. At 1080p the demo's filtered symbols cost 3.4 ms a frame while
+  they change; one covering the whole frame 50 to 150 ms. The export report no longer lists them.
 * **Timeline, bones, menus and stage fixes from user reports** (M1).
   * **Fixed**: F5 with no frames selected only extended the active layer. It now extends every
     layer that has frames at or after the playhead, as in Animate, and leaves the layers that end
