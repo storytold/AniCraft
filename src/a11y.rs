@@ -522,6 +522,43 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_timeline_moves_and_announces_the_playhead_and_layer_and_lists_its_spans() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        while focused_region(&ctx) != Some(Region::Timeline) {
+            key(&ctx, &mut app, egui::Key::F6, egui::Modifiers::COMMAND);
+        }
+        app.run("layer.select", serde_json::json!({"index": 0}));
+        app.tl_refocus = true;
+        frame(&ctx, &mut app, input(1.0));
+        frame(&ctx, &mut app, input(1.0));
+        let (frame0, layer0) = (app.s.frame, app.s.layer);
+        let t = key(&ctx, &mut app, egui::Key::ArrowRight, egui::Modifiers::NONE).unwrap_or_else(|| panic!("no tree"));
+        assert_eq!(app.s.frame, frame0 + 1, "Right is the next frame");
+        let said = app.status.as_ref().map(|s| s.text.clone()).unwrap_or_default();
+        assert!(said.starts_with(&format!("Frame {}", frame0 + 2)), "announced: {said}");
+        // The active layer's spans are list items under its frame grid, the playhead's selected.
+        let items: Vec<&Node> = t.nodes.iter().filter(|(_, n)| n.role() == Role::ListItem).map(|(_, n)| n).collect();
+        assert!(!items.is_empty(), "the active layer's spans are listed");
+        assert!(items.iter().all(|n| n.label().is_some_and(|l| l.starts_with("Frame"))), "{:?}", items.iter().map(|n| n.label()).collect::<Vec<_>>());
+        assert_eq!(items.iter().filter(|n| n.is_selected() == Some(true)).count(), 1, "one span holds the playhead");
+        let grid = t.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l.starts_with("Frames of")) && !n.children().is_empty());
+        assert!(grid.is_some(), "the list sits under the active layer's frame grid");
+        assert!(audit(&t).is_empty(), "{}", audit(&t).join("\n"));
+        // Left goes back; Down moves to the next layer and keeps the keyboard on the timeline.
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        assert_eq!(app.s.frame, frame0);
+        key(&ctx, &mut app, egui::Key::ArrowDown, egui::Modifiers::NONE);
+        assert_ne!(app.s.layer, layer0, "Down is the layer below");
+        assert_eq!(app.s.timeline().layers.iter().position(|l| l.id == app.s.layer), Some(1));
+        assert_eq!((focused_region(&ctx), keyboard(&ctx)), (Some(Region::Timeline), Keyboard::App), "the new row has the keyboard");
+        key(&ctx, &mut app, egui::Key::ArrowUp, egui::Modifiers::NONE);
+        assert_eq!(app.s.layer, layer0);
+        let said = app.status.as_ref().map(|s| s.text.clone()).unwrap_or_default();
+        let name = app.s.timeline().layer(layer0).map(|l| l.name.clone()).unwrap_or_default();
+        assert!(said.contains(&name), "the layer is announced: {said}");
+    }
+
+    #[test]
     fn ctrl_f6_moves_focus_through_the_panels_and_back() {
         let (_, mut app, ctx) = tree(|_, _| {});
         let mut seen = Vec::new();

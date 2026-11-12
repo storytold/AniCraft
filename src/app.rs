@@ -442,6 +442,10 @@ pub struct App {
     pub last_panel: Option<crate::a11y::Region>,
     /// The stage's elements as keyboard stops and screen-reader nodes (ADR 0064).
     pub stage_nav: crate::stage_a11y::StageNav,
+    /// The layer and frame the focused timeline last announced (ADR 0064).
+    pub tl_heard: Option<(anicraft_engine::doc::LayerId, u32)>,
+    /// The arrows moved the active layer: its row takes keyboard focus when drawn.
+    pub tl_refocus: bool,
     /// The start screen, while it is up (ADR 0059).
     pub start: Option<crate::start::StartScreen>,
     /// Files dragged over and dropped onto the window (ADR 0059).
@@ -615,6 +619,8 @@ impl App {
             heard: None,
             last_panel: None,
             stage_nav: Default::default(),
+            tl_heard: None,
+            tl_refocus: false,
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
@@ -2169,6 +2175,10 @@ impl App {
         let mut play = false;
         let mut nudge = egui::Vec2::ZERO;
         let surface_focused = ctx.memory(|m| m.focused().is_some());
+        // On the focused timeline the arrows move the playhead (Left, Right) and the active
+        // layer (Up, Down) instead of nudging artwork (ADR 0064).
+        let on_timeline = surface_focused && crate::a11y::focused_region(ctx) == Some(crate::a11y::Region::Timeline);
+        let (mut frame_step, mut layer_step) = (0i64, 0i64);
         ctx.input_mut(|i| {
             for (m, k, id) in &self.shortcuts {
                 if i.consume_key(*m, *k) {
@@ -2188,7 +2198,14 @@ impl App {
             // Screen pixels, as in Animate: a press moves less the further you zoom in.
             let step = if i.modifiers.shift { 10.0 } else { 1.0 } / self.view.zoom.max(1e-3);
             for (k, d) in [(Key::ArrowLeft, egui::vec2(-step, 0.0)), (Key::ArrowRight, egui::vec2(step, 0.0)), (Key::ArrowUp, egui::vec2(0.0, -step)), (Key::ArrowDown, egui::vec2(0.0, step))] {
-                if i.key_pressed(k) && !i.modifiers.command {
+                if on_timeline && i.consume_key(Modifiers::NONE, k) {
+                    match k {
+                        Key::ArrowLeft => frame_step -= 1,
+                        Key::ArrowRight => frame_step += 1,
+                        Key::ArrowUp => layer_step -= 1,
+                        _ => layer_step += 1,
+                    }
+                } else if i.key_pressed(k) && !i.modifiers.command {
                     nudge += d;
                 }
             }
@@ -2223,6 +2240,22 @@ impl App {
         }
         if let Some(t) = tool {
             self.tool = t;
+        }
+        if frame_step != 0 {
+            self.playing = false;
+            let last = i64::from(self.s.frame_count().saturating_sub(1));
+            let to = (i64::from(self.s.frame) + frame_step).clamp(0, last.max(0));
+            self.run("timeline.goto", json!({"frame": to}));
+        }
+        if layer_step != 0 {
+            let layers = &self.s.timeline().layers;
+            if let Some(at) = layers.iter().position(|l| l.id == self.s.layer) {
+                let to = (at as i64 + layer_step).clamp(0, layers.len() as i64 - 1);
+                if to != at as i64 && self.run("layer.select", json!({"index": to})).is_some() {
+                    // The keyboard goes with it, to the new active row.
+                    self.tl_refocus = true;
+                }
+            }
         }
         if play {
             self.toggle_play();
@@ -2470,6 +2503,7 @@ impl App {
             self.glyph_check = false;
         }
         self.handle_shortcuts(&ctx);
+        timeline::announce(self, &ctx);
         // Switching away from a path tool keeps its work: a Pen path in progress is finished.
         if self.tool != Tool::Pen && self.pen.is_some() {
             pathtools::commit_pen(self, false);

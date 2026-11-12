@@ -548,6 +548,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if is_active || r == first_row {
             a11y::anchor(ui, a11y::Region::Timeline, dock, &nr);
         }
+        if is_active && app.tl_refocus {
+            app.tl_refocus = false;
+            // (Asking again would reset the focus filter that keeps the arrows here.)
+            if !nr.has_focus() {
+                nr.request_focus();
+            }
+        }
         for (r, id, salt, label, on) in [(eye, "layer.toggle_visible", "eye", tr!("Show {name}", name = name), layer.visible), (lock, "layer.toggle_lock", "lock", tr!("Lock {name}", name = name), layer.locked), (outl, "layer.toggle_outline", "outline", tr!("Outline {name}", name = name), layer.outline)].into_iter().take(if is_camera { 2 } else { 3 }) {
             let rr = ui.interact(r, ui.id().with((salt, layer.id.0)), Sense::click());
             a11y::control(ui, &rr, WidgetType::Checkbox, &label, Some(on));
@@ -844,6 +851,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         let cr = ui.interact(cells, ui.id().with(("cells", layer.id.0)), a11y::pointer_only());
         a11y::control(ui, &cr, WidgetType::Button, &tr!("Frames of {name}", name = layer.name), None);
+        if is_active {
+            // Its keyframes and spans, one by one, for screen readers (ADR 0064).
+            frame_nodes(app, ui, &cr, layer, |f| x_of(f), y);
+        }
         let shift = ui.input(|inp| inp.modifiers.shift);
         if cr.clicked() || cr.drag_started() || cr.secondary_clicked() {
             app.timeline_focus = true;
@@ -1223,6 +1234,113 @@ fn frame_view_button(app: &mut App, ui: &mut egui::Ui) {
         });
     }
 }
+
+/// While the timeline has the keyboard, says where the playhead went (through the status bar,
+/// a live region): "Frame 12 · Ball · Frames 1–24: keyframe · motion tween". Quiet while playing,
+/// and on the frame the focus arrived at (Ctrl+F6 has just said the panel).
+pub fn announce(app: &mut App, ctx: &egui::Context) {
+    let focused = ctx.memory(|m| m.focused().is_some()) && a11y::focused_region(ctx) == Some(a11y::Region::Timeline);
+    let now = (app.s.layer, app.s.frame);
+    if !focused || app.playing {
+        app.tl_heard = if focused { Some(now) } else { None };
+        return;
+    }
+    if app.tl_heard.is_some_and(|h| h != now) {
+        let Some(layer) = app.s.timeline().layer(now.0) else { return };
+        let what = frame_text(layer, now.1).unwrap_or_else(|| tr!("no frame").to_string());
+        let msg = tr!("Frame {frame} · {layer} · {what}", frame = now.1 + 1, layer = layer.name, what = what);
+        app.status_ok(msg);
+    }
+    app.tl_heard = Some(now);
+}
+
+/// Most spans of the active layer listed one by one; the rest are summed up.
+pub const MAX_SPAN_NODES: usize = 1_000;
+
+/// What a span is, as a screen reader hears it: "Frames 1–24: keyframe · motion tween · label
+/// “walk”". `next_adjacent`: the next keyframe starts where this one ends (a tween reaches it).
+pub fn span_text(k: &anicraft_engine::doc::Keyframe, next_adjacent: bool) -> String {
+    let (a, b) = (k.start + 1, k.end());
+    let frames = if k.duration <= 1 { tr!("Frame {a}", a = a) } else { tr!("Frames {a}–{b}", a = a, b = b) };
+    let mut parts: Vec<String> = vec![if k.elements.is_empty() { tr!("blank keyframe").to_string() } else { tr!("keyframe").to_string() }];
+    if k.motion.is_some() {
+        parts.push(tr!("motion tween").to_string());
+    } else if let Some(t) = k.tween {
+        parts.push(match (t.kind, next_adjacent) {
+            (_, false) => tr!("broken tween").to_string(),
+            (TweenKind::Shape, true) => tr!("shape tween").to_string(),
+            (TweenKind::Classic, true) => tr!("classic tween").to_string(),
+        });
+    }
+    if !k.label.is_empty() {
+        parts.push(tr!("label “{label}”", label = k.label));
+    }
+    if k.sound.is_some() {
+        parts.push(tr!("sound").to_string());
+    }
+    if k.script.is_some() {
+        parts.push(tr!("actions").to_string());
+    }
+    tr!("{frames}: {what}", frames = frames, what = parts.join(" · "))
+}
+
+/// The span of `layer` at `frame`, described (`None`: no frame there).
+pub fn frame_text(layer: &Layer, frame: u32) -> Option<String> {
+    let ki = layer.keyframes.iter().position(|k| k.covers(frame))?;
+    let k = layer.keyframes.get(ki)?;
+    Some(span_text(k, layer.keyframes.get(ki + 1).is_some_and(|n| n.start == k.end())))
+}
+
+/// The active layer's spans as a list under its frame grid's node: each says its frames, what
+/// is there and its tween; the one under the playhead is selected; a reader's click moves the
+/// playhead there.
+fn frame_nodes(app: &mut App, ui: &mut egui::Ui, grid: &egui::Response, layer: &Layer, x_of: impl Fn(u32) -> f32, y: f32) {
+    use egui::accesskit::{Action, Role};
+    let ctx = ui.ctx().clone();
+    let child = ui.new_child(egui::UiBuilder::new().id_salt(("frame_list", layer.id.0)).accessibility_parent(grid.id).max_rect(grid.rect).sense(Sense::hover()));
+    let ak = |r: Rect| egui::accesskit::Rect { x0: r.min.x.into(), y0: r.min.y.into(), x1: r.max.x.into(), y1: r.max.y.into() };
+    let total = layer.keyframes.len();
+    ctx.accesskit_node_builder(child.unique_id(), |n| {
+        n.set_role(Role::List);
+        n.set_label(trn!("{n} keyframe span on {name}", "{n} keyframe spans on {name}", total, name = layer.name));
+        n.set_bounds(ak(grid.rect));
+    });
+    let mut goto = None;
+    for (ki, k) in layer.keyframes.iter().enumerate().take(MAX_SPAN_NODES) {
+        let id = child.unique_id().with(("span", k.start));
+        let r = Rect::from_min_max(pos2(x_of(k.start), y), pos2(x_of(k.end()), y + ROW_H)).intersect(grid.rect);
+        child.interact(Rect::from_center_size(r.center(), egui::Vec2::ZERO), id, Sense::hover());
+        let next_adjacent = layer.keyframes.get(ki + 1).is_some_and(|n| n.start == k.end());
+        let name = span_text(k, next_adjacent);
+        ctx.accesskit_node_builder(id, |n| {
+            n.set_role(Role::ListItem);
+            n.set_label(name);
+            n.set_selected(k.covers(app.s.frame));
+            if r.is_positive() {
+                n.set_bounds(ak(r));
+            }
+            n.set_position_in_set(ki + 1);
+            n.set_size_of_set(total);
+            n.add_action(Action::Click);
+        });
+        if ctx.input(|i| i.has_accesskit_action_request(id, Action::Click)) {
+            goto = Some(k.start);
+        }
+    }
+    if total > MAX_SPAN_NODES {
+        let id = child.unique_id().with("more");
+        child.interact(Rect::from_center_size(grid.rect.center(), egui::Vec2::ZERO), id, Sense::hover());
+        ctx.accesskit_node_builder(id, |n| {
+            n.set_role(Role::Label);
+            n.set_label(trn!("{n} more span is not listed: go there with , and . or Home and End", "{n} more spans are not listed: go there with , and . or Home and End", total - MAX_SPAN_NODES));
+        });
+    }
+    if let Some(f) = goto {
+        app.playing = false;
+        app.run("timeline.goto", json!({"frame": f}));
+    }
+}
+
 
 /// Engine param for an easing preset.
 /// A keyframe's sound over its span: the waveform from the keyframe on, repeated as the sound
