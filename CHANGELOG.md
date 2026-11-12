@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
+  tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
+  macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip
+  them, and a newer push cancels the older run. Their first run
+  found one macOS-only failure: the screen-reader translation tests treated the macOS app
+  menu's title, the product name, as untranslated.
 * **The user guide** (ADR 0069, M8).
   * **Help › User Guide** opens AniCraft's guide in your browser. It comes with the app, so it
     works offline; the web editor serves it beside the editor. It is also in the command palette.
