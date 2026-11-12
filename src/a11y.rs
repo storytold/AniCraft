@@ -449,7 +449,7 @@ mod tests {
         }
     }
 
-    fn node<'a>(t: &'a TreeUpdate, id: egui::Id) -> Option<&'a Node> {
+    fn node(t: &TreeUpdate, id: egui::Id) -> Option<&Node> {
         t.nodes.iter().find(|(n, _)| *n == id.accesskit_id()).map(|(_, n)| n)
     }
 

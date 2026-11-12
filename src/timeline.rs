@@ -853,7 +853,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         a11y::control(ui, &cr, WidgetType::Button, &tr!("Frames of {name}", name = layer.name), None);
         if is_active {
             // Its keyframes and spans, one by one, for screen readers (ADR 0064).
-            frame_nodes(app, ui, &cr, layer, |f| x_of(f), y);
+            frame_nodes(app, ui, &cr, layer, x_of, y);
         }
         let shift = ui.input(|inp| inp.modifiers.shift);
         if cr.clicked() || cr.drag_started() || cr.secondary_clicked() {
