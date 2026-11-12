@@ -136,6 +136,8 @@ fn plugins_cannot_reach_files_history_the_clipboard_or_other_plugins() {
     let forbidden = [
         save.as_str(),
         r#"{"op":"command","id":"file.export_png","params":{"path":"x.png"}}"#,
+        r#"{"op":"command","id":"file.export_apng","params":{"path":"x.png"}}"#,
+        r#"{"op":"command","id":"file.export_webp","params":{"path":"x.webp"}}"#,
         r#"{"op":"command","id":"plugin.run","params":{"id":"org.test.sneaky"}}"#,
         r#"{"op":"command","id":"plugin.remove","params":{"id":"org.test.sneaky","confirm":true}}"#,
         r#"{"op":"command","id":"edit.undo"}"#,
