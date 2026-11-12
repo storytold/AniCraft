@@ -108,8 +108,12 @@ a server or send it as one file.
 * The movie fits the browser window and stays sharp on high-density screens. In Publish
   Settings you can turn off **Scale to the browser window**, turn off **Include sounds**, and set
   the **Page title**.
-* Filters, Subtract and Invert blending and plug-in frame scripts are left out of the page, and
-  9-slice symbols are scaled as a whole. The status bar lists what was left out.
+* Filters (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel and Adjust Color) and
+  every blend mode look as they do in AniCraft. A filtered symbol that doesn't change is filtered
+  once; large filtered symbols that change every frame can slow the page down, as in any
+  browser movie, so keep animated filters small.
+* Plug-in frame scripts are left out of the page, and 9-slice symbols are scaled as a whole. The
+  status bar lists what was left out.
 
 ### Audio
 
