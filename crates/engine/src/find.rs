@@ -890,18 +890,21 @@ fn apply_element(e: &mut anicraft_doc::Element, f: Field, q: &Query, with: &With
                     t.skipped += 1;
                     t.note("a text field can't be left empty (delete it instead)".into());
                 } else {
-                    let (block, note) = crate::cmds_text::lay_out(&n, &crate::cmds_text::style_of(tb), tb.width)?;
+                    // Laid out again as it is: text on a path stays on it (ADR 0070).
+                    let (block, note, shift) = crate::cmds_text::relay_static(tb, &n, &crate::cmds_text::style_of(tb))?;
                     t.note_opt(note);
                     *tb = Arc::new(block);
+                    e.transform = e.transform.mul(&anicraft_geom::Affine::translate(shift.x, shift.y));
                     t.replaced += 1;
                 }
             }
         }
         (Field::Font, ElementKind::Text(tb), With::Font(family)) => {
             let style = crate::cmds_text::TextStyle { font: family.clone(), ..crate::cmds_text::style_of(tb) };
-            let (block, note) = crate::cmds_text::lay_out(&tb.text, &style, tb.width)?;
+            let (block, note, shift) = crate::cmds_text::relay_static(tb, &tb.text, &style)?;
             t.note_opt(note);
             *tb = Arc::new(block);
+            e.transform = e.transform.mul(&anicraft_geom::Affine::translate(shift.x, shift.y));
             t.replaced += 1;
         }
         (Field::TextColor, ElementKind::Text(tb), With::Color(c)) => {

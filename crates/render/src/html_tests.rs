@@ -892,7 +892,7 @@ fn the_js_player_draws_random_numbers_like_the_rust_player() {
 /// (layout isn't compared: neither player lays text out here).
 fn field_el(id: u64, name: &str, at: Vec2, (w, h): (f32, f32), text: &str, f: Option<anicraft_doc::TextField>) -> Arc<Element> {
     let n = text.chars().count() as f32;
-    let t = anicraft_doc::TextBlock { text: text.into(), font: "Inter".into(), size: 14.0, bold: true, italic: false, color: Rgba::hex(0x112233), align: anicraft_doc::TextAlign::Center, letter_spacing: 0.5, line_spacing: 2.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0 * n, 12.0)), box_width: w, box_height: h, field: f };
+    let t = anicraft_doc::TextBlock { text: text.into(), font: "Inter".into(), size: 14.0, bold: true, italic: false, color: Rgba::hex(0x112233), align: anicraft_doc::TextAlign::Center, letter_spacing: 0.5, line_spacing: 2.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0 * n, 12.0)), box_width: w, box_height: h, field: f, on_path: None };
     Arc::new(Element { id: ElementId(id), name: name.into(), transform: Affine::translate(at.x, at.y), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(t)) })
 }
 

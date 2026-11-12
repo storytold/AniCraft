@@ -471,7 +471,28 @@ pub struct TextBlock {
     /// A dynamic or input text field (ADR 0066); `None`: static text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<TextField>,
+    /// Text on a path (ADR 0070): its baseline follows this path instead of running in lines;
+    /// `outline` holds the glyphs set along it. Static text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_path: Option<TextPath>,
 }
+
+/// The path a text block follows (ADR 0070), and where along it the text sits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextPath {
+    /// The baseline's path, in the block's own space (its first subpath counts).
+    pub path: Path,
+    /// Where the text is anchored along the path (pixels from its start): the block's
+    /// alignment says how (left: starts there, centre: centred on it, right: ends there).
+    #[serde(default)]
+    pub offset: f32,
+    /// The text runs along the path backwards, on its other side.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip: bool,
+}
+
+/// Longest stretch along a path a text's offset may be (pixels either way).
+pub const MAX_PATH_OFFSET: f32 = 1_000_000.0;
 
 impl TextBlock {
     /// What kind of text it is: static, dynamic or input.
