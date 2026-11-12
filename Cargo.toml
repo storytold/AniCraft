@@ -26,6 +26,7 @@ anicraft-text = { path = "crates/text" }
 anicraft-plugins = { path = "crates/plugins" }
 anicraft-audio = { path = "crates/audio" }
 anicraft-gpu = { path = "crates/gpu" }
+anicraft-guide = { path = "crates/guide" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
@@ -109,6 +110,8 @@ web-time.workspace = true
 sys-locale = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The user guide, bundled for Help › User Guide (ADR 0069). The web build serves it as pages instead.
+anicraft-guide.workspace = true
 craft-update = { git = "https://github.com/storytold/craft-libs", rev = "6ac2a6a34ae83fc0f0bfb25a569ba6388b72266a" }
 
 eframe = { workspace = true, features = ["links"] }

@@ -269,6 +269,8 @@ pub struct Shot {
     pub path: PathBuf,
     pub frames: u32,
     pub requested: bool,
+    /// Scaled down to this width when written (`--shot-width`).
+    pub width: Option<u32>,
 }
 
 pub const SHOT_FRAMES: u32 = 120;
@@ -560,7 +562,7 @@ impl App {
             show_about: false,
             show_files: false,
             show_licenses: false,
-            shot: shot.map(|path| Shot { path, frames: 0, requested: false }),
+            shot: shot.map(|path| Shot { path, frames: 0, requested: false, width: None }),
             cursor_stage: None,
             tl_scroll: 0.0,
             tl_cell_w: timeline::CELL_DEFAULT,
@@ -785,6 +787,14 @@ impl App {
         p.ui_scale = scale.unwrap_or(p.ui_scale);
         self.prefs = p.sanitized();
         self.apply_prefs(ctx);
+    }
+
+    /// Help › User Guide: the bundled guide in the browser (ADR 0069).
+    pub fn open_user_guide(&mut self) {
+        match platform::open_user_guide() {
+            Ok(()) => self.status_ok(tr!("Opened the user guide in your browser")),
+            Err(e) => self.status_err(e),
+        }
     }
 
     pub fn open_prefs(&mut self) {
@@ -2463,6 +2473,10 @@ impl App {
             })
         });
         if let Some(img) = image {
+            let img = match shot.width {
+                Some(w) => shrink(&img, w as usize),
+                None => (*img).clone(),
+            };
             match write_screenshot(&shot.path, &img) {
                 Ok(()) => println!("screenshot saved to {}", shot.path.display()),
                 Err(e) => eprintln!("screenshot failed: {e}"),
@@ -2611,6 +2625,67 @@ pub(crate) fn write_screenshot(path: &std::path::Path, img: &egui::ColorImage) -
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     std::fs::write(path, png).map_err(|e| e.to_string())
+}
+
+/// A screenshot scaled down to `width` pixels across (kept when it is already narrower), each
+/// pixel the area-weighted mean of the ones it covers: sharp text, no aliasing.
+pub(crate) fn shrink(img: &egui::ColorImage, width: usize) -> egui::ColorImage {
+    let [w, h] = img.size;
+    if width == 0 || width >= w || h == 0 {
+        return img.clone();
+    }
+    let height = ((h * width + w / 2) / w).max(1);
+    // One axis at a time: per target pixel, the source pixels it covers and how much.
+    let taps = |from: usize, to: usize| -> Vec<Vec<(usize, f32)>> {
+        let scale = from as f32 / to as f32;
+        (0..to)
+            .map(|i| {
+                let (a, b) = (i as f32 * scale, (i + 1) as f32 * scale);
+                let mut v = Vec::new();
+                let mut j = a.floor() as usize;
+                while (j as f32) < b && j < from {
+                    let cover = (b.min(j as f32 + 1.0) - a.max(j as f32)).max(0.0) / scale;
+                    v.push((j, cover));
+                    j += 1;
+                }
+                v
+            })
+            .collect()
+    };
+    let (tx, ty) = (taps(w, width), taps(h, height));
+    let src: Vec<[f32; 4]> = img.pixels.iter().map(|c| c.to_srgba_unmultiplied().map(f32::from)).collect();
+    let mix = |acc: &mut [f32; 4], p: &[f32; 4], wgt: f32| {
+        for (a, v) in acc.iter_mut().zip(p) {
+            *a += v * wgt;
+        }
+    };
+    let mut rows = vec![[0.0f32; 4]; width * h];
+    for y in 0..h {
+        for (x, t) in tx.iter().enumerate() {
+            let mut acc = [0.0f32; 4];
+            for &(sx, wgt) in t {
+                if let Some(p) = src.get(y * w + sx) {
+                    mix(&mut acc, p, wgt);
+                }
+            }
+            if let Some(o) = rows.get_mut(y * width + x) {
+                *o = acc;
+            }
+        }
+    }
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for t in &ty {
+        for x in 0..width {
+            let mut acc = [0.0f32; 4];
+            for &(sy, wgt) in t {
+                if let Some(p) = rows.get(sy * width + x) {
+                    mix(&mut acc, p, wgt);
+                }
+            }
+            rgba.extend(acc.map(|v| v.round().clamp(0.0, 255.0) as u8));
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([width, height], &rgba)
 }
 
 /// Opens a file or folder with the operating system's default handler.
@@ -2790,5 +2865,28 @@ impl App {
             self.last_revision = self.s.revision;
             ctx.request_repaint();
         }
+    }
+}
+
+#[cfg(test)]
+mod shrink_tests {
+    use super::shrink;
+    use egui::{Color32, ColorImage};
+
+    #[test]
+    fn shrinking_averages_the_area_and_keeps_the_aspect() {
+        // 4 × 2: two black columns, two white: halved, one black pixel and one white per row.
+        let px = [Color32::BLACK, Color32::BLACK, Color32::WHITE, Color32::WHITE];
+        let img = ColorImage::new([4, 2], px.iter().chain(px.iter()).copied().collect());
+        let out = shrink(&img, 2);
+        assert_eq!(out.size, [2, 1]);
+        assert_eq!(out.pixels, vec![Color32::BLACK, Color32::WHITE]);
+        // A third of the way: the middle pixel mixes both halves.
+        let wide = ColorImage::new([3, 3], [Color32::BLACK, Color32::from_gray(90), Color32::WHITE].repeat(3));
+        let two = shrink(&wide, 2);
+        assert_eq!(two.size, [2, 2]);
+        assert_eq!(two.pixels[0], Color32::from_gray(30));
+        // Never enlarged.
+        assert_eq!(shrink(&img, 10).size, [4, 2]);
     }
 }
