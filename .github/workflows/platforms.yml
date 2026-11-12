@@ -1,0 +1,62 @@
+# The gate on macOS and Windows (ADR 0067): build, test and clippy the whole workspace on the
+# latest macOS (arm64) and Windows (x64) runners, so `cfg(target_os = "macos")` and
+# `cfg(windows)` code (the platform layer, Apple Events, Increase Contrast, contrast themes,
+# the Windows resource build) is compiled and linted on every pull request that changes code.
+# The Linux gate is ci.yml; this file only calls the suite's shared gate with other runners.
+name: CI (macOS, Windows)
+
+# A change that touches only documentation or other workflows skips both legs. Later patterns
+# win: everything, then not docs, Markdown or .github, then this file again. Kept in step in
+# both lists (no YAML anchors: not every workflow tool reads them).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "!.github/**"
+      - ".github/workflows/platforms.yml"
+  pull_request:
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "!.github/**"
+      - ".github/workflows/platforms.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Its own group, so these legs never cancel the Linux gate. A newer push to a PR branch cancels
+# its older run (macOS runners are scarce); every push to main runs to the end.
+concurrency:
+  group: ci-platforms-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository. The
+    # shared gate pins every action by SHA, runs Harden-Runner first in each leg, and keys
+    # rust-cache per OS and architecture (written by pushes to main, read by pull requests).
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      os: '["macos-latest", "windows-latest"]'
+      # Same craft-fonts commit as ci.yml, release.yml and freebsd.yml.
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      # Nothing extra: the wasm build is web.yml's, and plain cargo test needs no nextest.
+      targets: ""
+      tools: ""
+      # Cargo.toml's dev profile already keeps line tables only (and Windows PDBs small).
+      dev-debug: ""
+      timeout-minutes: 90
+      gate-timeout-minutes: 85
+      # All three steps run, so one run reports every failure; GPU tests skip themselves when
+      # the runner has no usable adapter (crates/gpu/src/tests.rs).
+      command: |
+        status=0
+        cargo build --workspace --locked || status=1
+        cargo test --workspace --locked --no-fail-fast || status=1
+        cargo clippy --workspace --all-targets --locked -- -D warnings || status=1
+        exit "$status"
