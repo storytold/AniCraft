@@ -55,6 +55,15 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
   `examples/plugins` (MIT OR Apache-2.0).
 
+### Opening documents on macOS (2026-11-11, ADR 0062)
+
+New crate, from crates.io, macOS builds only: `fmv-macos-events` 0.1.0 (MIT OR Apache-2.0),
+pinned with `=`. It registers AppKit's open-documents and quit Apple Event handlers so that
+AniCraft's own code stays free of `unsafe`. It was read in full before it was added: about 170
+lines, no network or file access. Its `objc2` 0.6, `objc2-app-kit` 0.3 and `objc2-foundation`
+0.3 (MIT, Zlib OR Apache-2.0 OR MIT) were already in the tree through wgpu. No new licence. It
+declares `rust-version = 1.95`, so the macOS build needs that toolchain or newer.
+
 ### Find and Replace (2026-11-11, ADR 0058)
 
 New crates, from crates.io: `regex` 1 with `regex-syntax` and `regex-automata` (MIT OR
