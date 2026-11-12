@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut v = vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
         CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{which?: demo (default) | interactive (a menu with a Play button, for Test Movie)}", mutates: false, run: new_sample },
         CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path, unsaved? (opens it as unsaved work: a restored copy), untitled? (with no file name, so Save asks for one)}", mutates: false, run: open },
@@ -122,7 +122,19 @@ pub fn specs() -> Vec<CommandSpec> {
             run: set_stage,
         },
         CommandSpec { id: "doc.info", label: "Document Info", menu: "", shortcut: None, params: "{}", mutates: false, run: |s, _| Ok(s.info()) },
-    ]
+    ];
+    // In the File menu as in Animate: New from Template under New, Save as Template under
+    // Save As (ADR 0065).
+    for t in crate::cmds_template::specs() {
+        let after = match t.id {
+            "file.new_from_template" => "file.new_sample",
+            "file.save_as_template" => "file.save_as",
+            _ => "doc.info",
+        };
+        let at = v.iter().position(|c| c.id == after).map_or(v.len(), |i| i + 1);
+        v.insert(at, t);
+    }
+    v
 }
 
 fn stage_edge(p: &Value, key: &str, default: u32) -> Result<u32> {
@@ -408,6 +420,73 @@ pub(crate) fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
         "skipped": report.skipped,
         "missing_fonts": report.missing_fonts,
     }))
+}
+
+/// An SVG drawing read from `path` (size-checked), with at least one shape.
+pub(crate) fn read_svg(path: &std::path::Path) -> Result<anicraft_svg::SvgImport> {
+    if crate::vfs::len(path)? > MAX_IMPORT_BYTES {
+        return Err(EngineError::Format(format!("{} is too large to import", path.display())));
+    }
+    let drawing = anicraft_svg::import(&crate::vfs::read(path)?).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    if drawing.is_empty() {
+        return Err(EngineError::State(format!("{} has no shapes AniCraft can import yet. {}", path.display(), drawing.report.summary())));
+    }
+    Ok(drawing)
+}
+
+/// Whether a drawing fits on one layer (one run of artwork, nothing masked).
+pub(crate) fn one_layer(d: &anicraft_svg::SvgImport) -> bool {
+    d.layers.len() == 1 && d.layers.iter().all(|l| l.mask.is_none())
+}
+
+/// Import to Library with an SVG (ADR 0065): a graphic symbol named after the file (a free
+/// name at the Library's top level) holding the drawing's shapes, its registration point at
+/// the drawing's centre. Clips and masks keep their mask layers inside the symbol.
+pub(crate) fn import_svg_symbol(s: &mut Session, path: &std::path::Path, name: Option<&str>) -> Result<Value> {
+    use anicraft_doc::{Layer, LayerId, LayerKind, Symbol, SymbolId, SymbolKind, Timeline};
+    let drawing = read_svg(path)?;
+    let stem: String = path.file_stem().map_or_else(|| "Drawing".into(), |n| n.to_string_lossy().chars().take(128).collect());
+    let name = s.doc.unique_name(None, name.map_or(stem.as_str(), str::trim));
+    let place = anicraft_geom::Affine::translate(-drawing.width * 0.5, -drawing.height * 0.5);
+    let elements = |s: &mut Session, list: Vec<anicraft_svg::ImportedElement>| -> Vec<Arc<anicraft_doc::Element>> {
+        list.into_iter()
+            .map(|e| Arc::new(anicraft_doc::Element { id: anicraft_doc::ElementId(s.doc.alloc_id()), name: e.name, transform: place.mul(&e.transform), color: anicraft_doc::ColorEffect::opacity(e.alpha), kind: e.kind }))
+            .collect()
+    };
+    let one_key = |els: Vec<Arc<anicraft_doc::Element>>| {
+        let mut k = anicraft_doc::Keyframe::new(0, 1);
+        k.elements = els;
+        vec![Arc::new(k)]
+    };
+    let count = drawing.elements().count();
+    let (width, height, report) = (drawing.width, drawing.height, drawing.report);
+    let runs = drawing.layers.len();
+    // Top first: the drawing lists its runs in paint order (bottom first).
+    let mut layers: Vec<Arc<Layer>> = Vec::new();
+    for (n, l) in drawing.layers.into_iter().enumerate().rev() {
+        let mut parent = None;
+        if let Some(mask) = l.mask {
+            let mut ml = Layer::new(LayerId(s.doc.alloc_id()), if mask.name.is_empty() { "Mask".to_string() } else { mask.name.clone() });
+            ml.kind = LayerKind::Mask;
+            ml.locked = true;
+            ml.keyframes = one_key(elements(s, mask.elements));
+            parent = Some(ml.id);
+            layers.push(Arc::new(ml));
+        }
+        let mut cl = Layer::new(LayerId(s.doc.alloc_id()), if runs == 1 { "Layer 1".to_string() } else { format!("Layer {}", n + 1) });
+        cl.parent = parent;
+        cl.keyframes = one_key(elements(s, l.elements));
+        layers.push(Arc::new(cl));
+    }
+    let mut timeline = Timeline { layers };
+    timeline.repair_masks();
+    let id = SymbolId(s.doc.alloc_id());
+    s.doc.library.push(Arc::new(Symbol { id, name: name.clone(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, scale_grid_kept: None, timeline }));
+    Ok(json!({"symbol": id.0, "name": name, "elements": count, "layers": timeline_len(s, id), "width": width, "height": height, "report": report.summary(), "skipped": report.skipped}))
+}
+
+fn timeline_len(s: &Session, id: anicraft_doc::SymbolId) -> usize {
+    s.doc.library.iter().find(|x| x.id == id).map_or(0, |x| x.timeline.layers.len())
 }
 
 /// A PNG or JPEG as a bitmap in the document, and the one shape that shows it: a rectangle of

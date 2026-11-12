@@ -24,6 +24,7 @@ pub mod stroke_style;
 pub mod player;
 pub mod publish;
 pub mod sample;
+pub mod templates;
 pub mod sound;
 
 pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
