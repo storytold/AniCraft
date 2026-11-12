@@ -14,6 +14,7 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 cd "$ROOT"
+command -v zip >/dev/null || { echo "error: zip not found (apt install zip)" >&2; exit 1; }
 
 WANT="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
 if ! command -v wasm-bindgen >/dev/null || [[ "$(wasm-bindgen --version | awk '{ print $2 }')" != "$WANT" ]]; then

@@ -34,7 +34,8 @@ jobs:
       app-name: anicraft
       app-title: AniCraft
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      # No WebAssembly build of the editor yet (roadmap M8).
+      # The web editor builds (ADR 0036) and packaging/web/package.sh makes its zip (#210), but
+      # releases don't carry it until the team decides where it is hosted: off for now.
       has-web: false
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

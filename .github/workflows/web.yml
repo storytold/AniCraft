@@ -1,7 +1,7 @@
 # The web build (ADR 0036, docs/web.md), so it never regresses: every crate of the workspace
 # builds for wasm32-unknown-unknown, the engine's tests/wasm.rs runs inside WebAssembly in Node
 # (what a build can't catch: clock, thread and file calls that compile but trap), and
-# scripts/build-web.sh produces the web/ bundle. Nothing is deployed.
+# packaging/web/package.sh produces the web/ bundle and its release zip. Nothing is deployed.
 name: Web
 
 on:
@@ -52,7 +52,8 @@ jobs:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
         run: cargo test -p anicraft-engine --target wasm32-unknown-unknown --test wasm --locked
 
-      - name: The web editor bundle
+      # The release download too (#210): what the release workflow's web job runs.
+      - name: The web editor bundle and its release zip
         run: |
-          scripts/build-web.sh
-          ls -l web
+          packaging/web/package.sh
+          ls -l web dist/release

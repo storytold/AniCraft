@@ -273,7 +273,7 @@ RISC-V (riscv64): `anicraft-<ver>-linux-riscv64.tar.gz`, a tarball only.
 
 | Build | File | Notes |
 |---|---|---|
-| Static site | `anicraft-web-<ver>.zip` | Runs in a modern browser; host it on any static server |
+| Static site | `anicraft-web-<ver>.zip` | Not in the releases yet: build it yourself with `packaging/web/package.sh` ([docs/web.md](docs/web.md)), then host it on any static server |
 
 ## The Crafting Apps
 
