@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Timeline, bones, menus and stage fixes from user reports** (M1).
+  * **Fixed**: F5 with no frames selected only extended the active layer. It now extends every
+    layer that has frames at or after the playhead, as in Animate, and leaves the layers that end
+    before it alone (#242).
+  * **Fixed**: after F5, F6 or F7 you had to select the next frame by hand. F5 now moves onto the
+    frame it adds, and F6 or F7 on a keyframe makes the new keyframe on the next frame and moves
+    there, so draw, F6, draw keeps going (#254). F7 on a keyframe no longer clears its drawing.
+  * **Fixed**: the timeline's Frame, Keyframe and Blank buttons took a lot of room. They are icons
+    now (a frame, a filled dot and a hollow dot, each with a plus), named in their tooltips (#240).
+  * **Fixed**: bone chains looked broken and jumped while posing. A bone started anywhere on an
+    instance now starts at the end of the bone before it, so the chain stays joined, and dragging
+    a bone along its length moves it from where you grabbed it instead of snapping its end to the
+    pointer (#239).
+  * **Fixed**: on macOS there were no menus (no File, no Save). The title bar covered the menu
+    row; it is see-through now, as designed (#247).
+  * **Fixed**: you couldn't draw outside the stage; anything past its edge was hidden. The
+    pasteboard now shows your artwork, as in Animate, and **Clip content outside the stage**
+    (beside the zoom menu, and in the View menu) hides it again when you want (#245, #251).
 * **Soft masks and text on a path** (ADR 0070, M4).
   * **Soft masks**: Layer Properties › **Mask type** on a mask layer: *Shape* (as in Animate),
     *Alpha* (the mask's opacity reveals: a gradient to transparent fades the artwork out) or

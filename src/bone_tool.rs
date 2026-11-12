@@ -6,8 +6,9 @@
 //! instance to another adds a bone; a drag inside a shape draws a bone inside it (the shape
 //! bends with it: a shape armature); a drag starting on a bone's end continues the chain from
 //! it, and a click picks a bone. With the **Selection tool** a drag on a bone, or on an
-//! instance a bone moves, poses the armature by inverse kinematics; a drag on the root instance
-//! (or a shape armature's shape) moves the whole armature. Each drag is one undo step, and the
+//! instance a bone moves, poses the armature by inverse kinematics (the point grabbed follows the
+//! pointer); a drag on the root instance, the root's joints (or a shape armature's shape) moves
+//! the whole armature. Each drag is one undo step, and the
 //! pose keys the frame.
 
 use crate::app::{App, Drag, Tool};
@@ -216,7 +217,22 @@ pub fn select_drag_start(app: &mut App, xf: Xf, press: Pos2) -> Option<Drag> {
     let sp = xf.to_stage(press);
     let tl = app.s.timeline();
     let (layer, bone, local) = match hit(app, xf, press) {
-        Some((layer, id, _)) => (layer, Some(id), None),
+        Some((layer, id, Part::End)) => (layer, Some(id), None),
+        // Along a bone: the point grabbed follows the pointer (pulling the bone's end there would
+        // make the chain jump, #239); on the joint a root's bone starts at, the armature moves.
+        Some((layer, id, Part::Body)) => {
+            let l = tl.layer(layer)?;
+            let arm = l.armature.as_deref()?;
+            let (_, els) = evaluate_layer_elements(l, app.s.frame)?;
+            let pose = armature::pose_at(l, app.s.frame).unwrap_or_default();
+            let from_root = arm.bone(id).is_some_and(|b| arm.bone_into(b.parent).is_none());
+            let at_head = armature::bones_at(arm, &els, &pose).iter().find(|b| b.id == id).is_some_and(|b| xf.to_screen(b.head).distance(press) <= GRAB_END);
+            if from_root && at_head {
+                (layer, None, None)
+            } else {
+                (layer, Some(id), armature::grab_point(arm, &els, &pose, id, sp))
+            }
+        }
         None => {
             let (layer, el) = item_at(app, sp, 3.0 / xf.zoom.max(1e-3), None, rig_target).filter(|(l, _)| tl.layer(*l).is_some_and(|l| l.kind == LayerKind::Armature))?;
             let l = tl.layer(layer)?;

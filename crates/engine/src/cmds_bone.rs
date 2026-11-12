@@ -24,7 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c(
             "bone.add",
             "Add Bone",
-            "{from (instance id: the bone starts on it), to (instance id: the bone moves it), head?: [x, y] (the joint, stage px; default the end of the bone into `from`, else its registration point), tail?: [x, y] (default `to`'s registration point), name?} → {bone, layer}. Both instances go to an armature layer (made for the first bone)",
+            "{from (instance id: the bone starts on it), to (instance id: the bone moves it), head?: [x, y] (the joint on a root instance, stage px, default its registration point; from an instance that hangs from a bone the joint is always that bone's end, so chains stay joined), tail?: [x, y] (default `to`'s registration point), name?} → {bone, layer}. Both instances go to an armature layer (made for the first bone)",
             true,
             add as crate::RunFn,
         ),
@@ -193,10 +193,12 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let (wf, wt) = (f.el.transform, t.el.transform);
     let singular = || EngineError::State("an instance scaled to nothing can't hold a bone".into());
     let (inv_f, inv_t) = (wf.inverse().ok_or_else(singular)?, wt.inverse().ok_or_else(singular)?);
-    // The joint: given, else the end of the bone into `from` (a chain joins end to start), else
-    // its registration point.
+    // The joint. An instance that already hangs from a bone has one joint, that bone's end: every
+    // bone from it starts there, wherever on the instance the drag began, so the chain stays
+    // joined end to start and turns about the joints it shows, as in Animate (#239). A root's
+    // bones start where given (a torso's shoulders and hips), else at its registration point.
     let into_from = fa.as_ref().and_then(|a| a.bone_into(from)).map(|b| wf.apply(b.tail));
-    let head = head.or(into_from).unwrap_or(wf.translation());
+    let head = into_from.or(head).unwrap_or(wf.translation());
     let tail = tail.unwrap_or(wt.translation());
     let rest = inv_f.mul(&wt);
     if !rest.is_finite() || rest.inverse().is_none() {
