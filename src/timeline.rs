@@ -429,6 +429,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let rows_bottom = body.bottom() - FOOTER_H;
     let tl_now = app.s.timeline().clone();
     let mut next_y = rows_top;
+    // Where each row is, for files dropped on a layer's frame (ADR 0065).
+    let mut drop_rows = Vec::new();
     for (r, &i) in rows.iter().enumerate().skip(first_row) {
         let Some(layer) = layers.get(i) else { continue };
         let y = next_y;
@@ -440,6 +442,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         next_y += rh;
         let row = Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), rh));
+        drop_rows.push((row, layer.id));
         let left = Rect::from_min_max(row.left_top(), pos2(grid.left(), row.bottom()));
         let is_active = layer.id == active;
         painter.rect_filled(left, 0.0, if is_active { T.accent_dim } else if r % 2 == 0 { T.panel } else { T.panel_alt });
@@ -1075,6 +1078,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         painter.with_clip_rect(grid).text(head.center(), Align2::CENTER_CENTER, label, font(role), T.ink);
     }
 
+    app.drop.timeline = Some(crate::drop::TimelineGeo { rows: drop_rows, cells_left: grid.left(), x0: grid.left() + pad - scroll * cell_w, cell_w });
+
     // footer buttons for layers
     let footer = Rect::from_min_max(pos2(body.left(), body.bottom() - FOOTER_H), pos2(grid.left(), body.bottom()));
     if n_layers > rows_visible {
@@ -1085,18 +1090,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     {
         painter.rect_filled(footer, 0.0, T.panel_alt);
         painter.line_segment([footer.left_top(), footer.right_top()], Stroke::new(1.0, T.border));
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(footer.shrink2(vec2(8.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        if child.button(tr!("+ Layer")).on_hover_text(tr!("New layer")).clicked() {
-            app.run("layer.new", json!({}));
-        }
-        if child.add_enabled(layers.len() > 1, egui::Button::new(tr!("Delete"))).named(tr!("Delete layer")).on_hover_text(tr!("Delete the active layer")).clicked() {
-            app.request("layer.delete", json!({}));
-        }
-        // New folder, Up and Down as icon buttons, so the row fits the layer column.
+        // New folder, Up and Down as icon buttons, laid out first from the right edge so they
+        // always show; the text buttons share what is left, shortened if a language makes them
+        // long (pseudo-locale screenshots lost the Down chevron off the column's edge).
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(footer.shrink2(vec2(8.0, 4.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
         for (icon, id, tip) in [
-            (Icon::FolderPlus, "layer.new_folder", tr!("New folder above the active layer (move layers in under it with Up and Down)")),
-            (Icon::ChevronUp, "layer.move_up", tr!("Move layer up")),
             (Icon::ChevronDown, "layer.move_down", tr!("Move layer down")),
+            (Icon::ChevronUp, "layer.move_up", tr!("Move layer up")),
+            (Icon::FolderPlus, "layer.new_folder", tr!("New folder above the active layer (move layers in under it with Up and Down)")),
         ] {
             let (r, resp) = child.allocate_exact_size(vec2(TARGET, TARGET), Sense::click());
             if resp.hovered() {
@@ -1108,6 +1109,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.run(id, json!({}));
             }
         }
+        child.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            if ui.add(egui::Button::new(tr!("+ Layer")).truncate()).named(tr!("New layer")).on_hover_text(tr!("New layer")).clicked() {
+                app.run("layer.new", json!({}));
+            }
+            if ui.add_enabled(layers.len() > 1, egui::Button::new(tr!("Delete")).truncate()).named(tr!("Delete layer")).on_hover_text(tr!("Delete the active layer")).clicked() {
+                app.request("layer.delete", json!({}));
+            }
+        });
     }
 
     // Horizontal scrollbar under the frames: the thumb is the visible part of the timeline.

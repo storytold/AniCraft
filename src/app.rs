@@ -463,6 +463,8 @@ pub struct App {
     pub drop: crate::drop::DropState,
     /// Recent files' pictures for the start screen.
     pub thumbs: crate::recent::Thumbs,
+    /// Templates: their pictures, the user's list and the Save as Template dialog (ADR 0065).
+    pub templates: crate::templates::Templates,
 }
 
 /// How often (seconds) the system's contrast setting is asked again (ADR 0064).
@@ -644,6 +646,7 @@ impl App {
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
+            templates: Default::default(),
         };
         app.apply_prefs(ctx);
         app.decode_sounds();
@@ -955,6 +958,14 @@ impl App {
                     crate::recent::sample_entries(self);
                 }
             }
+            Some("templates") => {
+                // File › New from Template: the start screen on its templates, with two sample
+                // templates of the user's own.
+                self.invoke("file.new_from_template");
+                crate::templates::sample_user(self);
+            }
+            Some("savetemplate") => crate::templates::open_save(self),
+            Some("droptimeline") => self.drop.preview = Some((vec![PathBuf::from("whoosh.wav")], crate::drop::PreviewAt::Timeline)), // i18n-exempt: a sample file name
             Some("drop") => self.drop.preview = Some((vec![PathBuf::from("sunset.png")], crate::drop::PreviewAt::Stage)), // i18n-exempt: a sample file name
             Some("droplibrary") => {
                 self.run("library.new_folder", json!({"name": "Backgrounds"})); // i18n-exempt: a sample folder name
@@ -1729,7 +1740,7 @@ impl App {
 
     /// Any modal (prompt, confirmation, close guard) is open: global shortcuts pause.
     pub fn modal_open(&self) -> bool {
-        self.prompt.is_some() || self.convert.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some()
+        self.prompt.is_some() || self.convert.is_some() || self.confirm.is_some() || self.close_dialog || self.plugin_dialog.is_some() || self.templates.save.is_some()
     }
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
@@ -1774,11 +1785,10 @@ impl App {
     /// new document resets. `selected` is how many elements were selected before it ran.
     pub(crate) fn announce(&mut self, id: &str, v: &Value, selected: usize) {
         match id {
-            "file.new" | "file.new_sample" | "file.open" | "file.open_recent" => {
+            "file.new" | "file.new_sample" | "file.new_from_template" | "file.open" | "file.open_recent" => {
                 // The document is here: the start screen has done its job (ADR 0059).
                 self.start = None;
-                if id != "file.new"
-                    && id != "file.new_sample"
+                if !id.starts_with("file.new")
                     && let Some(path) = self.s.path.clone().or_else(|| v["imported"].as_str().map(PathBuf::from))
                 {
                     crate::recent::captured_on_open(self, &path);
@@ -1790,7 +1800,10 @@ impl App {
                     // An imported file: say what came across and what didn't, and that saving
                     // makes a new .anicraft document.
                     Some(r) => self.status_ok(tr!("{report} Save to keep it as an AniCraft document.", report = r)),
-                    None => self.status_ok(if id == "file.open" || id == "file.open_recent" { tr!("Opened") } else { tr!("New document") }),
+                    None => match v["template"].as_str() {
+                        Some(t) => self.status_ok(tr!("New document from the template “{name}”", name = crate::i18n::t_dyn(t))),
+                        None => self.status_ok(if id == "file.open" || id == "file.open_recent" { tr!("Opened") } else { tr!("New document") }),
+                    },
                 }
             }
             "file.recover" => {
@@ -1832,7 +1845,13 @@ impl App {
                     tr!("{name} ({secs} s) is in the Library. Select a keyframe and pick it under Sound in Properties.", name = name, secs = secs)
                 });
             }
+            "file.import_to_library" if v.get("symbol").is_some() => {
+                // A drawing: a graphic symbol (ADR 0065), the Library's current item.
+                self.library_sel = v["symbol"].as_u64().map(|id| LibraryItem::Symbol(anicraft_engine::doc::SymbolId(id)));
+                self.status_ok(tr!("Added the graphic symbol “{name}” to the Library. Drag it to the stage to place it.", name = v["name"].as_str().unwrap_or("")));
+            }
             "file.import_to_library" => self.status_ok(tr!("Image added to the Library")),
+            "file.save_as_template" | "file.delete_template" => crate::templates::announce(self, id, v),
             "file.export_audio" => {
                 let n = v["sounds"].as_u64().unwrap_or(0);
                 let (path, secs) = (v["written"].as_str().unwrap_or(""), format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0)));
@@ -1978,6 +1997,19 @@ impl App {
         if matches!(id, "file.open_recent" | "file.recent_list") {
             // The recent files with their pictures (the File menu lists them too).
             crate::start::open(self);
+            return;
+        }
+        if id == "file.new_from_template" {
+            // The start screen, on its templates (ADR 0065).
+            crate::start::open(self);
+            if let Some(st) = self.start.as_mut() {
+                st.show_templates = true;
+            }
+            self.status_ok(tr!("Pick a template to start a new document from. Esc goes back to the document."));
+            return;
+        }
+        if id == "file.save_as_template" {
+            crate::templates::open_save(self);
             return;
         }
         if id == "tween.add_hint" {
@@ -2683,6 +2715,7 @@ impl App {
         crate::drop::frame(self, &ctx);
         self.prompt_window(&ctx);
         crate::convert_symbol::window(self, &ctx);
+        crate::templates::save_window(self, &ctx);
         crate::layer_props::window(self, &ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);

@@ -61,11 +61,13 @@ fn drops_route_by_file_type_and_target() {
     }
     for kind in [DropKind::Drawing, DropKind::Image, DropKind::Sound] {
         assert_eq!(route(kind, Stage), ImportToStage);
-        assert!(matches!(route(kind, Window), Refuse(_)), "only the stage and the Library take media");
+        assert!(matches!(route(kind, Window), Refuse(_)), "only the stage, the timeline and the Library take media");
+        // The Library takes drawings too, as graphic symbols (ADR 0065); a layer's frame takes all.
+        assert_eq!(route(kind, Library), ImportToLibrary);
+        assert_eq!(route(kind, Timeline), ImportToTimeline);
     }
-    assert_eq!(route(DropKind::Image, Library), ImportToLibrary);
-    assert_eq!(route(DropKind::Sound, Library), ImportToLibrary);
-    assert!(matches!(route(DropKind::Drawing, Library), Refuse(m) if m.contains("stage")));
+    assert!(matches!(route(DropKind::Unsupported, Timeline), Refuse(_)));
+    assert_eq!(route(DropKind::Document, Timeline), Open);
 }
 
 #[test]
@@ -116,9 +118,16 @@ fn media_dropped_on_the_library_go_into_the_folder_under_the_pointer() {
     // At the top level without a folder.
     run(&mut s, "file.drop", json!({"path": png, "to": "library"}));
     assert_eq!(s.doc.bitmaps.len(), 3);
-    // A drawing can't go into the Library; nothing is imported when one file is refused.
+    // A drawing goes in as one graphic symbol named after the file (ADR 0065), into the folder.
+    let symbols = s.doc.library.len();
+    let v = run(&mut s, "file.drop", json!({"paths": [svg], "to": "library", "folder": folder}));
+    assert_eq!(s.doc.library.len(), symbols + 1, "{v}");
+    let sym = s.doc.library.last().unwrap();
+    assert_eq!((sym.name.as_str(), sym.kind), ("badge", anicraft_doc::SymbolKind::Graphic));
+    assert!(s.doc.folder_contents(anicraft_doc::FolderId(folder)).contains(&anicraft_doc::LibraryEntry::Item(anicraft_doc::LibraryItem::Symbol(sym.id))));
+    // Nothing is imported when one file is refused.
     let before = s.doc.clone();
-    assert!(s.execute("file.drop", &json!({"paths": [svg], "to": "library"})).is_err());
+    assert!(s.execute("file.drop", &json!({"paths": [png.clone(), dir.join("notes.txt").display().to_string()], "to": "library"})).is_err());
     assert!(s.doc == before);
 }
 

@@ -60,6 +60,7 @@ mod shape_hints;
 mod stage;
 mod stage_a11y;
 mod start;
+mod templates;
 mod test_movie;
 mod theme;
 mod timeline;

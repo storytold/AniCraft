@@ -1,21 +1,23 @@
 //! Files dropped onto the window from the desktop or a browser (ADR 0059). Documents open (the
 //! unsaved-changes guard as with File › Open); drawings, images and sounds dropped on the stage
-//! go onto the active layer at the playhead where they were dropped, and dropped on the Library
-//! go into it, into the folder under the pointer. While files are dragged over the window a
-//! highlight shows where they will land. The routing is `anicraft_engine::cmds_drop::route`;
+//! go onto the active layer at the playhead where they were dropped, dropped on the Library
+//! go into it, into the folder under the pointer (an SVG as a graphic symbol), and dropped on a
+//! layer's frame in the timeline go onto that layer at that frame (ADR 0065). While files are
+//! dragged over the window a highlight shows where they will land. The routing is `anicraft_engine::cmds_drop::route`;
 //! the import is the `file.drop` command, one undo step.
 //!
 //! Where a drop lands needs the pointer. Browsers report it while dragging (our own `dragover`
 //! listener, `web::drag_pos`), but winit 0.30 gives no position with dragged files, and Windows
 //! and macOS send no pointer moves during a drag. So a drop waits a moment for the pointer's
 //! first move after it (the system sends one as the drag ends); without one it lands at the
-//! centre of the view, and says so.
+//! centre of the view, and says so. (winit 0.30.13, which eframe 0.36 and 0.37 both use, still
+//! has no drag position; ADR 0065.)
 
 use crate::app::App;
 use crate::theme::{T, Type, color, font};
 use anicraft_engine::cmds_drop::{DropAction, DropKind, DropTarget, kind_of, route};
-use anicraft_engine::doc::FolderId;
-use egui::{Pos2, Rect, Stroke, StrokeKind, vec2};
+use anicraft_engine::doc::{FolderId, LayerId, LayerKind};
+use egui::{Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -39,6 +41,30 @@ impl StageGeo {
     }
 }
 
+/// Where the timeline's rows and frames were drawn this frame (set by `timeline::show`).
+#[derive(Clone, Debug, Default)]
+pub struct TimelineGeo {
+    /// Each visible row (the layer column and its frames), and its layer.
+    pub rows: Vec<(Rect, LayerId)>,
+    /// Where the frame cells start (left of it is the layer column).
+    pub cells_left: f32,
+    /// The screen x of frame 0's left edge, and a frame's width.
+    pub x0: f32,
+    pub cell_w: f32,
+}
+
+impl TimelineGeo {
+    /// The layer and frame under `p` (over the layer column: the playhead's frame), and the
+    /// frame's cell.
+    pub fn at(&self, p: Pos2, playhead: u32) -> Option<(LayerId, u32, Rect)> {
+        let (row, layer) = *self.rows.iter().find(|(r, _)| r.contains(p))?;
+        let cw = self.cell_w.max(1.0);
+        let frame = if p.x >= self.cells_left { ((p.x - self.x0) / cw).floor().clamp(0.0, anicraft_engine::MAX_FRAME as f32) as u32 } else { playhead };
+        let left = self.x0 + frame as f32 * cw;
+        Some((layer, frame, Rect::from_min_max(pos2(left.max(self.cells_left), row.top()), pos2((left + cw).max(self.cells_left), row.bottom()))))
+    }
+}
+
 /// Where a drop at a point lands.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Spot {
@@ -46,6 +72,8 @@ pub enum Spot {
     Stage(f32, f32),
     /// On the Library, into this folder (`None`: the top level).
     Library(Option<FolderId>),
+    /// On a layer's frame in the timeline.
+    Timeline(LayerId, u32),
     /// Somewhere else on the window.
     Window,
     /// The start screen is up: documents open, nothing imports.
@@ -67,12 +95,11 @@ pub struct Plan {
 }
 
 /// Why a file can't go there, in the interface language.
-fn refusal(kind: DropKind, to: DropTarget, start: bool) -> String {
+fn refusal(kind: DropKind, start: bool) -> String {
     match kind {
         DropKind::Unsupported => tr!("AniCraft opens .anicraft, .fla and .xfl documents, and imports SVG drawings, PNG and JPEG images, and WAV, Ogg and MP3 sounds").into(),
         _ if start => tr!("Open or create a document first, then drop drawings, images and sounds on its stage").into(),
-        DropKind::Drawing if to == DropTarget::Library => tr!("SVG drawings import to the stage: drop it there").into(),
-        _ => tr!("Drop drawings, images and sounds on the stage to place them, or on the Library to add them").into(),
+        _ => tr!("Drop drawings, images and sounds on the stage or a layer's frame to place them, or on the Library to add them").into(),
     }
 }
 
@@ -89,6 +116,7 @@ pub fn plan(files: &[PathBuf], spot: Spot) -> Plan {
     }
     let to = match spot {
         Spot::Library(_) => DropTarget::Library,
+        Spot::Timeline(..) => DropTarget::Timeline,
         // Without a position, the stage (at the centre of the view).
         Spot::Stage(..) | Spot::Unknown => DropTarget::Stage,
         Spot::Window | Spot::Start => DropTarget::Window,
@@ -96,9 +124,9 @@ pub fn plan(files: &[PathBuf], spot: Spot) -> Plan {
     for f in files {
         let kind = kind_of(f);
         match route(kind, to) {
-            DropAction::ImportToStage | DropAction::ImportToLibrary => out.import.push(f.clone()),
+            DropAction::ImportToStage | DropAction::ImportToLibrary | DropAction::ImportToTimeline => out.import.push(f.clone()),
             DropAction::Open => {}
-            DropAction::Refuse(_) => out.left_out.push((f.clone(), refusal(kind, to, spot == Spot::Start))),
+            DropAction::Refuse(_) => out.left_out.push((f.clone(), refusal(kind, spot == Spot::Start))),
         }
     }
     if !out.import.is_empty() {
@@ -121,6 +149,8 @@ struct Waiting {
 pub struct DropState {
     /// Where the stage was drawn this frame (set by `stage::show`).
     pub stage: Option<StageGeo>,
+    /// Where the timeline's rows were drawn this frame (set by `timeline::show`).
+    pub timeline: Option<TimelineGeo>,
     waiting: Option<Waiting>,
     /// The pointer moved while files were dragged over the window: its position is current.
     tracked: bool,
@@ -135,6 +165,7 @@ pub struct DropState {
 pub enum PreviewAt {
     Stage,
     Library,
+    Timeline,
 }
 
 /// Where a drop at `p` lands, from this frame's layout.
@@ -145,6 +176,9 @@ pub fn spot_at(app: &App, p: Option<Pos2>) -> Spot {
     let Some(p) = p else { return Spot::Unknown };
     if let Some(folder) = app.library.drop_zone.folder_at(p) {
         return Spot::Library(folder);
+    }
+    if let Some((layer, frame, _)) = app.drop.timeline.as_ref().and_then(|t| t.at(p, app.s.frame)) {
+        return Spot::Timeline(layer, frame);
     }
     match app.drop.stage {
         Some(g) if g.canvas.contains(p) => {
@@ -158,6 +192,7 @@ pub fn spot_at(app: &App, p: Option<Pos2>) -> Spot {
 /// Before the panels draw: forget last frame's targets (a hidden panel takes nothing).
 pub fn begin_frame(app: &mut App) {
     app.drop.stage = None;
+    app.drop.timeline = None;
     app.library.drop_zone = Default::default();
 }
 
@@ -305,6 +340,20 @@ pub fn run(app: &mut App, files: &[PathBuf], spot: Spot) {
                 }
             })
         }
+        (DropTarget::Timeline, Spot::Timeline(layer, frame)) => {
+            // Centred in the view, in the edited space, as Paste puts things.
+            let c = view_centre(app);
+            let v = app.run("file.drop", json!({"paths": paths, "to": "timeline", "layer": layer.0, "frame": frame, "x": c.0, "y": c.1}));
+            v.map(|v| {
+                let name = app.s.timeline().layer(layer).map(|l| l.name.clone()).unwrap_or_default();
+                let (frame, undo) = (frame + 1, app.undo_key());
+                if v["keyframe_made"].as_bool() == Some(true) {
+                    trn!("Placed {n} file on {layer} at frame {frame}, in a new keyframe — {undo} to undo", "Placed {n} files on {layer} at frame {frame}, in a new keyframe — {undo} to undo", n, layer = name, frame = frame, undo = undo)
+                } else {
+                    trn!("Placed {n} file on {layer} at frame {frame} — {undo} to undo", "Placed {n} files on {layer} at frame {frame} — {undo} to undo", n, layer = name, frame = frame, undo = undo)
+                }
+            })
+        }
         _ => {
             let geo = app.drop.stage;
             if geo.is_some_and(|g| g.paused) {
@@ -313,14 +362,7 @@ pub fn run(app: &mut App, files: &[PathBuf], spot: Spot) {
             }
             let (centred, (x, y)) = match spot {
                 Spot::Stage(x, y) => (false, (x, y)),
-                _ => {
-                    let c = app.view_center_stage();
-                    let c = match app.s.edit_view() {
-                        Some(v) if v.scale.abs() > 1e-6 => ((c.x - v.origin.x) / v.scale, (c.y - v.origin.y) / v.scale),
-                        _ => (c.x, c.y),
-                    };
-                    (true, c)
-                }
+                _ => (true, view_centre(app)),
             };
             let v = app.run("file.drop", json!({"paths": paths, "to": "stage", "x": x, "y": y}));
             v.map(|_| {
@@ -352,7 +394,29 @@ pub fn open_from_system(app: &mut App, files: &[PathBuf]) {
         app.playing = false;
         run(app, &files, Spot::Window);
     } else if let Some(f) = files.first() {
-        app.status_err(tr!("Can't open {file}: {why}", file = crate::recent::display_name(f), why = refusal(DropKind::Unsupported, DropTarget::Window, false)));
+        app.status_err(tr!("Can't open {file}: {why}", file = crate::recent::display_name(f), why = refusal(DropKind::Unsupported, false)));
+    }
+}
+
+/// The middle of what the stage shows, in the edited space.
+fn view_centre(app: &App) -> (f32, f32) {
+    let c = app.view_center_stage();
+    match app.s.edit_view() {
+        Some(v) if v.scale.abs() > 1e-6 => ((c.x - v.origin.x) / v.scale, (c.y - v.origin.y) / v.scale),
+        _ => (c.x, c.y),
+    }
+}
+
+/// Why a layer can't take a drop (the engine refuses the same), in the interface language.
+fn layer_refusal(app: &App, layer: LayerId) -> Option<String> {
+    let tl = app.s.timeline();
+    let l = tl.layer(layer)?;
+    match l.kind {
+        LayerKind::Folder => Some(tr!("{layer} is a folder: drop on one of its layers", layer = l.name)),
+        LayerKind::Camera => Some(tr!("{layer} is the camera layer: drop on a layer below it", layer = l.name)),
+        LayerKind::Armature => Some(tr!("{layer} holds an armature: drop on another layer", layer = l.name)),
+        _ if l.locked || tl.locked_by_folder(layer) => Some(tr!("{layer} is locked: unlock it to drop onto it", layer = l.name)),
+        _ => None,
     }
 }
 
@@ -374,6 +438,11 @@ fn preview_point(app: &App, at: PreviewAt) -> Option<Pos2> {
     match at {
         PreviewAt::Stage => app.drop.stage.map(|g| g.canvas.center() + vec2(-g.canvas.width() * 0.12, -g.canvas.height() * 0.08)),
         PreviewAt::Library => app.library.drop_zone.rows.iter().find(|(_, f)| f.is_some()).map(|(r, _)| r.center()),
+        // A few frames past the playhead on the second row (the first when there is one).
+        PreviewAt::Timeline => app.drop.timeline.as_ref().and_then(|t| {
+            let (row, _) = t.rows.get(1).or_else(|| t.rows.first())?;
+            Some(pos2(t.x0 + (app.s.frame as f32 + 8.5) * t.cell_w, row.center().y))
+        }),
     }
 }
 
@@ -407,7 +476,7 @@ fn highlight(app: &App, ctx: &egui::Context, files: &[PathBuf], p: Option<Pos2>)
         1 => crate::recent::display_name(known[0]),
         n => trn!("{n} file", "{n} files", n),
     };
-    let fits = |to: DropTarget| known.iter().all(|f| matches!(route(kind_of(f), to), DropAction::ImportToStage | DropAction::ImportToLibrary));
+    let fits = |to: DropTarget| known.iter().all(|f| fits_one(f, to));
     match (spot, p) {
         (Spot::Stage(..), Some(p)) => {
             if let Some(g) = app.drop.stage {
@@ -418,7 +487,24 @@ fn highlight(app: &App, ctx: &egui::Context, files: &[PathBuf], p: Option<Pos2>)
             painter.line_segment([p - vec2(0.0, r), p + vec2(0.0, r)], Stroke::new(1.5, T.accent));
             let ok = fits(DropTarget::Stage);
             let layer = app.s.active_layer().map(|l| l.name.clone()).unwrap_or_default();
-            let text = if ok { tr!("Place {what} on {layer} at frame {frame}", what = what, layer = layer, frame = app.s.frame + 1) } else { refusal(DropKind::Unsupported, DropTarget::Stage, false) };
+            let text = if ok { tr!("Place {what} on {layer} at frame {frame}", what = what, layer = layer, frame = app.s.frame + 1) } else { refusal(DropKind::Unsupported, false) };
+            label(p + vec2(14.0, 12.0), text, ok);
+        }
+        (Spot::Timeline(layer, frame), Some(p)) => {
+            // The row outlined and the frame's cell filled: where it lands.
+            if let Some((row, cell)) = app.drop.timeline.as_ref().and_then(|t| Some((t.rows.iter().find(|(_, l)| *l == layer)?.0, t.at(p, app.s.frame)?.2))) {
+                painter.rect_stroke(row, crate::theme::SQUARE, Stroke::new(1.5, T.accent), StrokeKind::Inside);
+                painter.rect_filled(cell, crate::theme::SQUARE, T.accent.gamma_multiply(0.45));
+                painter.rect_stroke(cell, crate::theme::SQUARE, stroke, StrokeKind::Inside);
+            }
+            let name = app.s.timeline().layer(layer).map(|l| l.name.clone()).unwrap_or_default();
+            let sounds_only = !known.is_empty() && known.iter().all(|f| kind_of(f) == DropKind::Sound);
+            let (ok, text) = match layer_refusal(app, layer) {
+                Some(why) => (false, why),
+                None if !fits(DropTarget::Timeline) => (false, refusal(DropKind::Unsupported, false)),
+                None if sounds_only => (true, tr!("Put {what} on {layer}'s keyframe at frame {frame}", what = what, layer = name, frame = frame + 1)),
+                None => (true, tr!("Place {what} on {layer} at frame {frame}", what = what, layer = name, frame = frame + 1)),
+            };
             label(p + vec2(14.0, 12.0), text, ok);
         }
         (Spot::Library(folder), Some(p)) => {
@@ -438,8 +524,8 @@ fn highlight(app: &App, ctx: &egui::Context, files: &[PathBuf], p: Option<Pos2>)
                 (true, Some(f)) => tr!("Add {what} to “{folder}”", what = what, folder = f.name),
                 (true, None) => tr!("Add {what} to the Library", what = what),
                 (false, _) => match known.iter().find(|f| !fits_one(f, DropTarget::Library)) {
-                    Some(f) => refusal(kind_of(f), DropTarget::Library, false),
-                    None => refusal(DropKind::Unsupported, DropTarget::Library, false),
+                    Some(f) => refusal(kind_of(f), false),
+                    None => refusal(DropKind::Unsupported, false),
                 },
             };
             label(p + vec2(14.0, 12.0), text, ok);
@@ -447,17 +533,17 @@ fn highlight(app: &App, ctx: &egui::Context, files: &[PathBuf], p: Option<Pos2>)
         (Spot::Unknown, _) => {
             // The desktop doesn't say where the pointer is during a drag: say what each place does.
             painter.rect_stroke(screen, T.rc(), Stroke::new(1.5, T.accent), StrokeKind::Inside);
-            label(screen.center_top() + vec2(-180.0, 12.0), tr!("Drop {what} on the stage to place it, or on the Library to add it", what = what), true);
+            label(screen.center_top() + vec2(-180.0, 12.0), tr!("Drop {what} on the stage or a layer's frame to place it, or on the Library to add it", what = what), true);
         }
         (spot, p) => {
             let at = p.unwrap_or(screen.center_top()) + vec2(14.0, 12.0);
-            label(at, refusal(known.first().map_or(DropKind::Image, |f| kind_of(f)), DropTarget::Window, spot == Spot::Start), false);
+            label(at, refusal(known.first().map_or(DropKind::Image, |f| kind_of(f)), spot == Spot::Start), false);
         }
     }
 }
 
 fn fits_one(f: &Path, to: DropTarget) -> bool {
-    matches!(route(kind_of(f), to), DropAction::ImportToStage | DropAction::ImportToLibrary)
+    matches!(route(kind_of(f), to), DropAction::ImportToStage | DropAction::ImportToLibrary | DropAction::ImportToTimeline)
 }
 
 #[cfg(test)]
@@ -471,7 +557,7 @@ mod tests {
     #[test]
     fn drops_are_routed_by_type_and_target() {
         // A document opens wherever it lands, and only one at a time.
-        for spot in [Spot::Stage(1.0, 2.0), Spot::Library(None), Spot::Window, Spot::Start, Spot::Unknown] {
+        for spot in [Spot::Stage(1.0, 2.0), Spot::Library(None), Spot::Timeline(LayerId(1), 0), Spot::Window, Spot::Start, Spot::Unknown] {
             let plan = plan(&[p("walk.anicraft"), p("photo.png"), p("old.fla")], spot);
             assert_eq!(plan.open, Some(p("walk.anicraft")), "{spot:?}");
             assert!(plan.import.is_empty());
@@ -482,10 +568,12 @@ mod tests {
         let on_stage = plan_at(Spot::Stage(10.0, 20.0));
         assert_eq!((on_stage.to, on_stage.import.len(), on_stage.left_out.len()), (Some(DropTarget::Stage), 3, 1));
         assert!(on_stage.left_out[0].1.contains("SVG"), "says what AniCraft reads");
-        // On the Library: images and sounds; a drawing is pointed to the stage.
+        // On the Library: drawings (as graphic symbols), images and sounds.
         let in_library = plan_at(Spot::Library(Some(FolderId(7))));
-        assert_eq!((in_library.to, in_library.import.len(), in_library.left_out.len()), (Some(DropTarget::Library), 2, 2));
-        assert!(in_library.left_out.iter().any(|(f, why)| f == &p("a.svg") && why.contains("stage")));
+        assert_eq!((in_library.to, in_library.import.len(), in_library.left_out.len()), (Some(DropTarget::Library), 3, 1));
+        // On a layer's frame: the same three.
+        let on_frame = plan_at(Spot::Timeline(LayerId(3), 9));
+        assert_eq!((on_frame.to, on_frame.import.len(), on_frame.left_out.len()), (Some(DropTarget::Timeline), 3, 1));
         // Elsewhere on the window, or over the start screen: nothing imports.
         for spot in [Spot::Window, Spot::Start] {
             let plan = plan_at(spot);
@@ -517,6 +605,13 @@ mod tests {
         let (row, folder) = *app.library.drop_zone.rows.iter().find(|(_, f)| f.is_some()).expect("the folder row drew");
         assert_eq!(spot_at(&app, Some(row.center())), Spot::Library(folder));
         assert_eq!(spot_at(&app, Some(egui::pos2(1.0, 1.0))), Spot::Window, "the menu bar takes nothing");
+        // A timeline row: its layer, and the frame under the pointer (the playhead's over the
+        // layer column).
+        let tl = app.drop.timeline.clone().expect("the timeline drew");
+        let (row, layer) = tl.rows[1];
+        let x = tl.x0 + 6.5 * tl.cell_w;
+        assert_eq!(spot_at(&app, Some(egui::pos2(x, row.center().y))), Spot::Timeline(layer, 6));
+        assert_eq!(spot_at(&app, Some(egui::pos2(row.left() + 30.0, row.center().y))), Spot::Timeline(layer, app.s.frame));
         assert_eq!(spot_at(&app, None), Spot::Unknown);
         crate::start::open(&mut app);
         assert_eq!(spot_at(&app, Some(geo.canvas.center())), Spot::Start);
@@ -539,6 +634,19 @@ mod tests {
         run(&mut app, std::slice::from_ref(&png), Spot::Library(Some(folder)));
         assert_eq!(app.s.doc.folder_contents(folder).len(), 1);
         assert!(app.library.expanded.contains(&folder), "the folder opens to show it");
+        // On a layer's frame: onto that layer, in a keyframe made there, one undo step.
+        let star = app.s.timeline().layers[1].id;
+        let undo = app.s.history_len();
+        run(&mut app, std::slice::from_ref(&png), Spot::Timeline(star, 9));
+        assert_eq!(app.s.history_len(), undo + 1);
+        assert!(app.s.timeline().layer(star).and_then(|l| l.keyframe_at(9)).is_some_and(|k| k.start == 9 && k.elements.iter().any(|e| app.s.selection.contains(star, e.id))));
+        assert!(app.status.as_ref().is_some_and(|s| !s.error && s.text.contains("new keyframe")), "{:?}", app.status.as_ref().map(|s| &s.text));
+        // A locked layer says why, and nothing changes.
+        app.s.layer = star;
+        app.run("layer.toggle_lock", json!({}));
+        let before = app.s.doc.clone();
+        run(&mut app, std::slice::from_ref(&png), Spot::Timeline(star, 12));
+        assert!(app.s.doc == before && app.status.as_ref().is_some_and(|s| s.error && s.text.contains("locked")));
         // An unsupported file: one clear message, nothing changes.
         let before = app.s.doc.clone();
         run(&mut app, &[dir.join("notes.txt")], Spot::Stage(0.0, 0.0));
