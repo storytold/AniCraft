@@ -71,11 +71,17 @@ pub enum Icon {
     Bind,
     EditMultiple,
     Layer,
+    InsertFrame,
+    InsertKeyframe,
+    InsertBlankKeyframe,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 57] = [
+    pub const ALL: [Icon; 60] = [
+        Icon::InsertFrame,
+        Icon::InsertKeyframe,
+        Icon::InsertBlankKeyframe,
         Icon::Bind,
         Icon::Layer,
         Icon::EditMultiple,
@@ -138,7 +144,7 @@ impl Icon {
     /// Drawn filled as well as outlined: the Selection arrow is solid, the Subselection arrow
     /// hollow, the way animators tell the two apart at a glance.
     fn solid(self) -> bool {
-        matches!(self, Icon::Select)
+        matches!(self, Icon::Select | Icon::InsertKeyframe)
     }
 
     /// Lucide icon file and whether it is drawn mirrored.
@@ -219,6 +225,12 @@ impl Icon {
             Icon::FolderOpen => ("folder-open", false),
             // A layer: a row with a keyframe and its span (AniCraft original, on Lucide's grid).
             Icon::Layer => ("anicraft-layer", false),
+            // Insert Frame / Keyframe / Blank Keyframe: the timeline's own marks (a frame cell, a
+            // filled keyframe dot, a hollow blank-keyframe dot), each with a plus (AniCraft
+            // originals, on Lucide's grid).
+            Icon::InsertFrame => ("anicraft-insert-frame", false),
+            Icon::InsertKeyframe => ("anicraft-insert-keyframe", false),
+            Icon::InsertBlankKeyframe => ("anicraft-insert-blank-keyframe", false),
         }
     }
 }
@@ -273,6 +285,9 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-eyedropper", include_str!("../assets/icons/anicraft-eyedropper.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
     ("anicraft-layer", include_str!("../assets/icons/anicraft-layer.svg")),
+    ("anicraft-insert-frame", include_str!("../assets/icons/anicraft-insert-frame.svg")),
+    ("anicraft-insert-keyframe", include_str!("../assets/icons/anicraft-insert-keyframe.svg")),
+    ("anicraft-insert-blank-keyframe", include_str!("../assets/icons/anicraft-insert-blank-keyframe.svg")),
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("anicraft-bone", include_str!("../assets/icons/anicraft-bone.svg")),
     ("anicraft-bind", include_str!("../assets/icons/anicraft-bind.svg")),

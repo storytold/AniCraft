@@ -1495,15 +1495,22 @@ fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
     ui.label(text(Type::Data, fps_label(fps)).color(T.text_dim)).on_hover_text(tr!("Frame rate"));
     ui.label(text(Type::Data, format!("{:>6.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text(tr!("Time at the playhead"));
     ui.separator();
-    // Through `invoke`, so the buttons act on the frame selection like the keys do.
-    let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
-        if ui.button(label).named(tip).on_hover_text(tip).clicked() {
+    // Through `invoke`, so the buttons act on the frame selection like the keys do. Icons (the
+    // timeline's own marks, each with a plus) keep the header narrow; the name and the key
+    // stay in the tooltip and the accessible name (#240).
+    for (id, name, icon) in [
+        ("timeline.insert_frame", tr!("Insert frame"), Icon::InsertFrame),
+        ("timeline.insert_keyframe", tr!("Insert keyframe"), Icon::InsertKeyframe),
+        ("timeline.insert_blank_keyframe", tr!("Insert blank keyframe"), Icon::InsertBlankKeyframe),
+    ] {
+        let tip = match app.keymap.primary(id).map(crate::platform::shortcut_label) {
+            Some(k) => format!("{name} ({k})"),
+            None => name.to_string(),
+        };
+        if icon_button(ui, &tip, None, icon).clicked() {
             app.invoke(id);
         }
-    };
-    cmd(app, ui, tr!("Frame"), tr!("Insert frame (F5)"), "timeline.insert_frame");
-    cmd(app, ui, tr!("Keyframe"), tr!("Insert keyframe (F6)"), "timeline.insert_keyframe");
-    cmd(app, ui, tr!("Blank"), tr!("Insert blank keyframe (F7)"), "timeline.insert_blank_keyframe");
+    }
     let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
     let in_tween = here.and_then(|k| k.tween);
     let in_motion = here.is_some_and(|k| k.motion.is_some());
