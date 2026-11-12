@@ -552,6 +552,12 @@ fn panic_hunt_every_command() {
         json!({"id": 3, "profile": [[0, 1e30, -5], ["x"], [0.5, 16, 16]], "index": u64::MAX, "t": -0.5, "left": 1e9, "width": f64::MAX}),
         json!({"id": 3, "profile": "taper_both", "index": 0, "t": 1, "x": 1e30, "y": -1e30, "left": 0, "right": 16}),
         json!({"profile": (0..500).map(|i| json!([f64::from(i) / 500.0, 2, 2])).collect::<Vec<_>>()}),
+        // Brush presets, curves and the Paint Brush (ADR 0068): junk, extremes, both modes.
+        json!({"points": [[0, 0, 0.5], [300, 40, 1], [600, 0, 0]], "preset": "chalk", "as_stroke": true, "curve": [[0, 1], [0.5, 0], [1, 1]], "taper_start": 50, "taper_end": 50}),
+        json!({"points": [[0, 0], [1e5, 1e5]], "preset": "dotted", "spacing": 5, "jitter": 50, "size": 2000, "name": "x", "to": "y"}),
+        json!({"points": [[0, 0], [10, 0]], "preset": "nope", "curve": "wobbly", "spacing": 1, "jitter": -1, "name": "", "from": "missing", "names": [1, 2]}),
+        json!({"points": [[f64::MAX, 0]], "curve": [[f64::NAN, 2]], "pressure_size": "yes", "pressure_opacity": 1, "as_stroke": "no", "name": "Chalk", "to": "Pencil"}),
+        json!({"points": (0..2000).map(|i| json!([f64::from(i), f64::from(i % 7) * 3.0, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "preset": "ink_pen", "as_stroke": true, "name": "a".repeat(5000)}),
         // Stroke styles (ADR 0046): junk, extremes and patterns that would be very fine.
         json!({"cap": "none", "join": "miter", "miter": 100, "dash": [0, 1e-30], "dash_offset": -1e4, "style": "dashed"}),
         json!({"cap": 7, "join": "mitre", "miter": f64::NAN, "dash": vec![1e4; 16], "dot_spacing": 0, "style": "dotted"}),

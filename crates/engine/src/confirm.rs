@@ -112,6 +112,22 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: true,
             })
         }
+        // Brushes of your own live in your preferences, outside undo (ADR 0068).
+        "brush.preset_delete" => {
+            let name = p.get("name").and_then(Value::as_str)?;
+            let i = s.brushes.position(name)?;
+            let name = s.brushes.user().get(i)?.name.clone();
+            Some(Confirmation {
+                title: "Delete brush?".into(),
+                message: format!("The brush “{name}” will be deleted from your brushes. This cannot be undone."),
+                action: "Delete Brush".into(),
+                irreversible: true,
+            })
+        }
+        "brush.preset_export" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            crate::vfs::exists(path).then(|| overwrite(path, "Exporting the brushes"))
+        }
         "file.new" | "file.new_sample" | "file.new_from_template" | "file.open" | "file.open_recent" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
