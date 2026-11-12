@@ -69,7 +69,11 @@ Properties. The setting applies to the Rectangle, Oval, PolyStar, Line, Pen, Pen
 tools.
 
 The Eraser only erases merged drawing. Drawing objects, symbols and text are left alone by
-it.
+it. To turn a drawing object back into merged drawing, select it and choose **Modify › Break
+Apart** (**Ctrl+B**): it merges with the merged shapes it touches.
+
+As in Animate, what you've just drawn isn't selected, so no box gets in the way of the next
+stroke. Switch to the Selection tool (**V**) to pick it up.
 
 ### Selecting merged drawing
 
@@ -84,6 +88,8 @@ With the **Selection** tool (**V**) on merged drawing:
   changing anything, the drawing is whole again.
 * **Drag an unselected line** or the edge of a fill to **bend** it into a curve through the
   pointer. Its ends stay put.
+* **Ctrl-drag** (**⌘-drag** on a Mac) a line or the edge of a fill to add a **corner point**
+  where you pressed and pull it into a peak: on a straight edge, both sides stay straight.
 * **Drag an unselected corner or end** to move it. Every shape that shares the point moves
   with it, so the drawing stays joined.
 * **Drag a fill** to move just that fill, without its outline. Drag anything already selected
@@ -149,18 +155,28 @@ A line's thickness can change along its length. To give a line a profile, select
 one under **Width** in Properties: Uniform, Taper both ends, Taper start, Taper end, Bulge or
 Pinch. Set a profile in a drawing tool's options to make new lines start that way.
 
-For finer control, use the **Width** tool (**U**). Hover over a line to see its width points.
-Drag a point's handle to make the line wider or narrower there (**Alt**: one side only), drag
-its dot to slide it along, or drag anywhere on the line to add a point. Click a point and
-press **Delete** to remove it.
+For finer control, use the **Width** tool (**U**); the pointer becomes a crosshair. Hover over a
+line: a white box on it shows where a drag adds a width point, and the line's points show
+their handles. Drag on the line to make it wider or narrower there, drag a point's handle to
+change it (**Alt**: one side only), or drag its dot to slide it along. Click a point and press
+**Delete** to remove it.
 
 ## Fills and strokes
 
 ### Choosing colours
 
-Set the colours for new artwork in the drawing tool's options in Properties: the **Fill**
-swatch and its on/off checkbox, and the **Stroke** swatch, its checkbox and its width. The
-two squares at the bottom of the Tools panel show the current fill and stroke.
+Set the colours for new artwork with the two squares at the bottom of the Tools panel (the
+stroke's frame and the fill behind it), or in the drawing tool's options in Properties: the
+**Fill** swatch and its on/off checkbox, and the **Stroke** swatch, its checkbox and its
+width. The Pencil and the Line tool only draw lines, so they show no fill.
+
+Click any colour swatch to open the colour picker. **Swatches**, the default, shows the 216
+web-safe colours with greys and primaries beside them; a shade or highlight of a colour is
+usually one cell away. The colours you mix or type are kept in the row below for this session.
+**Mixer** sets any colour by hue, saturation and brightness (and alpha where the colour has
+one). The hex field shows the colour as `#rrggbb` and takes one you type. In the Tools panel's
+picker, **No colour** draws without a fill or a stroke, and with shapes selected, the colour
+you pick goes onto them too.
 
 To recolour existing artwork, select it and change **Fill** and **Stroke** in Properties.
 For transparency, use the colour effect's **Alpha** (see
@@ -226,7 +242,8 @@ the proportions, **Alt** scales from the centre), just outside a corner to **rot
 | Remove Transform | **Modify › Transform** | **Ctrl+Shift+Z** |
 | Break Apart | **Modify** | **Ctrl+B** |
 
-**Break Apart** turns text into shapes, and a symbol instance into the artwork inside it.
+**Break Apart** turns text into shapes, a symbol instance into the artwork inside it, and a
+drawing object into merged drawing.
 
 ## Copying, arranging and aligning
 
@@ -293,7 +310,8 @@ on its symbol (see [Symbols and the Library](symbols-and-library.md#9-slice-scal
 
 ## Not there yet
 
-Not in AniCraft yet: rulers, a grid and guides; grouping (**Ctrl+G**); a gradient editor and
-a Colour panel with swatches; PolyStar's Polygon option; the Paint Selection and Paint Inside
+Not in AniCraft yet: rulers, a grid and guides; grouping (**Ctrl+G**); a gradient editor, the
+Gradient Transform tool and a Swatches panel (saved custom swatches); entering a drawing object
+with a double-click; PolyStar's Polygon option; the Paint Selection and Paint Inside
 brush modes, brush libraries and tilt; erasing inside symbols; and Animate's ragged, stipple
 and hatched line styles (drawn solid when you open an Animate file).
