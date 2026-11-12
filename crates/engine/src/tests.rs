@@ -1506,6 +1506,58 @@ fn masked_frames_round_trip_through_svg_onto_mask_layers() {
 }
 
 #[test]
+fn soft_masks_round_trip_through_svg_onto_soft_mask_layers() {
+    // A grey ellipse as a luminance mask (ADR 0070) over an orange rect, on a dark background.
+    let mut src = Session::default();
+    run(&mut src, "draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 360, "fill": "#20304a"}));
+    run(&mut src, "layer.new", json!({"name": "Art"}));
+    run(&mut src, "draw.rect", json!({"x": 100, "y": 60, "w": 400, "h": 240, "fill": "#ff6b4a"}));
+    run(&mut src, "layer.new", json!({"name": "Mask"}));
+    run(&mut src, "draw.ellipse", json!({"x": 180, "y": 80, "w": 260, "h": 200, "fill": "#808080", "stroke": null}));
+    run(&mut src, "layer.toggle_mask", json!({}));
+    run(&mut src, "layer.set_mask", json!({"mask": "luminance"}));
+    // The middle shows half the orange (grey #808080 is 0.502 bright) over the background.
+    let pm = anicraft_render::render_frame(&src.doc, 0, 1.0).unwrap();
+    let px = pm.pixel(310, 180).unwrap();
+    let k = 128.0 / 255.0;
+    let want = [k * 1.0 + (1.0 - k) * 0x20 as f32 / 255.0, k * 0x6b as f32 / 255.0 + (1.0 - k) * 0x30 as f32 / 255.0];
+    assert!((px[0] - want[0]).abs() < 2e-3 && (px[1] - want[1]).abs() < 2e-3, "{px:?} vs {want:?}");
+    let svg_text = crate::cmds_file::frame_svg(&src.doc, 0);
+    assert!(svg_text.contains("<mask id=\"c0\"") && !svg_text.contains("mask-type"), "{svg_text}");
+
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-soft-mask-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("soft.svg");
+    std::fs::write(&svg, &svg_text).unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    assert_eq!(v["masks"].as_u64(), Some(1), "{v}");
+    let tl = s.doc.timeline(s.scene);
+    let mask = tl.layers.iter().find(|l| l.kind == anicraft_doc::LayerKind::Mask).unwrap();
+    assert_eq!(mask.mask_mode, anicraft_doc::MaskMode::Luminance);
+    let mask_id = mask.id;
+    // The same picture comes back, and exports the same mask again.
+    let a = anicraft_render::render_frame(&src.doc, 0, 0.5).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&s.doc, 0, 0.5).unwrap().to_rgba8();
+    let worst = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs()).max().unwrap();
+    let mean = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs() as f64).sum::<f64>() / a.len() as f64;
+    assert!(mean < 0.01 && worst <= 2, "mean {mean:.3}, worst {worst} of 255");
+    assert_eq!(crate::cmds_file::frame_svg(&s.doc, 0).matches("<mask ").count(), 1);
+    // As an alpha mask the opaque grey ellipse reveals fully: it comes back as a plain mask.
+    run(&mut s, "layer.select", json!({"layer": mask_id.0}));
+    run(&mut s, "layer.set_mask", json!({"mask": "alpha"}));
+    std::fs::write(&svg, crate::cmds_file::frame_svg(&s.doc, 0)).unwrap();
+    let mut t = Session::default();
+    run(&mut t, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    let tl = t.doc.timeline(t.scene);
+    assert_eq!(tl.layers.iter().find(|l| l.kind == anicraft_doc::LayerKind::Mask).unwrap().mask_mode, anicraft_doc::MaskMode::Coverage);
+    let a = anicraft_render::render_frame(&s.doc, 0, 0.5).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&t.doc, 0, 0.5).unwrap().to_rgba8();
+    assert!(a.iter().zip(&b).all(|(x, y)| (i32::from(*x) - i32::from(*y)).abs() <= 2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn imported_svg_text_is_editable_text() {
     if anicraft_text::Fonts::get().families().is_empty() {
         return;

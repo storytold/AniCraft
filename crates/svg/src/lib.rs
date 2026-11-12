@@ -114,6 +114,9 @@ pub struct ImportedMask {
     /// The clip path's or mask's `id`, if it had one.
     pub name: String,
     pub elements: Vec<ImportedElement>,
+    /// How the mask layer reveals (ADR 0070): coverage for clip paths and opaque masks, else
+    /// the `mask`'s `mask-type` (luminance by default, or alpha), its artwork as drawn.
+    pub mode: anicraft_doc::MaskMode,
 }
 
 /// Artwork drawn together on one layer, bottom first; masked by `mask` when there is one.

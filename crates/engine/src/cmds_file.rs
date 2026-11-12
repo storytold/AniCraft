@@ -384,6 +384,7 @@ pub(crate) fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
                 let mut ml = new_layer(s, label, anicraft_doc::LayerKind::Mask, Some(fid));
                 // Mask layers are locked, as Animate keeps them: the mask shows, its edge hides.
                 ml.locked = true;
+                ml.mask_mode = mask.mode;
                 ml.keyframes = keys(elements(s, mask.elements));
                 inside = Some(ml.id);
                 stack.push(ml);
@@ -469,6 +470,7 @@ pub(crate) fn import_svg_symbol(s: &mut Session, path: &std::path::Path, name: O
             let mut ml = Layer::new(LayerId(s.doc.alloc_id()), if mask.name.is_empty() { "Mask".to_string() } else { mask.name.clone() });
             ml.kind = LayerKind::Mask;
             ml.locked = true;
+            ml.mask_mode = mask.mode;
             ml.keyframes = one_key(elements(s, mask.elements));
             parent = Some(ml.id);
             layers.push(Arc::new(ml));
