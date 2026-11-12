@@ -1048,3 +1048,5 @@ mod template_tests;
 mod timeline_drop_tests;
 #[cfg(test)]
 mod timeline_key_tests;
+#[cfg(test)]
+mod tests_bone_chain;
