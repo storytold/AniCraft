@@ -111,13 +111,51 @@ fn one_based(a: &Args, k: &str) -> Result<Option<u32>, String> {
     }
 }
 
+/// Returns the usage line(s) for a given subcommand, formatted under `USAGE:`.
+pub fn subcommand_usage(cmd: &str) -> Option<String> {
+    let body = match cmd {
+        "info" => "  anicraft-cli info <file|--sample>",
+        "render" => "  anicraft-cli render <file|--sample> --out <frame.png> [--frame N] [--scale S]",
+        "render-seq" => "  anicraft-cli render-seq <file|--sample> --out-dir <dir> [--from A] [--to B] [--scale S]",
+        "gif" => "  anicraft-cli gif <file|--sample> --out <anim.gif> [--from A] [--to B] [--scale S] [--overwrite yes]",
+        "apng" | "webp" => {
+            "  anicraft-cli apng|webp <file|--sample> --out <anim.png|anim.webp> [--from A] [--to B] [--scale S]\n                         [--loop forever|N] [--background yes] [--overwrite yes]\n                                         full colour with real transparency (WebP: lossless)"
+        }
+        "commands" => "  anicraft-cli commands",
+        "run" => "  anicraft-cli run <file|--sample> <script.json> [--save <out.anicraft>]",
+        "exec" => "  anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]",
+        "new" => "  anicraft-cli new --out <file.anicraft> [--width W] [--height H] [--fps F]",
+        "guide" => "  anicraft-cli guide --out <folder>      writes the user guide as HTML pages (open index.html)",
+        "bench" => {
+            "  anicraft-cli bench [--layers N] [--shapes N] [--frames N]   performance probe (use --release)\n  anicraft-cli bench --check yes         the default scenario against the budgets in\n                                         docs/performance.md; fails when one is missed"
+        }
+        "serve" => {
+            "  anicraft-cli serve [file|--sample]     JSON-lines on stdin/stdout:\n        {\"id\":1,\"cmd\":\"draw.rect\",\"params\":{\"x\":10,\"y\":10,\"w\":50,\"h\":50}}"
+        }
+        "mcp" => {
+            "  anicraft-cli mcp [file|--sample]       Model Context Protocol server on stdin/stdout,\n                                         for AI assistants (see docs/mcp.md)"
+        }
+        "version" => "  anicraft-cli --version",
+        _ => return None,
+    };
+    Some(format!("USAGE:\n{body}"))
+}
+
 /// Runs the CLI; returns the text to print on success.
 pub fn run(argv: &[String]) -> Result<String, String> {
     let Some((cmd, rest)) = argv.split_first() else { return Ok(USAGE.to_string()) };
+    if cmd == "help" || cmd == "--help" || cmd == "-h" {
+        if let Some(sub) = rest.first().filter(|s| *s != "--help" && *s != "-h") {
+            return subcommand_usage(sub).ok_or_else(|| format!("unknown subcommand '{sub}'\n\n{USAGE}"));
+        }
+        return Ok(USAGE.to_string());
+    }
+    if rest.iter().any(|a| a == "--help" || a == "-h") {
+        return subcommand_usage(cmd).ok_or_else(|| format!("unknown subcommand '{cmd}'\n\n{USAGE}"));
+    }
     let a = Args::parse(rest)?;
     let src = a.positional.first().map(String::as_str);
     match cmd.as_str() {
-        "help" | "--help" | "-h" => Ok(USAGE.to_string()),
         // The release packaging smoke-tests every build with this (packaging/, ADR 0026).
         "version" | "--version" | "-V" => Ok(format!("anicraft-cli {}", env!("CARGO_PKG_VERSION"))),
         "commands" => {
@@ -588,5 +626,43 @@ mod tests {
         assert!(run(&["info".into()]).is_err());
         assert!(run(&["commands".into()]).unwrap().contains("timeline.insert_keyframe"));
         assert!(run(&["guide".into()]).is_err());
+    }
+
+    #[test]
+    fn subcommand_help_prints_usage() {
+        let subcommands = ["info", "render", "render-seq", "gif", "apng", "webp", "commands", "run", "exec", "new", "guide", "bench", "serve", "mcp"];
+        for sub in subcommands {
+            let out_long = run(&[sub.to_string(), "--help".to_string()]).unwrap();
+            assert!(out_long.contains("USAGE:"), "help for {sub} should contain USAGE:");
+            assert!(out_long.contains(sub), "help for {sub} should mention {sub}");
+
+            let out_short = run(&[sub.to_string(), "-h".to_string()]).unwrap();
+            assert_eq!(out_long, out_short);
+
+            let out_help = run(&["help".to_string(), sub.to_string()]).unwrap();
+            assert_eq!(out_long, out_help);
+        }
+
+        // Subcommand help with other arguments present
+        assert_eq!(
+            run(&["render".into(), "--scale".into(), "2".into(), "--help".into()]).unwrap(),
+            run(&["render".into(), "--help".into()]).unwrap()
+        );
+
+        // Unknown subcommand with --help or help still reports unknown
+        assert!(run(&["bogus".into(), "--help".into()]).is_err());
+        assert!(run(&["help".into(), "bogus".into()]).is_err());
+    }
+
+    #[test]
+    fn subcommand_usage_matches_usage_text() {
+        let subcommands =
+            ["info", "render", "render-seq", "gif", "apng", "webp", "commands", "run", "exec", "new", "guide", "bench", "serve", "mcp", "version"];
+        for sub in subcommands {
+            let u = subcommand_usage(sub).expect("subcommand_usage should exist");
+            let body = u.strip_prefix("USAGE:\n").expect("should start with USAGE:\n");
+            assert!(USAGE.contains(body), "USAGE should contain body for {sub}");
+        }
+        assert_eq!(subcommand_usage("bogus"), None);
     }
 }
