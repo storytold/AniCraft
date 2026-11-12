@@ -98,7 +98,7 @@ also layer 1, which `anicraft-doc` may not use.
    * **Text a script sets is drawn with `fillText`** in the field's family, then the generic
      `sans-serif`, wrapped and aligned in the box as AniCraft does. Its glyphs come from the
      viewer's browser and may differ in shape and width from Test Movie when the family isn't
-     on the viewer's computer. This is documented in `docs/web.md`.
+     on the viewer's computer. The export report says so for every page with fields ("text fields (their authored text keeps its outlines; text a script or the viewer changes is drawn with the browser's fonts)").
 9. **Font embedding: not in this slice, by decision.** Embedding font files in the page would
    redistribute fonts the author may not be licensed to redistribute (most commercial desktop
    licences forbid web embedding), and the export can't know. Embedding outlines for a declared
@@ -126,4 +126,5 @@ also layer 1, which `anicraft-doc` may not use.
   `selectionBeginIndex`/`setSelection` and other `TextField` properties and methods, text
   colour or format set by scripts, Cut, double-click word selection, a blinking caret, mouse
   wheel scrolling, embedded fonts in the HTML page (above), selecting dynamic text in the HTML
-  page, and running ActionScript 1/2 variables.
+  page, clipping the HTML page's input elements by mask layers, `mouseX`/`mouseY` while the
+  pointer is over one, and running ActionScript 1/2 variables.
