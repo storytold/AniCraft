@@ -25,6 +25,7 @@ USAGE:
   anicraft-cli run <file|--sample> <script.json> [--save <out.anicraft>]
   anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]
   anicraft-cli new --out <file.anicraft> [--width W] [--height H] [--fps F]
+  anicraft-cli guide --out <folder>      writes the user guide as HTML pages (open index.html)
   anicraft-cli bench [--layers N] [--shapes N] [--frames N]   performance probe (use --release)
   anicraft-cli bench --check yes         the default scenario against the budgets in
                                          docs/performance.md; fails when one is missed
@@ -122,6 +123,12 @@ pub fn run(argv: &[String]) -> Result<String, String> {
         "commands" => {
             let list: Vec<Value> = commands().iter().map(|c| c.to_json()).collect();
             serde_json::to_string_pretty(&list).map_err(|e| e.to_string())
+        }
+        // The user guide as the static HTML book Help › User Guide opens (ADR 0069).
+        "guide" => {
+            let out = a.flag("out").ok_or("guide needs --out <folder>")?;
+            let n = anicraft_guide::write_site(std::path::Path::new(out)).map_err(|e| format!("{out}: {e}"))?;
+            Ok(format!("wrote {n} files of the user guide to {out}; open {out}/index.html"))
         }
         "info" => {
             let s = session(&a, Some(src.ok_or("info needs a file or --sample")?))?;
@@ -580,5 +587,6 @@ mod tests {
         assert!(run(&["bogus".into()]).is_err());
         assert!(run(&["info".into()]).is_err());
         assert!(run(&["commands".into()]).unwrap().contains("timeline.insert_keyframe"));
+        assert!(run(&["guide".into()]).is_err());
     }
 }

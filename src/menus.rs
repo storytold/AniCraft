@@ -671,6 +671,10 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library and Movie Explorer")));
         }
         "Help" => {
+            if ui_item(ui, tr!("User Guide"), "", None) {
+                app.open_user_guide();
+            }
+            ui.separator();
             #[cfg(not(target_arch = "wasm32"))]
             if ui_item(ui, tr!("Check for Updates…"), "", None) {
                 app.updates.check(ui.ctx());

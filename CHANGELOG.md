@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* **The user guide** (ADR 0069, M8).
+  * **Help › User Guide** opens AniCraft's guide in your browser. It comes with the app, so it
+    works offline; the web editor serves it beside the editor. It is also in the command palette.
+  * Eighteen chapters written for artists, from getting started, drawing, symbols, the timeline and
+    tweens to masks, the camera and bones, text, images and sound, interactivity, exporting and
+    Publish, opening Animate files, preferences and accessibility, plug-ins, working headless, and
+    troubleshooting, plus **Coming from Animate**, which maps Animate's panels, tools and shortcuts
+    to AniCraft's.
+  * A **command reference** and a **shortcut reference** (with the macOS keys beside the others),
+    generated from AniCraft itself, so they always match the version you have.
+  * `anicraft-cli guide --out <folder>` writes the guide as HTML pages.
+  * On macOS, the fixed keys that hold a key while dragging ("Space+Drag") keep that key in their
+    label.
 * **Brush library, pressure curves and the Paint Brush** (ADR 0068, M7).
   * **Window › Brush Library**: seven built-in brushes, each with a stroke preview drawn by the
     renderer: Pencil, Ink Pen, Flat Calligraphy, Round Taper, Marker, Chalk (a ragged edge that

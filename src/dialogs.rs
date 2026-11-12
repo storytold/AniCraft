@@ -217,6 +217,7 @@ fn entries() -> Vec<Entry> {
     v.push(Entry::View(tr_noop!("Preview Through Camera"), "", App::toggle_camera_preview));
     v.push(Entry::View(tr_noop!("Fit Stage in Window"), "Ctrl+0", |a| a.view.fit = true));
     v.push(Entry::View(tr_noop!("Keyboard Shortcuts"), "F1", |a| a.show_shortcuts = true));
+    v.push(Entry::View(tr_noop!("User Guide"), "", App::open_user_guide));
     v.push(Entry::View(tr_noop!("Project Files & Docs"), "", |a| a.show_files = true));
     v.push(Entry::View(tr_noop!("Licenses & Notices"), "", |a| a.show_licenses = true));
     v.push(Entry::View(tr_noop!("Preferences"), "Ctrl+U", App::open_prefs));
@@ -686,7 +687,7 @@ enum SheetAct {
 
 /// Fixed keys: handled before the shortcut map, shown read-only. Groups and names are English
 /// keys (groups match [`GROUP_ORDER`]), translated where they are drawn.
-fn fixed_rows() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
+pub(crate) fn fixed_rows() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     let quit = if crate::platform::OS == crate::platform::Os::Mac { tr_noop!("Quit") } else { tr_noop!("Exit") };
     let (essentials, view, editing) = (tr_noop!("Essentials"), tr_noop!("View"), tr_noop!("Editing"));
     // Keys in registry notation; the words among them are translated by `fixed_key`.
@@ -726,7 +727,7 @@ fn fixed_key(k: &str) -> String {
 }
 
 /// Section order, by group key (English; the titles are translated where they are drawn).
-const GROUP_ORDER: [&str; 13] = [
+pub(crate) const GROUP_ORDER: [&str; 13] = [
     tr_noop!("Essentials"),
     tr_noop!("Tools"),
     tr_noop!("File"),
