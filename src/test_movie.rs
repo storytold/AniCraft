@@ -612,6 +612,7 @@ pub fn demo_typing(app: &mut App) {
     let mut r = ScriptRunner::new(plugins);
     let name = Vec2::new(60.0, 147.0);
     let mut ev = vec![Event::Move(name), Event::Down(name), Event::Up(name)];
+    // i18n-exempt: what the viewer types, document content
     ev.extend("Ada Lovelace".chars().map(Event::Char));
     ev.extend([Event::KeyDown(13), Event::KeyUp(13)]);
     let notes = Vec2::new(380.0, 228.0);
