@@ -531,6 +531,8 @@ impl<'a> Builder<'a> {
             layer.locked = l.bool("locked").unwrap_or(false);
             layer.outline = l.bool("outline").unwrap_or(false);
             layer.color = color(l, "color", "__none");
+            // Layer Properties' height, 100 / 200 / 300 % (ADR 0061), as a multiple of a row.
+            layer.height_rows = l.u32("heightMultiplier").map_or(1, |h| h.clamp(1, u32::from(anicraft_doc::MAX_LAYER_HEIGHT)) as u8);
             let mut keys = Vec::new();
             let mut raw_hints: HashMap<u32, Vec<RawHint>> = HashMap::new();
             for f in l.list("frames").iter().filter(|f| f.name == "DOMFrame") {

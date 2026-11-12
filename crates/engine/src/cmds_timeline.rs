@@ -126,7 +126,7 @@ fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(layer_type_json(s, id))
 }
 
-fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
+pub(crate) fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder) {
@@ -161,7 +161,7 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     Ok(())
 }
 
-fn layer_type_json(s: &Session, id: LayerId) -> Value {
+pub(crate) fn layer_type_json(s: &Session, id: LayerId) -> Value {
     let Some(l) = s.timeline().layer(id) else { return json!({}) };
     let tl = s.timeline();
     let parent_kind = l.parent.and_then(|p| tl.layer(p)).map(|x| x.kind);
@@ -656,8 +656,9 @@ fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The colour the `n`th layer gets (its outline and timeline bar).
 pub(crate) fn layer_color(n: usize) -> anicraft_doc::Rgba {
-    const PALETTE: [u32; 7] = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
-    anicraft_doc::Rgba::hex(PALETTE.get(n % PALETTE.len()).copied().unwrap_or(0x4fa3ff))
+    // The first seven of the layer colours, in turn.
+    const TURN: usize = 7;
+    anicraft_doc::Rgba::hex(crate::LAYER_COLORS.get(n % TURN).copied().unwrap_or(0x4fa3ff))
 }
 
 fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {

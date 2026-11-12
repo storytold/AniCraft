@@ -178,6 +178,7 @@ pub(crate) fn evaluate_symbol(doc: &Document, tl: &Timeline, frame: u32, xf: Aff
     let mut out = DisplayList::default();
     let mut cx = Ctx::top(xf);
     cx.depth = 1;
+    cx.stage = false;
     eval_timeline(doc, tl, frame, &cx, &mut out, play);
     out
 }
@@ -300,6 +301,9 @@ struct Ctx {
     /// The top-level layer and element everything inside belongs to (for picking).
     root: Option<(LayerId, ElementId)>,
     outline: Option<Rgba>,
+    /// The stage as edited (ADR 0061): layers in outline mode are drawn as outlines. Off for
+    /// the movie (every export, the player): View as Outlines is an editing aid.
+    stage: bool,
     /// The clip everything inside is drawn within.
     clip: Option<u32>,
     /// Set while evaluating mask artwork: everything inside forms this clip.
@@ -318,12 +322,13 @@ struct Ctx {
 
 impl Ctx {
     fn top(xf: Affine) -> Ctx {
-        Ctx { xf, color: ColorTransform::IDENTITY, depth: 0, root: None, outline: None, clip: None, masks: None, guide: false, group: None, camera: None, slice: None }
+        Ctx { xf, color: ColorTransform::IDENTITY, depth: 0, root: None, outline: None, stage: true, clip: None, masks: None, guide: false, group: None, camera: None, slice: None }
     }
 
     /// A main timeline seen through `camera`: its tint colours everything.
     fn through(camera: Option<Camera>) -> Ctx {
         let mut cx = Ctx::top(Affine::IDENTITY);
+        cx.stage = false;
         if let Some(c) = camera {
             cx.color = c.color();
             cx.camera = Some(c);
@@ -418,7 +423,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         // A layer guided by a guide layer: its tweens follow the guide's first path.
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
-        let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
+        let layer_outline = cx.outline.or(if layer.outline && cx.stage { Some(layer.color) } else { None });
         // Through a camera, each layer is placed by the camera and its own depth.
         let layer_xf = cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth));
         for el in elements.iter() {
@@ -523,7 +528,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
                     };
                     // A symbol with 9-slice guides, scaled: its shapes are sliced (ADR 0055).
                     let slice = crate::nine_slice::slicing(doc, sym, &el.transform).map(|s| Slicing { post: layer_xf.mul(&s.post), ..s });
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks, guide, group, camera: None, slice };
+                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, stage: cx.stage, clip, masks, guide, group, camera: None, slice };
                     eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
                 }
             }
