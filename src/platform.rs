@@ -331,9 +331,16 @@ pub const APP_ID: &str = "ai.storyteller.anicraft";
 pub fn viewport(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
     // The Wayland app_id / X11 class: docks match it to the installed desktop entry
     // (packaging/linux/ai.storyteller.anicraft.desktop) for the icon and the launcher.
-    let b = b.with_app_id(APP_ID).with_icon(app_icon());
-    match OS {
-        Os::Mac => b.with_fullsize_content_view(true).with_title_shown(false),
+    chrome(OS, b.with_app_id(APP_ID).with_icon(app_icon()))
+}
+
+/// The window chrome for `os`. On macOS the content runs under the title bar, so the bar must be
+/// transparent too: an opaque one covers the menu row (File, Edit, …) and swallows its clicks,
+/// which left Mac users with no menus at all (#247).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn chrome(os: Os, b: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    match os {
+        Os::Mac => b.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false).with_titlebar_buttons_shown(true),
         _ => b,
     }
 }
@@ -637,6 +644,21 @@ pub fn set_unsaved(unsaved: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mac_menu_row_is_never_under_an_opaque_title_bar() {
+        // #247: content under the title bar (full-size content view) with the bar still drawn
+        // hid File, Edit and the rest on macOS. Whenever content goes under it, it is see-through.
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            let b = chrome(os, egui::ViewportBuilder::default());
+            if b.fullsize_content_view == Some(true) {
+                assert_eq!(b.titlebar_shown, Some(false), "{os:?}: the title bar would cover the menus");
+                assert_ne!(b.titlebar_buttons_shown, Some(false), "{os:?}: keep the traffic lights");
+            }
+        }
+        assert_eq!(chrome(Os::Mac, egui::ViewportBuilder::default()).fullsize_content_view, Some(true));
+        assert_eq!(chrome(Os::Windows, egui::ViewportBuilder::default()).fullsize_content_view, None, "native frame");
+    }
 
     #[test]
     fn the_desktop_runs_every_command() {
