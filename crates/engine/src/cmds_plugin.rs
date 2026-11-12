@@ -43,6 +43,10 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
             "publish" if id == "publish.settings_get" => Ok(()),
             "publish" => Err("plug-ins can't change what Publish writes"),
             "prefs" => Err("plug-ins can't read or change your preferences"),
+            // Listing the brushes is harmless (and painting with one is `draw.brush`); the
+            // user's own brushes are their preferences, and a brush set is a file.
+            "brush" if id == "brush.preset_list" => Ok(()),
+            "brush" => Err("plug-ins can't change your brushes or read and write brush sets"),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
             "control" => Err("plug-ins can't play the movie"),
             ns if DOCUMENT.contains(&ns) => Ok(()),

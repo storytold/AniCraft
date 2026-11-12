@@ -27,6 +27,7 @@ This page is generated from the editor's shortcut map, so it always matches the 
 | Text | T | T |
 | Pencil | Shift+Y | ⇧Y |
 | Brush | B | B |
+| Paint Brush | Y | Y |
 | Eraser | E | E |
 | Rectangle | R | R |
 | Oval | O | O |

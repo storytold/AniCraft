@@ -21,6 +21,7 @@ pub enum Tool {
     Text,
     Pencil,
     Brush,
+    PaintBrush,
     Eraser,
     Rect,
     Oval,
@@ -66,7 +67,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 20] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 21] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -79,6 +80,7 @@ impl Tool {
             Tool::Text => tr_noop!("Text"),
             Tool::Pencil => tr_noop!("Pencil"),
             Tool::Brush => tr_noop!("Brush"),
+            Tool::PaintBrush => tr_noop!("Paint Brush"),
             Tool::Eraser => tr_noop!("Eraser"),
             Tool::Rect => tr_noop!("Rectangle"),
             Tool::Oval => tr_noop!("Oval"),
@@ -104,6 +106,7 @@ impl Tool {
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
             Tool::Brush => Some("B"),
+            Tool::PaintBrush => Some("Y"),
             Tool::Eraser => Some("E"),
             Tool::Rect => Some("R"),
             Tool::Oval => Some("O"),
@@ -125,7 +128,8 @@ impl Tool {
             Tool::Pen => tr_noop!("Click to place corner points, drag to pull smooth handles (Alt moves one handle). Click the first point to close; Enter, Esc or a click on the last point finishes. Backspace removes the last point. Alt-click a selected shape, a merged drawing's line or a motion path to add a point to it. Points snap to points and lines while Snap to Objects is on."),
             Tool::Text => tr_noop!("Click to type new text, or click text to edit it. Esc or a click elsewhere finishes. The options set the font, size and colour; double-click text with the Selection tool to edit it too."),
             Tool::Pencil => tr_noop!("Drag to draw freehand. The options bar sets Smooth, Straighten or Ink."),
-            Tool::Brush => tr_noop!("Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the shape, smoothing and paint mode."),
+            Tool::Brush => tr_noop!("Drag to paint filled shapes in the fill colour (a click paints a dab). [ and ] change the size; the options set the brush, its shape, pressure, smoothing and paint mode."),
+            Tool::PaintBrush => tr_noop!("Drag to draw a line in the stroke colour whose width follows the pen's pressure and the brush's tapers. Shape it afterwards with the Width tool. [ and ] change the size; the options set the brush and its pressure curve."),
             Tool::Eraser => tr_noop!("Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage."),
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
@@ -358,6 +362,12 @@ pub struct App {
     /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
     /// when there is one) and the pen's last pressure (ADR 0033).
     pub brush: crate::brushtool::BrushOptions,
+    /// The Paint Brush's options (ADR 0068), its own as in Animate.
+    pub paint_brush: crate::brushtool::BrushOptions,
+    /// When the last sample came (seconds), for Velocity.
+    pub brush_clock: f64,
+    /// Window › Brush Library and the brush pickers (ADR 0068).
+    pub brush_lib: crate::brush_panel::BrushLibraryView,
     pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
     pub pen_pressure: Option<f32>,
     /// Eraser tool options (ADR 0034); its stroke's samples are `brush_samples`.
@@ -533,6 +543,7 @@ impl App {
         let mut session = session;
         // Open Recent is the session's list, kept in the preferences (ADR 0059).
         session.recent = prefs.recent.clone();
+        session.brushes = prefs.brushes.clone();
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
@@ -586,6 +597,9 @@ impl App {
             snap_ring: None,
             pencil_mode: pathtools::PencilMode::default(),
             brush: crate::brushtool::BrushOptions::default(),
+            paint_brush: crate::brushtool::BrushOptions::paint_brush(),
+            brush_clock: 0.0,
+            brush_lib: crate::brush_panel::BrushLibraryView::default(),
             brush_samples: Vec::new(),
             pen_pressure: None,
             eraser: crate::erasertool::EraserOptions::default(),
@@ -1490,6 +1504,48 @@ impl App {
                     self.tool = Tool::Select;
                 }
             }
+            Some(which @ ("brushlibrary" | "brushcurve" | "paintbrush")) => {
+                // The brush library (ADR 0068): a page with a stroke of every built-in brush
+                // (pressure swelling in the middle), each named, and one of the user's own. The
+                // library open on it ("brushlibrary"), the pressure curve editor in Properties
+                // ("brushcurve"), or Paint Brush lines of varying width ("paintbrush").
+                self.run("layer.new", json!({"name": "Brushes"}));
+                self.run("draw.object_drawing", json!({"on": true}));
+                self.run("brush.preset_save", json!({"name": "Wet Ink", "from": "ink_pen", "size": 9, "curve": [[0, 0], [0.4, 0.75], [1, 1]]})); // i18n-exempt: a sample brush name
+                let wave = |y: f32, x0: f32, len: f32| -> Vec<[f32; 3]> {
+                    (0..=60)
+                        .map(|i| {
+                            let t = i as f32 / 60.0;
+                            [x0 + t * len, y + (t * std::f32::consts::TAU).sin() * 14.0, 0.25 + 0.75 * (t * std::f32::consts::PI).sin()]
+                        })
+                        .collect()
+                };
+                let mut names: Vec<String> = anicraft_engine::brush_library::BUILTIN.iter().map(|(k, _)| (*k).to_string()).collect();
+                names.push("Wet Ink".into()); // i18n-exempt: a sample brush name
+                let as_stroke = which == "paintbrush";
+                for (i, name) in names.iter().enumerate() {
+                    let y = 70.0 + i as f32 * 78.0;
+                    self.run("draw.brush", json!({"points": wave(y, 330.0, 560.0), "preset": name, "color": "#1b2a4a", "as_stroke": as_stroke}));
+                    let label = anicraft_engine::brush_library::BUILTIN.iter().find(|(k, _)| k == name).map_or(name.as_str(), |(_, n)| n);
+                    self.run("text.create", json!({"x": 60, "y": y - 14.0, "text": label, "size": 22, "color": "#3a4150"}));
+                }
+                self.run("edit.deselect", json!({}));
+                if as_stroke {
+                    self.tool = Tool::Width;
+                } else {
+                    self.tool = Tool::Brush;
+                    if let Some(p) = anicraft_engine::brush_library::builtin("ink_pen") {
+                        crate::brush_panel::choose(self, &p);
+                    }
+                    self.brush.curve = anicraft_engine::geom::pressure::PressureCurve::new(&[[0.0, 0.0], [0.35, 0.62], [0.7, 0.8], [1.0, 1.0]]);
+                    self.brush_lib.open = which == "brushlibrary";
+                    if which == "brushlibrary"
+                        && let Some(p) = anicraft_engine::brush_library::builtin("chalk")
+                    {
+                        crate::brush_panel::choose(self, &p);
+                    }
+                }
+            }
             Some(which @ ("brush" | "brushing")) => {
                 // Brushed artwork on a new layer (ADR 0033): a pressure-tapered wave, a flat
                 // calligraphic tip at 45°, square dabs, and a pink stroke painted behind a raw
@@ -2113,10 +2169,13 @@ impl App {
             "file.import_to_library" => Some((tr_noop!("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)"), "path", "sound.wav".to_string())),
             "file.import" => Some((tr_noop!("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)"), "path", "drawing.svg".to_string())),
             "plugin.install" => Some((tr_noop!("Install plug-in (.wasm file)"), "path", "plugin.wasm".to_string())),
+            // A brush set (ADR 0068): your brushes as a small JSON file.
+            "brush.preset_export" => Some((tr_noop!("Export your brushes (a brush set file)"), "path", "brushes.json".to_string())),
+            "brush.preset_import" => Some((tr_noop!("Import brushes (a brush set file)"), "path", "brushes.json".to_string())),
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
-            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || id == "plugin.install");
+            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "brush.preset_export" | "brush.preset_import"));
             if is_file && platform::WEB && platform::reads_file(id) {
                 // The browser's file picker (ADR 0036). The file arrives on a later frame
                 // (`open_picked`); a save or export asks for the download's name below.
@@ -2827,6 +2886,7 @@ impl App {
         crate::plugins_ui::show(self, &ctx);
         crate::actions_panel::show(self, &ctx);
         crate::find_panel::show(self, &ctx);
+        crate::brush_panel::show(self, &ctx);
         crate::publish_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
@@ -2855,6 +2915,7 @@ impl App {
         autosave::tick(self, &ctx);
         // Open Recent changed (an open, a save, a pin): into the preferences.
         crate::recent::sync(self);
+        crate::brush_panel::sync(self);
         // A browser asks before leaving a page with unsaved work (its close guard).
         platform::set_unsaved(self.s.is_dirty());
 
