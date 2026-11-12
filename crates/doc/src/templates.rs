@@ -54,8 +54,8 @@ fn line(d: &mut Document, name: &str, a: (f32, f32), b: (f32, f32), color: u32, 
     element(d, name, Affine::IDENTITY, Shape { path: Arc::new(p), fill: None, stroke: Some(Stroke::new(Rgba::hex(color), width)), fill_rule: Default::default(), merge: false })
 }
 
-/// A stroked rectangle outline.
-fn outline(d: &mut Document, name: &str, x: f32, y: f32, w: f32, h: f32, color: u32, width: f32) -> Arc<Element> {
+/// A stroked rectangle outline, `(x, y, w, h)`.
+fn outline(d: &mut Document, name: &str, (x, y, w, h): (f32, f32, f32, f32), color: u32, width: f32) -> Arc<Element> {
     element(d, name, Affine::IDENTITY, Shape { path: Arc::new(Path::rect(x, y, w, h)), fill: None, stroke: Some(Stroke::new(Rgba::hex(color), width)), fill_rule: Default::default(), merge: false })
 }
 
@@ -85,7 +85,7 @@ fn banner(width: u32, height: u32) -> Document {
     let mut d = blank(width, height, 24.0);
     let (w, h) = (width as f32, height as f32);
     let m = (w.min(h) * 0.1).round();
-    let guides = vec![outline(&mut d, "Safe area", m, m, w - 2.0 * m, h - 2.0 * m, GUIDE, 1.0), outline(&mut d, "Edge", 0.5, 0.5, w - 1.0, h - 1.0, GUIDE_SOFT, 1.0)];
+    let guides = vec![outline(&mut d, "Safe area", (m, m, w - 2.0 * m, h - 2.0 * m), GUIDE, 1.0), outline(&mut d, "Edge", (0.5, 0.5, w - 1.0, h - 1.0), GUIDE_SOFT, 1.0)];
     let mut layers = vec![layer(&mut d, "Safe area", LayerKind::Guide, GUIDE, FRAMES, guides)];
     layers.extend(drawing_layers(&mut d, &["Call to action", "Text", "Artwork"], FRAMES));
     let bg = element(&mut d, "background", Affine::IDENTITY, Shape::filled(Path::rect(0.0, 0.0, w, h), Paint::Solid(Rgba::hex(0xeef2f7))));
@@ -110,7 +110,7 @@ fn social_square() -> Document {
     let mut d = blank(1080, 1080, 30.0);
     let s = 1080.0;
     let m = 60.0;
-    let mut guides = vec![outline(&mut d, "Safe margin", m, m, s - 2.0 * m, s - 2.0 * m, GUIDE, 2.0)];
+    let mut guides = vec![outline(&mut d, "Safe margin", (m, m, s - 2.0 * m, s - 2.0 * m), GUIDE, 2.0)];
     for (i, t) in [s / 3.0, s * 2.0 / 3.0].into_iter().enumerate() {
         guides.push(line(&mut d, &format!("Third {}", i + 1), (t, 0.0), (t, s), GUIDE_SOFT, 1.0));
         guides.push(line(&mut d, &format!("Third {}", i + 3), (0.0, t), (s, t), GUIDE_SOFT, 1.0));
@@ -132,7 +132,7 @@ fn storyboard() -> Document {
     let (w, h) = (1920.0, 1080.0);
     let safe = |d: &mut Document, name: &str, keep: f32, color: u32| {
         let (mx, my) = (w * (1.0 - keep) / 2.0, h * (1.0 - keep) / 2.0);
-        outline(d, name, mx, my, w - 2.0 * mx, h - 2.0 * my, color, 2.0)
+        outline(d, name, (mx, my, w - 2.0 * mx, h - 2.0 * my), color, 2.0)
     };
     let guides = vec![
         safe(&mut d, "Action safe", 0.93, GUIDE),
