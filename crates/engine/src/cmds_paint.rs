@@ -73,6 +73,7 @@ fn element_shape_mut(s: &mut Session, id: ElementId) -> Result<&mut Shape> {
         ElementKind::Symbol { .. } => Err(EngineError::State("symbol instances keep their own colours; break it apart (Ctrl+B) or edit the symbol to paint it".into())),
         ElementKind::Text(_) => Err(EngineError::State("text has its own colour (Properties); break it apart (Ctrl+B) to paint it as a shape".into())),
         ElementKind::Camera => Err(EngineError::State("the camera has no paint (its tint is in Properties)".into())),
+        ElementKind::Group { .. } => Err(EngineError::State("a group keeps its members' colours; double-click it to paint inside, or ungroup it (Ctrl+Shift+G)".into())),
     }
 }
 

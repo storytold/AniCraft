@@ -133,6 +133,7 @@ pub fn element_name(doc: &Document, e: &Element) -> String {
         ElementKind::Text(tb) if tb.text.trim().is_empty() => tr!("Empty text").to_string(),
         ElementKind::Text(tb) => tr!("Text: {text}", text = excerpt(&tb.text, 80)),
         ElementKind::Camera => tr!("Camera").to_string(),
+        ElementKind::Group { .. } => trn!("Group of {n} item", "Group of {n} items", e.kind.group_members().len()),
     };
     let name = excerpt(&e.name, 80);
     if name.is_empty() { what } else { tr!("{name} · {what}", name = name, what = what) }

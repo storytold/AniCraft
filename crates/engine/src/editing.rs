@@ -40,10 +40,20 @@ const MAX_LEVELS: usize = 32;
 /// How much the artwork around an open symbol shows (Animate dims it).
 const DIM: f32 = 0.35;
 
-/// A symbol open for editing, and what to go back to.
+/// What a level of the editing stack has open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Opened {
+    /// A symbol's timeline (ADR 0045).
+    Symbol(SymbolId),
+    /// A group's members (ADR 0073): the group is [`EditLevel::instance`] on the timeline below,
+    /// on the keyframe at [`EditLevel::frame`].
+    Group,
+}
+
+/// A symbol or group open for editing, and what to go back to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditLevel {
-    pub symbol: SymbolId,
+    pub open: Opened,
     /// The instance it was opened from, on the timeline below (none: from the Library).
     pub instance: Option<(LayerId, ElementId)>,
     /// Stage space from the symbol's space: where the instance stands (through every level).
@@ -54,22 +64,79 @@ pub struct EditLevel {
     pub selection: Selection,
 }
 
-/// The timeline being edited: the open symbol's, else the scene's.
-pub(crate) fn edited<'a>(doc: &'a Document, scene: usize, editing: &[EditLevel]) -> &'a Timeline {
-    match editing.last().and_then(|l| doc.symbol(l.symbol)) {
-        Some(sym) => &sym.timeline,
-        None => doc.timeline(scene),
+impl EditLevel {
+    /// The symbol this level has open (`None` for a group).
+    pub fn symbol(&self) -> Option<SymbolId> {
+        match self.open {
+            Opened::Symbol(id) => Some(id),
+            Opened::Group => None,
+        }
     }
 }
 
-/// [`edited`] ([`Session::timeline`]), copy-on-write. Takes the fields, so a caller can keep using the session's others.
-pub(crate) fn edited_mut<'a>(doc: &'a mut Document, scene: usize, editing: &[EditLevel]) -> &'a mut Timeline {
-    let open = editing.last().and_then(|l| doc.library.iter().position(|s| s.id == l.symbol));
+/// The members of the group level `l` opens, on timeline `below`.
+fn group_in<'a>(below: &'a Timeline, l: &EditLevel) -> Option<&'a Timeline> {
+    let (layer, id) = l.instance?;
+    let k = below.layer(layer)?.keyframe_at(l.frame)?;
+    match &k.elements.iter().find(|e| e.id == id)?.kind {
+        ElementKind::Group { members } => Some(members),
+        _ => None,
+    }
+}
+
+/// [`group_in`], copy-on-write.
+fn group_in_mut<'a>(below: &'a mut Timeline, l: &EditLevel) -> Option<&'a mut Timeline> {
+    let (layer, id) = l.instance?;
+    let layer = below.layer_mut(layer)?;
+    let k = layer.keyframe_index_at(l.frame)?;
+    let el = layer.keyframe_mut(k)?.elements_mut_where(|e| e == id).into_iter().next()?;
+    match &mut el.kind {
+        ElementKind::Group { members } => Some(members),
+        _ => None,
+    }
+}
+
+/// How many levels of `editing`, from the outermost, still open something, and the timeline the
+/// last of them opens.
+fn walk<'a>(doc: &'a Document, scene: usize, editing: &[EditLevel]) -> (usize, &'a Timeline) {
+    let mut tl = doc.timeline(scene);
+    for (i, l) in editing.iter().enumerate() {
+        let next = match l.open {
+            Opened::Symbol(id) => doc.symbol(id).map(|s| &s.timeline),
+            Opened::Group => group_in(tl, l),
+        };
+        match next {
+            Some(t) => tl = t,
+            None => return (i, tl),
+        }
+    }
+    (editing.len(), tl)
+}
+
+/// The timeline being edited: the open symbol's or group's, else the scene's.
+pub(crate) fn edited<'a>(doc: &'a Document, scene: usize, editing: &[EditLevel]) -> &'a Timeline {
+    walk(doc, scene, editing).1
+}
+
+/// [`edited`] ([`Session::timeline`]), copy-on-write. Takes the fields, so a caller can keep using
+/// the session's others. Fails only when an open group is gone, which [`Session::fix_editing`]
+/// never leaves for long.
+pub(crate) fn edited_mut<'a>(doc: &'a mut Document, scene: usize, editing: &[EditLevel]) -> Result<&'a mut Timeline> {
+    let (valid, _) = walk(doc, scene, editing);
+    let levels = editing.get(..valid).unwrap_or_default();
+    // From the innermost open symbol (or the scene), through the groups opened inside it.
+    let base = levels.iter().rposition(|l| matches!(l.open, Opened::Symbol(_)));
+    let open = base.and_then(|b| levels.get(b)).and_then(EditLevel::symbol).and_then(|id| doc.library.iter().position(|s| s.id == id));
+    let groups = levels.get(base.map_or(0, |b| b + 1)..).unwrap_or_default();
     // (Borrowed only on the branch that returns it.)
-    match open {
+    let mut tl = match open {
         Some(i) if i < doc.library.len() => &mut Arc::make_mut(&mut doc.library[i]).timeline,
         _ => doc.timeline_mut(scene),
+    };
+    for l in groups {
+        tl = group_in_mut(tl, l).ok_or_else(|| EngineError::State("the group open for editing is gone".into()))?;
     }
+    Ok(tl)
 }
 
 /// How the stage shows the open symbol: its space on the stage is `translate(origin) ·
@@ -125,22 +192,27 @@ impl Session {
         edited(&self.doc, self.scene, &self.editing)
     }
 
-    /// The symbol open for editing, if any.
+    /// The symbol open for editing, if any (`None` on the stage and while a group is open).
     pub fn editing_symbol(&self) -> Option<SymbolId> {
-        self.editing.last().map(|l| l.symbol)
+        self.editing.last().and_then(EditLevel::symbol)
     }
 
-    /// Closes levels whose symbol is gone (an undo, a Library deletion), from the first such.
+    /// Whether a group is open for editing (ADR 0073).
+    pub fn editing_group(&self) -> bool {
+        self.editing.last().is_some_and(|l| l.open == Opened::Group)
+    }
+
+    /// Closes levels whose symbol or group is gone (an undo, a Library deletion, an ungroup),
+    /// from the first such.
     pub(crate) fn fix_editing(&mut self) {
-        if let Some(i) = self.editing.iter().position(|l| self.doc.symbol(l.symbol).is_none()) {
-            while self.editing.len() > i {
-                self.exit_level();
-            }
+        let (valid, _) = walk(&self.doc, self.scene, &self.editing);
+        while self.editing.len() > valid {
+            self.exit_level();
         }
     }
 
-    fn enter_level(&mut self, symbol: SymbolId, instance: Option<(LayerId, ElementId)>, transform: Affine, frame: u32) {
-        self.editing.push(EditLevel { symbol, instance, transform, layer: self.layer, frame: self.frame, selection: std::mem::take(&mut self.selection) });
+    fn enter_level(&mut self, open: Opened, instance: Option<(LayerId, ElementId)>, transform: Affine, frame: u32) {
+        self.editing.push(EditLevel { open, instance, transform, layer: self.layer, frame: self.frame, selection: std::mem::take(&mut self.selection) });
         // The top layer inside, at the frame the instance shows.
         self.layer = self.timeline().layers.first().map_or(LayerId(0), |l| l.id);
         self.frame = frame.min(self.timeline().frame_count().saturating_sub(1));
@@ -189,7 +261,7 @@ impl Session {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.state, self.scene, self.frame).hash(&mut h);
         for l in &self.editing {
-            (l.symbol, l.instance, l.frame, l.transform.m.map(f32::to_bits)).hash(&mut h);
+            (l.open, l.instance, l.frame, l.transform.m.map(f32::to_bits)).hash(&mut h);
         }
         let hit = self.hit_overlay();
         hit.map(|(c, a)| [c.r, c.g, c.b, c.a, a].map(f32::to_bits)).hash(&mut h);
@@ -216,10 +288,7 @@ impl Session {
         if view.in_place {
             for (i, l) in self.editing.iter().enumerate().rev() {
                 let parent = i.checked_sub(1).and_then(|j| self.editing.get(j));
-                let below = match parent {
-                    None => self.doc.timeline(self.scene).clone(),
-                    Some(p) => self.doc.symbol(p.symbol).map(|s| s.timeline.clone()).unwrap_or_default(),
-                };
+                let below = edited(&self.doc, self.scene, self.editing.get(..i).unwrap_or_default()).clone();
                 let xf = parent.map_or(Affine::IDENTITY, |p| p.transform);
                 let around = without(below, l.instance);
                 let layer = placed(&mut doc, around.clone(), xf, l.frame, ColorEffect::opacity(DIM));
@@ -304,7 +373,7 @@ pub(crate) fn would_nest(s: &Session, sym: SymbolId) -> bool {
     let mut seen: Vec<SymbolId> = Vec::new();
     let mut todo = vec![sym];
     while let Some(id) = todo.pop() {
-        if s.editing.iter().any(|l| l.symbol == id) {
+        if s.editing.iter().any(|l| l.symbol() == Some(id)) {
             return true;
         }
         if seen.contains(&id) || seen.len() > 100_000 {
@@ -313,7 +382,7 @@ pub(crate) fn would_nest(s: &Session, sym: SymbolId) -> bool {
         seen.push(id);
         let Some(sym) = s.doc.symbol(id) else { continue };
         for k in sym.timeline.layers.iter().flat_map(|l| l.keyframes.iter()) {
-            todo.extend(k.elements.iter().filter_map(|e| match e.kind {
+            todo.extend(anicraft_doc::expand_groups(&k.elements).iter().filter_map(|e| match e.kind {
                 ElementKind::Symbol { symbol, .. } => Some(symbol),
                 _ => None,
             }));
@@ -350,17 +419,17 @@ pub(crate) fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         if s.doc.symbol(symbol).is_none() {
             return Err(EngineError::State(format!("no symbol {sym} in the Library")));
         }
-        if s.editing.iter().any(|l| l.symbol == symbol) {
+        if s.editing.iter().any(|l| l.symbol() == Some(symbol)) {
             return Err(EngineError::State("that symbol is open already".into()));
         }
         let c = Vec2::new(s.doc.stage.width as f32 * 0.5, s.doc.stage.height as f32 * 0.5);
-        s.enter_level(symbol, None, Affine::translate(c.x, c.y), 0);
+        s.enter_level(Opened::Symbol(symbol), None, Affine::translate(c.x, c.y), 0);
         return Ok(editing_json(s));
     }
     let id = match opt_u64(p, "id")? {
         Some(i) => ElementId(i),
         None => {
-            let picked: Vec<ElementId> = s.selection.on(s.layer).into_iter().filter(|id| instance(s, *id).is_some_and(|(_, e)| matches!(e.kind, ElementKind::Symbol { .. }))).collect();
+            let picked: Vec<ElementId> = s.selection.on(s.layer).into_iter().filter(|id| instance(s, *id).is_some_and(|(_, e)| matches!(e.kind, ElementKind::Symbol { .. } | ElementKind::Group { .. }))).collect();
             match picked.as_slice() {
                 [one] => *one,
                 // Nothing to open: Ctrl+E goes back to the document, as in Animate.
@@ -368,8 +437,8 @@ pub(crate) fn edit(s: &mut Session, p: &Value) -> Result<Value> {
                     s.exit_all();
                     return Ok(editing_json(s));
                 }
-                [] => return Err(EngineError::State("select a symbol instance to edit it (or double-click it)".into())),
-                _ => return Err(EngineError::State("select one symbol instance to edit".into())),
+                [] => return Err(EngineError::State("select a symbol instance or a group to edit it (or double-click it)".into())),
+                _ => return Err(EngineError::State("select one symbol instance or group to edit".into())),
             }
         }
     };
@@ -377,23 +446,29 @@ pub(crate) fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     if !s.selectable(layer) {
         return Err(EngineError::State("that instance's layer is locked or hidden".into()));
     }
-    let ElementKind::Symbol { symbol, loop_mode, first_frame, .. } = el.kind else { return Err(EngineError::State("that is not a symbol instance".into())) };
+    let below = s.editing.last().map_or(Affine::IDENTITY, |l| l.transform);
+    // A group opens where it stands (ADR 0073): its members at their only frame. The level finds
+    // the keyframe it is on through the playhead below.
+    if matches!(el.kind, ElementKind::Group { .. }) {
+        s.enter_level(Opened::Group, Some((layer, id)), below.mul(&el.transform), 0);
+        return Ok(editing_json(s));
+    }
+    let ElementKind::Symbol { symbol, loop_mode, first_frame, .. } = el.kind else { return Err(EngineError::State("that is not a symbol instance or a group".into())) };
     let sym = s.doc.symbol(symbol).ok_or_else(|| EngineError::State("that instance's symbol is missing from the Library".into()))?;
-    if s.editing.iter().any(|l| l.symbol == symbol) {
+    if s.editing.iter().any(|l| l.symbol() == Some(symbol)) {
         return Err(EngineError::State("that symbol is open already".into()));
     }
     // A graphic opens at the frame the instance shows; movie clips and buttons at their first.
     let len = sym.timeline.frame_count();
     let start = s.timeline().layer(layer).and_then(|l| l.keyframe_at(s.frame)).map_or(s.frame, |k| k.start);
     let frame = if sym.kind == SymbolKind::Graphic { loop_mode.local_frame(s.frame.saturating_sub(start), first_frame, len) } else { 0 };
-    let below = s.editing.last().map_or(Affine::IDENTITY, |l| l.transform);
-    s.enter_level(symbol, Some((layer, id)), below.mul(&el.transform), frame);
+    s.enter_level(Opened::Symbol(symbol), Some((layer, id)), below.mul(&el.transform), frame);
     Ok(editing_json(s))
 }
 
 fn exit(s: &mut Session, p: &Value) -> Result<Value> {
     if s.editing.is_empty() {
-        return Err(EngineError::State("no symbol is open for editing".into()));
+        return Err(EngineError::State("no symbol or group is open for editing".into()));
     }
     if opt_bool(p, "all")?.unwrap_or(false) {
         s.exit_all();
@@ -405,7 +480,14 @@ fn exit(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The open symbols, outermost first.
 pub(crate) fn editing_json(s: &Session) -> Value {
-    let list: Vec<Value> = s.editing.iter().map(|l| json!({"symbol": l.symbol.0, "name": s.doc.symbol(l.symbol).map(|x| x.name.clone()), "instance": l.instance.map(|(_, e)| e.0)})).collect();
+    let list: Vec<Value> = s
+        .editing
+        .iter()
+        .map(|l| match l.symbol() {
+            Some(id) => json!({"symbol": id.0, "name": s.doc.symbol(id).map(|x| x.name.clone()), "instance": l.instance.map(|(_, e)| e.0)}),
+            None => json!({"group": l.instance.map(|(_, e)| e.0), "name": "Group", "instance": l.instance.map(|(_, e)| e.0)}),
+        })
+        .collect();
     json!({"editing": list, "layer": s.layer.0, "frame": s.frame, "selected": s.selection.id_list()})
 }
 

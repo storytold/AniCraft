@@ -342,6 +342,71 @@ pub enum ElementKind {
     /// The camera, on a camera layer (ADR 0027): the element's transform is the camera on the
     /// stage and its tint colours the view. It draws nothing itself.
     Camera,
+    /// A group (Modify › Group, ADR 0073): elements kept together without a Library symbol. Its
+    /// members are a one-layer, one-frame timeline, so double-clicking it edits them in place
+    /// with every tool, and raw shapes inside merge only with each other. The group's transform
+    /// and colour effect apply to its members; it is always drawn at its members' frame 0.
+    Group {
+        #[serde(default)]
+        members: Timeline,
+    },
+}
+
+impl ElementKind {
+    /// A group of `elements` (ADR 0073), on one layer with id `layer`.
+    pub fn group(layer: LayerId, elements: Vec<Arc<Element>>) -> ElementKind {
+        let mut l = Layer::new(layer, "Layer 1");
+        if let Some(k) = l.keyframe_mut(0) {
+            k.elements = elements;
+        }
+        ElementKind::Group { members: Timeline { layers: vec![Arc::new(l)] } }
+    }
+
+    /// A group's members as they are drawn: every layer's elements at frame 0, bottom layer
+    /// first (back to front). Empty for anything else.
+    pub fn group_members(&self) -> Vec<Arc<Element>> {
+        match self {
+            ElementKind::Group { members } => members.layers.iter().rev().filter_map(|l| l.keyframe_at(0)).flat_map(|k| k.elements.iter().cloned()).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Groups nested deeper than this are not drawn, walked or kept (guards hostile files).
+pub const MAX_GROUP_DEPTH: usize = 32;
+
+/// `elements` with every group replaced by its members, however deep (ADR 0073), in drawing
+/// order, each placed and coloured as the group shows it (the group's transform and colour
+/// effect composed into it); borrowed when there is no group. For walkers that look for what is
+/// placed (symbol instances, sounds, the player's instances): members keep their own ids.
+pub fn expand_groups(elements: &[Arc<Element>]) -> std::borrow::Cow<'_, [Arc<Element>]> {
+    if !elements.iter().any(|e| matches!(e.kind, ElementKind::Group { .. })) {
+        return std::borrow::Cow::Borrowed(elements);
+    }
+    fn walk(els: &[Arc<Element>], at: Option<(&Affine, &ColorEffect)>, depth: usize, out: &mut Vec<Arc<Element>>) {
+        for e in els {
+            let placed = |e: &Arc<Element>| match at {
+                None => e.clone(),
+                Some((xf, fx)) => {
+                    let mut c = (**e).clone();
+                    c.transform = xf.mul(&e.transform);
+                    c.color = fx.nested(&e.color);
+                    Arc::new(c)
+                }
+            };
+            match &e.kind {
+                ElementKind::Group { .. } if depth < MAX_GROUP_DEPTH => {
+                    let g = placed(e);
+                    walk(&e.kind.group_members(), Some((&g.transform, &g.color)), depth + 1, out);
+                }
+                ElementKind::Group { .. } => {}
+                _ => out.push(placed(e)),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(elements, None, 0, &mut out);
+    std::borrow::Cow::Owned(out)
 }
 
 /// How an instance's pixels combine with what is below it, as Animate's Blending menu. Every
@@ -670,6 +735,13 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
         }
         ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),
         ElementKind::Camera => Rect::EMPTY,
+        ElementKind::Group { .. } => {
+            let mut r = Rect::EMPTY;
+            for child in el.kind.group_members() {
+                r = r.union(&element_bounds(doc, &child, &xf.mul(&child.transform), depth + 1));
+            }
+            r
+        }
         ElementKind::Symbol { symbol, .. } => {
             let Some(sym) = doc.symbol(*symbol) else { return Rect::EMPTY };
             let mut r = Rect::EMPTY;
@@ -1488,9 +1560,15 @@ impl Document {
     pub fn scene_start(&self, i: usize) -> u32 {
         self.scenes.iter().take(i).map(|s| s.timeline.frame_count()).fold(0u32, u32::saturating_add)
     }
-    /// Every timeline: the scenes', then the library symbols'.
+    /// Every timeline: the scenes', then the library symbols', then the groups' inside them (ADR
+    /// 0073), so whatever walks every timeline (Library uses, sounds, paths) sees inside groups.
     pub fn timelines(&self) -> impl Iterator<Item = &Timeline> {
-        self.scenes.iter().map(|s| &s.timeline).chain(self.library.iter().map(|s| &s.timeline))
+        let top: Vec<&Timeline> = self.scenes.iter().map(|s| &s.timeline).chain(self.library.iter().map(|s| &s.timeline)).collect();
+        let mut all = top.clone();
+        for tl in top {
+            group_timelines(tl, 0, &mut all);
+        }
+        all.into_iter()
     }
     /// Repairs a loaded document: ids, sizes and keyframe order.
     pub fn sanitize(&mut self) {
@@ -1530,6 +1608,7 @@ impl Document {
                 sanitize_depth(l);
                 sanitize_armature(l);
                 scan(l, &mut max_id);
+                sanitize_groups(l, 0, &mut max_id);
             }
             tl.repair_masks();
         }
@@ -1566,6 +1645,7 @@ impl Document {
                 sanitize_depth(l);
                 sanitize_armature(l);
                 scan(l, &mut max_id);
+                sanitize_groups(l, 0, &mut max_id);
             }
             tl.repair_masks();
         }
@@ -1577,6 +1657,73 @@ impl Document {
         }
         self.sanitize_library_tree(&mut max_id);
         self.next_id = self.next_id.max(max_id.saturating_add(1));
+    }
+}
+
+/// The members' timelines of every group on `tl`'s keyframes, and of the groups inside them, in
+/// order, up to [`MAX_GROUP_DEPTH`] deep.
+fn group_timelines<'a>(tl: &'a Timeline, depth: usize, out: &mut Vec<&'a Timeline>) {
+    if depth >= MAX_GROUP_DEPTH {
+        return;
+    }
+    for e in tl.layers.iter().flat_map(|l| l.keyframes.iter()).flat_map(|k| k.elements.iter()) {
+        if let ElementKind::Group { members } = &e.kind {
+            out.push(members);
+            group_timelines(members, depth + 1, out);
+        }
+    }
+}
+
+/// Repairs the groups on a loaded layer (ADR 0073), however deep: each group's members are one
+/// frame of normal layers (a camera or armature layer inside one becomes a normal layer), every
+/// layer at least one keyframe at frame 0, and groups past [`MAX_GROUP_DEPTH`] are dropped. Ids
+/// inside count towards `max_id`. Touches only what needs it.
+fn sanitize_groups(layer: &mut Arc<Layer>, depth: usize, max_id: &mut u64) {
+    let has_groups = layer.keyframes.iter().any(|k| k.elements.iter().any(|e| matches!(e.kind, ElementKind::Group { .. })));
+    if !has_groups {
+        return;
+    }
+    let l = Arc::make_mut(layer);
+    for k in &mut l.keyframes {
+        if !k.elements.iter().any(|e| matches!(e.kind, ElementKind::Group { .. })) {
+            continue;
+        }
+        let k = Arc::make_mut(k);
+        if depth >= MAX_GROUP_DEPTH {
+            k.elements.retain(|e| !matches!(e.kind, ElementKind::Group { .. }));
+            continue;
+        }
+        for e in &mut k.elements {
+            if !matches!(e.kind, ElementKind::Group { .. }) {
+                continue;
+            }
+            let ElementKind::Group { members } = &mut Arc::make_mut(e).kind else { continue };
+            for gl in &mut members.layers {
+                *max_id = (*max_id).max(gl.id.0);
+                let bad_kind = matches!(gl.kind, LayerKind::Camera | LayerKind::Armature | LayerKind::Folder);
+                let bad_frames = gl.keyframes.len() != 1 || gl.keyframes.first().is_some_and(|k| k.start != 0 || k.duration != 1 || k.tween.is_some() || k.motion.is_some());
+                if bad_kind || bad_frames {
+                    let g = Arc::make_mut(gl);
+                    if bad_kind {
+                        g.kind = LayerKind::Normal;
+                        g.armature = None;
+                    }
+                    if bad_frames {
+                        // The frame a group shows (its first), as its only one.
+                        let mut first = g.keyframes.iter().find(|k| k.start == 0).map_or_else(|| Keyframe::new(0, 1), |k| (**k).clone());
+                        first.duration = 1;
+                        first.tween = None;
+                        first.motion = None;
+                        g.keyframes = vec![Arc::new(first)];
+                    }
+                }
+                for ge in gl.keyframes.iter().flat_map(|k| k.elements.iter()) {
+                    *max_id = (*max_id).max(ge.id.0);
+                }
+                sanitize_groups(gl, depth + 1, max_id);
+            }
+            members.repair_masks();
+        }
     }
 }
 

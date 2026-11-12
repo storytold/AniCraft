@@ -479,6 +479,13 @@ impl<'a> Bake<'a> {
             }
             // The camera is the view, not artwork (ADR 0027): it is baked into the layers.
             ElementKind::Camera => {}
+            // A group's members, placed and coloured by it, as if they stood on its layer (ADR
+            // 0073). (A translucent group's members fade one by one here.)
+            ElementKind::Group { .. } => {
+                for m in anicraft_doc::expand_groups(std::slice::from_ref(&Arc::new(el.clone()))).iter() {
+                    self.element(m, layer, f, start, out);
+                }
+            }
             ElementKind::Text(t) => match &t.field {
                 Some(f) => {
                     let item = self.field(el, t, f);
@@ -737,7 +744,7 @@ fn used_symbols(doc: &Document) -> Vec<SymbolId> {
     let mut order = Vec::new();
     let mut queue: VecDeque<&Timeline> = doc.scenes.iter().map(|s| &s.timeline).collect();
     while let Some(tl) = queue.pop_front() {
-        for el in tl.layers.iter().flat_map(|l| l.keyframes.iter()).flat_map(|k| k.elements.iter()) {
+        for el in tl.layers.iter().flat_map(|l| l.keyframes.iter()).flat_map(|k| anicraft_doc::expand_groups(&k.elements).into_owned()) {
             if let ElementKind::Symbol { symbol, .. } = &el.kind
                 && let Some(sym) = doc.symbol(*symbol)
                 && seen.insert(*symbol)

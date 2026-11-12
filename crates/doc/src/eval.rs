@@ -308,6 +308,8 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
         // Text tweens its placement and colour effect; the words stay the first keyframe's.
         (ElementKind::Text(_), ElementKind::Text(_)) => a.kind.clone(),
         (ElementKind::Camera, ElementKind::Camera) => ElementKind::Camera,
+        // A group tweens its placement and colour effect; its members stay the first keyframe's.
+        (ElementKind::Group { .. }, ElementKind::Group { .. }) => a.kind.clone(),
         _ => return None,
     };
     let mut transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
@@ -393,7 +395,7 @@ pub fn guide_walk(guide: &Layer, frame: u32) -> Option<PathWalk> {
             }
             PathWalk::new(&pts)
         }
-        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
+        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => None,
     })
 }
 
@@ -454,127 +456,169 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let layer_outline = cx.outline.or(if layer.outline && cx.stage { Some(layer.color) } else { None });
         // Through a camera, each layer is placed by the camera and its own depth.
         let layer_xf = cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth));
+        let lc = LayerCtx { layer, frame, kf_start, clip, masks, guide, outline: layer_outline, xf: layer_xf };
         for el in elements.iter() {
-            // In the player, a symbol instance has its own path, and maybe properties a script set.
-            let child = match (&el.kind, play) {
-                (ElementKind::Symbol { .. }, Some(p)) => Some(p.child(el.id)),
-                // So is a dynamic or input text field (ADR 0066).
-                (ElementKind::Text(t), Some(p)) if t.field.is_some() => Some(p.child(el.id)),
-                _ => None,
+            eval_element(doc, cx, &lc, el, out, play);
+        }
+    }
+}
+
+/// The layer an element is drawn on, as [`eval_element`] needs it.
+#[derive(Clone, Copy)]
+struct LayerCtx<'a> {
+    layer: &'a Layer,
+    frame: u32,
+    /// The first frame of the keyframe the element is on.
+    kf_start: u32,
+    clip: Option<u32>,
+    masks: Option<u32>,
+    guide: bool,
+    outline: Option<Rgba>,
+    /// The layer's space (and, inside a group, the group's) to stage space.
+    xf: Affine,
+}
+
+fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: &mut DisplayList, play: Option<&Play<'_>>) {
+    let LayerCtx { layer, frame, kf_start, clip, masks, guide, outline: layer_outline, xf: layer_xf } = *lc;
+    // In the player, a symbol instance has its own path, and maybe properties a script set.
+    let child = match (&el.kind, play) {
+        (ElementKind::Symbol { .. }, Some(p)) => Some(p.child(el.id)),
+        // So is a dynamic or input text field (ADR 0066).
+        (ElementKind::Text(t), Some(p)) if t.field.is_some() => Some(p.child(el.id)),
+        _ => None,
+    };
+    let set;
+    let el: &Element = match child.as_ref().and_then(|c| c.state.props.get(&c.path)) {
+        Some(ov) if !ov.shown() => return,
+        Some(ov) => {
+            set = ov.apply(el);
+            &set
+        }
+        None => el,
+    };
+    let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
+    let xf = layer_xf.mul(&el.transform);
+    let fx = el.color.transform();
+    let color = cx.color.concat(&fx);
+    match &el.kind {
+        ElementKind::Shape(s) => {
+            // Inside a 9-slice instance, the shape's outline is cut and mapped (bitmap
+            // fills scale normally, as in Animate).
+            let sliced = cx.slice.filter(|_| !matches!(s.fill, Some(Paint::Bitmap { .. }))).map(|sl| sliced_shape(s, &el.transform, &sl));
+            let (path, transform, fill, stroke) = match sliced {
+                Some(x) => x,
+                None => (s.path.clone(), xf, s.fill.clone(), s.stroke.clone()),
             };
-            let set;
-            let el: &Element = match child.as_ref().and_then(|c| c.state.props.get(&c.path)) {
-                Some(ov) if !ov.shown() => continue,
-                Some(ov) => {
-                    set = ov.apply(el);
-                    &set
-                }
-                None => el,
+            out.items.push(DisplayItem {
+                path,
+                transform,
+                fill,
+                stroke,
+                fill_rule: s.fill_rule,
+                color,
+                layer: root_layer,
+                element: root_el,
+                outline: layer_outline,
+                clip,
+                masks,
+                guide,
+                group: cx.group,
+                image: match &s.fill {
+                    Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).and_then(crate::Bitmap::pixels),
+                    _ => None,
+                },
+                smooth: match &s.fill {
+                    Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).is_none_or(|b| b.smoothing),
+                    _ => true,
+                },
+            });
+        }
+        ElementKind::Text(t) => {
+            let item = |path: Arc<Path>, transform: Affine, fill: Option<Paint>, stroke: Option<Stroke>, clip: Option<u32>, masks: Option<u32>| DisplayItem {
+                path,
+                transform,
+                fill,
+                stroke,
+                fill_rule: FillRule::NonZero,
+                color,
+                layer: root_layer,
+                element: root_el,
+                outline: layer_outline,
+                clip,
+                masks,
+                guide,
+                group: cx.group,
+                image: None,
+                smooth: true,
             };
-            let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
-            let xf = layer_xf.mul(&el.transform);
-            let fx = el.color.transform();
-            let color = cx.color.concat(&fx);
-            match &el.kind {
-                ElementKind::Shape(s) => {
-                    // Inside a 9-slice instance, the shape's outline is cut and mapped (bitmap
-                    // fills scale normally, as in Animate).
-                    let sliced = cx.slice.filter(|_| !matches!(s.fill, Some(Paint::Bitmap { .. }))).map(|sl| sliced_shape(s, &el.transform, &sl));
-                    let (path, transform, fill, stroke) = match sliced {
-                        Some(x) => x,
-                        None => (s.path.clone(), xf, s.fill.clone(), s.stroke.clone()),
-                    };
-                    out.items.push(DisplayItem {
-                        path,
-                        transform,
-                        fill,
-                        stroke,
-                        fill_rule: s.fill_rule,
-                        color,
-                        layer: root_layer,
-                        element: root_el,
-                        outline: layer_outline,
-                        clip,
-                        masks,
-                        guide,
-                        group: cx.group,
-                        image: match &s.fill {
-                            Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).and_then(crate::Bitmap::pixels),
-                            _ => None,
-                        },
-                        smooth: match &s.fill {
-                            Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).is_none_or(|b| b.smoothing),
-                            _ => true,
-                        },
-                    });
+            match &t.field {
+                // Mask artwork: a field's text masks; its box and border don't.
+                Some(f) if masks.is_none() => {
+                    let live = child.as_ref().map(|c| (c.state.fields.get(&c.path), c.state.focus.as_deref() == Some(c.path.as_slice())));
+                    field_items(t, f, live, xf, clip, out, item);
                 }
-                ElementKind::Text(t) => {
-                    let item = |path: Arc<Path>, transform: Affine, fill: Option<Paint>, stroke: Option<Stroke>, clip: Option<u32>, masks: Option<u32>| DisplayItem {
-                        path,
-                        transform,
-                        fill,
-                        stroke,
-                        fill_rule: FillRule::NonZero,
-                        color,
-                        layer: root_layer,
-                        element: root_el,
-                        outline: layer_outline,
-                        clip,
-                        masks,
-                        guide,
-                        group: cx.group,
-                        image: None,
-                        smooth: true,
-                    };
-                    match &t.field {
-                        // Mask artwork: a field's text masks; its box and border don't.
-                        Some(f) if masks.is_none() => {
-                            let live = child.as_ref().map(|c| (c.state.fields.get(&c.path), c.state.focus.as_deref() == Some(c.path.as_slice())));
-                            field_items(t, f, live, xf, clip, out, item);
-                        }
-                        _ => {
-                            let path = child.as_ref().and_then(|c| c.state.fields.get(&c.path)).and_then(|s| s.look.as_ref()).map_or_else(|| t.outline.clone(), |l| l.outline.clone());
-                            out.items.push(item(path, xf, Some(Paint::Solid(t.color)), None, clip, masks));
-                        }
-                    }
-                }
-                ElementKind::Camera => {}
-                ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } => {
-                    let Some(sym) = doc.symbol(*symbol) else { continue };
-                    let len = sym.timeline.frame_count();
-                    let local = match (sym.kind, &child) {
-                        // A graphic keeps step with this timeline: loop mode and first frame apply.
-                        (SymbolKind::Graphic, _) => loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, len),
-                        // In the player, movie clips and buttons are where it has them.
-                        (SymbolKind::MovieClip, Some(c)) => c.state.clip_frame(&c.path, len),
-                        (SymbolKind::Button, Some(c)) => c.state.button_frame(&c.path, len),
-                        // A movie clip plays its own timeline on a loop from when the instance
-                        // appeared, carrying on across keyframes that hold the same instance.
-                        (SymbolKind::MovieClip, None) => frame.saturating_sub(instance_start(layer, frame, el.id, *symbol)) % len.max(1),
-                        // While editing, a button shows its Up frame.
-                        (SymbolKind::Button, None) => 0,
-                    };
-                    // An instance below full opacity fades as one: its contents composite in a
-                    // group at full opacity, and the group blends at the instance's alpha. (Mask
-                    // artwork ignores opacity, so it never needs one.)
-                    // A blend mode composites the instance on its own too, then blends it.
-                    // An alpha offset (Advanced) changes each item's alpha on its own: it stays
-                    // in the items' transform, and the group (for a blend or filters) is opaque.
-                    let fade = fx.alpha_factor().unwrap_or(1.0);
-                    let (color, group) = if masks.is_none() && (fade < 1.0 - 1e-4 || !blend.is_normal() || !filters.is_empty()) {
-                        let gid = out.groups.len() as u32;
-                        out.groups.push(Group { parent: cx.group, alpha: fade, blend: *blend, filters: filters.iter().map(crate::Filter::sanitized).collect(), clip });
-                        let inner = if fx.alpha_factor().is_some() { fx.without_alpha() } else { fx };
-                        (cx.color.concat(&inner), Some(gid))
-                    } else {
-                        (color, cx.group)
-                    };
-                    // A symbol with 9-slice guides, scaled: its shapes are sliced (ADR 0055).
-                    let slice = crate::nine_slice::slicing(doc, sym, &el.transform).map(|s| Slicing { post: layer_xf.mul(&s.post), ..s });
-                    let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, stage: cx.stage, clip, masks, guide, group, camera: None, slice };
-                    eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
+                _ => {
+                    let path = child.as_ref().and_then(|c| c.state.fields.get(&c.path)).and_then(|s| s.look.as_ref()).map_or_else(|| t.outline.clone(), |l| l.outline.clone());
+                    out.items.push(item(path, xf, Some(Paint::Solid(t.color)), None, clip, masks));
                 }
             }
+        }
+        ElementKind::Camera => {}
+        // A group (ADR 0073): its members, placed and coloured by it, as if they stood on its layer
+        // (graphics and movie clips inside keep time with it), picked as it. Below full opacity it
+        // fades as one, as an instance does.
+        ElementKind::Group { members } => {
+            if cx.depth > MAX_SYMBOL_DEPTH + crate::MAX_GROUP_DEPTH {
+                return;
+            }
+            let fade = fx.alpha_factor().unwrap_or(1.0);
+            let (color, group) = if masks.is_none() && fade < 1.0 - 1e-4 {
+                let gid = out.groups.len() as u32;
+                out.groups.push(Group { parent: cx.group, alpha: fade, blend: crate::BlendMode::Normal, filters: Arc::from(Vec::new()), clip });
+                (cx.color.concat(&fx.without_alpha()), Some(gid))
+            } else {
+                (color, cx.group)
+            };
+            let inner = Ctx { color, depth: cx.depth + 1, root: Some((root_layer, root_el)), group, slice: None, camera: None, ..*cx };
+            let lc = LayerCtx { xf, ..*lc };
+            for m in members.layers.iter().rev().filter(|l| l.visible && l.kind != LayerKind::Guide).filter_map(|l| l.keyframe_at(0)).flat_map(|k| k.elements.iter()) {
+                eval_element(doc, &inner, &lc, m, out, play);
+            }
+        }
+        ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } => {
+            let Some(sym) = doc.symbol(*symbol) else { return };
+            let len = sym.timeline.frame_count();
+            let local = match (sym.kind, &child) {
+                // A graphic keeps step with this timeline: loop mode and first frame apply.
+                (SymbolKind::Graphic, _) => loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, len),
+                // In the player, movie clips and buttons are where it has them.
+                (SymbolKind::MovieClip, Some(c)) => c.state.clip_frame(&c.path, len),
+                (SymbolKind::Button, Some(c)) => c.state.button_frame(&c.path, len),
+                // A movie clip plays its own timeline on a loop from when the instance
+                // appeared, carrying on across keyframes that hold the same instance.
+                (SymbolKind::MovieClip, None) => frame.saturating_sub(instance_start(layer, frame, el.id, *symbol)) % len.max(1),
+                // While editing, a button shows its Up frame.
+                (SymbolKind::Button, None) => 0,
+            };
+            // An instance below full opacity fades as one: its contents composite in a
+            // group at full opacity, and the group blends at the instance's alpha. (Mask
+            // artwork ignores opacity, so it never needs one.)
+            // A blend mode composites the instance on its own too, then blends it.
+            // An alpha offset (Advanced) changes each item's alpha on its own: it stays
+            // in the items' transform, and the group (for a blend or filters) is opaque.
+            let fade = fx.alpha_factor().unwrap_or(1.0);
+            let (color, group) = if masks.is_none() && (fade < 1.0 - 1e-4 || !blend.is_normal() || !filters.is_empty()) {
+                let gid = out.groups.len() as u32;
+                out.groups.push(Group { parent: cx.group, alpha: fade, blend: *blend, filters: filters.iter().map(crate::Filter::sanitized).collect(), clip });
+                let inner = if fx.alpha_factor().is_some() { fx.without_alpha() } else { fx };
+                (cx.color.concat(&inner), Some(gid))
+            } else {
+                (color, cx.group)
+            };
+            // A symbol with 9-slice guides, scaled: its shapes are sliced (ADR 0055).
+            let slice = crate::nine_slice::slicing(doc, sym, &el.transform).map(|s| Slicing { post: layer_xf.mul(&s.post), ..s });
+            let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, stage: cx.stage, clip, masks, guide, group, camera: None, slice };
+            eval_timeline(doc, &sym.timeline, local, &inner, out, child.as_ref());
         }
     }
 }

@@ -803,7 +803,29 @@ fn panic_hunt_every_command() {
     if let Some(id) = button.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::Button).map(|x| x.id) {
         button.execute("symbol.edit", &json!({"symbol": id.0})).unwrap();
     }
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, layered, in_symbol, keyed, library, button] {
+    // Groups (ADR 0073): raw shapes, an object and a symbol instance in a group inside a group,
+    // the outer one moved and translucent, the inner one open for editing in place.
+    let mut grouped = Session::new(sample::demo());
+    grouped.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("draw.ellipse", json!({"x": 20, "y": 20, "w": 60, "h": 60, "fill": "#ff0000", "object": true})),
+        ("edit.select_all", json!({})),
+        ("modify.group", json!({})),
+        ("draw.rect", json!({"x": 100, "y": 0, "w": 60, "h": 60, "object": true})),
+        ("edit.select_all", json!({})),
+        ("modify.group", json!({})),
+        ("element.translate", json!({"dx": 30, "dy": 15})),
+        ("element.set_alpha", json!({"alpha": 0.5})),
+        ("symbol.edit", json!({})),
+        ("edit.select_all", json!({})),
+    ] {
+        grouped.execute(id, &p).unwrap();
+    }
+    let inner = grouped.visible_elements().into_iter().find(|e| matches!(e.kind, anicraft_doc::ElementKind::Group { .. })).map(|e| e.id.0).unwrap();
+    grouped.execute("symbol.edit", &json!({"id": inner})).unwrap();
+    assert_eq!(grouped.editing.len(), 2, "the fuzz starts inside a group inside a group");
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, layered, in_symbol, keyed, library, button, grouped] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
