@@ -291,7 +291,7 @@ fn a_pasted_raw_shape_cuts_what_it_lands_on() {
 }
 
 fn linear() -> Paint {
-    Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(200.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff0000) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0000ff) }] }
+    Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff0000) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0000ff) }])
 }
 
 #[test]

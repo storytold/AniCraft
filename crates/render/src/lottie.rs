@@ -302,18 +302,36 @@ fn sample(item: &DisplayItem, opacity: f32, masks: Vec<Bez>, report: &mut HashSe
     } else {
         let fill = match &item.fill {
             Some(Paint::Solid(c)) => Some(Fill::Solid { color: fx.apply(*c), rule: item.fill_rule }),
-            Some(Paint::Linear { start, end, stops }) => Some(Fill::Gradient { radial: false, start: m.apply(*start), end: m.apply(*end), stops: stops.iter().map(|s| (s.offset, fx.apply(s.color))).collect(), rule: item.fill_rule }),
-            Some(Paint::Radial { center, radius, stops }) => {
-                // Lottie's radial gradients are circles: a stretched or skewed one is drawn
-                // with its mean radius.
-                let (ux, uy) = (m.apply_vector(Vec2::new(1.0, 0.0)), m.apply_vector(Vec2::new(0.0, 1.0)));
-                let (lx, ly) = (ux.length(), uy.length());
-                if (lx - ly).abs() > 0.01 * lx.max(ly) || ux.dot(uy).abs() > 0.01 * lx * ly {
-                    report.insert("stretched radial gradients (drawn as circles)");
+            Some(p @ (Paint::Linear { .. } | Paint::Radial { .. })) => {
+                // What Lottie's gradients can't show is drawn the nearest way, and said.
+                if let Paint::Linear { spread, linear_rgb, .. } | Paint::Radial { spread, linear_rgb, .. } = p {
+                    if !spread.is_pad() {
+                        report.insert("reflected or repeated gradients (padded)");
+                    }
+                    if *linear_rgb {
+                        report.insert("linear-RGB gradients (blended in sRGB)");
+                    }
                 }
-                let r = radius * m.mean_scale();
-                let c = m.apply(*center);
-                Some(Fill::Gradient { radial: true, start: c, end: c + Vec2::new(r, 0.0), stops: stops.iter().map(|s| (s.offset, fx.apply(s.color))).collect(), rule: item.fill_rule })
+                let stops = p.stops().unwrap_or(&[]).iter().map(|s| (s.offset, fx.apply(s.color))).collect();
+                match p {
+                    Paint::Linear { start, end, .. } => Some(Fill::Gradient { radial: false, start: m.apply(*start), end: m.apply(*end), stops, rule: item.fill_rule }),
+                    _ => {
+                        if matches!(p, Paint::Radial { focal, .. } if *focal != 0.0) {
+                            report.insert("radial gradient focal points (drawn centred)");
+                        }
+                        // Lottie's radial gradients are circles: a stretched or skewed one is
+                        // drawn with its mean radius.
+                        let f = m.mul(&p.frame(None).unwrap_or(Affine::IDENTITY));
+                        let (ux, uy) = (f.apply_vector(Vec2::new(1.0, 0.0)), f.apply_vector(Vec2::new(0.0, 1.0)));
+                        let (lx, ly) = (ux.length(), uy.length());
+                        if (lx - ly).abs() > 0.01 * lx.max(ly) || ux.dot(uy).abs() > 0.01 * lx * ly {
+                            report.insert("stretched radial gradients (drawn as circles)");
+                        }
+                        let r = f.mean_scale();
+                        let c = f.apply(Vec2::ZERO);
+                        Some(Fill::Gradient { radial: true, start: c, end: c + Vec2::new(r, 0.0), stops, rule: item.fill_rule })
+                    }
+                }
             }
             Some(Paint::Bitmap { .. }) => {
                 report.insert("bitmap fills (not exported yet)");
@@ -703,7 +721,7 @@ mod tests {
         use std::sync::Arc;
         let mut d = Document { scenes: vec![Arc::new(Scene::new("Scene 1"))], ..Document::default() };
         let stops = vec![GradientStop { offset: 0.0, color: Rgba::WHITE }, GradientStop { offset: 1.0, color: Rgba::new(1.0, 1.0, 1.0, 0.0) }];
-        let art = Shape::filled(Path::rect(0.0, 0.0, 200.0, 200.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(200.0, 0.0), stops });
+        let art = Shape::filled(Path::rect(0.0, 0.0, 200.0, 200.0), Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), stops));
         let square = Shape::filled(Path::rect(20.0, 20.0, 160.0, 160.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0)));
         for (id, kind, parent, shape) in [(1, LayerKind::Mask, None, art), (2, LayerKind::Normal, Some(LayerId(1)), square)] {
             let mut l = Layer::new(LayerId(id), format!("L{id}"));

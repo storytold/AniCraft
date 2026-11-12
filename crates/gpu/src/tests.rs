@@ -89,10 +89,30 @@ fn scenes() -> Vec<(&'static str, DisplayList, View)> {
     star.fill_rule = FillRule::EvenOdd;
     out.push(("star", list(vec![star]), view(80, 80, Some(Rgba::WHITE))));
     // Gradients under rotation and scale.
-    let mut lin = item(Path::rect(0.0, 0.0, 100.0, 60.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(100.0, 0.0), stops: stops(&[(0.0, red), (0.5, Rgba::WHITE), (1.0, blue)]) });
+    let mut lin = item(Path::rect(0.0, 0.0, 100.0, 60.0), Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), stops(&[(0.0, red), (0.5, Rgba::WHITE), (1.0, blue)])));
     lin.transform = Affine::translate(70.0, 10.0).mul(&Affine::rotate(0.4)).mul(&Affine::scale(1.2, 0.8));
-    let rad = item(Path::ellipse(60.0, 90.0, 50.0, 30.0), Paint::Radial { center: Vec2::new(60.0, 90.0), radius: 50.0, stops: stops(&[(0.0, Rgba::WHITE), (1.0, Rgba::new(0.0, 0.0, 0.0, 0.3))]) });
+    let rad = item(Path::ellipse(60.0, 90.0, 50.0, 30.0), Paint::radial(Vec2::new(60.0, 90.0), 50.0, stops(&[(0.0, Rgba::WHITE), (1.0, Rgba::new(0.0, 0.0, 0.0, 0.3))])));
     out.push(("gradients", list(vec![lin, rad]), view(180, 130, Some(Rgba::new(0.9, 0.9, 0.85, 1.0)))));
+    // Gradient options (ADR 0074): reflect and repeat, linear light, a focal point on a turned
+    // ellipse that repeats.
+    let three = stops(&[(0.0, red), (0.5, Rgba::new(1.0, 0.9, 0.3, 1.0)), (1.0, blue)]);
+    let mut refl = Paint::linear(Vec2::new(20.0, 0.0), Vec2::new(50.0, 0.0), three.clone());
+    if let Paint::Linear { spread, linear_rgb, .. } = &mut refl {
+        *spread = anicraft_doc::Spread::Reflect;
+        *linear_rgb = true;
+    }
+    let mut rep = Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(14.0, 9.0), three.clone());
+    if let Paint::Linear { spread, .. } = &mut rep {
+        *spread = anicraft_doc::Spread::Repeat;
+    }
+    let mut foc = Paint::radial(Vec2::ZERO, 1.0, three).with_frame(&Affine::translate(140.0, 60.0).mul(&Affine::rotate(0.6)).mul(&Affine::scale(40.0, 20.0)), None);
+    if let Paint::Radial { focal, spread, .. } = &mut foc {
+        *focal = 0.6;
+        *spread = anicraft_doc::Spread::Repeat;
+    }
+    let mut rep_item = item(Path::rect(0.0, 60.0, 90.0, 50.0), rep);
+    rep_item.transform = Affine::translate(5.0, 0.0);
+    out.push(("gradient options", list(vec![item(Path::rect(0.0, 0.0, 90.0, 55.0), refl), rep_item, item(Path::ellipse(140.0, 60.0, 60.0, 50.0), foc)]), view(210, 120, Some(Rgba::WHITE))));
     // Strokes: wide, thin (sub-pixel, faded), on open and closed paths.
     let mut wide = item(Path::line(Vec2::new(10.0, 20.0), Vec2::new(150.0, 70.0)), Paint::Solid(red));
     wide.fill = None;
@@ -166,7 +186,7 @@ fn composited_scenes() -> Vec<(&'static str, DisplayList, View)> {
     let red = Rgba::new(0.9, 0.1, 0.1, 1.0);
     let blue = Rgba::new(0.1, 0.2, 0.9, 0.6);
     let green = Rgba::new(0.2, 0.7, 0.3, 0.8);
-    let grad = || Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(120.0, 40.0), stops: stops(&[(0.0, red), (0.5, Rgba::new(1.0, 0.9, 0.3, 1.0)), (1.0, blue)]) };
+    let grad = || Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(120.0, 40.0), stops(&[(0.0, red), (0.5, Rgba::new(1.0, 0.9, 0.3, 1.0)), (1.0, blue)]));
     let mut out = Vec::new();
     // A mask: a gradient seen through a circle, an unclipped shape over it, and one under it.
     let dl = DisplayList {
@@ -256,7 +276,7 @@ fn composited_scenes() -> Vec<(&'static str, DisplayList, View)> {
     out.push(("malformed links", dl, view(50, 50, Some(Rgba::WHITE))));
     // Soft masks (ADR 0070): an alpha gradient fading a shape out, a luminance mask with a
     // stroke and overlapping faded art, and a soft mask inside a coverage one.
-    let fade = Paint::Linear { start: Vec2::new(10.0, 0.0), end: Vec2::new(110.0, 0.0), stops: stops(&[(0.0, Rgba::new(1.0, 1.0, 1.0, 0.0)), (1.0, Rgba::new(0.2, 0.9, 0.4, 1.0))]) };
+    let fade = Paint::linear(Vec2::new(10.0, 0.0), Vec2::new(110.0, 0.0), stops(&[(0.0, Rgba::new(1.0, 1.0, 1.0, 0.0)), (1.0, Rgba::new(0.2, 0.9, 0.4, 1.0))]));
     let soft_art = |path: Path, paint: Paint, clip: u32| {
         let mut m = item(path, paint);
         m.masks = Some(clip);
@@ -347,7 +367,14 @@ fn emulate(b: &Binned, v: &View) -> Vec<Premul> {
                         let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
                         let q = Vec2::new(m[0] * p.x + m[2] * p.y + nn[0], m[1] * p.x + m[3] * p.y + nn[1]);
                         let d = q - Vec2::new(nn[2], nn[3]);
-                        let t = if kind == 1 { d.x * g[0] + d.y * g[1] } else { d.length() * g[2] };
+                        // As fine.wgsl: spread code and focal point in the first vec4.
+                        let o = b.paints[base];
+                        let t = if kind == 1 { d.x * g[0] + d.y * g[1] } else { anicraft_render::paint::focal_t(d * g[2], o[1]) };
+                        let t = match o[0] as u32 {
+                            1 => anicraft_doc::Spread::Reflect.apply(t),
+                            2 => anicraft_doc::Spread::Repeat.apply(t),
+                            _ => t,
+                        };
                         let i = (t.clamp(0.0, 1.0) * 255.0 + 0.5) as usize & 255;
                         b.paints[b.op_heads[hd + 2] as usize + i]
                     }
@@ -909,7 +936,7 @@ fn bitmap_scenes() -> Vec<(&'static str, DisplayList, View)> {
     let empty = Arc::new(anicraft_doc::Pixels { width: 0, height: 3, rgba: Vec::new() });
     out.push(("malformed bitmaps", list(vec![bitmap_item(Path::rect(0.0, 0.0, 30.0, 30.0), &short, false, Affine::scale(7.0, 7.0)), bitmap_item(Path::rect(10.0, 0.0, 10.0, 30.0), &empty, true, Affine::IDENTITY)]), view(32, 32, white)));
     // Inside a mask and a faded group, over a gradient.
-    let grad = item(Path::rect(0.0, 0.0, 80.0, 60.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(80.0, 60.0), stops: stops(&[(0.0, Rgba::BLACK), (1.0, Rgba::new(1.0, 0.8, 0.0, 1.0))]) });
+    let grad = item(Path::rect(0.0, 0.0, 80.0, 60.0), Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(80.0, 60.0), stops(&[(0.0, Rgba::BLACK), (1.0, Rgba::new(1.0, 0.8, 0.0, 1.0))])));
     let inside = in_group(clipped(bitmap_item(Path::rect(4.0, 4.0, 72.0, 52.0), &a, true, turned), 0), 0);
     let dl = DisplayList { clip_modes: Vec::new(), items: vec![grad, inside, mask(Path::ellipse(40.0, 30.0, 30.0, 22.0), 0)], clip_parents: vec![None], groups: vec![group(None, 0.7, BlendMode::Multiply)] };
     out.push(("bitmap masked and multiplied", dl, view(80, 60, white)));
@@ -989,7 +1016,7 @@ fn symbol_items(g: u32) -> Vec<DisplayItem> {
 #[test]
 fn gpu_matches_the_oracle_on_every_filter() {
     let Some(g) = gpu() else { return };
-    let backdrop = item(Path::rect(0.0, 0.0, 70.0, 60.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(70.0, 0.0), stops: stops(&[(0.0, Rgba::new(0.9, 0.9, 0.8, 1.0)), (1.0, Rgba::new(0.2, 0.4, 0.5, 1.0))]) });
+    let backdrop = item(Path::rect(0.0, 0.0, 70.0, 60.0), Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(70.0, 0.0), stops(&[(0.0, Rgba::new(0.9, 0.9, 0.8, 1.0)), (1.0, Rgba::new(0.2, 0.4, 0.5, 1.0))])));
     let mut worst: f64 = 0.0;
     for (name, f) in filters_to_test() {
         let mut items = vec![backdrop.clone()];

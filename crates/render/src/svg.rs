@@ -461,14 +461,37 @@ fn paint_attr(paint: &Paint, xf: &Affine, fx: &ColorTransform, defs: &mut String
     sorted.sort_by(|a, b| a.offset.total_cmp(&b.offset));
     let id = format!("g{n}");
     *n += 1;
-    let m = xf.m;
-    let gt = format!(" gradientUnits=\"userSpaceOnUse\" gradientTransform=\"matrix({} {} {} {} {} {})\"", num(m[0]), num(m[1]), num(m[2]), num(m[3]), num(m[4]), num(m[5]));
+    // A radial gradient's own matrix (an ellipse) goes into the gradient transform; its focal
+    // point lies on its own x axis (ADR 0074).
+    let own = match paint {
+        Paint::Radial { matrix, .. } => xf.mul(matrix),
+        _ => *xf,
+    };
+    let m = own.m;
+    let mut gt = format!(" gradientUnits=\"userSpaceOnUse\" gradientTransform=\"matrix({} {} {} {} {} {})\"", num(m[0]), num(m[1]), num(m[2]), num(m[3]), num(m[4]), num(m[5]));
+    let (spread, linear_rgb) = match paint {
+        Paint::Linear { spread, linear_rgb, .. } | Paint::Radial { spread, linear_rgb, .. } => (*spread, *linear_rgb),
+        _ => (anicraft_doc::Spread::Pad, false),
+    };
+    match spread {
+        anicraft_doc::Spread::Pad => {}
+        anicraft_doc::Spread::Reflect => gt.push_str(" spreadMethod=\"reflect\""),
+        anicraft_doc::Spread::Repeat => gt.push_str(" spreadMethod=\"repeat\""),
+    }
+    if linear_rgb {
+        gt.push_str(" color-interpolation=\"linearRGB\"");
+    }
     match paint {
         Paint::Linear { start, end, .. } => {
             let _ = write!(defs, "<linearGradient id=\"{id}\"{gt} x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">", num(start.x), num(start.y), num(end.x), num(end.y));
         }
-        Paint::Radial { center, radius, .. } => {
-            let _ = write!(defs, "<radialGradient id=\"{id}\"{gt} cx=\"{}\" cy=\"{}\" r=\"{}\">", num(center.x), num(center.y), num(radius.max(0.0)));
+        Paint::Radial { center, radius, focal, .. } => {
+            let r = radius.max(0.0);
+            let _ = write!(defs, "<radialGradient id=\"{id}\"{gt} cx=\"{}\" cy=\"{}\" r=\"{}\"", num(center.x), num(center.y), num(r));
+            if *focal != 0.0 && focal.is_finite() {
+                let _ = write!(defs, " fx=\"{}\" fy=\"{}\"", num(center.x + focal.clamp(-anicraft_doc::MAX_FOCAL, anicraft_doc::MAX_FOCAL) * r), num(center.y));
+            }
+            defs.push('>');
         }
         Paint::Solid(_) | Paint::Bitmap { .. } => return None,
     }
@@ -582,7 +605,7 @@ mod tests {
     #[test]
     fn gradients_keep_local_geometry_and_masks_become_clip_paths() {
         let stops = vec![GradientStop { offset: 0.0, color: Rgba::BLACK }, GradientStop { offset: 1.0, color: Rgba::WHITE.with_alpha(0.25) }];
-        let mut g = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(10.0, 0.0), stops }));
+        let mut g = item(Path::rect(0.0, 0.0, 10.0, 10.0), Some(Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), stops)));
         g.transform = Affine::translate(20.0, 0.0);
         g.clip = Some(1);
         let mut outer = item(Path::rect(0.0, 0.0, 50.0, 50.0), Some(Paint::Solid(Rgba::BLACK)));
@@ -638,7 +661,7 @@ mod tests {
         // A broken transform, an empty gradient, an invisible fill and a malformed clip link.
         let mut bad = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Solid(Rgba::BLACK)));
         bad.transform = Affine::scale(f32::NAN, 1.0);
-        let empty = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Radial { center: Vec2::new(0.0, 0.0), radius: f32::INFINITY, stops: vec![] }));
+        let empty = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::radial(Vec2::new(0.0, 0.0), f32::INFINITY, vec![])));
         let clear = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Solid(Rgba::TRANSPARENT)));
         let mut lost = item(Path::rect(0.0, 0.0, 1.0, 1.0), Some(Paint::Solid(Rgba::BLACK)));
         lost.clip = Some(7);

@@ -1345,7 +1345,7 @@ impl App {
                 }
                 let mask = self.run("layer.new", json!({"name": "Soft mask"})).and_then(|v| v["layer"].as_u64());
                 let stops = vec![anicraft_engine::doc::GradientStop { offset: 0.0, color: anicraft_engine::doc::Rgba::WHITE }, anicraft_engine::doc::GradientStop { offset: 1.0, color: anicraft_engine::doc::Rgba::WHITE.with_alpha(0.0) }];
-                let swatch = self.s.style.fill_paint.replace(anicraft_engine::doc::Paint::Radial { center: anicraft_engine::geom::Vec2::new(320.0, 200.0), radius: 190.0, stops });
+                let swatch = self.s.style.fill_paint.replace(anicraft_engine::doc::Paint::radial(anicraft_engine::geom::Vec2::new(320.0, 200.0), 190.0, stops));
                 self.run("draw.ellipse", json!({"x": 130, "y": 10, "w": 380, "h": 380, "stroke": null}));
                 self.s.style.fill_paint = swatch;
                 self.run("layer.toggle_mask", json!({}));

@@ -106,12 +106,103 @@ pub struct GradientStop {
     pub color: Rgba,
 }
 
+/// What a gradient shows past its ends (Animate's Overflow / Flow, SVG's `spreadMethod`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Spread {
+    /// The end colours carry on (Animate's Extend, SVG's `pad`).
+    #[default]
+    Pad,
+    /// The ramp mirrors back and forth.
+    Reflect,
+    /// The ramp starts again.
+    Repeat,
+}
+
+impl Spread {
+    pub const ALL: [Spread; 3] = [Spread::Pad, Spread::Reflect, Spread::Repeat];
+    pub fn is_pad(&self) -> bool {
+        *self == Spread::Pad
+    }
+    /// The key commands and files use (`extend` is Animate's name for `pad`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Spread::Pad => "extend",
+            Spread::Reflect => "reflect",
+            Spread::Repeat => "repeat",
+        }
+    }
+    pub fn from_key(s: &str) -> Option<Spread> {
+        match s {
+            "extend" | "pad" => Some(Spread::Pad),
+            "reflect" => Some(Spread::Reflect),
+            "repeat" => Some(Spread::Repeat),
+            _ => None,
+        }
+    }
+    /// Gradient position `t` (0 at the start, 1 at the end) → where on the ramp, in `0..=1`.
+    /// Non-finite positions read the start.
+    pub fn apply(self, t: f32) -> f32 {
+        if !t.is_finite() {
+            return 0.0;
+        }
+        match self {
+            Spread::Pad => t.clamp(0.0, 1.0),
+            Spread::Repeat => {
+                let f = t.rem_euclid(1.0);
+                // `rem_euclid` can round up to exactly 1 for tiny negative values.
+                if f >= 1.0 { 0.0 } else { f }
+            }
+            Spread::Reflect => {
+                let m = t.rem_euclid(2.0);
+                (if m > 1.0 { 2.0 - m } else { m }).clamp(0.0, 1.0)
+            }
+        }
+    }
+}
+
+/// Most stops a fill gradient may have (Animate allows 15).
+pub const MAX_GRADIENT_STOPS: usize = 15;
+/// How far the focal point may sit from the centre, as a share of the radius (a focal point on
+/// the ring itself is undefined; Animate's focal ratio runs to ±1 too).
+pub const MAX_FOCAL: f32 = 0.98;
+
 /// How a region is painted. Gradient geometry is in the element's local space.
+///
+/// Gradients may carry options that older files don't have (ADR 0074): what shows past the ends
+/// (`spread`), interpolation in linear light (`linear_rgb`), and for a radial gradient a focal
+/// point and a `matrix` that turns its circle into any ellipse. Each is written only when set,
+/// so a plain gradient is stored as before.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Paint {
     Solid(Rgba),
-    Linear { start: Vec2, end: Vec2, stops: Vec<GradientStop> },
-    Radial { center: Vec2, radius: f32, stops: Vec<GradientStop> },
+    Linear {
+        start: Vec2,
+        end: Vec2,
+        stops: Vec<GradientStop>,
+        #[serde(default, skip_serializing_if = "Spread::is_pad")]
+        spread: Spread,
+        /// Mix the stops in linear light (Animate's "Linear RGB"), not in sRGB.
+        #[serde(default, skip_serializing_if = "is_false")]
+        linear_rgb: bool,
+    },
+    /// The circle of `radius` round `center`, carried by `matrix` (an ellipse at any angle).
+    Radial {
+        center: Vec2,
+        radius: f32,
+        stops: Vec<GradientStop>,
+        #[serde(default, skip_serializing_if = "Spread::is_pad")]
+        spread: Spread,
+        #[serde(default, skip_serializing_if = "is_false")]
+        linear_rgb: bool,
+        /// Where the ramp starts, along the gradient's own x axis from the centre, as a share
+        /// of the radius in `-MAX_FOCAL..=MAX_FOCAL` (Animate's focal point ratio).
+        #[serde(default, skip_serializing_if = "is_zero")]
+        focal: f32,
+        /// Gradient space → shape space (identity: the plain circle).
+        #[serde(default, skip_serializing_if = "is_identity")]
+        matrix: Affine,
+    },
     /// A bitmap, its pixel (x, y) at local `matrix · (x, y)`; `repeat` tiles it, otherwise it
     /// shows once (an imported image is a rectangle of exactly its size, with no matrix).
     Bitmap {
@@ -128,7 +219,19 @@ fn is_identity(m: &Affine) -> bool {
     *m == Affine::IDENTITY
 }
 
+/// The canonical box a fill's frame maps: `-1..=1` on both axes (Animate's gradient square).
+pub const FRAME_BOX: Rect = Rect { min: Vec2 { x: -1.0, y: -1.0 }, max: Vec2 { x: 1.0, y: 1.0 } };
+
 impl Paint {
+    /// A linear gradient from `start` to `end`, with no options.
+    pub fn linear(start: Vec2, end: Vec2, stops: Vec<GradientStop>) -> Paint {
+        Paint::Linear { start, end, stops, spread: Spread::Pad, linear_rgb: false }
+    }
+    /// A radial gradient: the circle of `radius` round `center`, with no options.
+    pub fn radial(center: Vec2, radius: f32, stops: Vec<GradientStop>) -> Paint {
+        Paint::Radial { center, radius, stops, spread: Spread::Pad, linear_rgb: false, focal: 0.0, matrix: Affine::IDENTITY }
+    }
+
     /// A representative colour (first stop for gradients) for swatches and the properties panel.
     pub fn primary_color(&self) -> Rgba {
         match self {
@@ -138,15 +241,116 @@ impl Paint {
         }
     }
 
+    /// A gradient's colour stops.
+    pub fn stops(&self) -> Option<&[GradientStop]> {
+        match self {
+            Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => Some(stops),
+            _ => None,
+        }
+    }
+    pub fn stops_mut(&mut self) -> Option<&mut Vec<GradientStop>> {
+        match self {
+            Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => Some(stops),
+            _ => None,
+        }
+    }
+    pub fn is_gradient(&self) -> bool {
+        matches!(self, Paint::Linear { .. } | Paint::Radial { .. })
+    }
+
     /// The paint carried by `m` (its geometry moved from one space to another), so a shape in
-    /// the new space shows it where it was: gradient ends and centre are mapped, a radial
-    /// gradient's radius scales by the mean scale, a bitmap's matrix is composed.
+    /// the new space shows it where it was: gradient ends are mapped, a radial gradient's and a
+    /// bitmap's matrix is composed (exact under any transform).
     pub fn transformed(&self, m: &Affine) -> Paint {
         match self {
             Paint::Solid(_) => self.clone(),
-            Paint::Linear { start, end, stops } => Paint::Linear { start: m.apply(*start), end: m.apply(*end), stops: stops.clone() },
-            Paint::Radial { center, radius, stops } => Paint::Radial { center: m.apply(*center), radius: radius * m.mean_scale(), stops: stops.clone() },
+            Paint::Linear { start, end, stops, spread, linear_rgb } => Paint::Linear { start: m.apply(*start), end: m.apply(*end), stops: stops.clone(), spread: *spread, linear_rgb: *linear_rgb },
+            Paint::Radial { .. } => match self.frame(None) {
+                Some(f) => self.with_frame(&m.mul(&f), None),
+                None => self.clone(),
+            },
             Paint::Bitmap { bitmap, repeat, matrix } => Paint::Bitmap { bitmap: *bitmap, repeat: *repeat, matrix: m.mul(matrix) },
+        }
+    }
+
+    /// The fill's frame: the map from [`FRAME_BOX`] to the paint's space, which the Gradient
+    /// Transform tool edits (ADR 0074).
+    ///
+    /// * Linear: x from −1 at the start to 1 at the end, y square to it at the same scale.
+    /// * Radial: the unit circle onto the gradient's ring (x is its own axis, where the focal
+    ///   point sits).
+    /// * Bitmap: the box onto one copy of the image (`image` is its size in pixels).
+    ///
+    /// `None` for solid colours and a bitmap of unknown size.
+    pub fn frame(&self, image: Option<(f32, f32)>) -> Option<Affine> {
+        match self {
+            Paint::Solid(_) => None,
+            Paint::Linear { start, end, .. } => {
+                let mid = start.lerp(*end, 0.5);
+                let h = (*end - *start) * 0.5;
+                Some(Affine { m: [h.x, h.y, -h.y, h.x, mid.x, mid.y] })
+            }
+            Paint::Radial { center, radius, matrix, .. } => Some(matrix.mul(&Affine::translate(center.x, center.y)).mul(&Affine::scale(*radius, *radius))),
+            Paint::Bitmap { matrix, .. } => {
+                let (w, h) = image?;
+                Some(matrix.mul(&Affine::translate(w * 0.5, h * 0.5)).mul(&Affine::scale(w * 0.5, h * 0.5)))
+            }
+        }
+    }
+
+    /// This paint with its frame set to `f` (see [`Paint::frame`]); the stops and options stay.
+    /// A linear gradient keeps only the frame's x axis. A radial gradient is stored as a
+    /// circle when `f` is one, else with a matrix about its centre. Solid colours (and bitmaps
+    /// without a size) are returned unchanged.
+    pub fn with_frame(&self, f: &Affine, image: Option<(f32, f32)>) -> Paint {
+        let finite = f.m.iter().all(|v| v.is_finite());
+        if !finite {
+            return self.clone();
+        }
+        match self {
+            Paint::Solid(_) => self.clone(),
+            Paint::Linear { stops, spread, linear_rgb, .. } => Paint::Linear { start: f.apply(Vec2::new(-1.0, 0.0)), end: f.apply(Vec2::new(1.0, 0.0)), stops: stops.clone(), spread: *spread, linear_rgb: *linear_rgb },
+            Paint::Radial { stops, spread, linear_rgb, focal, .. } => {
+                let center = f.apply(Vec2::ZERO);
+                let [a, b, c, d, ..] = f.m;
+                let radius = Vec2::new(a, b).length();
+                let (matrix, radius) = if radius > 1e-9 {
+                    // The linear part with the x axis's length taken out, about the centre.
+                    let l = Affine { m: [a / radius, b / radius, c / radius, d / radius, 0.0, 0.0] };
+                    let plain = (l.m[0] - 1.0).abs() < 1e-6 && l.m[1].abs() < 1e-6 && l.m[2].abs() < 1e-6 && (l.m[3] - 1.0).abs() < 1e-6;
+                    if plain { (Affine::IDENTITY, radius) } else { (Affine::translate(center.x, center.y).mul(&l).mul(&Affine::translate(-center.x, -center.y)), radius) }
+                } else {
+                    (Affine::IDENTITY, 0.0)
+                };
+                Paint::Radial { center, radius, stops: stops.clone(), spread: *spread, linear_rgb: *linear_rgb, focal: *focal, matrix }
+            }
+            Paint::Bitmap { bitmap, repeat, .. } => match image {
+                Some((w, h)) if w > 0.0 && h > 0.0 => Paint::Bitmap { bitmap: *bitmap, repeat: *repeat, matrix: f.mul(&Affine::scale(2.0 / w, 2.0 / h)).mul(&Affine::translate(-w * 0.5, -h * 0.5)) },
+                _ => self.clone(),
+            },
+        }
+    }
+
+    /// This gradient or bitmap placed on `bounds` (shape space), as Animate pours an unlocked
+    /// fill: a linear gradient across the width, left to right; a radial one centred, its
+    /// ring touching the longer side; a bitmap tiled from the top-left at its own size.
+    /// The stops and options stay.
+    pub fn fitted(&self, bounds: &Rect) -> Paint {
+        if bounds.is_empty() || !(bounds.min.is_finite() && bounds.max.is_finite()) {
+            return self.clone();
+        }
+        let c = bounds.center();
+        match self {
+            Paint::Solid(_) => self.clone(),
+            Paint::Linear { .. } => {
+                let hw = (bounds.width() * 0.5).max(0.5);
+                self.with_frame(&Affine { m: [hw, 0.0, 0.0, hw, c.x, c.y] }, None)
+            }
+            Paint::Radial { .. } => {
+                let r = (bounds.width().max(bounds.height()) * 0.5).max(0.5);
+                self.with_frame(&Affine { m: [r, 0.0, 0.0, r, c.x, c.y] }, None)
+            }
+            Paint::Bitmap { bitmap, .. } => Paint::Bitmap { bitmap: *bitmap, repeat: true, matrix: Affine::translate(bounds.min.x, bounds.min.y) },
         }
     }
 
@@ -158,13 +362,24 @@ impl Paint {
         };
         match (self, o) {
             (Paint::Solid(a), Paint::Solid(b)) => Paint::Solid(a.lerp(*b, t)),
-            (Paint::Linear { start: s0, end: e0, stops: a }, Paint::Linear { start: s1, end: e1, stops: b }) => match lerp_stops(a, b) {
-                Some(stops) => Paint::Linear { start: s0.lerp(*s1, t), end: e0.lerp(*e1, t), stops },
+            (Paint::Linear { start: s0, end: e0, stops: a, spread, linear_rgb }, Paint::Linear { start: s1, end: e1, stops: b, .. }) => match lerp_stops(a, b) {
+                Some(stops) => Paint::Linear { start: s0.lerp(*s1, t), end: e0.lerp(*e1, t), stops, spread: *spread, linear_rgb: *linear_rgb },
                 None => self.clone(),
             },
-            (Paint::Radial { center: c0, radius: r0, stops: a }, Paint::Radial { center: c1, radius: r1, stops: b }) => match lerp_stops(a, b) {
-                Some(stops) => Paint::Radial { center: c0.lerp(*c1, t), radius: anicraft_geom::lerp(*r0, *r1, t), stops },
-                None => self.clone(),
+            (Paint::Radial { stops: a, .. }, Paint::Radial { stops: b, focal: f1, .. }) => match (lerp_stops(a, b), self.frame(None), o.frame(None)) {
+                (Some(stops), Some(fa), Some(fb)) => {
+                    let mut m = [0.0; 6];
+                    for (k, v) in m.iter_mut().enumerate() {
+                        *v = anicraft_geom::lerp(fa.m[k], fb.m[k], t);
+                    }
+                    let mut p = self.with_frame(&Affine { m }, None);
+                    if let Paint::Radial { stops: s, focal, .. } = &mut p {
+                        *s = stops;
+                        *focal = anicraft_geom::lerp(*focal, *f1, t);
+                    }
+                    p
+                }
+                _ => self.clone(),
             },
             _ => self.clone(),
         }
@@ -1647,6 +1862,10 @@ fn sanitize_scripts(layer: &mut Arc<Layer>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "gradient_tests.rs"]
+mod gradient_tests;
 
 #[cfg(test)]
 #[path = "camera_tests.rs"]
