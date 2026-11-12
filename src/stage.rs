@@ -1020,12 +1020,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, T.selection.gamma_multiply(0.45)), StrokeKind::Middle);
             continue;
         }
+        // A plain box, as Animate's Selection tool shows: handles are Free Transform's (Q),
+        // where they work. Handles drawn here could not be dragged (#205).
         painter.rect_stroke(r, 0.0, sel_stroke, StrokeKind::Middle);
-        for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom(), r.center_top(), r.center_bottom(), r.left_center(), r.right_center()] {
-            let h = Rect::from_center_size(c, vec2(6.0, 6.0));
-            painter.rect_filled(h, 0.0, Color32::WHITE);
-            painter.rect_stroke(h, 0.0, sel_stroke, StrokeKind::Middle);
-        }
         // registration point
         let o = to_screen(e.transform.translation());
         painter.circle(o, 3.5, Color32::WHITE, Stroke::new(1.0, Color32::BLACK));
@@ -1509,17 +1506,17 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
     }
     match app.tool {
         Tool::Rect => {
-            app.run("draw.rect", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y, "radius": app.rect_radius}));
+            app.draw("draw.rect", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y, "radius": app.rect_radius}));
         }
         Tool::Oval => {
-            app.run("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
+            app.draw("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
         }
         Tool::Star => {
             let r = d.length();
-            app.run("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
+            app.draw("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
         }
         Tool::Line => {
-            app.run("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
+            app.draw("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
         }
         _ => {}
     }
@@ -1562,6 +1559,40 @@ fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32)
             painter.line_segment([a, b], stroke);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod draw_tests {
+    use super::*;
+
+    fn app() -> App {
+        let ctx = egui::Context::default();
+        App::with_context(&ctx, anicraft_engine::Session::new(anicraft_engine::doc::Document::default()), Some(std::path::PathBuf::from("unused.png")))
+    }
+
+    /// #205, #243: a shape or a line drawn with a tool leaves nothing selected (no box around
+    /// the last stroke), in merge drawing and in Object Drawing, and the previous selection
+    /// goes too, as in Animate. Undo still takes the shape away in one step.
+    #[test]
+    fn drawing_tools_leave_nothing_selected() {
+        for object in [false, true] {
+            let mut app = app();
+            app.s.style.object_drawing = object;
+            for tool in [Tool::Line, Tool::Rect, Tool::Oval, Tool::Star] {
+                app.tool = tool;
+                let before = app.s.history_len();
+                create_shape(&mut app, pos2(10.0, 10.0), pos2(80.0, 60.0));
+                assert_eq!(app.s.history_len(), before + 1, "{tool:?} drew");
+                assert!(app.s.selection.is_empty(), "{tool:?}, object {object}: nothing selected");
+            }
+            app.pencil = (0..20).map(|i| Vec2::new(100.0 + i as f32 * 4.0, 100.0 + (i % 3) as f32)).collect();
+            crate::pathtools::commit_pencil(&mut app, crate::pathtools::Xf { origin: Pos2::ZERO, zoom: 1.0 });
+            assert!(app.s.selection.is_empty(), "Pencil, object {object}");
+            let n = app.s.visible_elements().len();
+            app.s.undo().expect("undo");
+            assert!(app.s.visible_elements().len() < n, "one undo takes the stroke away");
+        }
     }
 }
 

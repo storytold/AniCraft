@@ -256,14 +256,14 @@ pub fn commit(app: &mut App, xf: Xf) {
     params["unit"] = json!(xf.unit());
     params["as_stroke"] = json!(as_stroke);
     if as_stroke {
-        if let Some(v) = app.run("draw.brush", params)
+        if let Some(v) = app.draw("draw.brush", params)
             && v["width_points"].as_u64().is_some_and(|n| n > 1)
         {
             app.status_ok(tr!("A line whose width you can shape with the Width tool."));
         }
         return;
     }
-    if let Some(v) = app.run("draw.brush", params)
+    if let Some(v) = app.draw("draw.brush", params)
         && v["elements"].as_array().is_some_and(Vec::is_empty)
     {
         app.status_ok(tr!("Nothing to paint behind there: Paint Behind only paints empty areas."));

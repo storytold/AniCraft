@@ -713,6 +713,15 @@ impl App {
         }
     }
 
+    /// Runs a drawing tool's command and leaves nothing selected, as Animate's drawing tools
+    /// do: the next stroke goes on without a box around the last one (#205, #243). The command
+    /// itself selects what it drew, for scripts that style it next.
+    pub fn draw(&mut self, id: &str, params: Value) -> Option<Value> {
+        let v = self.run(id, params)?;
+        let _ = self.s.execute("edit.deselect", &json!({}));
+        Some(v)
+    }
+
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         let result = self.s.execute(id, &params);
         if platform::WEB && id.starts_with("file.") {

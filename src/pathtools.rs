@@ -141,7 +141,7 @@ pub fn commit_pen(app: &mut App, closed: bool) {
     if pen.knots.len() < 2 {
         return;
     }
-    app.run("draw.path", json!({"d": pen.to_svg(closed)}));
+    app.draw("draw.path", json!({"d": pen.to_svg(closed)}));
 }
 
 // ----- Pencil ------------------------------------------------------------------------------
@@ -195,7 +195,7 @@ pub fn commit_pencil(app: &mut App, xf: Xf) {
         return;
     }
     let points: Vec<[f32; 2]> = pts.iter().map(|p| [p.x, p.y]).collect();
-    app.run("draw.freehand", json!({"points": points, "mode": app.pencil_mode.id(), "tolerance": 1.5 * xf.unit()}));
+    app.draw("draw.freehand", json!({"points": points, "mode": app.pencil_mode.id(), "tolerance": 1.5 * xf.unit()}));
 }
 
 // ----- Subselection --------------------------------------------------------------------------
