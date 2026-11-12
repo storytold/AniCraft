@@ -23,6 +23,7 @@ This page is generated from the editor's shortcut map, so it always matches the 
 | Free Transform | Q | Q |
 | Width | U | U |
 | Bone | M | M |
+| Bind | Shift+M | ⇧M |
 | Pen | P | P |
 | Text | T | T |
 | Pencil | Shift+Y | ⇧Y |

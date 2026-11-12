@@ -8,6 +8,7 @@ pub use anicraft_audio as audio;
 pub use anicraft_actions as actions;
 
 pub mod armature;
+pub mod skin;
 mod bitmap;
 mod color_effect;
 pub mod camera;
@@ -1431,7 +1432,8 @@ impl Document {
         let scan = |l: &Layer, max_id: &mut u64| {
             *max_id = (*max_id).max(l.id.0);
             for b in l.armature.iter().flat_map(|a| &a.bones) {
-                *max_id = (*max_id).max(b.id.0);
+                // A shape armature's joint nodes take ids from the same counter (ADR 0071).
+                *max_id = (*max_id).max(b.id.0).max(b.child.0).max(b.parent.0);
             }
             for k in &l.keyframes {
                 for e in &k.elements {

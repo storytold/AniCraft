@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 258 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 260 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -287,6 +287,10 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{depth (px behind the stage, −500…10000; deeper layers move less when the camera pans), layer?}`
 - **Add Bone** `bone.add` · changes the document
   Parameters: ``{from (instance id: the bone starts on it), to (instance id: the bone moves it), head?: [x, y] (the joint, stage px; default the end of the bone into `from`, else its registration point), tail?: [x, y] (default `to`'s registration point), name?} → {bone, layer}. Both instances go to an armature layer (made for the first bone)``
+- **Add Bone in Shape** `bone.add_in_shape` · changes the document
+  Parameters: `{shape? (shape id: the first bone, or another bone from the shape), parent? (bone id: continue the chain from its end), head?: [x, y] (the joint, stage px; default the parent bone's end), tail: [x, y] (stage px), name?} → {bone, layer, created, points}. The first bone moves the shape to an armature layer of its own, as an object (merge drawing leaves it alone); the shape's points are bound to the nearest bones`
+- **Bind Points** `bone.bind` · changes the document
+  Parameters: `{bone, points?: [point index…] (default every point; see bone.info with points), mode?: "only" (the points follow just this bone; default) | "add" (they share it with the bones they follow) | "remove" | "auto" (back to automatic binding)} → {bone, changed, bound (how many points the bone moves)}. A shape armature's binding: which points of the shape follow which bone`
 - **Remove Bone** `bone.remove` · changes the document
   Parameters: `{bone} removes it and the bones below it; the instances they moved go to a layer of their own as they look at the playhead (with the last bone, the whole armature does); asks first when the armature has more than one pose`
 - **Joint Limits** `bone.set_limits` · changes the document
@@ -298,7 +302,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Drag Bone** `bone.solve` · changes the document
   Parameters: `{bone, x, y (stage px: where the bone's end goes), local?: [x, y] (the point dragged, in the bone's instance's space; default its end), frame?} → {reached, error (px), chain}; inverse kinematics turns the bone and the bones above it (limits respected, pinned bones kept)`
 - **Armatures** `bone.info`
-  Parameters: `{frame?, layer?} → every armature on the scene at the frame: its bones with joint and end (stage px), joint angle and limits (°), pinned`
+  Parameters: `{frame?, layer?, points?: bool} → every armature on the scene at the frame: its bones with joint and end (stage px), joint angle and limits (°), pinned; a shape armature's shape, how many points each bone moves, and with points the shape's points (stage px) and the bones each follows`
 - **Property Keyframe** `motion.set_key` · changes the document
   Parameters: `{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)`
 - **Remove Property Keyframe** `motion.remove_key` · changes the document
