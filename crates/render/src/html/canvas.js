@@ -380,16 +380,22 @@
       item: function (it) {
         const path = paths[it.p];
         if (!path || !AniCraft.finite(it.m)) return;
+        let g = stack[stack.length - 1].ctx;
         if (it.masks !== null) {
-          // Mask artwork: its fill area only, opaque.
           const mk = masks.get(it.masks);
-          if (!mk || it.f < 0) return;
-          set(mk.ctx, it.m);
-          mk.ctx.fillStyle = "#000";
-          mk.ctx.fill(path, it.eo ? "evenodd" : "nonzero");
-          return;
+          if (!mk) return;
+          if (mk.mode) {
+            // A soft mask's artwork (ADR 0070) is drawn as it looks.
+            g = mk.l.ctx;
+          } else {
+            // Mask artwork: its fill area only, opaque.
+            if (it.f < 0) return;
+            set(mk.l.ctx, it.m);
+            mk.l.ctx.fillStyle = "#000";
+            mk.l.ctx.fill(path, it.eo ? "evenodd" : "nonzero");
+            return;
+          }
         }
-        const g = stack[stack.length - 1].ctx;
         if (it.f >= 0) {
           const style = paintStyle(g, it.f, it.c);
           if (style) {
@@ -455,13 +461,29 @@
       clipEnd: function () {
         release(stack.pop());
       },
-      maskBegin: function (id) {
-        masks.set(id, layer());
+      maskBegin: function (id, mode) {
+        masks.set(id, { l: layer(), mode: mode });
       },
       maskEnd: function (id, open) {
-        const mk = masks.get(id);
+        const entry = masks.get(id);
         masks.delete(id);
-        if (!mk) return;
+        if (!entry) return;
+        const mk = entry.l;
+        if (open && entry.mode === 2) {
+          // A luminance mask: each pixel's luminance (sRGB coefficients) times its opacity
+          // becomes its opacity.
+          mk.ctx.setTransform(1, 0, 0, 1, 0, 0);
+          const img = mk.ctx.getImageData(0, 0, mk.canvas.width, mk.canvas.height);
+          const d = img.data;
+          for (let i = 0; i < d.length; i += 4) {
+            const l = (0.2125 * d[i] + 0.7154 * d[i + 1] + 0.0721 * d[i + 2]) * (d[i + 3] / 255);
+            d[i] = 0;
+            d[i + 1] = 0;
+            d[i + 2] = 0;
+            d[i + 3] = Math.round(l);
+          }
+          mk.ctx.putImageData(img, 0, 0);
+        }
         if (open) {
           const l = stack.pop();
           l.ctx.setTransform(1, 0, 0, 1, 0, 0);

@@ -11,6 +11,9 @@
 //! round dashes; ADR 0046); variable-width strokes are filled outlines (the polygons the
 //! renderer fills, dashes included).
 //!
+//! Soft masks (ADR 0070) become track mattes (alpha, or luma for luminance masks): a matte layer
+//! with the mask's artwork as drawn, just above each layer it shows through.
+//!
 //! Not carried across (counted in the report): bitmap fills; nested masks keep only the
 //! innermost mask; a symbol fading as one group is faded shape by shape; stretched radial
 //! gradients become circles; and draw-order changes that one fixed layer order can't show.
@@ -142,6 +145,33 @@ struct Sample {
     opacity: f32,
     /// Mask outlines this artwork shows through (their union).
     masks: Vec<Bez>,
+    /// A soft mask (ADR 0070) this artwork shows through: a track matte.
+    matte: Option<Matte>,
+}
+
+/// A soft mask as a track matte: its artwork as drawn, and whether its luminance (not its
+/// opacity) reveals.
+#[derive(Clone, PartialEq)]
+struct Matte {
+    luma: bool,
+    art: Vec<Sample>,
+}
+
+/// What a sample's look must keep for its values to be keyframed: its structure, fill kind,
+/// gradient stop count and stroke style.
+type Look = (Structure, u8, usize, Option<(u8, u8, usize)>);
+
+fn look(s: &Sample) -> Look {
+    let fill = match &s.fill {
+        None => 0,
+        Some(Fill::Solid { rule: r, .. }) => 1 + rule(*r),
+        Some(Fill::Gradient { radial, rule: r, .. }) => 3 + u8::from(*radial) * 2 + rule(*r),
+    };
+    let stops = match &s.fill {
+        Some(Fill::Gradient { stops, .. }) => stops.len(),
+        _ => 0,
+    };
+    (s.paths.iter().map(|b| (b.closed, b.v.len())).collect(), fill, stops, s.stroke.as_ref().map(|l| (l.cap, l.join, l.dash.len())))
 }
 
 /// A stroke in one frame, in stage space.
@@ -203,6 +233,8 @@ struct Key {
     masks: Structure,
     /// Lottie layer blend mode (`bm`).
     blend: u8,
+    /// A track matte's kind (luma or alpha) and the look of each piece of its artwork.
+    matte: Option<(bool, Vec<Look>)>,
 }
 
 struct Track {
@@ -295,7 +327,7 @@ fn sample(item: &DisplayItem, opacity: f32, masks: Vec<Bez>, report: &mut HashSe
         });
         (fill, stroke)
     };
-    (fill.is_some() || stroke.is_some()).then_some(Sample { paths, fill, stroke, opacity, masks })
+    (fill.is_some() || stroke.is_some()).then_some(Sample { paths, fill, stroke, opacity, masks, matte: None })
 }
 
 /// The movie's frames `from..=to` (movie frames, 0-based) as a Lottie animation named `name`.
@@ -316,6 +348,14 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
         let dl = crate::stroke::outline_variable_strokes(&full);
         // Mask artwork per clip, in stage space.
         let mut clip_art: Vec<Vec<Bez>> = vec![Vec::new(); dl.clip_parents.len()];
+        // Soft masks' artwork as drawn, per clip (ADR 0070).
+        let mut soft_art: Vec<Vec<Sample>> = vec![Vec::new(); dl.clip_parents.len()];
+        for item in dl.items.iter().filter(|i| i.masks.is_some_and(|c| dl.clip_mode(c).is_soft()) && !i.guide) {
+            let mut ignored = HashSet::new();
+            if let (Some(a), Some(s)) = (item.masks.and_then(|c| soft_art.get_mut(c as usize)), sample(item, 1.0, Vec::new(), &mut ignored)) {
+                a.push(s);
+            }
+        }
         for item in dl.items.iter().filter(|i| i.fill.is_some()) {
             if let Some(a) = item.masks.and_then(|c| clip_art.get_mut(c as usize)) {
                 a.extend(beziers(&item.path, &item.transform).into_iter().map(|mut b| {
@@ -332,16 +372,24 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
                 continue;
             }
             let mut flags: HashSet<&'static str> = HashSet::new();
+            let mut matte = None;
             let masks = match item.clip {
                 None => Vec::new(),
                 Some(c) => {
                     if dl.clip_parents.get(c as usize).copied().flatten().is_some() {
                         flags.insert("nested masks (only the innermost is kept)");
                     }
-                    match clip_art.get(c as usize) {
-                        // A clip with no mask artwork hides everything in it.
-                        Some(a) if !a.is_empty() => a.clone(),
-                        _ => continue,
+                    let art = if dl.clip_mode(c).is_soft() { soft_art.get(c as usize).map(Vec::len) } else { clip_art.get(c as usize).map(Vec::len) };
+                    // A clip with no mask artwork hides everything in it.
+                    if art.unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    if dl.clip_mode(c).is_soft() {
+                        // A soft mask is a track matte: alpha, or luma.
+                        matte = soft_art.get(c as usize).map(|a| Matte { luma: dl.clip_mode(c) == anicraft_doc::MaskMode::Luminance, art: a.clone() });
+                        Vec::new()
+                    } else {
+                        clip_art.get(c as usize).cloned().unwrap_or_default()
                     }
                 }
             };
@@ -373,11 +421,12 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
                 flags.insert(if blend.is_some() { "blend modes (applied shape by shape)" } else { "Subtract, Invert, Alpha and Erase blending (Lottie has no equivalent; drawn normally)" });
             }
             let blend = blend.unwrap_or(0);
-            let Some(s) = sample(item, opacity, masks, &mut flags) else {
+            let Some(mut s) = sample(item, opacity, masks, &mut flags) else {
                 // Not exported: counted by element (ids above every track index).
                 record(&mut notes, flags, usize::MAX - (item.element.0 as usize).min(usize::MAX / 2));
                 continue;
             };
+            s.matte = matte;
             let shape: Structure = s.paths.iter().map(|b| (b.closed, b.v.len())).collect();
             let occurrence = {
                 let c = seen.entry((item.layer.0, item.element.0, shape.clone())).or_insert(0);
@@ -401,6 +450,7 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
                 stroke: s.stroke.as_ref().map(|l| (l.cap, l.join, l.dash.len())),
                 masks: s.masks.iter().map(|b| (b.closed, b.v.len())).collect(),
                 blend,
+                matte: s.matte.as_ref().map(|m| (m.luma, m.art.iter().map(look).collect())),
             };
             let ti = match open.get(&key).copied().filter(|&ti| tracks.get(ti).is_some_and(|tr| tr.last + 1 == t)) {
                 Some(ti) => ti,
@@ -464,15 +514,23 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
 
     let frames = to - from + 1;
     let mut layers: Vec<Value> = Vec::with_capacity(tracks.len() + 1);
-    // Lottie lists layers top first.
-    for (ind, &ti) in bottom_up.iter().rev().enumerate() {
+    // Lottie lists layers top first; a track matte comes just above the layer it mattes.
+    for &ti in bottom_up.iter().rev() {
         let Some(tr) = tracks.get(ti) else { continue };
-        layers.push(layer(tr, ind + 1));
+        if let Some(m) = matte_layer(tr, layers.len() + 1) {
+            layers.push(m);
+            let mut l = layer(tr, layers.len() + 1);
+            l["tt"] = json!(if tr.key.matte.as_ref().is_some_and(|(luma, _)| *luma) { 3 } else { 1 });
+            layers.push(l);
+        } else {
+            layers.push(layer(tr, layers.len() + 1));
+        }
     }
-    let shape_layers = layers.len();
+    let shape_layers = layers.iter().filter(|l| l.get("td").is_none()).count();
+    let mattes = layers.len() - shape_layers;
     if background {
         let bg = doc.stage.background.sanitized();
-        layers.push(json!({"ddd": 0, "ind": shape_layers + 1, "ty": 1, "nm": "Stage", "sr": 1, "ks": static_ks(), "ao": 0, "ip": 0, "op": frames, "st": 0, "bm": 0,
+        layers.push(json!({"ddd": 0, "ind": shape_layers + mattes + 1, "ty": 1, "nm": "Stage", "sr": 1, "ks": static_ks(), "ao": 0, "ip": 0, "op": frames, "st": 0, "bm": 0,
             "sc": bg.to_hex(), "sw": doc.stage.width, "sh": doc.stage.height}));
     }
     let root = json!({
@@ -517,6 +575,25 @@ fn record(notes: &mut HashMap<&'static str, HashSet<usize>>, flags: HashSet<&'st
 
 fn static_ks() -> Value {
     json!({"o": {"a": 0, "k": 100}, "r": {"a": 0, "k": 0}, "p": {"a": 0, "k": [0, 0, 0]}, "a": {"a": 0, "k": [0, 0, 0]}, "s": {"a": 0, "k": [100, 100, 100]}})
+}
+
+/// The track matte a track shows through (a soft mask, ADR 0070), as a matte layer (`td`): each
+/// piece of the mask's artwork as a group, top first, with its paint and opacity.
+fn matte_layer(tr: &Track, ind: usize) -> Option<Value> {
+    let (_, looks) = tr.key.matte.as_ref()?;
+    let mut groups: Vec<Value> = Vec::with_capacity(looks.len());
+    for (k, (shape, _, _, stroke)) in looks.iter().enumerate().rev() {
+        let frames: Vec<(u32, Sample)> = tr.frames.iter().filter_map(|(t, s)| Some((*t, s.matte.as_ref()?.art.get(k)?.clone()))).collect();
+        let key = Key { shape: shape.clone(), stroke: *stroke, masks: Vec::new(), blend: 0, matte: None, ..tr.key.clone() };
+        let piece = Track { key, name: String::new(), first: tr.first, last: tr.last, frames, first_index: 0 };
+        if let Some(g) = layer(&piece, 0).get_mut("shapes").and_then(|v| v.get_mut(0)).map(Value::take) {
+            groups.push(g);
+        }
+    }
+    Some(json!({
+        "ddd": 0, "ind": ind, "ty": 4, "nm": format!("{} matte", tr.name), "sr": 1, "ks": static_ks(), "ao": 0,
+        "ip": tr.first, "op": tr.last + 1, "st": 0, "bm": 0, "td": 1, "shapes": groups
+    }))
 }
 
 /// One track as a shape layer: its outlines, then (drawn on top first, as Lottie lists them)
@@ -618,6 +695,48 @@ mod tests {
 
     fn parse(e: &LottieExport) -> Value {
         serde_json::from_str(&e.json).unwrap()
+    }
+
+    /// A mask layer (in `mode`) whose artwork is a white-to-clear gradient, over a masked red square.
+    pub(crate) fn soft_mask_doc(mode: anicraft_doc::MaskMode) -> Document {
+        use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, GradientStop, Layer, LayerId, LayerKind, Scene, Shape};
+        use std::sync::Arc;
+        let mut d = Document { scenes: vec![Arc::new(Scene::new("Scene 1"))], ..Document::default() };
+        let stops = vec![GradientStop { offset: 0.0, color: Rgba::WHITE }, GradientStop { offset: 1.0, color: Rgba::new(1.0, 1.0, 1.0, 0.0) }];
+        let art = Shape::filled(Path::rect(0.0, 0.0, 200.0, 200.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(200.0, 0.0), stops });
+        let square = Shape::filled(Path::rect(20.0, 20.0, 160.0, 160.0), Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0)));
+        for (id, kind, parent, shape) in [(1, LayerKind::Mask, None, art), (2, LayerKind::Normal, Some(LayerId(1)), square)] {
+            let mut l = Layer::new(LayerId(id), format!("L{id}"));
+            l.kind = kind;
+            l.parent = parent;
+            l.mask_mode = if kind == LayerKind::Mask { mode } else { Default::default() };
+            Arc::make_mut(&mut l.keyframes[0]).elements.push(Arc::new(Element { id: ElementId(100 + id), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) }));
+            d.timeline_mut(0).layers.push(Arc::new(l));
+        }
+        d
+    }
+
+    #[test]
+    fn soft_masks_become_track_mattes() {
+        use anicraft_doc::MaskMode;
+        for (mode, tt) in [(MaskMode::Alpha, 1), (MaskMode::Luminance, 3)] {
+            let e = to_lottie(&soft_mask_doc(mode), "soft", 0, 0, false);
+            let v = parse(&e);
+            let layers = v["layers"].as_array().unwrap();
+            assert_eq!((e.layers, layers.len()), (1, 2), "{mode:?}: one shape layer and its matte");
+            // The matte comes first (above), marked td; the layer under it uses it.
+            assert_eq!(layers[0]["td"], 1);
+            assert_eq!(layers[1]["tt"], tt);
+            assert!(layers[1].get("masksProperties").is_none(), "no layer mask for a soft mask");
+            // The matte holds the mask's artwork as drawn: its gradient fill.
+            let it = &layers[0]["shapes"][0]["it"];
+            assert!(it.as_array().unwrap().iter().any(|x| x["ty"] == "gf"), "{it}");
+            assert_eq!((layers[0]["ind"].as_u64(), layers[1]["ind"].as_u64()), (Some(1), Some(2)));
+        }
+        // A coverage mask stays a layer mask.
+        let v = parse(&to_lottie(&soft_mask_doc(MaskMode::Coverage), "hard", 0, 0, false));
+        assert_eq!(v["layers"].as_array().unwrap().len(), 1);
+        assert_eq!(v["layers"][0]["hasMask"], true);
     }
 
     #[test]

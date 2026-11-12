@@ -4,6 +4,10 @@
 //! glyph's outline with `skrifa` into one [`Path`], in pixels, with the layout box's top-left
 //! corner at the origin. The engine stores that path with the text element (ADR 0012), so
 //! rendering never depends on which fonts are installed.
+//!
+//! [`Fonts::layout_glyphs`] also hands back each glyph on its own ([`PlacedGlyph`]), for text
+//! placed glyph by glyph: along a path ([`on_path`], ADR 0070) or at SVG's per-character
+//! positions.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use anicraft_geom::{Path, PathCmd, Vec2};
@@ -76,6 +80,127 @@ pub struct Layout {
     /// Where a caret can stand, one entry per laid-out line, top first (ADR 0066: text fields
     /// that viewers type into).
     pub carets: Vec<CaretLine>,
+    /// Each glyph on its own, in drawing order: only from [`Fonts::layout_glyphs`] (empty
+    /// otherwise).
+    pub glyphs: Vec<PlacedGlyph>,
+}
+
+/// One laid-out glyph on its own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacedGlyph {
+    /// Its outline, with its pen position on the baseline at the origin (pixels, y down).
+    pub outline: Path,
+    /// Its pen position in the block: from the box's left edge (alignment applied), and its
+    /// line's baseline from the box's top.
+    pub x: f32,
+    pub baseline: f32,
+    /// How far the pen moves past it (letter spacing included).
+    pub advance: f32,
+    /// The character it starts at (`char`s of the whole text, line breaks included).
+    pub index: u32,
+}
+
+/// How text follows a path (ADR 0070).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PathPlacement {
+    /// Where the text is anchored, as a distance along the path: left-aligned text starts
+    /// there, centred text is centred on it, right-aligned text ends there.
+    pub offset: f32,
+    /// Along the path backwards: on its other side, upside down to the path's direction.
+    pub flip: bool,
+    pub align: Align,
+}
+
+/// Glyphs set along a path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathText {
+    /// Every glyph shown, in the path's space.
+    pub outline: Path,
+    /// The path's length.
+    pub length: f32,
+    /// Each shown glyph's character, the point on the path under its middle and its angle
+    /// (radians, the direction of travel).
+    pub placed: Vec<(u32, Vec2, f32)>,
+    /// Glyphs whose middle falls past an open path's ends (not drawn, as SVG leaves them).
+    pub hidden: usize,
+}
+
+/// The glyphs of a one-line layout set along `path`'s first subpath (ADR 0070): each glyph's
+/// middle at its distance along the path (measured on the curve itself), the glyph turned to
+/// the path's direction there, its baseline on the path, standing on the path's left (above a
+/// path drawn left to right; `flip` walks it backwards, onto the other side). On a closed path
+/// glyphs wrap round; on an open one those past its ends are left out. `None` when the path has
+/// no length.
+pub fn on_path(glyphs: &[PlacedGlyph], path: &Path, how: PathPlacement) -> Option<PathText> {
+    let walk = anicraft_geom::walk::CurveWalk::new(path)?;
+    let length = walk.length();
+    let closed = first_subpath_closed(path);
+    // The run's width: from its pen start (0) to the end of its last glyph.
+    let width = glyphs.iter().map(|g| g.x + g.advance).filter(|w| w.is_finite()).fold(0.0f32, f32::max);
+    let offset = if how.offset.is_finite() { how.offset.clamp(-1e6, 1e6) } else { 0.0 };
+    let start = offset
+        - match how.align {
+            Align::Left => 0.0,
+            Align::Center => width * 0.5,
+            Align::Right => width,
+        };
+    let mut out = PathText { outline: Path::new(), length, placed: Vec::with_capacity(glyphs.len()), hidden: 0 };
+    for g in glyphs {
+        let mid = start + g.x + g.advance * 0.5;
+        if !mid.is_finite() {
+            out.hidden += 1;
+            continue;
+        }
+        let s = if closed {
+            mid.rem_euclid(length)
+        } else if (0.0..=length).contains(&mid) {
+            mid
+        } else {
+            out.hidden += 1;
+            continue;
+        };
+        let (p, t) = if how.flip { (walk.at(length - s), walk.tangent(length - s) * -1.0) } else { (walk.at(s), walk.tangent(s)) };
+        let angle = t.y.atan2(t.x);
+        let m = anicraft_geom::Affine::translate(p.x, p.y).mul(&anicraft_geom::Affine::rotate(angle)).mul(&anicraft_geom::Affine::translate(-g.advance * 0.5, 0.0));
+        out.outline.cmds.extend(g.outline.transformed(&m).cmds);
+        out.placed.push((g.index, p, angle));
+    }
+    Some(out)
+}
+
+/// Text on a path in a box of its own, as text blocks keep it (ADR 0070): the glyphs set along
+/// the path, then the glyphs and the path moved together so their bounds start at the origin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoxedPathText {
+    pub outline: Path,
+    pub path: Path,
+    pub width: f32,
+    pub height: f32,
+    /// Where the box's origin is in the path's space: what to translate by to put it back.
+    pub shift: Vec2,
+    pub hidden: usize,
+}
+
+/// [`on_path`], boxed ([`BoxedPathText`]).
+pub fn on_path_boxed(glyphs: &[PlacedGlyph], path: &Path, how: PathPlacement) -> Option<BoxedPathText> {
+    let set = on_path(glyphs, path, how)?;
+    let b = set.outline.bounds().union(&path.bounds());
+    let shift = if b.min.x.is_finite() && b.min.y.is_finite() { b.min } else { Vec2::ZERO };
+    let back = anicraft_geom::Affine::translate(-shift.x, -shift.y);
+    let size = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    Some(BoxedPathText { outline: set.outline.transformed(&back), path: path.transformed(&back), width: size(b.width()), height: size(b.height()), shift, hidden: set.hidden })
+}
+
+/// Whether a path's first subpath ends with a close.
+fn first_subpath_closed(path: &Path) -> bool {
+    for (i, c) in path.cmds.iter().enumerate() {
+        match c {
+            PathCmd::Close => return true,
+            PathCmd::MoveTo(_) if i > 0 => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// One laid-out line's characters and caret positions. Indices count `char`s of the whole text
@@ -261,6 +386,15 @@ impl Fonts {
 
     /// Lays `text` out in `style`.
     pub fn layout(&self, text: &str, style: &Style) -> Result<Layout, TextError> {
+        self.lay_out_with(text, style, false)
+    }
+
+    /// Lays `text` out in `style`, with each glyph on its own too ([`Layout::glyphs`]).
+    pub fn layout_glyphs(&self, text: &str, style: &Style) -> Result<Layout, TextError> {
+        self.lay_out_with(text, style, true)
+    }
+
+    fn lay_out_with(&self, text: &str, style: &Style, glyphs: bool) -> Result<Layout, TextError> {
         if text.chars().count() > MAX_CHARS {
             return Err(TextError::TooLong);
         }
@@ -272,7 +406,7 @@ impl Fonts {
             style: if style.italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
         };
         let id = self.db.query(&q).ok_or(TextError::NoFonts)?;
-        let laid = self.db.with_face_data(id, |data, index| lay_out(data, index, text, style)).flatten().ok_or(TextError::NoFonts)?;
+        let laid = self.db.with_face_data(id, |data, index| lay_out(data, index, text, style, glyphs)).flatten().ok_or(TextError::NoFonts)?;
         Ok(Layout { family, ..laid })
     }
 }
@@ -324,7 +458,7 @@ struct Glyph {
     advance: f32,
 }
 
-fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout> {
+fn lay_out(data: &[u8], index: u32, text: &str, style: &Style, want_glyphs: bool) -> Option<Layout> {
     let style = sanitize(style);
     let font = skrifa::FontRef::from_index(data, index).ok()?;
     let size = skrifa::instance::Size::new(style.size);
@@ -422,6 +556,7 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
 
     let box_width = style.width.unwrap_or_else(|| lines.iter().map(|(w, _)| *w).fold(0.0, f32::max));
     let mut outline = Path::new();
+    let mut placed: Vec<PlacedGlyph> = Vec::new();
     for (row, (width, line)) in lines.iter().enumerate() {
         let shift = match style.align {
             Align::Left => 0.0,
@@ -429,16 +564,25 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style) -> Option<Layout>
             Align::Right => box_width - width,
         };
         let baseline = ascent + row as f32 * line_height;
+        let span = spans.get(row);
         for (g, gx) in line {
             let Some(glyph) = glyphs.get(g.id) else { continue };
-            let mut pen = Pen { cmds: &mut outline.cmds, x: shift + gx + g.x_offset, y: baseline - g.y_offset };
+            if want_glyphs {
+                let settings = skrifa::outline::DrawSettings::unhinted(size, skrifa::instance::LocationRef::default());
+                let mut own = Path::new();
+                let mut pen = Pen { cmds: &mut own.cmds, x: g.x_offset, y: -g.y_offset };
+                let _ = glyph.draw(settings, &mut pen);
+                let index = span.map_or(0, |(pstart, plen, to_char)| pstart + to_char.get(g.cluster).copied().unwrap_or(*plen).min(*plen));
+                placed.push(PlacedGlyph { outline: own, x: shift + gx, baseline, advance: g.advance, index });
+            }
             let settings = skrifa::outline::DrawSettings::unhinted(size, skrifa::instance::LocationRef::default());
+            let mut pen = Pen { cmds: &mut outline.cmds, x: shift + gx + g.x_offset, y: baseline - g.y_offset };
             let _ = glyph.draw(settings, &mut pen);
         }
     }
     let height = (lines.len().max(1) as f32 - 1.0) * line_height + (metrics.ascent - metrics.descent);
     let carets = caret_lines(&lines, &spans, box_width, style.align);
-    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing, lines: lines.len().max(1), line_height, ascent, carets })
+    Some(Layout { outline, width: box_width.max(0.0), height: height.max(0.0), family: String::new(), missing, lines: lines.len().max(1), line_height, ascent, carets, glyphs: placed })
 }
 
 /// The caret positions of laid-out lines (see [`CaretLine`]).
@@ -642,6 +786,82 @@ mod tests {
         assert!(one.ascent > 10.0 && one.ascent < one.height, "{} in {}", one.ascent, one.height);
         let b = one.outline.bounds();
         assert!(b.max.y > one.ascent - 1.0 && b.min.y < one.ascent, "glyphs sit on the baseline: {b:?}");
+    }
+
+    #[test]
+    fn glyphs_on_their_own_add_up_to_the_outline() {
+        let Some(fonts) = fonts() else { return };
+        let l = fonts.layout_glyphs("AVA b", &style(30.0)).unwrap();
+        assert_eq!(l.outline, fonts.layout("AVA b", &style(30.0)).unwrap().outline, "the same outline");
+        assert_eq!(fonts.layout("AVA b", &style(30.0)).unwrap().glyphs, Vec::new(), "only when asked");
+        assert_eq!(l.glyphs.iter().map(|g| g.index).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+        let mut joined = Path::new();
+        for g in &l.glyphs {
+            joined.cmds.extend(g.outline.transformed(&anicraft_geom::Affine::translate(g.x, g.baseline)).cmds);
+            assert_eq!(g.baseline, l.ascent);
+        }
+        let (a, b) = (joined.bounds(), l.outline.bounds());
+        assert!((a.min - b.min).length() < 1e-3 && (a.max - b.max).length() < 1e-3, "{a:?} vs {b:?}");
+        let last = l.glyphs.last().unwrap();
+        assert!((last.x + last.advance - l.width).abs() < 1e-3);
+    }
+
+    /// Synthetic glyphs: a 10 × 20 box standing on the baseline, `n` of them 10 apart.
+    fn boxes(n: u32) -> Vec<PlacedGlyph> {
+        (0..n).map(|i| PlacedGlyph { outline: Path::rect(0.0, -20.0, 10.0, 20.0), x: i as f32 * 10.0, baseline: 20.0, advance: 10.0, index: i }).collect()
+    }
+
+    #[test]
+    fn glyphs_follow_a_path_by_arc_length() {
+        let left = PathPlacement { offset: 0.0, flip: false, align: Align::Left };
+        // A straight line: glyph k's middle at 10 k + 5, upright, standing on the line (above it).
+        let mut line = Path::new();
+        line.cmds = vec![PathCmd::MoveTo(Vec2::new(0.0, 100.0)), PathCmd::LineTo(Vec2::new(200.0, 100.0))];
+        let t = on_path(&boxes(3), &line, left).unwrap();
+        assert_eq!(t.length, 200.0);
+        for (k, (i, p, a)) in t.placed.iter().enumerate() {
+            assert_eq!(*i, k as u32);
+            assert!((p.x - (10.0 * k as f32 + 5.0)).abs() < 1e-3 && (p.y - 100.0).abs() < 1e-3 && a.abs() < 1e-4, "{p:?} {a}");
+        }
+        let b = t.outline.bounds();
+        assert!((b.min.x).abs() < 1e-3 && (b.max.x - 30.0).abs() < 1e-3 && (b.min.y - 80.0).abs() < 1e-3 && (b.max.y - 100.0).abs() < 1e-3, "{b:?}");
+        // Offset, centring and right alignment move the run along the path.
+        let at = |offset, align| on_path(&boxes(3), &line, PathPlacement { offset, flip: false, align }).unwrap().placed[0].1.x;
+        assert!((at(50.0, Align::Left) - 55.0).abs() < 1e-3);
+        assert!((at(100.0, Align::Center) - 90.0).abs() < 1e-3);
+        assert!((at(200.0, Align::Right) - 175.0).abs() < 1e-3);
+        // Past an open path's end, glyphs are left out.
+        let off = on_path(&boxes(3), &line, PathPlacement { offset: 180.0, flip: false, align: Align::Left }).unwrap();
+        assert_eq!((off.placed.len(), off.hidden), (2, 1));
+        // Flipped: walked from the other end, upside down, below the line.
+        let f = on_path(&boxes(1), &line, PathPlacement { offset: 0.0, flip: true, align: Align::Left }).unwrap();
+        let (_, p, a) = f.placed[0];
+        assert!((p.x - 195.0).abs() < 1e-3 && (a.abs() - std::f32::consts::PI).abs() < 1e-3, "{p:?} {a}");
+        assert!(f.outline.bounds().min.y >= 100.0 - 1e-3, "{:?}", f.outline.bounds());
+    }
+
+    #[test]
+    fn glyphs_turn_with_a_circle_and_wrap_round_it() {
+        // A circle of radius 100 (clockwise on screen, from the right): a glyph at distance s
+        // sits at angle s / r, turned a quarter more.
+        let circle = Path::ellipse(0.0, 0.0, 100.0, 100.0);
+        let walk = anicraft_geom::walk::CurveWalk::new(&circle).unwrap();
+        let len = walk.length();
+        assert!((len - 2.0 * std::f32::consts::PI * 100.0).abs() < 0.5, "{len}");
+        let t = on_path(&boxes(4), &circle, PathPlacement { offset: len - 15.0, flip: false, align: Align::Left }).unwrap();
+        assert_eq!((t.placed.len(), t.hidden), (4, 0), "wrapped past the start of a closed path");
+        for (_, p, a) in &t.placed {
+            assert!((p.length() - 100.0).abs() < 0.05, "on the circle: {p:?}");
+            let tangent = Vec2::new(a.cos(), a.sin());
+            assert!(tangent.dot(*p).abs() < 0.5, "turned along it: {p:?} {a}");
+        }
+        // The second glyph's middle is at distance 0: the path's start.
+        let (_, p, _) = t.placed[1];
+        assert!((p - walk.at(0.0)).length() < 0.05, "{p:?}");
+        // No length, no text.
+        let mut dot = Path::new();
+        dot.cmds = vec![PathCmd::MoveTo(Vec2::ZERO), PathCmd::LineTo(Vec2::ZERO)];
+        assert!(on_path(&boxes(1), &dot, PathPlacement { offset: 0.0, flip: false, align: Align::Left }).is_none());
     }
 
     #[test]

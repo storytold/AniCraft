@@ -76,9 +76,12 @@ SVG files from illustration tools come in as artwork you can keep editing, not a
 * **Clip paths and masks.** A drawing with clipping comes in as a layer folder named after the
   file. Each clipped group sits on a masked layer under a mask layer that holds the clip's shape,
   so you can move or reshape the mask afterwards. Clips that cut nothing, like the frame clip
-  many design tools add, are dropped. Masks come across when they are solid shapes.
+  many design tools add, are dropped. Solid masks become ordinary (Shape) masks; faded, grey or
+  gradient masks become **soft masks** (mask type Luminance, or Alpha when the SVG says so).
 * **Text** comes in as text you can edit, one block per positioned line, with its font, size,
-  weight, italic, colour, letter spacing and alignment. Fonts that aren't on your computer fall
+  weight, italic, colour, letter spacing and alignment. Text on a path comes in as text on a
+  path. Characters the SVG places one by one (moved, shifted or turned) come in as small blocks
+  of their own where they are. Fonts that aren't on your computer fall
   back to the default, and the status bar names them.
 
 ### What doesn't come across yet
@@ -86,8 +89,6 @@ SVG files from illustration tools come in as artwork you can keep editing, not a
 AniCraft lists these in the status bar after the import, instead of guessing:
 
 * images embedded in the SVG, filters, style sheets (inline styles are read) and pattern fills;
-* soft, faded or coloured masks (drawn unmasked);
-* per-character positions and text on a path;
 * gradient strokes (drawn in one colour), and repeated or reflected gradients (drawn padded).
 
 ### An SVG as a symbol

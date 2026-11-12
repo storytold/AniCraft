@@ -635,11 +635,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.snap_ring = None;
     }
 
+    // Attach to Path (ADR 0070) waits for a click on a shape; Escape gives up.
+    if app.path_pick.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.path_pick = None;
+        app.status_ok(tr!("Attach to Path cancelled."));
+    }
     if resp.clicked()
         && !paused
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
+                _ if !panning && let Some(text) = app.path_pick.take() => {
+                    app.s.selection = anicraft_engine::Selection::only(app.s.layer, [text]);
+                    if app.run("text.attach_path", json!({"x": sp.x, "y": sp.y})).is_some() {
+                        app.status_ok(tr!("The text follows the shape's outline. {undo} to undo.", undo = app.undo_key()));
+                    }
+                }
                 Tool::Subselect if !panning => {
                     if !crate::motion_path::click(app, p, xf, shift) {
                         crate::pathtools::subselect_click(app, p, shift, xf);
@@ -1021,6 +1032,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         painter.rect_stroke(r, 0.0, sel_stroke, StrokeKind::Middle);
+        // Text on a path shows the path it follows (ADR 0070).
+        if let anicraft_engine::doc::ElementKind::Text(t) = &e.kind
+            && let Some(on) = &t.on_path
+            && let Some(item) = app.s.display_list().items.iter().find(|i| i.element == id)
+        {
+            let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom)).mul(&item.transform);
+            for pl in on.path.flatten(&to_px, 0.5) {
+                let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
+                painter.add(if pl.closed { egui::Shape::closed_line(pts, sel_stroke) } else { egui::Shape::line(pts, sel_stroke) });
+            }
+        }
         for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom(), r.center_top(), r.center_bottom(), r.left_center(), r.right_center()] {
             let h = Rect::from_center_size(c, vec2(6.0, 6.0));
             painter.rect_filled(h, 0.0, Color32::WHITE);

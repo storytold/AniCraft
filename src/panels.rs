@@ -3,7 +3,7 @@
 use crate::app::{App, Tool};
 use crate::icons::{self, Icon};
 use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, section, text, to_color32, with_type};
-use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, LineType, Paint, Rgba, SymbolKind, TextKind, evaluate_layer_elements};
+use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, LineType, MAX_PATH_OFFSET, Paint, Rgba, SymbolKind, TextKind, evaluate_layer_elements};
 use crate::a11y::{self, Named};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
@@ -796,6 +796,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                     app.text_edit = Some(crate::app::TextEditing { at: pos2(at.x, at.y), element: Some(e.id), text: t.text.clone(), original: t.text.clone(), focus: true });
                 }
             });
+            text_path_rows(app, ui, e, t);
         }
         if let ElementKind::Shape(sh) = &e.kind {
             ui.add_space(4.0);
@@ -880,6 +881,44 @@ fn bitmap_row(app: &mut App, ui: &mut egui::Ui, current: anicraft_engine::doc::B
         .on_hover_text(tr!("Show another bitmap from the Library here, keeping its position and transform"))
         .set_name(tr!("Swap Bitmap"));
         mixed(ui, differs);
+    });
+}
+
+/// Text on a path (ADR 0070): Attach to Path (then a click on a shape) for static text; for text
+/// on a path, where it sits along it, its side, and Release.
+fn text_path_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, t: &anicraft_engine::doc::TextBlock) {
+    if t.field.is_some() {
+        return;
+    }
+    let Some(on) = &t.on_path else {
+        row_prose(ui, tr!("Path"), |ui| {
+            let waiting = app.path_pick == Some(e.id);
+            let label = if waiting { tr!("Click a shape…") } else { tr!("Attach to Path") };
+            if ui.selectable_label(waiting, label).on_hover_text(tr!("Then click a shape on the stage: the text follows its outline (Esc cancels)")).clicked() {
+                if waiting {
+                    app.path_pick = None;
+                } else {
+                    app.path_pick = Some(e.id);
+                    app.status_ok(tr!("Click a shape to set the text along its outline. Esc cancels."));
+                }
+            }
+        });
+        return;
+    };
+    let mut offset = on.offset;
+    row(ui, tr!("Path"), |ui| {
+        if ui.add(egui::DragValue::new(&mut offset).prefix(format!("{} ", tr!("Offset"))).suffix(" px").speed(0.5).range(-MAX_PATH_OFFSET..=MAX_PATH_OFFSET).max_decimals(1)).named(tr!("Offset along the path")).on_hover_text(tr!("Where the text sits along the path: its alignment decides whether it starts, is centred or ends there")).changed() {
+            live(app, tr_noop!("Text on Path"), "text.path", json!({"offset": offset}));
+        }
+    });
+    row_prose(ui, tr!("Side"), |ui| {
+        let mut flip = on.flip;
+        if crate::theme::checkbox(ui, &mut flip, tr!("Flip")).on_hover_text(tr!("Run the text along the path the other way, on its other side")).changed() {
+            app.run("text.path", json!({"flip": flip}));
+        }
+        if ui.button(tr!("Release")).on_hover_text(tr!("Back to lines of text, where the text starts")).clicked() {
+            app.run("text.release_path", json!({}));
+        }
     });
 }
 

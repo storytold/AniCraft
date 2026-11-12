@@ -292,7 +292,7 @@ var AniCraft = (function () {
   // the group they fade with; `clips` holds each clip's parent, `groups` each group. `v`, when
   // given, hears every item and where clips and groups open and close (canvas.js draws so).
   function evaluate(M, st, v) {
-    const dl = { items: [], clips: [], groups: [] };
+    const dl = { items: [], clips: [], modes: [], groups: [] };
     const scene = M.scenes[st.scene];
     const tli = scene ? scene.tl : 0;
     // A scene seen through its camera: the camera's tint colours everything.
@@ -320,7 +320,11 @@ var AniCraft = (function () {
     for (const L of content(M, tl, frame).l) {
       let clip = cx.clip, masks = cx.masks;
       const isMask = cx.masks === null && L.mk !== undefined;
-      if (isMask) masks = slots[L.mk];
+      if (isMask) {
+        masks = slots[L.mk];
+        // A soft mask's mode (ADR 0070): 1 alpha, 2 luminance; coverage when absent.
+        if (L.mm) dl.modes[masks] = L.mm;
+      }
       else if (cx.masks === null && L.c !== undefined) clip = slots[L.c];
       if (v && cx.masks === null && !isMask) {
         // Masked layers draw into their clip; one that never meets its mask stays hidden.
@@ -334,7 +338,7 @@ var AniCraft = (function () {
           open = want;
         }
       }
-      if (v && isMask) v.maskBegin(masks);
+      if (v && isMask) v.maskBegin(masks, L.mm || 0);
       const lcx = L.v ? Object.assign({}, cx, { xf: L.v }) : cx;
       for (const e of L.e) evalElement(M, e, lcx, clip, masks, dl, play, v);
       if (v && isMask) {

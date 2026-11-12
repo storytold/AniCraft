@@ -3,7 +3,7 @@
 use crate::camera::Camera;
 use crate::nine_slice::Slicing;
 use crate::player::PlayerState;
-use crate::{ColorTransform, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
+use crate::{ColorTransform, Document, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, MaskMode, Paint, Rgba, Shape, Stroke, SymbolId, SymbolKind, Timeline, TweenKind};
 use anicraft_geom::walk::PathWalk;
 use anicraft_geom::{Affine, FillRule, Path};
 use std::borrow::Cow;
@@ -30,7 +30,9 @@ pub struct DisplayItem {
     pub outline: Option<Rgba>,
     /// Drawn only inside this clip (an index into [`DisplayList::clip_parents`]).
     pub clip: Option<u32>,
-    /// Mask artwork: not drawn; its fill area (strokes and opacity ignored) forms this clip.
+    /// Mask artwork: not drawn; it forms this clip: its fill area (strokes and opacity
+    /// ignored), or for a soft clip ([`DisplayList::clip_mode`]) its opacity or brightness as
+    /// drawn.
     pub masks: Option<u32>,
     /// Guide artwork: shown while editing, never in output.
     pub guide: bool,
@@ -51,6 +53,9 @@ pub struct DisplayList {
     /// One entry per clip: the enclosing clip it is intersected with. A parent always has a
     /// lower index than its children. A clip with no mask artwork hides everything in it.
     pub clip_parents: Vec<Option<u32>>,
+    /// How each clip's artwork reveals (ADR 0070), by clip index. Sparse: a clip past its end
+    /// is [`MaskMode::Coverage`], so lists that don't care leave it empty.
+    pub clip_modes: Vec<MaskMode>,
     /// Groups that fade as one: a symbol instance with an opacity below 1 composites its
     /// items together, then blends the result at `alpha`, so overlapping parts don't show
     /// through each other. A group's items are one unbroken run of `items`, nested runs for
@@ -72,6 +77,24 @@ pub struct Group {
 }
 
 impl DisplayList {
+    /// How clip `c`'s artwork reveals (coverage when unset).
+    pub fn clip_mode(&self, c: u32) -> MaskMode {
+        self.clip_modes.get(c as usize).copied().unwrap_or_default()
+    }
+
+    /// Sets clip `c`'s mode (only a soft mode is stored; coverage stays implicit).
+    pub fn set_clip_mode(&mut self, c: u32, mode: MaskMode) {
+        let i = c as usize;
+        if mode.is_soft() && i < self.clip_parents.len() {
+            if self.clip_modes.len() <= i {
+                self.clip_modes.resize(i + 1, MaskMode::Coverage);
+            }
+            if let Some(m) = self.clip_modes.get_mut(i) {
+                *m = mode;
+            }
+        }
+    }
+
     /// The opacity an item ends up with: its own times every group's it is in (what an item
     /// looks like when nothing overlaps it; also what picking and outlines use).
     pub fn effective_alpha(&self, item: &DisplayItem) -> f32 {
@@ -107,6 +130,9 @@ impl DisplayList {
         let gbase = self.groups.len() as u32;
         let gshift = |g: Option<u32>| g.map(|g| g + gbase);
         self.clip_parents.extend(other.clip_parents.into_iter().map(shift));
+        for (i, m) in other.clip_modes.into_iter().enumerate() {
+            self.set_clip_mode(base + i as u32, m);
+        }
         self.groups.extend(other.groups.into_iter().map(|g| Group { parent: gshift(g.parent), alpha: g.alpha, blend: g.blend, filters: g.filters, clip: shift(g.clip) }));
         self.items.extend(other.items.into_iter().map(|mut i| {
             i.clip = shift(i.clip);
@@ -398,8 +424,10 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
     let mut clips: Vec<(LayerId, u32)> = Vec::new();
     if cx.masks.is_none() {
         for layer in tl.layers.iter().filter(|l| l.kind == LayerKind::Mask && l.visible) {
-            clips.push((layer.id, out.clip_parents.len() as u32));
+            let c = out.clip_parents.len() as u32;
+            clips.push((layer.id, c));
             out.clip_parents.push(cx.clip);
+            out.set_clip_mode(c, layer.mask_mode);
         }
     }
     let clip_of = |id: LayerId| clips.iter().find(|(l, _)| *l == id).map(|(_, c)| *c);

@@ -1,6 +1,7 @@
 //! Clip paths and masks → mask layers (ADR 0021), on self-authored drawings.
 
 use super::*;
+use anicraft_doc::{MaskMode, Paint, Rgba};
 
 fn imp(svg: &str) -> SvgImport {
     match import_with_fonts(svg.as_bytes(), &Fonts::from_faces(Vec::new())) {
@@ -126,7 +127,7 @@ fn shapes_sharing_one_clip_share_one_mask_layer() {
 }
 
 #[test]
-fn opaque_masks_become_mask_layers_and_soft_ones_are_reported() {
+fn opaque_masks_become_mask_layers_and_soft_ones_soft_mask_layers() {
     let i = imp(r##"<svg width="100" height="100">
       <mask id="white"><circle cx="50" cy="50" r="30" fill="white"/><rect x="0" y="0" width="10" height="10" style="fill:#fff"/></mask>
       <mask id="alpha" style="mask-type:alpha"><circle cx="50" cy="50" r="30" fill="#123456"/></mask>
@@ -140,14 +141,45 @@ fn opaque_masks_become_mask_layers_and_soft_ones_are_reported() {
       <rect id="e" width="100" height="100" mask="url(#tight)"/>
     </svg>"##);
     let shape: Vec<(Option<&str>, Vec<&str>)> = i.layers.iter().map(|l| (l.mask.as_ref().map(|m| m.name.as_str()), names(l))).collect();
-    assert_eq!(shape, [(Some("white"), vec!["a"]), (Some("alpha"), vec!["b"]), (None, vec!["c", "d"]), (Some("tight"), vec!["e"])]);
+    assert_eq!(shape, [(Some("white"), vec!["a"]), (Some("alpha"), vec!["b"]), (Some("grey"), vec!["c"]), (Some("faded"), vec!["d"]), (Some("tight"), vec!["e"])]);
+    let modes: Vec<MaskMode> = i.layers.iter().map(|l| l.mask.as_ref().unwrap().mode).collect();
+    // Opaque masks stay Animate's masks (by area); the grey and the faded one are soft
+    // luminance masks (ADR 0070), their artwork as drawn.
+    assert_eq!(modes, [MaskMode::Coverage, MaskMode::Coverage, MaskMode::Luminance, MaskMode::Luminance, MaskMode::Coverage]);
     let white = i.layers[0].mask.as_ref().unwrap();
     assert_eq!(white.elements.len(), 2, "the default mask region (bounding box + 10%) holds the content and cuts nothing");
     assert!(in_mask(white, Vec2::new(5.0, 5.0)) && in_mask(white, Vec2::new(50.0, 50.0)) && !in_mask(white, Vec2::new(90.0, 10.0)));
-    assert_eq!(i.report.skipped.get("soft, faded or coloured masks (drawn unmasked)"), Some(&2));
+    let grey = &i.layers[2].mask.as_ref().unwrap().elements[0];
+    assert!(matches!(&grey.kind, ElementKind::Shape(s) if s.fill == Some(Paint::Solid(Rgba::hex(0x808080)))), "{grey:?}");
+    assert_eq!(i.layers[3].mask.as_ref().unwrap().elements[0].alpha, 0.5, "the content's opacity stays");
+    assert!(i.report.skipped.is_empty(), "{:?}", i.report);
     // A mask region cuts the mask: the full-size rect becomes the middle quarter.
-    let tight = path_of(&i.layers[3].mask.as_ref().unwrap().elements[0]).bounds();
+    let tight = path_of(&i.layers[4].mask.as_ref().unwrap().elements[0]).bounds();
     assert_eq!(tight, Rect::new(25.0, 25.0, 75.0, 75.0));
+}
+
+#[test]
+fn soft_masks_keep_gradients_and_their_region_cuts_them() {
+    let i = imp(r##"<svg width="200" height="100">
+      <linearGradient id="fade"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+      <linearGradient id="dark"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>
+      <mask id="a" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="50" height="100"><rect width="200" height="100" fill="url(#fade)"/></mask>
+      <mask id="l"><rect width="200" height="100" fill="url(#dark)" stroke="#fff"/></mask>
+      <rect id="cut" width="200" height="100" mask="url(#a)"/>
+      <rect id="lum" width="200" height="100" fill="red" mask="url(#l)"/>
+    </svg>"##);
+    assert_eq!(i.layers.len(), 2, "{:?}", i.layers);
+    let a = i.layers[0].mask.as_ref().unwrap();
+    assert_eq!(a.mode, MaskMode::Alpha);
+    // The region (x 0..50) cuts the gradient-filled rect in its own space; the paint stays.
+    let ElementKind::Shape(s) = &a.elements[0].kind else { panic!() };
+    assert!(matches!(s.fill, Some(Paint::Linear { .. })));
+    let b = path_of(&a.elements[0]).bounds();
+    assert!((b.max.x - 50.0).abs() < 1e-3 && b.min.x.abs() < 1e-3, "{b:?}");
+    // Luminance by default; the stroke stays too.
+    let l = i.layers[1].mask.as_ref().unwrap();
+    assert_eq!(l.mode, MaskMode::Luminance);
+    assert!(matches!(&l.elements[0].kind, ElementKind::Shape(s) if s.stroke.is_some() && matches!(s.fill, Some(Paint::Linear { .. }))));
 }
 
 #[test]

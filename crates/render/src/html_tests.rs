@@ -94,6 +94,8 @@ fn fixture() -> Document {
     });
     let mut mask = Layer::new(LayerId(6), "mask");
     mask.kind = LayerKind::Mask;
+    // A soft mask (ADR 0070): the player numbers its clip's mode as the evaluator does.
+    mask.mask_mode = anicraft_doc::MaskMode::Luminance;
     mask.keyframes = vec![kf(0, 30, vec![rect(5005, 400.0, 0.0, 20.0, 100.0, 0)], vec![], "")];
     let mut masked = Layer::new(LayerId(7), "masked");
     masked.parent = Some(LayerId(6));
@@ -291,6 +293,15 @@ fn same_display_list(js: &mut Js, m: &Movie, doc: &Document, st: &PlayerState, w
     }
     let clips: Vec<Option<u32>> = ours["clips"].as_array().unwrap().iter().map(|v| v.as_u64().map(|x| x as u32)).collect();
     assert_eq!(clips, dl.clip_parents, "{when}: clips");
+    let modes = ours["modes"].as_array().unwrap();
+    for c in 0..dl.clip_parents.len() {
+        let want = match dl.clip_mode(c as u32) {
+            anicraft_doc::MaskMode::Coverage => 0,
+            anicraft_doc::MaskMode::Alpha => 1,
+            anicraft_doc::MaskMode::Luminance => 2,
+        };
+        assert_eq!(modes.get(c).and_then(Value::as_u64).unwrap_or(0), want, "{when}: clip {c} mode");
+    }
     let groups = ours["groups"].as_array().unwrap();
     assert_eq!(groups.len(), dl.groups.len(), "{when}: groups");
     for (a, b) in groups.iter().zip(&dl.groups) {
@@ -881,7 +892,7 @@ fn the_js_player_draws_random_numbers_like_the_rust_player() {
 /// (layout isn't compared: neither player lays text out here).
 fn field_el(id: u64, name: &str, at: Vec2, (w, h): (f32, f32), text: &str, f: Option<anicraft_doc::TextField>) -> Arc<Element> {
     let n = text.chars().count() as f32;
-    let t = anicraft_doc::TextBlock { text: text.into(), font: "Inter".into(), size: 14.0, bold: true, italic: false, color: Rgba::hex(0x112233), align: anicraft_doc::TextAlign::Center, letter_spacing: 0.5, line_spacing: 2.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0 * n, 12.0)), box_width: w, box_height: h, field: f };
+    let t = anicraft_doc::TextBlock { text: text.into(), font: "Inter".into(), size: 14.0, bold: true, italic: false, color: Rgba::hex(0x112233), align: anicraft_doc::TextAlign::Center, letter_spacing: 0.5, line_spacing: 2.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0 * n, 12.0)), box_width: w, box_height: h, field: f, on_path: None };
     Arc::new(Element { id: ElementId(id), name: name.into(), transform: Affine::translate(at.x, at.y), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(t)) })
 }
 

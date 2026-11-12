@@ -78,7 +78,8 @@ const IMAGE: u32 = 4;
 
 /// Op header flag: the fill is drawn inside the current clip.
 pub const CLIPPED: u32 = 1;
-/// Op header flag: the op is clip artwork (its coverage joins the current level's union).
+/// Op header flag: the op is clip artwork (its coverage joins the current level's union; in a
+/// soft mask its paint composites into the level's colour).
 pub const ART: u32 = 2;
 
 /// An entry whose first word has this bit is a control entry, not a fill.
@@ -89,10 +90,22 @@ pub const OPEN: u32 = CTRL | 1;
 pub const CLOSE: u32 = CTRL | 2;
 /// The clip coverage starts at 1 (a new clip's chain follows).
 pub const MASK_RESET: u32 = CTRL | 3;
-/// One level of the clip chain starts: its union of artwork coverage starts at 0.
+/// `[LEVEL_BEGIN, mask mode, 0, 0]`: one level of the clip chain starts: its union of artwork
+/// coverage starts at 0, or for a soft mask ([`mask_code`]) its artwork's colour starts
+/// transparent.
 pub const LEVEL_BEGIN: u32 = CTRL | 4;
-/// The level ends: the clip coverage is multiplied by its union.
+/// The level ends: the clip coverage is multiplied by its union (or by the soft mask's
+/// opacity or luminance, ADR 0070).
 pub const LEVEL_END: u32 = CTRL | 5;
+
+/// Mask modes as the shader numbers them (`fine.wgsl` › `LEVEL_END`).
+pub fn mask_code(m: anicraft_doc::MaskMode) -> u32 {
+    match m {
+        anicraft_doc::MaskMode::Coverage => 0,
+        anicraft_doc::MaskMode::Alpha => 1,
+        anicraft_doc::MaskMode::Luminance => 2,
+    }
+}
 
 /// Blend modes as the shader numbers them (`fine.wgsl` › `blend`).
 pub fn blend_code(m: BlendMode) -> u32 {
@@ -540,7 +553,8 @@ fn tile_stream(fills: &[[u32; 4]], arts: &[[u32; 4]], t: &Tables, out: &mut Vec<
             }
             out.push([MASK_RESET, 0, 0, 0]);
             for &l in chain {
-                out.push([LEVEL_BEGIN, 0, 0, 0]);
+                let mode = t.scene.clips.get(l as usize).map_or(0, |c| mask_code(c.mode));
+                out.push([LEVEL_BEGIN, mode, 0, 0]);
                 out.extend_from_slice(level(l));
                 out.push([LEVEL_END, 0, 0, 0]);
             }

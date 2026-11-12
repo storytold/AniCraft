@@ -1046,3 +1046,5 @@ mod drop_tests;
 mod template_tests;
 #[cfg(test)]
 mod timeline_drop_tests;
+#[cfg(test)]
+mod path_text_tests;
