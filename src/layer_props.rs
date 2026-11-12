@@ -1,5 +1,6 @@
 //! The Layer Properties dialog (ADR 0061), as in Animate: name, show and lock, type, outline
-//! colour, View layer as outlines, onion skin and layer height. Opened by double-clicking a
+//! colour, View layer as outlines, onion skin and layer height; a mask layer's mask type (ADR
+//! 0070: by shape, as in Animate, or soft, by alpha or luminance). Opened by double-clicking a
 //! layer's icon, from the layer's right-click menu or Modify › Timeline. OK sends one
 //! `layer.set_properties` (one undo step) with what changed; Cancel changes nothing.
 
@@ -20,6 +21,8 @@ pub struct LayerPropsDialog {
     /// `camera`, `armature`).
     pub ty: String,
     pub color: [u8; 3],
+    /// A mask layer's mask type: `coverage`, `alpha` or `luminance`.
+    pub mask: String,
     pub outline: bool,
     pub onion: bool,
     /// Rows: 1, 2 or 3 (100, 200, 300 %).
@@ -48,6 +51,7 @@ pub fn open(app: &mut App, layer: Option<LayerId>) {
         locked: l.locked,
         ty: p.get("type").and_then(Value::as_str).unwrap_or("normal").to_string(),
         color: [c.r(), c.g(), c.b()],
+        mask: l.mask_mode.key().to_string(),
         outline: l.outline,
         onion: l.onion,
         height: l.height(),
@@ -59,6 +63,15 @@ pub fn open(app: &mut App, layer: Option<LayerId>) {
 /// The types a layer can be given here, with their names.
 fn types() -> [(&'static str, &'static str); 5] {
     [("normal", tr!("Normal")), ("guide", tr!("Guide")), ("guided", tr!("Guided")), ("mask", tr!("Mask")), ("masked", tr!("Masked"))]
+}
+
+/// The mask types, with their names and what each does.
+fn mask_types() -> [(&'static str, &'static str, &'static str); 3] {
+    [
+        ("coverage", tr!("Shape"), tr!("The mask's fills reveal fully, whatever their colour or opacity (as in Animate)")),
+        ("alpha", tr!("Alpha"), tr!("The mask's opacity reveals: gradients to transparent and faded shapes give soft edges")),
+        ("luminance", tr!("Luminance"), tr!("The mask's brightness reveals: white shows, black hides, greys show partly")),
+    ]
 }
 
 fn type_label(ty: &str) -> &'static str {
@@ -127,6 +140,17 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                 }
             });
         });
+        if d.ty == "mask" {
+            form_row(ui, FORM_LABEL_DIALOG, tr!("Mask type"), |ui| {
+                ui.horizontal(|ui| {
+                    for (k, name, what) in mask_types() {
+                        if ui.radio(d.mask == k, name).on_hover_text(what).clicked() {
+                            d.mask = k.to_string();
+                        }
+                    }
+                });
+            });
+        }
         form_row(ui, FORM_LABEL_DIALOG, tr!("Outline colour"), |ui| {
             ui.color_edit_button_srgb(&mut d.color).named(tr!("Outline colour")).on_hover_text(tr!("The colour of the layer's outlines and of its bar on the timeline"));
         });
@@ -183,6 +207,11 @@ pub fn changes(d: &LayerPropsDialog) -> Value {
         "onion": d.onion,
         "height": u32::from(d.height) * 100,
     });
+    let mut now = now;
+    // The mask type is a mask layer's (and only sent when it changes).
+    if d.ty == "mask" {
+        now["mask"] = json!(d.mask);
+    }
     let mut out = json!({"layer": d.layer.0});
     if let (Some(now), Some(o)) = (now.as_object(), out.as_object_mut()) {
         for (k, v) in now {
@@ -232,6 +261,15 @@ mod tests {
         open(&mut app, Some(id));
         accept(&mut app);
         assert_eq!(app.s.history().undo_len(), steps + 1);
+        // A mask layer's mask type, by itself.
+        app.s.execute("layer.set_properties", &json!({"layer": id.0, "type": "mask"})).unwrap();
+        open(&mut app, Some(id));
+        let d = app.layer_props.as_mut().unwrap();
+        assert_eq!(changes(d), json!({"layer": id.0}));
+        d.mask = "alpha".into();
+        assert_eq!(changes(d), json!({"layer": id.0, "mask": "alpha"}));
+        accept(&mut app);
+        assert_eq!(app.s.timeline().layer(id).unwrap().mask_mode, anicraft_engine::doc::MaskMode::Alpha);
         // The menu command opens it too.
         app.invoke("layer.set_properties");
         assert!(app.layer_props.is_some());

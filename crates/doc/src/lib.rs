@@ -910,6 +910,7 @@ impl PartialEq for Layer {
             && self.depth.to_bits() == o.depth.to_bits()
             && self.volume.to_bits() == o.volume.to_bits()
             && self.muted == o.muted
+            && self.mask_mode == o.mask_mode
             && match (&self.armature, &o.armature) {
                 (Some(a), Some(b)) => arc_eq(a, b),
                 (a, b) => a.is_none() && b.is_none(),
