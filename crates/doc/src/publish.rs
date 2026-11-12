@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub enum PublishFormat {
     Html,
     Gif,
+    Apng,
+    Webp,
     Video,
     Lottie,
     SpriteSheet,
@@ -25,9 +27,11 @@ pub enum PublishFormat {
 
 impl PublishFormat {
     /// Every format, in the order Publish runs them.
-    pub const ALL: [PublishFormat; 9] = [
+    pub const ALL: [PublishFormat; 11] = [
         PublishFormat::Html,
         PublishFormat::Gif,
+        PublishFormat::Apng,
+        PublishFormat::Webp,
         PublishFormat::Video,
         PublishFormat::Lottie,
         PublishFormat::SpriteSheet,
@@ -42,6 +46,8 @@ impl PublishFormat {
         match self {
             PublishFormat::Html => "html",
             PublishFormat::Gif => "gif",
+            PublishFormat::Apng => "apng",
+            PublishFormat::Webp => "webp",
             PublishFormat::Video => "video",
             PublishFormat::Lottie => "lottie",
             PublishFormat::SpriteSheet => "sprite_sheet",
@@ -61,6 +67,8 @@ impl PublishFormat {
         match self {
             PublishFormat::Html => "HTML canvas",
             PublishFormat::Gif => "Animated GIF",
+            PublishFormat::Apng => "Animated PNG",
+            PublishFormat::Webp => "Animated WebP",
             PublishFormat::Video => "Video",
             PublishFormat::Lottie => "Lottie",
             PublishFormat::SpriteSheet => "Sprite sheet",
@@ -76,6 +84,9 @@ impl PublishFormat {
         match self {
             PublishFormat::Html => "{name}.html",
             PublishFormat::Gif => "{name}.gif",
+            // Not {name}.png: the PNG image has that.
+            PublishFormat::Apng => "{name}_animated.png",
+            PublishFormat::Webp => "{name}.webp",
             PublishFormat::Video => "{name}.webm",
             PublishFormat::Lottie => "{name}.json",
             PublishFormat::SpriteSheet => "{name}_sheet.png",
@@ -91,6 +102,8 @@ impl PublishFormat {
         match self {
             PublishFormat::Html => &["html", "htm"],
             PublishFormat::Gif => &["gif"],
+            PublishFormat::Apng => &["png", "apng"],
+            PublishFormat::Webp => &["webp"],
             PublishFormat::Video => &["webm", "mp4"],
             PublishFormat::Lottie => &["json"],
             PublishFormat::SpriteSheet | PublishFormat::Png => &["png"],
@@ -107,6 +120,8 @@ pub const MAX_OUTPUT_CHARS: usize = 512;
 pub const MAX_TITLE_CHARS: usize = 256;
 /// Largest export scale.
 pub const MAX_PUBLISH_SCALE: f32 = 8.0;
+/// Most plays an animated PNG or WebP's loop count says (WebP stores it in 16 bits).
+pub const MAX_PLAYS: u32 = 65_535;
 
 /// Movie frames to publish (every scene in order, 0-based): `None` ends are the movie's ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +169,30 @@ format_settings!(
         scale: f32 = 1.0,
         #[serde(rename = "loop")]
         looping: bool = true,
+    }
+);
+format_settings!(
+    /// An animated PNG: full colour, real alpha (`file.export_apng`, ADR 0063).
+    ApngSettings, PublishFormat::Apng, false, {
+        range: FrameRange = FrameRange::default(),
+        scale: f32 = 1.0,
+        /// How many times it plays; 0: forever.
+        #[serde(rename = "loop")]
+        plays: u32 = 0,
+        /// The stage colour behind it; off: transparent.
+        background: bool = false,
+    }
+);
+format_settings!(
+    /// An animated WebP, lossless (`file.export_webp`, ADR 0063).
+    WebpSettings, PublishFormat::Webp, false, {
+        range: FrameRange = FrameRange::default(),
+        scale: f32 = 1.0,
+        /// How many times it plays; 0: forever.
+        #[serde(rename = "loop")]
+        plays: u32 = 0,
+        /// The stage colour behind it; off: transparent.
+        background: bool = false,
     }
 );
 format_settings!(
@@ -220,6 +259,8 @@ format_settings!(
 pub struct PublishProfile {
     pub html: HtmlSettings,
     pub gif: GifSettings,
+    pub apng: ApngSettings,
+    pub webp: WebpSettings,
     pub video: VideoSettings,
     pub lottie: LottieSettings,
     pub sprite_sheet: SpriteSheetSettings,
@@ -249,6 +290,8 @@ impl PublishProfile {
         match f {
             PublishFormat::Html => (self.html.enabled, &self.html.output),
             PublishFormat::Gif => (self.gif.enabled, &self.gif.output),
+            PublishFormat::Apng => (self.apng.enabled, &self.apng.output),
+            PublishFormat::Webp => (self.webp.enabled, &self.webp.output),
             PublishFormat::Video => (self.video.enabled, &self.video.output),
             PublishFormat::Lottie => (self.lottie.enabled, &self.lottie.output),
             PublishFormat::SpriteSheet => (self.sprite_sheet.enabled, &self.sprite_sheet.output),
@@ -264,6 +307,8 @@ impl PublishProfile {
         match f {
             PublishFormat::Html => (&mut self.html.enabled, &mut self.html.output),
             PublishFormat::Gif => (&mut self.gif.enabled, &mut self.gif.output),
+            PublishFormat::Apng => (&mut self.apng.enabled, &mut self.apng.output),
+            PublishFormat::Webp => (&mut self.webp.enabled, &mut self.webp.output),
             PublishFormat::Video => (&mut self.video.enabled, &mut self.video.output),
             PublishFormat::Lottie => (&mut self.lottie.enabled, &mut self.lottie.output),
             PublishFormat::SpriteSheet => (&mut self.sprite_sheet.enabled, &mut self.sprite_sheet.output),
@@ -290,16 +335,18 @@ impl PublishProfile {
             }
         }
         clip(&mut self.html.title, MAX_TITLE_CHARS);
-        for s in [&mut self.gif.scale, &mut self.video.scale, &mut self.sprite_sheet.scale, &mut self.png_sequence.scale, &mut self.png.scale] {
+        for s in [&mut self.gif.scale, &mut self.apng.scale, &mut self.webp.scale, &mut self.video.scale, &mut self.sprite_sheet.scale, &mut self.png_sequence.scale, &mut self.png.scale] {
             *s = clean_scale(*s);
         }
         self.sprite_sheet.padding = self.sprite_sheet.padding.min(256);
+        self.apng.plays = self.apng.plays.min(MAX_PLAYS);
+        self.webp.plays = self.webp.plays.min(MAX_PLAYS);
         self.sprite_sheet.columns = self.sprite_sheet.columns.min(10_000);
         self.audio.rate = self.audio.rate.clamp(8_000, 192_000);
         if !matches!(self.audio.bits, 16 | 24 | 32) {
             self.audio.bits = 16;
         }
-        for r in [&mut self.gif.range, &mut self.video.range, &mut self.lottie.range, &mut self.sprite_sheet.range, &mut self.png_sequence.range, &mut self.audio.range] {
+        for r in [&mut self.gif.range, &mut self.apng.range, &mut self.webp.range, &mut self.video.range, &mut self.lottie.range, &mut self.sprite_sheet.range, &mut self.png_sequence.range, &mut self.audio.range] {
             if let (Some(a), Some(b)) = (r.from, r.to)
                 && b < a
             {
@@ -344,6 +391,13 @@ mod tests {
         assert!(partial.gif.enabled && partial.html.enabled);
         assert_eq!(partial.gif.output, "{name}.gif");
         assert_eq!(partial.gif.scale, 1.0);
+        assert_eq!((partial.apng.plays, partial.webp.background, partial.webp.enabled), (0, false, false), "formats newer than the file get their defaults");
+        let mut q = PublishProfile::default();
+        q.apng.plays = 3;
+        q.webp.background = true;
+        let text = serde_json::to_string(&q).unwrap();
+        assert!(text.contains("\"apng\"") && text.contains("\"loop\":3"), "{text}");
+        assert_eq!(serde_json::from_str::<PublishProfile>(&text).unwrap(), q);
     }
 
     #[test]
@@ -354,12 +408,14 @@ mod tests {
         p.audio.rate = 5;
         p.audio.bits = 7;
         p.sprite_sheet.padding = u32::MAX;
+        p.webp.plays = u32::MAX;
         p.video.output = "  ".into();
         p.html.title = "x".repeat(10_000);
         p.lottie.range = FrameRange { from: Some(9), to: Some(2) };
         p.sanitize();
         assert_eq!((p.gif.scale, p.png.scale, p.audio.rate, p.audio.bits, p.sprite_sheet.padding), (1.0, MAX_PUBLISH_SCALE, 8_000, 16, 256));
         assert_eq!(p.video.output, "{name}.webm");
+        assert_eq!(p.webp.plays, MAX_PLAYS);
         assert_eq!(p.html.title.chars().count(), MAX_TITLE_CHARS);
         assert_eq!(p.lottie.range, FrameRange { from: Some(2), to: Some(9) });
     }

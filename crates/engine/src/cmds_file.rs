@@ -75,6 +75,24 @@ pub fn specs() -> Vec<CommandSpec> {
             run: export_gif,
         },
         CommandSpec {
+            id: "file.export_apng",
+            label: "Export Animated PNG…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.png or .apng), from?, to? (movie frames: every scene in order), scale?, loop? (true (default): forever; false: once; or how many times it plays), background? (default false: transparent), confirm?}",
+            mutates: false,
+            run: |s, p| crate::anim::export(s, p, crate::anim::Kind::Apng),
+        },
+        CommandSpec {
+            id: "file.export_webp",
+            label: "Export Animated WebP…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.webp; lossless), from?, to? (movie frames: every scene in order), scale?, loop? (true (default): forever; false: once; or how many times it plays), background? (default false: transparent), confirm?}",
+            mutates: false,
+            run: |s, p| crate::anim::export(s, p, crate::anim::Kind::Webp),
+        },
+        CommandSpec {
             id: "file.export_lottie",
             label: "Export Lottie Animation…",
             menu: "File/Export",
@@ -207,7 +225,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"saved": path.display().to_string()}))
 }
 
-fn scale_param(p: &Value) -> Result<f32> {
+pub(crate) fn scale_param(p: &Value) -> Result<f32> {
     match opt_f32(p, "scale")? {
         None => Ok(1.0),
         Some(v) if v > 0.0 && v <= 8.0 => Ok(v),

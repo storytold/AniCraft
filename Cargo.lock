@@ -293,6 +293,7 @@ dependencies = [
  "anicraft-text",
  "anicraft-xfl",
  "gif",
+ "image-webp",
  "miniz_oxide 0.8.9",
  "png 0.17.16",
  "rayon",
@@ -2234,6 +2235,16 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]

@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Publish Settings",
             menu: "",
             shortcut: None,
-            params: "{profile? (a whole profile, as publish.settings_get returns it), format? (html | gif | video | lottie | sprite_sheet | png_sequence | png | svg | audio), enabled?, output? (relative to the document's folder; {name} is the document's name), and that format's options: title, sound, fit (html); from, to, scale, loop (gif); from, to, scale, audio (video); from, to, background (lottie); from, to, scale, columns, padding, background (sprite_sheet); from, to, scale (png_sequence); frame, scale (png); frame (svg); from, to, rate, bits (audio). from/to/frame are movie frames, null for the movie's ends}",
+            params: "{profile? (a whole profile, as publish.settings_get returns it), format? (html | gif | apng | webp | video | lottie | sprite_sheet | png_sequence | png | svg | audio), enabled?, output? (relative to the document's folder; {name} is the document's name), and that format's options: title, sound, fit (html); from, to, scale, loop (gif); from, to, scale, loop (true, false or how many times it plays; 0: forever), background (apng, webp); from, to, scale, audio (video); from, to, background (lottie); from, to, scale, columns, padding, background (sprite_sheet); from, to, scale (png_sequence); frame, scale (png); frame (svg); from, to, rate, bits (audio). from/to/frame are movie frames, null for the movie's ends}",
             mutates: true,
             run: settings_set,
         },
@@ -205,6 +205,17 @@ pub fn plan(doc: &Document, path: Option<&Path>, only: Option<&[PublishFormat]>)
                 p.insert("loop".into(), json!(g.looping));
                 ("file.export_gif", n, vec![out])
             }
+            PublishFormat::Apng | PublishFormat::Webp => {
+                let (range, scale, plays, background, command) = match f {
+                    PublishFormat::Apng => (prof.apng.range, prof.apng.scale, prof.apng.plays, prof.apng.background, "file.export_apng"),
+                    _ => (prof.webp.range, prof.webp.scale, prof.webp.plays, prof.webp.background, "file.export_webp"),
+                };
+                let n = range_params(&mut p, range, last);
+                p.insert("scale".into(), json!(scale));
+                p.insert("loop".into(), json!(plays));
+                p.insert("background".into(), json!(background));
+                (command, n, vec![out])
+            }
             PublishFormat::Video => {
                 let v = &prof.video;
                 let n = range_params(&mut p, v.range, last);
@@ -310,7 +321,7 @@ pub fn formats_param(p: &Value) -> Result<Option<Vec<PublishFormat>>> {
         Some(Value::Array(list)) => list
             .iter()
             .take(64)
-            .map(|v| v.as_str().and_then(PublishFormat::from_key).ok_or_else(|| EngineError::Param(format!("unknown format {v} (html, gif, video, lottie, sprite_sheet, png_sequence, png, svg or audio)"))))
+            .map(|v| v.as_str().and_then(PublishFormat::from_key).ok_or_else(|| EngineError::Param(format!("unknown format {v} (html, gif, apng, webp, video, lottie, sprite_sheet, png_sequence, png, svg or audio)"))))
             .collect::<Result<Vec<_>>>()
             .map(Some),
         Some(_) => Err(EngineError::Param("param 'formats' must be a list of format names".into())),
@@ -549,6 +560,7 @@ fn option_keys(f: PublishFormat) -> &'static [&'static str] {
     match f {
         PublishFormat::Html => &["title", "sound", "fit"],
         PublishFormat::Gif => &["from", "to", "scale", "loop"],
+        PublishFormat::Apng | PublishFormat::Webp => &["from", "to", "scale", "loop", "background"],
         PublishFormat::Video => &["from", "to", "scale", "audio"],
         PublishFormat::Lottie => &["from", "to", "background"],
         PublishFormat::SpriteSheet => &["from", "to", "scale", "columns", "padding", "background"],
@@ -633,6 +645,18 @@ fn apply(prof: &mut PublishProfile, f: PublishFormat, p: &Value) -> Result<()> {
             set_scale(&mut g.scale, p)?;
             set_bool(&mut g.looping, p, "loop")?;
         }
+        PublishFormat::Apng | PublishFormat::Webp => {
+            let (range, scale, plays, background) = match f {
+                PublishFormat::Apng => (&mut prof.apng.range, &mut prof.apng.scale, &mut prof.apng.plays, &mut prof.apng.background),
+                _ => (&mut prof.webp.range, &mut prof.webp.scale, &mut prof.webp.plays, &mut prof.webp.background),
+            };
+            set_range(range, p)?;
+            set_scale(scale, p)?;
+            if p.get("loop").is_some() {
+                *plays = crate::anim::plays(p)?;
+            }
+            set_bool(background, p, "background")?;
+        }
         PublishFormat::Video => {
             let v = &mut prof.video;
             set_range(&mut v.range, p)?;
@@ -704,7 +728,7 @@ fn settings_set(s: &mut Session, p: &Value) -> Result<Value> {
     };
     match opt_str(p, "format")? {
         Some(k) => {
-            let f = PublishFormat::from_key(k).ok_or_else(|| EngineError::Param(format!("unknown format '{k}' (html, gif, video, lottie, sprite_sheet, png_sequence, png, svg or audio)")))?;
+            let f = PublishFormat::from_key(k).ok_or_else(|| EngineError::Param(format!("unknown format '{k}' (html, gif, apng, webp, video, lottie, sprite_sheet, png_sequence, png, svg or audio)")))?;
             apply(&mut prof, f, p)?;
         }
         None if p.get("profile").is_none_or(Value::is_null) && p.as_object().is_some_and(|o| o.keys().any(|k| k != "confirm" && k != "profile")) => {

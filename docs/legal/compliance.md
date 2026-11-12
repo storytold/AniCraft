@@ -95,6 +95,15 @@ page's player in it. Nothing of it is in the app or the CLI. No new licence. The
 JavaScript is our own code (`crates/render/src/html/`), MIT OR Apache-2.0 like the rest, and
 uses no npm packages.
 
+### Animated PNG and WebP (2026-11-11, ADR 0063)
+
+New crate, from crates.io: `image-webp` 0.2 (lossless WebP encoding and decoding in pure Rust,
+`#![forbid(unsafe_code)]`, MIT OR Apache-2.0). Its dependencies, `byteorder-lite` (Unlicense
+OR MIT) and `quick-error` (MIT OR Apache-2.0), were already in the tree. No new licence. APNG frames use the `png` crate already in
+the tree. There is no lossy WebP yet: the only lossy encoders on crates.io bind the C libwebp
+library, which this project does not build. APNG and WebP are both royalty-free (see the
+codec table).
+
 ### Sound (2026-11-09, ADR 0020)
 
 The audio slice adds, all permissive and from crates.io: `lewton` (Ogg Vorbis decoding, MIT OR

@@ -260,6 +260,8 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
     match cmd {
         "file.export_png" => (tr_noop!("PNG image"), &["png"]),
         "file.export_gif" => (tr_noop!("Animated GIF"), &["gif"]),
+        "file.export_apng" => (tr_noop!("Animated PNG"), &["png", "apng"]),
+        "file.export_webp" => (tr_noop!("Animated WebP"), &["webp"]),
         "file.export_svg" => (tr_noop!("SVG image"), &["svg"]),
         "file.export_lottie" => (tr_noop!("Lottie animation"), &["json"]),
         "file.export_html" => (tr_noop!("Web page"), &["html", "htm"]),
