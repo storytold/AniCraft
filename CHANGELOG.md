@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+* **Soft masks and text on a path** (ADR 0070, M4).
+  * **Soft masks**: Layer Properties › **Mask type** on a mask layer: *Shape* (as in Animate),
+    *Alpha* (the mask's opacity reveals: a gradient to transparent fades the artwork out) or
+    *Luminance* (the mask's brightness reveals: white shows, black hides). On the stage, on the
+    GPU stage, in Test Movie and in every export: SVG writes a `mask`, Lottie a track matte, the
+    HTML canvas composites it. `layer.set_mask` does it headless.
+  * **Text on a path**: Properties › Path › **Attach to Path**, then click a shape: static text
+    follows its outline (a copy of it; the shape stays). Move it along with **Offset**, put it on
+    the other side with **Flip**, and **Release** it back to lines of text. The alignment says
+    whether the text starts, is centred or ends at the offset. Editing the words, the font or
+    the size keeps it on its path. Also Modify › Text › Attach Text to Path.
+  * **SVG import**: soft masks come in as soft mask layers (luminance, or alpha with
+    `mask-type: alpha`) instead of being drawn unmasked; `textPath` comes in as text on a path;
+    per-character `x`, `y`, `dx`, `dy` and `rotate` are kept where they are simple.
 * **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
   tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
   macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip
