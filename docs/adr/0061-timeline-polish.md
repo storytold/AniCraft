@@ -64,6 +64,13 @@ Nothing was copied.
      laid out by height (`rows_fitting`, `max_first_row`, `first_showing`, `row_at`), so
      scrolling, bringing the active layer into view and dragging across rows follow the real
      rows.
+   * **Frame zoom moves to the timeline's bottom bar**, at the right end of the scroll bar, as
+     in Animate. The header had grown (onion options, the camera) until the zoom field covered
+     the tween-kind menu at the default window size. The header now has the dock's full width
+     and fits at 1600 × 940; a test measures it (`the_header_fits_at_the_default_window_size`).
+     Sideways scrolling stays the fallback for small windows, large interface scales and long
+     translations. *Rejected:* an overflow menu for the onion and camera toggles. They are
+     everyday controls, and hiding them costs a click every time.
    * **Frame View** menu beside the zoom slider: Tiny, Small, Normal, Medium, Large (frame widths
      4, 8, 12, 18, 28 points; the slider still sets anything between) and **Short** rows (20
      points; a 200 % layer is two short rows).

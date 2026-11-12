@@ -304,6 +304,9 @@ pub struct App {
     pub layer_props: Option<crate::layer_props::LayerPropsDialog>,
     /// Open the timeline's Frame View menu on the next frame (screenshots, the audit).
     pub tl_frame_view_open: bool,
+    /// How far the timeline header's content overflowed its width last frame (points; ≤ 0: it
+    /// fits). Checked by a test at the default window size.
+    pub tl_header_spill: f32,
     /// Open this layer's colour popup on the next frame (screenshots, the audit).
     pub tl_color_open: Option<anicraft_engine::doc::LayerId>,
     pub convert_last: crate::convert_symbol::Last,
@@ -529,6 +532,7 @@ impl App {
             convert: None,
             layer_props: None,
             tl_frame_view_open: false,
+            tl_header_spill: 0.0,
             tl_color_open: None,
             convert_last: Default::default(),
             show_about: false,

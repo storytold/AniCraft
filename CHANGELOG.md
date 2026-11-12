@@ -13,7 +13,9 @@
     around it, dimmed.
   * **Layer Height** 100 / 200 / 300 % (right-click menu), **Layer Properties** (double-click a
     layer's icon, Properties… or Modify › Timeline), and a **Frame View** menu with frame widths
-    Tiny to Large and **Short** rows.
+    Tiny to Large and **Short** rows. Frame zoom and Frame View sit at the right end of the
+    timeline's bottom bar, as in Animate, so the header fits at the default window size again
+    (the tween-kind menu was cut off).
   * Headless: `layer.set_onion`, `layer.set_color`, `layer.set_height`, `layer.set_properties`,
     `layer.properties`. Saved in the document with defaults left out, so older files open as
     before. XFL import reads a layer's height.

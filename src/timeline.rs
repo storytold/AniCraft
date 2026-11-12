@@ -34,6 +34,9 @@ fn frame_center(cell_left: f32, cell_w: f32) -> f32 {
     (cell_left + cell_w * 0.5).round() + 0.5
 }
 const FOOTER_H: f32 = 38.0;
+/// The bottom bar's frame zoom and Frame View at its right end: the 56 pt slider, its field, the
+/// menu button and spacing.
+const ZOOM_W: f32 = 168.0;
 /// Frame View › Short (ADR 0061): row height (points). Layers 200 % and 300 % tall are that
 /// many short rows.
 const SHORT_ROW_H: f32 = 20.0;
@@ -236,23 +239,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- header ---------------------------------------------------------------------------
     egui::Frame::NONE.fill(T.panel_alt).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            // Room kept at the right end for the frame zoom (the 56 pt slider, its field,
-            // spacing) and the Frame View menu.
-            const ZOOM_W: f32 = 122.0 + 30.0;
-            // The rest scrolls sideways (Shift+wheel) when the dock is narrow (a small window, a
-            // large interface scale) instead of being cut off.
-            let w = (ui.available_width() - ZOOM_W).max(0.0);
-            egui::ScrollArea::horizontal().id_salt("tl_header").max_width(w).show(ui, |ui| ui.horizontal(|ui| header(app, ui, dock)));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                frame_view_button(app, ui);
-                let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
-                let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
-                ui.spacing_mut().slider_width = 56.0;
-                let r = with_type(ui, Type::Data, |ui| a11y::slider(ui, &mut pct, lo..=hi, tr!("Frame zoom"), a11y::SliderLook { suffix: " %", max_decimals: Some(0), logarithmic: true, ..Default::default() }));
-                if r.on_hover_text(tr!("Frame zoom: frame width (Ctrl+wheel over the frames)")).changed() {
-                    app.tl_cell_w = (pct / 100.0 * CELL_DEFAULT).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
-                }
-            });
+            // The whole width is the header's (frame zoom and Frame View sit in the bottom bar,
+            // as in Animate). What doesn't fit scrolls sideways (Shift+wheel) in a small window
+            // or at a large interface scale, instead of being cut off.
+            let w = ui.available_width();
+            let out = egui::ScrollArea::horizontal().id_salt("tl_header").max_width(w).show(ui, |ui| ui.horizontal(|ui| header(app, ui, dock)));
+            app.tl_header_spill = out.content_size.x - out.inner_rect.width();
         });
     });
 
@@ -1111,6 +1103,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let bar = Rect::from_min_max(pos2(grid.left(), body.bottom() - FOOTER_H), body.right_bottom());
     painter.rect_filled(bar, 0.0, T.panel_alt);
     painter.line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, T.border));
+    // Frame zoom and Frame View at the bar's right end, as Animate has them; the scroll track
+    // takes the rest.
+    let zoom_area = Rect::from_min_max(pos2((bar.right() - ZOOM_W).max(bar.left()), bar.top()), bar.right_bottom());
+    let bar = Rect::from_min_max(bar.left_top(), pos2(zoom_area.left(), bar.bottom()));
     let track = bar.shrink2(vec2(10.0, (FOOTER_H - 12.0) * 0.5));
     let content = (frames_total + 30).max(visible_cols) as f32;
     let frac = (visible_cols as f32 / content).clamp(0.05, 1.0);
@@ -1133,6 +1129,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_filled(track, T.rc(), T.field);
     painter.rect_filled(thumb, T.rc(), if sr.hovered() || sr.dragged() { T.control_edge } else { T.hover });
     sr.on_hover_text(tr!("Scroll the timeline (or Shift+wheel anywhere over it)"));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(zoom_area.shrink2(vec2(6.0, 4.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    frame_view_button(app, &mut child);
+    let mut pct = app.tl_cell_w / CELL_DEFAULT * 100.0;
+    let (lo, hi) = (CELL_RANGE.start() / CELL_DEFAULT * 100.0, CELL_RANGE.end() / CELL_DEFAULT * 100.0);
+    child.spacing_mut().slider_width = 56.0;
+    let r = with_type(&mut child, Type::Data, |ui| a11y::slider(ui, &mut pct, lo..=hi, tr!("Frame zoom"), a11y::SliderLook { suffix: " %", max_decimals: Some(0), logarithmic: true, ..Default::default() }));
+    if r.on_hover_text(tr!("Frame zoom: frame width (Ctrl+wheel over the frames)")).changed() {
+        app.tl_cell_w = (pct / 100.0 * CELL_DEFAULT).clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
+    }
 }
 
 /// The layer colour popup (a click on a layer's colour chip, ADR 0061): the layer colours as
@@ -1453,6 +1458,27 @@ mod tests {
         assert!(FRAME_WIDTHS.windows(2).all(|w| w[0].1 < w[1].1));
         assert!(FRAME_WIDTHS.iter().all(|(_, w)| CELL_RANGE.contains(w)));
         assert_eq!(FRAME_WIDTHS[2].1, CELL_DEFAULT);
+    }
+
+    /// The header at the default window size (1600 × 940, `main.rs`), in the widest state the
+    /// sample has: a classic tween at the playhead (Ease and tween-kind menus both shown).
+    fn header_spill(width: f32) -> f32 {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::new(anicraft_engine::doc::sample::demo()), Some(std::path::PathBuf::from("unused.png")));
+        assert!(app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).is_some_and(|k| k.tween.is_some()), "the widest header: a classic tween");
+        let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 940.0))), ..Default::default() };
+        for _ in 0..4 {
+            ctx.run_ui(input(), |ui| app.frame(ui)).textures_delta.clear();
+        }
+        app.tl_header_spill
+    }
+
+    #[test]
+    fn the_header_fits_at_the_default_window_size() {
+        let spill = header_spill(1600.0);
+        assert!(spill <= 0.5, "the timeline header overflows by {spill:.0} pt at 1600 × 940");
+        // The measure is real: at the smallest window the header scrolls sideways instead.
+        assert!(header_spill(960.0) > 0.5);
     }
 
     #[test]
