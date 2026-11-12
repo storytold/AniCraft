@@ -25,6 +25,55 @@
     costs the same however much of the screen it covers.
   * The web version's download is now built by `packaging/web/package.sh` and checked in CI; the
     README no longer suggests releases carry it yet (#210).
+* **Drawing tools and colour fixes from user reports** (M1).
+  * **Fixed**: the Fill and Stroke colour squares in the Tools panel did nothing when clicked.
+    They open the colour picker now, with No Colour, and recolour selected shapes (#246).
+  * **Fixed**: the colour picker had no hex field. Every colour swatch's picker shows the colour
+    as `#rrggbb` and takes one you type (#201).
+  * **Fixed**: the colour picker had no web-safe palette. It opens on Animate's 216 web-safe
+    swatches, with greys and primaries beside them and the colours you mix or type in a row
+    below; **Mixer** has the full picker (#248).
+  * **Fixed**: the Pencil's Properties showed a Fill swatch, though the Pencil only draws lines.
+    The Pencil and the Line tool show only the stroke now (#252).
+  * **Fixed**: a squiggle drawn with Object Drawing on was trapped in its object. **Modify ›
+    Break Apart** (Ctrl+B) now turns a drawing object into merged drawing you can edit (#253).
+  * **Fixed**: the Width tool didn't thicken a line when you dragged on it, the pointer didn't
+    change, and the marker was a tiny dark box. A drag on the line widens it there, the pointer
+    is a crosshair (an add pointer over a line), and the marker is a white box with handles
+    (#250).
+  * **Fixed**: every new line segment came with a scale gizmo whose handles couldn't be dragged,
+    and a box appeared after every brush or pencil stroke. As in Animate, what you draw isn't
+    left selected, and the Selection tool's box no longer shows handles that do nothing (#205,
+    #243).
+  * **Fixed**: Ctrl-dragging a shape's edge made a smooth curve. It adds a corner point where you
+    pressed, with straight sides on a straight edge (#200).
+* **Filters, Subtract and Invert in HTML canvas export** (ADR 0072, M6). Exported web pages now
+  show every filter (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel and Adjust
+  Color, with inner, knockout, hide object and Inner/Outer/Full) and the Subtract and Invert blend
+  modes as AniCraft draws them, in every browser: the page runs a port of AniCraft's own filters
+  over the symbol's pixels instead of the browser's effects, and shadows and glows reach onto the
+  stage from symbols beside it. A filtered symbol that doesn't change is filtered once. Tested
+  against AniCraft's renderer pixel by pixel (35 filter set-ups at three view scales, within
+  1/1000) and checked in a browser. At 1080p the demo's filtered symbols cost 3.4 ms a frame while
+  they change; one covering the whole frame 50 to 150 ms. The export report no longer lists them.
+* **Timeline, bones, menus and stage fixes from user reports** (M1).
+  * **Fixed**: F5 with no frames selected only extended the active layer. It now extends every
+    layer that has frames at or after the playhead, as in Animate, and leaves the layers that end
+    before it alone (#242).
+  * **Fixed**: after F5, F6 or F7 you had to select the next frame by hand. F5 now moves onto the
+    frame it adds, and F6 or F7 on a keyframe makes the new keyframe on the next frame and moves
+    there, so draw, F6, draw keeps going (#254). F7 on a keyframe no longer clears its drawing.
+  * **Fixed**: the timeline's Frame, Keyframe and Blank buttons took a lot of room. They are icons
+    now (a frame, a filled dot and a hollow dot, each with a plus), named in their tooltips (#240).
+  * **Fixed**: bone chains looked broken and jumped while posing. A bone started anywhere on an
+    instance now starts at the end of the bone before it, so the chain stays joined, and dragging
+    a bone along its length moves it from where you grabbed it instead of snapping its end to the
+    pointer (#239).
+  * **Fixed**: on macOS there were no menus (no File, no Save). The title bar covered the menu
+    row; it is see-through now, as designed (#247).
+  * **Fixed**: you couldn't draw outside the stage; anything past its edge was hidden. The
+    pasteboard now shows your artwork, as in Animate, and **Clip content outside the stage**
+    (beside the zoom menu, and in the View menu) hides it again when you want (#245, #251).
 * **Soft masks and text on a path** (ADR 0070, M4).
   * **Soft masks**: Layer Properties › **Mask type** on a mask layer: *Shape* (as in Animate),
     *Alpha* (the mask's opacity reveals: a gradient to transparent fades the artwork out) or

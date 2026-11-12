@@ -409,6 +409,15 @@ pub fn bones_at(arm: &Armature, elements: &[Arc<Element>], pose: &Pose) -> Vec<B
         .collect()
 }
 
+/// Layer point `p` in the space of the instance (or joint node) bone `id` moves, with the
+/// armature posed by `pose`: the `local` for [`solve`] that makes the grabbed point follow a drag
+/// from where it is, so grabbing a bone along its length never snaps its end to the pointer.
+pub fn grab_point(arm: &Armature, elements: &[Arc<Element>], pose: &Pose, id: BoneId, p: Vec2) -> Option<Vec2> {
+    let child = arm.bone(id)?.child;
+    let q = place(arm, elements, pose).get(&child)?.inverse()?.apply(p);
+    (q.x.is_finite() && q.y.is_finite()).then_some(q)
+}
+
 /// What a solve came to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Solved {

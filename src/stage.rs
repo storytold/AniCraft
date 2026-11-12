@@ -140,26 +140,58 @@ struct TileSpec {
     view: View,
 }
 
-/// Tiles covering stage-device-pixel rect `[x0, x1) × [y0, y1)`, nearest to `centre` first.
-fn tiles_for(z: f32, stage_px: (u32, u32), px: [f32; 4], margin: u32, bg: anicraft_engine::doc::Rgba) -> Vec<TileSpec> {
+/// Most tiles along one side: a screen's worth and the look-ahead ring, many times over.
+const MAX_TILES_PER_AXIS: usize = 64;
+
+/// The tile spans `(offset, length)` in device pixels along one axis of a stage `len` long that
+/// overlap `[lo, hi)`. The stage is cut into `TILE`s from its edge; with `pasteboard`, so is the
+/// space before and after it (from the stage's edges outwards), so no tile straddles the edge.
+fn spans(len: u32, lo: f32, hi: f32, pasteboard: bool) -> Vec<(i64, u32)> {
+    let t = i64::from(TILE);
+    let len = i64::from(len);
+    let (lo, hi) = (lo.floor().clamp(-1e9, 1e9) as i64, hi.ceil().clamp(-1e9, 1e9) as i64);
+    let mut out = Vec::new();
+    if pasteboard && lo < 0 {
+        // Before the stage: [-(k+1)T, -kT), nearest the stage first.
+        let first = (-hi).max(0) / t;
+        let last = (-lo - 1) / t;
+        let first = first.max(last - MAX_TILES_PER_AXIS as i64 + 1);
+        out.extend((first..=last).rev().map(|k| (-(k + 1) * t, TILE)));
+    }
+    if hi > 0 && lo < len {
+        let first = lo.max(0) / t;
+        let last = (hi.min(len) - 1) / t;
+        out.extend((first..=last).take(MAX_TILES_PER_AXIS).map(|k| (k * t, (t.min(len - k * t)) as u32)));
+    }
+    if pasteboard && hi > len {
+        // After it: [len + kT, len + (k+1)T).
+        let first = (lo - len).max(0) / t;
+        let last = (hi - len - 1) / t;
+        out.extend((first..=last).take(MAX_TILES_PER_AXIS).map(|k| (len + k * t, TILE)));
+    }
+    out
+}
+
+/// Tiles covering stage-device-pixel rect `[x0, x1) × [y0, y1)` (and `margin` tiles around it),
+/// nearest to its centre first. The stage's tiles are filled with `bg`; with `pasteboard` the
+/// view beyond the stage gets tiles too, transparent over the pasteboard (#245), so artwork
+/// there shows while the stage keeps its exact colour and blending.
+fn tiles_for(z: f32, stage_px: (u32, u32), px: [f32; 4], margin: u32, bg: anicraft_engine::doc::Rgba, pasteboard: bool) -> Vec<TileSpec> {
     let (sw, sh) = stage_px;
     if sw == 0 || sh == 0 {
         return Vec::new();
     }
-    let t = TILE as f32;
-    let last = (sw.div_ceil(TILE) - 1, sh.div_ceil(TILE) - 1);
-    let tx0 = ((px[0] / t).floor().max(0.0) as u32).saturating_sub(margin);
-    let ty0 = ((px[1] / t).floor().max(0.0) as u32).saturating_sub(margin);
-    let tx1 = (((px[2] - 1.0).max(0.0) / t).floor() as u32 + margin).min(last.0);
-    let ty1 = (((px[3] - 1.0).max(0.0) / t).floor() as u32 + margin).min(last.1);
+    let m = (margin * TILE) as f32;
+    let xs = spans(sw, px[0] - m, px[2] + m, pasteboard);
+    let ys = spans(sh, px[1] - m, px[3] + m, pasteboard);
     let (cx, cy) = ((px[0] + px[2]) / 2.0, (px[1] + px[3]) / 2.0);
     let mut out = Vec::new();
-    for ty in ty0..=ty1 {
-        for tx in tx0..=tx1 {
-            let (ox, oy) = (tx * TILE, ty * TILE);
-            let (w, h) = (TILE.min(sw - ox), TILE.min(sh - oy));
-            let view = View { transform: Affine::translate(-(ox as f32), -(oy as f32)).mul(&Affine::scale(z, z)), width: w, height: h, background: Some(bg) };
-            let rect = [ox as f32 / z, oy as f32 / z, (ox + w) as f32 / z, (oy + h) as f32 / z];
+    for &(oy, h) in &ys {
+        for &(ox, w) in &xs {
+            let inside = ox >= 0 && oy >= 0 && ox < i64::from(sw) && oy < i64::from(sh);
+            let (fx, fy) = (ox as f32, oy as f32);
+            let view = View { transform: Affine::translate(-fx, -fy).mul(&Affine::scale(z, z)), width: w, height: h, background: inside.then_some(bg) };
+            let rect = [fx / z, fy / z, (fx + w as f32) / z, (fy + h as f32) / z];
             out.push(TileSpec { rect, view });
         }
     }
@@ -393,34 +425,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Select | Tool::Transform if multi => crate::onion::drag_start(app, sp, shift, zoom),
                 // On an armature, a drag poses it (ADR 0043).
                 Tool::Select if let Some(d) = crate::bone_tool::select_drag_start(app, xf, press) => d,
-                // Raw shapes (ADR 0041): an unselected corner or end moves, an unselected segment
-                // or fill edge bends; anything else is picked (unless it already is) and moved.
-                Tool::Select => match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
-                    Some((_, Grab::Point { at })) => {
-                        app.s.begin_gesture(tr_noop!("Move Point"));
-                        app.raw_points = serde_json::Value::Null;
-                        app.raw_with.clear();
-                        app.raw_touched.clear();
-                        Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
-                    }
-                    Some((layer, Grab::Segment { id, cmd, t, .. })) => {
-                        if layer != app.s.layer {
-                            app.s.layer = layer;
-                            app.s.selection.clear();
-                        }
-                        app.s.begin_gesture(tr_noop!("Bend"));
-                        app.raw_touched.clear();
-                        Drag::Bend { id, cmd, t, last: sp }
-                    }
-                    Some((layer, Grab::Fill { id } | Grab::Object { id })) => {
-                        if !app.s.selection.contains(layer, id) {
-                            app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
-                        }
-                        app.s.begin_gesture(tr_noop!("Move"));
-                        Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
-                    }
-                    None => Drag::Marquee { start: sp, cur: sp },
-                },
+                Tool::Select => select_press(app, sp, shift, command, zoom),
                 Tool::Transform => {
                     let zone = sel_rect.and_then(|r| xf_zone(r, press));
                     match (zone, sel_bounds) {
@@ -604,15 +609,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.drop_raw();
                 app.s.end_gesture();
             }
-            Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => {
-                // What the drag changed merges again with what it touches, in the same step.
-                if !app.raw_touched.is_empty() {
-                    let ids = std::mem::take(&mut app.raw_touched);
-                    app.run("raw.merge", json!({"ids": ids}));
-                }
-                app.raw_points = serde_json::Value::Null;
-                app.s.end_gesture();
-            }
+            Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => end_raw_drag(app),
             Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
             Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
@@ -816,7 +813,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_filled(stage_rect.translate(vec2(3.0, 4.0)), 0.0, T.stage_shadow);
     // Stage colour first, so a picture still rendering never shows as a hole.
     painter.rect_filled(stage_rect, 0.0, crate::theme::to_color32(app.s.doc.stage.background));
-    let vis = stage_rect.intersect(canvas);
+    // What gets rendered: the stage, and the pasteboard around it unless View › Clip Content
+    // Outside the Stage is on (#251). Previewing through the camera shows what the movie shows.
+    let pasteboard = !app.view.clip_to_stage && !preview;
+    let vis = if pasteboard { canvas } else { stage_rect.intersect(canvas) };
     if vis.width() >= 1.0 && vis.height() >= 1.0 {
         if app.stage_cache.service.is_none() {
             let ctx = ui.ctx().clone();
@@ -833,7 +833,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let bg = app.s.doc.stage.background;
         let stage_px = ((size.x * z).ceil().max(1.0) as u32, (size.y * z).ceil().max(1.0) as u32);
         let px = [(vis.min.x - st_origin.x) * ppp, (vis.min.y - st_origin.y) * ppp, (vis.max.x - st_origin.x) * ppp, (vis.max.y - st_origin.y) * ppp];
-        let visible = tiles_for(z, stage_px, px, 0, bg);
+        let visible = tiles_for(z, stage_px, px, 0, bg, pasteboard);
         let pic = app.s.stage_picture();
         let editing = edit_view.is_some();
         // Onion skin is off while a symbol is open in place (`stage_skin`, ADR 0045).
@@ -912,7 +912,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, None).through_camera(preview)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg, pasteboard).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview)));
             }
             svc.prefetch(ahead);
         }
@@ -1038,6 +1038,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, T.selection.gamma_multiply(0.45)), StrokeKind::Middle);
             continue;
         }
+        // A plain box, as Animate's Selection tool shows: handles are Free Transform's (Q),
+        // where they work. Handles drawn here could not be dragged (#205).
         painter.rect_stroke(r, 0.0, sel_stroke, StrokeKind::Middle);
         // Text on a path shows the path it follows (ADR 0070).
         if let anicraft_engine::doc::ElementKind::Text(t) = &e.kind
@@ -1049,11 +1051,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
                 painter.add(if pl.closed { egui::Shape::closed_line(pts, sel_stroke) } else { egui::Shape::line(pts, sel_stroke) });
             }
-        }
-        for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom(), r.center_top(), r.center_bottom(), r.left_center(), r.right_center()] {
-            let h = Rect::from_center_size(c, vec2(6.0, 6.0));
-            painter.rect_filled(h, 0.0, Color32::WHITE);
-            painter.rect_stroke(h, 0.0, sel_stroke, StrokeKind::Middle);
         }
         // registration point
         let o = to_screen(e.transform.translation());
@@ -1128,6 +1125,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = pointer.filter(|p| canvas.contains(*p))
         && let Some((_, grab)) = app.s.raw_grab(to_v(to_stage(p)), GRAB_EDGE / zoom, GRAB_POINT / zoom)
     {
+        // With Ctrl (⌘) an edge takes a new corner point there: the corner mark (#200).
+        let grab = match grab {
+            Grab::Segment { at, .. } if command => Grab::Point { at },
+            g => g,
+        };
         grab_mark(&painter, p, grab);
     }
 
@@ -1243,6 +1245,70 @@ fn move_raw_point(app: &mut App, c: Pos2, zoom: f32) {
         app.raw_points = points.clone();
         touched(app, &serde_json::Value::Array(ids));
     }
+}
+
+/// A Selection-tool press at `sp` (stage) on raw shapes (ADR 0041): an unselected corner or end
+/// moves, an unselected segment or fill edge bends; anything else is picked (unless it already
+/// is) and moved. With `corner` (Ctrl, ⌘ on macOS), as in Animate, an edge gets a corner point
+/// where it was pressed and the drag pulls that point, so the edge peaks there (#200).
+fn select_press(app: &mut App, sp: Pos2, shift: bool, corner: bool, zoom: f32) -> Drag {
+    let point_drag = |app: &mut App, at: Vec2| {
+        app.raw_points = serde_json::Value::Null;
+        app.raw_with.clear();
+        app.raw_touched.clear();
+        Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
+    };
+    match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
+        Some((_, Grab::Point { at })) => {
+            app.s.begin_gesture(tr_noop!("Move Point"));
+            point_drag(app, at)
+        }
+        Some((layer, Grab::Segment { id, cmd, t, at })) => {
+            if layer != app.s.layer {
+                app.s.layer = layer;
+                app.s.selection.clear();
+            }
+            if corner {
+                // The new point, its corner and its move are one undo step. Where no point can
+                // go (one is there already), the press bends the edge as without Ctrl.
+                app.s.begin_gesture(tr_noop!("Add Corner Point"));
+                if let Ok(v) = app.s.execute("raw.add_point", &json!({"x": at.x, "y": at.y, "slop": GRAB_EDGE / zoom.max(1e-3)})) {
+                    let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).map(|x| x as f32);
+                    if let (Some(x), Some(y)) = (f("x"), f("y")) {
+                        // A curved edge splits into two curves meeting smoothly: drawing the new
+                        // point's handles in makes it a corner, so the sides meet in a peak.
+                        let _ = app.s.execute("raw.convert_points", &json!({"points": [[x, y]], "smooth": false}));
+                        let drag = point_drag(app, Vec2::new(x, y));
+                        touched(app, &v["changed"]);
+                        return drag;
+                    }
+                }
+                app.s.end_gesture();
+            }
+            app.s.begin_gesture(tr_noop!("Bend"));
+            app.raw_touched.clear();
+            Drag::Bend { id, cmd, t, last: sp }
+        }
+        Some((layer, Grab::Fill { id } | Grab::Object { id })) => {
+            if !app.s.selection.contains(layer, id) {
+                app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
+            }
+            app.s.begin_gesture(tr_noop!("Move"));
+            Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
+        }
+        None => Drag::Marquee { start: sp, cur: sp },
+    }
+}
+
+/// The end of a drag that bent an edge or moved raw points or handles: what it changed merges
+/// again with what it touches, in the same step.
+fn end_raw_drag(app: &mut App) {
+    if !app.raw_touched.is_empty() {
+        let ids = std::mem::take(&mut app.raw_touched);
+        app.run("raw.merge", json!({"ids": ids}));
+    }
+    app.raw_points = serde_json::Value::Null;
+    app.s.end_gesture();
 }
 
 /// Where a command's result says the drag snapped.
@@ -1759,17 +1825,17 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
     }
     match app.tool {
         Tool::Rect => {
-            app.run("draw.rect", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y, "radius": app.rect_radius}));
+            app.draw("draw.rect", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y, "radius": app.rect_radius}));
         }
         Tool::Oval => {
-            app.run("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
+            app.draw("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
         }
         Tool::Star => {
             let r = d.length();
-            app.run("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
+            app.draw("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
         }
         Tool::Line => {
-            app.run("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
+            app.draw("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
         }
         _ => {}
     }
@@ -1812,6 +1878,96 @@ fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32)
             painter.line_segment([a, b], stroke);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod draw_tests {
+    use super::*;
+
+    fn app() -> App {
+        let ctx = egui::Context::default();
+        App::with_context(&ctx, anicraft_engine::Session::new(anicraft_engine::doc::Document::default()), Some(std::path::PathBuf::from("unused.png")))
+    }
+
+    /// #205, #243: a shape or a line drawn with a tool leaves nothing selected (no box around
+    /// the last stroke), in merge drawing and in Object Drawing, and the previous selection
+    /// goes too, as in Animate. Undo still takes the shape away in one step.
+    #[test]
+    fn drawing_tools_leave_nothing_selected() {
+        for object in [false, true] {
+            let mut app = app();
+            app.s.style.object_drawing = object;
+            for tool in [Tool::Line, Tool::Rect, Tool::Oval, Tool::Star] {
+                app.tool = tool;
+                let before = app.s.history_len();
+                create_shape(&mut app, pos2(10.0, 10.0), pos2(80.0, 60.0));
+                assert_eq!(app.s.history_len(), before + 1, "{tool:?} drew");
+                assert!(app.s.selection.is_empty(), "{tool:?}, object {object}: nothing selected");
+            }
+            app.pencil = (0..20).map(|i| Vec2::new(100.0 + i as f32 * 4.0, 100.0 + (i % 3) as f32)).collect();
+            crate::pathtools::commit_pencil(&mut app, crate::pathtools::Xf { origin: Pos2::ZERO, zoom: 1.0 });
+            assert!(app.s.selection.is_empty(), "Pencil, object {object}");
+            let n = app.s.visible_elements().len();
+            app.s.undo().expect("undo");
+            assert!(app.s.visible_elements().len() < n, "one undo takes the stroke away");
+        }
+    }
+
+    /// The area of the raw fill (one on the stage).
+    fn fill_area(app: &App) -> f32 {
+        let fills: Vec<_> = app.s.visible_elements().into_iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge && sh.fill.is_some())).collect();
+        assert_eq!(fills.len(), 1, "one raw fill");
+        let anicraft_engine::doc::ElementKind::Shape(sh) = &fills[0].kind else { return 0.0 };
+        sh.path
+            .flatten(&fills[0].transform, 0.01)
+            .iter()
+            .map(|pl| {
+                let n = pl.points.len();
+                (0..n).filter_map(|i| Some(pl.points.get(i)?.cross(*pl.points.get((i + 1) % n)?))).sum::<f32>() * 0.5
+            })
+            .sum::<f32>()
+            .abs()
+    }
+
+    /// Presses the top edge of a raw 100 × 80 rectangle in its middle, drags it 30 up and lets
+    /// go, as the stage does.
+    fn drag_top_edge(ctrl: bool) -> App {
+        let mut app = app();
+        app.tool = Tool::Select;
+        app.s.style.object_drawing = false;
+        app.run("draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 80, "fill": "#ff0000", "stroke": "#000000"}));
+        app.run("edit.deselect", json!({}));
+        app.drag = select_press(&mut app, pos2(50.0, 0.0), false, ctrl, 1.0);
+        let to = pos2(50.0, -30.0);
+        match app.drag {
+            Drag::RawPoint { .. } => move_raw_point(&mut app, to, 1.0),
+            Drag::Bend { id, cmd, t, last } => {
+                let d = to - last;
+                let v = app.run("path.bend_segment", json!({"id": id.0, "cmd": cmd, "t": t, "x": last.x, "y": last.y, "dx": d.x, "dy": d.y, "merge": false})).expect("bent");
+                touched(&mut app, &v["changed"]);
+            }
+            d => panic!("a press on the edge starts {d:?}"),
+        }
+        end_raw_drag(&mut app);
+        app.drag = Drag::None;
+        app
+    }
+
+    /// #200: Ctrl-drag on an edge makes a corner point with straight sides (Animate); a plain
+    /// drag still bends the edge into a curve. One undo takes either back.
+    #[test]
+    fn ctrl_drag_on_an_edge_makes_a_corner() {
+        let mut app = drag_top_edge(true);
+        // The rectangle and the triangle (0, 0), (50, -30), (100, 0).
+        assert!((fill_area(&app) - 9500.0).abs() < 1.0, "straight sides up to the peak: {}", fill_area(&app));
+        let pts = app.s.execute("raw.points", &json!({"ids": app.s.visible_elements().iter().map(|e| e.id.0).collect::<Vec<_>>()})).expect("points");
+        assert!(pts.to_string().contains("-30"), "a point at the peak: {pts}");
+        app.s.undo().expect("undo");
+        assert!((fill_area(&app) - 8000.0).abs() < 1.0, "one undo: the rectangle again");
+        let bent = drag_top_edge(false);
+        let a = fill_area(&bent);
+        assert!(a > 8000.0 + 100.0 && (a - 9500.0).abs() > 50.0, "a plain drag bends it into a curve: {a}");
     }
 }
 
@@ -1866,5 +2022,66 @@ mod xf_tests {
         assert_eq!(xf_zone(r, pos2(312.0, 212.0)), Some(XfKind::Rotate));
         assert_eq!(xf_zone(r, pos2(200.0, 150.0)), Some(XfKind::Move));
         assert_eq!(xf_zone(r, pos2(500.0, 500.0)), None);
+    }
+}
+
+#[cfg(test)]
+mod pasteboard_tests {
+    use super::*;
+    use anicraft_engine::doc::Rgba;
+
+    const BG: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+
+    /// Every device pixel of `px` is in exactly one tile.
+    fn covered_once(tiles: &[TileSpec], z: f32, px: [f32; 4]) {
+        for y in (px[1] as i32..px[3] as i32).step_by(97) {
+            for x in (px[0] as i32..px[2] as i32).step_by(89) {
+                let (sx, sy) = ((x as f32 + 0.5) / z, (y as f32 + 0.5) / z);
+                let n = tiles.iter().filter(|t| sx >= t.rect[0] && sx < t.rect[2] && sy >= t.rect[1] && sy < t.rect[3]).count();
+                assert_eq!(n, 1, "pixel ({x}, {y}) is in {n} tiles");
+            }
+        }
+    }
+
+    #[test]
+    fn the_pasteboard_gets_transparent_tiles_that_never_cross_the_stage_edge() {
+        // A 1280 × 720 stage at 100 %, seen with 700 px of pasteboard on each side (#245).
+        let (z, stage) = (1.0, (1280, 720));
+        let view = [-700.0, -300.0, 1980.0, 1020.0];
+        let tiles = tiles_for(z, stage, view, 0, BG, true);
+        covered_once(&tiles, z, view);
+        for t in &tiles {
+            let inside = t.rect[0] >= 0.0 && t.rect[1] >= 0.0 && t.rect[2] <= 1280.0 && t.rect[3] <= 720.0;
+            let outside = t.rect[2] <= 0.0 || t.rect[0] >= 1280.0 || t.rect[3] <= 0.0 || t.rect[1] >= 720.0;
+            assert!(inside ^ outside, "a tile straddles the stage edge: {:?}", t.rect);
+            // The stage keeps its colour (and blends against it); the pasteboard is see-through.
+            assert_eq!(t.view.background.is_some(), inside, "{:?}", t.rect);
+            assert!(t.view.width <= TILE && t.view.height <= TILE);
+        }
+        // The stage's own tiles are the same with or without the pasteboard.
+        let clipped = tiles_for(z, stage, view, 0, BG, false);
+        let rects = |ts: &[TileSpec], f: fn(&TileSpec) -> bool| {
+            let mut v: Vec<[i32; 4]> = ts.iter().filter(|t| f(t)).map(|t| t.rect.map(|c| c as i32)).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(rects(&tiles, |t| t.view.background.is_some()), rects(&clipped, |_| true));
+        // Clipped (#251), nothing is drawn off the stage.
+        assert!(clipped.iter().all(|t| t.rect[0] >= 0.0 && t.rect[1] >= 0.0 && t.rect[2] <= 1280.0 && t.rect[3] <= 720.0));
+        covered_once(&clipped, z, [0.0, 0.0, 1280.0, 720.0]);
+    }
+
+    #[test]
+    fn pasteboard_tiles_work_far_away_zoomed_and_stay_bounded() {
+        // Zoomed in, looking only at the pasteboard, left of and below the stage.
+        let tiles = tiles_for(4.0, (2000, 1000), [-5000.0, 1500.0, -3000.0, 2600.0], 1, BG, true);
+        assert!(!tiles.is_empty());
+        assert!(tiles.iter().all(|t| t.view.background.is_none()));
+        covered_once(&tiles, 4.0, [-5000.0, 1500.0, -3000.0, 2600.0]);
+        // A wild view (zoomed far out on a huge canvas) still makes a bounded number of tiles.
+        let n = tiles_for(1.0, (100, 100), [-1e12, -1e12, 1e12, 1e12], 1, BG, true).len();
+        assert!(n <= (2 * MAX_TILES_PER_AXIS + 1).pow(2), "{n} tiles");
+        // Clipped and looking away from the stage: nothing to draw.
+        assert!(tiles_for(1.0, (100, 100), [-900.0, -900.0, -10.0, -10.0], 0, BG, false).is_empty());
     }
 }

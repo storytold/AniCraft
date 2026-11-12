@@ -181,6 +181,9 @@ pub struct StageView {
     /// The canvas size and zoom of the last fit: while the view is still as fitted, it fits
     /// again when the canvas changes size (window resized, panels or interface scale changed).
     pub fitted: Option<(egui::Vec2, f32)>,
+    /// View › Clip Content Outside the Stage (#251): hide artwork on the pasteboard (it is still
+    /// there, and still exported only where it is on the stage). Off: it shows, as in Animate.
+    pub clip_to_stage: bool,
 }
 
 /// In-progress pointer gesture on the stage.
@@ -221,7 +224,8 @@ pub enum Drag {
     Eraser,
     /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
     /// `sub`; `start` is its left and right width when the drag began.
-    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
+    /// `index` is the grabbed width point (None: one the drag adds at `t`).
+    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: Option<usize>, t: f32, grip: crate::widthtool::Grip, start: (f32, f32) },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
@@ -388,6 +392,8 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
+    /// Opens the Tools bar's fill swatch picker on the next frame (the `swatches` screenshot).
+    pub open_fill_swatch: bool,
     /// The bone picked on the stage (ADR 0043; view state).
     pub bone_sel: Option<anicraft_engine::doc::BoneId>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
@@ -560,7 +566,7 @@ impl App {
             updates: Default::default(),
             s: session,
             tool: Tool::Select,
-            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
+            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None, clip_to_stage: false },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
             hint_menu: None,
@@ -617,6 +623,7 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
+            open_fill_swatch: false,
             bone_sel: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
@@ -713,6 +720,15 @@ impl App {
         if raw {
             self.run("draw.drop", json!({}));
         }
+    }
+
+    /// Runs a drawing tool's command and leaves nothing selected, as Animate's drawing tools
+    /// do: the next stroke goes on without a box around the last one (#205, #243). The command
+    /// itself selects what it drew, for scripts that style it next.
+    pub fn draw(&mut self, id: &str, params: Value) -> Option<Value> {
+        let v = self.run(id, params)?;
+        let _ = self.s.execute("edit.deselect", &json!({}));
+        Some(v)
     }
 
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
@@ -1075,6 +1091,17 @@ impl App {
                 self.view.fit = false;
                 self.view.zoom = 3.0;
                 self.view.pan = egui::vec2(1200.0, 300.0);
+            }
+            Some("pasteboard") | Some("clipped") => {
+                // Artwork half off the stage (#245); `clipped`: Clip Content Outside the Stage on
+                // (#251). Zoomed out so the pasteboard shows around the stage.
+                let w = self.s.doc.stage.width as f32;
+                self.run("draw.ellipse", json!({"x": -160.0, "y": 40.0, "w": 260.0, "h": 200.0}));
+                self.run("draw.rect", json!({"x": w - 80.0, "y": 260.0, "w": 240.0, "h": 120.0}));
+                self.view.fit = false;
+                self.view.zoom = 0.55;
+                self.view.pan = egui::Vec2::ZERO;
+                self.view.clip_to_stage = which == Some("clipped");
             }
             Some("prefs") => {
                 self.show_prefs = true;
@@ -1810,6 +1837,10 @@ impl App {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
                 }
             }
+            Some("swatches") => {
+                // The fill swatch's colour picker open.
+                self.open_fill_swatch = true;
+            }
             Some("width") => {
                 // A tapered brush-like stroke being shaped with the Width tool: one width point
                 // pushed out on its left side and selected.
@@ -2272,6 +2303,13 @@ impl App {
                 return;
             }
             self.prompt = Some(Prompt { title, cmd: id, key, text });
+            return;
+        }
+        // F5, F6 and F7 work as in Animate: at the playhead with no frame selection, F5 extends
+        // every layer that reaches it; on one frame the playhead moves on to what was made.
+        if let Some(p) = timeline::insert_key_params(self, id) {
+            self.request(id, p);
+            timeline::follow_playhead(self);
             return;
         }
         // Frame commands act on the frame selection (F5 over 3 frames on 2 layers inserts 3

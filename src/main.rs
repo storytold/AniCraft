@@ -27,6 +27,7 @@ mod app;
 mod autosave;
 mod brush_panel;
 mod brushtool;
+mod colour;
 mod envelope;
 mod find_panel;
 mod publish_panel;

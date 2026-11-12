@@ -96,13 +96,13 @@ This page is generated from the command registry, so it always matches the versi
 ## Insert
 
 - **Frame** `timeline.insert_frame` · Insert › Timeline · **F5** · changes the document
-  Parameters: `{layer? | layers?: [..], frame?, count?}`
+  Parameters: `{layer? | layers?: [..] | all_layers?: true (every layer with frames at or after the frame, as F5 with no frame selection; the active layer when none has), frame?, count?, advance?: true (the playhead moves onto the last frame inserted, as the key does in the editor)}`
 - **Remove Frame** `timeline.remove_frame` · Insert › Timeline · **Shift+F5** (macOS **⇧F5**) · changes the document
   Parameters: `{layer? | layers?: [..], frame?, count?}`
 - **Keyframe** `timeline.insert_keyframe` · Insert › Timeline · **F6** · changes the document
-  Parameters: `{layer? | layers?: [..], frame?}`
+  Parameters: `{layer? | layers?: [..], frame?, advance?: true (on a keyframe the new key goes on the next frame, and the playhead moves onto it, as the key does in the editor)}`
 - **Blank Keyframe** `timeline.insert_blank_keyframe` · Insert › Timeline · **F7** · changes the document
-  Parameters: `{layer? | layers?: [..], frame?}`
+  Parameters: `{layer? | layers?: [..], frame?, advance?: true (on a keyframe the blank key goes on the next frame instead of clearing it, and the playhead moves onto it)}`
 - **Clear Keyframe** `timeline.clear_keyframe` · Insert › Timeline · **Shift+F6** (macOS **⇧F6**) · changes the document
   Parameters: `{layer? | layers?: [..], frame?, count?}`
 - **Create Motion Tween** `timeline.create_motion_tween` · changes the document
@@ -165,7 +165,7 @@ This page is generated from the command registry, so it always matches the versi
 - **Convert to Symbol…** `modify.convert_to_symbol` · **F8** · changes the document
   Parameters: `{name? (default: the next free “Symbol n”; a name the folder holds gets a number), kind?: graphic|movie_clip|button (default: graphic), folder?: Library folder id (default: the top level)} → {symbol, instance, name, layer, folder} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)`
 - **Break Apart** `modify.break_apart` · **Ctrl+B** (macOS **⌘B**) · changes the document
-  Parameters: `{}`
+  Parameters: `{} the selected symbol instances become their contents, text becomes shapes, and drawing objects become raw shapes that merge with the raw shapes they touch`
 - **Rotate 90° CW** `modify.rotate_cw` · Modify › Transform · **Ctrl+Shift+9** (macOS **⇧⌘9**) · changes the document
   Parameters: `{}`
 - **Rotate 90° CCW** `modify.rotate_ccw` · Modify › Transform · **Ctrl+Shift+7** (macOS **⇧⌘7**) · changes the document
@@ -292,7 +292,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Layer Depth** `layer.set_depth` · changes the document
   Parameters: `{depth (px behind the stage, −500…10000; deeper layers move less when the camera pans), layer?}`
 - **Add Bone** `bone.add` · changes the document
-  Parameters: ``{from (instance id: the bone starts on it), to (instance id: the bone moves it), head?: [x, y] (the joint, stage px; default the end of the bone into `from`, else its registration point), tail?: [x, y] (default `to`'s registration point), name?} → {bone, layer}. Both instances go to an armature layer (made for the first bone)``
+  Parameters: ``{from (instance id: the bone starts on it), to (instance id: the bone moves it), head?: [x, y] (the joint on a root instance, stage px, default its registration point; from an instance that hangs from a bone the joint is always that bone's end, so chains stay joined), tail?: [x, y] (default `to`'s registration point), name?} → {bone, layer}. Both instances go to an armature layer (made for the first bone)``
 - **Add Bone in Shape** `bone.add_in_shape` · changes the document
   Parameters: `{shape? (shape id: the first bone, or another bone from the shape), parent? (bone id: continue the chain from its end), head?: [x, y] (the joint, stage px; default the parent bone's end), tail: [x, y] (stage px), name?} → {bone, layer, created, points}. The first bone moves the shape to an armature layer of its own, as an object (merge drawing leaves it alone); the shape's points are bound to the nearest bones`
 - **Bind Points** `bone.bind` · changes the document

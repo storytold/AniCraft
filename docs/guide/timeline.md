@@ -19,7 +19,8 @@ The timeline sits under the stage. From left to right, its header holds:
 * the onion skin buttons and their options menu;
 * the camera button;
 * the current frame number, the frame rate and the time at the playhead;
-* the **Frame**, **Keyframe** and **Blank** buttons, and a tween menu.
+* the **Insert frame**, **Insert keyframe** and **Insert blank keyframe** buttons (a frame, a
+  filled dot and a hollow dot, each with a plus), and a tween menu.
 
 Under the header, the layer list is on the left and the frame grid on the right, with the frame
 ruler along the top. The bar at the bottom has buttons for new layers and folders, deleting and
@@ -110,8 +111,21 @@ with nothing on it, so the layer is empty from there on.
 | Insert a blank keyframe | **F7** | **Insert › Timeline › Blank Keyframe** |
 | Turn a keyframe back into a plain frame | **Shift+F6** | **Insert › Timeline › Clear Keyframe** |
 
-The **Frame**, **Keyframe** and **Blank** buttons in the timeline header do the same, and so
-does the right-click menu on the frames.
+The **Insert frame**, **Insert keyframe** and **Insert blank keyframe** buttons in the timeline
+header do the same, and so does the right-click menu on the frames.
+
+As in Animate, the keys keep you moving along the timeline:
+
+* **F5** moves the playhead onto the frame it adds, so holding it down walks along the timeline.
+* **F6** or **F7** on a frame that is already a keyframe adds the new keyframe on the *next*
+  frame and moves there, so you can draw, press **F6**, draw again, and so on. On any other
+  frame they key the frame you're on.
+* With no frames selected (for example after scrubbing the playhead), **F5** adds a frame on
+  every layer that has frames at or after the playhead, so the layers stay in step. Layers that
+  end before the playhead are left alone. When no layer reaches the playhead, it lengthens the
+  layer you're on up to it.
+* With a frame selected, the keys act on that frame's layer, and the selection moves with the
+  playhead.
 
 An empty frame shows a hint in **Properties › Frame**: press **F7** to start drawing there.
 

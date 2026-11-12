@@ -171,6 +171,36 @@ pub fn range_params(app: &App) -> Option<serde_json::Value> {
     Some(json!({"layers": ids, "frame": f0, "count": f1 - f0 + 1}))
 }
 
+/// Params for F5, F6 and F7 when they act at one frame, as in Animate: with no frame selection
+/// F5 extends every layer that reaches the playhead (#242), and the playhead moves on to the frame
+/// or key just made, so pressing the key again keeps going (#254). `None`: not one of them, or a
+/// selection of more than one frame (that is a range edit, see [`range_params`]).
+pub fn insert_key_params(app: &App, id: &str) -> Option<serde_json::Value> {
+    if !matches!(id, "timeline.insert_frame" | "timeline.insert_keyframe" | "timeline.insert_blank_keyframe") {
+        return None;
+    }
+    match range_params(app) {
+        Some(mut p) if p["count"] == json!(1) => {
+            p["advance"] = json!(true);
+            Some(p)
+        }
+        Some(_) => None,
+        None if id == "timeline.insert_frame" => Some(json!({"all_layers": true, "advance": true})),
+        None => Some(json!({"advance": true})),
+    }
+}
+
+/// A one-frame selection moves with the playhead after F5 / F6 / F7 (as in Animate), instead of
+/// being dropped for being left behind.
+pub fn follow_playhead(app: &mut App) {
+    if let Some(sel) = app.frame_sel.as_mut()
+        && sel.anchor.1 == sel.head.1
+    {
+        sel.anchor.1 = app.s.frame;
+        sel.head.1 = app.s.frame;
+    }
+}
+
 /// Frame commands that act on the frame selection.
 pub const RANGE_COMMANDS: [&str; 7] = ["timeline.insert_frame", "timeline.remove_frame", "timeline.insert_keyframe", "timeline.insert_blank_keyframe", "timeline.clear_keyframe", "timeline.copy_frames", "timeline.cut_frames"];
 
@@ -1465,15 +1495,22 @@ fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
     ui.label(text(Type::Data, fps_label(fps)).color(T.text_dim)).on_hover_text(tr!("Frame rate"));
     ui.label(text(Type::Data, format!("{:>6.2} s", f as f32 / fps.max(1.0))).color(T.text_dim)).on_hover_text(tr!("Time at the playhead"));
     ui.separator();
-    // Through `invoke`, so the buttons act on the frame selection like the keys do.
-    let cmd = |app: &mut App, ui: &mut egui::Ui, label: &str, tip: &str, id: &'static str| {
-        if ui.button(label).named(tip).on_hover_text(tip).clicked() {
+    // Through `invoke`, so the buttons act on the frame selection like the keys do. Icons (the
+    // timeline's own marks, each with a plus) keep the header narrow; the name and the key
+    // stay in the tooltip and the accessible name (#240).
+    for (id, name, icon) in [
+        ("timeline.insert_frame", tr!("Insert frame"), Icon::InsertFrame),
+        ("timeline.insert_keyframe", tr!("Insert keyframe"), Icon::InsertKeyframe),
+        ("timeline.insert_blank_keyframe", tr!("Insert blank keyframe"), Icon::InsertBlankKeyframe),
+    ] {
+        let tip = match app.keymap.primary(id).map(crate::platform::shortcut_label) {
+            Some(k) => format!("{name} ({k})"),
+            None => name.to_string(),
+        };
+        if icon_button(ui, &tip, None, icon).clicked() {
             app.invoke(id);
         }
-    };
-    cmd(app, ui, tr!("Frame"), tr!("Insert frame (F5)"), "timeline.insert_frame");
-    cmd(app, ui, tr!("Keyframe"), tr!("Insert keyframe (F6)"), "timeline.insert_keyframe");
-    cmd(app, ui, tr!("Blank"), tr!("Insert blank keyframe (F7)"), "timeline.insert_blank_keyframe");
+    }
     let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
     let in_tween = here.and_then(|k| k.tween);
     let in_motion = here.is_some_and(|k| k.motion.is_some());
@@ -1642,6 +1679,49 @@ mod tests {
             assert_eq!(c.fract(), 0.5, "centred on a pixel");
             assert!((c - (x + cw * 0.5)).abs() <= 1.0);
         }
+    }
+
+    fn spans(app: &App, l: LayerId) -> Vec<(u32, u32)> {
+        app.s.timeline().layer(l).map(|l| l.keyframes.iter().map(|k| (k.start, k.duration)).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn f5_f6_f7_from_the_editor_extend_at_the_playhead_and_move_on() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::default(), Some(std::path::PathBuf::from("unused.png")));
+        let a = app.s.layer;
+        app.run("timeline.insert_frame", json!({"layer": a.0, "frame": 0, "count": 7}));
+        let b = LayerId(app.run("layer.new", json!({})).and_then(|v| v["layer"].as_u64()).unwrap_or(0));
+        app.run("timeline.remove_frame", json!({"layer": b.0, "frame": 0, "count": 4}));
+        assert_eq!((spans(&app, a), spans(&app, b)), (vec![(0, 8)], vec![(0, 4)]));
+        // No frame selection, playhead at frame 5: F5 extends layer 1 only, and moves on.
+        app.frame_sel = None;
+        app.s.set_frame(4);
+        app.invoke("timeline.insert_frame");
+        assert_eq!((spans(&app, a), spans(&app, b)), (vec![(0, 9)], vec![(0, 4)]));
+        assert_eq!(app.s.frame, 5);
+        // A clicked cell: F5 there is for that layer, and the cell follows the playhead.
+        app.frame_sel = Some(FrameSel::cell(b, 3));
+        app.s.set_frame(3);
+        app.invoke("timeline.insert_frame");
+        assert_eq!(spans(&app, b), vec![(0, 5)]);
+        assert_eq!(app.s.frame, 4);
+        assert_eq!(app.frame_sel.map(|s| s.frames()), Some((4, 4)));
+        // F6 on a keyframe: the next frame gets the key, the playhead and the cell go there.
+        app.frame_sel = Some(FrameSel::cell(b, 0));
+        app.s.set_frame(0);
+        app.invoke("timeline.insert_keyframe");
+        assert_eq!(spans(&app, b), vec![(0, 1), (1, 4)]);
+        assert_eq!((app.s.frame, app.frame_sel.map(|s| s.frames())), (1, Some((1, 1))));
+        app.invoke("timeline.insert_blank_keyframe");
+        assert_eq!(spans(&app, b), vec![(0, 1), (1, 1), (2, 3)]);
+        assert_eq!(app.s.frame, 2);
+        // A selection of several frames stays a range edit and doesn't move the playhead.
+        app.frame_sel = Some(FrameSel { anchor: (a, 1), head: (a, 2) });
+        app.s.set_frame(1);
+        app.invoke("timeline.insert_frame");
+        assert_eq!(spans(&app, a), vec![(0, 11)]);
+        assert_eq!(app.s.frame, 1);
     }
 
     #[test]
