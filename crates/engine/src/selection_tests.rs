@@ -562,3 +562,14 @@ fn clicking_a_layer_name_selects_its_artwork() {
     run(&mut s, "layer.select", json!({"layer": bottom.0, "select": true}));
     assert!(s.selection.is_empty());
 }
+
+#[test]
+fn select_with_toggle_takes_one_out_and_puts_it_back_across_layers() {
+    // Shift+Space on a stage element (ADR 0064): the others stay selected, on either layer.
+    let (mut s, top, bottom, a, b) = two_layers();
+    run(&mut s, "element.select", json!({"ids": [b.0], "toggle": true}));
+    assert!(s.selection.contains(top, a) && !s.selection.contains(bottom, b));
+    run(&mut s, "element.select", json!({"ids": [b.0], "toggle": true}));
+    assert!(s.selection.contains(top, a) && s.selection.contains(bottom, b));
+    assert!(s.execute("element.select", &json!({"ids": [b.0], "toggle": "yes"})).is_err(), "toggle is a bool");
+}
