@@ -1095,7 +1095,7 @@ fn filter_cases() -> Vec<Vec<anicraft_doc::Filter>> {
 /// small stage, with `filters`.
 fn filtered_doc(filters: &[anicraft_doc::Filter]) -> Document {
     let mut d = Document { stage: anicraft_doc::Stage { width: 64, height: 56, fps: 24.0, background: Rgba::WHITE }, ..Document::default() };
-    let grad = Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(24.0, 18.0), stops: vec![stop(0.0, 0xff3300, 1.0), stop(1.0, 0x3366ff, 0.6)] };
+    let grad = Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(24.0, 18.0), vec![stop(0.0, 0xff3300, 1.0), stop(1.0, 0x3366ff, 0.6)]);
     let mut a = Shape::filled(Path::ellipse(12.0, 10.0, 11.0, 8.5), grad);
     a.stroke = Some(anicraft_doc::Stroke::new(Rgba::hex(0x112233), 1.5));
     let b = Shape::filled(Path::rect(16.3, 4.6, 9.2, 13.7), Paint::Solid(Rgba::hex(0x22aa44).with_alpha(0.5)));
@@ -1200,7 +1200,7 @@ fn soft_masked_doc(mode: anicraft_doc::MaskMode, inside: bool) -> Document {
         Filter::Glow { blur_x: 6.0, blur_y: 6.0, strength: 1.5, quality: 2, color: Rgba::hex(0xffcc00), inner: false, knockout: false },
     ];
     let mut d = filtered_doc(&filters);
-    let ramp = Paint::Linear { start: Vec2::new(10.0, 0.0), end: Vec2::new(54.0, 0.0), stops: vec![stop(0.0, 0xffffff, 1.0), stop(0.5, 0x808080, 0.5), stop(1.0, 0x000000, 0.2)] };
+    let ramp = Paint::linear(Vec2::new(10.0, 0.0), Vec2::new(54.0, 0.0), vec![stop(0.0, 0xffffff, 1.0), stop(0.5, 0x808080, 0.5), stop(1.0, 0x000000, 0.2)]);
     let art = Arc::new(Element { id: ElementId(320), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(10.0, 4.0, 44.0, 48.0), ramp)) });
     let mut mask = Layer::new(LayerId(321), "mask");
     mask.kind = LayerKind::Mask;
