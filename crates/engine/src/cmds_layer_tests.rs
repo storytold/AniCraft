@@ -154,7 +154,7 @@ fn layer_properties_set_everything_as_one_step_or_nothing() {
     let (mut s, top, bottom) = two_walks();
     let undo = s.history.undo_len();
     let r = run(&mut s, "layer.set_properties", json!({"layer": bottom.0, "name": "Sky", "color": "#123456", "outline": true, "height": 200, "locked": true, "visible": false, "onion": false, "type": "guide"}));
-    assert_eq!(r, json!({"layer": bottom.0, "name": "Sky", "type": "guide", "color": "#123456", "outline": true, "height": 200, "visible": false, "locked": true, "onion": false}));
+    assert_eq!(r, json!({"layer": bottom.0, "name": "Sky", "type": "guide", "mask": null, "color": "#123456", "outline": true, "height": 200, "visible": false, "locked": true, "onion": false}));
     assert_eq!(s.history.undo_len(), undo + 1, "one undo step");
     assert_eq!(run(&mut s, "layer.properties", json!({"layer": bottom.0})), r);
     // The same type again changes nothing (a masked layer stays masked by the same mask).
@@ -172,6 +172,31 @@ fn layer_properties_set_everything_as_one_step_or_nothing() {
         assert_eq!(layer(&s, top).name, "Layer 2", "{bad}");
     }
     assert!(s.execute("layer.properties", &json!({"layer": 999_999})).is_err());
+}
+
+#[test]
+fn a_mask_layer_takes_a_mask_type() {
+    let (mut s, top, bottom) = two_walks();
+    // Only a mask layer has one.
+    assert!(s.execute("layer.set_mask", &json!({"layer": top.0, "mask": "alpha"})).is_err());
+    assert!(s.execute("layer.set_properties", &json!({"layer": top.0, "name": "X", "mask": "alpha"})).is_err());
+    assert_eq!(layer(&s, top).name, "Layer 2", "nothing changed");
+    // Made a mask and soft in one step; then by itself.
+    let r = run(&mut s, "layer.set_properties", json!({"layer": top.0, "type": "mask", "mask": "luminance"}));
+    assert_eq!((r["type"].as_str(), r["mask"].as_str()), (Some("mask"), Some("luminance")));
+    assert_eq!(layer(&s, top).mask_mode, anicraft_doc::MaskMode::Luminance);
+    assert_eq!(run(&mut s, "layer.set_mask", json!({"layer": top.0, "mask": "alpha"}))["mask"], "alpha");
+    assert!(s.execute("layer.set_mask", &json!({"layer": top.0, "mask": "soft"})).is_err());
+    assert!(s.execute("layer.set_mask", &json!({"layer": top.0})).is_err());
+    assert_eq!(run(&mut s, "layer.properties", json!({"layer": bottom.0}))["mask"], Value::Null);
+    // The stage shows it at once: the masked square at its edge (art opaque → fully shown).
+    run(&mut s, "layer.set_properties", json!({"layer": bottom.0, "type": "masked"}));
+    let dl = s.display_list();
+    assert_eq!(dl.clip_mode(0), anicraft_doc::MaskMode::Alpha);
+    // Undo goes back to luminance, then to coverage.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(layer(&s, top).mask_mode, anicraft_doc::MaskMode::Luminance);
 }
 
 #[test]

@@ -181,6 +181,9 @@ pub struct StageView {
     /// The canvas size and zoom of the last fit: while the view is still as fitted, it fits
     /// again when the canvas changes size (window resized, panels or interface scale changed).
     pub fitted: Option<(egui::Vec2, f32)>,
+    /// View › Clip Content Outside the Stage (#251): hide artwork on the pasteboard (it is still
+    /// there, and still exported only where it is on the stage). Off: it shows, as in Animate.
+    pub clip_to_stage: bool,
 }
 
 /// In-progress pointer gesture on the stage.
@@ -345,6 +348,8 @@ pub struct App {
     pub library: crate::library::LibraryView,
     /// Text being typed on the stage.
     pub text_edit: Option<TextEditing>,
+    /// Attach to Path is waiting for a click on a shape (ADR 0070): the text to set along it.
+    pub path_pick: Option<anicraft_engine::doc::ElementId>,
     /// Font families on this computer, listed once on first need.
     pub font_families: Option<Vec<String>>,
     pub star_points: u32,
@@ -561,7 +566,7 @@ impl App {
             updates: Default::default(),
             s: session,
             tool: Tool::Select,
-            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None },
+            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None, clip_to_stage: false },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
             hint_menu: None,
@@ -594,6 +599,7 @@ impl App {
             library_sel,
             library: Default::default(),
             text_edit: None,
+            path_pick: None,
             font_families: None,
             star_points: 5,
             rect_radius: 0.0,
@@ -1075,6 +1081,17 @@ impl App {
                 self.view.zoom = 3.0;
                 self.view.pan = egui::vec2(1200.0, 300.0);
             }
+            Some("pasteboard") | Some("clipped") => {
+                // Artwork half off the stage (#245); `clipped`: Clip Content Outside the Stage on
+                // (#251). Zoomed out so the pasteboard shows around the stage.
+                let w = self.s.doc.stage.width as f32;
+                self.run("draw.ellipse", json!({"x": -160.0, "y": 40.0, "w": 260.0, "h": 200.0}));
+                self.run("draw.rect", json!({"x": w - 80.0, "y": 260.0, "w": 240.0, "h": 120.0}));
+                self.view.fit = false;
+                self.view.zoom = 0.55;
+                self.view.pan = egui::Vec2::ZERO;
+                self.view.clip_to_stage = which == Some("clipped");
+            }
             Some("prefs") => {
                 self.show_prefs = true;
                 self.scan_system_fonts();
@@ -1327,6 +1344,40 @@ impl App {
                 if which == "testscript" {
                     crate::test_movie::open(self);
                     crate::test_movie::demo_pointer(self);
+                }
+            }
+            Some(which @ ("softmask" | "pathtext")) => {
+                // Soft masks and text on a path (ADR 0070): colour bands seen through a radial
+                // gradient on an alpha mask layer, and a line of text along an oval. `softmask`
+                // opens the mask layer's Layer Properties; `pathtext` selects the text.
+                self.perform("file.new", json!({"width": 640, "height": 400}));
+                self.run("draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 400, "fill": "#1d3557", "stroke": null}));
+                self.run("layer.new", json!({"name": "Bands"}));
+                for (i, c) in ["#e76f51", "#f4a261", "#e9c46a", "#2a9d8f", "#8ab17d"].iter().enumerate() {
+                    self.run("draw.rect", json!({"x": 120 + 80 * i, "y": 40, "w": 80, "h": 320, "fill": c, "stroke": null}));
+                }
+                let mask = self.run("layer.new", json!({"name": "Soft mask"})).and_then(|v| v["layer"].as_u64());
+                let stops = vec![anicraft_engine::doc::GradientStop { offset: 0.0, color: anicraft_engine::doc::Rgba::WHITE }, anicraft_engine::doc::GradientStop { offset: 1.0, color: anicraft_engine::doc::Rgba::WHITE.with_alpha(0.0) }];
+                let swatch = self.s.style.fill_paint.replace(anicraft_engine::doc::Paint::Radial { center: anicraft_engine::geom::Vec2::new(320.0, 200.0), radius: 190.0, stops });
+                self.run("draw.ellipse", json!({"x": 130, "y": 10, "w": 380, "h": 380, "stroke": null}));
+                self.s.style.fill_paint = swatch;
+                self.run("layer.toggle_mask", json!({}));
+                self.run("layer.set_mask", json!({"mask": "alpha"}));
+                self.run("layer.new", json!({"name": "Title"}));
+                // i18n-exempt: document content
+                let text = self.run("text.create", json!({"text": "Soft masks · text on a path", "x": 40, "y": 40, "size": 26, "color": "#f1faee", "align": "center"})).and_then(|v| v["element"].as_u64());
+                let oval = self.run("draw.ellipse", json!({"x": 70, "y": 25, "w": 500, "h": 350, "fill": null, "stroke": "#f1faee", "stroke_width": 1})).and_then(|v| v["element"].as_u64());
+                if let (Some(t), Some(o)) = (text, oval) {
+                    self.run("element.select", json!({"ids": [t]}));
+                    self.run("text.attach_path", json!({"path": o, "offset": 1080}));
+                    self.run("element.select", json!({"ids": [o]}));
+                    self.run("edit.delete", json!({}));
+                    self.run("element.select", json!({"ids": [t]}));
+                }
+                if which == "softmask"
+                    && let Some(m) = mask
+                {
+                    crate::layer_props::open(self, Some(anicraft_engine::doc::LayerId(m)));
                 }
             }
             Some(which @ ("textfields" | "testtext")) => {
@@ -2241,6 +2292,13 @@ impl App {
                 return;
             }
             self.prompt = Some(Prompt { title, cmd: id, key, text });
+            return;
+        }
+        // F5, F6 and F7 work as in Animate: at the playhead with no frame selection, F5 extends
+        // every layer that reaches it; on one frame the playhead moves on to what was made.
+        if let Some(p) = timeline::insert_key_params(self, id) {
+            self.request(id, p);
+            timeline::follow_playhead(self);
             return;
         }
         // Frame commands act on the frame selection (F5 over 3 frames on 2 layers inserts 3

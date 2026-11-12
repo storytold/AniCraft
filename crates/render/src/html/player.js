@@ -292,7 +292,7 @@ var AniCraft = (function () {
   // the group they fade with; `clips` holds each clip's parent, `groups` each group. `v`, when
   // given, hears every item and where clips and groups open and close (canvas.js draws so).
   function evaluate(M, st, v) {
-    const dl = { items: [], clips: [], groups: [] };
+    const dl = { items: [], clips: [], modes: [], groups: [] };
     const scene = M.scenes[st.scene];
     const tli = scene ? scene.tl : 0;
     // A scene seen through its camera: the camera's tint colours everything.
@@ -320,7 +320,11 @@ var AniCraft = (function () {
     for (const L of content(M, tl, frame).l) {
       let clip = cx.clip, masks = cx.masks;
       const isMask = cx.masks === null && L.mk !== undefined;
-      if (isMask) masks = slots[L.mk];
+      if (isMask) {
+        masks = slots[L.mk];
+        // A soft mask's mode (ADR 0070): 1 alpha, 2 luminance; coverage when absent.
+        if (L.mm) dl.modes[masks] = L.mm;
+      }
       else if (cx.masks === null && L.c !== undefined) clip = slots[L.c];
       if (v && cx.masks === null && !isMask) {
         // Masked layers draw into their clip; one that never meets its mask stays hidden.
@@ -334,7 +338,7 @@ var AniCraft = (function () {
           open = want;
         }
       }
-      if (v && isMask) v.maskBegin(masks);
+      if (v && isMask) v.maskBegin(masks, L.mm || 0);
       const lcx = L.v ? Object.assign({}, cx, { xf: L.v }) : cx;
       for (const e of L.e) evalElement(M, e, lcx, clip, masks, dl, play, v);
       if (v && isMask) {
@@ -379,9 +383,11 @@ var AniCraft = (function () {
     const fade = fx[7] === 0 ? Math.min(Math.max(fx[3], 0), 1) : 1;
     const blend = e.bl || "normal";
     let color = concat(cx.c, fx), group = cx.group;
-    if (masks === null && (fade < 1 - 1e-4 || blend !== "normal" || e.fx)) {
+    const filters = Array.isArray(e.fx) && e.fx.length ? e.fx : null;
+    if (masks === null && (fade < 1 - 1e-4 || blend !== "normal" || filters)) {
       group = dl.groups.length;
-      dl.groups.push({ parent: cx.group, alpha: fade, blend: blend, clip: clip });
+      // Filters run in the page (filters.js); `margin` is how far they reach (stage pixels).
+      dl.groups.push({ parent: cx.group, alpha: fade, blend: blend, clip: clip, filters: filters, margin: filters ? e.fm || 0 : 0 });
       color = concat(cx.c, fx[7] === 0 ? [fx[0], fx[1], fx[2], 1, fx[4], fx[5], fx[6], 0] : fx);
     }
     if (v && group !== cx.group) v.groupBegin(group, dl.groups[group]);

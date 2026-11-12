@@ -2,7 +2,7 @@ use super::*;
 use crate::{Rgba, TextAlign};
 
 fn block(text: &str, f: TextField) -> TextBlock {
-    TextBlock { text: text.into(), font: "Mono".into(), size: 10.0, bold: false, italic: false, color: Rgba::BLACK, align: TextAlign::Left, letter_spacing: 0.0, line_spacing: 0.0, width: None, outline: Arc::new(Path::new()), box_width: 54.0, box_height: 24.0, field: Some(f) }
+    TextBlock { text: text.into(), font: "Mono".into(), size: 10.0, bold: false, italic: false, color: Rgba::BLACK, align: TextAlign::Left, letter_spacing: 0.0, line_spacing: 0.0, width: None, outline: Arc::new(Path::new()), box_width: 54.0, box_height: 24.0, field: Some(f), on_path: None }
 }
 
 /// Runs edits on a field as the player does: each change of text lays it out again (10 px per

@@ -308,6 +308,9 @@ fn interleave(tl: &Timeline, parts: Vec<DisplayList>) -> (DisplayList, Vec<usize
         let shift = move |c: Option<u32>| c.map(|c| c + base);
         let gshift = move |g: Option<u32>| g.map(|g| g + gbase);
         dl.clip_parents.extend(part.clip_parents.into_iter().map(shift));
+        for (i, m) in part.clip_modes.into_iter().enumerate() {
+            dl.set_clip_mode(base + i as u32, m);
+        }
         dl.groups.extend(part.groups.into_iter().map(|g| anicraft_doc::Group { parent: gshift(g.parent), clip: shift(g.clip), ..g }));
         iters.push(
             part.items

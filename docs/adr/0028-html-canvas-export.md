@@ -157,14 +157,17 @@ size, the frames stored and what was approximated. Headless: `anicraft-cli exec 
 
 ### Not carried across (reported)
 
-Filters (drawn without them), Subtract and Invert blending (drawn normally), tints on bitmap
-fills, and **plug-in frame scripts** (they need the WebAssembly plug-in host; the page logs
-that they didn't run, as Test Movie does without plug-ins). Outline-mode layers are drawn in
-full: outline mode is an authoring view, as in Animate's publish.
+Tints on bitmap fills and **plug-in frame scripts** (they need the WebAssembly plug-in host;
+the page logs that they didn't run, as Test Movie does without plug-ins). Outline-mode layers
+are drawn in full: outline mode is an authoring view, as in Animate's publish.
+
+**Update (ADR 0072):** filters and Subtract and Invert blending are now drawn in the page as
+the renderer draws them (`filters.js`, a port of `filters.rs`, over the group's pixels; Subtract
+and Invert per pixel), tested against the oracle's pixels, and no longer reported.
 
 ## Not yet
 
-Filters via `ctx.filter`; a folder layout (`.html` + `.js` + assets) for bitmap-heavy movies;
+A folder layout (`.html` + `.js` + assets) for bitmap-heavy movies;
 keyboard focus and Enter/Space on buttons; a loading poster; hit tests that respect masks
 (the Rust player doesn't either); stream sounds that follow the playhead; frame-script
 plug-ins in the browser (wasm in the page through the same ABI); ActionScript (ADR 0013 tiers).

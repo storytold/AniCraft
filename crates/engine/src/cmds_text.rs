@@ -4,11 +4,15 @@
 //! Dynamic and input text fields (ADR 0066): `text.field` sets a block's Text type and field
 //! options. A field's box is fixed and its text is laid out inside the gutter, aligned in the box;
 //! [`field_layout`] does that for the commands and for the player while a movie plays.
+//!
+//! Text on a path (ADR 0070): `text.attach_path` sets static text along a shape's outline (a
+//! copy of it, in the text's own space), `text.path` moves it along, flips it or releases it.
+//! The glyphs are set by arc length and stored as outlines, as all text is.
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, FIELD_GUTTER, LineType, MAX_FIELD_CHARS, MAX_FIELD_NAME, Rgba, TextAlign, TextBlock, TextField, TextKind};
-use anicraft_geom::{Affine, Path};
+use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, FIELD_GUTTER, LineType, MAX_FIELD_CHARS, MAX_FIELD_NAME, MAX_PATH_OFFSET, Rgba, TextAlign, TextBlock, TextField, TextKind, TextPath};
+use anicraft_geom::{Affine, Path, Vec2};
 use anicraft_text::{Align, Fonts};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -39,6 +43,17 @@ pub fn specs() -> Vec<CommandSpec> {
         c("text.create", "New Text", "", None, "{text (may be empty for an input field), type?: static|dynamic|input, x?, y? (top-left; default: centred), font?, size?, bold?, italic?, color?, align?, letter_spacing?, line_spacing?, width?}", true, create as crate::RunFn),
         c("text.edit", "Edit Text", "", None, "{text?, font?, size? (px), bold?, italic?, color?, align?: left|center|right, letter_spacing?, line_spacing?, width? (px, wraps; null: one line per paragraph)} on the selected text", true, |s, p| s.each_layer(false, |s| edit(s, p))),
         c("text.fonts", "Fonts", "", None, "{}", false, fonts),
+        c(
+            "text.attach_path",
+            "Attach Text to Path",
+            "Modify/Text",
+            None,
+            "{path?: element id of a shape (default: the other selected element, a shape), x?, y? (pick the shape at this stage point instead), offset? (px along the path; default by the text's alignment: its start, middle or end), flip?: bool} sets the selected static text along a copy of the shape's outline (its first contour); the shape stays as it is (ADR 0070)",
+            true,
+            attach_path as crate::RunFn,
+        ),
+        c("text.path", "Text on Path", "", None, "{offset? (px along the path), flip?: bool (along the path backwards, on its other side), release?: bool (back to lines of text where it starts)} on the selected text on a path (ADR 0070)", true, |s, p| s.each_layer(false, |s| set_path(s, p))),
+        c("text.release_path", "Release Text from Path", "Modify/Text", None, "{} the selected text on a path goes back to lines of text (ADR 0070)", true, |s, _| s.each_layer(false, |s| set_path(s, &json!({"release": true})))),
         c("text.field", "Text Type", "", None, "{type?: static|dynamic|input, lines?: single|multiline|multiline_no_wrap|password (input only), width?, height? (the field's box, px), selectable?, border?, background?, border_color?, background_color?, max_chars? (input; 0: no limit), variable? (kept, not run)} on the selected text; dynamic and input fields are named with instance.set_name and scripted in Test Movie and the HTML export (ADR 0066)", true, |s, p| s.each_layer(false, |s| set_field(s, p))),
     ]
 }
@@ -126,6 +141,7 @@ pub(crate) fn lay_out(text: &str, style: &TextStyle, width: Option<f32>) -> Resu
         box_width: layout.width,
         box_height: layout.height,
         field: None,
+        on_path: None,
     };
     Ok((block, note))
 }
@@ -192,17 +208,172 @@ pub(crate) fn lay_out_field(text: &str, style: &TextStyle, field: &TextField, bo
         box_width,
         box_height,
         field: Some(field.clone()),
+        on_path: None,
     };
     Ok((block, note))
 }
 
+/// Text on a path (ADR 0070): `text` on one line (line breaks become spaces) set along `on`'s
+/// path. The block's space is moved so its box (the path and the glyphs together) starts at
+/// the origin, as every text box does: the second value is where that origin was, which the
+/// element's transform must move by (`transform × translate(shift)`) for nothing to move.
+pub(crate) fn lay_out_on_path(text: &str, style: &TextStyle, on: &TextPath) -> Result<(TextBlock, Option<String>, Vec2)> {
+    let fonts = Fonts::get();
+    let line: String = text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+    let layout = fonts
+        .layout_glyphs(&line, &anicraft_text::Style { family: style.font.clone(), size: style.size, bold: style.bold, italic: style.italic, align: Align::Left, letter_spacing: style.letter_spacing, line_spacing: 0.0, width: None })
+        .map_err(|e| EngineError::State(format!("can't lay out text: {e}")))?;
+    let note = (!style.font.trim().is_empty() && !layout.family.eq_ignore_ascii_case(style.font.trim())).then(|| format!("“{}” isn't installed on this computer; used {}", style.font.trim(), layout.family));
+    let align = match style.align {
+        TextAlign::Left => Align::Left,
+        TextAlign::Center => Align::Center,
+        TextAlign::Right => Align::Right,
+    };
+    let offset = if on.offset.is_finite() { on.offset.clamp(-MAX_PATH_OFFSET, MAX_PATH_OFFSET) } else { 0.0 };
+    let set = anicraft_text::on_path_boxed(&layout.glyphs, &on.path, anicraft_text::PathPlacement { offset, flip: on.flip, align }).ok_or_else(|| EngineError::State("the path has no length to set text along".into()))?;
+    let shift = set.shift;
+    let block = TextBlock {
+        text: text.to_string(),
+        font: layout.family,
+        size: style.size,
+        bold: style.bold,
+        italic: style.italic,
+        color: style.color,
+        align: style.align,
+        letter_spacing: style.letter_spacing,
+        line_spacing: style.line_spacing,
+        width: None,
+        outline: Arc::new(set.outline),
+        box_width: set.width,
+        box_height: set.height,
+        field: None,
+        on_path: Some(TextPath { path: set.path, offset, flip: on.flip }),
+    };
+    Ok((block, note, shift))
+}
+
 /// The block `t` with new text or style: a field keeps its box (or takes `width` as its new
-/// width); static text wraps at `width`.
-fn relay(t: &TextBlock, text: &str, style: &TextStyle, width: Option<f32>) -> Result<(TextBlock, Option<String>)> {
-    match &t.field {
-        Some(f) => lay_out_field(text, style, f, width.unwrap_or(t.box_width), t.box_height),
-        None => lay_out(text, style, width),
+/// width); static text wraps at `width`; text on a path stays on it. With where the block's
+/// origin moved to ([`lay_out_on_path`]; zero for the others).
+pub(crate) fn relay(t: &TextBlock, text: &str, style: &TextStyle, width: Option<f32>) -> Result<(TextBlock, Option<String>, Vec2)> {
+    match (&t.field, &t.on_path) {
+        (_, Some(on)) => lay_out_on_path(text, style, on),
+        (Some(f), None) => lay_out_field(text, style, f, width.unwrap_or(t.box_width), t.box_height).map(|(b, n)| (b, n, Vec2::ZERO)),
+        (None, None) => lay_out(text, style, width).map(|(b, n)| (b, n, Vec2::ZERO)),
     }
+}
+
+/// What Find and Replace lays text out with: as before (static text, its fields' boxes
+/// dropped), except that text on a path stays on its path.
+pub(crate) fn relay_static(t: &TextBlock, text: &str, style: &TextStyle) -> Result<(TextBlock, Option<String>, Vec2)> {
+    match &t.on_path {
+        Some(on) => lay_out_on_path(text, style, on),
+        None => lay_out(text, style, t.width).map(|(b, n)| (b, n, Vec2::ZERO)),
+    }
+}
+
+/// The selected static text, along a copy of a shape's outline (ADR 0070).
+fn attach_path(s: &mut Session, p: &Value) -> Result<Value> {
+    let by_id = opt_u64(p, "path")?.map(ElementId);
+    let at = match (opt_f32(p, "x")?, opt_f32(p, "y")?) {
+        (Some(x), Some(y)) => Some(Vec2::new(x, y)),
+        (None, None) => None,
+        _ => return Err(EngineError::Param("give both 'x' and 'y', or neither".into())),
+    };
+    let flip = opt_bool(p, "flip")?.unwrap_or(false);
+    let offset = opt_f32(p, "offset")?;
+    if offset.is_some_and(|o| !(-MAX_PATH_OFFSET..=MAX_PATH_OFFSET).contains(&o)) {
+        return Err(EngineError::Param(format!("'offset' must be within ±{MAX_PATH_OFFSET} px")));
+    }
+    // The shape: by id or by point, on any layer of what is being edited; else the selection's.
+    let wanted = match (by_id, at) {
+        (Some(id), _) => Some(id),
+        (None, Some(pt)) => Some(s.hit_test(pt, 2.0).map(|(_, e)| e).ok_or_else(|| EngineError::State("there is no shape there to set the text along".into()))?),
+        (None, None) => None,
+    };
+    let texts: Vec<ElementId> = s.selected_elements_mut()?.iter().filter(|e| matches!(&e.kind, ElementKind::Text(t) if t.field.is_none())).map(|e| e.id).collect();
+    let [text_id] = texts.as_slice() else {
+        return Err(EngineError::State(if texts.is_empty() { "select a static text block to set along a path".into() } else { "select one text block to set along a path".into() }));
+    };
+    // The shapes on the timeline being edited at this frame (in its space, as the text is):
+    // the one asked for, or the selected one.
+    let selected = s.selection.on(s.layer);
+    let mut candidates: Vec<Path> = Vec::new();
+    for l in &s.timeline().layers {
+        let Some((_, els)) = anicraft_doc::evaluate_layer_elements(l, s.frame) else { continue };
+        for e in els.iter() {
+            let ElementKind::Shape(sh) = &e.kind else { continue };
+            let pick = match wanted {
+                Some(w) => w == e.id,
+                None => l.id == s.layer && selected.contains(&e.id),
+            };
+            if pick {
+                candidates.push(sh.path.transformed(&e.transform));
+            }
+        }
+    }
+    let path = match candidates.as_slice() {
+        [path] => path.clone(),
+        [] => return Err(EngineError::State("pick a shape to set the text along".into())),
+        _ => return Err(EngineError::State("select the text and one shape (or pick the shape)".into())),
+    };
+    // Its first contour, in the timeline's space (the text takes the path's place).
+    let first: Path = Path { cmds: path.cmds.iter().enumerate().take_while(|(i, c)| *i == 0 || !matches!(c, anicraft_geom::PathCmd::MoveTo(_))).map(|(_, c)| *c).collect() };
+    let length = anicraft_geom::walk::CurveWalk::new(&first).map(|w| w.length()).ok_or_else(|| EngineError::State("the shape's outline has no length to set text along".into()))?;
+    let mut out = Value::Null;
+    for e in s.selected_elements_mut()? {
+        if e.id != *text_id {
+            continue;
+        }
+        let ElementKind::Text(t) = &e.kind else { continue };
+        let style = style_of(t);
+        let offset = offset.unwrap_or(match t.align {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => length * 0.5,
+            TextAlign::Right => length,
+        });
+        let (block, note, shift) = lay_out_on_path(&t.text, &style, &TextPath { path: first.clone(), offset, flip })?;
+        // The path is in stage space; the text's new space is the path's, moved to its box.
+        e.transform = Affine::translate(shift.x, shift.y);
+        out = json!({"element": e.id.0, "length": length, "offset": offset, "flip": flip, "note": note});
+        e.kind = ElementKind::Text(Arc::new(block));
+    }
+    s.select_only([*text_id]);
+    Ok(out)
+}
+
+/// Moves, flips or releases the selected text on a path.
+fn set_path(s: &mut Session, p: &Value) -> Result<Value> {
+    let offset = opt_f32(p, "offset")?;
+    if offset.is_some_and(|o| !(-MAX_PATH_OFFSET..=MAX_PATH_OFFSET).contains(&o)) {
+        return Err(EngineError::Param(format!("'offset' must be within ±{MAX_PATH_OFFSET} px")));
+    }
+    let flip = opt_bool(p, "flip")?;
+    let release = opt_bool(p, "release")?.unwrap_or(false);
+    let mut changed = 0;
+    for e in s.selected_elements_mut()? {
+        let ElementKind::Text(t) = &e.kind else { continue };
+        let Some(on) = &t.on_path else { continue };
+        let style = style_of(t);
+        if release {
+            // Back to a line of text, its box where the text started along the path.
+            let start = t.outline.bounds();
+            let (block, _) = lay_out(&t.text, &style, None)?;
+            let at = if start.min.x.is_finite() { start.min } else { Vec2::ZERO };
+            e.transform = e.transform.mul(&Affine::translate(at.x, at.y));
+            e.kind = ElementKind::Text(Arc::new(block));
+        } else {
+            let on = TextPath { offset: offset.unwrap_or(on.offset), flip: flip.unwrap_or(on.flip), ..on.clone() };
+            let (block, _, shift) = lay_out_on_path(&t.text, &style, &on)?;
+            e.transform = e.transform.mul(&Affine::translate(shift.x, shift.y));
+            e.kind = ElementKind::Text(Arc::new(block));
+        }
+        changed += 1;
+    }
+    if changed == 0 {
+        return Err(EngineError::State("the selection has no text on a path".into()));
+    }
+    Ok(json!({"changed": changed}))
 }
 
 /// The box a block becomes a field in: the text's own size and the gutters (at least 20 px wide).
@@ -236,6 +407,9 @@ fn set_field(s: &mut Session, p: &Value) -> Result<Value> {
     let mut notes = Vec::new();
     for e in s.selected_elements_mut()? {
         let ElementKind::Text(t) = &e.kind else { continue };
+        if t.on_path.is_some() && kind.is_some_and(|k| k != TextKind::Static) {
+            return Err(EngineError::State("text on a path is static text (release it from the path first)".into()));
+        }
         let to = kind.unwrap_or(t.kind());
         let style = style_of(t);
         let (block, note) = if to == TextKind::Static {
@@ -340,9 +514,10 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::Param("'text' is empty (delete the text instead)".into()));
         }
         let width = if t.field.is_some() { width_param(p, Some(t.box_width))?.or(Some(t.box_width)).map(|w| w.max(1.0)) } else { width_param(p, t.width)? };
-        let (block, note) = relay(t, &text, &style, width)?;
+        let (block, note, shift) = relay(t, &text, &style, width)?;
         notes.extend(note);
         last_style = Some(TextStyle { font: block.font.clone(), ..style });
+        e.transform = e.transform.mul(&Affine::translate(shift.x, shift.y));
         e.kind = ElementKind::Text(Arc::new(block));
         edited += 1;
     }

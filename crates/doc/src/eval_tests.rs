@@ -157,6 +157,27 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
 }
 
 #[test]
+fn a_soft_mask_layer_gives_its_clip_its_mode() {
+    let mut d = mask_doc();
+    assert_eq!((evaluate(&d, 0).clip_mode(0), evaluate(&d, 0).clip_modes.len()), (crate::MaskMode::Coverage, 0), "coverage stays implicit");
+    Arc::make_mut(&mut d.timeline_mut(0).layers[0]).mask_mode = crate::MaskMode::Luminance;
+    let dl = evaluate(&d, 0);
+    assert_eq!(dl.clip_mode(0), crate::MaskMode::Luminance);
+    // Appended lists keep their modes on their renumbered clips.
+    let mut a = evaluate(&mask_doc(), 0);
+    a.append(dl);
+    assert_eq!((a.clip_mode(0), a.clip_mode(1)), (crate::MaskMode::Coverage, crate::MaskMode::Luminance));
+    // The mode is saved only when it isn't coverage, and older files (without it) open as coverage.
+    let json = serde_json::to_string(&*d.timeline(0).layers[0]).unwrap();
+    assert!(json.contains("\"mask_mode\":\"luminance\""), "{json}");
+    let plain = serde_json::to_string(&*mask_doc().timeline(0).layers[0]).unwrap();
+    assert!(!plain.contains("mask_mode"));
+    let back: Layer = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.mask_mode, crate::MaskMode::Luminance);
+    assert_eq!(serde_json::from_str::<Layer>(&plain).unwrap().mask_mode, crate::MaskMode::Coverage);
+}
+
+#[test]
 fn appending_lists_renumbers_clips() {
     let d = mask_doc();
     let mut a = evaluate(&d, 0);

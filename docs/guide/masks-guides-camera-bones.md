@@ -36,6 +36,22 @@ group takes it out of the mask.
 * A mask moves with its whole group when you reorder layers. Masks work inside folders and inside
   symbols too.
 
+### Soft masks
+
+A mask doesn't have to have hard edges. Double-click the mask layer's icon (or right-click it and
+choose **Properties…**) and pick a **Mask type**:
+
+* **Shape**: the mask's fills reveal fully, whatever their colour or opacity. This is what
+  Animate's masks do, and it's the default.
+* **Alpha**: the mask's opacity reveals. Fill the mask with a gradient that goes to transparent
+  and the artwork fades out with it; a shape at 50 % opacity shows the artwork at half strength.
+  Strokes, bitmaps and colour effects on the mask count too.
+* **Luminance**: the mask's brightness reveals: white shows, black hides, greys show partly.
+  This is how SVG masks work.
+
+Soft masks show on the stage and in Test Movie, and export to SVG, Lottie (as track mattes) and
+HTML.
+
 ## Guide layers
 
 A **guide** layer holds artwork that helps you draw, such as a layout sketch, a grid or safe
@@ -139,8 +155,12 @@ called inverse kinematics.
 2. Pick the **Bone** tool (**M**).
 3. Drag from one instance (for example, the upper arm) to the next (the forearm). A bone joins
    them, and both move to a new **armature** layer, shown with a bone icon in the timeline.
-4. To continue the chain, drag from the end of the last bone to the next instance (the hand).
-5. To branch, drag from any instance of the armature to another one.
+4. To continue the chain, drag from the last instance (the forearm) to the next one (the
+   hand). The new bone always starts at the end of the bone before it, wherever on the
+   instance you began, so the chain stays joined.
+5. To branch, drag from any instance of the armature to another one. Branches from the first
+   instance (the root, such as a torso) start where you begin the drag; branches from any other
+   instance start at its joint.
 
 Bones show on the stage as wedges, from a round joint to their end, in the armature layer's
 colour. Click a bone to select it.
@@ -149,9 +169,10 @@ colour. Click a bone to select it.
 
 With the **Selection** tool (**V**):
 
-* drag a bone or an instance, and the bones above it turn so it follows the pointer. If the point
-  is out of reach, the chain stretches straight towards it;
-* drag the root instance to move the whole armature.
+* drag a bone or an instance, and the bones above it turn so the point you grabbed follows the
+  pointer (drag a bone's end to pull the end). If the point is out of reach, the chain stretches
+  straight towards it;
+* drag the root instance, or the joint its first bone starts at, to move the whole armature.
 
 Each drag is one undo step.
 
