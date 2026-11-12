@@ -403,6 +403,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = ruler_resp.interact_pointer_pos() {
             app.playing = false;
             app.run("timeline.goto", json!({"frame": frame_at(p.x)}));
+            // The playhead's frame on every layer, as in Animate: F5, F6, Shift+F5 and the
+            // other frame commands then act on all layers until a frame of one layer is clicked.
+            let layers = &app.s.timeline().layers;
+            if let (Some(a), Some(b)) = (layers.first(), layers.last()) {
+                app.frame_sel = Some(FrameSel { anchor: (a.id, app.s.frame), head: (b.id, app.s.frame) });
+            }
         }
     // The onion menu on a right-click, as the markers live here (ADR 0047).
     ruler_resp.context_menu(|ui| crate::onion::menu(app, ui));
@@ -1658,5 +1664,66 @@ mod tests {
         assert!(FrameSel::cell(LayerId(1), 0).has_keys(&ls));
         // A deleted layer invalidates the selection.
         assert!(FrameSel { anchor: (LayerId(9), 0), head: (LayerId(1), 0) }.layers(&ls).is_empty());
+    }
+
+    /// Each layer's length, in frames.
+    fn ends(app: &App) -> Vec<(LayerId, u32)> {
+        app.s.timeline().layers.iter().map(|l| (l.id, l.end_frame())).collect()
+    }
+
+    /// Issue 195: a click on the playhead (the frame ruler) picks that frame on every layer, so
+    /// F5 adds a frame to all of them; a click on one layer's frame goes back to that layer.
+    #[test]
+    fn a_click_on_the_playhead_makes_frame_keys_act_on_every_layer() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::new(anicraft_engine::doc::sample::demo()), Some(std::path::PathBuf::from("unused.png")));
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 940.0) / app.prefs.ui_scale);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| app.frame(ui));
+            out.textures_delta.clear();
+            out.platform_output.accesskit_update
+        };
+        let mut tree = None;
+        for _ in 0..3 {
+            tree = frame(&mut app, Vec::new()).or(tree);
+        }
+        let layers: Vec<LayerId> = app.s.timeline().layers.iter().filter(|l| l.kind != LayerKind::Folder).map(|l| l.id).collect();
+        assert!(layers.len() >= 2, "the sample has several layers: {layers:?}");
+        // The second layer is the active one, as after a click on its name.
+        app.s.layer = layers[1];
+        // The frame ruler, found by its name for screen readers.
+        let ppp = ctx.pixels_per_point();
+        let ruler = tree
+            .and_then(|t| t.nodes.into_iter().find(|(_, n)| n.label() == Some("Playhead (frame ruler)")))
+            .and_then(|(_, n)| n.bounds())
+            .map(|b| Rect::from_min_max(pos2(b.x0 as f32, b.y0 as f32) / ppp, pos2(b.x1 as f32, b.y1 as f32) / ppp))
+            .unwrap_or_else(|| panic!("no frame ruler on screen"));
+        // Click the ruler a little way in (frame 3 or so).
+        let at = pos2(ruler.left() + 40.0, ruler.center().y);
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, vec![press(true)]);
+        frame(&mut app, vec![press(false)]);
+        frame(&mut app, Vec::new());
+        let f = app.s.frame;
+        assert!(f > 0, "the click moved the playhead");
+        let before = ends(&app);
+        let steps = app.s.history_len();
+        app.invoke("timeline.insert_frame");
+        assert_eq!(app.s.history_len(), steps + 1, "one undo step");
+        // The same as F5 on every layer at the playhead.
+        let all = ends(&app);
+        app.s.undo().expect("undo");
+        assert_eq!(ends(&app), before, "one undo takes it all back");
+        app.run("timeline.insert_frame", json!({"layers": layers.iter().map(|l| l.0).collect::<Vec<_>>(), "frame": f}));
+        assert_eq!(all, ends(&app), "F5 after a click on the playhead adds a frame on every layer");
+        app.s.undo().expect("undo");
+        assert!(before.iter().zip(&all).filter(|(b, a)| b != a).count() >= 2, "more than one layer grew: {before:?} → {all:?}");
+        // A click on one layer's frame (what the grid does) acts on that layer only again.
+        app.frame_sel = Some(FrameSel::cell(layers[1], f));
+        app.invoke("timeline.insert_frame");
+        let one = ends(&app);
+        assert_eq!(before.iter().zip(&one).filter(|(b, a)| b != a).map(|(b, _)| b.0).collect::<Vec<_>>(), vec![layers[1]]);
     }
 }

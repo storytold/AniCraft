@@ -120,6 +120,8 @@ An empty frame shows a hint in **Properties › Frame**: press **F7** to start d
 * Click a frame to select it and move the playhead there.
 * **Shift**-click, or drag across frames, to select a range. A selection can span several
   layers.
+* Click the playhead (the frame ruler) to select that frame on every layer. **F5**, **F6**
+  and the other frame keys then act on all layers, until you click a frame of one layer.
 * **Ctrl+Alt+A** selects every frame.
 
 The frame keys, the header buttons and the right-click menu all act on the whole selection.
