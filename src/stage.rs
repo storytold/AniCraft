@@ -1145,6 +1145,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ),
     };
     crate::a11y::surface(ui, &resp, &name);
+    // Its elements, one by one, while it has the keyboard (ADR 0064).
+    crate::stage_a11y::show(app, ui, &resp, |p| to_screen(p));
 }
 
 // ----- raw shapes (ADR 0031, 0041) ----------------------------------------------------------------

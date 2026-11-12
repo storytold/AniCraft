@@ -437,6 +437,90 @@ mod tests {
         assert!(app.playing, "Enter on the focused stage plays");
     }
 
+    /// Presses `key` and lets a frame pass for focus to settle. Returns the last frame's tree.
+    fn key(ctx: &egui::Context, app: &mut App, key: egui::Key, modifiers: egui::Modifiers) -> Option<TreeUpdate> {
+        frame(ctx, app, press(key, modifiers));
+        frame(ctx, app, input(1.0)).platform_output.accesskit_update
+    }
+
+    fn focus_stage(ctx: &egui::Context, app: &mut App) {
+        while focused_region(ctx) != Some(Region::Stage) {
+            key(ctx, app, egui::Key::F6, egui::Modifiers::COMMAND);
+        }
+    }
+
+    fn node<'a>(t: &'a TreeUpdate, id: egui::Id) -> Option<&'a Node> {
+        t.nodes.iter().find(|(n, _)| *n == id.accesskit_id()).map(|(_, n)| n)
+    }
+
+    #[test]
+    fn the_stage_lists_its_elements_and_selects_them_from_the_keyboard() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        // Unfocused, the stage has no element nodes: the tree stays small.
+        assert!(app.stage_nav.focused(&ctx).is_none());
+        focus_stage(&ctx, &mut app);
+        app.run("edit.deselect", serde_json::json!({}));
+        let (items, total) = crate::stage_a11y::items(&app);
+        assert!(items.len() >= 2 && total == items.len(), "the sample frame has a few elements: {items:?}");
+        // Tab goes into the list, to the first element.
+        let t = key(&ctx, &mut app, egui::Key::Tab, egui::Modifiers::NONE).unwrap_or_else(|| panic!("no tree"));
+        let first = app.stage_nav.focused(&ctx).unwrap_or_else(|| panic!("Tab on the stage focuses an element"));
+        assert_eq!(first, (items[0].layer, items[0].element));
+        let n = node(&t, crate::stage_a11y::node_id(first.0, first.1)).unwrap_or_else(|| panic!("the element has a node"));
+        assert_eq!(n.role(), Role::ListBoxOption);
+        assert_eq!(n.label(), Some(items[0].name.as_str()));
+        assert_eq!(n.is_selected(), Some(false));
+        assert!(n.bounds().is_some_and(|b| b.x1 > b.x0 || b.y1 > b.y0) || items[0].bounds.is_empty(), "bounds on screen");
+        assert_eq!(t.focus, crate::stage_a11y::node_id(first.0, first.1).accesskit_id(), "the reader's focus is on it");
+        // The list box is the canvas's child, and its options are the list's.
+        let list = t.nodes.iter().find(|(_, n)| n.role() == Role::ListBox && n.children().contains(&crate::stage_a11y::node_id(first.0, first.1).accesskit_id()));
+        assert!(list.is_some(), "the options sit in a list box");
+        let canvas = t.nodes.iter().find(|(_, n)| n.role() == Role::Canvas && n.label().is_some_and(|l| l.starts_with("Stage"))).map(|(_, n)| n);
+        assert!(canvas.is_some_and(|c| list.is_some_and(|(id, _)| c.children().contains(id))), "the list box is the stage's child");
+        // Space selects it alone; the arrows move on without nudging; Shift+Space adds the next.
+        key(&ctx, &mut app, egui::Key::Space, egui::Modifiers::NONE);
+        assert!(app.s.selection.contains(first.0, first.1) && app.s.selection.len() == 1);
+        let before = crate::stage_a11y::items(&app).0.iter().map(|i| i.bounds).collect::<Vec<_>>();
+        key(&ctx, &mut app, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        let second = app.stage_nav.focused(&ctx).unwrap_or_else(|| panic!("an element has focus"));
+        assert_eq!(second, (items[1].layer, items[1].element));
+        assert_eq!(crate::stage_a11y::items(&app).0.iter().map(|i| i.bounds).collect::<Vec<_>>(), before, "the arrows moved focus, not the artwork");
+        key(&ctx, &mut app, egui::Key::Space, egui::Modifiers::SHIFT);
+        assert!(app.s.selection.contains(second.0, second.1) && app.s.selection.contains(first.0, first.1));
+        let t = key(&ctx, &mut app, egui::Key::Space, egui::Modifiers::SHIFT).unwrap_or_else(|| panic!("no tree"));
+        assert!(!app.s.selection.contains(second.0, second.1) && app.s.selection.len() == 1, "Shift+Space again takes it out");
+        assert_eq!(node(&t, crate::stage_a11y::node_id(first.0, first.1)).and_then(Node::is_selected), Some(true));
+        // Left from the first wraps to the last; Enter selects it alone.
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        let last = items.last().map(|i| (i.layer, i.element));
+        assert_eq!(app.stage_nav.focused(&ctx), last);
+        key(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+        assert!(!app.playing, "Enter on an element selects, it doesn't play");
+        // The sample's sky is on a locked layer: listed (unavailable), never selected.
+        assert!(items.last().is_some_and(|i| i.locked));
+        assert!(app.s.selection.contains(first.0, first.1) && app.s.selection.len() == 1, "a locked element isn't selected");
+        key(&ctx, &mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        key(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+        let before_last = items.get(items.len() - 2).map(|i| (i.layer, i.element));
+        assert!(before_last.is_some_and(|(l, e)| app.s.selection.contains(l, e)) && app.s.selection.len() == 1, "Enter selects it alone");
+        // Esc goes back to the stage itself.
+        key(&ctx, &mut app, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(app.stage_nav.focused(&ctx).is_none());
+        assert_eq!(focused_region(&ctx), Some(Region::Stage));
+        assert_eq!(keyboard(&ctx), Keyboard::App, "the stage has the keyboard again: arrows nudge");
+    }
+
+    #[test]
+    fn stage_elements_and_timeline_frames_pass_the_audit() {
+        let (_, mut app, ctx) = tree(|_, _| {});
+        focus_stage(&ctx, &mut app);
+        let t = key(&ctx, &mut app, egui::Key::Tab, egui::Modifiers::NONE).unwrap_or_else(|| panic!("no tree"));
+        assert!(t.nodes.iter().filter(|(_, n)| n.role() == Role::ListBoxOption).count() >= 2);
+        let found = audit(&t);
+        assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
     #[test]
     fn ctrl_f6_moves_focus_through_the_panels_and_back() {
         let (_, mut app, ctx) = tree(|_, _| {});

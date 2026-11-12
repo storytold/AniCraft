@@ -440,6 +440,8 @@ pub struct App {
     heard: Option<(usize, u32)>,
     /// The panel Ctrl+F6 last moved focus to (where the next press continues from).
     pub last_panel: Option<crate::a11y::Region>,
+    /// The stage's elements as keyboard stops and screen-reader nodes (ADR 0064).
+    pub stage_nav: crate::stage_a11y::StageNav,
     /// The start screen, while it is up (ADR 0059).
     pub start: Option<crate::start::StartScreen>,
     /// Files dragged over and dropped onto the window (ADR 0059).
@@ -612,6 +614,7 @@ impl App {
             audio_clock: false,
             heard: None,
             last_panel: None,
+            stage_nav: Default::default(),
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
