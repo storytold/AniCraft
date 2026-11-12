@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Groups and Combine Objects** (ADR 0073, M1; issues #206, #229, #200).
+  * **Modify › Group** (**Ctrl+G**) and **Ungroup** (**Ctrl+Shift+G**): keep artwork together
+    without a Library symbol. Double-click a group to edit it in place (the rest dims, the edit
+    bar says `Scene 1 › Group`); groups nest; merged drawing inside a group only cuts and joins
+    the shapes in that group. Ungroup puts everything back exactly where it showed. Break Apart
+    on a group ungroups it.
+  * **Modify › Combine Objects › Union, Intersect, Punch, Crop** on two or more selected shapes,
+    with the exact geometry of merge drawing.
+  * **Selection tool**: **Ctrl-drag** (⌘-drag) a line or fill edge to pull a sharp corner out of
+    it; **Alt-drag** (Option-drag) to drag a copy away; **Shift** keeps a move horizontal,
+    vertical or at 45°.
+  * Animate files keep their groups (`DOMGroup` used to be flattened).
+  * Headless: `modify.group`, `modify.ungroup`, `modify.combine {op}`, `symbol.edit {id}` on a
+    group.
+
 * **Timeline, bones, menus and stage fixes from user reports** (M1).
   * **Fixed**: F5 with no frames selected only extended the active layer. It now extends every
     layer that has frames at or after the playhead, as in Animate, and leaves the layers that end

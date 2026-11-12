@@ -88,6 +88,11 @@ With the **Selection** tool (**V**) on merged drawing:
   with it, so the drawing stays joined.
 * **Drag a fill** to move just that fill, without its outline. Drag anything already selected
   to move the whole selection.
+* **Ctrl-drag** (**⌘-drag** on a Mac) a line or the edge of a fill to pull a **sharp corner**
+  out of it instead of bending it. Straight sides stay straight.
+* **Alt-drag** (**Option-drag**) a fill or a selection to drag a **copy** away. The original
+  stays whole.
+* Hold **Shift** while moving to keep the move horizontal, vertical or at 45°.
 
 A small corner or curve mark beside the pointer shows what a drag will do. When you let go,
 whatever you moved merges with what it lands on.
@@ -256,9 +261,35 @@ layers.
 
 ### Grouping
 
-There's no Group command (Animate's **Ctrl+G**) yet. To keep shapes together, either draw
-them with Object Drawing on, or select them and make them a symbol with **Modify › Convert to
+Select some artwork and choose **Modify › Group** (**Ctrl+G**) to keep it together. A group
+moves, scales and stacks as one, and it stays out of the Library. Groups can hold anything:
+merged drawing, drawing objects, symbols, text and other groups.
+
+* **Double-click** a group to edit what's inside it, right where it is. The rest of the stage
+  dims, and the bar above the stage shows **Scene 1 › Group**. Every tool works inside. Merged
+  drawing in a group only cuts and joins the shapes in the same group. Double-click empty stage,
+  or click **Scene 1** in that bar, to go back.
+* **Modify › Ungroup** (**Ctrl+Shift+G**) or **Break Apart** (**Ctrl+B**) puts the pieces back
+  on the layer, exactly where they showed. Merged drawing then cuts and joins what it lands on.
+* A group can have a colour effect, and it fades as one.
+
+A group has one frame. To animate what's inside, make it a symbol with **Modify › Convert to
 Symbol…** (**F8**), as described in [Symbols and the Library](symbols-and-library.md).
+
+### Combine Objects
+
+**Modify › Combine Objects** joins or cuts two or more selected shapes on one layer. The
+topmost shape is the one on top in the stacking order.
+
+* **Union** joins them into one. Shapes of one colour become one drawing object. Several
+  colours, or lines, become a group of the merged shapes.
+* **Intersect** keeps only the area every shape covers, in the top shape's fill and stroke.
+* **Punch** cuts the top shape's area out of the shapes under it, and removes the top shape.
+* **Crop** keeps only the parts of the shapes under it that are inside the top shape, and
+  removes the top shape.
+
+The top shape cuts with its fill, so it needs one. Break symbols, text and groups apart first
+(**Ctrl+B**).
 
 ## Colour effects
 
@@ -293,7 +324,7 @@ on its symbol (see [Symbols and the Library](symbols-and-library.md#9-slice-scal
 
 ## Not there yet
 
-Not in AniCraft yet: rulers, a grid and guides; grouping (**Ctrl+G**); a gradient editor and
+Not in AniCraft yet: rulers, a grid and guides; Envelope and **Delete Envelope**; a gradient editor and
 a Colour panel with swatches; PolyStar's Polygon option; the Paint Selection and Paint Inside
 brush modes, brush libraries and tilt; erasing inside symbols; and Animate's ragged, stipple
 and hatched line styles (drawn solid when you open an Animate file).
