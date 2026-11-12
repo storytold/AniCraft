@@ -354,6 +354,19 @@ mod tests {
         audit(&t).into_iter().map(|m| format!("[{name}] {m}")).collect()
     }
 
+    /// Test Movie exposes its text fields (ADR 0066): input fields as text inputs named by their
+    /// instance names, with what was typed as their value; dynamic text as a label.
+    #[test]
+    fn test_movie_text_fields_are_text_inputs() {
+        let (t, _, _) = tree(|a, _| a.open_panel(Some("testtext")));
+        let find = |label: &str| t.nodes.iter().map(|(_, n)| n).find(|n| n.label() == Some(label)).unwrap_or_else(|| panic!("no node named {label}"));
+        let name = find("name_txt");
+        assert_eq!((name.role(), name.value()), (Role::TextInput, Some("Ada Lovelace")));
+        assert_eq!(find("notes_txt").role(), Role::MultilineTextInput);
+        let score = find("score_txt");
+        assert_eq!((score.role(), score.value()), (Role::Label, Some("Hello, Ada Lovelace!")));
+    }
+
     #[test]
     fn every_interactive_node_has_a_name_and_a_role() {
         let mut found = Vec::new();
