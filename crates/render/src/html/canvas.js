@@ -498,16 +498,23 @@
         const path = paths[it.p];
         if (!path || !AniCraft.finite(it.m)) return;
         if (filtering) trail.push("i" + it.p + "," + it.m.join(",") + "," + it.f + "," + (it.s ? it.s.join(",") : "") + "," + it.c.join(",") + "," + (it.k ? JSON.stringify(it.k) : "") + "," + it.eo + "," + it.masks);
+        let L = top();
         if (it.masks !== null) {
-          // Mask artwork: its fill area only, opaque.
           const mk = masks.get(it.masks);
-          if (!mk || it.f < 0) return;
-          set(mk, it.m);
-          mk.ctx.fillStyle = "#000";
-          mk.ctx.fill(path, it.eo ? "evenodd" : "nonzero");
-          return;
+          if (!mk) return;
+          if (mk.mode) {
+            // A soft mask's artwork (ADR 0070) is drawn as it looks, on the mask's layer.
+            L = mk.l;
+          } else {
+            // Mask artwork: its fill area only, opaque.
+            if (it.f < 0) return;
+            set(mk.l, it.m);
+            mk.l.ctx.fillStyle = "#000";
+            mk.l.ctx.fill(path, it.eo ? "evenodd" : "nonzero");
+            return;
+          }
         }
-        const L = top(), g = L.ctx;
+        const g = L.ctx;
         if (it.f >= 0) {
           const style = paintStyle(g, it.f, it.c);
           if (style) {
@@ -590,15 +597,33 @@
         if (filtering) trail.push("x");
         release(stack.pop());
       },
-      maskBegin: function (id) {
-        if (filtering) trail.push("m" + id);
-        masks.set(id, like(top()));
+      // A mask's layer has the place and size of the layer it masks (a filtered group's reaches
+      // past the canvas); a luminance mask's pixels are read back.
+      maskBegin: function (id, mode) {
+        if (filtering) trail.push("m" + id + "," + mode);
+        masks.set(id, { l: like(top(), mode === 2), mode: mode });
       },
       maskEnd: function (id, open) {
         if (filtering) trail.push("n" + open);
-        const mk = masks.get(id);
+        const entry = masks.get(id);
         masks.delete(id);
-        if (!mk) return;
+        if (!entry) return;
+        const mk = entry.l;
+        if (open && entry.mode === 2) {
+          // A luminance mask: each pixel's luminance (sRGB coefficients) times its opacity
+          // becomes its opacity.
+          mk.ctx.setTransform(1, 0, 0, 1, 0, 0);
+          const img = mk.ctx.getImageData(0, 0, mk.canvas.width, mk.canvas.height);
+          const d = img.data;
+          for (let i = 0; i < d.length; i += 4) {
+            const l = (0.2125 * d[i] + 0.7154 * d[i + 1] + 0.0721 * d[i + 2]) * (d[i + 3] / 255);
+            d[i] = 0;
+            d[i + 1] = 0;
+            d[i + 2] = 0;
+            d[i + 3] = Math.round(l);
+          }
+          mk.ctx.putImageData(img, 0, 0);
+        }
         if (open) {
           const l = stack.pop();
           l.ctx.setTransform(1, 0, 0, 1, 0, 0);

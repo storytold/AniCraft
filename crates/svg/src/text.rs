@@ -6,6 +6,11 @@
 //! An AniCraft block has one style, so a chunk whose pieces differ in style takes the style of
 //! most of its visible characters, and the report counts it (as in ADR 0014). Whitespace is
 //! collapsed as browsers do, unless `xml:space="preserve"`.
+//!
+//! ADR 0070: a `textPath` becomes text on a path (its `startOffset`, `side` and the
+//! `text-anchor`), and per-character positions are kept where they are simple: a character
+//! with its own `x`/`y`, a `dx`/`dy` shift or a `rotate` angle starts a block of its own there
+//! (rotated about its baseline origin), the next continuing after the text before it.
 
 use crate::{Anchor, Builder, ImportedElement, PaintSpec, Style, declarations, get, hidden, length, local, name_of};
 use anicraft_doc::{ElementKind, Paint, TextAlign, TextBlock};
@@ -26,9 +31,33 @@ struct Chunk {
     anchor: Anchor,
     pieces: Vec<(String, Style)>,
     chars: usize,
+    /// `x` is a shift from where the text before it ended (a `dx`), not a position.
+    follow: bool,
+    /// Degrees, about the chunk's baseline origin (a per-character `rotate`).
+    rotate: f32,
+    /// Set along a path (`textPath`).
+    path: Option<OnPath>,
+}
+
+/// A `textPath`'s path in the text's user space, and where along it the text is anchored.
+struct OnPath {
+    path: anicraft_geom::Path,
+    offset: f32,
+    flip: bool,
 }
 
 impl Chunk {
+    fn at(x: f32, y: f32, anchor: Anchor) -> Chunk {
+        Chunk { x, y, anchor, pieces: Vec::new(), chars: 0, follow: false, rotate: 0.0, path: None }
+    }
+}
+
+impl Chunk {
+    /// Characters it holds, whitespace included (what moves the pen on).
+    fn len(&self) -> usize {
+        self.pieces.iter().map(|(t, _)| t.chars().count()).sum()
+    }
+
     fn has_text(&self) -> bool {
         self.pieces.iter().any(|(t, _)| !t.trim().is_empty())
     }
@@ -38,8 +67,10 @@ impl Chunk {
 #[derive(Default)]
 struct Flags {
     per_char: bool,
-    rotated: bool,
-    on_path: bool,
+    nested_chars: bool,
+    lost_path: bool,
+    after_path: bool,
+    anchored_chars: bool,
     decorated: bool,
     vertical: bool,
     cut: bool,
@@ -63,6 +94,44 @@ fn generic(name: &str) -> Option<&'static str> {
 /// The names in a `font-family` list, unquoted.
 fn families(css: &str) -> Vec<String> {
     css.split(',').map(|n| n.trim().trim_matches(['"', '\'']).trim().to_string()).filter(|n| !n.is_empty()).take(16).collect()
+}
+
+/// A `textPath`'s text (its `tspan`s flattened into pieces of their styles).
+fn gather(el: &X, style: &Style, c: &mut Chunk, report: &mut crate::Report, depth: usize) {
+    for child in &el.children {
+        match local(&child.name) {
+            anicraft_xml::TEXT_NODE => {
+                let room = MAX_CHARS.saturating_sub(c.chars);
+                c.chars += child.text.chars().count().min(room);
+                c.pieces.push((child.text.chars().take(room).collect(), style.clone()));
+            }
+            "tspan" | "a" if depth < MAX_TSPAN_DEPTH => {
+                let d = declarations(child);
+                if get(&d, "display") == Some("none") || hidden(&d) {
+                    continue;
+                }
+                let st = style.with(child, report);
+                gather(child, &st, c, report, depth + 1);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One text node's whitespace collapsed as browsers do (line breaks and tabs are spaces, runs
+/// of spaces one), leading spaces dropped when `at_start`.
+fn collapse_str(t: &str, at_start: bool) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut prev_space = at_start;
+    for ch in t.chars() {
+        let ch = if matches!(ch, '\n' | '\r' | '\t') { ' ' } else { ch };
+        if ch == ' ' && prev_space {
+            continue;
+        }
+        prev_space = ch == ' ';
+        out.push(ch);
+    }
+    out
 }
 
 /// Collapses whitespace across the chunks as browsers do: line breaks and tabs are spaces,
@@ -99,8 +168,10 @@ impl<'a> Builder<'a> {
         collapse(&mut chunks);
         let report = [
             (flags.per_char, "per-character text positions (ignored)"),
-            (flags.rotated, "rotated characters (drawn upright)"),
-            (flags.on_path, "text on a path"),
+            (flags.nested_chars, "per-character positions running into nested tspans (ignored there)"),
+            (flags.lost_path, "text on a path whose path is missing (drawn on a line)"),
+            (flags.after_path, "text after a text path (placed at the text's start)"),
+            (flags.anchored_chars, "per-character shifts in centred or right-anchored text (approximate)"),
             (flags.decorated, "underlined or struck-through text (lines left out)"),
             (flags.vertical, "vertical text (drawn horizontal)"),
             (flags.cut, "text cut to 100,000 characters per block"),
@@ -111,8 +182,20 @@ impl<'a> Builder<'a> {
             }
         }
         let mut out = Vec::new();
+        // Where the text before ends (a following chunk continues there).
+        let mut pen_x = 0.0f32;
+        let mut space: Option<f32> = None;
         for c in chunks {
+            let start_x = if c.follow { pen_x + c.x } else { c.x };
             if !c.has_text() {
+                // Only spaces: they still move the pen on.
+                if c.path.is_none() {
+                    let n = c.len() as f32;
+                    if n > 0.0 && let Some((_, st)) = c.pieces.first() {
+                        let w = *space.get_or_insert_with(|| self.space_width(st));
+                        pen_x = start_x + n * w;
+                    }
+                }
                 continue;
             }
             // The style most of the visible characters have (the first on a tie).
@@ -136,6 +219,26 @@ impl<'a> Builder<'a> {
             let Some((_, st)) = best.and_then(|(i, _)| c.pieces.get(i)) else { continue };
             let st = st.clone();
             let text: String = c.pieces.iter().map(|(t, _)| t.as_str()).collect();
+            let trailing = text.chars().rev().take_while(|ch| *ch == ' ').count() as f32;
+            let align = match c.anchor {
+                Anchor::Start => TextAlign::Left,
+                Anchor::Middle => TextAlign::Center,
+                Anchor::End => TextAlign::Right,
+            };
+            if let Some(on) = &c.path {
+                match self.path_block(text, &st, alpha, on, align) {
+                    Ok(Some((block, shift))) => {
+                        let transform = m.mul(&Affine::translate(shift.x, shift.y));
+                        if transform.is_finite() {
+                            let name = if out.is_empty() { name_of(el) } else { String::new() };
+                            out.push(ImportedElement { name, transform, alpha, kind: ElementKind::Text(Arc::new(block)) });
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(()) => break,
+                }
+                continue;
+            }
             match self.text_block(text, &st, alpha) {
                 Ok(Some((block, ascent))) => {
                     let w = block.box_width;
@@ -144,13 +247,18 @@ impl<'a> Builder<'a> {
                         Anchor::Middle => -w * 0.5,
                         Anchor::End => -w,
                     };
-                    let transform = m.mul(&Affine::translate(c.x + shift, c.y - ascent));
+                    pen_x = start_x + shift + w + if trailing > 0.0 { trailing * *space.get_or_insert_with(|| self.space_width(&st)) } else { 0.0 };
+                    let transform = if c.rotate != 0.0 {
+                        m.mul(&Affine::translate(start_x + shift, c.y)).mul(&Affine::rotate(c.rotate.to_radians())).mul(&Affine::translate(0.0, -ascent))
+                    } else {
+                        m.mul(&Affine::translate(start_x + shift, c.y - ascent))
+                    };
                     if !transform.is_finite() {
                         continue;
                     }
                     let name = if out.is_empty() { name_of(el) } else { String::new() };
                     let block_alpha = alpha;
-                    let block = TextBlock { align: match c.anchor { Anchor::Start => TextAlign::Left, Anchor::Middle => TextAlign::Center, Anchor::End => TextAlign::Right }, ..block };
+                    let block = TextBlock { align, ..block };
                     out.push(ImportedElement { name, transform, alpha: block_alpha, kind: ElementKind::Text(Arc::new(block)) });
                 }
                 Ok(None) => {}
@@ -163,12 +271,12 @@ impl<'a> Builder<'a> {
     /// Reads `el`'s positions and content into chunks.
     fn text_content(&mut self, el: &'a X, style: &Style, chunks: &mut Vec<Chunk>, flags: &mut Flags, depth: usize) {
         let (vw, vh) = self.viewport;
-        let list = |key: &str, reference: f32| -> Vec<f32> { el.attr(key).map(|v| v.split([' ', ',', '\t', '\n', '\r']).filter(|p| !p.is_empty()).filter_map(|p| length(p, reference)).collect()).unwrap_or_default() };
+        let list = |key: &str, reference: f32| -> Vec<f32> { el.attr(key).map(|v| v.split([' ', ',', '\t', '\n', '\r']).filter(|p| !p.is_empty()).take(MAX_CHARS).filter_map(|p| length(p, reference)).collect()).unwrap_or_default() };
         let (xs, ys, dxs, dys) = (list("x", vw), list("y", vh), list("dx", vw), list("dy", vh));
-        if xs.len() > 1 || ys.len() > 1 || dxs.len() > 1 || dys.len() > 1 {
-            flags.per_char = true;
-        }
-        flags.rotated |= el.attr("rotate").is_some_and(|r| r.split([' ', ',']).any(|v| v.trim().parse::<f32>().is_ok_and(|a| a != 0.0)));
+        let rotates: Vec<f32> = list("rotate", 1.0).into_iter().map(|a| if a.is_finite() { a } else { 0.0 }).collect();
+        // Per-character positions (ADR 0070): the first values place the element's start (as
+        // before); the rest go to its own characters, in order.
+        let per_char = xs.len() > 1 || ys.len() > 1 || dxs.len() > 1 || dys.len() > 1 || rotates.iter().any(|a| *a != 0.0);
         let d = declarations(el);
         flags.decorated |= get(&d, "text-decoration").is_some_and(|v| v != "none");
         flags.vertical |= get(&d, "writing-mode").is_some_and(|v| v.starts_with("tb") || v.starts_with("vertical"));
@@ -179,13 +287,12 @@ impl<'a> Builder<'a> {
                 return;
             }
             let y = ys.first().copied().or_else(|| chunks.last().map(|c| c.y)).unwrap_or(0.0);
-            chunks.push(Chunk { x: xs.first().copied().unwrap_or(0.0), y, anchor: style.anchor, pieces: Vec::new(), chars: 0 });
+            chunks.push(Chunk::at(xs.first().copied().unwrap_or(0.0), y, style.anchor));
         } else if let Some(&y) = ys.first() {
-            // A new line without a new x continues after the text before it, which only the
-            // layout knows: kept on the line when there is text already.
+            // A new line without a new x continues after the text before it.
             match chunks.last_mut() {
                 Some(c) if !c.has_text() => c.y = y,
-                _ => flags.per_char = true,
+                _ => chunks.push(Chunk { follow: true, ..Chunk::at(0.0, y, style.anchor) }),
             }
         }
         let (dx, dy) = (dxs.first().copied().unwrap_or(0.0), dys.first().copied().unwrap_or(0.0));
@@ -195,33 +302,172 @@ impl<'a> Builder<'a> {
                     c.x += dx;
                     c.y += dy;
                 }
-                _ => flags.per_char = true,
+                Some(c) => {
+                    let y = c.y + dy;
+                    chunks.push(Chunk { follow: true, ..Chunk::at(dx, y, style.anchor) });
+                }
+                None => {}
             }
         }
+        // The character of this element's own text reached so far (for per-character values).
+        let mut k = 0usize;
+        let mut last_rotate = 0.0f32;
         for child in &el.children {
             match local(&child.name) {
                 anicraft_xml::TEXT_NODE => {
-                    let Some(c) = chunks.last_mut() else { continue };
-                    let room = MAX_CHARS.saturating_sub(c.chars);
-                    let n = child.text.chars().count();
-                    if n > room {
-                        flags.cut = true;
+                    if !per_char {
+                        let Some(c) = chunks.last_mut() else { continue };
+                        if c.path.is_some() {
+                            // Text after a text path: on a line of its own at the text's start.
+                            if !child.text.trim().is_empty() {
+                                flags.after_path = true;
+                            }
+                            let (x, y) = (0.0, c.y);
+                            chunks.push(Chunk::at(x, y, style.anchor));
+                        }
+                        let Some(c) = chunks.last_mut() else { continue };
+                        let room = MAX_CHARS.saturating_sub(c.chars);
+                        let n = child.text.chars().count();
+                        if n > room {
+                            flags.cut = true;
+                        }
+                        c.chars += n.min(room);
+                        c.pieces.push((child.text.chars().take(room).collect(), style.clone()));
+                        continue;
                     }
-                    c.chars += n.min(room);
-                    c.pieces.push((child.text.chars().take(room).collect(), style.clone()));
+                    // Character by character: one starts a chunk where it has its own position,
+                    // shift or angle (or follows a rotated one).
+                    let text = if style.preserve { child.text.clone() } else { collapse_str(&child.text, k == 0 && chunks.last().is_none_or(|c| !c.has_text())) };
+                    for ch in text.chars() {
+                        let rot = rotates.get(k).or(rotates.last()).copied().unwrap_or(0.0);
+                        let (ax, ay) = (xs.get(k).copied().filter(|_| k > 0), ys.get(k).copied().filter(|_| k > 0));
+                        let (ddx, ddy) = if k > 0 { (dxs.get(k).copied().unwrap_or(0.0), dys.get(k).copied().unwrap_or(0.0)) } else { (0.0, 0.0) };
+                        let has_text = chunks.last().is_some_and(Chunk::has_text);
+                        let fresh = ax.is_some() || ay.is_some() || ddx != 0.0 || ddy != 0.0 || ((rot != 0.0 || last_rotate != 0.0) && has_text);
+                        if fresh {
+                            if chunks.len() >= MAX_CHUNKS {
+                                flags.cut = true;
+                                return;
+                            }
+                            let y = ay.or_else(|| chunks.last().map(|c| c.y)).unwrap_or(0.0) + ddy;
+                            let c = match ax {
+                                Some(x) => Chunk::at(x + ddx, y, style.anchor),
+                                None => {
+                                    if style.anchor != Anchor::Start {
+                                        flags.anchored_chars = true;
+                                    }
+                                    Chunk { follow: true, ..Chunk::at(ddx, y, Anchor::Start) }
+                                }
+                            };
+                            chunks.push(c);
+                        }
+                        let Some(c) = chunks.last_mut() else { break };
+                        if c.chars >= MAX_CHARS {
+                            flags.cut = true;
+                            break;
+                        }
+                        c.rotate = rot;
+                        c.chars += 1;
+                        match c.pieces.last_mut() {
+                            Some((t, st)) if same_look(st, style) && st.preserve == style.preserve => t.push(ch),
+                            _ => c.pieces.push((ch.to_string(), style.clone())),
+                        }
+                        last_rotate = rot;
+                        k += 1;
+                    }
                 }
                 "tspan" | "a" => {
                     let cd = declarations(child);
                     if get(&cd, "display") == Some("none") || hidden(&cd) || depth >= MAX_TSPAN_DEPTH {
                         continue;
                     }
+                    if per_char && (k < xs.len().max(ys.len()).max(dxs.len()).max(dys.len()) || rotates.iter().skip(k).any(|a| *a != 0.0)) {
+                        flags.nested_chars = true;
+                    }
                     let st = style.with(child, &mut self.report);
                     self.text_content(child, &st, chunks, flags, depth + 1);
                 }
-                "textPath" => flags.on_path = true,
+                "textPath" => {
+                    let st = style.with(child, &mut self.report);
+                    match self.text_path(child) {
+                        Some(on) => {
+                            if chunks.len() >= MAX_CHUNKS {
+                                flags.cut = true;
+                                return;
+                            }
+                            let y = chunks.last().map_or(0.0, |c| c.y);
+                            let mut c = Chunk { path: Some(on), ..Chunk::at(0.0, y, st.anchor) };
+                            gather(child, &st, &mut c, &mut self.report, 0);
+                            chunks.push(c);
+                        }
+                        None => {
+                            flags.lost_path = true;
+                            self.text_content(child, &st, chunks, flags, depth + 1);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    /// A `textPath`'s path (`href`: a path or basic shape, with its own transform) and its
+    /// `startOffset` (a length or a percentage of the path's length) and `side`.
+    fn text_path(&mut self, tp: &'a X) -> Option<OnPath> {
+        let href = tp.attr("href").or_else(|| tp.attr("xlink:href"))?.trim().trim_start_matches('#');
+        let target = self.ids.get(href).copied()?;
+        let name = local(&target.name);
+        if !matches!(name, "path" | "rect" | "circle" | "ellipse" | "polyline" | "polygon" | "line") {
+            return None;
+        }
+        let (path, _) = self.geometry(target, name)?;
+        let path = path.transformed(&target.attr("transform").map_or(Affine::IDENTITY, crate::transform));
+        let len = anicraft_geom::walk::CurveWalk::new(&path)?.length();
+        let offset = tp.attr("startOffset").map(str::trim).and_then(|v| match v.strip_suffix('%') {
+            Some(p) => p.trim().parse::<f32>().ok().map(|p| p / 100.0 * len),
+            None => length(v, len),
+        });
+        let offset = offset.filter(|o| o.is_finite()).unwrap_or(0.0).clamp(-anicraft_doc::MAX_PATH_OFFSET, anicraft_doc::MAX_PATH_OFFSET);
+        Some(OnPath { path, offset, flip: tp.attr("side") == Some("right") })
+    }
+
+    /// The width a space takes in style `st` (pixels).
+    fn space_width(&mut self, st: &Style) -> f32 {
+        let fonts = self.fonts();
+        let face = self.face(fonts, &st.font_family);
+        let style = anicraft_text::Style { family: face.family.unwrap_or_default(), size: st.font_size, bold: st.bold || face.bold, italic: st.italic || face.italic, letter_spacing: st.letter_spacing, ..anicraft_text::Style::default() };
+        let w = |t: &str| fonts.layout(t, &style).map_or(0.0, |l| l.width);
+        (w("x x") - w("xx")).max(0.0)
+    }
+
+    /// Lays one chunk out along its path: the block (on its path, boxed from the origin) and
+    /// where that origin is in the text's user space. `Ok(None)` draws nothing; `Err` means no
+    /// text can be laid out at all.
+    fn path_block(&mut self, text: String, st: &Style, alpha: f32, on: &OnPath, align: TextAlign) -> Result<Option<(TextBlock, anicraft_geom::Vec2)>, ()> {
+        let Some((block, _)) = self.text_block(text, st, alpha)? else { return Ok(None) };
+        let fonts = self.fonts();
+        let style = anicraft_text::Style { family: block.font.clone(), size: block.size, bold: block.bold, italic: block.italic, letter_spacing: block.letter_spacing, ..anicraft_text::Style::default() };
+        let line: String = block.text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+        let Ok(layout) = fonts.layout_glyphs(&line, &style) else { return Ok(None) };
+        let how = anicraft_text::PathPlacement {
+            offset: on.offset,
+            flip: on.flip,
+            align: match align {
+                TextAlign::Left => Align::Left,
+                TextAlign::Center => Align::Center,
+                TextAlign::Right => Align::Right,
+            },
+        };
+        let Some(set) = anicraft_text::on_path_boxed(&layout.glyphs, &on.path, how) else { return Ok(None) };
+        let block = TextBlock {
+            align,
+            outline: Arc::new(set.outline),
+            box_width: set.width,
+            box_height: set.height,
+            on_path: Some(anicraft_doc::TextPath { path: set.path, offset: on.offset, flip: on.flip }),
+            ..block
+        };
+        Ok(Some((block, set.shift)))
     }
 
     /// Lays one chunk out: the block (aligned left, at the origin) and its first baseline.
@@ -292,6 +538,7 @@ impl<'a> Builder<'a> {
             box_width: layout.width,
             box_height: layout.height,
             field: None,
+            on_path: None,
         };
         Ok(Some((block, ascent)))
     }

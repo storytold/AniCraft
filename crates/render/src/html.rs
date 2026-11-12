@@ -30,7 +30,7 @@ use crate::stroke::stroke_outline;
 use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::player::TimelineRef;
-use anicraft_doc::{ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
+use anicraft_doc::{ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, MaskMode, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -653,6 +653,16 @@ impl<'a> Bake<'a> {
                 }
                 if layer.kind == LayerKind::Mask {
                     entry.insert("mk".into(), json!(slots.get(&layer.id.0).copied().unwrap_or(0)));
+                    // A soft mask (ADR 0070): 1 alpha, 2 luminance.
+                    match layer.mask_mode {
+                        MaskMode::Coverage => {}
+                        MaskMode::Alpha => {
+                            entry.insert("mm".into(), json!(1));
+                        }
+                        MaskMode::Luminance => {
+                            entry.insert("mm".into(), json!(2));
+                        }
+                    }
                 } else if let Some(&slot) = layer.parent.and_then(|p| slots.get(&p.0)) {
                     entry.insert("c".into(), json!(slot));
                 }

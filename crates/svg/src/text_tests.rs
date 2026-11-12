@@ -91,11 +91,19 @@ fn missing_fonts_and_unsupported_text_are_reported() {
         </svg>"##,
         fonts,
     );
-    assert_eq!(t.len(), 3, "{:?}", t.iter().map(|(_, b)| &b.text).collect::<Vec<_>>());
+    // Per-character x positions split "Three" where they place characters (ADR 0070); a text
+    // path whose path is missing is drawn on a line.
+    let words: Vec<&str> = t.iter().map(|(_, b)| b.text.as_str()).collect();
+    assert_eq!(words, ["One", "Two", "T", "h", "ree", "Four"]);
+    for (k, x) in [(3, 10.0), (4, 20.0)] {
+        let r = ink(&t[k].0, &t[k].1);
+        assert!(r.min.x >= x - 0.5 && r.min.x < x + 4.0, "{}: {r:?}", t[k].1.text);
+    }
     assert_eq!(report.missing_fonts.iter().map(String::as_str).collect::<Vec<_>>(), ["Zz Missing Face"]);
     assert!(fonts.families().contains(report.fallback_font.as_ref().unwrap()));
     assert!(report.summary().contains("Fonts not on this computer, drawn in"), "{}", report.summary());
-    for k in ["underlined or struck-through text (lines left out)", "per-character text positions (ignored)", "strokes on text (left out)", "text on a path", "outlined text without a fill (left out)"] {
+    assert_eq!(report.skipped.get("strokes on text (left out)"), Some(&3), "once per block");
+    for k in ["underlined or struck-through text (lines left out)", "text on a path whose path is missing (drawn on a line)", "outlined text without a fill (left out)"] {
         assert_eq!(report.skipped.get(k), Some(&1), "{k}: {report:?}");
     }
 }
@@ -114,4 +122,73 @@ fn text_can_be_a_clip_and_needs_fonts() {
     .unwrap();
     let mask = i.layers.iter().find_map(|l| l.mask.as_ref()).expect("a mask layer");
     assert!(matches!(&mask.elements[0].kind, ElementKind::Text(b) if b.text == "REVEAL"), "the mask stays editable text");
+}
+
+#[test]
+fn text_paths_become_text_on_a_path() {
+    let Some(fonts) = fonts() else { return };
+    let (t, report) = texts(
+        r##"<svg width="400" height="300" font-family="sans-serif" font-size="20">
+          <defs><path id="line" d="M 50 200 L 350 200"/><circle id="ring" cx="200" cy="100" r="60" transform="translate(0 10)"/></defs>
+          <text><textPath href="#line">Start here</textPath></text>
+          <text text-anchor="middle"><textPath xlink:href="#line" startOffset="50%">Middle</textPath></text>
+          <text><textPath href="#line" startOffset="20" side="right">Under</textPath></text>
+          <text><textPath href="#ring">Around the ring</textPath></text>
+        </svg>"##,
+        fonts,
+    );
+    assert!(report.skipped.is_empty(), "{report:?}");
+    let words: Vec<&str> = t.iter().map(|(_, b)| b.text.as_str()).collect();
+    assert_eq!(words, ["Start here", "Middle", "Under", "Around the ring"]);
+    for (_, b) in &t {
+        assert!(b.on_path.is_some(), "{}", b.text);
+    }
+    // On the line, standing on it, from its start.
+    let r = ink(&t[0].0, &t[0].1);
+    assert!((r.min.x - 50.0).abs() < 4.0 && r.max.y <= 206.0 && r.max.y > 195.0, "{r:?}");
+    // startOffset 50% with text-anchor middle: centred on x 200.
+    assert_eq!(t[1].1.align, TextAlign::Center);
+    assert!((ink(&t[1].0, &t[1].1).center().x - 200.0).abs() < 3.0);
+    assert!((t[1].1.on_path.as_ref().unwrap().offset - 150.0).abs() < 0.01);
+    // side="right": walked backwards from the end, under the line.
+    let u = ink(&t[2].0, &t[2].1);
+    let on = t[2].1.on_path.as_ref().unwrap();
+    assert!(on.flip && u.min.y > 195.0 && u.max.x <= 331.0, "{u:?}");
+    // The ring keeps its own transform: glyphs sit round (200, 110), radius 60.
+    let ring = ink(&t[3].0, &t[3].1);
+    assert!(ring.min.x > 200.0 - 90.0 && ring.max.x < 200.0 + 90.0 && ring.min.y > 110.0 - 90.0 && ring.max.y < 110.0 + 90.0, "{ring:?}");
+    let path = t[3].1.on_path.as_ref().unwrap().path.transformed(&t[3].0.transform).bounds();
+    assert!((path.center().y - 110.0).abs() < 0.5 && (path.width() - 120.0).abs() < 0.5, "{path:?}");
+}
+
+#[test]
+fn per_character_shifts_and_rotations_place_their_characters() {
+    let Some(fonts) = fonts() else { return };
+    let (t, report) = texts(
+        r##"<svg width="400" height="300" font-family="sans-serif" font-size="20">
+          <text x="10" y="50" dx="0 0 30">abcd</text>
+          <text x="10" y="100" dy="0 10 10">xyz</text>
+          <text x="10" y="150" rotate="0 90">ok</text>
+          <text x="10 40" y="200 220">AB</text>
+        </svg>"##,
+        fonts,
+    );
+    assert!(report.skipped.is_empty(), "{report:?}");
+    let words: Vec<&str> = t.iter().map(|(_, b)| b.text.as_str()).collect();
+    assert_eq!(words, ["ab", "cd", "x", "y", "z", "o", "k", "A", "B"]);
+    // dx 30 on "c": it starts 30 px after "ab" ends.
+    let (ab, cd) = (ink(&t[0].0, &t[0].1), ink(&t[1].0, &t[1].1));
+    let gap = cd.min.x - (t[0].0.transform.translation().x + t[0].1.box_width);
+    assert!((gap - 30.0).abs() < 3.0, "{ab:?} {cd:?} gap {gap}");
+    assert!((ab.max.y - cd.max.y).abs() < 2.0, "same baseline");
+    // dy moves each later character down, cumulatively.
+    let (x, y, z) = (ink(&t[2].0, &t[2].1), ink(&t[3].0, &t[3].1), ink(&t[4].0, &t[4].1));
+    assert!((y.min.y - x.min.y - 10.0).abs() < 2.0 && (z.min.y - x.min.y - 20.0).abs() < 2.0, "{x:?} {y:?} {z:?}");
+    assert!(y.min.x > x.max.x - 1.0, "continues after the x");
+    // rotate 90 on "k": turned a quarter about its baseline origin (taller than wide, below).
+    let k = ink(&t[6].0, &t[6].1);
+    assert!(k.min.y > 140.0 && t[6].0.transform.m[1].abs() > 0.99, "{k:?} {:?}", t[6].0.transform);
+    // Absolute x and y lists place each character.
+    let b = ink(&t[8].0, &t[8].1);
+    assert!(b.min.x >= 40.0 && b.min.x < 44.0 && (b.max.y - 220.0).abs() < 1.5, "{b:?}");
 }

@@ -1,13 +1,15 @@
 //! Layer view properties saved in the document (ADR 0061): each layer's onion skin toggle, its
 //! colour (outlines and the timeline bar), View as Outlines, its row height, and Layer
 //! Properties, which sets several of them (and the name, type, show and lock) as one step.
+//! A mask layer's mask type (ADR 0070) is set here too: by area (Animate's masks), by the
+//! artwork's opacity, or by its brightness.
 //!
 //! Behaviour learned from Adobe's public help pages on layers and onion skinning and from
 //! watching the program; nothing was copied.
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{Layer, LayerId, LayerKind, MAX_LAYER_HEIGHT};
+use anicraft_doc::{Layer, LayerId, LayerKind, MAX_LAYER_HEIGHT, MaskMode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -30,15 +32,24 @@ pub fn specs() -> Vec<CommandSpec> {
         c("layer.set_color", "Layer Colour", "", None, "{color: \"#rrggbb\", layer?} the layer's colour: its outlines in outline mode and its bar on the timeline", true, set_color),
         c("layer.set_height", "Layer Height", "", None, "{height: 100 | 200 | 300 (percent of a normal row), layer?} the layer's row height on the timeline", true, set_height),
         c(
+            "layer.set_mask",
+            "Mask Type",
+            "",
+            None,
+            "{mask: coverage|alpha|luminance, layer?} how a mask layer reveals the layers it masks: coverage (its fills' area, as in Animate), alpha (its artwork's opacity: gradients and faded shapes make soft edges) or luminance (its brightness: white shows, black hides; SVG's mask) (ADR 0070)",
+            true,
+            set_mask,
+        ),
+        c(
             "layer.set_properties",
             "Layer Properties",
             "Modify/Timeline",
             None,
-            "{layer?, name?, type?: normal|mask|masked|guide|guided, color?, outline?: bool (view as outlines), height?: 100|200|300, visible?, locked?, onion?} sets several at once, as one undo step; answers with the layer's properties",
+            "{layer?, name?, type?: normal|mask|masked|guide|guided, mask?: coverage|alpha|luminance (a mask layer's mask type), color?, outline?: bool (view as outlines), height?: 100|200|300, visible?, locked?, onion?} sets several at once, as one undo step; answers with the layer's properties",
             true,
             set_properties,
         ),
-        c("layer.properties", "Get Layer Properties", "", None, "{layer?} the layer's name, type, colour, outline, height (percent), visible, locked and onion", false, |s, p| properties(s, layer_id(s, p)?)),
+        c("layer.properties", "Get Layer Properties", "", None, "{layer?} the layer's name, type, mask type (mask layers), colour, outline, height (percent), visible, locked and onion", false, |s, p| properties(s, layer_id(s, p)?)),
     ]
 }
 
@@ -101,6 +112,22 @@ fn set_height(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"height": u32::from(l.height()) * 100}))
 }
 
+/// `mask`: a mask type's key.
+fn mask_param(p: &Value) -> Result<Option<MaskMode>> {
+    opt_str(p, "mask")?.map(|k| MaskMode::from_key(k).ok_or_else(|| EngineError::Param(format!("'mask' is coverage, alpha or luminance, not '{k}'")))).transpose()
+}
+
+fn set_mask(s: &mut Session, p: &Value) -> Result<Value> {
+    let mode = mask_param(p)?.ok_or_else(|| EngineError::Param("param 'mask' (coverage, alpha or luminance) is required".into()))?;
+    let id = layer_id(s, p)?;
+    let l = s.layer_mut(Some(id))?;
+    if l.kind != LayerKind::Mask {
+        return Err(EngineError::State("only a mask layer has a mask type".into()));
+    }
+    l.mask_mode = mode;
+    Ok(json!({"layer": id.0, "mask": mode.key()}))
+}
+
 fn set_properties(s: &mut Session, p: &Value) -> Result<Value> {
     let id = layer_id(s, p)?;
     // Every param is read (and checked) before anything changes.
@@ -112,6 +139,7 @@ fn set_properties(s: &mut Session, p: &Value) -> Result<Value> {
     let color = opt_color(p, "color")?;
     let outline = opt_bool(p, "outline")?;
     let height = height_param(p)?;
+    let mask = mask_param(p)?;
     let (visible, locked, onion) = (opt_bool(p, "visible")?, opt_bool(p, "locked")?, opt_bool(p, "onion")?);
     if let Some(ty) = ty {
         let now = crate::cmds_timeline::layer_type_json(s, id);
@@ -120,6 +148,12 @@ fn set_properties(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     let l = s.layer_mut(Some(id))?;
+    if let Some(m) = mask {
+        if l.kind != LayerKind::Mask {
+            return Err(EngineError::State("only a mask layer has a mask type".into()));
+        }
+        l.mask_mode = m;
+    }
     if let Some(n) = name {
         l.name = n;
     }
@@ -151,6 +185,7 @@ fn properties(s: &Session, id: LayerId) -> Result<Value> {
         "layer": id.0,
         "name": l.name,
         "type": ty,
+        "mask": (l.kind == LayerKind::Mask).then(|| l.mask_mode.key()),
         "color": l.color.to_hex(),
         "outline": l.outline,
         "height": u32::from(l.height()) * 100,

@@ -1015,6 +1015,8 @@ mod tests_camera;
 #[cfg(test)]
 mod tests_bone;
 #[cfg(test)]
+mod tests_shape_bone;
+#[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
 mod raw_tests;
@@ -1044,3 +1046,5 @@ mod drop_tests;
 mod template_tests;
 #[cfg(test)]
 mod timeline_drop_tests;
+#[cfg(test)]
+mod path_text_tests;

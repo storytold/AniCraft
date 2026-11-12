@@ -8,6 +8,7 @@ pub use anicraft_audio as audio;
 pub use anicraft_actions as actions;
 
 pub mod armature;
+pub mod skin;
 mod bitmap;
 mod color_effect;
 pub mod camera;
@@ -471,7 +472,28 @@ pub struct TextBlock {
     /// A dynamic or input text field (ADR 0066); `None`: static text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<TextField>,
+    /// Text on a path (ADR 0070): its baseline follows this path instead of running in lines;
+    /// `outline` holds the glyphs set along it. Static text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_path: Option<TextPath>,
 }
+
+/// The path a text block follows (ADR 0070), and where along it the text sits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextPath {
+    /// The baseline's path, in the block's own space (its first subpath counts).
+    pub path: Path,
+    /// Where the text is anchored along the path (pixels from its start): the block's
+    /// alignment says how (left: starts there, centre: centred on it, right: ends there).
+    #[serde(default)]
+    pub offset: f32,
+    /// The text runs along the path backwards, on its other side.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip: bool,
+}
+
+/// Longest stretch along a path a text's offset may be (pixels either way).
+pub const MAX_PATH_OFFSET: f32 = 1_000_000.0;
 
 impl TextBlock {
     /// What kind of text it is: static, dynamic or input.
@@ -820,7 +842,58 @@ pub struct Layer {
     /// An armature layer's bones (ADR 0043); `None` on every other kind of layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armature: Option<Arc<Armature>>,
+    /// How a mask layer's artwork reveals what it masks (ADR 0070): its fill area (Animate's
+    /// masks), or its opacity or brightness (soft masks). Ignored on other kinds of layer.
+    #[serde(default, skip_serializing_if = "MaskMode::is_coverage")]
+    pub mask_mode: MaskMode,
 }
+
+/// How a mask layer's artwork reveals the layers it masks (ADR 0070).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskMode {
+    /// Its fills' area, fully opaque: colours, opacity and strokes don't matter (as in Animate).
+    #[default]
+    Coverage,
+    /// Its artwork as drawn (fills, strokes, gradients, bitmaps, opacity): the artwork's
+    /// opacity reveals (Animate users get this with alpha-gradient masks; SVG `mask-type: alpha`).
+    Alpha,
+    /// Its artwork's brightness times its opacity reveals: white shows, black hides (SVG's
+    /// default `mask`). Luminance uses the sRGB coefficients 0.2125, 0.7154, 0.0721.
+    Luminance,
+}
+
+impl MaskMode {
+    pub const ALL: [MaskMode; 3] = [MaskMode::Coverage, MaskMode::Alpha, MaskMode::Luminance];
+    pub fn is_coverage(&self) -> bool {
+        *self == MaskMode::Coverage
+    }
+    /// Whether the artwork's colours and opacity count (not just its area).
+    pub fn is_soft(self) -> bool {
+        self != MaskMode::Coverage
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            MaskMode::Coverage => "coverage",
+            MaskMode::Alpha => "alpha",
+            MaskMode::Luminance => "luminance",
+        }
+    }
+    pub fn from_key(k: &str) -> Option<MaskMode> {
+        MaskMode::ALL.into_iter().find(|m| m.key() == k)
+    }
+    /// How much a premultiplied colour reveals in this mode, `0..=1`.
+    pub fn reveal(self, premul: [f32; 4]) -> f32 {
+        let v = match self {
+            MaskMode::Coverage | MaskMode::Alpha => premul[3],
+            MaskMode::Luminance => LUMA[0] * premul[0] + LUMA[1] * premul[1] + LUMA[2] * premul[2],
+        };
+        if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+    }
+}
+
+/// The luminance coefficients of a luminance mask (SVG's `luminanceToAlpha`, on sRGB values).
+pub const LUMA: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
@@ -859,6 +932,7 @@ impl PartialEq for Layer {
             && self.depth.to_bits() == o.depth.to_bits()
             && self.volume.to_bits() == o.volume.to_bits()
             && self.muted == o.muted
+            && self.mask_mode == o.mask_mode
             && match (&self.armature, &o.armature) {
                 (Some(a), Some(b)) => arc_eq(a, b),
                 (a, b) => a.is_none() && b.is_none(),
@@ -892,6 +966,7 @@ impl Layer {
             volume: 1.0,
             muted: false,
             armature: None,
+            mask_mode: MaskMode::Coverage,
         }
     }
     /// The row height in normal rows, `1..=MAX_LAYER_HEIGHT` whatever a file says.
@@ -1431,7 +1506,8 @@ impl Document {
         let scan = |l: &Layer, max_id: &mut u64| {
             *max_id = (*max_id).max(l.id.0);
             for b in l.armature.iter().flat_map(|a| &a.bones) {
-                *max_id = (*max_id).max(b.id.0);
+                // A shape armature's joint nodes take ids from the same counter (ADR 0071).
+                *max_id = (*max_id).max(b.id.0).max(b.child.0).max(b.parent.0);
             }
             for k in &l.keyframes {
                 for e in &k.elements {

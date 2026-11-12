@@ -11,6 +11,30 @@
   against AniCraft's renderer pixel by pixel (35 filter set-ups at three view scales, within
   1/1000) and checked in a browser. At 1080p the demo's filtered symbols cost 3.4 ms a frame while
   they change; one covering the whole frame 50 to 150 ms. The export report no longer lists them.
+* **Soft masks and text on a path** (ADR 0070, M4).
+  * **Soft masks**: Layer Properties › **Mask type** on a mask layer: *Shape* (as in Animate),
+    *Alpha* (the mask's opacity reveals: a gradient to transparent fades the artwork out) or
+    *Luminance* (the mask's brightness reveals: white shows, black hides). On the stage, on the
+    GPU stage, in Test Movie and in every export: SVG writes a `mask`, Lottie a track matte, the
+    HTML canvas composites it. `layer.set_mask` does it headless.
+  * **Text on a path**: Properties › Path › **Attach to Path**, then click a shape: static text
+    follows its outline (a copy of it; the shape stays). Move it along with **Offset**, put it on
+    the other side with **Flip**, and **Release** it back to lines of text. The alignment says
+    whether the text starts, is centred or ends at the offset. Editing the words, the font or
+    the size keeps it on its path. Also Modify › Text › Attach Text to Path.
+  * **SVG import**: soft masks come in as soft mask layers (luminance, or alpha with
+    `mask-type: alpha`) instead of being drawn unmasked; `textPath` comes in as text on a path;
+    per-character `x`, `y`, `dx`, `dy` and `rotate` are kept where they are simple.
+* **Bones inside shapes** (ADR 0071, M7).
+  * The **Bone** tool now also draws bones inside a shape, so the shape itself bends like a tail
+    or a tentacle. Its points follow the nearest bones, and the bend stays smooth through the
+    joints. Lines keep their width, and the shape as drawn comes back exactly at rest.
+  * Pose by dragging bones with the Selection tool. Poses key per frame and tween with easing,
+    as symbol armatures do, and every export, Test Movie and the stage show the bend.
+  * The new **Bind** tool (**Shift+M**) shows which points follow which bone, and changes it by
+    click, Shift-click, Ctrl-click or a box. **Properties › Bone** counts the bone's points and
+    has **Rebind All**.
+  * Headless: `bone.add_in_shape`, `bone.bind`, and `bone.info` with `points`.
 * **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
   tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
   macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip

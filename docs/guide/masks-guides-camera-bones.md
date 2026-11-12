@@ -36,6 +36,22 @@ group takes it out of the mask.
 * A mask moves with its whole group when you reorder layers. Masks work inside folders and inside
   symbols too.
 
+### Soft masks
+
+A mask doesn't have to have hard edges. Double-click the mask layer's icon (or right-click it and
+choose **Properties…**) and pick a **Mask type**:
+
+* **Shape**: the mask's fills reveal fully, whatever their colour or opacity. This is what
+  Animate's masks do, and it's the default.
+* **Alpha**: the mask's opacity reveals. Fill the mask with a gradient that goes to transparent
+  and the artwork fades out with it; a shape at 50 % opacity shows the artwork at half strength.
+  Strokes, bitmaps and colour effects on the mask count too.
+* **Luminance**: the mask's brightness reveals: white shows, black hides, greys show partly.
+  This is how SVG masks work.
+
+Soft masks show on the stage and in Test Movie, and export to SVG, Lottie (as track mattes) and
+HTML.
+
 ## Guide layers
 
 A **guide** layer holds artwork that helps you draw, such as a layout sketch, a grid or safe
@@ -174,8 +190,39 @@ Select a bone to see **Properties › Bone**:
   where they are, on a layer of their own. If the armature has more than one pose, AniCraft asks
   first.
 
-Not there yet: bones inside shapes (shape armatures), springs, joints that slide, armatures
-that scripts pose while the movie plays, and armatures from Animate files.
+### Bones inside a shape
+
+A shape can have bones of its own, so the shape itself bends, like a tail, a tentacle or a
+strand of hair, with no symbols needed.
+
+1. Draw the shape. A shape with points along its length bends more smoothly.
+2. With the **Bone** tool (**M**), drag from inside the shape to where the first bone ends.
+   The shape moves to a new armature layer. It becomes a drawing object, so shapes you draw
+   later don't cut into it.
+3. Drag from the end of the last bone to add the next one, or from inside the shape to start
+   a branch.
+
+Every point of the outline follows the bones nearest to it. Points near a joint are shared by
+the bones that meet there, so the shape bends smoothly. Pose and animate it as you would any
+armature: drag its bones with the **Selection** tool, and drag the shape to move it. Lines keep
+their width as the shape bends.
+
+**The Bind tool** (**Shift+M**) changes which points follow which bone. With it, the shape's
+points show as small squares, or as triangles where several bones share a point. Click a bone
+to pick it, and the points it moves fill in. Then:
+
+* click a point (or drag a box around several) to make it follow only that bone;
+* **Shift**-click to share the bone with the bones the point already follows;
+* **Ctrl**-click (**⌘**-click on a Mac) to take the point away from the bone. A point that no
+  bone moves stays where it was drawn.
+
+**Properties › Bone** shows how many of the shape's points the bone moves. **Rebind All** goes
+back to the automatic binding. Adding or removing bones rebinds the points you haven't bound
+by hand.
+
+Not there yet: symbols and shapes in one armature, reshaping a shape after it has bones,
+springs, joints that slide, armatures that scripts pose while the movie plays, and armatures
+from Animate files.
 
 ## Next steps
 

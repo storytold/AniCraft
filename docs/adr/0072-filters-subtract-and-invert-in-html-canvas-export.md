@@ -66,6 +66,16 @@ The result is composited into the layer below at the group's alpha and in its bl
 clips from outside the symbol apply after filtering and clips inside it before, as in the
 renderer.
 
+### With soft masks (ADR 0070)
+
+A mask's layer always has the place and size of the layer it masks, so inside a filtered
+group (which reaches past the canvas) a mask, hard or soft, lines up with what it masks. A
+soft mask over a filtered symbol cuts what the filters made: the filtered group is composited
+into the clip's layer, and the mask (its artwork drawn as it looks, opacity or luminance
+becoming opacity) is applied when the clip ends. A soft mask inside a filtered symbol shapes
+what the filters see: its clip's layer is inside the filtered layer. Both are the renderer's
+order (clips from outside the symbol after filtering, its own before).
+
 ### Subtract and Invert, per pixel
 
 The page reads the group and what is under it where the group drew, applies the renderer's
@@ -116,6 +126,11 @@ from 87 to 40 ms).
   35 cases (every filter; every side, knockout, inner and hide object; even and odd box
   widths; stacks of three) at view scales 1 and 1.5 or 2: largest difference 9.3 × 10⁻⁴,
   under a quarter of an 8-bit step. Breaking the even-width column pass fails it at once.
+* **With soft masks**: a filtered movie clip under an alpha or a luminance mask, and one whose
+  symbol holds such a mask: both players' display lists agree (clip modes, filters, groups),
+  and the page's frame, composed in canvas.js's order from `filters.js` and the mask artwork
+  read as the page reads it, equals the oracle's frame at view scales 1 and 1.5 (largest
+  difference 4 × 10⁻⁷). Ignoring the mask, or masking before filtering, fails it.
 * **Resolution**: box widths, passes and offsets equal the renderer's for 4,160 filters (13
   angles, 8 distances, 4 blurs, 5 scales), including halves.
 * **Subtract and Invert**: `blendPixel` equals the renderer's `blend` to 10⁻⁵ over a grid of

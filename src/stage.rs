@@ -340,7 +340,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone | Tool::Bind => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -444,6 +444,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tool::Subselect => crate::pathtools::subselect_drag_start(app, press, shift, xf),
                 Tool::Bone => crate::bone_tool::drag_start(app, xf, press),
+                Tool::Bind => crate::bind_tool::drag_start(app, xf, press),
                 Tool::Width => crate::widthtool::drag_start(app, press, xf),
                 Tool::Pencil => {
                     app.pencil = vec![to_v(sp)];
@@ -581,7 +582,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     crate::pathtools::move_points(app, Vec2::new(d.x, d.y), !alt);
                 }
             }
-            (Drag::PointMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (Drag::PointMarquee { cur: m, .. } | Drag::BindMarquee { cur: m, .. }, Some(c)) => *m = c,
             (d @ Drag::Width { .. }, Some(c)) => {
                 let d = *d;
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
@@ -615,6 +616,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
+            Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Brush => crate::brushtool::commit(app, xf),
             Drag::Eraser => crate::erasertool::commit(app, xf),
@@ -633,11 +635,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.snap_ring = None;
     }
 
+    // Attach to Path (ADR 0070) waits for a click on a shape; Escape gives up.
+    if app.path_pick.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.path_pick = None;
+        app.status_ok(tr!("Attach to Path cancelled."));
+    }
     if resp.clicked()
         && !paused
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
+                _ if !panning && let Some(text) = app.path_pick.take() => {
+                    app.s.selection = anicraft_engine::Selection::only(app.s.layer, [text]);
+                    if app.run("text.attach_path", json!({"x": sp.x, "y": sp.y})).is_some() {
+                        app.status_ok(tr!("The text follows the shape's outline. {undo} to undo.", undo = app.undo_key()));
+                    }
+                }
                 Tool::Subselect if !panning => {
                     if !crate::motion_path::click(app, p, xf, shift) {
                         crate::pathtools::subselect_click(app, p, shift, xf);
@@ -676,6 +689,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 Tool::Bone if !panning => crate::bone_tool::click(app, xf, p),
+                Tool::Bind if !panning => crate::bind_tool::click(app, xf, p, shift, command),
                 Tool::Select | Tool::Transform if !panning && multi => crate::onion::click(app, sp, shift, zoom),
                 // A click on a bone picks it (ADR 0043).
                 Tool::Select if !panning && let Some((layer, bone, _)) = crate::bone_tool::hit(app, xf, p) => crate::bone_tool::select(app, layer, Some(bone)),
@@ -965,6 +979,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Armatures' bones over their artwork (ADR 0043).
     crate::bone_tool::draw(app, &painter, xf);
+    crate::bind_tool::draw(app, &painter, xf);
     let sel_stroke = Stroke::new(1.0, T.selection);
     let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None
@@ -1017,6 +1032,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         painter.rect_stroke(r, 0.0, sel_stroke, StrokeKind::Middle);
+        // Text on a path shows the path it follows (ADR 0070).
+        if let anicraft_engine::doc::ElementKind::Text(t) = &e.kind
+            && let Some(on) = &t.on_path
+            && let Some(item) = app.s.display_list().items.iter().find(|i| i.element == id)
+        {
+            let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom)).mul(&item.transform);
+            for pl in on.path.flatten(&to_px, 0.5) {
+                let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
+                painter.add(if pl.closed { egui::Shape::closed_line(pts, sel_stroke) } else { egui::Shape::line(pts, sel_stroke) });
+            }
+        }
         for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom(), r.center_top(), r.center_bottom(), r.left_center(), r.right_center()] {
             let h = Rect::from_center_size(c, vec2(6.0, 6.0));
             painter.rect_filled(h, 0.0, Color32::WHITE);

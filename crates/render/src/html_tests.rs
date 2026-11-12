@@ -94,6 +94,8 @@ fn fixture() -> Document {
     });
     let mut mask = Layer::new(LayerId(6), "mask");
     mask.kind = LayerKind::Mask;
+    // A soft mask (ADR 0070): the player numbers its clip's mode as the evaluator does.
+    mask.mask_mode = anicraft_doc::MaskMode::Luminance;
     mask.keyframes = vec![kf(0, 30, vec![rect(5005, 400.0, 0.0, 20.0, 100.0, 0)], vec![], "")];
     let mut masked = Layer::new(LayerId(7), "masked");
     masked.parent = Some(LayerId(6));
@@ -292,6 +294,15 @@ fn same_display_list(js: &mut Js, m: &Movie, doc: &Document, st: &PlayerState, w
     }
     let clips: Vec<Option<u32>> = ours["clips"].as_array().unwrap().iter().map(|v| v.as_u64().map(|x| x as u32)).collect();
     assert_eq!(clips, dl.clip_parents, "{when}: clips");
+    let modes = ours["modes"].as_array().unwrap();
+    for c in 0..dl.clip_parents.len() {
+        let want = match dl.clip_mode(c as u32) {
+            anicraft_doc::MaskMode::Coverage => 0,
+            anicraft_doc::MaskMode::Alpha => 1,
+            anicraft_doc::MaskMode::Luminance => 2,
+        };
+        assert_eq!(modes.get(c).and_then(Value::as_u64).unwrap_or(0), want, "{when}: clip {c} mode");
+    }
     let groups = ours["groups"].as_array().unwrap();
     assert_eq!(groups.len(), dl.groups.len(), "{when}: groups");
     for (a, b) in groups.iter().zip(&dl.groups) {
@@ -890,7 +901,7 @@ fn the_js_player_draws_random_numbers_like_the_rust_player() {
 /// (layout isn't compared: neither player lays text out here).
 fn field_el(id: u64, name: &str, at: Vec2, (w, h): (f32, f32), text: &str, f: Option<anicraft_doc::TextField>) -> Arc<Element> {
     let n = text.chars().count() as f32;
-    let t = anicraft_doc::TextBlock { text: text.into(), font: "Inter".into(), size: 14.0, bold: true, italic: false, color: Rgba::hex(0x112233), align: anicraft_doc::TextAlign::Center, letter_spacing: 0.5, line_spacing: 2.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0 * n, 12.0)), box_width: w, box_height: h, field: f };
+    let t = anicraft_doc::TextBlock { text: text.into(), font: "Inter".into(), size: 14.0, bold: true, italic: false, color: Rgba::hex(0x112233), align: anicraft_doc::TextAlign::Center, letter_spacing: 0.5, line_spacing: 2.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0 * n, 12.0)), box_width: w, box_height: h, field: f, on_path: None };
     Arc::new(Element { id: ElementId(id), name: name.into(), transform: Affine::translate(at.x, at.y), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(t)) })
 }
 
@@ -1098,6 +1109,48 @@ fn filtered_doc(filters: &[anicraft_doc::Filter]) -> Document {
     d
 }
 
+/// The first filtered instance in the movie's data: its filters (`fx`) and their reach (`fm`).
+fn exported_filters(m: &Movie) -> (Value, Value) {
+    let e = m.json["contents"].as_array().unwrap().iter().flat_map(|c| c["l"].as_array().unwrap().iter().flat_map(|l| l["e"].as_array().unwrap().iter())).find(|e| e.get("fx").is_some()).cloned().expect("a filtered instance");
+    (e["fx"].clone(), e["fm"].clone())
+}
+
+/// What the page makes of the oracle's unfiltered layer `l` (its pixels `pm`) at view scale
+/// `scale`: the layer placed with 7 more pixels around it, as the page's canvas layer reaches past
+/// the oracle's, cut by `region` and filtered there by `filters.js`. Returns the oracle's layer
+/// filtered by the oracle beside the page's, both over the page's larger rectangle (`x0`, `y0`,
+/// `w`, `h` in surface pixels; zero where either has nothing).
+fn page_and_oracle_filtered(js: &mut Context, l: &crate::FilterLayer, pm: &[crate::paint::Premul], filters: &[anicraft_doc::Filter], (fx, fm): &(Value, Value), scale: f32) -> ((i32, i32, usize, usize), Vec<[f32; 4]>, Vec<[f32; 4]>) {
+    let (w, h) = (l.bounds.width(), l.bounds.height());
+    let mut want = pm.to_vec();
+    crate::filters::apply(&mut want, w, h, filters, scale);
+    let pad = 7;
+    let (bw, bh) = (w + 2 * pad, h + 2 * pad);
+    let mut big = vec![0.0f32; bw * bh * 4];
+    for y in 0..h {
+        for x in 0..w {
+            big[((y + pad) * bw + x + pad) * 4..][..4].copy_from_slice(&pm[y * w + x]);
+        }
+    }
+    let code = format!(
+        "(function () {{ var b = new Float32Array({big}); var r = AniCraftFilters.region(b, {bw}, {bh}, AniCraftFilters.reach({fm}, {scale})); if (!r) return null; var w = r[2] - r[0], h = r[3] - r[1]; var c = new Float32Array(w * h * 4); for (var y = 0; y < h; y++) for (var x = 0; x < w * 4; x++) c[y * w * 4 + x] = b[((y + r[1]) * {bw} + r[0]) * 4 + x]; AniCraftFilters.apply(c, w, h, {fx}, {scale}); return {{ r: r, c: Array.from(c) }}; }})()",
+        big = json!(big),
+    );
+    let out = js_json(js, &code);
+    let r: Vec<usize> = out["r"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+    let c: Vec<f32> = out["c"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+    let cw = r[2] - r[0];
+    let (mut page, mut oracle) = (Vec::with_capacity(bw * bh), Vec::with_capacity(bw * bh));
+    for y in 0..bh {
+        for x in 0..bw {
+            let inside = (r[0]..r[2]).contains(&x) && (r[1]..r[3]).contains(&y);
+            page.push(if inside { c[((y - r[1]) * cw + x - r[0]) * 4..][..4].try_into().unwrap() } else { [0.0; 4] });
+            oracle.push(if (pad..pad + w).contains(&x) && (pad..pad + h).contains(&y) { want[(y - pad) * w + x - pad] } else { [0.0; 4] });
+        }
+    }
+    ((l.bounds.x0 - pad as i32, l.bounds.y0 - pad as i32, bw, bh), page, oracle)
+}
+
 /// The page's filters on the oracle's own unfiltered layer, placed with room around it as the
 /// page's canvas layer is, cut to where they can reach (`region`) and filtered there, give the
 /// oracle's filtered layer: every filter, side and switch, alone and stacked, at whole and
@@ -1109,8 +1162,8 @@ fn the_pages_filters_give_the_renderers_pixels() {
     for (n, filters) in filter_cases().into_iter().enumerate() {
         let doc = filtered_doc(&filters);
         let m = movie(&doc, &HtmlOptions::default());
-        let el = m.json["contents"][0]["l"][0]["e"][0].clone();
-        assert_eq!(el["fx"].as_array().map(Vec::len), Some(filters.len()), "case {n}: {el}");
+        let exported = exported_filters(&m);
+        assert_eq!(exported.0.as_array().map(Vec::len), Some(filters.len()), "case {n}");
         let dl = anicraft_doc::evaluate(&doc, 0);
         // Every case at the stage size, and at a fractional or a double view scale in turn.
         for scale in [1.0f32, if n % 2 == 0 { 1.5 } else { 2.0 }] {
@@ -1118,43 +1171,115 @@ fn the_pages_filters_give_the_renderers_pixels() {
             let (scene, _) = crate::prepare_scene(&dl, &view).unwrap();
             let [l] = scene.layers.as_slice() else { panic!("case {n}: one filtered layer") };
             let (pm, _) = crate::render(&l.list, &l.view).unwrap();
-            let (w, h) = (l.bounds.width(), l.bounds.height());
-            let mut want = pm.data.clone();
-            crate::filters::apply(&mut want, w, h, &dl.groups[0].filters, scale);
-            // The page's layer: the oracle's with 7 more pixels around it.
-            let pad = 7;
-            let (bw, bh) = (w + 2 * pad, h + 2 * pad);
-            let mut big = vec![0.0f32; bw * bh * 4];
-            for y in 0..h {
-                for x in 0..w {
-                    big[((y + pad) * bw + x + pad) * 4..][..4].copy_from_slice(&pm.data[y * w + x]);
-                }
-            }
-            let code = format!(
-                "(function () {{ var b = new Float32Array({big}); var r = AniCraftFilters.region(b, {bw}, {bh}, AniCraftFilters.reach({fm}, {scale})); var w = r[2] - r[0], h = r[3] - r[1]; var c = new Float32Array(w * h * 4); for (var y = 0; y < h; y++) for (var x = 0; x < w * 4; x++) c[y * w * 4 + x] = b[((y + r[1]) * {bw} + r[0]) * 4 + x]; AniCraftFilters.apply(c, w, h, {fx}, {scale}); return {{ r: r, c: Array.from(c) }}; }})()",
-                big = json!(big),
-                fm = el["fm"],
-                fx = el["fx"],
-            );
-            let out = js_json(&mut js, &code);
-            let r: Vec<usize> = out["r"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
-            let c: Vec<f32> = out["c"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
-            let cw = r[2] - r[0];
-            for y in 0..bh {
-                for x in 0..bw {
-                    let inside = (r[0]..r[2]).contains(&x) && (r[1]..r[3]).contains(&y);
-                    let page: [f32; 4] = if inside { c[((y - r[1]) * cw + x - r[0]) * 4..][..4].try_into().unwrap() } else { [0.0; 4] };
-                    let oracle = if (pad..pad + w).contains(&x) && (pad..pad + h).contains(&y) { want[(y - pad) * w + x - pad] } else { [0.0; 4] };
-                    for k in 0..4 {
-                        let d = (page[k] - oracle[k]).abs();
-                        worst = worst.max(d);
-                        assert!(d < 2e-3, "case {n} {filters:?} at ×{scale}, pixel ({x}, {y}) channel {k}: page {page:?}, renderer {oracle:?}");
-                    }
+            let (_, page, oracle) = page_and_oracle_filtered(&mut js, l, &pm.data, &dl.groups[0].filters, &exported, scale);
+            for (i, (p, o)) in page.iter().zip(&oracle).enumerate() {
+                for k in 0..4 {
+                    let d = (p[k] - o[k]).abs();
+                    worst = worst.max(d);
+                    assert!(d < 2e-3, "case {n} {filters:?} at ×{scale}, pixel {i} channel {k}: page {p:?}, renderer {o:?}");
                 }
             }
         }
     }
     eprintln!("largest difference from the renderer: {worst:e}");
+}
+
+/// A filtered movie clip under a soft mask (`inside` false: a mask layer on the stage over the
+/// layer with the instance), or a soft mask inside the filtered symbol (`inside` true: the
+/// symbol's own mask layer over its artwork). The mask is a gradient from opaque white through
+/// half-transparent grey to faint black, so alpha and luminance reveal differently.
+fn soft_masked_doc(mode: anicraft_doc::MaskMode, inside: bool) -> Document {
+    use anicraft_doc::{Filter, FilterSide};
+    let filters = vec![
+        Filter::DropShadow { blur_x: 5.0, blur_y: 5.0, strength: 1.0, quality: 2, angle: 45.0, distance: 4.0, color: Rgba::new(0.1, 0.0, 0.3, 1.0), inner: false, knockout: false, hide_object: false },
+        Filter::Bevel { blur_x: 3.0, blur_y: 3.0, strength: 1.2, quality: 1, angle: 45.0, distance: 2.0, shadow_color: Rgba::BLACK, highlight_color: Rgba::WHITE, side: FilterSide::Inner, knockout: false },
+        Filter::Glow { blur_x: 6.0, blur_y: 6.0, strength: 1.5, quality: 2, color: Rgba::hex(0xffcc00), inner: false, knockout: false },
+    ];
+    let mut d = filtered_doc(&filters);
+    let ramp = Paint::Linear { start: Vec2::new(10.0, 0.0), end: Vec2::new(54.0, 0.0), stops: vec![stop(0.0, 0xffffff, 1.0), stop(0.5, 0x808080, 0.5), stop(1.0, 0x000000, 0.2)] };
+    let art = Arc::new(Element { id: ElementId(320), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(10.0, 4.0, 44.0, 48.0), ramp)) });
+    let mut mask = Layer::new(LayerId(321), "mask");
+    mask.kind = LayerKind::Mask;
+    mask.mask_mode = mode;
+    if inside {
+        // In the symbol's space (the instance sits at 18.4, 15.2).
+        let mut a = (*art).clone();
+        a.transform = Affine::translate(-18.4, -15.2);
+        mask.keyframes = vec![kf(0, 1, vec![Arc::new(a)], vec![], "")];
+        let sym = d.library.iter_mut().find(|s| s.id == SymbolId(300)).unwrap();
+        let tl = &mut Arc::make_mut(sym).timeline;
+        let mut masked = (*tl.layers[0]).clone();
+        masked.parent = Some(LayerId(321));
+        tl.layers = vec![Arc::new(mask), Arc::new(masked)];
+    } else {
+        mask.keyframes = vec![kf(0, 1, vec![art], vec![], "")];
+        let tl = d.timeline_mut(0);
+        let mut masked = (*tl.layers[0]).clone();
+        masked.parent = Some(LayerId(321));
+        tl.layers = vec![Arc::new(mask), Arc::new(masked)];
+    }
+    d
+}
+
+/// Filters and soft masks together, as the page composes them: a soft mask over a filtered
+/// symbol cuts what the filters made (the page masks the clip's layer after the filtered group
+/// is composited into it), and a soft mask inside a filtered symbol shapes what the filters see
+/// (the page's clip layer is inside the filtered layer). Both players' display lists agree (clip
+/// modes, filters, groups), and the page's pixels, composed in that order from `filters.js` and
+/// the mask artwork drawn as it looks (luminance or opacity becoming opacity, as canvas.js does),
+/// equal the oracle's frame, in alpha and luminance mode, at two view scales.
+#[test]
+fn filters_and_soft_masks_compose_in_the_page_as_in_the_renderer() {
+    use anicraft_doc::MaskMode;
+    let mut js = filters_js();
+    let mut worst = 0.0f32;
+    for mode in [MaskMode::Alpha, MaskMode::Luminance] {
+        for inside in [false, true] {
+            let doc = soft_masked_doc(mode, inside);
+            let when = format!("{mode:?}, mask {}", if inside { "inside the filtered symbol" } else { "over it" });
+            compare(&doc, &[(vec![], vec![])]);
+            let m = movie(&doc, &HtmlOptions::default());
+            let exported = exported_filters(&m);
+            let dl = anicraft_doc::evaluate(&doc, 0);
+            assert_eq!((dl.clip_parents.len(), dl.clip_mode(0)), (1, mode), "{when}");
+            let filters = dl.groups.iter().find(|g| !g.filters.is_empty()).unwrap().filters.clone();
+            for scale in [1.0f32, 1.5] {
+                let (sw, sh) = ((64.0 * scale) as usize, (56.0 * scale) as usize);
+                let view = crate::View { transform: Affine::scale(scale, scale), width: sw as u32, height: sh as u32, background: Some(Rgba::WHITE) };
+                let (frame, _) = crate::render(&dl, &view).unwrap();
+                let (scene, _) = crate::prepare_scene(&dl, &view).unwrap();
+                let [l] = scene.layers.as_slice() else { panic!("{when}: one filtered layer") };
+                let (pm, _) = crate::render(&l.list, &l.view).unwrap();
+                let ((x0, y0, bw, bh), page, _) = page_and_oracle_filtered(&mut js, l, &pm.data, &filters, &exported, scale);
+                // A mask over the symbol: its artwork drawn as it looks on its own, read as the
+                // page reads it (canvas.js `maskEnd`).
+                let reveal: Option<Vec<f32>> = (!inside).then(|| {
+                    let art = anicraft_doc::DisplayList { items: dl.items.iter().filter(|i| i.masks.is_some()).map(|i| anicraft_doc::DisplayItem { masks: None, clip: None, group: None, ..i.clone() }).collect(), clip_parents: Vec::new(), clip_modes: Vec::new(), groups: Vec::new() };
+                    let (mp, _) = crate::render(&art, &crate::View { background: None, ..view }).unwrap();
+                    mp.data.iter().map(|p| mode.reveal(*p)).collect()
+                });
+                for y in 0..sh {
+                    for x in 0..sw {
+                        let (lx, ly) = (x as i32 - x0, y as i32 - y0);
+                        let mut p = if lx >= 0 && ly >= 0 && (lx as usize) < bw && (ly as usize) < bh { page[ly as usize * bw + lx as usize] } else { [0.0; 4] };
+                        if let Some(r) = &reveal {
+                            let k = r[y * sw + x];
+                            p = [p[0] * k, p[1] * k, p[2] * k, p[3] * k];
+                        }
+                        // Over the white stage.
+                        let out = [p[0] + 1.0 - p[3], p[1] + 1.0 - p[3], p[2] + 1.0 - p[3], 1.0];
+                        let want = frame.data[y * sw + x];
+                        for k in 0..4 {
+                            let d = (out[k] - want[k]).abs();
+                            worst = worst.max(d);
+                            assert!(d < 3e-3, "{when} at ×{scale}, pixel ({x}, {y}) channel {k}: page {out:?}, renderer {want:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("largest difference from the renderer with soft masks: {worst:e}");
 }
 
 /// The page resolves each filter to the same whole box widths and pixel offsets as the renderer,

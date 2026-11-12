@@ -41,3 +41,9 @@ Imported Animate files use masks often.
   Artists used to that step lose nothing: locking still works and also hides the edge.
 * A future GPU renderer must implement the same clip semantics; the CPU tests are the oracle.
 * Folders can reuse `parent` without a format change.
+
+## Note (2026-11-12): soft masks
+
+A mask layer now has a mask type (ADR 0070): Shape (this ADR's coverage, the default), Alpha or
+Luminance. Soft masks use the same clips, nesting and stage edge; only how the artwork reveals
+changes.
