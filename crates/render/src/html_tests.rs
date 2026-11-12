@@ -1120,7 +1120,11 @@ fn exported_filters(m: &Movie) -> (Value, Value) {
 /// the oracle's, cut by `region` and filtered there by `filters.js`. Returns the oracle's layer
 /// filtered by the oracle beside the page's, both over the page's larger rectangle (`x0`, `y0`,
 /// `w`, `h` in surface pixels; zero where either has nothing).
-fn page_and_oracle_filtered(js: &mut Context, l: &crate::FilterLayer, pm: &[crate::paint::Premul], filters: &[anicraft_doc::Filter], (fx, fm): &(Value, Value), scale: f32) -> ((i32, i32, usize, usize), Vec<[f32; 4]>, Vec<[f32; 4]>) {
+/// A rectangle in surface pixels (`x0`, `y0`, `w`, `h`), the page's pixels over it and the
+/// oracle's.
+type Filtered = ((i32, i32, usize, usize), Vec<[f32; 4]>, Vec<[f32; 4]>);
+
+fn page_and_oracle_filtered(js: &mut Context, l: &crate::FilterLayer, pm: &[crate::paint::Premul], filters: &[anicraft_doc::Filter], (fx, fm): &(Value, Value), scale: f32) -> Filtered {
     let (w, h) = (l.bounds.width(), l.bounds.height());
     let mut want = pm.to_vec();
     crate::filters::apply(&mut want, w, h, filters, scale);
