@@ -201,7 +201,7 @@ impl Entry {
 
 /// Commands the palette can run without extra input (everything optional, or prompted).
 fn runnable(c: &CommandSpec) -> bool {
-    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
+    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_apng" | "file.export_webp" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
         return true;
     }
     let inner = c.params.trim().trim_start_matches('{').trim_end_matches('}');

@@ -20,6 +20,22 @@
   * Windows and Linux already open a double-clicked document from the command line; a test
     now covers it.
 
+* **Animated PNG and animated WebP export** (ADR 0063, M4).
+  * **File › Export › Export Animated PNG…** and **Export Animated WebP…** make full-colour
+    animations with real transparency, for the web and chat apps, where a GIF has 256 colours
+    and hard edges. WebP is lossless. Both are transparent by default; turn on the stage colour
+    as background if you want it. Loop forever, play once, or play a set number of times.
+  * Every frame is exactly what AniCraft renders. Frames that repeat the one before are stored
+    once and shown longer, and each later frame stores only the rectangle that changed, so
+    holds and small motions cost little.
+  * Timing is exact: APNG delays are fractions of the frame rate (29.97 fps stays 29.97), and
+    WebP's milliseconds never drift.
+  * Both are in **Publish Settings** (Animated PNG, Animated WebP) with frames, scale, loop and
+    background; in a browser they download. Headless: `file.export_apng`, `file.export_webp`
+    and `anicraft-cli apng` / `webp`.
+  * On the sample (48 frames, 1280 × 720) the APNG is 2.0 MB and the WebP 1.8 MB, against the
+    GIF's 1.4 MB, which has only 256 colours; both take less time to make than the GIF.
+
 * **Publish Settings and Publish** (ADR 0060, M8).
   * **File › Publish Settings** (Ctrl+Shift+F12) is a window that stays open while you work.
     It lists every format AniCraft exports (HTML canvas, animated GIF, video, Lottie, sprite

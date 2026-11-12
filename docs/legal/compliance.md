@@ -62,7 +62,12 @@ pinned with `=`. It registers AppKit's open-documents and quit Apple Event handl
 AniCraft's own code stays free of `unsafe`. It was read in full before it was added: about 170
 lines, no network or file access. Its `objc2` 0.6, `objc2-app-kit` 0.3 and `objc2-foundation`
 0.3 (MIT, Zlib OR Apache-2.0 OR MIT) were already in the tree through wgpu. No new licence. It
-declares `rust-version = 1.95`, so the macOS build needs that toolchain or newer.
+declares `rust-version = 1.95`, so the workspace's minimum Rust is now 1.95.
+**Audit note:** the crate is built only for `cfg(target_os = "macos")`, is pinned with `=0.1.0`
+(the checksum is in `Cargo.lock`), and its licence is checked by `cargo deny`. It registers
+two Apple Event handlers (open documents, quit) and an observer, and returns paths through a
+main-thread inbox. It has no network, file or process access, and no build script. Read any
+new version in full before it comes in.
 
 ### Find and Replace (2026-11-11, ADR 0058)
 
@@ -103,6 +108,15 @@ under MIT/Apache-2.0), as a dev-dependency of `anicraft-render`: the tests run t
 page's player in it. Nothing of it is in the app or the CLI. No new licence. The page's
 JavaScript is our own code (`crates/render/src/html/`), MIT OR Apache-2.0 like the rest, and
 uses no npm packages.
+
+### Animated PNG and WebP (2026-11-11, ADR 0063)
+
+New crate, from crates.io: `image-webp` 0.2 (lossless WebP encoding and decoding in pure Rust,
+`#![forbid(unsafe_code)]`, MIT OR Apache-2.0). Its dependencies, `byteorder-lite` (Unlicense
+OR MIT) and `quick-error` (MIT OR Apache-2.0), were already in the tree. No new licence. APNG frames use the `png` crate already in
+the tree. There is no lossy WebP yet: the only lossy encoders on crates.io bind the C libwebp
+library, which this project does not build. APNG and WebP are both royalty-free (see the
+codec table).
 
 ### Sound (2026-11-09, ADR 0020)
 

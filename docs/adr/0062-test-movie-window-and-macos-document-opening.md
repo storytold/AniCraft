@@ -121,9 +121,9 @@ association, `Exec=anicraft %f` in the desktop entry). Nothing had tested that.
 * The editor redraws while the movie plays (point 1). This is measured and recorded in the PR.
 * One small third-party crate holds `unsafe` macOS code on our behalf. It is a supply-chain
   risk, mitigated by an exact pin and a full read, and listed for the lead.
-* The workspace's `rust-version` is 1.90, but `fmv-macos-events` declares 1.95. The macOS build
-  therefore needs Rust 1.95 or newer (CI and releases use the current stable). Windows and Linux
-  don't build the crate.
+* `fmv-macos-events` declares `rust-version = 1.95`, so the workspace's declared minimum moved
+  from 1.90 to **1.95** (`Cargo.toml`, `docs/requirements.md`) on every platform, one MSRV for
+  all. CI and releases already build with the current stable.
 
 ## Only a Mac can verify
 

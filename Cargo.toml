@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 # An application, not a library: not published to crates.io.
 publish = false
 repository = "https://github.com/storytold/AniCraft"
-rust-version = "1.90"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anicraft-geom = { path = "crates/geom" }
@@ -42,6 +42,8 @@ png = "0.17"
 # JPEG decoding for imported images (already in the tree; MIT OR Apache-2.0 OR Zlib).
 zune-jpeg = { version = "0.5", default-features = false }
 gif = "0.14"
+# Lossless WebP frames for animated WebP export (pure Rust, MIT OR Apache-2.0; ADR 0063).
+image-webp = "0.2"
 # wgpu is the primary renderer; glow (OpenGL) is the fallback for GPUs/VMs where wgpu fails.
 # Default features off: we skip `links` (opening web links pulls in url/idna/ICU Unicode
 # tables we don't use) and the web-only screen-reader shim. Same set as PhotoCraft, plus glow.

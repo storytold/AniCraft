@@ -18,6 +18,9 @@ USAGE:
   anicraft-cli render <file|--sample> --out <frame.png> [--frame N] [--scale S]
   anicraft-cli render-seq <file|--sample> --out-dir <dir> [--from A] [--to B] [--scale S]
   anicraft-cli gif <file|--sample> --out <anim.gif> [--from A] [--to B] [--scale S] [--overwrite yes]
+  anicraft-cli apng|webp <file|--sample> --out <anim.png|anim.webp> [--from A] [--to B] [--scale S]
+                         [--loop forever|N] [--background yes] [--overwrite yes]
+                                         full colour with real transparency (WebP: lossless)
   anicraft-cli commands
   anicraft-cli run <file|--sample> <script.json> [--save <out.anicraft>]
   anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]
@@ -148,9 +151,11 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             }
             exec(&mut s, "file.export_png_sequence", &p).map(|v| v.to_string())
         }
-        "gif" => {
-            let mut s = session(&a, Some(src.ok_or("gif needs a file or --sample")?))?;
-            let out = a.flag("out").ok_or("gif needs --out <anim.gif>")?;
+        "gif" | "apng" | "webp" => {
+            let mut s = session(&a, Some(src.ok_or(format!("{cmd} needs a file or --sample"))?))?;
+            let cmd = cmd.as_str();
+            let ext = if cmd == "apng" { "png" } else { cmd };
+            let out = a.flag("out").ok_or(format!("{cmd} needs --out <anim.{ext}>"))?;
             let mut p = json!({"path": out});
             if let Some(f) = one_based(&a, "from")? {
                 p["from"] = json!(f);
@@ -164,7 +169,16 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             if a.flag("overwrite").is_some_and(|v| v == "yes" || v == "true") {
                 p["confirm"] = json!(true);
             }
-            exec(&mut s, "file.export_gif", &p).map(|v| v.to_string())
+            if cmd != "gif" {
+                match a.flag("loop") {
+                    None | Some("forever") => {}
+                    Some(n) => p["loop"] = json!(n.parse::<u32>().map_err(|_| format!("--loop is forever or how many times it plays, not '{n}'"))?),
+                }
+                if a.flag("background").is_some_and(|v| v == "yes" || v == "true") {
+                    p["background"] = json!(true);
+                }
+            }
+            exec(&mut s, &format!("file.export_{cmd}"), &p).map(|v| v.to_string())
         }
         "new" => {
             let mut s = Session::default();

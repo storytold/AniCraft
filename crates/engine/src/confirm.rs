@@ -109,7 +109,7 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && crate::vfs::exists(path)).then(|| overwrite(path, "Saving"))
         }
-        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
+        "file.export_png" | "file.export_gif" | "file.export_apng" | "file.export_webp" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             crate::vfs::exists(path).then(|| overwrite(path, "Exporting"))
         }

@@ -5,6 +5,7 @@
 //! JSON params, so headless and interactive behaviour cannot drift apart.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod anim;
 mod cmds_actions;
 mod cmds_bone;
 pub mod cmds_brush;

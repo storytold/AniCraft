@@ -587,7 +587,7 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
             a.run("element.set_color_effect", serde_json::json!({"style": style}));
         }));
     }
-    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "start", "testmovie", "testmovieinside"] {
+    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
     // Test Movie in a window of its own (ADR 0062; egui stands in for the window system here).
@@ -612,12 +612,12 @@ fn status_lines_for_every_result_are_translated() {
         "kb": 12, "layers": 2, "masks": 1, "elements": 3, "report": "Imported walk.fla.", "copied": 2, "cut": 2, "pasted": 2,
         "removed": 2, "cleared": 2, "original_newer": true, "sounds": 1, "name": "beat", "sound": 1, "log": ["Did it."],
         "installed": [{"name": "Tint", "version": "1.0"}], "failed": ["bad.wasm: not a plug-in"], "replaced": "Tint 0.9",
-        "plugin": {"name": "Tint", "version": "1.0"}, "undone": "Move", "redone": "Move",
+        "plugin": {"name": "Tint", "version": "1.0"}, "undone": "Move", "redone": "Move", "bytes": 4096, "stored_frames": 2,
     });
     let bare = json!({});
     let ids = [
         "file.new", "file.open", "file.recover", "file.discard_recovery", "file.save", "file.save_as", "file.import", "file.import_to_library",
-        "file.export_audio", "file.export_sprite_sheet", "file.export_html", "file.export_lottie", "file.export_png", "file.export_gif",
+        "file.export_audio", "file.export_sprite_sheet", "file.export_html", "file.export_lottie", "file.export_png", "file.export_gif", "file.export_apng", "file.export_webp",
         "sound.delete", "edit.undo", "edit.redo", "edit.delete", "layer.delete", "draw.erase_all", "scene.delete", "scene.new",
         "timeline.clear_keyframe", "timeline.copy_frames", "timeline.cut_frames", "timeline.paste_frames", "timeline.remove_frame",
         "plugin.run", "plugin.install", "plugin.remove", "plugin.reload",

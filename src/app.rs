@@ -865,6 +865,17 @@ impl App {
                     crate::publish_panel::publish_now(self);
                 }
             }
+            Some("publishanim") => {
+                // Publish Settings with the animated PNG on (ADR 0063): played three times,
+                // transparent, the WebP on beside it.
+                let dir = std::env::temp_dir().join("anicraft-publish-shot");
+                let _ = std::fs::create_dir_all(&dir);
+                self.s.path = Some(dir.join("walk.anicraft"));
+                self.run("publish.settings_set", json!({"format": "apng", "enabled": true, "loop": 3}));
+                self.run("publish.settings_set", json!({"format": "webp", "enabled": true}));
+                self.publish.selected = anicraft_engine::doc::publish::PublishFormat::Apng;
+                crate::publish_panel::open(self);
+            }
             Some("explorer") => {
                 // The Movie Explorer tab (ADR 0058), its first rows open: scene, layers, keyframes
                 // and the instances on them, opening into their symbols.
@@ -1718,6 +1729,16 @@ impl App {
                 let done = trn!("Exported {path} ({n} frame, {kb} KB): open it in a web browser.", "Exported {path} ({n} frames, {kb} KB): open it in a web browser.", v["frames"].as_u64().unwrap_or(0), path = v["written"].as_str().unwrap_or(""), kb = kb);
                 self.status_ok(format!("{done}{report}"));
             }
+            "file.export_apng" | "file.export_webp" => {
+                // Frames identical to the one before are kept once, with a longer delay.
+                let kb = v["bytes"].as_u64().unwrap_or(0).div_ceil(1024);
+                let n = v["frames"].as_u64().unwrap_or(0);
+                let stored = v["stored_frames"].as_u64().unwrap_or(n);
+                let path = v["written"].as_str().unwrap_or("");
+                let done = trn!("Exported {path} ({n} frame, {kb} KB).", "Exported {path} ({n} frames, {kb} KB).", n, path = path, kb = kb);
+                let held = if stored < n { format!(" {}", tr!("Frames that repeat the one before are stored once, shown longer.")) } else { String::new() };
+                self.status_ok(format!("{done}{held}"));
+            }
             "file.export_lottie" => {
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
                 let done = trn!("Exported {path} ({n} frame, {layers} layers).", "Exported {path} ({n} frames, {layers} layers).", v["frames"].as_u64().unwrap_or(0), path = v["written"].as_str().unwrap_or(""), layers = v["layers"]);
@@ -1854,6 +1875,8 @@ impl App {
             "file.export_png" => Some((tr_noop!("Export frame as PNG"), "path", format!("frame_{:04}.png", self.s.frame + 1))),
             "file.export_png_sequence" => Some((tr_noop!("Export PNG sequence to folder"), "dir", "frames".to_string())),
             "file.export_gif" => Some((tr_noop!("Export animated GIF"), "path", "animation.gif".to_string())),
+            "file.export_apng" => Some((tr_noop!("Export animated PNG (full colour, transparent)"), "path", "animation.png".to_string())),
+            "file.export_webp" => Some((tr_noop!("Export animated WebP (lossless, transparent)"), "path", "animation.webp".to_string())),
             "file.export_svg" => Some((tr_noop!("Export frame as SVG"), "path", format!("frame_{:04}.svg", self.s.frame + 1))),
             "file.export_sprite_sheet" => Some((tr_noop!("Export sprite sheet (PNG + JSON frame map)"), "path", "sprites.png".to_string())),
             "file.export_video" => Some((tr_noop!("Export video (.webm or .mp4, made with your ffmpeg)"), "path", "animation.webm".to_string())),
