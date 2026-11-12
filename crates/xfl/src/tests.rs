@@ -32,7 +32,7 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
             </DOMFrame>
           </frames>
         </DOMLayer>
-        <DOMLayer name="Ground" locked="true">
+        <DOMLayer name="Ground" locked="true" heightMultiplier="2">
           <frames>
             <DOMFrame index="0" duration="15">
               <elements>
@@ -90,6 +90,7 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(ball.keyframes[0].label, "start");
     assert!(matches!(ball.keyframes[0].tween.map(|t| t.easing), Some(anicraft_doc::Easing::Classic(e)) if e == -50.0));
     assert!(doc.timeline(0).layers[1].locked);
+    assert_eq!((doc.timeline(0).layers[0].height(), doc.timeline(0).layers[1].height()), (1, 2), "Layer Properties height");
     assert_eq!(doc.timeline(0).layers[2].kind, LayerKind::Guide);
     assert_eq!(doc.timeline(0).frame_count(), 15);
     assert_eq!(doc.frame_count(), 16, "the movie: scene 1, then the one-frame scene 2");

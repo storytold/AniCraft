@@ -18,6 +18,7 @@ mod cmds_frames;
 mod cmds_modify;
 mod cmds_motion;
 mod cmds_hints;
+mod cmds_layer;
 pub mod cmds_library;
 mod cmds_paint;
 mod cmds_path;
@@ -122,6 +123,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_drop::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
+    v.extend(cmds_layer::specs());
     v.extend(cmds_camera::specs());
     v.extend(cmds_bone::specs());
     v.extend(cmds_motion::specs());
@@ -171,6 +173,7 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
 
 pub use history::{Snapshot, StateId};
 pub use selection::Selection;
+pub use cmds_layer::LAYER_COLORS;
 
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
 pub const MAX_FRAME: u32 = 100_000;

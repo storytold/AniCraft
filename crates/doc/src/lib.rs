@@ -646,10 +646,20 @@ pub struct Layer {
     pub visible: bool,
     #[serde(default)]
     pub locked: bool,
+    /// View as Outlines (ADR 0061): the stage draws the layer's artwork as hairlines in
+    /// [`Layer::color`]. Never in the movie or an export.
     #[serde(default)]
     pub outline: bool,
     #[serde(default = "default_layer_color")]
     pub color: Rgba,
+    /// Onion skin draws this layer's frames around the playhead (ADR 0061); off, only its
+    /// playhead frame shows.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub onion: bool,
+    /// Row height on the timeline as a multiple of a normal row (ADR 0061): 1, 2 or 3 (100,
+    /// 200 or 300 %), as Animate's Layer Properties offer. Read through [`Layer::height`].
+    #[serde(default = "one", skip_serializing_if = "is_one", rename = "height")]
+    pub height_rows: u8,
     #[serde(default)]
     pub keyframes: Vec<Arc<Keyframe>>,
     /// Layer depth (ADR 0027), pixels behind the stage (negative: in front): the camera's pans
@@ -676,6 +686,18 @@ fn full() -> f32 {
 fn is_full(v: &f32) -> bool {
     *v == 1.0
 }
+fn is_true(v: &bool) -> bool {
+    *v
+}
+fn one() -> u8 {
+    1
+}
+fn is_one(v: &u8) -> bool {
+    *v == 1
+}
+
+/// Tallest a layer's timeline row gets, in normal rows (300 %).
+pub const MAX_LAYER_HEIGHT: u8 = 3;
 
 impl PartialEq for Layer {
     fn eq(&self, o: &Layer) -> bool {
@@ -687,6 +709,8 @@ impl PartialEq for Layer {
             && self.locked == o.locked
             && self.outline == o.outline
             && self.color == o.color
+            && self.onion == o.onion
+            && self.height_rows == o.height_rows
             && self.depth.to_bits() == o.depth.to_bits()
             && self.volume.to_bits() == o.volume.to_bits()
             && self.muted == o.muted
@@ -716,12 +740,18 @@ impl Layer {
             locked: false,
             outline: false,
             color: default_layer_color(),
+            onion: true,
+            height_rows: 1,
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
             depth: 0.0,
             volume: 1.0,
             muted: false,
             armature: None,
         }
+    }
+    /// The row height in normal rows, `1..=MAX_LAYER_HEIGHT` whatever a file says.
+    pub fn height(&self) -> u8 {
+        self.height_rows.clamp(1, MAX_LAYER_HEIGHT)
     }
     /// The gain this layer gives its sounds: its volume, or silence when muted.
     pub fn sound_gain(&self) -> f32 {

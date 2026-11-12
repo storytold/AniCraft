@@ -300,6 +300,15 @@ pub struct App {
     pub prompt: Option<Prompt>,
     /// The Convert to Symbol dialog, and what it chose last (ADR 0053).
     pub convert: Option<crate::convert_symbol::ConvertDialog>,
+    /// The Layer Properties dialog while it is open (ADR 0061).
+    pub layer_props: Option<crate::layer_props::LayerPropsDialog>,
+    /// Open the timeline's Frame View menu on the next frame (screenshots, the audit).
+    pub tl_frame_view_open: bool,
+    /// How far the timeline header's content overflowed its width last frame (points; ≤ 0: it
+    /// fits). Checked by a test at the default window size.
+    pub tl_header_spill: f32,
+    /// Open this layer's colour popup on the next frame (screenshots, the audit).
+    pub tl_color_open: Option<anicraft_engine::doc::LayerId>,
     pub convert_last: crate::convert_symbol::Last,
     pub show_about: bool,
     pub show_files: bool,
@@ -521,6 +530,10 @@ impl App {
             status: None,
             prompt: None,
             convert: None,
+            layer_props: None,
+            tl_frame_view_open: false,
+            tl_header_spill: 0.0,
+            tl_color_open: None,
             convert_last: Default::default(),
             show_about: false,
             show_files: false,
@@ -997,6 +1010,26 @@ impl App {
                 // The bouncing ball on its keyframes.
                 let top = self.s.timeline().layers.first().map(|l| l.id);
                 self.onion_ui.sel.retain(|it| Some(it.layer) == top);
+            }
+            Some("layerprops") => {
+                // Layer Properties (ADR 0061) on the active layer.
+                crate::layer_props::open(self, None);
+            }
+            Some("frameview") => self.tl_frame_view_open = true,
+            Some("layercolour") => self.tl_color_open = Some(self.s.layer),
+            Some("timelinepolish") => {
+                // Per-layer onion toggles, outlines in the layer colour and a taller layer
+                // (ADR 0061): onion skin on, the top layer outlined in orange and 200 % tall,
+                // the next one left out of onion skin.
+                self.onion.ghosts = true;
+                let ids: Vec<u64> = self.s.timeline().layers.iter().filter(|l| !matches!(l.kind, anicraft_engine::doc::LayerKind::Folder | anicraft_engine::doc::LayerKind::Camera)).map(|l| l.id.0).collect();
+                if let Some(&top) = ids.first() {
+                    self.run("layer.set_properties", json!({"layer": top, "outline": true, "color": "#ff8a65", "height": 200}));
+                }
+                if let Some(&next) = ids.get(1) {
+                    self.run("layer.set_onion", json!({"layer": next, "onion": false}));
+                }
+                self.run("timeline.goto", json!({"frame": 12}));
             }
             Some("onionsymbol") => {
                 // Onion skin inside a symbol open in place (ADR 0051): the sample's spinning star,
@@ -1855,6 +1888,11 @@ impl App {
             self.show_plugins = true;
             return;
         }
+        if id == "layer.set_properties" {
+            // Modify › Timeline › Layer Properties: the dialog for the active layer.
+            crate::layer_props::open(self, None);
+            return;
+        }
         if id == "modify.convert_to_symbol" {
             // Name, type and Library folder (ADR 0053).
             crate::convert_symbol::open(self);
@@ -2491,6 +2529,7 @@ impl App {
         crate::drop::frame(self, &ctx);
         self.prompt_window(&ctx);
         crate::convert_symbol::window(self, &ctx);
+        crate::layer_props::window(self, &ctx);
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);

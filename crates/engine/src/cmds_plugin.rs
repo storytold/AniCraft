@@ -82,7 +82,7 @@ fn document_view(s: &Session) -> Value {
         .timeline()
         .layers
         .iter()
-        .map(|l| json!({"id": l.id.0, "name": l.name, "kind": format!("{:?}", l.kind).to_lowercase(), "visible": l.visible, "locked": l.locked, "parent": l.parent.map(|p| p.0)}))
+        .map(|l| json!({"id": l.id.0, "name": l.name, "kind": format!("{:?}", l.kind).to_lowercase(), "visible": l.visible, "locked": l.locked, "outline": l.outline, "onion": l.onion, "height": u32::from(l.height()) * 100, "parent": l.parent.map(|p| p.0)}))
         .collect();
     json!({
         "abi": anicraft_plugins::ABI_VERSION,
