@@ -9,10 +9,10 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("timeline.insert_frame", "Frame", "Insert/Timeline", Some("F5"), "{layer? | layers?: [..], frame?, count?}", true, insert_frame as crate::RunFn),
+        c("timeline.insert_frame", "Frame", "Insert/Timeline", Some("F5"), "{layer? | layers?: [..] | all_layers?: true (every layer with frames at or after the frame, as F5 with no frame selection; the active layer when none has), frame?, count?, advance?: true (the playhead moves onto the last frame inserted, as the key does in the editor)}", true, insert_frame as crate::RunFn),
         c("timeline.remove_frame", "Remove Frame", "Insert/Timeline", Some("Shift+F5"), "{layer? | layers?: [..], frame?, count?}", true, remove_frame),
-        c("timeline.insert_keyframe", "Keyframe", "Insert/Timeline", Some("F6"), "{layer? | layers?: [..], frame?}", true, insert_keyframe),
-        c("timeline.insert_blank_keyframe", "Blank Keyframe", "Insert/Timeline", Some("F7"), "{layer? | layers?: [..], frame?}", true, insert_blank_keyframe),
+        c("timeline.insert_keyframe", "Keyframe", "Insert/Timeline", Some("F6"), "{layer? | layers?: [..], frame?, advance?: true (on a keyframe the new key goes on the next frame, and the playhead moves onto it, as the key does in the editor)}", true, insert_keyframe),
+        c("timeline.insert_blank_keyframe", "Blank Keyframe", "Insert/Timeline", Some("F7"), "{layer? | layers?: [..], frame?, advance?: true (on a keyframe the blank key goes on the next frame instead of clearing it, and the playhead moves onto it)}", true, insert_blank_keyframe),
         c("timeline.clear_keyframe", "Clear Keyframe", "Insert/Timeline", Some("Shift+F6"), "{layer? | layers?: [..], frame?, count?}", true, clear_keyframe),
         c("timeline.move_keyframes", "Move Keyframes", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}", true, move_keyframes),
         c("timeline.create_motion_tween", "Create Motion Tween", "Insert", None, "{layer?, frame?} (several objects on the key become one graphic symbol; a one-frame span grows to a second)", true, crate::cmds_motion::create),
@@ -232,19 +232,54 @@ pub(crate) fn shift_after(layer: &mut Layer, from: u32, delta: i64) {
     }
 }
 
-/// F5 over a range: `count` frames on each target layer.
+/// F5 over a range: `count` frames on each target layer. With `all_layers` (F5 with no frame
+/// selection) every layer that has frames at or after `frame` grows, so the layers stay in step;
+/// layers that end before it are left alone. With `advance` the playhead moves onto the last
+/// frame inserted, as holding F5 walks along the timeline.
 fn insert_frame(s: &mut Session, p: &Value) -> Result<Value> {
     let (_, frame) = target(s, p)?;
     let count = count_param(p)?;
+    let all = opt_bool(p, "all_layers")?.unwrap_or(false);
+    let ids = if all { layers_at_or_after(s, frame) } else { target_layers(s, p)? };
     let mut frames = 0;
-    for id in target_layers(s, p)? {
+    for &id in &ids {
         let layer = s.layer_mut(Some(id))?;
         for _ in 0..count {
-            insert_frame_at(layer, frame)?;
+            if all && layer.keyframe_index_at(frame).is_none() && layer.end_frame() > frame {
+                // A gap (or the frames before the first key) under the playhead: insert an
+                // empty frame there, so what follows moves along with the other layers.
+                insert_empty_frame_at(layer, frame)?;
+            } else {
+                insert_frame_at(layer, frame)?;
+            }
         }
         frames = frames.max(layer.end_frame());
     }
-    Ok(json!({"frames": frames}))
+    let mut out = json!({"frames": frames, "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>()});
+    if opt_bool(p, "advance")?.unwrap_or(false) {
+        s.set_frame(frame.saturating_add(count).min(frames.saturating_sub(1)));
+        out["playhead"] = json!(s.frame);
+    }
+    Ok(out)
+}
+
+/// The layers F5 with no frame selection extends: every layer of the timeline with frames at or
+/// after `frame` (folders have none). When no layer reaches that far, the active layer, so F5
+/// past the end still lengthens what you are working on.
+fn layers_at_or_after(s: &Session, frame: u32) -> Vec<LayerId> {
+    let tl = s.timeline();
+    let ids: Vec<LayerId> = tl.layers.iter().filter(|l| l.kind != LayerKind::Folder && l.end_frame() > frame).map(|l| l.id).collect();
+    if ids.is_empty() { vec![s.layer] } else { ids }
+}
+
+/// One empty frame at `frame`: everything from there on moves one frame later.
+fn insert_empty_frame_at(layer: &mut Layer, frame: u32) -> Result<()> {
+    if layer.end_frame() >= MAX_FRAME {
+        return Err(EngineError::State("the timeline is at its maximum length".into()));
+    }
+    shift_after(layer, frame, 1);
+    layer.normalize();
+    Ok(())
 }
 
 pub(crate) fn insert_frame_at(layer: &mut Layer, frame: u32) -> Result<()> {
@@ -393,7 +428,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
 }
 
 fn insert_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
-    let (_, frame) = target(s, p)?;
+    let frame = key_frame(s, p)?;
     for id in target_layers(s, p)? {
         let layer = s.layer_mut(Some(id))?;
         // Inside a motion tween F6 keys every property there; the span stays whole.
@@ -401,15 +436,38 @@ fn insert_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
             insert_keyframe_at(layer, frame, true)?;
         }
     }
-    Ok(json!({"keyframe": frame}))
+    advanced(s, p, frame)
 }
 
 fn insert_blank_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
-    let (_, frame) = target(s, p)?;
+    let frame = key_frame(s, p)?;
     for id in target_layers(s, p)? {
         insert_keyframe_at(s.layer_mut(Some(id))?, frame, false)?;
     }
-    Ok(json!({"keyframe": frame}))
+    advanced(s, p, frame)
+}
+
+/// Where F6 / F7 put the key. With `advance`, a frame that is already a keyframe on every target
+/// layer means "the next one": pressing F6 again after drawing makes the next drawing's key.
+fn key_frame(s: &Session, p: &Value) -> Result<u32> {
+    let (_, frame) = target(s, p)?;
+    if !opt_bool(p, "advance")?.unwrap_or(false) {
+        return Ok(frame);
+    }
+    let ids = target_layers(s, p)?;
+    let tl = s.timeline();
+    let on_keys = !ids.is_empty() && ids.iter().all(|id| tl.layer(*id).is_some_and(|l| l.keyframe_starting_at(frame).is_some()));
+    if on_keys && frame < MAX_FRAME { Ok(frame + 1) } else { Ok(frame) }
+}
+
+/// The result of F6 / F7; with `advance` the playhead moves onto the new key.
+fn advanced(s: &mut Session, p: &Value, frame: u32) -> Result<Value> {
+    let mut out = json!({"keyframe": frame});
+    if opt_bool(p, "advance")?.unwrap_or(false) {
+        s.set_frame(frame);
+        out["playhead"] = json!(frame);
+    }
+    Ok(out)
 }
 
 /// Shift+F6 over a range: clears every keyframe starting in `frame..frame + count` on each

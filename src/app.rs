@@ -2226,6 +2226,13 @@ impl App {
             self.prompt = Some(Prompt { title, cmd: id, key, text });
             return;
         }
+        // F5, F6 and F7 work as in Animate: at the playhead with no frame selection, F5 extends
+        // every layer that reaches it; on one frame the playhead moves on to what was made.
+        if let Some(p) = timeline::insert_key_params(self, id) {
+            self.request(id, p);
+            timeline::follow_playhead(self);
+            return;
+        }
         // Frame commands act on the frame selection (F5 over 3 frames on 2 layers inserts 3
         // frames on each).
         if timeline::RANGE_COMMANDS.contains(&id)
