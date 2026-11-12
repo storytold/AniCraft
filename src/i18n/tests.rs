@@ -479,8 +479,9 @@ fn plain_names(what: &str, app: &crate::app::App, nodes: Vec<(egui::accesskit::N
     for (_, n) in nodes {
         for name in [n.label(), n.description()].into_iter().flatten() {
             // egui names its own window close button; it offers no way to name it ourselves
-            // (docs/localisation.md › Not yet).
-            let translated = name.chars().any(pseudo::is_accented) || EGUI_OWN.contains(&name);
+            // (docs/localisation.md › Not yet). The product name stays as it is in every
+            // language (the macOS app menu is titled with it, ADR 0006), as the source scan allows.
+            let translated = name.chars().any(pseudo::is_accented) || EGUI_OWN.contains(&name) || name == "AniCraft";
             let ours = scan::is_prose(name) && !doc_text.contains(name) && !doc_text.iter().any(|d| name.contains(d.as_str()));
             if ours && !translated {
                 found.insert(format!("[{what}] {:?} {name:?}", n.role()));
