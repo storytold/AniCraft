@@ -17,6 +17,7 @@ pub enum Tool {
     Transform,
     Width,
     Bone,
+    Bind,
     Pen,
     Text,
     Pencil,
@@ -67,7 +68,7 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 21] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 22] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -76,6 +77,7 @@ impl Tool {
             Tool::Transform => tr_noop!("Free Transform"),
             Tool::Width => tr_noop!("Width"),
             Tool::Bone => tr_noop!("Bone"),
+            Tool::Bind => tr_noop!("Bind"),
             Tool::Pen => tr_noop!("Pen"),
             Tool::Text => tr_noop!("Text"),
             Tool::Pencil => tr_noop!("Pencil"),
@@ -102,6 +104,7 @@ impl Tool {
             Tool::Transform => Some("Q"),
             Tool::Width => Some("U"),
             Tool::Bone => Some("M"),
+            Tool::Bind => Some("Shift+M"),
             Tool::Pen => Some("P"),
             Tool::Text => Some("T"),
             Tool::Pencil => Some("Shift+Y"),
@@ -132,7 +135,8 @@ impl Tool {
             Tool::PaintBrush => tr_noop!("Drag to draw a line in the stroke colour whose width follows the pen's pressure and the brush's tapers. Shape it afterwards with the Width tool. [ and ] change the size; the options set the brush and its pressure curve."),
             Tool::Eraser => tr_noop!("Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage."),
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
-            Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
+            Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer), or drag inside a shape to draw a bone in it (the shape bends with its bones); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
+            Tool::Bind => tr_noop!("Shows the points of shapes with bones: a square follows one bone, a triangle several. Click a bone to see the points it moves (filled). Click a point, or drag a box around points, to make them follow only that bone; Shift shares the bone with the ones they follow, Ctrl takes them from it."),
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
             Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
@@ -233,8 +237,11 @@ pub enum Drag {
     CameraPan { last: egui::Pos2 },
     CameraRotate { last: f32 },
     CameraWheel { until: f64 },
-    /// Bone tool (ADR 0043): drawing a bone from instance `from`, joint `head` to `cur` (stage).
+    /// Bone tool (ADR 0043): drawing a bone from instance `from` (or inside shape `from`, or on
+    /// from a shape bone's joint node, ADR 0071), joint `head` to `cur` (stage).
     Bone { from: anicraft_engine::doc::ElementId, head: egui::Pos2, cur: egui::Pos2 },
+    /// Bind tool (ADR 0071): a box from `start` to `cur` (stage) binding the points inside it.
+    BindMarquee { start: egui::Pos2, cur: egui::Pos2 },
     /// Posing by inverse kinematics: point `local` of the bone's instance follows the pointer.
     BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
     /// Moving a whole armature by its root, from stage point `last` last frame.
@@ -1749,6 +1756,29 @@ impl App {
                 self.run("timeline.goto", json!({"frame": 0}));
                 self.bone_sel = Some(anicraft_engine::doc::BoneId(b2));
                 self.tool = Tool::Select;
+            }
+            Some("shapebones") => {
+                // A tail with bones inside it (ADR 0071): four bones, curled at frame 1 and the
+                // other way at frame 24, the second bone picked with the Bind tool in hand.
+                self.run("layer.new", json!({"name": "Tail"}));
+                let d = "M220 260 C300 252 420 250 540 262 C660 274 760 280 860 296 C872 300 872 306 860 308 C760 318 660 318 540 316 C420 314 300 334 220 340 C200 340 200 260 220 260 Z";
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                let shape = id(self.run("draw.path", json!({"d": d, "fill": "#e8833a", "stroke": "#4a2c14", "stroke_width": 3, "object": true})), "element");
+                self.run("timeline.insert_frame", json!({"frame": 23}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                let mut bone = id(self.run("bone.add_in_shape", json!({"shape": shape, "head": [220, 300], "tail": [380, 296]})), "bone");
+                let mut bones = vec![bone];
+                for x in [540, 700, 850] {
+                    bone = id(self.run("bone.add_in_shape", json!({"parent": bone, "tail": [x, 298]})), "bone");
+                    bones.push(bone);
+                }
+                for (b, (a, z)) in bones.iter().zip([(-4, 3), (-12, 10), (-16, 14), (-20, 18)]) {
+                    self.run("bone.pose", json!({"bone": b, "angle": a, "frame": 0}));
+                    self.run("bone.pose", json!({"bone": b, "angle": z, "frame": 23}));
+                }
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.bone_sel = bones.get(1).copied().map(anicraft_engine::doc::BoneId);
+                self.tool = Tool::Bind;
             }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.

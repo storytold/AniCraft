@@ -45,7 +45,8 @@ Each tool has the key you already know.
 | Subselection | **A** | Points and handles, on raw drawings and drawing objects. |
 | Free Transform | **Q** | Scale, rotate and move; Shift and Alt as you'd expect. |
 | Width | **U** | Variable-width strokes, with profiles in Properties. |
-| Bone | **M** | Joins symbol instances into an armature. |
+| Bone | **M** | Joins symbol instances into an armature, or draws bones inside a shape. |
+| Bind | **Shift+M** | Chooses which points of a shape follow which bone. |
 | Pen | **P** | Alt-click adds a point to a path. |
 | Text | **T** | Static, dynamic and input text. |
 | Pencil | **Shift+Y** | Smooth, Straighten and Ink modes. |
@@ -189,7 +190,7 @@ Besides the tools and keys above, these are still to come:
 
 * groups, saved workspaces and several open documents at once;
 * motion tweens and bones from Animate documents;
-* shape armatures, spring and joint translation for bones;
+* spring and joint translation for bones, and armatures mixing symbols and shapes;
 * the Brush's Paint Selection and Paint Inside modes, pressure curves and a brush library;
 * per-character text styles and text on a path;
 * full screen and zoom in Test Movie;

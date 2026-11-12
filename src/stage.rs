@@ -340,7 +340,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone | Tool::Bind => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -444,6 +444,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tool::Subselect => crate::pathtools::subselect_drag_start(app, press, shift, xf),
                 Tool::Bone => crate::bone_tool::drag_start(app, xf, press),
+                Tool::Bind => crate::bind_tool::drag_start(app, xf, press),
                 Tool::Width => crate::widthtool::drag_start(app, press, xf),
                 Tool::Pencil => {
                     app.pencil = vec![to_v(sp)];
@@ -581,7 +582,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     crate::pathtools::move_points(app, Vec2::new(d.x, d.y), !alt);
                 }
             }
-            (Drag::PointMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (Drag::PointMarquee { cur: m, .. } | Drag::BindMarquee { cur: m, .. }, Some(c)) => *m = c,
             (d @ Drag::Width { .. }, Some(c)) => {
                 let d = *d;
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
@@ -615,6 +616,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
+            Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Brush => crate::brushtool::commit(app, xf),
             Drag::Eraser => crate::erasertool::commit(app, xf),
@@ -687,6 +689,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 Tool::Bone if !panning => crate::bone_tool::click(app, xf, p),
+                Tool::Bind if !panning => crate::bind_tool::click(app, xf, p, shift, command),
                 Tool::Select | Tool::Transform if !panning && multi => crate::onion::click(app, sp, shift, zoom),
                 // A click on a bone picks it (ADR 0043).
                 Tool::Select if !panning && let Some((layer, bone, _)) = crate::bone_tool::hit(app, xf, p) => crate::bone_tool::select(app, layer, Some(bone)),
@@ -976,6 +979,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Armatures' bones over their artwork (ADR 0043).
     crate::bone_tool::draw(app, &painter, xf);
+    crate::bind_tool::draw(app, &painter, xf);
     let sel_stroke = Stroke::new(1.0, T.selection);
     let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None

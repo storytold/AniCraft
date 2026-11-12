@@ -19,6 +19,7 @@
 //! joint's limits. It works on joint angles directly, so limits are a clamp per step and the
 //! result is a pose by construction.
 
+use crate::skin::{self, Skin};
 use crate::{Element, ElementId, Keyframe, Layer};
 use anicraft_geom::{Affine, Vec2};
 use serde::{Deserialize, Serialize};
@@ -111,11 +112,22 @@ impl Bone {
 pub struct Armature {
     #[serde(default)]
     pub bones: Vec<Bone>,
+    /// A shape armature (ADR 0071): the bones are inside this shape and bend its outline. Its
+    /// bones join joint nodes (ids that are no element) instead of instances; see
+    /// [`crate::skin`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin: Option<Skin>,
 }
 
 impl Armature {
     pub fn is_empty(&self) -> bool {
         self.bones.is_empty()
+    }
+
+    /// The shape a shape armature's bones are inside (ADR 0071); `None` for an armature of
+    /// symbol instances.
+    pub fn skin_shape(&self) -> Option<ElementId> {
+        self.skin.as_ref().map(|s| s.shape)
     }
 
     pub fn bone(&self, id: BoneId) -> Option<&Bone> {
@@ -152,8 +164,12 @@ impl Armature {
         out
     }
 
-    /// The instances no bone moves (one for an armature made with the Bone tool).
+    /// The instances no bone moves (one for an armature made with the Bone tool; a shape
+    /// armature's shape).
     pub fn roots(&self) -> Vec<ElementId> {
+        if let Some(s) = self.skin_shape() {
+            return vec![s];
+        }
         let mut out = Vec::new();
         for b in &self.bones {
             if self.bone_into(b.parent).is_none() && !out.contains(&b.parent) {
@@ -210,8 +226,12 @@ impl Armature {
             kept.push(b);
         }
         // Order: a bone after the bone moving its parent. What never gets placed is a cycle.
+        // A shape armature's bones all hang from its shape.
         let children: HashSet<ElementId> = kept.iter().map(|b| b.child).collect();
-        let mut placed: HashSet<ElementId> = kept.iter().map(|b| b.parent).filter(|p| !children.contains(p)).collect();
+        let mut placed: HashSet<ElementId> = match self.skin_shape() {
+            Some(s) => HashSet::from([s]),
+            None => kept.iter().map(|b| b.parent).filter(|p| !children.contains(p)).collect(),
+        };
         let mut ordered = Vec::with_capacity(kept.len());
         let mut rest = kept;
         loop {
@@ -227,7 +247,8 @@ impl Armature {
         }
         ordered.truncate(MAX_BONES);
         self.bones = ordered;
-        self.bones != before
+        let skin_changed = skin::sanitize(self);
+        self.bones != before || skin_changed
     }
 }
 
@@ -296,19 +317,21 @@ impl Pose {
 }
 
 /// `R(angle)` about point `j`.
-fn turn_about(j: Vec2, angle: f32) -> Affine {
+pub(crate) fn turn_about(j: Vec2, angle: f32) -> Affine {
     Affine::translate(j.x, j.y).mul(&Affine::rotate(angle)).mul(&Affine::translate(-j.x, -j.y))
 }
 
 /// Forward kinematics: the transform (in the layer's space) of every instance in `elements`
 /// once `pose` turns the armature's joints. A root keeps its own transform; a child is placed
 /// from its parent: `R_joint(angle) · parent · rest`. An instance whose parent isn't on the
-/// keyframe keeps its own transform.
+/// keyframe keeps its own transform. A shape armature's joint nodes (ADR 0071) are placed
+/// the same way from the shape's transform.
 pub fn place(arm: &Armature, elements: &[Arc<Element>], pose: &Pose) -> HashMap<ElementId, Affine> {
     let mut world: HashMap<ElementId, Affine> = elements.iter().map(|e| (e.id, e.transform)).collect();
+    let nodes = arm.skin.is_some();
     for b in &arm.bones {
         let Some(wp) = world.get(&b.parent).copied() else { continue };
-        if !world.contains_key(&b.child) {
+        if !nodes && !world.contains_key(&b.child) {
             continue;
         }
         let j = wp.apply(b.head);
@@ -320,11 +343,14 @@ pub fn place(arm: &Armature, elements: &[Arc<Element>], pose: &Pose) -> HashMap<
     world
 }
 
-/// Puts the instances of `elements` where `pose` has them (copy-on-write: only instances that
-/// move are cloned). Returns whether any moved.
+/// Puts the instances of `elements` where `pose` has them, and bends a shape armature's shape
+/// (copy-on-write: only what changes is cloned). Returns whether anything changed.
 pub fn apply(arm: &Armature, elements: &mut [Arc<Element>], pose: &Pose) -> bool {
     if arm.is_empty() {
         return false;
+    }
+    if arm.skin.is_some() {
+        return skin::apply(arm, elements, pose);
     }
     let world = place(arm, elements, pose);
     let mut moved = false;
@@ -372,7 +398,8 @@ pub struct BoneAt {
 /// Every bone's joint and end with the instances in `elements` placed as they show (posed:
 /// what [`crate::evaluate_layer_elements`] gives on an armature layer).
 pub fn bones_at(arm: &Armature, elements: &[Arc<Element>], pose: &Pose) -> Vec<BoneAt> {
-    let world: HashMap<ElementId, Affine> = elements.iter().map(|e| (e.id, e.transform)).collect();
+    // A shape armature's joint nodes are no elements: forward kinematics places them.
+    let world: HashMap<ElementId, Affine> = if arm.skin.is_some() { place(arm, elements, pose) } else { elements.iter().map(|e| (e.id, e.transform)).collect() };
     arm.bones
         .iter()
         .filter_map(|b| {

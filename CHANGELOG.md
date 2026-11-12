@@ -16,6 +16,16 @@
   * **SVG import**: soft masks come in as soft mask layers (luminance, or alpha with
     `mask-type: alpha`) instead of being drawn unmasked; `textPath` comes in as text on a path;
     per-character `x`, `y`, `dx`, `dy` and `rotate` are kept where they are simple.
+* **Bones inside shapes** (ADR 0071, M7).
+  * The **Bone** tool now also draws bones inside a shape, so the shape itself bends like a tail
+    or a tentacle. Its points follow the nearest bones, and the bend stays smooth through the
+    joints. Lines keep their width, and the shape as drawn comes back exactly at rest.
+  * Pose by dragging bones with the Selection tool. Poses key per frame and tween with easing,
+    as symbol armatures do, and every export, Test Movie and the stage show the bend.
+  * The new **Bind** tool (**Shift+M**) shows which points follow which bone, and changes it by
+    click, Shift-click, Ctrl-click or a box. **Properties › Bone** counts the bone's points and
+    has **Rebind All**.
+  * Headless: `bone.add_in_shape`, `bone.bind`, and `bone.info` with `points`.
 * **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
   tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
   macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip

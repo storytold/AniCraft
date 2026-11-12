@@ -1015,6 +1015,8 @@ mod tests_camera;
 #[cfg(test)]
 mod tests_bone;
 #[cfg(test)]
+mod tests_shape_bone;
+#[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
 mod raw_tests;
