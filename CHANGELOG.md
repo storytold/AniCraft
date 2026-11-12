@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
+  tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
+  macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip
+  them, and a newer push cancels the older run. Their first run
+  found one macOS-only failure: the screen-reader translation tests treated the macOS app
+  menu's title, the product name, as untranslated.
 * **Dynamic and input text fields** (ADR 0066, M5).
   * **Properties › Text type**: Static, Dynamic or Input text, as in Animate. Dynamic and input
     fields have an **instance name**, a **line type** (single line, multiline, multiline no wrap,
