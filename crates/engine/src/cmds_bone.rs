@@ -463,26 +463,12 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
                 .collect();
             let mut out = json!({"layer": l.id.0, "name": l.name, "roots": arm.roots().iter().map(|e| e.0).collect::<Vec<_>>(), "poses": poses(l), "bones": bones, "shape": arm.skin_shape().map(|e| e.0)});
             if with_points && let Some(k) = &arm.skin {
-                out["points"] = json!(shape_points(arm, &els).iter().zip(&k.points).map(|(at, b)| json!({"at": pt(*at), "bones": b.bones.iter().map(|i| json!([i.0.0, i.1])).collect::<Vec<_>>(), "manual": b.manual})).collect::<Vec<_>>());
+                out["points"] = json!(skin::points_shown(arm, &els).iter().zip(&k.points).map(|(at, b)| json!({"at": pt(*at), "bones": b.bones.iter().map(|i| json!([i.0.0, i.1])).collect::<Vec<_>>(), "manual": b.manual})).collect::<Vec<_>>());
             }
             Some(out)
         })
         .collect();
     Ok(json!({"frame": frame, "armatures": list}))
-}
-
-/// The points of a shape armature's shape as they show (stage px, in point order): the
-/// anchors of its posed outline.
-pub fn shape_points(arm: &Armature, elements: &[Arc<Element>]) -> Vec<Vec2> {
-    let Some(id) = arm.skin_shape() else { return Vec::new() };
-    elements
-        .iter()
-        .find(|e| e.id == id)
-        .and_then(|e| match &e.kind {
-            ElementKind::Shape(sh) => Some(skin::anchors(&sh.path).into_iter().map(|p| e.transform.apply(p)).collect()),
-            _ => None,
-        })
-        .unwrap_or_default()
 }
 
 fn add_in_shape(s: &mut Session, p: &Value) -> Result<Value> {

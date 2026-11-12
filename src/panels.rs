@@ -32,6 +32,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Eyedropper => Icon::Eyedropper,
         Tool::Camera => Icon::Camera,
         Tool::Bone => Icon::Bone,
+        Tool::Bind => Icon::Bind,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
     }
@@ -1491,12 +1492,28 @@ fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId
             }
         });
     }
+    // A bone inside a shape (ADR 0071): how many of the shape's points it moves.
+    let skin = layer.armature.as_ref().and_then(|a| a.skin.as_ref()).map(|k| (k.points.iter().filter(|p| p.weight(id) > 0.0).count(), k.points.len()));
+    if let Some((mine, total)) = skin {
+        row(ui, tr!("Points"), |ui| {
+            ui.label(text(Type::Data, format!("{mine} / {total}"))).on_hover_text(tr!("How many of the shape's points this bone moves. Adjust them with the Bind tool"));
+        });
+    }
     ui.horizontal_wrapped(|ui| {
-        if ui.button(tr!("Remove Bone")).named(tr!("Remove bone")).on_hover_text(tr!("Removes the bone and the bones below it; their instances stay where they are, on a layer of their own")).clicked() {
+        if skin.is_some() {
+            if ui.button(tr!("Bind Tool")).named(tr!("Bind tool")).on_hover_text(tr!("Choose which points of the shape follow this bone")).clicked() {
+                app.tool = crate::app::Tool::Bind;
+            }
+            if ui.button(tr!("Rebind All")).named(tr!("Rebind all points")).on_hover_text(tr!("Binds every point of the shape to its nearest bones again, dropping changes made with the Bind tool")).clicked() {
+                app.run("bone.bind", json!({"bone": id.0, "mode": "auto"}));
+            }
+        }
+        let hint = if skin.is_some() { tr!("Removes the bone and the bones below it; the shape's points follow the bones that are left") } else { tr!("Removes the bone and the bones below it; their instances stay where they are, on a layer of their own") };
+        if ui.button(tr!("Remove Bone")).named(tr!("Remove bone")).on_hover_text(hint).clicked() {
             app.request("bone.remove", json!({"bone": id.0}));
         }
     });
-    ui.label(text(Type::Caption, tr!("Drag bones or instances with the Selection tool to pose; a pose at another frame keys it, and poses tween.")));
+    ui.label(text(Type::Caption, if skin.is_some() { tr!("Drag bones with the Selection tool to bend the shape; a pose at another frame keys it, and poses tween.") } else { tr!("Drag bones or instances with the Selection tool to pose; a pose at another frame keys it, and poses tween.") }));
 }
 
 fn document_props(app: &mut App, ui: &mut egui::Ui) {

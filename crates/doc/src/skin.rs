@@ -290,6 +290,20 @@ pub fn apply(arm: &Armature, elements: &mut [Arc<Element>], pose: &Pose) -> bool
     true
 }
 
+/// The points of a shape armature's shape in `elements` (evaluated: posed), in point order, in
+/// the layer's space: the anchors of its outline as it shows.
+pub fn points_shown(arm: &Armature, elements: &[Arc<Element>]) -> Vec<Vec2> {
+    let Some(skin) = &arm.skin else { return Vec::new() };
+    elements
+        .iter()
+        .find(|e| e.id == skin.shape)
+        .and_then(|e| match &e.kind {
+            ElementKind::Shape(sh) => Some(anchors(&sh.path).into_iter().map(|p| e.transform.apply(p)).collect()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// Repairs a loaded skin against its armature: the rest outline within [`MAX_SKIN_POINTS`]
 /// anchors (else the skin goes), one binding per anchor, weights of bones that exist, positive
 /// and summing to 1; unbound automatic anchors are bound. Returns whether anything changed.
