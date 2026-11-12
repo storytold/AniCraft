@@ -10,7 +10,7 @@
 use crate::a11y::Named;
 use crate::app::{App, Drag};
 use crate::prefs::{ONION_REACH_MAX, OnionPrefs};
-use crate::theme::{T, Type, color, font, text, to_color32, to_rgba};
+use crate::theme::{T, Type, color, color_edit_button_srgba, font, text, to_color32, to_rgba};
 use anicraft_engine::doc::Rgba;
 use anicraft_engine::geom::{Rect as GRect, Vec2};
 use anicraft_engine::onion::{FrameItem, Markers, OnionSkin, PRESETS};
@@ -170,7 +170,7 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui) {
             let name = if past { tr!("Before colour") } else { tr!("After colour") };
             ui.label(text(Type::Body, if past { tr!("Before") } else { tr!("After") }));
             let mut c = to_color32(if past { o.past } else { o.future });
-            let r = ui.color_edit_button_srgba(&mut c).named(name).on_hover_text(if past { tr!("Colour of the frames before the playhead") } else { tr!("Colour of the frames after the playhead") });
+            let r = color_edit_button_srgba(ui, &mut c).named(name).on_hover_text(if past { tr!("Colour of the frames before the playhead") } else { tr!("Colour of the frames after the playhead") });
             if r.changed() {
                 let [cr, cg, cb, _] = c.to_srgba_unmultiplied();
                 change(app, &ctx, |o, p| {

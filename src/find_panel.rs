@@ -6,7 +6,7 @@
 
 use crate::a11y::{self, Named};
 use crate::app::App;
-use crate::theme::{T, TARGET, Type, color, font, text};
+use crate::theme::{T, TARGET, Type, color, color_edit_button_srgb, font, text};
 use anicraft_engine::StateId;
 use anicraft_engine::find::{self, Field, Hit, Kind, Query, TextOptions, Where};
 use egui::{Align2, Rect, Sense, WidgetType, pos2, vec2};
@@ -285,11 +285,11 @@ fn query_rows(app: &mut App, ui: &mut egui::Ui) -> bool {
         }
         Kind::Color => {
             row(ui, tr!("Find"), &mut |ui| {
-                ui.color_edit_button_srgb(&mut app.find.color).named(tr!("Colour to find"));
+                color_edit_button_srgb(ui, &mut app.find.color).named(tr!("Colour to find"));
                 ui.label(text(Type::Data, format!("#{:02x}{:02x}{:02x}", app.find.color[0], app.find.color[1], app.find.color[2])));
             });
             row(ui, tr!("Replace with"), &mut |ui| {
-                ui.color_edit_button_srgb(&mut app.find.with_color).named(tr!("Colour to replace with"));
+                color_edit_button_srgb(ui, &mut app.find.with_color).named(tr!("Colour to replace with"));
                 ui.label(text(Type::Data, format!("#{:02x}{:02x}{:02x}", app.find.with_color[0], app.find.with_color[1], app.find.with_color[2])));
             });
         }
