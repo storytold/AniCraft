@@ -98,7 +98,21 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: true,
             })
         }
-        "file.new" | "file.new_sample" | "file.open" | "file.open_recent" | "file.recover" if s.is_dirty() => Some(Confirmation {
+        "file.save_as_template" => {
+            let path = crate::cmds_template::target(p).ok()?;
+            crate::vfs::exists(&path).then(|| overwrite(&path, "Saving the template"))
+        }
+        "file.delete_template" => {
+            let path = crate::cmds_template::target(p).ok()?;
+            let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Some(Confirmation {
+                title: "Delete template?".into(),
+                message: format!("The template “{name}” and its picture will be deleted from your templates. This cannot be undone."),
+                action: "Delete Template".into(),
+                irreversible: true,
+            })
+        }
+        "file.new" | "file.new_sample" | "file.new_from_template" | "file.open" | "file.open_recent" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
             action: "Discard Changes".into(),

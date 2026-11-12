@@ -18,6 +18,25 @@
   * Every other export and the stage draw fields with their authored text, box and border.
   * `text.field`, `text.create {type}` and `control.test_movie` `text` and `select_all` events
     for agents and the CLI.
+* **Templates, SVG into the Library, and drops on the timeline** (ADR 0065, M8).
+  * **File › New from Template** and the start screen's new **Templates** row: Leaderboard banner
+    728 × 90, Rectangle banner 300 × 250, Social square 1080 × 1080 at 30 fps, Storyboard 16:9 (six
+    labelled panels), Character turnaround and a Lip-sync mouth chart. Each has named layers and
+    guides on a locked guide layer (they show while drawing and never export). They open as new,
+    untitled documents with a drawing layer active.
+  * **File › Save as Template** keeps the open document, with a picture, under a name and a
+    category in your settings folder. It shows under "My templates" on the start screen, with
+    Delete. Replacing or deleting a template asks first.
+  * **SVG into the Library**: dropping an SVG on the Library, or File › Import › Import to Library,
+    makes one graphic symbol named after the file, in the folder under the pointer.
+  * **Drops on the timeline**: a sound dropped on a layer's frame goes onto that keyframe. An image
+    or SVG goes onto that layer at that frame, in a new keyframe if needed. Either way it is one undo
+    step, and a highlight shows the cell. Locked layers, folders and the camera say why they won't
+    take it.
+  * The timeline's layer footer keeps its Move Down button in every language.
+  * Headless: `file.new_from_template`, `file.templates`, `file.save_as_template`,
+    `file.delete_template`, and `file.drop` with `to: "timeline"`.
+  * Exact drop positions from the desktop still wait for winit 0.31 (eframe 0.37 is still on 0.30).
 * **Accessibility, second pass** (ADR 0064, M8).
   * **Select on the stage from the keyboard.** With the stage focused (Ctrl+F6), Tab goes to
     its elements, and a ring shows the focused one on the artwork.

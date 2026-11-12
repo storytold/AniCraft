@@ -79,7 +79,9 @@ engine, and two of them keep state (the recent list, its pictures) between sessi
 
 ## Not yet
 
-* Exact desktop drop positions (winit 0.31), and dropping folders of images as a sequence.
-* SVG into the Library (as a graphic symbol), and dropping onto the timeline (a layer and frame).
+* Exact desktop drop positions (winit 0.31; eframe 0.36 and 0.37 are on winit 0.30, ADR 0065), and
+  dropping folders of images as a sequence.
+* ~~SVG into the Library, dropping onto the timeline, templates on the start screen~~: done in
+  ADR 0065.
 * Opening several dropped documents (needs document tabs), and reopening the last document at start.
-* Templates on the start screen, and thumbnails that follow the poster frame.
+* Thumbnails that follow the poster frame.

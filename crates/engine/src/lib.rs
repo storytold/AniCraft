@@ -26,6 +26,7 @@ pub mod cmds_raw;
 pub mod cmds_rawsub;
 mod cmds_rawpoints;
 pub mod cmds_recent;
+pub mod cmds_template;
 mod cmds_recovery;
 mod cmds_script;
 pub mod cmds_plugin;
@@ -1030,3 +1031,7 @@ mod selection_tests;
 mod scale_grid_tests;
 #[cfg(test)]
 mod drop_tests;
+#[cfg(test)]
+mod template_tests;
+#[cfg(test)]
+mod timeline_drop_tests;

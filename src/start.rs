@@ -1,6 +1,7 @@
 //! The start screen (ADR 0059): what AniCraft shows when it starts without a document to open,
 //! as Animate's Home screen does. New with stage-size presets (and a custom size), Open, the
-//! recent files with their pictures, and the sample animation. It takes the place of the
+//! recent files with their pictures, the sample animation, and the templates (ADR 0065: built-in
+//! and the user's own; File › New from Template opens the screen on them). It takes the place of the
 //! workspace, never sits over it as a dialog: the menus keep working, Esc goes back to the
 //! document, and New, Open or a recent file dismisses it once the document is there.
 
@@ -34,12 +35,14 @@ pub struct StartScreen {
     pub width: u32,
     pub height: u32,
     pub fps: f32,
+    /// Opened from File › New from Template: scroll to the templates once.
+    pub show_templates: bool,
 }
 
 impl Default for StartScreen {
     fn default() -> Self {
         let d = anicraft_engine::doc::Stage::default();
-        StartScreen { width: d.width, height: d.height, fps: d.fps }
+        StartScreen { width: d.width, height: d.height, fps: d.fps, show_templates: false }
     }
 }
 
@@ -52,6 +55,7 @@ pub fn new_params(width: u32, height: u32, fps: f32) -> serde_json::Value {
 pub fn open(app: &mut App) {
     app.playing = false;
     app.start = Some(StartScreen { fps: app.s.doc.stage.fps, ..StartScreen::default() });
+    crate::templates::rescan(app);
     app.status_ok(tr!("Pick a size to start a new animation, or open one you made. Esc goes back to the document."));
 }
 
@@ -78,6 +82,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         open_column(app, right, &ctx);
                     }
                 });
+                ui.add_space(20.0);
+                let head = crate::templates::section(app, ui, &ctx);
+                if let Some(st) = app.start.as_mut().filter(|s| s.show_templates) {
+                    st.show_templates = false;
+                    ui.scroll_to_rect(head, Some(egui::Align::TOP));
+                }
                 ui.add_space(16.0);
                 footer(app, ui);
             });
