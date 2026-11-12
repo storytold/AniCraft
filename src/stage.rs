@@ -67,11 +67,13 @@ pub struct Cache {
     pub gpu: crate::gpu_stage::GpuStage,
     /// Who drew the newest visible tiles: the GPU, or the CPU and why (status bar).
     pub drawn_by: Option<(bool, Option<String>)>,
+    /// The selection pattern's texture and the colour it was made in (`selection_pattern`).
+    pattern: Option<(Color32, egui::TextureHandle)>,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None, gpu: Default::default(), drawn_by: None }
+        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None, gpu: Default::default(), drawn_by: None, pattern: None }
     }
 }
 
@@ -999,12 +1001,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
     if app.tool == Tool::Select {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
-        let mut mesh = egui::Mesh::default();
+        let (mut spans, mut dots) = (Vec::new(), egui::Mesh::default());
         let mut budget = MAX_DOTS;
         for item in app.s.display_list().items.iter().filter(|i| app.s.selection.contains(i.layer, i.element) && raw.contains(&(i.layer, i.element))) {
-            selection_dots(&mut mesh, item, &to_px.mul(&item.transform), canvas, &mut budget);
+            selection_pattern(&mut spans, &mut dots, item, &to_px.mul(&item.transform), canvas, &mut budget);
         }
-        painter.add(egui::Shape::mesh(mesh));
+        if !spans.is_empty() {
+            let mut mesh = egui::Mesh::with_texture(pattern_texture(&mut app.stage_cache.pattern, ui.ctx()));
+            pattern_mesh(&mut mesh, &spans);
+            painter.add(egui::Shape::mesh(mesh));
+        }
+        painter.add(egui::Shape::mesh(dots));
     }
     if multi {
         let hover = pointer.filter(|p| canvas.contains(*p) && !panning && !app.modal_open() && app.palette.is_none() && matches!(app.tool, Tool::Select | Tool::Transform)).map(to_stage);
@@ -1277,14 +1284,80 @@ fn raw_ids(app: &App) -> std::collections::HashSet<(anicraft_engine::doc::LayerI
     layers.into_iter().flat_map(|l| app.s.elements_on(l).into_iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(move |e| (l, e.id))).collect()
 }
 
-/// Most selection dots drawn in a frame.
+/// Spacing of the selection pattern's dots (points).
+const GAP: f32 = 3.0;
+/// Most single dots drawn in a frame along hairline strokes (wider strokes and fills are spans).
 const MAX_DOTS: usize = 60_000;
+/// Most pattern spans in a frame: far more than a full-screen drawing needs (a 4K view is ~720
+/// rows), so the pattern never stops part way down a shape; it only bounds a pathological one.
+const MAX_SPANS: usize = 400_000;
+
+/// The selection pattern's tile: two by two dot cells, dark and light in a checker, at four
+/// texels a point so the 1.5-point dots stay crisp. Drawn repeating, on the screen grid.
+fn pattern_image(dark: Color32) -> egui::ColorImage {
+    const PER_PT: usize = 4;
+    let cell = (GAP as usize) * PER_PT;
+    let size = 2 * cell;
+    let (lo, hi) = (cell / 4, cell - cell / 4);
+    let pixels = (0..size * size)
+        .map(|i| {
+            let (x, y) = (i % size, i / size);
+            let inside = (lo..hi).contains(&(x % cell)) && (lo..hi).contains(&(y % cell));
+            match inside {
+                false => Color32::TRANSPARENT,
+                true if (x / cell + y / cell).is_multiple_of(2) => dark,
+                true => Color32::WHITE,
+            }
+        })
+        .collect();
+    egui::ColorImage::new([size, size], pixels)
+}
+
+/// The pattern texture for the theme's selection colour (made again when the theme changes).
+fn pattern_texture(cache: &mut Option<(Color32, egui::TextureHandle)>, ctx: &egui::Context) -> egui::TextureId {
+    let dark = T.selection;
+    if let Some((c, t)) = cache.as_ref()
+        && *c == dark
+    {
+        return t.id();
+    }
+    let t = ctx.load_texture("selection-pattern", pattern_image(dark), egui::TextureOptions::NEAREST_REPEAT);
+    let id = t.id();
+    *cache = Some((dark, t));
+    id
+}
+
+/// Adds the pattern over `spans` to `mesh` (textured with [`pattern_texture`]). The texture
+/// coordinates come from screen positions, so the dots sit on a fixed screen grid and don't
+/// crawl when the view pans; a dot's centre is on a multiple of [`GAP`].
+fn pattern_mesh(mesh: &mut egui::Mesh, spans: &[Rect]) {
+    let tile = 2.0 * GAP;
+    let uv = |p: Pos2| pos2((p.x + GAP * 0.5) / tile, (p.y + GAP * 0.5) / tile);
+    for r in spans {
+        mesh.add_rect_with_uv(*r, Rect::from_min_max(uv(r.min), uv(r.max)), Color32::WHITE);
+    }
+}
 
 /// Animate's selection look for raw shapes: fine dots over the selected fill or stroke, light and
-/// dark in a checker so they show on any colour. They sit on a fixed screen grid, so they don't
-/// crawl when the view pans; `m` maps the item's path to the screen.
-fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
-    const GAP: f32 = 3.0;
+/// dark in a checker so they show on any colour. `m` maps the item's path to the screen. Fills
+/// and strokes wider than the dot spacing become `spans` (one rectangle per row of dots per run
+/// inside them, for the pattern texture), so a shape filling the view costs a few hundred
+/// rectangles however far it is zoomed in (#204: single dots under one budget ran out part way
+/// down a big or zoomed-in shape, and the shading stopped there). Hairline strokes get one row of
+/// dots along them in `mesh`.
+fn selection_pattern(spans: &mut Vec<Rect>, mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
+    use anicraft_engine::geom::FillRule;
+    if item.fill.is_some() {
+        pattern_spans(&item.path.flatten(m, 0.5), item.fill_rule, clip, spans);
+    }
+    let Some(st) = &item.stroke else { return };
+    let half = (st.reach() * m.mean_scale()).max(0.5);
+    if half >= GAP {
+        // The stroke's own outline (caps, joins and dashes as drawn), filled non-zero.
+        let outline = anicraft_engine::render::stroke::stroke_outline(&item.path, m, st, 0.5);
+        pattern_spans(&outline.flatten(&Affine::IDENTITY, 0.5), FillRule::NonZero, clip, spans);
+        return;
+    }
     let mut dot = |p: Pos2| {
         if clip.contains(p) && *budget > 0 {
             *budget -= 1;
@@ -1293,73 +1366,160 @@ fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayIte
         }
         *budget > 0
     };
-    let lines = item.path.flatten(m, 0.5);
-    if item.fill.is_some() {
-        let b = item.path.bounds().transformed(m);
-        let mut y = (b.min.y.max(clip.top()) / GAP).ceil() * GAP;
-        let bottom = b.max.y.min(clip.bottom());
-        let mut xs: Vec<f32> = Vec::new();
-        while y <= bottom {
-            // Where this row crosses the outline; pairs of crossings are inside (even-odd: raw
-            // fills never overlap themselves).
-            xs.clear();
-            for pl in &lines {
-                let n = pl.points.len();
-                for i in 0..n {
-                    let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
-                    if (a.y > y) != (c.y > y) {
-                        xs.push(a.x + (y - a.y) * (c.x - a.x) / (c.y - a.y));
-                    }
-                }
+    // Along the stroke; segments off the screen are skipped.
+    let near = clip.expand(half + GAP);
+    for pl in &item.path.flatten(m, 0.5) {
+        let n = pl.points.len();
+        let segs = if pl.closed { n } else { n.saturating_sub(1) };
+        let mut carry = 0.0;
+        for i in 0..segs {
+            let (Some(&a), Some(&c)) = (pl.points.get(i), pl.points.get((i + 1) % n)) else { continue };
+            let d = c - a;
+            let len = d.length();
+            if len <= 1e-6 {
+                continue;
             }
-            xs.sort_by(f32::total_cmp);
-            for [x0, x1] in xs.as_chunks::<2>().0 {
-                let mut x = (x0.max(clip.left()) / GAP).ceil() * GAP;
-                while x <= x1.min(clip.right()) {
-                    if !dot(pos2(x, y)) {
-                        return;
-                    }
-                    x += GAP;
-                }
+            if !near.intersects(Rect::from_two_pos(pos2(a.x, a.y), pos2(c.x, c.y))) {
+                carry = (carry - len).rem_euclid(GAP);
+                continue;
             }
-            y += GAP;
+            let dir = d * (1.0 / len);
+            let mut t = carry;
+            while t < len {
+                let p = a + dir * t;
+                if !dot(pos2(p.x, p.y)) {
+                    return;
+                }
+                t += GAP;
+            }
+            carry = t - len;
         }
     }
-    if let Some(st) = &item.stroke {
-        // Along the stroke, in rows across its width; segments off the screen are skipped.
-        let half = (st.reach() * m.mean_scale()).max(0.5);
-        let rows = (half / GAP).floor() as i32;
-        let near = clip.expand(half + GAP);
-        for pl in &lines {
-            let n = pl.points.len();
-            let segs = if pl.closed { n } else { n.saturating_sub(1) };
-            let mut carry = 0.0;
-            for i in 0..segs {
-                let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
-                let d = c - a;
-                let len = d.length();
-                if len <= 1e-6 {
-                    continue;
-                }
-                if !near.intersects(Rect::from_two_pos(pos2(a.x, a.y), pos2(c.x, c.y))) {
-                    carry = (carry - len).rem_euclid(GAP);
-                    continue;
-                }
-                let (dir, normal) = (d * (1.0 / len), d.perp() * (1.0 / len));
-                let mut t = carry;
-                while t < len {
-                    let p = a + dir * t;
-                    for k in -rows..=rows {
-                        let q = p + normal * (k as f32 * GAP);
-                        if !dot(pos2(q.x, q.y)) {
-                            return;
-                        }
+}
+
+/// The runs inside the closed outlines `lines` (screen space, filled by `rule`) along each row
+/// of dots, as rectangles one row of dots tall, clipped to `clip`. Rows are scanned with an
+/// active edge list, so the cost follows the outline's edges and the rows on screen, not the
+/// area covered.
+pub(crate) fn pattern_spans(lines: &[anicraft_engine::geom::Polyline], rule: anicraft_engine::geom::FillRule, clip: Rect, out: &mut Vec<Rect>) {
+    use anicraft_engine::geom::FillRule;
+    // Every non-horizontal edge near the view, as (top, bottom, x at top, dx/dy, winding).
+    let mut edges: Vec<(f32, f32, f32, f32, i32)> = Vec::new();
+    for pl in lines {
+        let n = pl.points.len();
+        if n < 2 {
+            continue;
+        }
+        for i in 0..n {
+            let (Some(&a), Some(&c)) = (pl.points.get(i), pl.points.get((i + 1) % n)) else { continue };
+            if a.y == c.y || !(a.is_finite() && c.is_finite()) {
+                continue;
+            }
+            let (top, bottom, w) = if a.y < c.y { (a, c, 1) } else { (c, a, -1) };
+            if bottom.y < clip.top() - GAP || top.y > clip.bottom() + GAP {
+                continue;
+            }
+            edges.push((top.y, bottom.y, top.x, (bottom.x - top.x) / (bottom.y - top.y), w));
+        }
+    }
+    if edges.is_empty() {
+        return;
+    }
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let last = edges.iter().fold(f32::NEG_INFINITY, |m, e| m.max(e.1)).min(clip.bottom() + GAP * 0.5);
+    let mut y = (edges.first().map_or(0.0, |e| e.0).max(clip.top() - GAP * 0.5) / GAP).ceil() * GAP;
+    let inside = |w: i32| match rule {
+        FillRule::NonZero => w != 0,
+        FillRule::EvenOdd => w % 2 != 0,
+    };
+    let (mut next, mut active, mut xs): (usize, Vec<usize>, Vec<(f32, i32)>) = (0, Vec::new(), Vec::new());
+    while y <= last && out.len() < MAX_SPANS {
+        while edges.get(next).is_some_and(|e| e.0 <= y) {
+            active.push(next);
+            next += 1;
+        }
+        // Half-open in y, so a vertex shared by two edges counts once.
+        active.retain(|&i| edges.get(i).is_some_and(|e| e.1 > y));
+        xs.clear();
+        xs.extend(active.iter().filter_map(|&i| edges.get(i)).map(|e| (e.2 + (y - e.0) * e.3, e.4)));
+        xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (top, bottom) = ((y - GAP * 0.5).max(clip.top()), (y + GAP * 0.5).min(clip.bottom()));
+        let (mut w, mut from) = (0, 0.0);
+        for &(x, d) in &xs {
+            let was = inside(w);
+            w += d;
+            match (was, inside(w)) {
+                (false, true) => from = x,
+                (true, false) => {
+                    let (x0, x1) = (from.max(clip.left()), x.min(clip.right()));
+                    if x1 > x0 && bottom > top {
+                        out.push(Rect::from_min_max(pos2(x0, top), pos2(x1, bottom)));
                     }
-                    t += GAP;
                 }
-                carry = t - len;
+                _ => {}
             }
         }
+        y += GAP;
+    }
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::*;
+    use anicraft_engine::geom::{FillRule, Path};
+
+    fn area(spans: &[Rect]) -> f32 {
+        spans.iter().map(|r| r.area()).sum()
+    }
+
+    /// #204: a shape far bigger than the view (zoomed in) is shaded all the way down, not just its
+    /// top rows, and costs one span per row rather than one quad per dot.
+    #[test]
+    fn a_zoomed_in_shape_is_shaded_to_the_bottom_of_the_view() {
+        let clip = Rect::from_min_max(pos2(0.0, 0.0), pos2(3840.0, 2160.0));
+        let mut spans = Vec::new();
+        let big = Path::rect(-5000.0, -4000.0, 20000.0, 15000.0);
+        pattern_spans(&big.flatten(&Affine::IDENTITY, 0.5), FillRule::NonZero, clip, &mut spans);
+        let bottom = spans.iter().fold(0.0f32, |m, r| m.max(r.max.y));
+        assert_eq!(bottom, clip.bottom(), "the pattern reaches the bottom of the view");
+        assert!((area(&spans) - clip.area()).abs() < 1.0, "the whole view is covered: {} of {}", area(&spans), clip.area());
+        assert_eq!(spans.len(), 721, "one span per row of dots");
+        // The single-dot overlay this replaced stopped after 60 000 dots: 46 rows of 1 280.
+        assert!(clip.area() / (GAP * GAP) > 60_000.0 * 10.0);
+    }
+
+    /// Holes stay unshaded (even-odd and non-zero), and the spans follow the outline.
+    #[test]
+    fn spans_follow_the_fill_rule_and_the_outline() {
+        let clip = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 400.0));
+        let mut ring = Path::rect(0.0, 0.0, 300.0, 300.0);
+        ring.cmds.extend(Path::rect(100.0, 100.0, 100.0, 100.0).cmds);
+        for rule in [FillRule::EvenOdd, FillRule::NonZero] {
+            let mut spans = Vec::new();
+            pattern_spans(&ring.flatten(&Affine::IDENTITY, 0.5), rule, clip, &mut spans);
+            let in_hole = spans.iter().any(|r| r.contains(pos2(150.0, 150.0)));
+            assert_eq!(in_hole, rule == FillRule::NonZero, "{rule:?}: both squares wind the same way");
+            assert!(spans.iter().all(|r| r.min.x >= 0.0 && r.max.x <= 300.0 && r.max.y <= 301.5));
+            assert!(spans.iter().any(|r| r.contains(pos2(50.0, 150.0))));
+        }
+    }
+
+    /// The tile's dots sit on the screen grid in the old checker: dark where the row and column
+    /// numbers add up to an even number.
+    #[test]
+    fn the_pattern_tile_is_a_checker_of_dots() {
+        let img = pattern_image(Color32::BLUE);
+        let size = img.size[0];
+        let at = |pt: (f32, f32)| {
+            // Screen point → texel, as `pattern_mesh` maps it.
+            let u = ((pt.0 + GAP * 0.5) / (2.0 * GAP)).rem_euclid(1.0);
+            let v = ((pt.1 + GAP * 0.5) / (2.0 * GAP)).rem_euclid(1.0);
+            img.pixels[(v * size as f32) as usize * size + (u * size as f32) as usize]
+        };
+        assert_eq!(at((0.0, 0.0)), Color32::BLUE);
+        assert_eq!(at((3.0, 0.0)), Color32::WHITE);
+        assert_eq!(at((3.0, 3.0)), Color32::BLUE);
+        assert_eq!(at((1.4, 0.0)), Color32::TRANSPARENT, "space between dots");
     }
 }
 

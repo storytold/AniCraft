@@ -62,6 +62,7 @@ mod shape_hints;
 mod stage;
 mod stage_a11y;
 mod start;
+mod startup;
 mod templates;
 mod test_movie;
 mod theme;
@@ -75,24 +76,37 @@ use anicraft_engine::Session;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
-/// The session to start with: the file given on the command line (through `file.open`, so
-/// `.fla` / `.xfl` import works the same as from the menu), else the sample. Also the import
-/// report of an Animate document, for the status bar.
+/// What opening the command line's file said, for the status bar.
 #[cfg(not(target_arch = "wasm32"))]
-fn open_session(file: Option<&Path>) -> (Session, Option<String>) {
-    let Some(p) = file else { return (Session::new(anicraft_engine::doc::sample::demo()), None) };
+#[derive(Debug, PartialEq)]
+enum Opened {
+    /// Nothing to report (no file, or an AniCraft document).
+    Quiet,
+    /// The import report of an Animate document.
+    Imported(String),
+    /// It didn't open (the sample is there instead): the file's name and why.
+    Failed(String, String),
+}
+
+/// The session to start with: the file given on the command line (through `file.open`, so
+/// `.fla` / `.xfl` import works the same as from the menu), else the sample. A file that can't
+/// be opened says why in the window (#226: a release build has no console, so the reason used
+/// to go nowhere and a double-clicked document seemed to open as the sample).
+#[cfg(not(target_arch = "wasm32"))]
+fn open_session(file: Option<&Path>) -> (Session, Opened) {
+    let Some(p) = file else { return (Session::new(anicraft_engine::doc::sample::demo()), Opened::Quiet) };
     let mut s = Session::default();
     match s.execute("file.open", &serde_json::json!({"path": p.display().to_string()})) {
-        Ok(v) => {
-            let report = v.get("report").and_then(|r| r.as_str()).map(str::to_string);
-            if let Some(r) = &report {
-                println!("{r}");
+        Ok(v) => match v.get("report").and_then(|r| r.as_str()) {
+            Some(r) => {
+                startup::line(&format!("imported {}: {r}", p.display()));
+                (s, Opened::Imported(r.to_string()))
             }
-            (s, report)
-        }
+            None => (s, Opened::Quiet),
+        },
         Err(e) => {
-            eprintln!("could not open {}: {e}; starting with the sample", p.display());
-            (Session::new(anicraft_engine::doc::sample::demo()), None)
+            startup::line(&format!("could not open {}: {e}; starting with the sample", p.display()));
+            (Session::new(anicraft_engine::doc::sample::demo()), Opened::Failed(crate::recent::display_name(p), e.to_string()))
         }
     }
 }
@@ -112,12 +126,11 @@ struct Look {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look) -> eframe::Result {
-    let options = eframe::NativeOptions {
+fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look) -> eframe::Result {
+    let options = attempt.options(eframe::NativeOptions {
         viewport: platform::viewport(egui::ViewportBuilder::default().with_title("AniCraft").with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0])),
-        renderer,
         ..Default::default()
-    };
+    });
     // The embedded interface font joins the text library before anything lays text out:
     // opening an Animate document from the command line lays its text out right here.
     anicraft_engine::text::Fonts::register(theme::embedded_fonts());
@@ -131,6 +144,7 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
         Box::new(move |cc| {
             // A document the system hands over while AniCraft is idle wakes it (ADR 0062).
             platform::wake_on_requests(&cc.egui_ctx);
+            startup::log_adapter(cc.wgpu_render_state.as_ref());
             let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);
             if let Some(s) = a.shot.as_mut() {
@@ -145,9 +159,11 @@ fn run(renderer: eframe::Renderer, file: Option<&Path>, shot: Option<PathBuf>, o
             }
             a.preview_look(&cc.egui_ctx, look.theme, look.scale);
             a.open_panel(open.as_deref());
-            // An imported document says what came across, as opening it from the menu does.
-            if let Some(r) = report {
-                a.status_ok(tr!("{report} Save to keep it as an AniCraft document.", report = r));
+            match report {
+                // An imported document says what came across, as opening it from the menu does.
+                Opened::Imported(r) => a.status_ok(tr!("{report} Save to keep it as an AniCraft document.", report = r)),
+                Opened::Failed(name, e) => a.status_err(tr!("Could not open {name}: {e}", name = name, e = e)),
+                Opened::Quiet => {}
             }
             Ok(Box::new(a))
         }),
@@ -227,8 +243,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
 /// `--help` (the console's text, in English).
 #[cfg(not(target_arch = "wasm32"))]
 // i18n-exempt: the --help console text
-const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png [--shot-width <px>]] [--renderer wgpu|gl] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|brushlibrary|brushcurve|paintbrush|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|softmask|pathtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
-     --renderer   force the GPU backend (also ANICRAFT_RENDERER); default wgpu, falling back to OpenGL\n\
+const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png [--shot-width <px>]] [--renderer gl|wgpu|vulkan|dx12|metal] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|selectzoom|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|symboledit|nineslice|nineslicedit|brush|brushing|brushlibrary|brushcurve|paintbrush|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|softmask|pathtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish]\n\
+     --renderer   the window's graphics (also ANICRAFT_RENDERER); default automatic, falling back to OpenGL\n\
      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
      --shot-width scales the screenshot down to this width (the user guide's pictures)\n\
      ANICRAFT_STAGE_RENDERER=gpu|cpu  stage renderer (default gpu, falling back to cpu; ADR 0032)\n\
@@ -269,17 +285,32 @@ fn main() -> eframe::Result {
     // from before the event loop starts until it ends (ADR 0062).
     let _documents = platform::listen_for_documents();
 
-    // wgpu first (Vulkan/Metal/DX12). If it cannot start (old GPU, VM, missing drivers, common
-    // on some Linux setups) retry once with OpenGL, unless the user forced a backend.
-    let forced = platform::forced_renderer(renderer.as_deref());
-    let first = forced.unwrap_or(eframe::Renderer::Wgpu);
-    match run(first, file.as_deref(), shot.clone(), open.clone(), look.clone()) {
-        Err(e) if forced.is_none() && first == eframe::Renderer::Wgpu => {
-            eprintln!("GPU backend (wgpu) failed to start: {e}. Retrying with OpenGL.");
-            run(eframe::Renderer::Glow, file.as_deref(), shot, open, look)
+    // The window: the graphics asked for, then this platform's order down to OpenGL. A way that
+    // fails or panics before the window is up falls through to the next; a start that died
+    // inside a driver last time tries that way last (#207, `startup`).
+    let died_in = startup::begin(platform::log_dir());
+    let attempts = startup::plan(platform::forced_backend(renderer.as_deref()), prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), died_in.as_deref());
+    let mut why = String::from("no attempt"); // i18n-exempt: log text
+    for (n, attempt) in attempts.iter().enumerate() {
+        startup::trying(attempt, n + 1, attempts.len());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone())));
+        why = match result {
+            Ok(Ok(())) => {
+                startup::line("closed");
+                return Ok(());
+            }
+            Ok(Err(e)) => e.to_string(),
+            Err(p) => format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())), // i18n-exempt: a log line
+        };
+        startup::line(&format!("{} failed: {why}", attempt.label()));
+        // It ran and then stopped: not a start-up problem, and opening a second window would
+        // surprise (autosave offers the work back next time).
+        if startup::started() {
+            return Err(eframe::Error::AppCreation(why.into()));
         }
-        other => other,
     }
+    startup::give_up(&why);
+    Err(eframe::Error::AppCreation(why.into()))
 }
 
 #[cfg(test)]
@@ -317,8 +348,15 @@ mod args_tests {
         assert_eq!(opened.path.as_deref(), Some(path.as_path()));
         assert!(opened.doc == s.doc, "the document on the command line, not the sample");
         // A file that isn't there: the sample, never a crash.
-        let (fallback, _) = open_session(Some(&dir.join("missing.anicraft")));
+        let (fallback, said) = open_session(Some(&dir.join("missing.anicraft")));
         assert!(fallback.path.is_none());
+        // #226: and the window says why (a release build has no console to print it on).
+        assert!(matches!(&said, Opened::Failed(name, why) if name == "missing.anicraft" && !why.is_empty()), "{said:?}");
+        // An Animate document double-clicked or opened with AniCraft imports, with its report.
+        let xfl = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/xfl/tests/corpus/shapes/shapes.xfl");
+        let (imported, said) = open_session(Some(&xfl));
+        assert!(matches!(said, Opened::Imported(_)), "{said:?}");
+        assert!(imported.path.is_none() && !imported.doc.timeline(0).layers.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

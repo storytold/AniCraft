@@ -5,6 +5,7 @@
 //! The web build (ADR 0036) is one more platform: the browser's file picker and downloads take
 //! the dialogs' place, its storage the settings folder's, and the glue lives in `web.rs`.
 
+use crate::prefs::WindowBackend;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -539,14 +540,49 @@ pub fn is_system_argument(arg: &str) -> bool {
     arg.starts_with("-psn_")
 }
 
-/// Renderer requested by `--renderer` / `ANICRAFT_RENDERER` (`wgpu` or `gl`), if any.
+/// The window's graphics asked for by `--renderer` / `ANICRAFT_RENDERER`, if any: `gl`,
+/// `wgpu` (automatic), `vulkan`, `dx12` or `metal`. Before #207 the last three all meant `wgpu`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn forced_renderer(arg: Option<&str>) -> Option<eframe::Renderer> {
+pub fn forced_backend(arg: Option<&str>) -> Option<WindowBackend> {
     let v = arg.map(str::to_owned).or_else(|| std::env::var("ANICRAFT_RENDERER").ok())?;
-    match v.to_ascii_lowercase().as_str() {
-        "gl" | "glow" | "opengl" => Some(eframe::Renderer::Glow),
-        "wgpu" | "vulkan" | "metal" | "dx12" => Some(eframe::Renderer::Wgpu),
+    match v.trim().to_ascii_lowercase().as_str() {
+        "gl" | "glow" | "opengl" => Some(WindowBackend::OpenGl),
+        "wgpu" | "auto" => Some(WindowBackend::Auto),
+        "vulkan" => Some(WindowBackend::Vulkan),
+        "dx12" | "d3d12" | "directx" => Some(WindowBackend::Dx12),
+        "metal" => Some(WindowBackend::Metal),
         _ => None,
+    }
+}
+
+/// The ways to open the window on `os`, in the order Automatic tries them (`startup`, #207):
+/// each a graphics interface and whether to ask for the low-power GPU. On a laptop with two
+/// GPUs (a Surface Book, most gaming laptops) the integrated one drives the display, so the
+/// second try is the system's own interface on it; OpenGL is the last resort everywhere.
+pub fn window_attempts(os: Os) -> Vec<(WindowBackend, bool)> {
+    match os {
+        Os::Windows => vec![(WindowBackend::Auto, false), (WindowBackend::Dx12, true), (WindowBackend::OpenGl, false)],
+        Os::Mac => vec![(WindowBackend::Auto, false), (WindowBackend::Metal, true), (WindowBackend::OpenGl, false)],
+        _ => vec![(WindowBackend::Auto, false), (WindowBackend::Vulkan, true), (WindowBackend::OpenGl, false)],
+    }
+}
+
+/// The window graphics Preferences offers on `os`.
+pub fn window_backends(os: Os) -> &'static [WindowBackend] {
+    match os {
+        Os::Windows => &[WindowBackend::Auto, WindowBackend::Dx12, WindowBackend::Vulkan, WindowBackend::OpenGl],
+        Os::Mac => &[WindowBackend::Auto, WindowBackend::Metal, WindowBackend::OpenGl],
+        Os::Web => &[],
+        _ => &[WindowBackend::Auto, WindowBackend::Vulkan, WindowBackend::OpenGl],
+    }
+}
+
+/// Where the start-up log goes (#207): `Logs` in the settings folder. `ANICRAFT_LOG_DIR`
+/// points it elsewhere (tests, portable installs).
+pub fn log_dir() -> Option<PathBuf> {
+    match std::env::var_os("ANICRAFT_LOG_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => Some(PathBuf::from(d)),
+        None => config_dir().map(|d| d.join("Logs")), // i18n-exempt: a folder name
     }
 }
 
@@ -730,7 +766,22 @@ mod tests {
 
     #[test]
     fn renderer_override() {
-        assert_eq!(forced_renderer(Some("gl")), Some(eframe::Renderer::Glow));
-        assert_eq!(forced_renderer(Some("WGPU")), Some(eframe::Renderer::Wgpu));
+        assert_eq!(forced_backend(Some("gl")), Some(WindowBackend::OpenGl));
+        assert_eq!(forced_backend(Some("WGPU")), Some(WindowBackend::Auto));
+        // #207: each interface is its own choice now, not just "wgpu".
+        assert_eq!(forced_backend(Some("dx12")), Some(WindowBackend::Dx12));
+        assert_eq!(forced_backend(Some("vulkan")), Some(WindowBackend::Vulkan));
+        assert_eq!(forced_backend(Some("metal")), Some(WindowBackend::Metal));
+    }
+
+    #[test]
+    fn every_platform_falls_back_to_opengl_and_offers_what_it_tries() {
+        for os in [Os::Windows, Os::Mac, Os::Linux, Os::Other] {
+            let tries = window_attempts(os);
+            assert_eq!(tries.first(), Some(&(WindowBackend::Auto, false)), "{os:?}");
+            assert_eq!(tries.last(), Some(&(WindowBackend::OpenGl, false)), "{os:?}: OpenGL is the last resort");
+            assert!(tries.iter().all(|(b, _)| window_backends(os).contains(b)), "{os:?}: Preferences offers each");
+        }
+        assert!(window_attempts(Os::Windows).contains(&(WindowBackend::Dx12, true)), "DirectX 12 on the integrated GPU");
     }
 }
