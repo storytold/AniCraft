@@ -1444,8 +1444,10 @@ pub(crate) fn xf_total(kind: XfKind, b: [f32; 4], start: Pos2, cur: Pos2, shift:
             Affine::translate(d.x, d.y)
         }
         XfKind::Scale { hx, hy } => {
-            let px = if alt { cx } else { [x1, cx, x0][(hx + 1) as usize] };
-            let py = if alt { cy } else { [y1, cy, y0][(hy + 1) as usize] };
+            // About the transformation point (the centre of the box, as drawn) like rotation;
+            // Alt holds the opposite handle still instead (#193).
+            let px = if alt { [x1, cx, x0][(hx + 1) as usize] } else { cx };
+            let py = if alt { [y1, cy, y0][(hy + 1) as usize] } else { cy };
             let factor = |s: f32, c: f32, p: f32| {
                 let den = s - p;
                 if den.abs() < 1e-3 { 1.0 } else { (c - p) / den }
@@ -1572,25 +1574,39 @@ mod xf_tests {
     }
 
     #[test]
-    fn corner_scale_keeps_the_opposite_corner_fixed() {
-        let m = xf_total(XfKind::Scale { hx: 1, hy: 1 }, B, pos2(100.0, 50.0), pos2(200.0, 100.0), false, false);
+    fn alt_corner_scale_keeps_the_opposite_corner_fixed() {
+        let m = xf_total(XfKind::Scale { hx: 1, hy: 1 }, B, pos2(100.0, 50.0), pos2(200.0, 100.0), false, true);
         assert_eq!(apply(&m, 0.0, 0.0), Vec2::new(0.0, 0.0));
         assert_eq!(apply(&m, 100.0, 50.0), Vec2::new(200.0, 100.0));
     }
 
     #[test]
-    fn shift_keeps_proportions_and_alt_scales_from_centre() {
+    fn scale_handles_scale_about_the_pivot() {
+        // #193: the transformation point (the centre of the box) stays put, not the opposite
+        // handle, and the dragged handle follows the pointer.
+        let m = xf_total(XfKind::Scale { hx: 1, hy: 1 }, B, pos2(100.0, 50.0), pos2(150.0, 75.0), false, false);
+        assert_eq!(apply(&m, 50.0, 25.0), Vec2::new(50.0, 25.0), "the pivot stays put");
+        assert_eq!(apply(&m, 100.0, 50.0), Vec2::new(150.0, 75.0), "the handle follows the pointer");
+        assert_eq!(apply(&m, 0.0, 0.0), Vec2::new(-50.0, -25.0), "the opposite corner moves out");
+        let m = xf_total(XfKind::Scale { hx: -1, hy: 0 }, B, pos2(0.0, 25.0), pos2(-50.0, 25.0), false, false);
+        assert_eq!(apply(&m, 50.0, 25.0), Vec2::new(50.0, 25.0), "edge handle: the pivot stays put");
+        assert_eq!(apply(&m, 100.0, 0.0), Vec2::new(150.0, 0.0), "the opposite edge moves out");
+    }
+
+    #[test]
+    fn shift_keeps_proportions_and_alt_scales_from_the_opposite_edge() {
         let m = xf_total(XfKind::Scale { hx: 1, hy: 1 }, B, pos2(100.0, 50.0), pos2(300.0, 60.0), true, false);
-        let p = apply(&m, 100.0, 50.0);
-        assert!((p.x / 100.0 - p.y / 50.0).abs() < 1e-4, "{p:?}");
+        let p = apply(&m, 100.0, 50.0) - Vec2::new(50.0, 25.0);
+        assert!((p.x / 50.0 - p.y / 25.0).abs() < 1e-4, "{p:?}");
         let m = xf_total(XfKind::Scale { hx: 1, hy: 0 }, B, pos2(100.0, 25.0), pos2(150.0, 25.0), false, true);
-        assert_eq!(apply(&m, 50.0, 25.0), Vec2::new(50.0, 25.0), "centre stays put");
+        assert_eq!(apply(&m, 0.0, 25.0), Vec2::new(0.0, 25.0), "the opposite edge stays put");
         assert_eq!(apply(&m, 100.0, 0.0).x, 150.0);
     }
 
     #[test]
     fn edge_scale_only_changes_one_axis_and_never_collapses() {
-        let m = xf_total(XfKind::Scale { hx: 0, hy: 1 }, B, pos2(50.0, 50.0), pos2(50.0, 0.0), false, false);
+        // Dragged onto the pivot: clamped, never flat.
+        let m = xf_total(XfKind::Scale { hx: 0, hy: 1 }, B, pos2(50.0, 50.0), pos2(50.0, 25.0), false, false);
         assert!(m.determinant().abs() > 0.0, "clamped above zero");
         assert_eq!(m.m[0], 1.0);
     }
