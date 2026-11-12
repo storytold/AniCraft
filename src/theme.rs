@@ -655,6 +655,12 @@ pub fn to_color32(c: anicraft_engine::doc::Rgba) -> Color32 {
     Color32::from_rgba_unmultiplied((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8, (c.a * 255.0).round() as u8)
 }
 
+/// Where a dragged panel tab would dock (ADR 0075): the accent, light enough to see the
+/// panels under it.
+pub fn dock_drop() -> Color32 {
+    T.accent.gamma_multiply(0.28)
+}
+
 /// How strongly a button's hit area is laid over the artwork (ADR 0057): enough to see where the
 /// pointer finds the button, light enough to see the state under it.
 pub const HIT_AREA_ALPHA: f32 = 0.35;

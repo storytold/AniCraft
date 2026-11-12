@@ -38,6 +38,8 @@ mod camera_tool;
 mod convert_symbol;
 mod layer_props;
 mod dialogs;
+mod dock;
+mod dock_ui;
 mod drop;
 mod gpu_stage;
 mod icons;
