@@ -74,11 +74,13 @@ pub enum Icon {
     InsertFrame,
     InsertKeyframe,
     InsertBlankKeyframe,
+    ClipStage,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 60] = [
+    pub const ALL: [Icon; 61] = [
+        Icon::ClipStage,
         Icon::InsertFrame,
         Icon::InsertKeyframe,
         Icon::InsertBlankKeyframe,
@@ -231,6 +233,9 @@ impl Icon {
             Icon::InsertFrame => ("anicraft-insert-frame", false),
             Icon::InsertKeyframe => ("anicraft-insert-keyframe", false),
             Icon::InsertBlankKeyframe => ("anicraft-insert-blank-keyframe", false),
+            // The stage with crop marks at its corners (AniCraft original, on Lucide's grid):
+            // Clip Content Outside the Stage.
+            Icon::ClipStage => ("anicraft-clip-stage", false),
         }
     }
 }
@@ -288,6 +293,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-insert-frame", include_str!("../assets/icons/anicraft-insert-frame.svg")),
     ("anicraft-insert-keyframe", include_str!("../assets/icons/anicraft-insert-keyframe.svg")),
     ("anicraft-insert-blank-keyframe", include_str!("../assets/icons/anicraft-insert-blank-keyframe.svg")),
+    ("anicraft-clip-stage", include_str!("../assets/icons/anicraft-clip-stage.svg")),
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("anicraft-bone", include_str!("../assets/icons/anicraft-bone.svg")),
     ("anicraft-bind", include_str!("../assets/icons/anicraft-bind.svg")),

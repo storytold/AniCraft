@@ -189,6 +189,11 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
             })
             .response
             .set_name(tr!("Zoom"));
+            // Beside the zoom, as in Animate (#251): a toggle, on = the pasteboard is hidden.
+            let clip = app.view.clip_to_stage;
+            if crate::timeline::icon_button(ui, tr!("Clip content outside the stage"), Some(clip), Icon::ClipStage).clicked() {
+                app.view.clip_to_stage = !clip;
+            }
             if ui.selectable_label(app.onion.ghosts, tr!("Onion skin")).clicked() {
                 crate::onion::toggle_ghosts(app);
             }

@@ -138,26 +138,58 @@ struct TileSpec {
     view: View,
 }
 
-/// Tiles covering stage-device-pixel rect `[x0, x1) × [y0, y1)`, nearest to `centre` first.
-fn tiles_for(z: f32, stage_px: (u32, u32), px: [f32; 4], margin: u32, bg: anicraft_engine::doc::Rgba) -> Vec<TileSpec> {
+/// Most tiles along one side: a screen's worth and the look-ahead ring, many times over.
+const MAX_TILES_PER_AXIS: usize = 64;
+
+/// The tile spans `(offset, length)` in device pixels along one axis of a stage `len` long that
+/// overlap `[lo, hi)`. The stage is cut into `TILE`s from its edge; with `pasteboard`, so is the
+/// space before and after it (from the stage's edges outwards), so no tile straddles the edge.
+fn spans(len: u32, lo: f32, hi: f32, pasteboard: bool) -> Vec<(i64, u32)> {
+    let t = i64::from(TILE);
+    let len = i64::from(len);
+    let (lo, hi) = (lo.floor().clamp(-1e9, 1e9) as i64, hi.ceil().clamp(-1e9, 1e9) as i64);
+    let mut out = Vec::new();
+    if pasteboard && lo < 0 {
+        // Before the stage: [-(k+1)T, -kT), nearest the stage first.
+        let first = (-hi).max(0) / t;
+        let last = (-lo - 1) / t;
+        let first = first.max(last - MAX_TILES_PER_AXIS as i64 + 1);
+        out.extend((first..=last).rev().map(|k| (-(k + 1) * t, TILE)));
+    }
+    if hi > 0 && lo < len {
+        let first = lo.max(0) / t;
+        let last = (hi.min(len) - 1) / t;
+        out.extend((first..=last).take(MAX_TILES_PER_AXIS).map(|k| (k * t, (t.min(len - k * t)) as u32)));
+    }
+    if pasteboard && hi > len {
+        // After it: [len + kT, len + (k+1)T).
+        let first = (lo - len).max(0) / t;
+        let last = (hi - len - 1) / t;
+        out.extend((first..=last).take(MAX_TILES_PER_AXIS).map(|k| (len + k * t, TILE)));
+    }
+    out
+}
+
+/// Tiles covering stage-device-pixel rect `[x0, x1) × [y0, y1)` (and `margin` tiles around it),
+/// nearest to its centre first. The stage's tiles are filled with `bg`; with `pasteboard` the
+/// view beyond the stage gets tiles too, transparent over the pasteboard (#245), so artwork
+/// there shows while the stage keeps its exact colour and blending.
+fn tiles_for(z: f32, stage_px: (u32, u32), px: [f32; 4], margin: u32, bg: anicraft_engine::doc::Rgba, pasteboard: bool) -> Vec<TileSpec> {
     let (sw, sh) = stage_px;
     if sw == 0 || sh == 0 {
         return Vec::new();
     }
-    let t = TILE as f32;
-    let last = (sw.div_ceil(TILE) - 1, sh.div_ceil(TILE) - 1);
-    let tx0 = ((px[0] / t).floor().max(0.0) as u32).saturating_sub(margin);
-    let ty0 = ((px[1] / t).floor().max(0.0) as u32).saturating_sub(margin);
-    let tx1 = (((px[2] - 1.0).max(0.0) / t).floor() as u32 + margin).min(last.0);
-    let ty1 = (((px[3] - 1.0).max(0.0) / t).floor() as u32 + margin).min(last.1);
+    let m = (margin * TILE) as f32;
+    let xs = spans(sw, px[0] - m, px[2] + m, pasteboard);
+    let ys = spans(sh, px[1] - m, px[3] + m, pasteboard);
     let (cx, cy) = ((px[0] + px[2]) / 2.0, (px[1] + px[3]) / 2.0);
     let mut out = Vec::new();
-    for ty in ty0..=ty1 {
-        for tx in tx0..=tx1 {
-            let (ox, oy) = (tx * TILE, ty * TILE);
-            let (w, h) = (TILE.min(sw - ox), TILE.min(sh - oy));
-            let view = View { transform: Affine::translate(-(ox as f32), -(oy as f32)).mul(&Affine::scale(z, z)), width: w, height: h, background: Some(bg) };
-            let rect = [ox as f32 / z, oy as f32 / z, (ox + w) as f32 / z, (oy + h) as f32 / z];
+    for &(oy, h) in &ys {
+        for &(ox, w) in &xs {
+            let inside = ox >= 0 && oy >= 0 && ox < i64::from(sw) && oy < i64::from(sh);
+            let (fx, fy) = (ox as f32, oy as f32);
+            let view = View { transform: Affine::translate(-fx, -fy).mul(&Affine::scale(z, z)), width: w, height: h, background: inside.then_some(bg) };
+            let rect = [fx / z, fy / z, (fx + w as f32) / z, (fy + h as f32) / z];
             out.push(TileSpec { rect, view });
         }
     }
@@ -803,7 +835,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_filled(stage_rect.translate(vec2(3.0, 4.0)), 0.0, T.stage_shadow);
     // Stage colour first, so a picture still rendering never shows as a hole.
     painter.rect_filled(stage_rect, 0.0, crate::theme::to_color32(app.s.doc.stage.background));
-    let vis = stage_rect.intersect(canvas);
+    // What gets rendered: the stage, and the pasteboard around it unless View › Clip Content
+    // Outside the Stage is on (#251). Previewing through the camera shows what the movie shows.
+    let pasteboard = !app.view.clip_to_stage && !preview;
+    let vis = if pasteboard { canvas } else { stage_rect.intersect(canvas) };
     if vis.width() >= 1.0 && vis.height() >= 1.0 {
         if app.stage_cache.service.is_none() {
             let ctx = ui.ctx().clone();
@@ -820,7 +855,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let bg = app.s.doc.stage.background;
         let stage_px = ((size.x * z).ceil().max(1.0) as u32, (size.y * z).ceil().max(1.0) as u32);
         let px = [(vis.min.x - st_origin.x) * ppp, (vis.min.y - st_origin.y) * ppp, (vis.max.x - st_origin.x) * ppp, (vis.max.y - st_origin.y) * ppp];
-        let visible = tiles_for(z, stage_px, px, 0, bg);
+        let visible = tiles_for(z, stage_px, px, 0, bg, pasteboard);
         let pic = app.s.stage_picture();
         let editing = edit_view.is_some();
         // Onion skin is off while a symbol is open in place (`stage_skin`, ADR 0045).
@@ -899,7 +934,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ahead.extend(jobs.iter().map(|(t, _)| make_job_for(raster, state, &app.s.doc, start + f, t.view, None).through_camera(preview)));
                 }
             } else {
-                ahead.extend(tiles_for(z, stage_px, px, 1, bg).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview)));
+                ahead.extend(tiles_for(z, stage_px, px, 1, bg, pasteboard).into_iter().filter(|t| !jobs.iter().any(|(v, _)| v.rect == t.rect)).map(|t| make_job_for(raster, state, &pic.doc, pic.frame, t.view, onion).through_camera(preview)));
             }
             svc.prefetch(ahead);
         }
@@ -1616,5 +1651,66 @@ mod xf_tests {
         assert_eq!(xf_zone(r, pos2(312.0, 212.0)), Some(XfKind::Rotate));
         assert_eq!(xf_zone(r, pos2(200.0, 150.0)), Some(XfKind::Move));
         assert_eq!(xf_zone(r, pos2(500.0, 500.0)), None);
+    }
+}
+
+#[cfg(test)]
+mod pasteboard_tests {
+    use super::*;
+    use anicraft_engine::doc::Rgba;
+
+    const BG: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+
+    /// Every device pixel of `px` is in exactly one tile.
+    fn covered_once(tiles: &[TileSpec], z: f32, px: [f32; 4]) {
+        for y in (px[1] as i32..px[3] as i32).step_by(97) {
+            for x in (px[0] as i32..px[2] as i32).step_by(89) {
+                let (sx, sy) = ((x as f32 + 0.5) / z, (y as f32 + 0.5) / z);
+                let n = tiles.iter().filter(|t| sx >= t.rect[0] && sx < t.rect[2] && sy >= t.rect[1] && sy < t.rect[3]).count();
+                assert_eq!(n, 1, "pixel ({x}, {y}) is in {n} tiles");
+            }
+        }
+    }
+
+    #[test]
+    fn the_pasteboard_gets_transparent_tiles_that_never_cross_the_stage_edge() {
+        // A 1280 × 720 stage at 100 %, seen with 700 px of pasteboard on each side (#245).
+        let (z, stage) = (1.0, (1280, 720));
+        let view = [-700.0, -300.0, 1980.0, 1020.0];
+        let tiles = tiles_for(z, stage, view, 0, BG, true);
+        covered_once(&tiles, z, view);
+        for t in &tiles {
+            let inside = t.rect[0] >= 0.0 && t.rect[1] >= 0.0 && t.rect[2] <= 1280.0 && t.rect[3] <= 720.0;
+            let outside = t.rect[2] <= 0.0 || t.rect[0] >= 1280.0 || t.rect[3] <= 0.0 || t.rect[1] >= 720.0;
+            assert!(inside ^ outside, "a tile straddles the stage edge: {:?}", t.rect);
+            // The stage keeps its colour (and blends against it); the pasteboard is see-through.
+            assert_eq!(t.view.background.is_some(), inside, "{:?}", t.rect);
+            assert!(t.view.width <= TILE && t.view.height <= TILE);
+        }
+        // The stage's own tiles are the same with or without the pasteboard.
+        let clipped = tiles_for(z, stage, view, 0, BG, false);
+        let rects = |ts: &[TileSpec], f: fn(&TileSpec) -> bool| {
+            let mut v: Vec<[i32; 4]> = ts.iter().filter(|t| f(t)).map(|t| t.rect.map(|c| c as i32)).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(rects(&tiles, |t| t.view.background.is_some()), rects(&clipped, |_| true));
+        // Clipped (#251), nothing is drawn off the stage.
+        assert!(clipped.iter().all(|t| t.rect[0] >= 0.0 && t.rect[1] >= 0.0 && t.rect[2] <= 1280.0 && t.rect[3] <= 720.0));
+        covered_once(&clipped, z, [0.0, 0.0, 1280.0, 720.0]);
+    }
+
+    #[test]
+    fn pasteboard_tiles_work_far_away_zoomed_and_stay_bounded() {
+        // Zoomed in, looking only at the pasteboard, left of and below the stage.
+        let tiles = tiles_for(4.0, (2000, 1000), [-5000.0, 1500.0, -3000.0, 2600.0], 1, BG, true);
+        assert!(!tiles.is_empty());
+        assert!(tiles.iter().all(|t| t.view.background.is_none()));
+        covered_once(&tiles, 4.0, [-5000.0, 1500.0, -3000.0, 2600.0]);
+        // A wild view (zoomed far out on a huge canvas) still makes a bounded number of tiles.
+        let n = tiles_for(1.0, (100, 100), [-1e12, -1e12, 1e12, 1e12], 1, BG, true).len();
+        assert!(n <= (2 * MAX_TILES_PER_AXIS + 1).pow(2), "{n} tiles");
+        // Clipped and looking away from the stage: nothing to draw.
+        assert!(tiles_for(1.0, (100, 100), [-900.0, -900.0, -10.0, -10.0], 0, BG, false).is_empty());
     }
 }
