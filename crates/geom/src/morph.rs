@@ -640,6 +640,42 @@ pub fn compatible_hinted(a: &Path, b: &Path, hints: &[(Vec2, Vec2)]) -> Option<(
     Some((to_path(&sa), to_path(&sb)))
 }
 
+/// Joins open subpaths that meet end to end (within `tol`) into longer runs, reversing pieces
+/// as needed, and closes the runs that come back to their start. The separate stroke runs of
+/// a raw shape's outline then morph as one outline, the way its fill does.
+pub fn chain(p: &Path, tol: f32) -> Path {
+    let (mut out, mut open): (Vec<Sub>, Vec<Sub>) = subpaths(p).into_iter().partition(|s| s.closed);
+    open.reverse(); // popped in drawing order
+    let end = |s: &Sub| s.segs.last().map_or(s.start, |g| g[2]);
+    while let Some(mut cur) = open.pop() {
+        loop {
+            let tail = end(&cur);
+            if let Some(j) = open.iter().rposition(|s| s.start.distance(tail) <= tol || end(s).distance(tail) <= tol) {
+                let next = open.remove(j);
+                let next = if next.start.distance(tail) <= tol { next } else { reverse(&next) };
+                cur.segs.extend(next.segs);
+                continue;
+            }
+            if let Some(j) = open.iter().rposition(|s| end(s).distance(cur.start) <= tol || s.start.distance(cur.start) <= tol) {
+                let prev = open.remove(j);
+                let mut prev = if end(&prev).distance(cur.start) <= tol { prev } else { reverse(&prev) };
+                prev.segs.extend(cur.segs);
+                cur = prev;
+                continue;
+            }
+            break;
+        }
+        if cur.segs.len() > 1 && end(&cur).distance(cur.start) <= tol {
+            if let Some(g) = cur.segs.last_mut() {
+                g[2] = cur.start;
+            }
+            cur.closed = true;
+        }
+        out.push(cur);
+    }
+    to_path(&out)
+}
+
 /// The shape `t` of the way from `a` to `b` (0 = `a`, 1 = `b`), for any two paths.
 ///
 /// Always goes through [`compatible`]: two paths with the same commands can still start at

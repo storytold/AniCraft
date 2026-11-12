@@ -152,6 +152,16 @@ pub(crate) fn hint_pairs(kf: &Keyframe, next: &Keyframe) -> Vec<(usize, Vec2, Ve
         .collect()
 }
 
+/// The hints of a shape tween from `kf` to `next` placed on an outline at both ends: the indices
+/// of the elements they are placed on (start, end) and the points in layer space.
+pub(crate) fn placed_hints(kf: &Keyframe, next: &Keyframe) -> Vec<(usize, usize, Vec2, Vec2)> {
+    kf.hints
+        .iter()
+        .take(MAX_SHAPE_HINTS)
+        .filter_map(|h| Some((placed_on(&kf.elements, h.start)?, placed_on(&next.elements, h.end)?, h.start, h.end)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
