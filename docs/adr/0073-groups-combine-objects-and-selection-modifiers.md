@@ -119,8 +119,9 @@ nothing was copied.
   stroked shape) is a group, so it is edited with a double-click instead of in place. Merging the
   two ideas (a drawing object as a group that tools reach into without opening it, issue #181)
   is a later step on this model.
-* A group inside a tween tweens its placement and colour; its members stay the first keyframe's
-  (as text does). Animate turns grouped tween targets into symbols; we don't.
+* A classic or shape tween between two groups tweens the group's placement and colour, and its
+  members pair by order and tween as they would alone (an Animate file's tweened groups play as
+  in Animate; the XFL corpus checks it). A member without a partner holds.
 * The HTML canvas export draws a translucent group's members one by one (their overlaps show
   through); every other output fades it as one.
 * The Movie Explorer lists what is inside a group as on its keyframe; going to such a row selects

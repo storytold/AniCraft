@@ -308,8 +308,19 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
         // Text tweens its placement and colour effect; the words stay the first keyframe's.
         (ElementKind::Text(_), ElementKind::Text(_)) => a.kind.clone(),
         (ElementKind::Camera, ElementKind::Camera) => ElementKind::Camera,
-        // A group tweens its placement and colour effect; its members stay the first keyframe's.
-        (ElementKind::Group { .. }, ElementKind::Group { .. }) => a.kind.clone(),
+        // A group tweens its placement and colour effect, and its members pair by order, layer by
+        // layer, tweening as they would on their own (ADR 0073); a member without a partner holds.
+        (ElementKind::Group { members: ma }, ElementKind::Group { members: mb }) => {
+            let mut members = ma.clone();
+            for (la, lb) in members.layers.iter_mut().zip(&mb.layers) {
+                let (Some(ka), Some(kb)) = (la.keyframe_at(0), lb.keyframe_at(0)) else { continue };
+                let els: Vec<Arc<Element>> = ka.elements.iter().enumerate().map(|(i, x)| kb.elements.get(i).and_then(|y| interpolate(x, y, t, morph, &[], None)).map_or_else(|| x.clone(), Arc::new)).collect();
+                if let Some(k) = Arc::make_mut(la).keyframe_mut(0) {
+                    k.elements = els;
+                }
+            }
+            ElementKind::Group { members }
+        }
         _ => return None,
     };
     let mut transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
