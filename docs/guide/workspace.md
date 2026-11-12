@@ -11,7 +11,8 @@ Shortcuts are written the Windows and Linux way. On macOS, use ⌘ (Command) for
 
 ## The window layout
 
-AniCraft has a single window with fixed, docked panels:
+AniCraft opens with the **Essentials** workspace: the panels docked as below. You can move
+every panel (see [Arranging panels and workspaces](#arranging-panels-and-workspaces)).
 
 | Area | Where | What it's for |
 |---|---|---|
@@ -26,19 +27,62 @@ AniCraft has a single window with fixed, docked panels:
 | History | right, bottom | Every undo step. Click one to go back to it. |
 | Status bar | bottom edge | Hints and messages, the pointer's position, autosave time and how much undo history is kept. |
 
-Every section in the right-hand dock has a header you can click to fold it away and give the
-others room. You can drag the edge between the stage and the dock, and between the stage and
-the timeline, to resize them.
+Click the arrow at the left of a panel group's header to fold the group away and give the
+others room. Drag the edge between the stage and a dock, or the line between two panel groups,
+to resize them.
 
 Some things open in windows of their own, which stay open while you work:
 
-* **Window › Actions** (**F9**): what keyframes and buttons do (see
-  [Interactivity](interactivity.md)).
 * **Edit › Find and Replace** (**Ctrl+F**).
 * **File › Publish Settings…** (**Ctrl+Shift+F12**).
 * **Control › Test Movie** (**Ctrl+Enter**) plays your movie in its own window.
 
-Panels can't be undocked, rearranged or saved as workspace layouts yet.
+**Window › Actions** (**F9**) opens the Actions panel floating in a window of its own (see
+[Interactivity](interactivity.md)); you can dock it like any other panel.
+
+## Arranging panels and workspaces
+
+Every panel can go anywhere: Properties, Align, Colour, Library, Movie Explorer, History,
+Timeline, Motion Editor, Actions and Output.
+
+* **Move a panel** by dragging its tab. While you drag, a blue area shows where it will go:
+  * onto another group's header: it joins that group as a tab;
+  * onto the top or bottom half of a group (left or right half below and above the stage): a
+    group of its own just there;
+  * near an edge of the stage: a dock on that side. This is how you put the **timeline above
+    the stage**: drag its tab to the top of the stage;
+  * anywhere else: it floats in a window of its own.
+
+  Press **Esc** while dragging to leave everything as it was.
+* **Use the panel menu** (the ☰ button at the right of each group's header, or right-click a
+  tab) to dock a panel on any side, float it, fold its group, close it or close the whole tab
+  group, without dragging.
+* **Floating panels** have their own window on the desktop, which you can put on another
+  screen. **Dock** in that window puts the panel back where it came from. Your shortcuts with
+  Ctrl or Alt (Undo, Save, Test Movie…) still work there. Where a system can't open another
+  window (the web version), a floating panel floats inside the AniCraft window instead.
+* **Close a panel** from its menu, or from its floating window. **Window** lists every panel,
+  ticked while it's in front; choose one to bring it forward (it reopens where it was), or
+  choose a ticked one to close it.
+
+**Ctrl+F6** moves the keyboard from panel to panel in the order they are docked (the stage,
+the docks above, below and to the right and left of it, floating panels inside the window,
+then the tools). Panels in a window of their own have their own keyboard.
+
+### Workspaces
+
+A workspace is a named arrangement of the panels. **Window › Workspace** has three:
+
+| Workspace | What it's for |
+|---|---|
+| **Essentials** | The layout above. |
+| **Animator** | A tall timeline, with the Output and History beside it, and a slim right dock. |
+| **Designer** | A wide Properties panel with Colour and Align under it, and a short timeline. |
+
+Each workspace remembers how you changed it, until you choose **Window › Workspace › Reset**.
+**Save Workspace…** keeps the current arrangement under a name of your own; it's listed with
+the others, and Reset brings it back as you saved it. Your workspaces and where every panel is
+are kept in your preferences, so AniCraft opens the way you left it.
 
 ### Properties
 
@@ -55,11 +99,18 @@ Properties changes with what you're doing, from top to bottom:
 
 Changes show on the stage as you drag a value, and each drag is a single undo step.
 
+### Colour and Output
+
+**Colour** sets the stroke and fill colours new shapes and text use; with something selected,
+a change also recolours the selection (one undo step). **Swap** exchanges the two, and **Black
+and White** sets a black stroke and a white fill. **Output** shows what the running Test Movie
+writes (its `trace` actions, frame-script logs and anything that couldn't run), and keeps the
+last run's lines after Test Movie closes.
+
 ### The Window menu
 
-The **Window** menu switches between the tabs and panels: **Timeline** and **Motion Editor**
-(the bottom tabs), **Actions** (**F9**), **Library** and **Movie Explorer** (**Alt+F3**), and
-**Onion Skin**.
+The **Window** menu has the workspaces, every panel (**Actions** is **F9**, **Movie Explorer**
+**Alt+F3**), the **Brush Library** and **Onion Skin**.
 
 ## The command palette
 

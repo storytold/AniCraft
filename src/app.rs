@@ -1064,6 +1064,19 @@ impl App {
                 self.publish.selected = anicraft_engine::doc::publish::PublishFormat::Apng;
                 crate::publish_panel::open(self);
             }
+            // Dockable panels (ADR 0075): the timeline above the stage, the Output beside it,
+            // Colour stacked with Properties and Align floating.
+            Some("dock") => {
+                use crate::dock::{Panel as P, Side, Target};
+                self.dock.move_to(P::Timeline, Target::Split { side: Side::Top, before: None });
+                self.dock.move_to(P::Output, Target::Split { side: Side::Top, before: None });
+                self.dock.move_to(P::Colour, Target::Stack(P::Properties));
+                self.dock.move_to(P::Align, Target::Float(Some([980.0, 420.0])));
+                self.dock.top.size = Some(300.0);
+                self.dock_changed();
+            }
+            Some("animator") => self.switch_workspace("animator"),
+            Some("designer") => self.switch_workspace("designer"),
             Some("explorer") => {
                 // The Movie Explorer tab (ADR 0058), its first rows open: scene, layers, keyframes
                 // and the instances on them, opening into their symbols.

@@ -391,6 +391,19 @@ mod tests {
         for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "shapebones", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple", "library", "librarymenu", "edittransform", "onionsymbol", "layerprops", "frameview", "layercolour", "timelinepolish", "convert", "mixed", "bitmap", "nineslice", "nineslicedit", "find", "explorer", "publish", "publishreport", "publishanim", "start", "drop", "droplibrary", "testmovie", "testmovieinside", "templates", "savetemplate", "droptimeline", "textfields", "testtext", "softmask", "pathtext", "brushlibrary", "brushcurve", "paintbrush"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
+        // Every panel in front where it docks, and floating (ADR 0075); the other workspaces.
+        for p in crate::dock::Panel::ALL {
+            found.extend(check(&format!("{p:?} panel"), |a, _| a.show_panel(p)));
+            found.extend(check(&format!("{p:?} floating"), |a, _| a.dock.move_to(p, crate::dock::Target::Float(None))));
+        }
+        found.extend(check("floating panel window", |a, ctx| {
+            ctx.set_embed_viewports(false);
+            a.dock.move_to(crate::dock::Panel::Colour, crate::dock::Target::Float(None));
+        }));
+        for w in ["animator", "designer"] {
+            found.extend(check(w, |a, _| a.switch_workspace(w)));
+        }
+        found.extend(check("timeline above the stage", |a, _| a.dock.move_to(crate::dock::Panel::Timeline, crate::dock::Target::Split { side: crate::dock::Side::Top, before: None })));
         // Test Movie in a window of its own (ADR 0062): its controls, named in that window.
         found.extend(check("test movie window", |a, ctx| {
             ctx.set_embed_viewports(false);

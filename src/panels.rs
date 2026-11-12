@@ -389,11 +389,11 @@ pub(crate) fn colour_panel(app: &mut App, ui: &mut egui::Ui) {
     let (mut stroke, mut fill) = (rgb(st.stroke), rgb(st.fill));
     let (mut stroke_changed, mut fill_changed) = (false, false);
     row(ui, tr!("Stroke"), |ui| {
-        stroke_changed = ui.color_edit_button_srgb(&mut stroke).named(tr!("Stroke colour")).changed();
+        stroke_changed = crate::colour::button(ui, &mut stroke).named(tr!("Stroke colour")).changed();
         ui.label(text(Type::Data, hex(stroke)).color(T.text_dim));
     });
     row(ui, tr!("Fill"), |ui| {
-        fill_changed = ui.color_edit_button_srgb(&mut fill).named(tr!("Fill colour")).changed();
+        fill_changed = crate::colour::button(ui, &mut fill).named(tr!("Fill colour")).changed();
         ui.label(text(Type::Data, hex(fill)).color(T.text_dim));
     });
     let mut undo = tr_noop!("Colour");

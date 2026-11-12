@@ -475,10 +475,11 @@ pub fn built_in(key: &str) -> Option<Layout> {
             bottom: zone(vec![Group::of(&[Panel::Timeline, Panel::MotionEditor], 1.0)], None),
             ..Layout::default()
         },
-        // Animation first: a tall timeline with the Output beside it, a slim right dock.
+        // Animation first: a tall timeline with the Output and History beside it, a slim right
+        // dock.
         "animator" => Layout {
-            right: zone(vec![Group::of(&[Panel::Properties, Panel::Align], 5.0), Group::of(&[Panel::Library, Panel::MovieExplorer, Panel::History], 4.0)], Some(260.0)),
-            bottom: zone(vec![Group::of(&[Panel::Timeline, Panel::MotionEditor], 3.0), Group::of(&[Panel::Output], 1.0)], Some(440.0)),
+            right: zone(vec![Group::of(&[Panel::Properties, Panel::Align], 5.0), Group::of(&[Panel::Library, Panel::MovieExplorer], 4.0)], Some(280.0)),
+            bottom: zone(vec![Group::of(&[Panel::Timeline, Panel::MotionEditor], 3.0), Group::of(&[Panel::Output, Panel::History], 1.0)], Some(440.0)),
             ..Layout::default()
         },
         // Drawing first: a wide Properties with Colour and Align, a short timeline.

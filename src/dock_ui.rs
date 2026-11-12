@@ -162,7 +162,8 @@ pub fn workspace(app: &mut App, ui: &mut egui::Ui) {
     // Docks start at their usual size, but never take most of a small window or a large
     // interface scale (200 % on a laptop leaves under 1000 × 600 points), and the stage always
     // keeps room when the scale goes up later.
-    let room = ui.available_rect_before_wrap().size();
+    let room = ui.available_rect_before_wrap();
+    let room = vec2(room.width(), room.height());
     let (dock_w, dock_h) = ((room.x * 0.3).clamp(220.0, 292.0), (room.y * 0.42).clamp(200.0, 292.0));
     egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(0, 8))).show(ui, |ui| crate::panels::tools(app, ui));
     app.dock_view.drawn.clear();
@@ -404,7 +405,8 @@ fn tab_widget(ui: &mut egui::Ui, tab: Panel, r: Rect, active: bool, galley: &std
         p.rect_filled(r, T.rc(), T.hover);
     }
     let colour = if active { theme::color(Type::Heading) } else { T.text_dim };
-    p.galley_with_override_text_color(pos2(r.left() + 8.0, r.center().y - galley.rect.height() * 0.5), galley.clone(), colour);
+    // A tab too long for the room left is cut at its edge, never drawn over the menu.
+    p.with_clip_rect(r.intersect(p.clip_rect())).galley_with_override_text_color(pos2(r.left() + 8.0, r.center().y - galley.rect.height() * 0.5), galley.clone(), colour);
     if active && several {
         p.rect_filled(Rect::from_min_max(pos2(r.left() + 6.0, r.bottom() - 2.0), pos2(r.right() - 6.0, r.bottom())), theme::SQUARE, T.accent);
     }
@@ -590,7 +592,7 @@ fn drag_and_drop(app: &mut App, ctx: &egui::Context, acts: &mut Vec<Act>) {
     }
     let label = crate::i18n::t(p.label());
     let g = painter.layout_no_wrap(label.to_string(), font(Type::Label), T.on_fill);
-    let tag = Rect::from_min_size(pos + vec2(14.0, 10.0), g.rect.size() + vec2(16.0, 8.0));
+    let tag = Rect::from_min_size(pos + vec2(14.0, 10.0), vec2(g.rect.width() + 16.0, g.rect.height() + 8.0));
     painter.rect_filled(tag, T.rc(), T.accent);
     painter.galley(tag.min + vec2(8.0, 4.0), g, T.on_fill);
     ctx.request_repaint();
@@ -773,5 +775,169 @@ fn own_window(app: &mut App, ctx: &egui::Context, f: &crate::dock::Float, acts: 
     }
     if close {
         acts.push(Act::Close(p));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dock::{Place, built_in};
+
+    fn app() -> (App, egui::Context) {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+        // Screenshot mode: default preferences, nothing saved.
+        let app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        (app, ctx)
+    }
+
+    fn input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 940.0))), events, ..Default::default() }
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        ctx.run_ui(input(events), |ui| app.frame(ui)).textures_delta.clear();
+    }
+
+    fn settle(ctx: &egui::Context, app: &mut App) {
+        for _ in 0..3 {
+            frame(ctx, app, Vec::new());
+        }
+    }
+
+    fn pointer(pos: egui::Pos2, pressed: Option<bool>) -> Vec<egui::Event> {
+        let mut v = vec![egui::Event::PointerMoved(pos)];
+        if let Some(pressed) = pressed {
+            v.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        }
+        v
+    }
+
+    /// Drags from `from` to `to` in a few steps, as a hand would.
+    fn drag(ctx: &egui::Context, app: &mut App, from: egui::Pos2, to: egui::Pos2) {
+        frame(ctx, app, pointer(from, None));
+        frame(ctx, app, pointer(from, Some(true)));
+        for i in 1..=8 {
+            frame(ctx, app, pointer(from + (to - from) * (i as f32 / 8.0), None));
+        }
+        frame(ctx, app, pointer(to, Some(false)));
+        settle(ctx, app);
+    }
+
+    #[test]
+    fn the_default_layout_is_essentials() {
+        let (mut app, ctx) = app();
+        settle(&ctx, &mut app);
+        assert_eq!(app.dock, built_in("essentials").expect("built in"));
+        assert_eq!(app.prefs.workspaces.current, "essentials");
+        // Its groups: four on the right, one below the stage.
+        let sides: Vec<Side> = app.dock_view.drawn.iter().map(|d| d.side).collect();
+        assert_eq!(sides, vec![Side::Right, Side::Right, Side::Right, Side::Right, Side::Bottom]);
+    }
+
+    #[test]
+    fn dragging_the_timeline_tab_docks_it_above_the_stage() {
+        let (mut app, ctx) = app();
+        settle(&ctx, &mut app);
+        let tab = app.dock_view.drawn.iter().find(|d| d.side == Side::Bottom).map(|d| d.header.left_center() + vec2(40.0, 0.0));
+        let stage = app.dock_view.stage;
+        let (Some(tab), Some(stage)) = (tab, stage) else { panic!("drawn") };
+        drag(&ctx, &mut app, tab, pos2(stage.center().x, stage.top() + 20.0));
+        assert!(matches!(app.dock.place(Panel::Timeline), Some(Place::Docked { side: Side::Top, .. })), "{:?}", app.dock.place(Panel::Timeline));
+        assert!(app.dock_view.drag.is_none());
+        assert_eq!(app.prefs.workspaces.live.get("essentials"), Some(&app.dock), "kept as the arrangement of Essentials");
+        // Dropped on the right dock's Library header: stacked there as a tab.
+        let library = app.dock_view.drawn.iter().find(|d| d.first == Panel::Library).map(|d| d.header.center());
+        let tab = app.dock_view.drawn.iter().find(|d| d.side == Side::Top).map(|d| d.header.left_center() + vec2(40.0, 0.0));
+        let (Some(library), Some(tab)) = (library, tab) else { panic!("drawn") };
+        drag(&ctx, &mut app, tab, library);
+        let Some(Place::Docked { side: Side::Right, group, .. }) = app.dock.place(Panel::Timeline) else { panic!("{:?}", app.dock.place(Panel::Timeline)) };
+        assert_eq!(app.dock.right.groups[group].tabs, vec![Panel::Library, Panel::MovieExplorer, Panel::Timeline]);
+        assert!(app.dock.top.groups.is_empty(), "the top dock is gone with its last group");
+    }
+
+    #[test]
+    fn a_tab_dropped_away_from_the_docks_floats_and_esc_cancels_a_drag() {
+        let (mut app, ctx) = app();
+        settle(&ctx, &mut app);
+        let history = app.dock_view.drawn.iter().find(|d| d.first == Panel::History).map(|d| d.header.left_center() + vec2(50.0, 0.0));
+        let stage = app.dock_view.stage;
+        let (Some(history), Some(stage)) = (history, stage) else { panic!("drawn") };
+        // Esc while dragging: nothing moves.
+        frame(&ctx, &mut app, pointer(history, None));
+        frame(&ctx, &mut app, pointer(history, Some(true)));
+        for i in 1..=6 {
+            frame(&ctx, &mut app, pointer(history + (stage.center() - history) * (i as f32 / 6.0), None));
+        }
+        assert_eq!(app.dock_view.drag, Some(Panel::History));
+        frame(&ctx, &mut app, vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        frame(&ctx, &mut app, pointer(stage.center(), Some(false)));
+        assert_eq!(app.dock, built_in("essentials").expect("built in"));
+        // The middle of the stage: a floating window there.
+        drag(&ctx, &mut app, history, stage.center());
+        assert!(app.dock.is_floating(Panel::History));
+        assert_eq!(app.dock.floating.first().and_then(|f| f.at).map(|a| [a[0].round(), a[1].round()]), Some([stage.center().x.round(), stage.center().y.round()]));
+    }
+
+    #[test]
+    fn floating_panels_fall_back_inside_the_editor_without_windows() {
+        // Headless egui has no window system: it embeds viewports, as a system that can't open
+        // another window does. The panel floats inside, as an egui window with Dock.
+        let (mut app, ctx) = app();
+        assert!(ctx.embed_viewports());
+        app.dock.move_to(Panel::Output, Target::Float(Some([300.0, 200.0])));
+        settle(&ctx, &mut app);
+        assert!(app.dock_view.placed.contains(&Panel::Output), "drawn inside the editor");
+        let area = ctx.memory(|m| m.area_rect(Id::new(("dock_float", Panel::Output.id()))));
+        assert!(area.is_some_and(|r| (r.left() - 300.0).abs() < 1.0 && (r.top() - 200.0).abs() < 1.0), "where it was put: {area:?}");
+        // A window of its own where there can be one: drawn in its viewport, not inside.
+        let (mut app, ctx) = self::app();
+        ctx.set_embed_viewports(false);
+        app.dock.move_to(Panel::Output, Target::Float(None));
+        settle(&ctx, &mut app);
+        assert!(!app.dock_view.placed.contains(&Panel::Output));
+        assert!(app.dock.is_floating(Panel::Output));
+        // Ctrl+F6 leaves it out (its keyboard is its window's).
+        assert!(!a11y::order(&ctx).contains(&Region::Panel(Panel::Output)));
+        // Dock puts it back where it came from.
+        apply(&mut app, vec![Act::DockBack(Panel::Output)]);
+        assert!(matches!(app.dock.place(Panel::Output), Some(Place::Docked { side: Side::Bottom, .. })));
+    }
+
+    #[test]
+    fn every_panel_opens_from_the_window_menu_and_draws() {
+        let (mut app, ctx) = app();
+        for p in Panel::ALL {
+            app.toggle_panel(p);
+            if !app.dock.is_shown(p) {
+                app.toggle_panel(p);
+            }
+            settle(&ctx, &mut app);
+            assert!(app.dock.is_shown(p), "{p:?}");
+            let drawn = app.dock.is_floating(p) || app.dock_view.drawn.iter().any(|d| app.dock.zone(d.side).groups.iter().any(|g| g.tabs.first() == Some(&d.first) && g.shown() == Some(p)));
+            assert!(drawn, "{p:?} is on screen");
+        }
+    }
+
+    #[test]
+    fn workspaces_switch_and_reset_with_their_sizes() {
+        let (mut app, ctx) = app();
+        settle(&ctx, &mut app);
+        let width = |app: &App| app.dock_view.drawn.iter().find(|d| d.side == Side::Right).map_or(0.0, |d| d.rect.width());
+        let essentials = width(&app);
+        app.switch_workspace("designer");
+        settle(&ctx, &mut app);
+        assert_eq!(app.dock, built_in("designer").expect("built in"));
+        assert!(width(&app) > essentials + 50.0, "the Properties of Designer is wide: {} vs {essentials}", width(&app));
+        app.dock.close(Panel::History);
+        app.dock_changed();
+        app.switch_workspace("essentials");
+        app.switch_workspace("designer");
+        assert!(!app.dock.is_open(Panel::History), "changes kept until reset");
+        app.reset_workspace();
+        assert_eq!(app.dock, built_in("designer").expect("built in"));
+        app.save_workspace("Mine");
+        assert_eq!(app.prefs.workspaces.current, "Mine");
+        assert!(app.prefs.workspaces.saved.contains_key("Mine"));
     }
 }
