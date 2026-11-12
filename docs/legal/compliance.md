@@ -76,6 +76,13 @@ Apache-2.0) and `aho-corasick` (Unlicense OR MIT), built with only the `std`, `p
 `unicode-case` and `unicode-perl` features. They match Find and Replace's patterns in linear
 time with size limits. No new licence.
 
+### System contrast setting (2026-11-11, ADR 0064)
+
+New direct dependency on Windows only: `winreg` 0.55 (MIT, crates.io), already in the tree
+through `craft-update`. It reads one registry value, the high-contrast flag. The web build
+turns on web-sys's `MediaQueryList` feature (same crate, same licence). macOS and Linux ask
+system tools (`defaults`, `gdbus`, `gsettings`), so nothing is linked. No new licence.
+
 ### Interface languages (2026-11-10, ADR 0040)
 
 New crate: `sys-locale` 0.3 (MIT OR Apache-2.0, crates.io), which reads the system's interface

@@ -440,6 +440,23 @@ pub struct App {
     heard: Option<(usize, u32)>,
     /// The panel Ctrl+F6 last moved focus to (where the next press continues from).
     pub last_panel: Option<crate::a11y::Region>,
+    /// The stage's elements as keyboard stops and screen-reader nodes (ADR 0064).
+    pub stage_nav: crate::stage_a11y::StageNav,
+    /// The layer and frame the focused timeline last announced (ADR 0064).
+    pub tl_heard: Option<(anicraft_engine::doc::LayerId, u32)>,
+    /// The arrows moved the active layer: its row takes keyboard focus when drawn.
+    pub tl_refocus: bool,
+    /// The menu bar from the keyboard: Alt, F10 and the arrows (ADR 0064).
+    pub menu_keys: menus::MenuKeys,
+    /// What the system last said about contrast (ADR 0064): `None` until it has, or if it
+    /// can't. Screenshot runs never ask, so they look the same everywhere.
+    pub system_contrast: Option<bool>,
+    /// Keys to press, a few frames apart (screenshots of keyboard states).
+    pub key_script: std::collections::VecDeque<(Key, Modifiers)>,
+    key_script_wait: u8,
+    /// The system's contrast setting being read off the UI thread, and when it last was.
+    contrast_probe: Option<std::sync::mpsc::Receiver<Option<bool>>>,
+    contrast_asked: Option<f64>,
     /// The start screen, while it is up (ADR 0059).
     pub start: Option<crate::start::StartScreen>,
     /// Files dragged over and dropped onto the window (ADR 0059).
@@ -449,6 +466,9 @@ pub struct App {
     /// Templates: their pictures, the user's list and the Save as Template dialog (ADR 0065).
     pub templates: crate::templates::Templates,
 }
+
+/// How often (seconds) the system's contrast setting is asked again (ADR 0064).
+const SYSTEM_CONTRAST_EVERY: f64 = 4.0;
 
 /// How finished this version is, shown next to the version number (docs/release.md). English:
 /// translated where the interface shows it (`--version` prints it as is).
@@ -614,6 +634,15 @@ impl App {
             audio_clock: false,
             heard: None,
             last_panel: None,
+            stage_nav: Default::default(),
+            tl_heard: None,
+            tl_refocus: false,
+            menu_keys: Default::default(),
+            system_contrast: None,
+            key_script: Default::default(),
+            key_script_wait: 0,
+            contrast_probe: None,
+            contrast_asked: None,
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
@@ -709,7 +738,7 @@ impl App {
         crate::i18n::set_language(&self.prefs.language);
         ctx.request_repaint();
         ctx.set_zoom_factor(self.prefs.ui_scale);
-        theme::apply_palette(ctx, self.prefs.theme);
+        theme::apply_palette(ctx, self.prefs.palette(self.system_contrast));
         crate::onion::refresh_colors(self);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
@@ -749,7 +778,10 @@ impl App {
             return;
         }
         let mut p = self.prefs.clone();
-        p.theme = theme.unwrap_or(p.theme);
+        if let Some(t) = theme {
+            p.theme = t;
+            p.theme_follows_system = Some(false);
+        }
         p.ui_scale = scale.unwrap_or(p.ui_scale);
         self.prefs = p.sanitized();
         self.apply_prefs(ctx);
@@ -772,6 +804,88 @@ impl App {
             && let Err(e) = self.prefs.save()
         {
             self.status_err(tr!("Could not save preferences: {e}", e = e));
+        }
+    }
+
+    /// Presses `keys` once the window has settled, a few frames apart.
+    fn script_keys(&mut self, keys: impl IntoIterator<Item = (Key, Modifiers)>) {
+        self.key_script.extend(keys);
+        self.key_script_wait = 10;
+    }
+
+    /// The next scripted key press, once the frames before it have settled.
+    fn press_scripted_key(&mut self, ctx: &egui::Context) {
+        if self.key_script.is_empty() {
+            return;
+        }
+        ctx.request_repaint();
+        if self.key_script_wait > 0 {
+            self.key_script_wait -= 1;
+            return;
+        }
+        if let Some((key, modifiers)) = self.key_script.pop_front() {
+            ctx.input_mut(|i| i.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }));
+            self.key_script_wait = 3;
+        }
+    }
+
+    /// Follows the system's contrast setting (ADR 0064): asks it on a worker now and then (at
+    /// start, every few seconds, and when the window comes back to the front), and switches the
+    /// palette in the same frame the answer changes, while Preferences says "Follow system".
+    fn follow_system_contrast(&mut self, ctx: &egui::Context) {
+        if self.shot.is_some() {
+            return;
+        }
+        if let Some(rx) = &self.contrast_probe {
+            match rx.try_recv() {
+                Ok(v) => {
+                    self.contrast_probe = None;
+                    self.set_system_contrast(ctx, v);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.contrast_probe = None,
+            }
+        }
+        let (now, came_back) = ctx.input(|i| (i.time, i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))));
+        let due = self.contrast_asked.is_none_or(|t| now - t >= SYSTEM_CONTRAST_EVERY || came_back);
+        if !due {
+            return;
+        }
+        self.contrast_asked = Some(now);
+        let (tx, rx) = std::sync::mpsc::channel();
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = {
+            let ctx2 = ctx.clone();
+            std::thread::Builder::new()
+                .name("anicraft-contrast".into())
+                .spawn(move || {
+                    let _ = tx.send(platform::system_high_contrast());
+                    ctx2.request_repaint();
+                })
+                .is_ok()
+        };
+        // (No threads in a browser: the media query answers at once.)
+        #[cfg(target_arch = "wasm32")]
+        let started = tx.send(platform::system_high_contrast()).is_ok();
+        if started {
+            self.contrast_probe = Some(rx);
+        }
+        // Ask again later even if nothing else happens.
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(SYSTEM_CONTRAST_EVERY));
+    }
+
+    /// What the system says about contrast: the palette follows at once, if it follows.
+    pub fn set_system_contrast(&mut self, ctx: &egui::Context, v: Option<bool>) {
+        if v == self.system_contrast {
+            return;
+        }
+        let before = self.prefs.palette(self.system_contrast);
+        self.system_contrast = v;
+        let after = self.prefs.palette(v);
+        if after != before {
+            theme::apply_palette(ctx, after);
+            crate::onion::refresh_colors(self);
+            ctx.request_repaint();
         }
     }
 
@@ -823,7 +937,11 @@ impl App {
     }
 
     pub fn open_panel(&mut self, which: Option<&str>) {
+        use egui::{Key as K, Modifiers as M};
         match which {
+            // Keyboard states for screenshots (ADR 0064): keys pressed a few frames apart.
+            Some("stagekeys") => self.script_keys([(K::F6, M::COMMAND), (K::Tab, M::NONE), (K::Space, M::NONE), (K::ArrowRight, M::NONE)]),
+            Some("menukeys") => self.script_keys([(K::F10, M::NONE), (K::ArrowRight, M::NONE), (K::ArrowDown, M::NONE), (K::ArrowDown, M::NONE)]),
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
             Some("shortcuts") => self.show_shortcuts = true,
             Some("lastscene") => {
@@ -2135,6 +2253,12 @@ impl App {
         if self.modal_open() || self.key_capture.is_some() {
             return;
         }
+        // Alt+letter opens a menu (ADR 0064), before the tool letters: egui would match those
+        // with Alt held too.
+        let alt_bound = |k: Key| self.shortcuts.iter().any(|(m, key, _)| *key == k && m.alt && !m.ctrl && !m.command && !m.shift);
+        let mut menu_keys = std::mem::take(&mut self.menu_keys);
+        menu_keys.access_key(ctx, alt_bound);
+        self.menu_keys = menu_keys;
         // Palette, shortcut sheet, preferences and quit work even while a text field has focus.
         // Preferences: Ctrl+U (the shortcut Animate users know) and Ctrl/⌘+, (platform norm).
         let (palette, sheet, prefs_key, quit) = ctx.input_mut(|i| {
@@ -2198,6 +2322,10 @@ impl App {
         let mut play = false;
         let mut nudge = egui::Vec2::ZERO;
         let surface_focused = ctx.memory(|m| m.focused().is_some());
+        // On the focused timeline the arrows move the playhead (Left, Right) and the active
+        // layer (Up, Down) instead of nudging artwork (ADR 0064).
+        let on_timeline = surface_focused && crate::a11y::focused_region(ctx) == Some(crate::a11y::Region::Timeline);
+        let (mut frame_step, mut layer_step) = (0i64, 0i64);
         ctx.input_mut(|i| {
             for (m, k, id) in &self.shortcuts {
                 if i.consume_key(*m, *k) {
@@ -2217,7 +2345,14 @@ impl App {
             // Screen pixels, as in Animate: a press moves less the further you zoom in.
             let step = if i.modifiers.shift { 10.0 } else { 1.0 } / self.view.zoom.max(1e-3);
             for (k, d) in [(Key::ArrowLeft, egui::vec2(-step, 0.0)), (Key::ArrowRight, egui::vec2(step, 0.0)), (Key::ArrowUp, egui::vec2(0.0, -step)), (Key::ArrowDown, egui::vec2(0.0, step))] {
-                if i.key_pressed(k) && !i.modifiers.command {
+                if on_timeline && i.consume_key(Modifiers::NONE, k) {
+                    match k {
+                        Key::ArrowLeft => frame_step -= 1,
+                        Key::ArrowRight => frame_step += 1,
+                        Key::ArrowUp => layer_step -= 1,
+                        _ => layer_step += 1,
+                    }
+                } else if i.key_pressed(k) && !i.modifiers.command {
                     nudge += d;
                 }
             }
@@ -2252,6 +2387,22 @@ impl App {
         }
         if let Some(t) = tool {
             self.tool = t;
+        }
+        if frame_step != 0 {
+            self.playing = false;
+            let last = i64::from(self.s.frame_count().saturating_sub(1));
+            let to = (i64::from(self.s.frame) + frame_step).clamp(0, last.max(0));
+            self.run("timeline.goto", json!({"frame": to}));
+        }
+        if layer_step != 0 {
+            let layers = &self.s.timeline().layers;
+            if let Some(at) = layers.iter().position(|l| l.id == self.s.layer) {
+                let to = (at as i64 + layer_step).clamp(0, layers.len() as i64 - 1);
+                if to != at as i64 && self.run("layer.select", json!({"index": to})).is_some() {
+                    // The keyboard goes with it, to the new active row.
+                    self.tl_refocus = true;
+                }
+            }
         }
         if play {
             self.toggle_play();
@@ -2485,6 +2636,7 @@ impl App {
         }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
+        self.follow_system_contrast(&ctx);
         if let Some(p) = platform::picked_file() {
             self.open_picked(p);
         }
@@ -2498,7 +2650,9 @@ impl App {
             platform::set_mac_glyphs(ok);
             self.glyph_check = false;
         }
+        self.press_scripted_key(&ctx);
         self.handle_shortcuts(&ctx);
+        timeline::announce(self, &ctx);
         // Switching away from a path tool keeps its work: a Pen path in progress is finished.
         if self.tool != Tool::Pen && self.pen.is_some() {
             pathtools::commit_pen(self, false);

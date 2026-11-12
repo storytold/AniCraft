@@ -417,10 +417,27 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                     ui.add_space(4.0);
                     form_row(ui, LW, tr!("Theme"), |ui| {
                         ui.vertical(|ui| {
+                            // Follow system (ADR 0064), then each palette by hand.
+                            let was = if p.follows_system() { None } else { Some(p.theme) };
+                            let mut choice = was;
+                            crate::theme::radio_value(ui, &mut choice, None, text(Type::Body, tr!("Follow system")));
+                            let says = match app.system_contrast {
+                                Some(true) => tr!("High contrast while the system asks for more contrast (it does now), graphite otherwise."),
+                                Some(false) => tr!("High contrast while the system asks for more contrast (it doesn't now), graphite otherwise."),
+                                None => tr!("High contrast while the system asks for more contrast, graphite otherwise. This system doesn't say, so it is graphite."),
+                            };
+                            form_note(ui, toggle_indent, text(Type::Caption, says));
+                            ui.add_space(2.0);
                             for (palette, name, tip) in crate::theme::Palette::ALL {
-                                crate::theme::radio_value(ui, &mut p.theme, palette, text(Type::Body, crate::i18n::t(name)));
+                                crate::theme::radio_value(ui, &mut choice, Some(palette), text(Type::Body, crate::i18n::t(name)));
                                 form_note(ui, toggle_indent, text(Type::Caption, crate::i18n::t(tip)));
                                 ui.add_space(2.0);
+                            }
+                            if choice != was {
+                                p.theme_follows_system = Some(choice.is_none());
+                                if let Some(t) = choice {
+                                    p.theme = t;
+                                }
                             }
                         });
                     });

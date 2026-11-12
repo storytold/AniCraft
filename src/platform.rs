@@ -53,6 +53,64 @@ pub fn system_locale() -> Option<String> {
     sys_locale::get_locale().filter(|l| !l.is_empty() && l.len() <= 64)
 }
 
+/// Whether the system asks for more contrast (ADR 0064): Windows' contrast themes (high
+/// contrast), macOS' Increase Contrast, the desktop portal's contrast setting on Linux (GNOME's
+/// High Contrast where there is no portal), the browser's `prefers-contrast: more`. `None`:
+/// this system doesn't say. Can block for a moment (it may ask another process): call it off
+/// the UI thread.
+pub fn system_high_contrast() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        // HIGHCONTRAST's flags as the system keeps them; bit 0 is HCF_HIGHCONTRASTON.
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).open_subkey(r"Control Panel\Accessibility\HighContrast").ok()?; // i18n-exempt: a registry path
+        let flags: String = key.get_value("Flags").ok()?; // i18n-exempt: a registry value name
+        flags.trim().parse::<u32>().ok().map(|f| f & 1 == 1)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Missing until the user first changes it: off.
+        let out = std::process::Command::new("defaults").args(["read", "com.apple.universalaccess", "increaseContrast"]).output().ok()?; // i18n-exempt: a command line
+        Some(String::from_utf8_lossy(&out.stdout).trim() == "1")
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()?.match_media("(prefers-contrast: more)").ok()??.matches().into() // i18n-exempt: a media query
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+    {
+        portal_contrast().or_else(gnome_high_contrast)
+    }
+}
+
+/// The XDG desktop portal's `org.freedesktop.appearance contrast` (1: high), through `gdbus`.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn portal_contrast() -> Option<bool> {
+    let out = std::process::Command::new("gdbus") // i18n-exempt: a command line
+        .args(["call", "--session", "--timeout", "1", "--dest", "org.freedesktop.portal.Desktop", "--object-path", "/org/freedesktop/portal/desktop", "--method", "org.freedesktop.portal.Settings.ReadOne", "org.freedesktop.appearance", "contrast"]) // i18n-exempt: a command line
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    parse_portal_uint(&String::from_utf8_lossy(&out.stdout)).map(|v| v == 1)
+}
+
+/// GNOME's own switch, for desktops without the portal setting.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn gnome_high_contrast() -> Option<bool> {
+    let out = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.a11y.interface", "high-contrast"]).output().ok().filter(|o| o.status.success())?; // i18n-exempt: a command line
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// The number in a `gdbus` reply such as `(<<uint32 1>>,)` or `(<uint32 0>,)`.
+#[cfg_attr(any(windows, target_os = "macos", target_arch = "wasm32"), allow(dead_code))]
+fn parse_portal_uint(reply: &str) -> Option<u32> {
+    let rest = reply.split("uint32").nth(1)?;
+    rest.trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
 /// Whether the active fonts can draw ⌘ ⇧ ⌥ ⌃ (set once fonts are installed).
 static MAC_GLYPHS: AtomicBool = AtomicBool::new(false);
 
@@ -67,6 +125,12 @@ pub fn set_web_on_mac(mac: bool) {
 /// Whose conventions shortcut labels follow: the OS's, or in a browser the computer's under it.
 fn keys_os() -> Os {
     if OS == Os::Web && WEB_ON_MAC.load(Ordering::Relaxed) { Os::Mac } else { OS }
+}
+
+/// Whether Alt and F10 reach the menu bar (ADR 0064): on Windows, Linux and the web, as their
+/// applications do, but not on a Mac (in a browser or not), whose menu conventions differ.
+pub fn menu_bar_keys() -> bool {
+    keys_os() != Os::Mac
 }
 
 pub fn set_mac_glyphs(available: bool) {
@@ -610,6 +674,20 @@ mod tests {
         }
         assert_eq!(take_requests().len(), MAX_REQUESTS);
         assert!(is_system_argument("-psn_0_8194") && !is_system_argument("walk.anicraft"));
+    }
+
+    #[test]
+    fn portal_replies_parse() {
+        assert_eq!(parse_portal_uint("(<<uint32 1>>,)"), Some(1));
+        assert_eq!(parse_portal_uint("(<uint32 0>,)
+"), Some(0));
+        assert_eq!(parse_portal_uint("Error: no such key"), None);
+    }
+
+    #[test]
+    fn the_system_contrast_setting_can_be_read_without_panicking() {
+        // Whatever this machine says (or doesn't), asking never fails loudly.
+        let _ = system_high_contrast();
     }
 
     #[test]
