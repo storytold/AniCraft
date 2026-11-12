@@ -540,6 +540,49 @@ fn to_path(subs: &[Sub]) -> Path {
     p
 }
 
+/// Most open subpaths [`chain`] joins (the search is quadratic); past it they stay as they are.
+const MAX_CHAIN: usize = 1024;
+
+/// Joins the open subpaths of `paths` that meet end to end (within `tol`, turning one round
+/// where needed) into longer ones, closing a chain that comes back to its start. Merge
+/// Drawing cuts a shape's line at every corner; chained, the pieces are its outline again, so
+/// a shape tween morphs them as it morphs the fill. Closed subpaths pass through as they are.
+pub fn chain(paths: &[Path], tol: f32) -> Path {
+    let (mut out, mut open): (Vec<Sub>, Vec<Sub>) = paths.iter().flat_map(subpaths).partition(|s| s.closed);
+    if open.len() > MAX_CHAIN {
+        out.append(&mut open);
+        return to_path(&out);
+    }
+    let end = |s: &Sub| s.segs.last().map_or(s.start, |g| g[2]);
+    let near = |a: Vec2, b: Vec2| a.distance(b) <= tol;
+    open.reverse(); // taken from the back, so in drawing order
+    while let Some(mut cur) = open.pop() {
+        // A chain that has come back to its start is done (other pieces may meet it there).
+        while !near(end(&cur), cur.start) {
+            let e = end(&cur);
+            if let Some(i) = open.iter().rposition(|s| near(s.start, e) || near(end(s), e)) {
+                let s = open.remove(i);
+                cur.segs.extend(if near(s.start, e) { s.segs } else { reverse(&s).segs });
+            } else if let Some(i) = open.iter().rposition(|s| near(end(s), cur.start) || near(s.start, cur.start)) {
+                let s = open.remove(i);
+                let mut s = if near(end(&s), cur.start) { s } else { reverse(&s) };
+                s.segs.append(&mut cur.segs);
+                cur = s;
+            } else {
+                break;
+            }
+        }
+        if near(end(&cur), cur.start) {
+            if let Some(g) = cur.segs.last_mut() {
+                g[2] = cur.start;
+            }
+            cur.closed = true;
+        }
+        out.push(cur);
+    }
+    to_path(&out)
+}
+
 /// Most shape hints a morph honours (Animate's a to z).
 pub const MAX_HINTS: usize = 26;
 
@@ -839,6 +882,33 @@ mod tests {
         let (x, y) = compatible_hinted(&l1, &l2, &[(Vec2::new(25.0, 0.0), Vec2::new(50.0, 80.0)), (Vec2::new(0.0, 0.0), Vec2::new(0.0, 50.0))]).unwrap();
         let k = anchors_of(&x).iter().position(|v| close(*v, Vec2::new(25.0, 0.0))).unwrap();
         assert!(close(anchors_of(&y)[k], Vec2::new(50.0, 80.0)));
+    }
+
+    #[test]
+    fn chain_joins_pieces_that_meet_into_outlines() {
+        // A triangle's sides, out of order, one drawn backwards and one a hair off its corner,
+        // plus a stray line and a closed square: the sides become one closed outline.
+        let (p, q, r) = (Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(5.0, 8.0));
+        let sides = [Path::line(q, r), Path::line(Vec2::new(0.05, 0.0), q), Path::line(p, r)];
+        let stray = Path::line(Vec2::new(50.0, 50.0), Vec2::new(60.0, 50.0));
+        let square = Path::rect(100.0, 0.0, 5.0, 5.0);
+        let mut all = sides.to_vec();
+        all.extend([stray.clone(), square.clone()]);
+        let joined = chain(&all, 0.2);
+        let subs = subpaths(&joined);
+        assert_eq!(subs.len(), 3, "{subs:?}");
+        let tri = subs.iter().find(|s| s.segs.len() == 3).unwrap();
+        assert!(tri.closed);
+        let corners: Vec<Vec2> = anchors(tri).collect();
+        for c in [q, r] {
+            assert!(corners.iter().any(|a| close(*a, c)), "{c:?} in {corners:?}");
+        }
+        assert!(corners.iter().any(|a| a.distance(p) < 0.1));
+        assert!(subs.iter().any(|s| !s.closed && s.segs.len() == 1), "the stray line stays open");
+        assert!(subs.iter().any(|s| s.closed && s.segs.len() == 4), "the square passes through");
+        // The joined triangle morphs like the filled one.
+        assert!(morph(&joined, &Path::ellipse(0.0, 0.0, 5.0, 5.0), 0.5).is_some());
+        assert!(chain(&[], 0.2).cmds.is_empty());
     }
 
     #[test]

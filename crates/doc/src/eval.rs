@@ -242,16 +242,83 @@ fn evaluate_tweened<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) 
     let morph = tween.kind == TweenKind::Shape;
     let path = guide.map(|g| (g, tween.orient));
     let pairs = if morph && !kf.hints.is_empty() { crate::hints::hint_pairs(kf, next) } else { Vec::new() };
+    let lines = if morph { tween_lines(kf, next, t) } else { Vec::new() };
     let els = kf
         .elements
         .iter()
         .enumerate()
-        .map(|(i, a)| {
+        .filter_map(|(i, a)| {
+            // A line tweened whole stands in for its first piece; its other pieces go.
+            if let Some((pieces, line)) = lines.iter().find(|l| l.0.contains(&i)) {
+                return (pieces.first() == Some(&i)).then(|| line.clone());
+            }
             let hints: Vec<_> = pairs.iter().filter(|h| h.0 == i).map(|h| (h.1, h.2)).collect();
-            next.elements.get(i).and_then(|b| interpolate(a, b, t, morph, &hints, path)).map_or_else(|| a.clone(), Arc::new)
+            Some(next.elements.get(i).and_then(|b| interpolate(a, b, t, morph, &hints, path)).map_or_else(|| a.clone(), Arc::new))
         })
         .collect();
     Some((kf.start, Cow::Owned(els)))
+}
+
+/// The stroke of a raw line piece: what Merge Drawing makes of a drawing's lines, cut at every
+/// corner, one element per piece (placed with a plain translation).
+fn raw_line(e: &Element) -> Option<&Stroke> {
+    let [a, b, c, d, ..] = e.transform.m;
+    match &e.kind {
+        ElementKind::Shape(s) if s.merge && s.fill.is_none() && [a - 1.0, b, c, d - 1.0].iter().all(|v| v.abs() <= 1e-6) => s.stroke.as_ref(),
+        _ => None,
+    }
+}
+
+/// The raw line pieces of `els`, by stroke style (and colour effect) in the order the styles
+/// first appear: each style's element indices.
+fn line_styles(els: &[Arc<Element>]) -> Vec<Vec<usize>> {
+    let mut styles: Vec<(&Stroke, crate::ColorEffect, Vec<usize>)> = Vec::new();
+    for (i, e) in els.iter().enumerate() {
+        let Some(st) = raw_line(e) else { continue };
+        match styles.iter_mut().find(|s| s.0 == st && s.1 == e.color) {
+            Some(s) => s.2.push(i),
+            None => styles.push((st, e.color, vec![i])),
+        }
+    }
+    styles.into_iter().map(|s| s.2).collect()
+}
+
+/// A shape tween's raw lines (issue #119): on each keyframe the pieces of one style are joined
+/// end to end into the outlines they make, and those morph as the fill does, so the line
+/// follows the fill whatever its number of sides (paired piece by piece, sides went bare or
+/// pieces were left standing). Styles pair in the order they first appear; each comes out as
+/// one element, with the indices of the start keyframe's pieces it replaces.
+fn tween_lines(kf: &crate::Keyframe, next: &crate::Keyframe, t: f32) -> Vec<(Vec<usize>, Arc<Element>)> {
+    let (sa, sb) = (line_styles(&kf.elements), line_styles(&next.elements));
+    sa.into_iter().zip(sb).filter_map(|(ia, ib)| Some((ia.clone(), Arc::new(tween_line(&kf.elements, &ia, &next.elements, &ib, &kf.hints, t)?)))).collect()
+}
+
+/// The pieces `ia` of `a` morphed `t` of the way to the pieces `ib` of `b`, as one line.
+fn tween_line(a: &[Arc<Element>], ia: &[usize], b: &[Arc<Element>], ib: &[usize], hints: &[crate::ShapeHint], t: f32) -> Option<Element> {
+    use anicraft_geom::morph;
+    let outline = |els: &[Arc<Element>], idx: &[usize]| {
+        let pieces: Vec<Path> = idx
+            .iter()
+            .filter_map(|&i| match &els.get(i)?.kind {
+                ElementKind::Shape(s) => Some(s.path.transformed(&els.get(i)?.transform)),
+                _ => None,
+            })
+            .collect();
+        morph::chain(&pieces, anicraft_geom::planar::SNAP)
+    };
+    let (first, other) = (a.get(*ia.first()?)?, b.get(*ib.first()?)?);
+    let (sa, sb) = (raw_line(first)?, raw_line(other)?);
+    let (pa, pb) = (outline(a, ia), outline(b, ib));
+    // Hints placed on these lines on both keyframes steer them as they steer the fill they edge.
+    let on = |p: &Path, q| morph::nearest_point(p, q).is_some_and(|(_, d)| d <= crate::hints::HINT_TOLERANCE);
+    let hints: Vec<_> = hints.iter().take(crate::hints::MAX_SHAPE_HINTS).filter(|h| on(&pa, h.start) && on(&pb, h.end)).map(|h| (h.start, h.end)).collect();
+    let path = morph::morph_hinted(&pa, &pb, &hints, t)?;
+    let c = path.bounds().center();
+    if !c.is_finite() {
+        return None;
+    }
+    let shape = Shape { path: Arc::new(path.transformed(&Affine::translate(-c.x, -c.y))), fill: None, stroke: Some(sa.lerp(sb, t)), fill_rule: FillRule::default(), merge: true };
+    Some(Element { id: first.id, name: first.name.clone(), transform: Affine::translate(c.x, c.y), color: first.color.lerp(&other.color, t), kind: ElementKind::Shape(shape) })
 }
 
 /// Interpolates two elements; `None` when they cannot tween. With `morph` (a shape tween),

@@ -1598,6 +1598,68 @@ fn create_shape_tween_morphs_and_keeps_the_easing() {
     assert_eq!(s.active_layer().unwrap().keyframes[0].tween.unwrap().kind, anicraft_doc::TweenKind::Classic);
 }
 
+/// The flattened outlines of `items` (stage space), as line segments.
+fn outline_segments<'a>(items: impl Iterator<Item = &'a anicraft_doc::DisplayItem>) -> Vec<(Vec2, Vec2)> {
+    let mut segs = Vec::new();
+    for it in items {
+        for pl in it.path.flatten(&it.transform, 0.05) {
+            segs.extend(pl.points.windows(2).map(|w| (w[0], w[1])));
+            if let (true, Some(&a), Some(&b)) = (pl.closed, pl.points.last(), pl.points.first()) {
+                segs.push((a, b));
+            }
+        }
+    }
+    segs
+}
+
+/// How far `p` is from the nearest of `segs`.
+fn distance_to(segs: &[(Vec2, Vec2)], p: Vec2) -> f32 {
+    segs.iter()
+        .map(|&(a, b)| {
+            let ab = b - a;
+            let t = if ab.dot(ab) > 0.0 { ((p - a).dot(ab) / ab.dot(ab)).clamp(0.0, 1.0) } else { 0.0 };
+            p.distance(a + ab * t)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+#[test]
+fn shape_tweens_carry_the_stroke_round_shapes_with_more_or_fewer_sides() {
+    // Issue #119. A stroked triangle into a stroked hexagon and back (raw shapes: Merge Drawing
+    // makes one stroke piece per side, 3 and 6 of them). In between, the stroke must follow the
+    // whole morphing fill outline: no side left bare, no line left standing off it.
+    let mut s = Session::default();
+    let polygon = |s: &mut Session, sides: u32| {
+        let inner = 60.0 * (std::f32::consts::PI / sides as f32).cos(); // on the edges: a polygon
+        run(s, "draw.star", json!({"cx": 100, "cy": 100, "outer": 60, "inner": inner, "points": sides, "fill": "#ff0000", "stroke": "#000000", "stroke_width": 2, "object": false}));
+    };
+    polygon(&mut s, 3);
+    let strokes = |s: &Session| s.active_layer().unwrap().keyframes.last().unwrap().elements.iter().filter(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.fill.is_none())).count();
+    assert_eq!(strokes(&s), 3, "one stroke piece per side");
+    run(&mut s, "timeline.goto", json!({"frame": 10}));
+    run(&mut s, "timeline.insert_blank_keyframe", json!({}));
+    polygon(&mut s, 6);
+    assert_eq!(strokes(&s), 6);
+    run(&mut s, "timeline.goto", json!({"frame": 20}));
+    run(&mut s, "timeline.insert_blank_keyframe", json!({}));
+    polygon(&mut s, 3);
+    for frame in [0, 10] {
+        run(&mut s, "timeline.create_shape_tween", json!({"frame": frame}));
+    }
+    for frame in [3, 5, 8, 13, 15, 18] {
+        let list = anicraft_doc::evaluate(&s.doc, frame);
+        let fill = outline_segments(list.items.iter().filter(|i| i.fill.is_some()));
+        let stroke = outline_segments(list.items.iter().filter(|i| i.stroke.is_some()));
+        assert!(!fill.is_empty() && !stroke.is_empty(), "frame {frame}");
+        // Every point of the fill's outline has the stroke on it, and every point of the stroke
+        // lies on the outline.
+        let bare = fill.iter().flat_map(|&(a, b)| (0..=8).map(move |k| a.lerp(b, k as f32 / 8.0))).map(|p| distance_to(&stroke, p)).fold(0.0, f32::max);
+        let stray = stroke.iter().flat_map(|&(a, b)| (0..=8).map(move |k| a.lerp(b, k as f32 / 8.0))).map(|p| distance_to(&fill, p)).fold(0.0, f32::max);
+        assert!(bare < 0.5, "frame {frame}: part of the outline is {bare} from the stroke");
+        assert!(stray < 0.5, "frame {frame}: a stroke is {stray} off the outline");
+    }
+}
+
 #[test]
 fn scenes_play_in_order_edit_separately_and_survive_save_and_undo() {
     let mut s = Session::default();
