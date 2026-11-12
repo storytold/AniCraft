@@ -13,9 +13,9 @@
 //! clips have their own playheads, buttons their pointer states). Identical paths, paints and
 //! frames are stored once, so a still keyframe over many frames costs one entry.
 //!
-//! What doesn't carry across is counted in the report: filters, 9-slice scaling (instances
-//! scale as a whole), Subtract and Invert blending,
-//! plug-in frame scripts (they need the plug-in host) and kept scripts
+//! Filters and the Subtract and Invert blend modes run in the page as the renderer runs them
+//! (`html/filters.js`, ADR 0072). What doesn't carry across is counted in the report: 9-slice
+//! scaling (instances scale as a whole), plug-in frame scripts (they need the plug-in host) and kept scripts
 //! outside the ActionScript subset. Scripts in the subset (ADR 0013 tiers 2 and 2.5) come
 //! across as the same script IR the Rust player runs (as JSON), with each timeline's functions
 //! and variable types, and `player.js` evaluates it the same way.
@@ -30,7 +30,7 @@ use crate::stroke::stroke_outline;
 use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::player::TimelineRef;
-use anicraft_doc::{BlendMode, ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
+use anicraft_doc::{ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -40,8 +40,10 @@ use std::sync::Arc;
 pub const PLAYER_JS: &str = include_str!("html/player.js");
 /// The page: canvas drawing, timing, pointer and sound.
 pub const CANVAS_JS: &str = include_str!("html/canvas.js");
+/// Filters and the blend modes canvas 2D lacks, per pixel (ADR 0072).
+pub const FILTERS_JS: &str = include_str!("html/filters.js");
 /// Version of the embedded data (`"v"`), raised when the player must change to read it.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// Largest page written.
 pub const MAX_HTML_BYTES: usize = 512 << 20;
 
@@ -97,8 +99,6 @@ pub struct HtmlExport {
 }
 
 /// Notes for the report.
-const FILTERS: &str = "filters (not exported; drawn without them)";
-const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
 const NINE_SLICE: &str = "9-slice scaling (scaled as a whole)";
@@ -133,6 +133,70 @@ fn line_style(st: &anicraft_doc::Stroke) -> Value {
 
 fn coord(v: f32) -> Value {
     num(v, 1000.0)
+}
+
+/// An `f32` exactly (the page reads it back with `Math.fround`), as an integer when it is one.
+fn exact(v: f32) -> Value {
+    if !v.is_finite() {
+        json!(0)
+    } else if v.fract() == 0.0 && v.abs() < 1e9 {
+        json!(v as i64)
+    } else {
+        json!(f64::from(v))
+    }
+}
+
+fn exact_color(c: Rgba) -> Value {
+    let c = c.sanitized();
+    json!([exact(c.r), exact(c.g), exact(c.b), exact(c.a)])
+}
+
+/// A filter for the page's `filters.js` (ADR 0072), sanitized, with the oracle's values exactly:
+/// `k` the kind (`blur`, `shadow` for Drop Shadow and Glow, `bevel` for Bevel and Gradient
+/// Bevel, `gglow`, `adjust`), `x`, `y` blur, `q` quality, `s` strength, `d` distance
+/// (stage pixels; the page scales them by its view, as the renderer does), colours as straight
+/// `[r, g, b, a]`, ramps as `[offset, r, g, b, a]` stops, Adjust Color as its 4 × 5 matrix.
+/// The angle comes as the renderer's own `[cos, sin]` (`u`), so the page multiplies the same
+/// numbers and its whole-pixel offsets round as the renderer's do, at halves too.
+fn filter_json(f: &anicraft_doc::Filter) -> Value {
+    use anicraft_doc::{Filter, FilterSide, GradientStop};
+    let unit = |angle: f32| {
+        let a = angle.to_radians();
+        json!([exact(a.cos()), exact(a.sin())])
+    };
+    let side = |s: FilterSide| match s {
+        FilterSide::Inner => "inner",
+        FilterSide::Outer => "outer",
+        FilterSide::Full => "full",
+    };
+    let ramp = |stops: &[GradientStop]| Value::Array(stops.iter().map(|s| json!([exact(s.offset), exact(s.color.r), exact(s.color.g), exact(s.color.b), exact(s.color.a)])).collect());
+    match f.sanitized() {
+        Filter::Blur { blur_x, blur_y, quality } => json!({"k": "blur", "x": exact(blur_x), "y": exact(blur_y), "q": quality}),
+        Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner, knockout, hide_object } => json!({
+            "k": "shadow", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "c": exact_color(color), "in": inner, "ko": knockout || (hide_object && inner), "ho": hide_object,
+        }),
+        Filter::Glow { blur_x, blur_y, strength, quality, color, inner, knockout } => json!({
+            "k": "shadow", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": [1, 0], "d": 0,
+            "c": exact_color(color), "in": inner, "ko": knockout, "ho": false,
+        }),
+        Filter::Bevel { blur_x, blur_y, strength, quality, angle, distance, shadow_color, highlight_color, side: sd, knockout } => json!({
+            "k": "bevel", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "hc": exact_color(highlight_color), "sc": exact_color(shadow_color), "side": side(sd), "ko": knockout,
+        }),
+        Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, stops, side: sd, knockout } => json!({
+            "k": "bevel", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "st": ramp(&stops), "side": side(sd), "ko": knockout,
+        }),
+        Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, side: sd, knockout } => json!({
+            "k": "gglow", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "st": ramp(&stops), "side": side(sd), "ko": knockout,
+        }),
+        Filter::AdjustColor { brightness, contrast, saturation, hue } => {
+            let m = crate::filters::color_matrix(brightness, contrast, saturation, hue);
+            json!({"k": "adjust", "m": m.iter().flatten().map(|v| exact(*v)).collect::<Vec<_>>()})
+        }
+    }
 }
 
 fn color(c: Rgba) -> Vec<Value> {
@@ -526,13 +590,12 @@ impl<'a> Bake<'a> {
                 }
                 if !blend.is_normal() {
                     o.insert("bl".into(), json!(blend.key()));
-                    if matches!(blend, BlendMode::Subtract | BlendMode::Invert) {
-                        self.notes.entry(BLENDS).or_default().insert(el.id.0);
-                    }
                 }
+                // Filters run in the page as the renderer runs them (ADR 0072): `fx` the list,
+                // `fm` how far they reach together (stage pixels).
                 if !filters.is_empty() {
-                    o.insert("fx".into(), json!(1));
-                    self.notes.entry(FILTERS).or_default().insert(el.id.0);
+                    o.insert("fx".into(), Value::Array(filters.iter().map(filter_json).collect()));
+                    o.insert("fm".into(), exact(filters.iter().map(anicraft_doc::Filter::margin).sum::<f32>()));
                 }
                 if !events.is_empty() {
                     o.insert("ev".into(), Value::Array(events.iter().map(|h| json!([h.event.key(), actions(&h.actions)])).collect()));
@@ -809,7 +872,7 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
         images: json["images"].as_array().map_or(0, Vec::len),
         sounds: json["sounds"].as_array().map_or(0, Vec::len),
         data_bytes: 0,
-        code_bytes: PLAYER_JS.len() + CANVAS_JS.len(),
+        code_bytes: PLAYER_JS.len() + FILTERS_JS.len() + CANVAS_JS.len(),
     };
     let report = b.notes.into_iter().map(|(k, v)| (k.to_string(), v.len())).collect();
     Movie { json, paths: b.paths, report, stats }
@@ -842,7 +905,7 @@ pub fn to_html(doc: &Document, opts: &HtmlOptions) -> Result<HtmlExport, String>
     let title = escape_html(&opts.title);
     let bg = doc.stage.background.to_hex();
     let (w, h) = (doc.stage.width.max(1), doc.stage.height.max(1));
-    let mut html = String::with_capacity(data.len() + PLAYER_JS.len() + CANVAS_JS.len() + 1024);
+    let mut html = String::with_capacity(data.len() + PLAYER_JS.len() + FILTERS_JS.len() + CANVAS_JS.len() + 1024);
     html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     html.push_str(&format!("<meta name=\"generator\" content=\"AniCraft {}\">\n<title>{title}</title>\n", env!("CARGO_PKG_VERSION")));
     html.push_str(&format!("<style>html,body{{margin:0;height:100%;background:{bg}}}body{{display:flex;align-items:center;justify-content:center;overflow:hidden}}canvas{{display:block;touch-action:none;user-select:none}}</style>\n</head>\n<body>\n"));

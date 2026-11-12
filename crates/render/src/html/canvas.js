@@ -5,7 +5,10 @@
 // input text fields through real form elements laid over the canvas. Drawing follows the
 // CPU renderer (crates/render, the oracle): fills by their rule, round-joined strokes of the
 // stage-space width, colour effects baked into colours, a symbol that fades or blends as one
-// drawn on its own layer first, and masks as the union of their fills.
+// drawn on its own layer first, and masks as the union of their fills. A symbol with filters
+// draws on a layer that reaches past the canvas by as far as its filters spread, and filters.js
+// runs them over its pixels as the renderer does (ADR 0072); Subtract and Invert, which canvas
+// 2D lacks, are composited per pixel there too.
 (function () {
   "use strict";
   const data = document.getElementById("anicraft-movie");
@@ -74,33 +77,141 @@
     if (canvas.width !== bw || canvas.height !== bh) {
       canvas.width = bw;
       canvas.height = bh;
-      pool.length = 0;
+      pool.clear();
+      filtered.clear();
+      keptPixels = 0;
     }
     scale = bw / W;
     draw();
   }
 
   // ----- drawing ----------------------------------------------------------------------------------
-  // Offscreen layers for groups and clips, reused frame to frame.
-  const pool = [];
-  function layer() {
-    const c = pool.pop() || document.createElement("canvas");
-    if (c.width !== canvas.width || c.height !== canvas.height) {
-      c.width = canvas.width;
-      c.height = canvas.height;
+  // Offscreen layers for groups and clips, reused frame to frame, by size and by whether their
+  // pixels are read back (filters, per-pixel blending: kept in memory, where reading is fast).
+  // A layer is a canvas and where its top left is on the stage canvas (`x0`, `y0`, in device
+  // pixels); the stage canvas is the layer at (0, 0).
+  const pool = new Map();
+  function layer(x0, y0, w, h, read) {
+    const key = w + "x" + h + (read ? "r" : "");
+    const free = pool.get(key);
+    let c = free && free.pop();
+    if (!c) {
+      c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
     }
-    const g = c.getContext("2d");
+    const g = c.getContext("2d", read ? { willReadFrequently: true } : undefined);
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.globalAlpha = 1;
     g.globalCompositeOperation = "source-over";
-    g.clearRect(0, 0, c.width, c.height);
-    return { canvas: c, ctx: g };
+    g.clearRect(0, 0, w, h);
+    return { canvas: c, ctx: g, x0: x0, y0: y0, w: w, h: h, key: key };
+  }
+  // A layer the size and place of `l`.
+  function like(l, read) {
+    return layer(l.x0, l.y0, l.w, l.h, read);
   }
   function release(l) {
-    pool.push(l.canvas);
+    let free = pool.get(l.key);
+    if (!free) pool.set(l.key, (free = []));
+    if (free.length < 8) free.push(l.canvas);
   }
-  // Canvas compositing for each blend mode; Subtract and Invert have none and draw normally.
-  const BLEND = { normal: "source-over", layer: "source-over", multiply: "multiply", screen: "screen", overlay: "overlay", darken: "darken", lighten: "lighten", hardlight: "hard-light", add: "lighter", difference: "difference", alpha: "destination-in", erase: "destination-out", subtract: "source-over", invert: "source-over" };
+  // Canvas compositing for each blend mode; Subtract and Invert are composited per pixel.
+  const BLEND = { normal: "source-over", layer: "source-over", multiply: "multiply", screen: "screen", overlay: "overlay", darken: "darken", lighten: "lighten", hardlight: "hard-light", add: "lighter", difference: "difference", alpha: "destination-in", erase: "destination-out" };
+  const PER_PIXEL = { subtract: true, invert: true };
+  // Largest layer a filtered group draws on (pixels): the renderer's limit, which every browser
+  // allows a canvas.
+  const MAX_FILTER_PIXELS = 4096 * 4096;
+  // How far past a `w × h` layer a filtered one may reach and stay within that (lib.rs
+  // `filter_setup`); a filter reaching further is cut there, off the stage.
+  function room(w, h) {
+    const s = w + h;
+    return Math.max(Math.floor((Math.sqrt(Math.max(s * s - 4 * (w * h - MAX_FILTER_PIXELS), 0)) - s) / 4), 0);
+  }
+  // Filtered groups' pixels by what was drawn in them (and the view), so a group that doesn't
+  // change between frames is filtered once. Least recently used goes first.
+  const filtered = new Map();
+  const MAX_FILTERED = 64;
+  // At most this many pixels kept (about 128 MB).
+  const MAX_KEPT_PIXELS = 32 << 20;
+  let keptPixels = 0;
+
+  // `src` (a canvas `w × h` whose top left is at `x0`, `y0`; `srcCtx` its context when its pixels
+  // can be read) onto layer `dst` at `alpha` in blend `mode`.
+  function composite(dst, src, srcCtx, x0, y0, w, h, alpha, mode) {
+    const g = dst.ctx;
+    const dx = x0 - dst.x0, dy = y0 - dst.y0;
+    alpha = Math.min(Math.max(alpha, 0), 1);
+    if (PER_PIXEL[mode] && srcCtx && alpha > 0) {
+      // Only where the group drew, within the layer below.
+      const ax = Math.max(dx, 0), ay = Math.max(dy, 0);
+      const bx = Math.min(dx + w, dst.w), by = Math.min(dy + h, dst.h);
+      if (bx <= ax || by <= ay) return;
+      try {
+        const s = srcCtx.getImageData(ax - dx, ay - dy, bx - ax, by - ay);
+        const r = AniCraftFilters.region(s.data, bx - ax, by - ay, 0);
+        if (!r) return;
+        const rw = r[2] - r[0], rh = r[3] - r[1];
+        const part = rw === bx - ax && rh === by - ay ? s : srcCtx.getImageData(ax - dx + r[0], ay - dy + r[1], rw, rh);
+        const d = g.getImageData(ax + r[0], ay + r[1], rw, rh);
+        AniCraftFilters.blendImage(d.data, part.data, alpha, mode);
+        g.putImageData(d, ax + r[0], ay + r[1]);
+        return;
+      } catch (e) {
+        // Pixels that can't be read draw normally.
+      }
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = alpha;
+    g.globalCompositeOperation = BLEND[mode] || "source-over";
+    g.drawImage(src, dx, dy);
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = "source-over";
+  }
+
+  // A filtered group's layer `l` through its filters: a canvas cut to where its pixels can show
+  // (the artwork grown by the filters' reach) and where that is on the stage canvas, or null when
+  // nothing shows. `sig` is what was drawn on it.
+  function runFilters(l, grp, sig) {
+    const key = scale + "|" + JSON.stringify(grp.filters) + "|" + sig;
+    if (filtered.has(key)) {
+      const hit = filtered.get(key);
+      filtered.delete(key);
+      filtered.set(key, hit);
+      return hit;
+    }
+    let out = null;
+    try {
+      const px = l.ctx.getImageData(0, 0, l.w, l.h);
+      const r = AniCraftFilters.region(px.data, l.w, l.h, AniCraftFilters.reach(grp.margin, scale));
+      if (r) {
+        const w = r[2] - r[0], h = r[3] - r[1];
+        const cut = l.ctx.getImageData(r[0], r[1], w, h);
+        const buf = AniCraftFilters.premul(cut.data);
+        AniCraftFilters.apply(buf, w, h, grp.filters, scale);
+        AniCraftFilters.straight(buf, cut.data);
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        const g = c.getContext("2d", { willReadFrequently: true });
+        g.putImageData(cut, 0, 0);
+        out = { canvas: c, ctx: g, x0: l.x0 + r[0], y0: l.y0 + r[1], w: w, h: h };
+      }
+    } catch (e) {
+      // Pixels that can't be read draw without their filters (not kept: the layer is reused).
+      return { canvas: l.canvas, ctx: null, x0: l.x0, y0: l.y0, w: l.w, h: l.h };
+    }
+    filtered.set(key, out);
+    keptPixels += out ? out.w * out.h : 0;
+    while (filtered.size > MAX_FILTERED || keptPixels > MAX_KEPT_PIXELS) {
+      const oldest = filtered.keys().next().value;
+      const o = filtered.get(oldest);
+      keptPixels -= o ? o.w * o.h : 0;
+      filtered.delete(oldest);
+      if (oldest === key) break;
+    }
+    return out;
+  }
 
   function paintStyle(g, f, fx) {
     const p = movie.paints[f];
@@ -231,15 +342,16 @@
       g.fillText(lines[i], x, y);
     }
   }
-  // One field on `g` (`set` places a context by a stage transform); input fields with an
-  // instance path go into `seen`, to get their elements.
-  function drawField(g, f, set, seen) {
+  // One field on layer `L` (`set` places a layer's context by a stage transform); input fields
+  // with an instance path go into `seen`, to get their elements.
+  function drawField(L, f, set, seen) {
+    const g = L.ctx;
     const tf = f.tf, m = f.m, box = paths[tf.r];
     if (!AniCraft.finite(m) || !box) return;
     if (tf.bg !== undefined) {
       const style = paintStyle(g, tf.bg, f.c);
       if (style) {
-        set(g, m);
+        set(L, m);
         g.fillStyle = style;
         g.fill(box);
       }
@@ -249,7 +361,7 @@
     // While its element shows an input field's text, the canvas doesn't.
     else {
       g.save();
-      set(g, m);
+      set(L, m);
       g.beginPath();
       g.rect(0, 0, tf.w, tf.h);
       g.clip();
@@ -264,7 +376,7 @@
     }
     if (tf.bd) {
       // 1 px in the field's space, mitred, like any stroke (stage width × the mean scale).
-      g.setTransform(scale, 0, 0, scale, 0, 0);
+      g.setTransform(scale, 0, 0, scale, -L.x0, -L.y0);
       g.lineWidth = AniCraft.meanScale(m);
       g.lineJoin = "miter";
       g.lineCap = "butt";
@@ -366,36 +478,42 @@
   }
 
   function draw() {
-    const stack = [{ ctx: ctx, canvas: canvas }];
+    const stack = [{ ctx: ctx, canvas: canvas, x0: 0, y0: 0, w: canvas.width, h: canvas.height }];
     const seen = new Map();
     const masks = new Map();
+    // What is drawn while a filtered group is open, as text: the key its filtered pixels are kept
+    // by (`runFilters`).
+    const trail = [];
+    let filtering = 0;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = "source-over";
     ctx.fillStyle = movie.stage.bg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     const k = scale;
-    const set = (g, m) => g.setTransform(k * m[0], k * m[1], k * m[2], k * m[3], k * m[4], k * m[5]);
+    const set = (L, m) => L.ctx.setTransform(k * m[0], k * m[1], k * m[2], k * m[3], k * m[4] - L.x0, k * m[5] - L.y0);
+    const top = () => stack[stack.length - 1];
     player.evaluate({
       item: function (it) {
         const path = paths[it.p];
         if (!path || !AniCraft.finite(it.m)) return;
+        if (filtering) trail.push("i" + it.p + "," + it.m.join(",") + "," + it.f + "," + (it.s ? it.s.join(",") : "") + "," + it.c.join(",") + "," + (it.k ? JSON.stringify(it.k) : "") + "," + it.eo + "," + it.masks);
         if (it.masks !== null) {
           // Mask artwork: its fill area only, opaque.
           const mk = masks.get(it.masks);
           if (!mk || it.f < 0) return;
-          set(mk.ctx, it.m);
+          set(mk, it.m);
           mk.ctx.fillStyle = "#000";
           mk.ctx.fill(path, it.eo ? "evenodd" : "nonzero");
           return;
         }
-        const g = stack[stack.length - 1].ctx;
+        const L = top(), g = L.ctx;
         if (it.f >= 0) {
           const style = paintStyle(g, it.f, it.c);
           if (style) {
             const bitmap = movie.paints[it.f] && movie.paints[it.f].b !== undefined;
             g.globalAlpha = bitmap && !AniCraft.recolours(it.c) ? Math.min(Math.max(it.c[3], 0), 1) : 1;
-            set(g, it.m);
+            set(L, it.m);
             g.fillStyle = style;
             // A bitmap without Allow Smoothing keeps hard pixel edges (ADR 0050).
             const hard = bitmap && movie.paints[it.f].px === true;
@@ -409,7 +527,7 @@
           const scale = AniCraft.meanScale(it.m);
           const w = it.s[4] * scale * k;
           if (w > 0 && Number.isFinite(w)) {
-            g.setTransform(k, 0, 0, k, 0, 0);
+            g.setTransform(k, 0, 0, k, -L.x0, -L.y0);
             g.lineWidth = w / k;
             // Caps, joins and dashes (stage units: local lengths × the mean scale, like the width).
             const st = it.k;
@@ -432,33 +550,52 @@
         }
       },
       field: function (f) {
-        drawField(stack[stack.length - 1].ctx, f, set, seen);
+        if (filtering) trail.push("t" + f.tf.p + "," + f.tf.r + "," + f.m.join(",") + "," + f.c.join(",") + "," + f.key + "," + JSON.stringify(f.text));
+        drawField(top(), f, set, seen);
       },
-      groupBegin: function () {
-        stack.push(layer());
+      groupBegin: function (_, grp) {
+        const P = top();
+        if (filtering) trail.push("g" + grp.alpha + "," + grp.blend + "," + grp.margin + "," + (grp.filters ? JSON.stringify(grp.filters) : ""));
+        if (grp.filters) {
+          // Room for the filters to spread past the layer below, as far as they reach.
+          const around = Math.min(AniCraftFilters.reach(grp.margin, scale), room(P.w, P.h));
+          const l = layer(P.x0 - around, P.y0 - around, P.w + 2 * around, P.h + 2 * around, true);
+          l.mark = trail.length;
+          filtering++;
+          stack.push(l);
+        } else stack.push(like(P, PER_PIXEL[grp.blend] === true));
       },
       groupEnd: function (_, grp) {
         const l = stack.pop();
-        const g = stack[stack.length - 1].ctx;
-        g.setTransform(1, 0, 0, 1, 0, 0);
-        g.globalAlpha = Math.min(Math.max(grp.alpha, 0), 1);
-        g.globalCompositeOperation = BLEND[grp.blend] || "source-over";
-        g.drawImage(l.canvas, 0, 0);
-        g.globalAlpha = 1;
-        g.globalCompositeOperation = "source-over";
+        const P = top();
+        if (grp.filters) {
+          filtering--;
+          const sig = trail.slice(l.mark).join(";");
+          if (filtering === 0) trail.length = 0;
+          else trail.push("e");
+          const out = runFilters(l, grp, sig);
+          if (out) composite(P, out.canvas, out.ctx, out.x0, out.y0, out.w, out.h, grp.alpha, grp.blend);
+        } else {
+          if (filtering) trail.push("e");
+          composite(P, l.canvas, l.ctx, l.x0, l.y0, l.w, l.h, grp.alpha, grp.blend);
+        }
         release(l);
       },
-      clipBegin: function () {
-        stack.push(layer());
+      clipBegin: function (id) {
+        if (filtering) trail.push("c" + id);
+        stack.push(like(top()));
       },
       // A clip that ends without meeting its mask shows nothing.
       clipEnd: function () {
+        if (filtering) trail.push("x");
         release(stack.pop());
       },
       maskBegin: function (id) {
-        masks.set(id, layer());
+        if (filtering) trail.push("m" + id);
+        masks.set(id, like(top()));
       },
       maskEnd: function (id, open) {
+        if (filtering) trail.push("n" + open);
         const mk = masks.get(id);
         masks.delete(id);
         if (!mk) return;
@@ -468,9 +605,7 @@
           l.ctx.globalCompositeOperation = "destination-in";
           l.ctx.drawImage(mk.canvas, 0, 0);
           l.ctx.globalCompositeOperation = "source-over";
-          const g = stack[stack.length - 1].ctx;
-          g.setTransform(1, 0, 0, 1, 0, 0);
-          g.drawImage(l.canvas, 0, 0);
+          composite(top(), l.canvas, null, l.x0, l.y0, l.w, l.h, 1, "normal");
           release(l);
         }
         release(mk);

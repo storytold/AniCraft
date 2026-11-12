@@ -1,7 +1,7 @@
 use super::*;
 use anicraft_doc::actions::{ButtonEvent, EventHandler, PluginScript, Property, Target};
 use anicraft_doc::player::{Event, NoScripts, PlayerState, start, step};
-use anicraft_doc::{ColorEffect, ColorTransform, ElementId, GradientStop, Keyframe, LayerId, LoopMode, Scene, Shape, Symbol, Tween, evaluate_player, sample};
+use anicraft_doc::{BlendMode, ColorEffect, ColorTransform, ElementId, GradientStop, Keyframe, LayerId, LoopMode, Scene, Shape, Symbol, Tween, evaluate_player, sample};
 use anicraft_geom::Vec2;
 use boa_engine::{Context, Source};
 
@@ -165,6 +165,7 @@ impl Js {
     fn new(m: &Movie) -> Js {
         let mut ctx = Context::default();
         ctx.eval(Source::from_bytes(PLAYER_JS)).unwrap_or_else(|e| panic!("player.js: {e}"));
+        ctx.eval(Source::from_bytes(FILTERS_JS)).unwrap_or_else(|e| panic!("filters.js: {e}"));
         ctx.eval(Source::from_bytes(HOST_JS)).unwrap();
         let polys: Vec<Value> = m.paths.iter().map(|p| Value::Array(p.flatten(&Affine::IDENTITY, 0.05).into_iter().map(|l| json!({"c": l.closed, "p": l.points.iter().map(|q| json!([q.x, q.y])).collect::<Vec<_>>()})).collect())).collect();
         let setup = format!("var POLYS = {}; var P = new AniCraft.Player({}, host);", Value::Array(polys), m.json);
@@ -296,6 +297,7 @@ fn same_display_list(js: &mut Js, m: &Movie, doc: &Document, st: &PlayerState, w
     for (a, b) in groups.iter().zip(&dl.groups) {
         assert!(close(a["alpha"].as_f64().unwrap(), b.alpha, 1e-3), "{when}: group alpha");
         assert_eq!(a["blend"], b.blend.key(), "{when}: group blend");
+        assert_eq!(a["filters"].as_array().map_or(0, Vec::len), b.filters.len(), "{when}: group filters");
         assert_eq!((a["parent"].as_u64().map(|x| x as u32), a["clip"].as_u64().map(|x| x as u32)), (b.parent, b.clip), "{when}: group nesting");
     }
 }
@@ -425,7 +427,7 @@ fn the_page_holds_the_movie_and_the_player_and_nothing_can_close_its_scripts() {
     let e = to_html(&doc, &HtmlOptions { title: "Doors </script> & \"knobs\"".into(), ..Default::default() }).unwrap();
     assert!(e.html.starts_with("<!DOCTYPE html>"));
     assert!(e.html.contains("<title>Doors &lt;/script&gt; &amp; &quot;knobs&quot;</title>"));
-    for js in [PLAYER_JS, CANVAS_JS] {
+    for js in [PLAYER_JS, FILTERS_JS, CANVAS_JS] {
         assert!(!js.to_ascii_lowercase().contains("</script") && !js.contains("<!--"), "a script source would end its element");
     }
     // Exactly the three scripts' closing tags, and the data reads back as the movie.
@@ -534,9 +536,11 @@ fn what_does_not_carry_across_is_reported() {
     let tl = doc.timeline_mut(0);
     Arc::make_mut(&mut Arc::make_mut(&mut tl.layers[2]).keyframe_mut(0).unwrap().elements[0]).transform = Affine::scale(2.0, 1.0);
     let m = movie(&doc, &HtmlOptions::default());
-    assert_eq!(m.report.get(FILTERS), Some(&1));
     assert_eq!(m.report.get(NINE_SLICE), Some(&1));
-    assert_eq!(m.report.get(BLENDS), Some(&1));
+    // Filters and Subtract run in the page (ADR 0072): not reported, and exported.
+    assert!(!m.report.keys().any(|k| k.contains("filter") || k.contains("Subtract")), "{:?}", m.report);
+    let el = &m.json["contents"].as_array().unwrap().iter().flat_map(|c| c["l"].as_array().unwrap().iter().flat_map(|l| l["e"].as_array().unwrap().iter())).find(|e| e.get("fx").is_some()).cloned().unwrap();
+    assert_eq!((&el["fx"], &el["fm"], &el["bl"]), (&json!([{"k": "blur", "x": 4, "y": 4, "q": 1}]), &json!(3), &json!("subtract")));
     assert_eq!(m.report.get(PLUGIN_SCRIPTS), Some(&1));
     // The player says so when the frame script's keyframe is entered.
     let mut js = Js::new(&m);
@@ -1014,4 +1018,222 @@ fn text_fields_export_as_named_instances_and_static_text_as_before() {
     // The page hears each field as one, with its text, in place of its items.
     let seen = js.eval("(function () { var out = []; P.evaluate({ item: function () {}, field: function (f) { out.push([f.key, f.text, f.tf.k, f.items.length]); }, clipBegin: function () {}, clipEnd: function () {}, maskBegin: function () {}, maskEnd: function () {}, groupBegin: function () {}, groupEnd: function () {} }); return out; })()");
     assert_eq!(seen, json!([["61", null, "dynamic", 4], ["62", "Hello", "input", 1]]));
+}
+
+// ----- filters and per-pixel blending in the page (ADR 0072) ------------------------------------
+
+/// A JavaScript engine with the page's filters.
+fn filters_js() -> Context {
+    let mut ctx = Context::default();
+    ctx.eval(Source::from_bytes(FILTERS_JS)).unwrap_or_else(|e| panic!("filters.js: {e}"));
+    ctx
+}
+
+fn js_json(ctx: &mut Context, code: &str) -> Value {
+    let v = ctx.eval(Source::from_bytes(&format!("JSON.stringify({code})"))).unwrap_or_else(|e| panic!("{code}: {e}"));
+    let s = v.to_string(ctx).unwrap().to_std_string_escaped();
+    serde_json::from_str(&s).unwrap_or_else(|e| panic!("{code}: {e}: {s}"))
+}
+
+fn stop(offset: f32, c: u32, a: f32) -> GradientStop {
+    GradientStop { offset, color: Rgba::hex(c).with_alpha(a) }
+}
+
+/// Every filter, with each of its sides, knockouts and switches, and stacks of them.
+fn filter_cases() -> Vec<Vec<anicraft_doc::Filter>> {
+    use anicraft_doc::{Filter, FilterSide};
+    let ds = |inner, knockout, hide_object, angle: f32| Filter::DropShadow { blur_x: 6.0, blur_y: 3.0, strength: 1.3, quality: 2, angle, distance: 5.0, color: Rgba::new(0.1, 0.2, 0.6, 0.8), inner, knockout, hide_object };
+    let glow = |inner, knockout| Filter::Glow { blur_x: 7.0, blur_y: 7.0, strength: 2.0, quality: 3, color: Rgba::hex(0xffcc00), inner, knockout };
+    let bevel = |side, knockout| Filter::Bevel { blur_x: 4.0, blur_y: 5.0, strength: 1.5, quality: 1, angle: 45.0, distance: 3.0, shadow_color: Rgba::hex(0x000033), highlight_color: Rgba::WHITE.with_alpha(0.9), side, knockout };
+    let ramp = vec![stop(0.0, 0xffffff, 0.0), stop(0.4, 0x00ff00, 1.0), stop(1.0, 0x0000ff, 1.0)];
+    let gglow = |side, knockout| Filter::GradientGlow { blur_x: 5.0, blur_y: 8.0, strength: 1.0, quality: 2, angle: 120.0, distance: 4.0, stops: ramp.clone(), side, knockout };
+    let bramp = vec![stop(0.0, 0xffff00, 1.0), stop(0.5, 0, 0.0), stop(0.8, 0xff00ff, 0.7), stop(1.0, 0x000000, 1.0)];
+    let gbevel = |side, knockout| Filter::GradientBevel { blur_x: 3.0, blur_y: 3.0, strength: 2.0, quality: 2, angle: 225.0, distance: 2.0, stops: bramp.clone(), side, knockout };
+    let mut out = vec![
+        vec![Filter::Blur { blur_x: 5.0, blur_y: 2.0, quality: 1 }],
+        vec![Filter::Blur { blur_x: 8.0, blur_y: 8.0, quality: 3 }],
+        vec![Filter::AdjustColor { brightness: 20.0, contrast: 30.0, saturation: -40.0, hue: 75.0 }],
+        vec![Filter::AdjustColor { brightness: -50.0, contrast: -20.0, saturation: 60.0, hue: -150.0 }],
+    ];
+    for (inner, knockout, hide) in [(false, false, false), (true, false, false), (false, true, false), (true, true, false), (false, false, true), (true, false, true)] {
+        out.push(vec![ds(inner, knockout, hide, 45.0)]);
+    }
+    out.push(vec![ds(false, false, false, 200.0)]);
+    for (inner, knockout) in [(false, false), (true, false), (false, true), (true, true)] {
+        out.push(vec![glow(inner, knockout)]);
+    }
+    for side in FilterSide::ALL {
+        for knockout in [false, true] {
+            out.push(vec![bevel(side, knockout)]);
+            out.push(vec![gglow(side, knockout)]);
+            out.push(vec![gbevel(side, knockout)]);
+        }
+    }
+    // Stacks: each filter works on what the one before made.
+    out.push(vec![ds(false, false, false, 45.0), bevel(FilterSide::Inner, false), Filter::AdjustColor { brightness: 0.0, contrast: 10.0, saturation: 20.0, hue: 30.0 }]);
+    out.push(vec![Filter::Blur { blur_x: 3.0, blur_y: 3.0, quality: 2 }, glow(false, false), gglow(FilterSide::Full, false)]);
+    out
+}
+
+/// A movie clip with a gradient, a translucent shape and a stroke (soft edges everywhere), on a
+/// small stage, with `filters`.
+fn filtered_doc(filters: &[anicraft_doc::Filter]) -> Document {
+    let mut d = Document { stage: anicraft_doc::Stage { width: 64, height: 56, fps: 24.0, background: Rgba::WHITE }, ..Document::default() };
+    let grad = Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(24.0, 18.0), stops: vec![stop(0.0, 0xff3300, 1.0), stop(1.0, 0x3366ff, 0.6)] };
+    let mut a = Shape::filled(Path::ellipse(12.0, 10.0, 11.0, 8.5), grad);
+    a.stroke = Some(anicraft_doc::Stroke::new(Rgba::hex(0x112233), 1.5));
+    let b = Shape::filled(Path::rect(16.3, 4.6, 9.2, 13.7), Paint::Solid(Rgba::hex(0x22aa44).with_alpha(0.5)));
+    let el = |id, s| Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(s) });
+    d.library.push(symbol(300, SymbolKind::MovieClip, vec![layer(301, vec![kf(0, 1, vec![el(302, a), el(303, b)], vec![], "")])]));
+    let mut i = (*inst(310, 300, "art", Affine::translate(18.4, 15.2), vec![])).clone();
+    if let ElementKind::Symbol { filters: f, .. } = &mut i.kind {
+        *f = filters.to_vec();
+    }
+    Arc::make_mut(&mut d.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap().elements = vec![Arc::new(i)];
+    d
+}
+
+/// The page's filters on the oracle's own unfiltered layer, placed with room around it as the
+/// page's canvas layer is, cut to where they can reach (`region`) and filtered there, give the
+/// oracle's filtered layer: every filter, side and switch, alone and stacked, at whole and
+/// fractional view scales.
+#[test]
+fn the_pages_filters_give_the_renderers_pixels() {
+    let mut js = filters_js();
+    let mut worst = 0.0f32;
+    for (n, filters) in filter_cases().into_iter().enumerate() {
+        let doc = filtered_doc(&filters);
+        let m = movie(&doc, &HtmlOptions::default());
+        let el = m.json["contents"][0]["l"][0]["e"][0].clone();
+        assert_eq!(el["fx"].as_array().map(Vec::len), Some(filters.len()), "case {n}: {el}");
+        let dl = anicraft_doc::evaluate(&doc, 0);
+        // Every case at the stage size, and at a fractional or a double view scale in turn.
+        for scale in [1.0f32, if n % 2 == 0 { 1.5 } else { 2.0 }] {
+            let view = crate::View { transform: Affine::scale(scale, scale), width: (64.0 * scale) as u32, height: (56.0 * scale) as u32, background: None };
+            let (scene, _) = crate::prepare_scene(&dl, &view).unwrap();
+            let [l] = scene.layers.as_slice() else { panic!("case {n}: one filtered layer") };
+            let (pm, _) = crate::render(&l.list, &l.view).unwrap();
+            let (w, h) = (l.bounds.width(), l.bounds.height());
+            let mut want = pm.data.clone();
+            crate::filters::apply(&mut want, w, h, &dl.groups[0].filters, scale);
+            // The page's layer: the oracle's with 7 more pixels around it.
+            let pad = 7;
+            let (bw, bh) = (w + 2 * pad, h + 2 * pad);
+            let mut big = vec![0.0f32; bw * bh * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    big[((y + pad) * bw + x + pad) * 4..][..4].copy_from_slice(&pm.data[y * w + x]);
+                }
+            }
+            let code = format!(
+                "(function () {{ var b = new Float32Array({big}); var r = AniCraftFilters.region(b, {bw}, {bh}, AniCraftFilters.reach({fm}, {scale})); var w = r[2] - r[0], h = r[3] - r[1]; var c = new Float32Array(w * h * 4); for (var y = 0; y < h; y++) for (var x = 0; x < w * 4; x++) c[y * w * 4 + x] = b[((y + r[1]) * {bw} + r[0]) * 4 + x]; AniCraftFilters.apply(c, w, h, {fx}, {scale}); return {{ r: r, c: Array.from(c) }}; }})()",
+                big = json!(big),
+                fm = el["fm"],
+                fx = el["fx"],
+            );
+            let out = js_json(&mut js, &code);
+            let r: Vec<usize> = out["r"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+            let c: Vec<f32> = out["c"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+            let cw = r[2] - r[0];
+            for y in 0..bh {
+                for x in 0..bw {
+                    let inside = (r[0]..r[2]).contains(&x) && (r[1]..r[3]).contains(&y);
+                    let page: [f32; 4] = if inside { c[((y - r[1]) * cw + x - r[0]) * 4..][..4].try_into().unwrap() } else { [0.0; 4] };
+                    let oracle = if (pad..pad + w).contains(&x) && (pad..pad + h).contains(&y) { want[(y - pad) * w + x - pad] } else { [0.0; 4] };
+                    for k in 0..4 {
+                        let d = (page[k] - oracle[k]).abs();
+                        worst = worst.max(d);
+                        assert!(d < 2e-3, "case {n} {filters:?} at ×{scale}, pixel ({x}, {y}) channel {k}: page {page:?}, renderer {oracle:?}");
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("largest difference from the renderer: {worst:e}");
+}
+
+/// The page resolves each filter to the same whole box widths and pixel offsets as the renderer,
+/// across angles, distances and view scales, including those that round at halves.
+#[test]
+fn the_pages_filters_resolve_like_the_renderers() {
+    use crate::filters::{FilterOp, resolve};
+    use anicraft_doc::{Filter, FilterSide};
+    let mut js = filters_js();
+    let mut cases = Vec::new();
+    for angle in [0.0f32, 30.0, 45.0, 60.0, 90.0, 135.0, 180.0, 210.0, 270.0, 300.0, 359.0, -45.0, 725.0] {
+        for distance in [0.0f32, 0.5, 1.0, 2.5, 3.0, 4.5, 7.0, -3.5] {
+            for (bx, by, q) in [(0.0f32, 0.0f32, 1u8), (2.5, 1.5, 2), (5.0, 9.0, 3), (0.3, 255.0, 1)] {
+                for scale in [1.0f32, 0.5, 1.25, 2.0, 3.0] {
+                    cases.push((Filter::DropShadow { blur_x: bx, blur_y: by, strength: 1.0, quality: q, angle, distance, color: Rgba::BLACK, inner: false, knockout: false, hide_object: true }, scale));
+                    cases.push((Filter::Bevel { blur_x: bx, blur_y: by, strength: 1.0, quality: q, angle, distance, shadow_color: Rgba::BLACK, highlight_color: Rgba::WHITE, side: FilterSide::Full, knockout: false }, scale));
+                }
+            }
+        }
+    }
+    let list: Vec<Value> = cases.iter().map(|(f, s)| json!([filter_json(f), s])).collect();
+    let got = js_json(&mut js, &format!("{}.map(function (c) {{ var o = AniCraftFilters.resolve(c[0], c[1]); return [o.blur.nx, o.blur.ny, o.blur.passes, o.dx, o.dy]; }})", Value::Array(list)));
+    for ((f, scale), g) in cases.iter().zip(got.as_array().unwrap()) {
+        let (blur, dx, dy) = match resolve(f, *scale) {
+            FilterOp::Shadow { blur, dx, dy, .. } | FilterOp::Bevel { blur, dx, dy, .. } => (blur, dx, dy),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(g, &json!([blur.nx, blur.ny, blur.passes, dx, dy]), "{f:?} at ×{scale}");
+    }
+    assert!(cases.len() > 4000);
+    // How far a group's filters reach: the renderer's margin.
+    for (m, scale) in [(3.0f32, 1.0f32), (7.25, 1.5), (0.0, 2.0)] {
+        assert_eq!(js_json(&mut js, &format!("AniCraftFilters.reach({m}, {scale})")), json!(((m * scale).ceil() + 2.0) as i64));
+    }
+}
+
+/// Subtract and Invert, composited by the page, follow the renderer's formula, in floats and
+/// on the canvas's 8-bit pixels (within a step of rounding).
+#[test]
+fn the_page_subtracts_and_inverts_like_the_renderer() {
+    let mut js = filters_js();
+    let levels = [0.0f32, 0.2, 0.5, 0.8, 1.0];
+    let mut cases = Vec::new();
+    for &sa in &levels {
+        for &ba in &levels {
+            for &(cs, cb) in &[(0.9f32, 0.3f32), (0.1, 0.7), (0.5, 0.5), (1.0, 0.0)] {
+                cases.push(([cs * sa, (1.0 - cs) * sa, 0.4 * sa, sa], [cb * ba, 0.6 * ba, (1.0 - cb) * ba, ba]));
+            }
+        }
+    }
+    for (mode, key) in [(BlendMode::Subtract, "subtract"), (BlendMode::Invert, "invert")] {
+        let got = js_json(&mut js, &format!("{}.map(function (p) {{ return AniCraftFilters.blendPixel('{key}', p[0], p[1], [0, 0, 0, 0]); }})", json!(cases)));
+        for ((s, b), g) in cases.iter().zip(got.as_array().unwrap()) {
+            let want = crate::blend(mode, *s, *b);
+            for k in 0..4 {
+                assert!((g[k].as_f64().unwrap() as f32 - want[k]).abs() < 1e-5, "{key}: {s:?} over {b:?}: {g} vs {want:?}");
+            }
+        }
+        // 8-bit straight pixels, at a group alpha: the renderer's blend of the same colours.
+        let src: Vec<u8> = vec![230, 40, 100, 255, 10, 200, 90, 128, 255, 255, 255, 60, 0, 0, 0, 0];
+        let dst: Vec<u8> = vec![120, 180, 30, 255, 250, 20, 140, 255, 60, 60, 60, 200, 77, 88, 99, 255];
+        let alpha = 0.75f32;
+        let out = js_json(&mut js, &format!("(function () {{ var d = new Uint8ClampedArray({}); AniCraftFilters.blendImage(d, new Uint8ClampedArray({}), {alpha}, '{key}'); return Array.from(d); }})()", json!(dst), json!(src)));
+        let pre = |p: &[u8], k: f32| {
+            let a = f32::from(p[3]) / 255.0 * k;
+            [f32::from(p[0]) / 255.0 * a, f32::from(p[1]) / 255.0 * a, f32::from(p[2]) / 255.0 * a, a]
+        };
+        for i in 0..4 {
+            let (s, d) = (&src[i * 4..][..4], &dst[i * 4..][..4]);
+            let want = if s[3] == 0 { pre(d, 1.0) } else { crate::blend(mode, pre(s, alpha), pre(d, 1.0)) };
+            let a = want[3];
+            for k in 0..4 {
+                let v = if k == 3 { a } else if a > 0.0 { want[k] / a } else { 0.0 };
+                let g = out[i * 4 + k].as_f64().unwrap() as f32 / 255.0;
+                assert!((g - v).abs() <= 1.0 / 255.0 + 1e-6, "{key}, pixel {i}, channel {k}: {g} vs {v}");
+            }
+        }
+    }
+}
+
+/// Broken filter data (a page edited by hand, or a later format) is skipped, never thrown on.
+#[test]
+fn the_pages_filters_survive_broken_data() {
+    let mut js = filters_js();
+    let out = js_json(&mut js, "(function () { var b = new Float32Array([0.5, 0, 0, 0.5, 1, 1, 1, 1]); AniCraftFilters.apply(b, 2, 1, [null, 3, {k: 'sparkle'}, {k: 'adjust', m: [1]}, {k: 'blur', x: 'wide', y: NaN, q: -4}, {k: 'shadow'}, {k: 'bevel', st: 'x'}, {k: 'gglow', st: [[0.5]]}], NaN); AniCraftFilters.apply(b, 3, 1, [{k: 'blur', x: 2, y: 2, q: 1}], 1); AniCraftFilters.blendImage(new Uint8ClampedArray(4), new Uint8ClampedArray(8), NaN, 'invert'); return [Array.from(b).every(isFinite), AniCraftFilters.region(new Uint8ClampedArray(16), 2, 2, 5)]; })()");
+    assert_eq!(out, json!([true, null]));
 }
