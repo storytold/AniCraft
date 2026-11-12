@@ -213,9 +213,10 @@ The Eraser can't erase inside symbols, or lines with a width profile, yet.
 
 ## Transforming artwork
 
-With the **Free Transform** tool (**Q**), drag a corner or edge to **scale** (**Shift** keeps
-the proportions, **Alt** scales from the centre), just outside a corner to **rotate**
-(**Shift** snaps to 15°), or inside the box to **move**. You can also type exact
+With the **Free Transform** tool (**Q**), drag a corner or edge to **scale** about the
+transformation point in the middle of the box (**Shift** keeps the proportions, **Alt** holds
+the opposite corner or edge still instead), just outside a corner to **rotate** (**Shift**
+snaps to 15°), or inside the box to **move**. You can also type exact
 **Position**, **Scale** and **Rotation** values in Properties.
 
 | Command | Menu | Key |

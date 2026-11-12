@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* **Fixed**: dragging a Free Transform scale handle scaled from the opposite handle instead of
+  the transformation point in the middle of the box (issue #193). It now scales about the
+  transformation point, as rotating does; hold **Alt** to keep the opposite corner or edge still.
 * **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
   tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
   macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip
