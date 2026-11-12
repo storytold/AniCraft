@@ -85,7 +85,11 @@ impl Rgba {
     pub fn to_hex(self) -> String {
         let s = self.sanitized();
         let b = |v: f32| (v * 255.0).round() as u8;
-        format!("#{:02x}{:02x}{:02x}", b(s.r), b(s.g), b(s.b))
+        if s.a < 1.0 {
+            format!("#{:02x}{:02x}{:02x}{:02x}", b(s.r), b(s.g), b(s.b), b(s.a))
+        } else {
+            format!("#{:02x}{:02x}{:02x}", b(s.r), b(s.g), b(s.b))
+        }
     }
     /// Parses `#rrggbb`, `rrggbb` or `#rrggbbaa`.
     pub fn parse_hex(s: &str) -> Option<Rgba> {
@@ -1685,6 +1689,13 @@ mod tests {
         assert_eq!(LoopMode::PlayOnce.local_frame(7, 0, 5), 4);
         assert_eq!(LoopMode::SingleFrame.local_frame(7, 3, 5), 3);
         assert_eq!(LoopMode::Loop.local_frame(u32::MAX, u32::MAX, 0), 0);
+    }
+
+    #[test]
+    fn hex_roundtrip_keeps_alpha() {
+        let c = Rgba::parse_hex("#ff000080").unwrap();
+        assert_eq!(c.to_hex(), "#ff000080");
+        assert_eq!(Rgba::parse_hex(&c.to_hex()).unwrap(), c);
     }
 
     #[test]

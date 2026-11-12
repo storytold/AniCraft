@@ -531,7 +531,7 @@ pub fn to_lottie(doc: &Document, name: &str, from: u32, to: u32, background: boo
     if background {
         let bg = doc.stage.background.sanitized();
         layers.push(json!({"ddd": 0, "ind": shape_layers + mattes + 1, "ty": 1, "nm": "Stage", "sr": 1, "ks": static_ks(), "ao": 0, "ip": 0, "op": frames, "st": 0, "bm": 0,
-            "sc": bg.to_hex(), "sw": doc.stage.width, "sh": doc.stage.height}));
+            "sc": bg.with_alpha(1.0).to_hex(), "sw": doc.stage.width, "sh": doc.stage.height}));
     }
     let root = json!({
         "v": "5.7.0",

@@ -863,7 +863,7 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
     let json = json!({
         "v": FORMAT_VERSION,
         "generator": format!("AniCraft {}", env!("CARGO_PKG_VERSION")),
-        "stage": {"w": stage.width.max(1), "h": stage.height.max(1), "fps": num(fps, 1000.0), "bg": stage.background.to_hex()},
+        "stage": {"w": stage.width.max(1), "h": stage.height.max(1), "fps": num(fps, 1000.0), "bg": stage.background.with_alpha(1.0).to_hex()},
         "fit": opts.fit,
         "scenes": doc.scenes.iter().enumerate().map(|(i, s)| json!({"name": s.name, "tl": i})).collect::<Vec<_>>(),
         "symbols": symbols,
@@ -913,7 +913,7 @@ pub fn to_html(doc: &Document, opts: &HtmlOptions) -> Result<HtmlExport, String>
     // the JSON is inside a string, where `<` reads the same.
     let data = m.json.to_string().replace('<', "\\u003c");
     let title = escape_html(&opts.title);
-    let bg = doc.stage.background.to_hex();
+    let bg = doc.stage.background.with_alpha(1.0).to_hex();
     let (w, h) = (doc.stage.width.max(1), doc.stage.height.max(1));
     let mut html = String::with_capacity(data.len() + PLAYER_JS.len() + FILTERS_JS.len() + CANVAS_JS.len() + 1024);
     html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
