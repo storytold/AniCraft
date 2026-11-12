@@ -47,6 +47,39 @@ pub enum StageRenderer {
     Cpu,
 }
 
+/// How the window itself is drawn (#207, #255): AniCraft picks, or one graphics interface the user
+/// chose for this computer. Takes effect the next time AniCraft starts; whichever is chosen, a
+/// failure falls back to the next way that works (`startup`). Read leniently, so a value a
+/// newer build wrote never resets the other preferences.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WindowBackend {
+    /// The platform's order (`platform::window_attempts`).
+    #[default]
+    Auto,
+    Vulkan,
+    /// Windows' own (Direct3D 12).
+    Dx12,
+    Metal,
+    OpenGl,
+}
+
+impl WindowBackend {
+    /// The choice's name and what it is for, as Preferences lists it (English keys).
+    pub fn describe(self) -> (&'static str, &'static str) {
+        match self {
+            WindowBackend::Auto => (tr_noop!("Automatic"), tr_noop!("AniCraft tries the best way for this computer first, and the next one if a way doesn't work.")),
+            WindowBackend::Vulkan => (tr_noop!("Vulkan"), tr_noop!("Try this if the window flickers or goes black with another choice.")),
+            WindowBackend::Dx12 => (tr_noop!("DirectX 12"), tr_noop!("Windows' own graphics: try this if the window flickers or goes black with another choice.")),
+            WindowBackend::Metal => (tr_noop!("Metal"), tr_noop!("The Mac's own graphics.")),
+            WindowBackend::OpenGl => (tr_noop!("OpenGL"), tr_noop!("Older and slower, but works with most graphics drivers. The stage is drawn on the CPU or on a graphics device of its own.")),
+        }
+    }
+}
+
+fn lenient_backend<'de, D: serde::Deserializer<'de>>(d: D) -> Result<WindowBackend, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
+}
+
 impl StageRenderer {
     pub const ALL: [(StageRenderer, &'static str, &'static str); 2] = [
         (StageRenderer::Gpu, tr_noop!("Graphics card (GPU)"), tr_noop!("Draws the stage on the graphics card, and on the CPU when there is no card that can. The picture is the same either way.")),
@@ -78,6 +111,9 @@ pub struct Prefs {
     /// the choice), so that key is not read.
     #[serde(rename = "stage")]
     pub stage_renderer: StageRenderer,
+    /// How the window is drawn, from the next start (#207, #255).
+    #[serde(deserialize_with = "lenient_backend")]
+    pub window_backend: WindowBackend,
     /// Native open/save dialogs; off = a built-in path field (for Linux setups without an XDG
     /// desktop portal).
     pub native_dialogs: bool,
@@ -162,6 +198,7 @@ impl Default for Prefs {
             ui_scale: 1.0,
             render_mode: RenderMode::Auto,
             stage_renderer: StageRenderer::Gpu,
+            window_backend: WindowBackend::Auto,
             native_dialogs: true,
             timeline_start_gap: 0.0,
             timeline_short_rows: false,
@@ -387,6 +424,12 @@ mod tests {
         assert_eq!(p.stage_renderer, StageRenderer::Gpu, "the GPU draws the stage unless the CPU is chosen");
         assert_eq!(Prefs::from_json(r#"{"stage_renderer": "Cpu"}"#).stage_renderer, StageRenderer::Gpu, "the old default, written by every earlier build, is not a choice");
         assert_eq!(Prefs::from_json(r#"{"stage": "Cpu"}"#).stage_renderer, StageRenderer::Cpu);
+        // The window's graphics: automatic unless chosen, and a value this build doesn't know
+        // (a newer build's) leaves it automatic without resetting anything else.
+        assert_eq!(p.window_backend, WindowBackend::Auto);
+        assert_eq!(Prefs::from_json(r#"{"window_backend": "Dx12"}"#).window_backend, WindowBackend::Dx12);
+        let newer = Prefs::from_json(r#"{"window_backend": "Hologram", "stage": "Cpu"}"#);
+        assert_eq!((newer.window_backend, newer.stage_renderer), (WindowBackend::Auto, StageRenderer::Cpu));
         let chosen = Prefs { stage_renderer: StageRenderer::Cpu, ..Prefs::default() };
         assert_eq!(Prefs::from_json(&serde_json::to_string(&chosen).unwrap()).stage_renderer, StageRenderer::Cpu, "a choice survives saving");
         let p = Prefs::from_json(r#"{"shortcuts": {"tool.pen": ["F10", "Ctrl+K"], "nope": ["F2"]}}"#);

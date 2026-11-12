@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+* **Fixed: start-up, files and display, from user reports** (M8).
+  * Fixed: Flash files that opened in 0.1 no longer opening (#226). One damaged or unreadable
+    part of a `.fla` (a bitmap, a sound, a library symbol) no longer stops the whole file from
+    opening: the rest opens and the report says what was left out. A file double-clicked or
+    opened with **Open With** that can't be opened now says why in the status bar instead of
+    quietly showing the sample, and `anicraft-cli info`, `render` and the export commands open
+    `.fla` and `.xfl` files too.
+  * Fixed: Animate documents opening on a black stage instead of white (#163).
+  * Fixed: AniCraft not opening at all on some laptops with two graphics chips, such as the
+    Surface Book 2 (#207). If a way of drawing the window fails, AniCraft now tries the next one
+    (on Windows: DirectX 12 on the built-in chip, then OpenGL) instead of exiting, and a start that
+    crashed inside a graphics driver tries that way last next time. If nothing works, a message
+    says so. A start-up log in the settings folder (`Logs/anicraft.log`) records what was tried,
+    to attach to a bug report.
+  * New: **Preferences › Stage › Window graphics** chooses how the window is drawn (Automatic,
+    DirectX 12, Vulkan, Metal or OpenGL), for windows that flicker or flash black (#255).
+    `--renderer dx12`, `vulkan` and `metal` now pick that interface; before, they all meant the
+    default.
+  * Fixed: the selection shading on shapes stopping part way down when zoomed in or on a big
+    shape (#204). The dot pattern now covers the whole shape and its outline at any zoom, and
+    costs the same however much of the screen it covers.
+  * The web version's download is now built by `packaging/web/package.sh` and checked in CI; the
+    README no longer suggests releases carry it yet (#210).
 * **Drawing tools and colour fixes from user reports** (M1).
   * **Fixed**: the Fill and Stroke colour squares in the Tools panel did nothing when clicked.
     They open the colour picker now, with No Colour, and recolour selected shapes (#246).

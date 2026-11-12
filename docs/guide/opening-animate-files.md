@@ -125,6 +125,12 @@ computers without the font.
 * Archives made by different zip tools open, large ones included.
 * A **damaged or suspicious** file fails with one sentence that names the problem, and never
   crashes AniCraft. Nothing from it is ever unpacked onto your disk.
+* When only **part** of a file is damaged (one bitmap, one sound or one library symbol), the rest
+  opens and the report counts what was left out, such as "1 bitmaps whose files couldn't be
+  read".
+* A document that opens without a stage colour gets Animate's default, white.
+* A document you double-click, or open with **Open With**, that can't be opened says why in the
+  status bar.
 
 ## Tips
 

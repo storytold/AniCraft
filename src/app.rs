@@ -1075,6 +1075,17 @@ impl App {
                 crate::movie_explorer::expand_to(self, 3);
             }
             Some("about") => self.show_about = true,
+            Some("selectzoom") => {
+                // #204: a raw rectangle with a wide outline, selected and zoomed in far past the
+                // window: the selection pattern covers all of it, down to the bottom.
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 60, "y": 40, "w": 840, "h": 460, "fill": "#e8594f", "stroke": "#7a1f1a", "stroke_width": 24, "object": false}));
+                self.run("edit.select_all", json!({}));
+                self.tool = Tool::Select;
+                self.view.fit = false;
+                self.view.zoom = 4.0;
+                self.view.pan = egui::vec2(1820.0, 1030.0);
+            }
             Some("zoom") => {
                 // 300% on the ball: many tiles, edges cross shapes (seam check).
                 self.view.fit = false;
@@ -2888,6 +2899,8 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+        // A few frames drawn: the window started (#207).
+        crate::startup::frame();
     }
 }
 
