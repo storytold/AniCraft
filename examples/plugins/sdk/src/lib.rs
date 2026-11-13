@@ -1,13 +1,19 @@
 //! Guest-side helpers for AniCraft WebAssembly plug-ins (ABI v1, `docs/plugins.md`).
 //!
-//! A plug-in names its manifest and its `run` function with [`plugin!`] and talks to AniCraft
-//! with [`command`], [`document`], [`selected_elements`] and [`log`]. The only `unsafe` a
-//! plug-in needs is here: the two host imports and the raw pointers the exports receive.
-//! Everything else is plain Rust; `std` is fine as long as nothing touches WASI (files, clock,
-//! randomness), since AniCraft refuses modules with any other import.
+//! A command plug-in names its manifest and its `run` function with [`plugin!`] and talks to
+//! AniCraft with [`command`], [`document`], [`selected_elements`] and [`log`]. An exporter
+//! names its export function with [`exporter!`] and reads frames with [`movie`] and [`frame`];
+//! an ease plug-in names its ease function with [`ease!`]. The only `unsafe` a plug-in needs is
+//! here: the two host imports and the raw pointers the exports receive. Everything else is
+//! plain Rust; `std` is fine as long as nothing touches WASI (files, clock, randomness), since
+//! AniCraft refuses modules with any other import.
+//!
+//! Built for anything but WebAssembly (a plug-in's own `cargo test`), the host imports are
+//! stand-ins that answer every request with an error, so the pure parts can be unit-tested.
 
 use serde_json::{Value, json};
 
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "anicraft")]
 unsafe extern "C" {
     /// Sends `len` bytes of JSON at `ptr`; returns the length of the response.
@@ -16,6 +22,16 @@ unsafe extern "C" {
     /// Copies up to `cap` bytes of the last response to `ptr`; returns the bytes copied.
     #[link_name = "response"]
     fn host_response(ptr: *mut u8, cap: usize) -> i32;
+}
+
+/// Outside AniCraft (native unit tests) there is no host: no response.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn host_call(_: *const u8, _: usize) -> i32 {
+    0
+}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn host_response(_: *mut u8, _: usize) -> i32 {
+    0
 }
 
 /// Sends one request (`{"op": …}`) and returns its result, or the host's error message.
@@ -53,6 +69,19 @@ pub fn selected_elements(paths: bool) -> Result<Vec<Value>, String> {
 /// A line in the run's report (and the error message if the run fails).
 pub fn log(message: &str) {
     let _ = request(&json!({"op": "log", "message": message}));
+}
+
+/// An exporter's movie: `{name, width, height, fps, background, from, to, frames,
+/// total_frames, scenes}` (frames are 0-based movie frames).
+pub fn movie() -> Result<Value, String> {
+    request(&json!({"op": "movie"}))
+}
+
+/// Frame `index` of the export (0 = the first frame exported), evaluated: `{index, frame,
+/// scene, scene_frame, items: [{layer, element, path, transform, fill, stroke, fill_rule,
+/// alpha, color?, clip?, masks?, group?}], clips, groups}`.
+pub fn frame(index: u64) -> Result<Value, String> {
+    request(&json!({"op": "frame", "index": index}))
 }
 
 /// A small deterministic random generator (SplitMix64). Plug-ins have no source of
@@ -103,6 +132,70 @@ macro_rules! plugin {
             $crate::run(ptr, len, $run)
         }
     };
+}
+
+/// Exports the entry points of an exporter plug-in: `exporter!(MANIFEST, export)` where
+/// `export: fn(&serde_json::Value) -> Result<Vec<u8>, String>` gets the validated options and
+/// returns the file's bytes.
+#[macro_export]
+macro_rules! exporter {
+    ($manifest:expr, $export:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn ac_abi_version() -> i32 {
+            1
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn ac_manifest() -> i64 {
+            $crate::manifest_ptr($manifest)
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn ac_alloc(size: i32) -> i32 {
+            $crate::alloc(size)
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn ac_export(ptr: i32, len: i32) -> i64 {
+            $crate::export(ptr, len, $export)
+        }
+    };
+}
+
+/// Exports the entry points of an ease plug-in: `ease!(MANIFEST, ease)` where
+/// `ease: fn(usize, f64) -> f64` is the eased progress of the manifest's ease number `index` at
+/// time `t` (0..=1). AniCraft samples it when the plug-in loads; it gets no host calls.
+#[macro_export]
+macro_rules! ease {
+    ($manifest:expr, $ease:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn ac_abi_version() -> i32 {
+            1
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn ac_manifest() -> i64 {
+            $crate::manifest_ptr($manifest)
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn ac_ease(index: i32, t: f64) -> f64 {
+            $ease(index.max(0) as usize, t)
+        }
+    };
+}
+
+#[doc(hidden)]
+pub fn export(ptr: i32, len: i32, f: fn(&Value) -> Result<Vec<u8>, String>) -> i64 {
+    // SAFETY: the host wrote `len` bytes of options into the block it got from `ac_alloc`.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as usize as *const u8, len.max(0) as usize) };
+    let options: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
+    match f(&options) {
+        Ok(out) => {
+            // The instance is dropped after the export, so the file is never freed.
+            let out = std::mem::ManuallyDrop::new(out);
+            ((out.len() as i64) << 32) | (out.as_ptr() as usize as i64)
+        }
+        Err(e) => {
+            log(&e);
+            -1
+        }
+    }
 }
 
 #[doc(hidden)]
