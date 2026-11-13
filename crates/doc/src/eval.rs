@@ -335,7 +335,7 @@ struct Joined {
 }
 
 /// The raw stroke runs of `els` joined into one element per stroke style (and scale, rotation
-/// and skew, which the stroke's width follows), each in the space of its first run.
+/// and skew, which the stroke's width follows, and colour effect), each in the space of its first run.
 fn joined_runs(els: &[Arc<Element>]) -> Vec<Joined> {
     let mut out: Vec<Joined> = Vec::new();
     for (i, e) in els.iter().enumerate() {
@@ -343,7 +343,7 @@ fn joined_runs(els: &[Arc<Element>]) -> Vec<Joined> {
         let slot = out.iter_mut().find_map(|j| {
             let ElementKind::Shape(js) = &mut j.el.kind else { return None };
             let into = j.el.transform.inverse()?.mul(&e.transform);
-            (j.el.transform.m[..4] == e.transform.m[..4] && js.stroke.as_ref() == Some(st)).then_some((&mut j.members, js, into))
+            (j.el.transform.m[..4] == e.transform.m[..4] && js.stroke.as_ref() == Some(st) && j.el.color == e.color).then_some((&mut j.members, js, into))
         });
         match slot {
             Some((members, js, into)) => {
@@ -361,14 +361,14 @@ fn joined_runs(els: &[Arc<Element>]) -> Vec<Joined> {
     out
 }
 
-/// The partner on `b` of each joined outline of `a`: one with the same stroke first, then the
+/// The partner on `b` of each joined outline of `a`: one with the same stroke and colour first, then the
 /// rest in order.
 fn pair_joined(a: &[Joined], b: &[Joined]) -> Vec<Option<usize>> {
     let mut taken = vec![false; b.len()];
     let mut out: Vec<Option<usize>> = a
         .iter()
         .map(|x| {
-            let m = b.iter().zip(&taken).position(|(y, &used)| !used && raw_stroke(&y.el) == raw_stroke(&x.el))?;
+            let m = b.iter().zip(&taken).position(|(y, &used)| !used && raw_stroke(&y.el) == raw_stroke(&x.el) && y.el.color == x.el.color)?;
             if let Some(u) = taken.get_mut(m) {
                 *u = true;
             }
