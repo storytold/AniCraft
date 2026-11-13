@@ -1621,6 +1621,7 @@ mod pattern_tests {
             group: None,
             image: None,
             smooth: true,
+            warp: None,
         }
     }
 

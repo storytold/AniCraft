@@ -836,7 +836,7 @@ mod tests {
     fn variable_width_strokes_export_as_filled_outlines() {
         use anicraft_doc::{Document, Element, ElementId, ElementKind, ProfilePreset, Shape, Stroke};
         let mut doc = Document::default();
-        let shape = Shape { path: std::sync::Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(Stroke::new(Rgba::hex(0x00ff00), 10.0).with_profile(ProfilePreset::TaperEnd.profile())), fill_rule: FillRule::NonZero, merge: false };
+        let shape = Shape { path: std::sync::Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(Stroke::new(Rgba::hex(0x00ff00), 10.0).with_profile(ProfilePreset::TaperEnd.profile())), fill_rule: FillRule::NonZero, merge: false, warp: None };
         let el = Element { id: ElementId(77), name: String::new(), transform: Affine::IDENTITY, color: Default::default(), kind: ElementKind::Shape(shape) };
         let layer = std::sync::Arc::make_mut(&mut doc.timeline_mut(0).layers[0]);
         layer.keyframe_mut(0).unwrap().elements.push(std::sync::Arc::new(el));
@@ -853,7 +853,7 @@ mod tests {
         use anicraft_doc::{Cap, Dash, Document, Element, ElementId, ElementKind, Join, Shape, Stroke, StrokeStyle};
         let export = |st: Stroke| {
             let mut doc = Document::default();
-            let shape = Shape { path: std::sync::Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(st), fill_rule: FillRule::NonZero, merge: false };
+            let shape = Shape { path: std::sync::Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(st), fill_rule: FillRule::NonZero, merge: false, warp: None };
             let el = Element { id: ElementId(77), name: String::new(), transform: Affine::scale(2.0, 2.0), color: Default::default(), kind: ElementKind::Shape(shape) };
             let layer = std::sync::Arc::make_mut(&mut doc.timeline_mut(0).layers[0]);
             layer.keyframe_mut(0).unwrap().elements.push(std::sync::Arc::new(el));

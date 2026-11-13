@@ -249,7 +249,7 @@ pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
                         name: String::new(),
                         transform: pose(x + dx, y + dy, 1.0, 1.0, phase * 20.0),
                         color: ColorEffect::default(),
-                        kind: ElementKind::Shape(Shape { path: path.clone(), fill: Some(fill.clone()), stroke: None, fill_rule: Default::default(), merge: false }),
+                        kind: ElementKind::Shape(Shape { path: path.clone(), fill: Some(fill.clone()), stroke: None, fill_rule: Default::default(), merge: false, warp: None }),
                     })
                 })
                 .collect();
