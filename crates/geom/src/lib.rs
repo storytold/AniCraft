@@ -8,6 +8,7 @@ mod affine;
 pub mod brush;
 pub mod clip;
 pub mod edit;
+pub mod envelope;
 pub mod morph;
 pub mod planar;
 pub mod pressure;
