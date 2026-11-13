@@ -383,9 +383,11 @@ var AniCraft = (function () {
     const fade = fx[7] === 0 ? Math.min(Math.max(fx[3], 0), 1) : 1;
     const blend = e.bl || "normal";
     let color = concat(cx.c, fx), group = cx.group;
-    if (masks === null && (fade < 1 - 1e-4 || blend !== "normal" || e.fx)) {
+    const filters = Array.isArray(e.fx) && e.fx.length ? e.fx : null;
+    if (masks === null && (fade < 1 - 1e-4 || blend !== "normal" || filters)) {
       group = dl.groups.length;
-      dl.groups.push({ parent: cx.group, alpha: fade, blend: blend, clip: clip });
+      // Filters run in the page (filters.js); `margin` is how far they reach (stage pixels).
+      dl.groups.push({ parent: cx.group, alpha: fade, blend: blend, clip: clip, filters: filters, margin: filters ? e.fm || 0 : 0 });
       color = concat(cx.c, fx[7] === 0 ? [fx[0], fx[1], fx[2], 1, fx[4], fx[5], fx[6], 0] : fx);
     }
     if (v && group !== cx.group) v.groupBegin(group, dl.groups[group]);

@@ -183,7 +183,7 @@ fn control(ui: &mut egui::Ui, name: &str, kind: &ParamKind, v: &mut Value) -> bo
         }
         ParamKind::Color { .. } => {
             let mut c = hex_rgb(v.as_str().unwrap_or("#000000"));
-            let changed = ui.color_edit_button_srgb(&mut c).named(name).changed();
+            let changed = crate::colour::button(ui, &mut c).named(name).changed();
             let h = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
             ui.label(text(Type::Data, h.clone()));
             *v = json!(h);

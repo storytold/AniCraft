@@ -722,10 +722,19 @@ impl<'a> Builder<'a> {
                 candidates.push(format!("bin/{data}"));
             }
             let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(256).collect();
-            let mut found_data = false;
+            let (mut found_data, mut unreadable) = (false, false);
             let mut bitmap = None;
             for path in candidates {
-                let Some(bytes) = (self.read)(&path)? else { continue };
+                let bytes = match (self.read)(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => continue,
+                    // Damaged or over the archive's limits: this bitmap is left out, not
+                    // the whole document (#226).
+                    Err(_) => {
+                        unreadable = true;
+                        continue;
+                    }
+                };
                 found_data = true;
                 if let Ok(b) = Bitmap::from_image(BitmapId(0), short.clone(), bytes) {
                     bitmap = Some(b);
@@ -742,6 +751,7 @@ impl<'a> Builder<'a> {
                     self.doc.bitmaps.push(Arc::new(b));
                 }
                 None if found_data => self.report.skip("bitmaps stored in Animate's own format"),
+                None if unreadable => self.report.skip("bitmaps whose files couldn't be read"),
                 None => self.report.skip("missing bitmap files"),
             }
         }
@@ -763,10 +773,19 @@ impl<'a> Builder<'a> {
                 candidates.push(format!("bin/{data}"));
             }
             let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(256).collect();
-            let mut found_data = false;
+            let (mut found_data, mut unreadable) = (false, false);
             let mut sound = None;
             for path in candidates {
-                let Some(bytes) = (self.read)(&path)? else { continue };
+                let bytes = match (self.read)(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => continue,
+                    // Damaged or over the archive's limits: this sound is left out, not
+                    // the whole document (#226).
+                    Err(_) => {
+                        unreadable = true;
+                        continue;
+                    }
+                };
                 found_data = true;
                 if let Ok(s) = anicraft_doc::Sound::from_data(anicraft_doc::SoundId(0), short.clone(), bytes) {
                     sound = Some(s);
@@ -781,6 +800,7 @@ impl<'a> Builder<'a> {
                     self.doc.sounds.push(Arc::new(s));
                 }
                 None if found_data => self.report.skip("sounds stored in Animate's own format"),
+                None if unreadable => self.report.skip("sounds whose files couldn't be read"),
                 None => self.report.skip("missing sound files"),
             }
         }
@@ -821,11 +841,19 @@ impl<'a> Builder<'a> {
             if !seen.insert(href.to_string()) {
                 continue;
             }
-            let Some(bytes) = (self.read)(&format!("LIBRARY/{href}"))? else {
-                self.report.skip("missing library files");
-                continue;
+            // A damaged symbol file is left out (its instances with it), not the whole
+            // document (#226).
+            let item = match (self.read)(&format!("LIBRARY/{href}")).map(|b| b.map(|b| xml::parse(&b))) {
+                Ok(Some(Ok(item))) => item,
+                Ok(None) => {
+                    self.report.skip("missing library files");
+                    continue;
+                }
+                Err(_) | Ok(Some(Err(_))) => {
+                    self.report.skip("library files that couldn't be read");
+                    continue;
+                }
             };
-            let item = xml::parse(&bytes)?;
             if item.name != "DOMSymbolItem" {
                 continue;
             }
@@ -888,7 +916,8 @@ impl<'a> Builder<'a> {
     /// used, else the first. A missing or unreadable file changes nothing: it is settings, not
     /// content.
     fn publish_settings(&mut self) -> Result<(), XflError> {
-        let Some(bytes) = (self.read)("PublishSettings.xml")? else { return Ok(()) };
+        // Optional: settings that can't be read leave the defaults (#226).
+        let Ok(Some(bytes)) = (self.read)("PublishSettings.xml") else { return Ok(()) };
         let Ok(root) = xml::parse(&bytes) else { return Ok(()) };
         let profiles: Vec<&X> = root.children.iter().filter(|c| c.name == "flash_profile").collect();
         let profile = profiles.iter().find(|p| p.bool("current") == Some(true)).or(profiles.first()).copied().unwrap_or(&root);
@@ -973,7 +1002,8 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
         width: root.f32("width").unwrap_or(550.0).clamp(1.0, 8192.0) as u32,
         height: root.f32("height").unwrap_or(400.0).clamp(1.0, 8192.0) as u32,
         fps: root.f32("frameRate").unwrap_or(24.0).clamp(1.0, 120.0),
-        background: color(&root, "backgroundColor", "__none"),
+        // Animate leaves the default, white, out of the file (#163).
+        background: if root.attr("backgroundColor").is_some() { color(&root, "backgroundColor", "__none") } else { Rgba::WHITE },
     };
     b.register_folders(&root);
     b.register_bitmaps(&root)?;

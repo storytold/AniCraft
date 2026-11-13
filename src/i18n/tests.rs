@@ -55,6 +55,8 @@ fn without_tests(src: &str) -> String {
 const NOT_UI: &[&str] = &[
     "eprintln!(", "println!(", "print!(", "panic!(", "assert", "unreachable!(", "Id::new(", "id_salt(", "persistent_id(", "json!(", "execute(", "perform(", "invoke(", ".run(", "find_command(", "#[", "env!(", "include_str!(", "include_bytes!(", "concat!(", "var(",
     "contains(", "starts_with(", "ends_with(", "strip_prefix(", "strip_suffix(", "matches!(", "== ", "!= ",
+    // The start-up log (`startup::line`): English, like console messages, for bug reports.
+    "line(&", "write(&format!(",
 ];
 
 /// Whether a prose literal outside the macros is allowed: not interface text by its context,

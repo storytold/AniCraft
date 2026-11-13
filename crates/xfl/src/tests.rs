@@ -570,3 +570,15 @@ fn sounds_in_the_package_come_across_on_frames_and_buttons_states() {
     let s = input(&doc, &s.state, &[Event::Move(anicraft_geom::Vec2::new(10.0, 10.0))], &mut NoScripts);
     assert_eq!(s.sounds.iter().map(|x| x.sound.sound).collect::<Vec<_>>(), [click]);
 }
+
+/// #163: Animate leaves the default stage colour (white) out of `DOMDocument.xml`, so a file
+/// without `backgroundColor` has a white stage, not a black one.
+#[test]
+fn a_document_without_a_background_colour_has_a_white_stage() {
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
+        Ok((p == "DOMDocument.xml").then(|| br#"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" frameRate="12"><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#.to_vec()))
+    };
+    let (doc, _) = import_with(&read).unwrap();
+    assert_eq!(doc.stage.background, Rgba::WHITE);
+    assert_eq!((doc.stage.width, doc.stage.height), (550, 400), "Animate's default size, also left out");
+}

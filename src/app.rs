@@ -224,7 +224,8 @@ pub enum Drag {
     Eraser,
     /// Width tool: resizing (or sliding) width point `index` of shape `id`, found on subpath
     /// `sub`; `start` is its left and right width when the drag began.
-    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: usize, grip: crate::widthtool::Grip, start: (f32, f32) },
+    /// `index` is the grabbed width point (None: one the drag adds at `t`).
+    Width { id: anicraft_engine::doc::ElementId, sub: usize, index: Option<usize>, t: f32, grip: crate::widthtool::Grip, start: (f32, f32) },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
@@ -391,6 +392,8 @@ pub struct App {
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
     pub width_sel: Option<(anicraft_engine::doc::ElementId, usize)>,
+    /// Opens the Tools bar's fill swatch picker on the next frame (the `swatches` screenshot).
+    pub open_fill_swatch: bool,
     /// The bone picked on the stage (ADR 0043; view state).
     pub bone_sel: Option<anicraft_engine::doc::BoneId>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
@@ -620,6 +623,7 @@ impl App {
             align_to_stage: false,
             points: Vec::new(),
             width_sel: None,
+            open_fill_swatch: false,
             bone_sel: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
@@ -716,6 +720,15 @@ impl App {
         if raw {
             self.run("draw.drop", json!({}));
         }
+    }
+
+    /// Runs a drawing tool's command and leaves nothing selected, as Animate's drawing tools
+    /// do: the next stroke goes on without a box around the last one (#205, #243). The command
+    /// itself selects what it drew, for scripts that style it next.
+    pub fn draw(&mut self, id: &str, params: Value) -> Option<Value> {
+        let v = self.run(id, params)?;
+        let _ = self.s.execute("edit.deselect", &json!({}));
+        Some(v)
     }
 
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
@@ -1062,6 +1075,17 @@ impl App {
                 crate::movie_explorer::expand_to(self, 3);
             }
             Some("about") => self.show_about = true,
+            Some("selectzoom") => {
+                // #204: a raw rectangle with a wide outline, selected and zoomed in far past the
+                // window: the selection pattern covers all of it, down to the bottom.
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 60, "y": 40, "w": 840, "h": 460, "fill": "#e8594f", "stroke": "#7a1f1a", "stroke_width": 24, "object": false}));
+                self.run("edit.select_all", json!({}));
+                self.tool = Tool::Select;
+                self.view.fit = false;
+                self.view.zoom = 4.0;
+                self.view.pan = egui::vec2(1820.0, 1030.0);
+            }
             Some("zoom") => {
                 // 300% on the ball: many tiles, edges cross shapes (seam check).
                 self.view.fit = false;
@@ -1865,6 +1889,10 @@ impl App {
                 {
                     self.tl_drag = timeline::TlDrag::Span { layer: l.id, start: k.start, end: k.end(), to: k.end() + 6 };
                 }
+            }
+            Some("swatches") => {
+                // The fill swatch's colour picker open.
+                self.open_fill_swatch = true;
             }
             Some("width") => {
                 // A tapered brush-like stroke being shaped with the Width tool: one width point
@@ -2924,6 +2952,8 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+        // A few frames drawn: the window started (#207).
+        crate::startup::frame();
     }
 }
 

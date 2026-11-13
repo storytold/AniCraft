@@ -89,10 +89,11 @@ nothing was copied.
 
 5. **Selection-tool modifiers** (the shell composes existing commands, so a script does the same
    with the same commands):
-   * **Ctrl/Cmd-drag** on an unselected raw line or fill edge pulls a **sharp corner** out of it
-     (issue #200): `raw.add_point` where it was grabbed, then `raw.move_point`, one gesture and
-     one undo step. Straight sides stay straight; the pointer shows the corner mark while Ctrl is
-     held.
+   * **Ctrl/Cmd-drag** on an unselected raw line or fill edge pulls a **corner** out of it
+     (issue #200). This PR first had its own version (`raw.add_point`, then `raw.move_point`);
+     the drawing-tools fixes (#257) reached `main` with one that also makes the new point a
+     corner on curved edges (`raw.convert_points`) and falls back to a bend where no point can
+     go, so that one is kept and this ADR's modifiers sit in its `select_press`.
    * **Alt/Option-drag** on a selection or a fill moves a **copy** (`edit.duplicate` in place,
      then the move), leaving the original whole; raw copies merge on top where they land.
    * **Shift** while moving keeps the move horizontal, vertical or at 45° and turns snapping off

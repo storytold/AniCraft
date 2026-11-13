@@ -152,7 +152,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
             });
         }
         form_row(ui, FORM_LABEL_DIALOG, tr!("Outline colour"), |ui| {
-            ui.color_edit_button_srgb(&mut d.color).named(tr!("Outline colour")).on_hover_text(tr!("The colour of the layer's outlines and of its bar on the timeline"));
+            crate::colour::button(ui, &mut d.color).named(tr!("Outline colour")).on_hover_text(tr!("The colour of the layer's outlines and of its bar on the timeline"));
         });
         if kind != LayerKind::Camera && kind != LayerKind::Folder {
             form_row(ui, FORM_LABEL_DIALOG, tr!("Outlines"), |ui| {

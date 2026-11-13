@@ -165,7 +165,7 @@ This page is generated from the command registry, so it always matches the versi
 - **Convert to Symbol…** `modify.convert_to_symbol` · **F8** · changes the document
   Parameters: `{name? (default: the next free “Symbol n”; a name the folder holds gets a number), kind?: graphic|movie_clip|button (default: graphic), folder?: Library folder id (default: the top level)} → {symbol, instance, name, layer, folder} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)`
 - **Break Apart** `modify.break_apart` · **Ctrl+B** (macOS **⌘B**) · changes the document
-  Parameters: `{}`
+  Parameters: `{} the selected symbol instances become their contents, text becomes shapes, and drawing objects become raw shapes that merge with the raw shapes they touch`
 - **Group** `modify.group` · **Ctrl+G** (macOS **⌘G**) · changes the document
   Parameters: `{} puts the selected elements on each layer into one group there (ADR 0073), where the topmost of them was, and selects it → {group, members} (one layer) or {layers: [..]}. Members keep their places exactly: the group's transform starts as the identity. Raw shapes inside merge only with each other; double-click the group (symbol.edit) to edit it in place`
 - **Ungroup** `modify.ungroup` · **Ctrl+Shift+G** (macOS **⇧⌘G**) · changes the document
