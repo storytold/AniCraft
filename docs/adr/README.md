@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0080 | m1/drawing-leftovers | Drawing parity leftovers: PolyStar options, Paint Selection and Inside, editing drawing objects, Envelope |
