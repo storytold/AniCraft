@@ -12,8 +12,10 @@
 //! frame scripts, symbol linkage classes and the document class, kept verbatim (ADR 0013 tier
 //! 1); frame scripts in the ActionScript 3.0 subset run in Test Movie (tier 2), and the report
 //! lists which run and which are only kept; sounds whose file is in the package as WAV, Ogg
-//! Vorbis or MP3, and the sounds on frames that use them, buttons' states included (ADR 0057).
-//! Everything else (sounds and bitmaps kept only in Animate's own storage, sound effects,
+//! Vorbis or MP3, and the sounds on frames that use them, buttons' states included, with their
+//! sync, repeats and effect or envelope (ADR 0057, ADR 0086); Screen Video videos as a still of
+//! their first frame (`video`, ADR 0086). Sounds and videos that don't come across are named in
+//! the report with why. Everything else (bitmaps kept only in Animate's own storage, video playback,
 //! motion tweens with property curves, unknown filters) is counted in the report instead of guessed at,
 //! and so is whatever is drawn the nearest way AniCraft can (ragged, stipple and hatched
 //! strokes, reflecting gradients, …). The self-authored corpus in `tests/corpus/` covers
