@@ -492,3 +492,44 @@ fn envelope_drag_is_one_step() {
     let (_, _, mesh) = s.envelope().expect("open");
     assert!((mesh[15].x - (pts[15][0] + 30.0)).abs() < 1e-3);
 }
+
+/// Timings for ADR 0080 (`cargo test --release -p anicraft-engine parity_timings -- --ignored --nocapture`).
+#[test]
+#[ignore = "a measurement"]
+fn parity_timings() {
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let wave: Vec<[f32; 2]> = (0..=400).map(|i| [20.0 + i as f32 * 2.5, 300.0 + (i as f32 * 0.05).sin() * 120.0]).collect();
+    for mode in ["normal", "inside", "selection"] {
+        let mut times = Vec::new();
+        for _ in 0..9 {
+            let mut s = blank(false);
+            run(&mut s, "draw.ellipse", json!({"x": 100, "y": 100, "w": 800, "h": 400, "fill": "#3d8bfd", "stroke": "#000000", "stroke_width": 2}));
+            run(&mut s, "edit.deselect", json!({}));
+            if mode == "selection" {
+                run(&mut s, "edit.select_all", json!({}));
+            }
+            let t = std::time::Instant::now();
+            run(&mut s, "draw.brush", json!({"points": wave, "size": 30, "mode": mode, "color": "#ff0000"}));
+            times.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+        eprintln!("brush 1000 px wave, size 30, {mode}: {:.2} ms", median(times));
+    }
+    let mut times = Vec::new();
+    for _ in 0..9 {
+        let mut s = blank(true);
+        run(&mut s, "draw.star", json!({"cx": 400, "cy": 300, "outer": 250, "sides": 32, "point_size": 0.5, "fill": "#ff0000"}));
+        run(&mut s, "draw.ellipse", json!({"x": 100, "y": 100, "w": 600, "h": 400, "fill": "#00ff00"}));
+        run(&mut s, "edit.select_all", json!({}));
+        let v = run(&mut s, "modify.envelope", json!({}));
+        let pts = points_of(&v);
+        let t = std::time::Instant::now();
+        for k in 0..10 {
+            run(&mut s, "modify.envelope_move", json!({"index": 1, "x": pts[1][0], "y": pts[1][1] - 10.0 * k as f32}));
+        }
+        times.push(t.elapsed().as_secs_f64() * 1e3 / 10.0);
+    }
+    eprintln!("envelope move, a 32-point star and an oval: {:.2} ms", median(times));
+}
