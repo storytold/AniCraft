@@ -43,6 +43,7 @@ mod layer_depth;
 mod layer_props;
 mod dialogs;
 mod dock;
+mod dock_float;
 mod dock_ui;
 mod drop;
 mod ease_editor;
@@ -82,6 +83,7 @@ mod timeline;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod widthtool;
+mod workspaces_window;
 
 #[cfg(not(target_arch = "wasm32"))]
 use anicraft_engine::Session;

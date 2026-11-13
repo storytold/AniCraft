@@ -679,6 +679,9 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
                 if ui_item(ui, tr!("Save Workspace…"), "", None) {
                     app.prompt = Some(crate::app::Prompt { title: tr_noop!("Save Workspace"), cmd: "view.save_workspace", key: "name", text: String::new(), focus: true });
                 }
+                if ui_item(ui, tr!("Manage Workspaces…"), "", None) {
+                    crate::workspaces_window::open(app);
+                }
                 let name = crate::i18n::t_dyn(crate::dock::Workspaces::name(&current)).into_owned();
                 if ui_item(ui, &tr!("Reset “{name}”", name = name), "", None) {
                     app.reset_workspace();
@@ -693,8 +696,8 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
                     crate::dock::Panel::MovieExplorer => app.keymap.primary("view.movie_explorer").unwrap_or(""),
                     _ => "",
                 };
-                if ui_item(ui, crate::i18n::t(p.label()), key, Some(app.dock.is_shown(p))) {
-                    if p == crate::dock::Panel::MovieExplorer && !app.dock.is_shown(p) {
+                if ui_item(ui, crate::i18n::t(p.label()), key, Some(app.panel_visible(p))) {
+                    if p == crate::dock::Panel::MovieExplorer && !app.panel_visible(p) {
                         crate::movie_explorer::open(app);
                     } else {
                         app.toggle_panel(p);

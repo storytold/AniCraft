@@ -459,6 +459,8 @@ pub struct App {
     pub dock: crate::dock::Layout,
     /// The dock's view state: a tab being dragged, where groups were drawn.
     pub dock_view: crate::dock_ui::DockView,
+    /// Window › Workspace › Manage Workspaces… (ADR 0087).
+    pub manage_workspaces: crate::workspaces_window::Manage,
     /// The Motion Editor's view state: the property whose curve it shows, the picked key
     /// (frames into the span), its drag and its list scroll.
     pub me_prop: anicraft_engine::doc::Property,
@@ -704,6 +706,7 @@ impl App {
             tl_drag: timeline::TlDrag::None,
             dock: prefs.workspaces.layout(),
             dock_view: Default::default(),
+            manage_workspaces: Default::default(),
             me_prop: anicraft_engine::doc::Property::X,
             me_key: None,
             me_sel: Vec::new(),
@@ -3454,7 +3457,8 @@ impl App {
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
-        crate::dock_ui::floating(self, &ctx);
+        crate::dock_float::floating(self, &ctx);
+        crate::workspaces_window::show(self, &ctx);
         crate::find_panel::show(self, &ctx);
         crate::brush_panel::show(self, &ctx);
         crate::publish_panel::show(self, &ctx);

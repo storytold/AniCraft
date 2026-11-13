@@ -40,59 +40,51 @@ fn tool_icon(tool: Tool) -> Icon {
     }
 }
 
-pub fn tools(app: &mut App, ui: &mut egui::Ui) {
-    let area = ui.max_rect();
-    // Scrolls (wheel, or Tab to a tool) when a large interface scale leaves too little height.
-    // The margin is inside the scroll area, so focus rings drawn around a tool are not clipped.
-    egui::ScrollArea::vertical().id_salt("tools").scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| tool_column(app, ui, area));
-    });
+/// How the tools are laid out where they are (ADR 0087).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolFlow {
+    /// One column: the bar on the left or right of the editor.
+    Column,
+    /// One row: the bar above or below the stage.
+    Row,
+    /// As many columns as fit: a panel in a dock or a floating window.
+    Grid,
 }
 
-fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
-    ui.vertical_centered(|ui| {
-        for tool in Tool::ALL {
-            let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::click());
-            let active = app.tool == tool;
-            // The active tool sits on a lighter gray block with a white icon; the rest are a
-            // step dimmer, so the one in hand stands out without colour.
-            let bg = if active {
-                T.active
-            } else if resp.hovered() {
-                T.header
-            } else {
-                Color32::TRANSPARENT
-            };
-            ui.painter().rect_filled(rect, T.rc(), bg);
-            let tint = if active { T.on_active } else if resp.hovered() { T.icon_hot } else { T.icon };
-            icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), tool_icon(tool), tint);
-            // "Pen tool (P)": what the tooltip says first, and what a screen reader says.
-            let name = a11y::with_key(&tr!("{tool} tool", tool = crate::i18n::t(tool.label())), app.keymap.primary(crate::keymap::tool_id(tool)));
-            a11y::control(ui, &resp, WidgetType::Button, &name, Some(active));
-            if active {
-                a11y::anchor(ui, a11y::Region::Tools, area, &resp);
-            }
-            let resp = resp.on_hover_text(format!("{name}\n{}", crate::i18n::t(tool.hint())));
-            if resp.clicked() {
-                app.tool = tool;
-            }
-            // Animate: double-clicking the Eraser erases everything on the stage (it asks first).
-            if tool == Tool::Eraser && resp.double_clicked() {
-                crate::erasertool::erase_everything(app);
-            }
-            if matches!(tool, Tool::Width | Tool::Eraser | Tool::Line | Tool::Eyedropper) {
-                // Tool groups: select, draw by hand, shapes, view.
-                ui.add_space(3.0);
-                let y = ui.cursor().top();
-                ui.painter().line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(1.0, T.border));
-                ui.add_space(4.0);
-            }
+pub fn tools(app: &mut App, ui: &mut egui::Ui, flow: ToolFlow) {
+    let area = ui.max_rect();
+    // Scrolls (wheel, or Tab to a tool) when a large interface scale leaves too little room.
+    // The margin is inside the scroll area, so focus rings drawn around a tool are not clipped.
+    let hidden = egui::scroll_area::ScrollBarVisibility::AlwaysHidden;
+    match flow {
+        ToolFlow::Column => {
+            egui::ScrollArea::vertical().id_salt("tools").scroll_bar_visibility(hidden).show(ui, |ui| {
+                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| ui.vertical_centered(|ui| tool_items(app, ui, area, flow)));
+            });
         }
-        // Snap to Objects (Animate's magnet, ADR 0042): on, dragged points and selections snap
-        // to points, lines and fill edges.
+        ToolFlow::Row => {
+            egui::ScrollArea::horizontal().id_salt("tools_row").scroll_bar_visibility(hidden).show(ui, |ui| {
+                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 6)).show(ui, |ui| ui.horizontal(|ui| tool_items(app, ui, area, flow)));
+            });
+        }
+        ToolFlow::Grid => {
+            egui::ScrollArea::vertical().id_salt("tools_grid").auto_shrink([false, false]).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+                    tool_items(app, ui, area, flow);
+                });
+            });
+        }
+    }
+}
+
+fn tool_items(app: &mut App, ui: &mut egui::Ui, area: Rect, flow: ToolFlow) {
+    for tool in Tool::ALL {
         let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::click());
-        let on = app.s.style.snap_objects;
-        let bg = if on {
+        let active = app.tool == tool;
+        // The active tool sits on a lighter gray block with a white icon; the rest are a
+        // step dimmer, so the one in hand stands out without colour.
+        let bg = if active {
             T.active
         } else if resp.hovered() {
             T.header
@@ -100,17 +92,66 @@ fn tool_column(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             Color32::TRANSPARENT
         };
         ui.painter().rect_filled(rect, T.rc(), bg);
-        let tint = if on { T.on_active } else if resp.hovered() { T.icon_hot } else { T.icon };
-        icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), Icon::Magnet, tint);
-        let name = a11y::with_key(tr!("Snap to Objects"), app.keymap.primary("draw.snap_to_objects"));
-        a11y::control(ui, &resp, WidgetType::Checkbox, &name, Some(on));
-        let resp = resp.on_hover_text(if on { tr!("{name}: on\nDragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) } else { tr!("{name}: off\nDragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) });
-        if resp.clicked() {
-            app.run("draw.snap_to_objects", json!({}));
+        let tint = if active { T.on_active } else if resp.hovered() { T.icon_hot } else { T.icon };
+        icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), tool_icon(tool), tint);
+        // "Pen tool (P)": what the tooltip says first, and what a screen reader says.
+        let name = a11y::with_key(&tr!("{tool} tool", tool = crate::i18n::t(tool.label())), app.keymap.primary(crate::keymap::tool_id(tool)));
+        a11y::control(ui, &resp, WidgetType::Button, &name, Some(active));
+        if active {
+            a11y::anchor(ui, a11y::Region::Tools, area, &resp);
         }
-        ui.add_space(10.0);
-        tool_swatches(app, ui);
-    });
+        let resp = resp.on_hover_text(format!("{name}
+{}", crate::i18n::t(tool.hint())));
+        if resp.clicked() {
+            app.tool = tool;
+        }
+        // Animate: double-clicking the Eraser erases everything on the stage (it asks first).
+        if tool == Tool::Eraser && resp.double_clicked() {
+            crate::erasertool::erase_everything(app);
+        }
+        if matches!(tool, Tool::Width | Tool::Eraser | Tool::Line | Tool::Eyedropper) {
+            // Tool groups: select, draw by hand, shapes, view.
+            match flow {
+                ToolFlow::Column => {
+                    ui.add_space(3.0);
+                    let y = ui.cursor().top();
+                    ui.painter().line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(1.0, T.border));
+                    ui.add_space(4.0);
+                }
+                ToolFlow::Row => {
+                    ui.add_space(3.0);
+                    let x = ui.cursor().left();
+                    ui.painter().line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(1.0, T.border));
+                    ui.add_space(4.0);
+                }
+                ToolFlow::Grid => ui.add_space(6.0),
+            }
+        }
+    }
+    // Snap to Objects (Animate's magnet, ADR 0042): on, dragged points and selections snap
+    // to points, lines and fill edges.
+    let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_BUTTON, TOOL_BUTTON), Sense::click());
+    let on = app.s.style.snap_objects;
+    let bg = if on {
+        T.active
+    } else if resp.hovered() {
+        T.header
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, T.rc(), bg);
+    let tint = if on { T.on_active } else if resp.hovered() { T.icon_hot } else { T.icon };
+    icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(TOOL_ICON, TOOL_ICON)), Icon::Magnet, tint);
+    let name = a11y::with_key(tr!("Snap to Objects"), app.keymap.primary("draw.snap_to_objects"));
+    a11y::control(ui, &resp, WidgetType::Checkbox, &name, Some(on));
+    let resp = resp.on_hover_text(if on { tr!("{name}: on
+Dragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) } else { tr!("{name}: off
+Dragged points and selections snap to points, lines and fill edges within 10 pixels.", name = name) });
+    if resp.clicked() {
+        app.run("draw.snap_to_objects", json!({}));
+    }
+    ui.add_space(if flow == ToolFlow::Grid { 6.0 } else { 10.0 });
+    tool_swatches(app, ui);
 }
 
 /// The stroke and fill swatches under the tools, as in Animate: the stroke's frame at the top
