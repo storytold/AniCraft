@@ -21,6 +21,16 @@
     panel at that width in English and the pseudo-locale. Long section titles end in "…".
   * Fixed: clicking a tab above or below the stage could start a drag instead of showing it.
 
+* **Animate files: sounds, videos and more archive layouts** (ADR 0086, M4).
+  * Frame sounds keep their **effect**: Left or Right Channel, the fades, or a custom envelope.
+  * Sounds and videos that don't come across are **named in the report** with the reason
+    ("theme.aif: AIFF", "voice.wav: WAV in IMA ADPCM", "intro.flv: FLV, On2 VP6, 4.5 s");
+    `file.open` returns them as `named`.
+  * A **Screen Video** comes in as a still of its first frame, in the Library and where the
+    video was placed; other videos are named with their format and length.
+  * A **zipped XFL folder** (one top folder, `__MACOSX` ignored) and a **self-extracting
+    archive** renamed to `.fla` open like any `.fla`.
+  * The corpus gains `sounds` and `video` packages and six archive layouts.
 * **Motion Editor and timeline retiming** (ADR 0083, M2).
   * **Moving keys in time** in the Motion Editor: drag a key sideways. It snaps to frames and
     stops next to its neighbours, and the value and ease go with it. Shift-click picks keys

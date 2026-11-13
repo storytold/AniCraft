@@ -40,10 +40,12 @@ const FRAMES: &[(&str, &[u32])] = &[
     ("scenes", &[0, 3, 7, 8, 10]),
     ("scripts", &[0, 4]),
     ("shapes", &[0]),
+    ("sounds", &[0]),
     ("symbols", &[0, 5]),
     ("text", &[0]),
     ("textfields", &[0]),
     ("tweens", &[0, 6, 12]),
+    ("video", &[0]),
 ];
 
 /// Render scale: the corpus stages are 320 × 180.
@@ -59,6 +61,18 @@ const PROBES: &[(&str, u32, f32, f32, u32)] = &[
     ("shapes", 0, 80.0, 30.0, 0x2B6CD9),
     ("shapes", 0, 95.0, 50.0, 0xF4F1EA),
     ("shapes", 0, 270.0, 60.0, 0xF29E1F),
+    // ADR 0086: the sounds package's artwork under its sound layers, on its own stage colour.
+    ("sounds", 0, 40.0, 60.0, 0x2A9D8F),
+    ("sounds", 0, 160.0, 90.0, 0xE9C46A),
+    ("sounds", 0, 10.0, 10.0, 0xF4F1EA),
+    // The Screen Video's first frame at 1.5 times (20..116 × 20..92), its quarters the right
+    // way up and round; the VP6 video draws nothing; the rectangle beside it.
+    ("video", 0, 35.0, 35.0, 0xE63946),
+    ("video", 0, 100.0, 35.0, 0x2A9D8F),
+    ("video", 0, 35.0, 80.0, 0x2646C8),
+    ("video", 0, 100.0, 80.0, 0xE9C46A),
+    ("video", 0, 200.0, 50.0, 0x264653),
+    ("video", 0, 10.0, 150.0, 0xFFFFFF),
     ("primitives", 0, 40.0, 50.0, 0xF2CC8F),
     ("primitives", 0, 210.0, 40.0, 0xE07A5F),
     ("primitives", 0, 6.0, 170.0, 0xFFFFFF),
@@ -270,6 +284,7 @@ fn every_package_opens_from_a_fla_with_the_same_golden_frames() {
             let mut t = Session::default();
             let got = t.execute("file.open", &json!({"path": path.display().to_string()})).unwrap_or_else(|e| panic!("{case}, {}: {e}", v.name));
             assert_eq!(got["report"], want["report"], "{case}, {}", v.name);
+            assert_eq!(got["named"], want["named"], "{case}, {}", v.name);
             assert!(t.doc == s.doc, "{case}, {}: the .fla opens differently from the folder", v.name);
         }
         // The goldens (imported without fonts, as they were made), rendered from the .fla in
@@ -341,4 +356,18 @@ fn every_entry_point_opens_the_corpus_as_a_fla() {
         .join()
         .unwrap();
     }
+}
+
+/// ADR 0086: opening a document headless (the CLI and MCP) says which sounds and videos didn't
+/// come across, by name, and the sounds that did are in the Library with their waveforms.
+#[test]
+fn file_open_names_the_sounds_and_videos_that_did_not_come_across() {
+    let mut s = Session::default();
+    let got = s.execute("file.open", &json!({"path": corpus().join("sounds").display().to_string()})).unwrap();
+    assert_eq!(got["named"]["missing sound files"], json!(["lost.wav"]));
+    assert!(got["report"].as_str().unwrap().contains("3 sounds in formats AniCraft can't decode (theme.aif: AIFF; voice.wav: WAV in IMA ADPCM; Sounds/loop: Animate's own sound data)"), "{}", got["report"]);
+    assert_eq!(s.doc.sounds.len(), 2);
+    assert!(s.doc.sounds.iter().all(|x| x.decoded().is_some_and(|d| d.pcm.frames() > 0)), "waveforms ready to draw");
+    let got = s.execute("file.open", &json!({"path": corpus().join("video").display().to_string(), "confirm": true})).unwrap();
+    assert_eq!(got["named"]["videos AniCraft can't play"], json!(["intro.flv: FLV, On2 VP6, 4.5 s", "gone.mp4: its file is missing, 1.0 s"]));
 }

@@ -574,10 +574,12 @@ fn sounds_in_the_package_come_across_on_frames_and_buttons_states() {
     assert_eq!(on(1).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Event)));
     assert_eq!(on(2).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Stream)));
     assert_eq!(on(3), None);
-    assert_eq!(report.skipped.get("sounds stored in Animate's own format"), Some(&1));
-    assert_eq!(report.skipped.get("missing sound files"), Some(&1));
+    assert_eq!(on(2).map(|s| s.effect), Some(anicraft_doc::sound::SoundEffect::FadeIn), "the effect comes across (ADR 0086)");
+    // Sounds that don't come across are named, with their format (ADR 0086).
+    assert_eq!(report.names.get("sounds in formats AniCraft can't decode"), Some(&vec!["private.mp3: Animate's own sound data".to_string()]));
+    assert_eq!(report.names.get("missing sound files"), Some(&vec!["gone.wav".to_string()]));
     assert_eq!(report.skipped.get("frame sounds whose sound isn't in the package"), Some(&1));
-    assert_eq!(report.skipped.get("sound effects and envelopes (played without)"), Some(&1));
+    assert!(report.summary().contains("1 missing sound files (gone.wav)"), "{}", report.summary());
     // In the player, going over the button starts its Over sound.
     use anicraft_doc::player::{Event, NoScripts, input, start};
     let s = start(&doc, &mut NoScripts);
@@ -595,4 +597,75 @@ fn a_document_without_a_background_colour_has_a_white_stage() {
     let (doc, _) = import_with(&read).unwrap();
     assert_eq!(doc.stage.background, Rgba::WHITE);
     assert_eq!((doc.stage.width, doc.stage.height), (550, 400), "Animate's default size, also left out");
+}
+
+/// ADR 0086: hostile sound data (cut short, sizes that lie, a sample count far past the file)
+/// never panics, never allocates past the file, and is either read for what it holds or named
+/// in the report.
+#[test]
+fn hostile_sound_files_are_bounded_and_named() {
+    let doc = r#"<DOMDocument><media><DOMSoundItem name="s.wav" href="s.wav" sampleCount="99999999999999" format="44kHz 16bit Stereo"/></media>
+      <timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="L"><frames><DOMFrame index="0" soundName="s.wav" soundLoop="4294967295"/></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#;
+    let open = |wav: Vec<u8>| {
+        let files: HashMap<String, Vec<u8>> = HashMap::from([("DOMDocument.xml".to_string(), doc.as_bytes().to_vec()), ("LIBRARY/s.wav".to_string(), wav)]);
+        let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+        import_with(&read).unwrap()
+    };
+    let good = anicraft_doc::audio::wav::encode(8000, 2, &[0.5; 1600], anicraft_doc::audio::wav::Bits::Int16);
+    let (d, _) = open(good.clone());
+    assert_eq!(d.sounds[0].frames, 800);
+    assert_eq!(d.timeline(0).layers[0].keyframes[0].sound.as_ref().unwrap().repeat, anicraft_doc::sound::MAX_REPEAT, "repeats bounded");
+    // Every cut: read for what it holds, or named.
+    for cut in 0..good.len() {
+        let (d, r) = open(good[..cut].to_vec());
+        assert!(d.sounds.len() == 1 || r.names.values().flatten().any(|n| n.starts_with("s.wav")), "cut at {cut}: {r:?}");
+        assert!(d.sounds.iter().all(|s| s.frames <= 800));
+    }
+    // The data chunk claiming 4 GB, and the RIFF size lying: only what is there is read.
+    let mut lying = good.clone();
+    lying[40..44].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+    lying[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    let (d, _) = open(lying);
+    assert_eq!(d.sounds[0].frames, 800);
+    // 32 channels of one byte each claimed in a tiny file: no frames, so named, not imported.
+    let mut wide = good;
+    wide[22..24].copy_from_slice(&32u16.to_le_bytes());
+    wide[32..34].copy_from_slice(&64u16.to_le_bytes());
+    wide.truncate(44 + 10);
+    let (d, r) = open(wide);
+    assert!(d.sounds.is_empty() && r.skipped.get("sounds in formats AniCraft can't decode") == Some(&1), "{r:?}");
+}
+
+/// ADR 0086: the report names what didn't come across, a few per kind in the summary line.
+#[test]
+fn the_summary_names_a_few_items_and_counts_the_rest() {
+    let mut media = String::new();
+    for i in 0..5 {
+        media.push_str(&format!(r#"<DOMSoundItem name="gone{i}.wav" href="gone{i}.wav"/>"#));
+    }
+    let doc = format!(r#"<DOMDocument><media>{media}</media><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok((p == "DOMDocument.xml").then(|| doc.as_bytes().to_vec())) };
+    let (_, r) = import_with(&read).unwrap();
+    assert_eq!(r.names["missing sound files"].len(), 5);
+    assert!(r.summary().contains("5 missing sound files (gone0.wav; gone1.wav; gone2.wav and 2 more)"), "{}", r.summary());
+}
+
+/// ADR 0086: a `.fla` whose package sits in one top folder opens; one with the package at its
+/// root and a folder beside it opens the root one; several documents in top folders are
+/// refused with their names.
+#[test]
+fn a_package_in_one_top_folder_opens_and_several_are_named() {
+    use crate::zip::pack::{Raw, write};
+    let doc = br#"<DOMDocument width="99"><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#;
+    let other = br#"<DOMDocument width="42"><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#;
+    let fla = |entries: &[(&str, &[u8])]| write(&entries.iter().map(|(n, b)| Raw::new(n, b, true)).collect::<Vec<_>>(), false);
+    let (d, _) = crate::import_fla(&fla(&[("Walk/DOMDocument.xml", doc), ("__MACOSX/Walk/._DOMDocument.xml", b"\0\x05\x16\x07")])).unwrap();
+    assert_eq!(d.stage.width, 99);
+    let (d, _) = crate::import_fla(&fla(&[("DOMDocument.xml", doc), ("Old/DOMDocument.xml", other)])).unwrap();
+    assert_eq!(d.stage.width, 99, "the package at the root wins");
+    let e = crate::import_fla(&fla(&[("Walk/DOMDocument.xml", doc), ("Run/DOMDocument.xml", other)])).err().unwrap().to_string();
+    assert!(e.contains("2 Animate documents (Run, Walk)"), "{e}");
+    // Deeper than one folder isn't looked for.
+    let e = crate::import_fla(&fla(&[("a/b/DOMDocument.xml", doc)])).err().unwrap().to_string();
+    assert!(e.contains("no DOMDocument.xml"), "{e}");
 }

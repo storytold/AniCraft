@@ -212,6 +212,8 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
         info["kept"] = json!(report.kept);
         info["runs"] = json!(report.runs);
         info["missing_fonts"] = json!(report.missing_fonts);
+        // The sounds and videos that didn't come across, by name and why (ADR 0086).
+        info["named"] = json!(report.names);
         info["merged_keyframes"] = json!(merged);
         return Ok(info);
     }
