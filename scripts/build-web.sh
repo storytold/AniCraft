@@ -45,6 +45,8 @@ mkdir -p "$OUT"
 wasm-bindgen --target web --no-typescript --out-dir "$OUT" --out-name anicraft "$WASM"
 cp packaging/web/index.html "$OUT/index.html"
 cp assets/app-icon/hicolor/128x128/apps/ai.storyteller.anicraft.png "$OUT/anicraft.png"
+# The user guide beside the editor: Help › User Guide opens guide/index.html (ADR 0069).
+cargo run -q -p anicraft-cli -- guide --out "$OUT/guide"
 
 BYTES="$(wc -c <"$OUT/anicraft_bg.wasm" | tr -d ' ')"
 GZIP="$(gzip -9 -c "$OUT/anicraft_bg.wasm" | wc -c | tr -d ' ')"

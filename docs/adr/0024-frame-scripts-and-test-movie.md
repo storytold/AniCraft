@@ -129,4 +129,5 @@ confirmation). Command plug-ins may call `actions.*` and `instance.*` but not `c
 * Not in this slice: ActionScript parsing (ADR 0013 tiers), HTML canvas export, sound
   actions, keyboard events, drag, variables and conditions, persistent script state, scripts
   inside graphic symbols (they never run, as in Animate) and button frame scripts, masks in
-  hit tests, a separate OS window for Test Movie.
+  hit tests, a separate OS window for Test Movie (done in ADR 0062: a window of its own where
+  the system has windows, this floating window as the fallback).

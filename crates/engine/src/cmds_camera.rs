@@ -65,7 +65,7 @@ fn add(s: &mut Session, _: &Value) -> Result<Value> {
     let mut k = Keyframe::new(0, frames);
     k.elements.push(Arc::new(Camera::rest(&s.doc.stage).to_element(el)));
     layer.keyframes = vec![Arc::new(k)];
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     tl.layers.insert(0, Arc::new(layer));
     tl.repair_masks();
     s.layer = id;
@@ -75,7 +75,7 @@ fn add(s: &mut Session, _: &Value) -> Result<Value> {
 
 fn remove(s: &mut Session, _: &Value) -> Result<Value> {
     let id = camera_layer(s).ok_or_else(no_camera)?;
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     tl.layers.retain(|l| l.id != id);
     tl.repair_masks();
     if s.layer == id {
@@ -167,7 +167,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         let lim = 1_000_000.0;
         c.center = Vec2::new(c.center.x.clamp(-lim, lim), c.center.y.clamp(-lim, lim));
         el.transform = c.transform();
-        el.color = c.color();
+        el.color = c.to_element(el.id).color;
         Ok(c)
     })();
     s.layer = layer;

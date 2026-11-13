@@ -26,7 +26,7 @@ fn bone(id: BoneId, parent: ElementId, child: ElementId) -> Bone {
 /// joint), the hand from 300; the hand's end at 400. The arm and hand reach 200 px from the
 /// shoulder joint at (200, 100).
 fn chain() -> (Armature, Vec<Arc<Element>>) {
-    let arm = Armature { bones: vec![bone(B1, ROOT, ARM), bone(B2, ARM, HAND)] };
+    let arm = Armature { bones: vec![bone(B1, ROOT, ARM), bone(B2, ARM, HAND)], skin: None };
     (arm, vec![instance(ROOT, 100.0, 100.0), instance(ARM, 200.0, 100.0), instance(HAND, 300.0, 100.0)])
 }
 
@@ -173,7 +173,7 @@ fn every_export_sees_the_pose() {
     let mut k = Keyframe::new(0, 1);
     k.elements.push(Arc::new(Element { id: ElementId(3), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, -5.0, 100.0, 10.0), Paint::Solid(Rgba::BLACK))) }));
     seg.keyframes = vec![Arc::new(k)];
-    d.library.push(Arc::new(Symbol { id: SEG, name: "Seg".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(seg)] } }));
+    d.library.push(Arc::new(Symbol { id: SEG, name: "Seg".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(seg)] } }));
     d.timeline_mut(0).layers = vec![Arc::new(armature_layer(Easing::Linear))];
     d.sanitize();
     let dl = evaluate(&d, 10);
@@ -242,7 +242,7 @@ fn long_chains_and_collinear_targets_converge() {
             bones.push(Bone { id: BoneId(5000 + i as u64), ..bone(BoneId(0), p, c) });
             els.push(instance(c, 100.0 * (i + 1) as f32, 0.0));
         }
-        let arm = Armature { bones };
+        let arm = Armature { bones, skin: None };
         let last = BoneId(5000 + n as u64 - 1);
         let reach = 100.0 * n as f32;
         for k in 0..12 {

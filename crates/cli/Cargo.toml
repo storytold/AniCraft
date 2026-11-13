@@ -19,6 +19,7 @@ anicraft-doc.workspace = true
 anicraft-engine.workspace = true
 anicraft-render.workspace = true
 anicraft-geom.workspace = true
+anicraft-guide.workspace = true
 serde_json.workspace = true
 
 [lints]

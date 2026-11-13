@@ -70,8 +70,7 @@ fn camera_rotation_and_tint_apply_to_the_whole_view() {
     // Stage point (105, 50) is right of the centre; the camera turned clockwise, so it shows
     // above the middle. In the square's space that point is (10, 50).
     assert!(i.transform.apply(Vec2::new(10.0, 50.0)).distance(Vec2::new(100.0, 45.0)) < 1e-3);
-    assert_eq!(i.color.tint_amount, 0.5);
-    assert_eq!(i.color.tint, Rgba::hex(0xff0000));
+    assert_eq!(i.color, crate::ColorTransform::tint(Rgba::hex(0xff0000), 0.5));
 }
 
 #[test]
@@ -141,7 +140,7 @@ fn the_camera_stays_on_top_alone_and_old_files_read_without_one() {
     // A symbol's camera layer is a normal layer.
     let mut sl = Layer::new(LayerId(80), "in symbol");
     sl.kind = LayerKind::Camera;
-    d.library.push(Arc::new(Symbol { id: SymbolId(81), name: "S".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(sl)] } }));
+    d.library.push(Arc::new(Symbol { id: SymbolId(81), name: "S".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(sl)] } }));
     d.sanitize();
     assert_eq!(d.library[0].timeline.layers[0].kind, LayerKind::Normal);
     // Depth round-trips, is left out when 0, and an old file reads at 0; hostile depths clamp.

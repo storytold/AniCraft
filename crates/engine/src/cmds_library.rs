@@ -182,7 +182,7 @@ fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"folder": id.0, "name": name}))
 }
 
-fn rename(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     let e = entry_of(p)?;
     if !s.doc.has_entry(e) {
         return Err(EngineError::State(format!("the Library has no {}", describe(e))));
@@ -284,13 +284,19 @@ pub(crate) fn deletion(s: &Session, entries: &[LibraryEntry]) -> (Vec<LibraryIte
 /// Takes every reference to `gone` off `tl` (instances, bitmap-filled shapes, keyframe sounds),
 /// un-sharing only the layers and keyframes that had one. How many references went.
 fn strip(tl: &mut Timeline, gone: &HashSet<LibraryItem>) -> usize {
+    strip_in(tl, gone, 0)
+}
+
+/// [`strip`], inside groups too (ADR 0073): a group keeps its other members.
+fn strip_in(tl: &mut Timeline, gone: &HashSet<LibraryItem>, depth: usize) -> usize {
     let refers = |e: &anicraft_doc::Element| match &e.kind {
         ElementKind::Symbol { symbol, .. } => gone.contains(&LibraryItem::Symbol(*symbol)),
         ElementKind::Shape(sh) => matches!(&sh.fill, Some(Paint::Bitmap { bitmap, .. }) if gone.contains(&LibraryItem::Bitmap(*bitmap))),
-        ElementKind::Text(_) | ElementKind::Camera => false,
+        ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => false,
     };
+    let inside = |e: &anicraft_doc::Element| matches!(&e.kind, ElementKind::Group { members } if depth < anicraft_doc::MAX_GROUP_DEPTH && strip_needed(members, gone));
     let sounds = |k: &anicraft_doc::Keyframe| k.sound.as_ref().is_some_and(|f| gone.contains(&LibraryItem::Sound(f.sound)));
-    let hit = |k: &anicraft_doc::Keyframe| sounds(k) || k.elements.iter().any(|e| refers(e));
+    let hit = |k: &anicraft_doc::Keyframe| sounds(k) || k.elements.iter().any(|e| refers(e) || inside(e));
     let mut n = 0;
     for l in tl.layers.iter_mut().filter(|l| l.keyframes.iter().any(|k| hit(k))) {
         for k in Arc::make_mut(l).keyframes.iter_mut().filter(|k| hit(k)) {
@@ -302,6 +308,11 @@ fn strip(tl: &mut Timeline, gone: &HashSet<LibraryItem>) -> usize {
             let before = k.elements.len();
             k.elements.retain(|e| !refers(e));
             n += before - k.elements.len();
+            for e in k.elements.iter_mut().filter(|e| inside(e)) {
+                if let ElementKind::Group { members } = &mut Arc::make_mut(e).kind {
+                    n += strip_in(members, gone, depth + 1);
+                }
+            }
         }
     }
     n
@@ -412,35 +423,46 @@ fn swap_symbol(s: &mut Session, p: &Value) -> Result<Value> {
 /// the old bitmap's. Any other shape filled with a bitmap keeps its outline and fill transform.
 fn swap_bitmap(s: &mut Session, p: &Value) -> Result<Value> {
     let to = BitmapId(opt_u64(p, "bitmap")?.ok_or_else(|| EngineError::Param("param 'bitmap' is required".into()))?);
-    let Some(new) = s.doc.bitmap(to).map(|b| (b.name.clone(), b.width as f32, b.height as f32)) else {
+    if s.doc.bitmap(to).is_none() {
         return Err(EngineError::State(format!("no bitmap with id {}", to.0)));
-    };
+    }
     let sizes: std::collections::HashMap<BitmapId, (String, f32, f32)> = s.doc.bitmaps.iter().map(|b| (b.id, (b.name.clone(), b.width as f32, b.height as f32))).collect();
     let mut swapped = 0;
     for e in s.selected_elements_mut()? {
-        let ElementKind::Shape(sh) = &mut e.kind else { continue };
-        let Some(Paint::Bitmap { bitmap, repeat, matrix }) = &mut sh.fill else { continue };
-        let old = *bitmap;
-        *bitmap = to;
-        swapped += 1;
-        if old == to {
-            continue;
-        }
-        if let Some((name, w, h)) = sizes.get(&old)
-            && !*repeat
-            && *matrix == anicraft_geom::Affine::IDENTITY
-            && *sh.path == anicraft_geom::Path::rect(0.0, 0.0, *w, *h)
-        {
-            sh.path = Arc::new(anicraft_geom::Path::rect(0.0, 0.0, new.1, new.2));
-            if e.name == *name {
-                e.name.clone_from(&new.0);
-            }
+        if swap_bitmap_of(e, to, &sizes) {
+            swapped += 1;
         }
     }
     if swapped == 0 {
         return Err(EngineError::State("select a bitmap, or a shape filled with one, to swap".into()));
     }
     Ok(json!({"swapped": swapped, "bitmap": to.0}))
+}
+
+/// Makes a bitmap-filled shape show bitmap `to` (Swap Bitmap, and Find and Replace, ADR 0058):
+/// a placed bitmap (a rectangle of the old bitmap's size, filled once at the origin) takes the
+/// new one's size and, when it had the old one's name, its name; any other shape keeps its
+/// outline and fill transform. `sizes` are every bitmap's name, width and height. False when `e`
+/// isn't filled with a bitmap.
+pub(crate) fn swap_bitmap_of(e: &mut anicraft_doc::Element, to: BitmapId, sizes: &std::collections::HashMap<BitmapId, (String, f32, f32)>) -> bool {
+    let ElementKind::Shape(sh) = &mut e.kind else { return false };
+    let Some(Paint::Bitmap { bitmap, repeat, matrix }) = &mut sh.fill else { return false };
+    let old = *bitmap;
+    *bitmap = to;
+    if old == to {
+        return true;
+    }
+    if let (Some((name, w, h)), Some(new)) = (sizes.get(&old), sizes.get(&to))
+        && !*repeat
+        && *matrix == anicraft_geom::Affine::IDENTITY
+        && *sh.path == anicraft_geom::Path::rect(0.0, 0.0, *w, *h)
+    {
+        sh.path = Arc::new(anicraft_geom::Path::rect(0.0, 0.0, new.1, new.2));
+        if e.name == *name {
+            e.name.clone_from(&new.0);
+        }
+    }
+    true
 }
 
 #[cfg(test)]

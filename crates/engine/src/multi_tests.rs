@@ -285,7 +285,7 @@ fn onion_skin_inside_a_symbol_composes_its_own_frames_where_it_stands() {
     let n = dl.items.len();
     let (ghost, now) = (&dl.items[n - 2], &dl.items[n - 1]);
     assert_eq!((left(ghost), left(now)), (100.0, 140.0));
-    assert!(ghost.color.alpha < 1.0 && ghost.color.tint_amount > 0.0 && now.color.alpha == 1.0);
+    assert!(ghost.color.mul[3] < 1.0 && ghost.color.changes_colour() && now.color.is_identity());
     // The job does the same, keyed apart from the plain picture.
     let view = anicraft_render::View { transform: Affine::IDENTITY, width: 64, height: 64, background: None };
     let plain_job = crate::render_service::make_job(pic.state, &pic.doc, pic.frame, view, Some(&ghosts));
@@ -295,7 +295,7 @@ fn onion_skin_inside_a_symbol_composes_its_own_frames_where_it_stands() {
     // Edit Multiple Frames shows both keyframes at full strength.
     let multi = OnionSkin { edit_multiple: true, markers: crate::onion::Markers::Relative { before: 4, after: 0 }, ..OnionSkin::default() };
     let dl = crate::render_service::display_list_inside(&pic.doc, pic.frame, &front, &multi);
-    assert!(dl.items.iter().rev().take(2).all(|i| i.color.alpha == 1.0 && i.color.tint_amount == 0.0));
+    assert!(dl.items.iter().rev().take(2).all(|i| i.color.is_identity()));
     // With nothing to add, the job draws the picture as it is.
     let off = make_off(&pic);
     assert_eq!(off.display_list().items.len(), plain.items.len());

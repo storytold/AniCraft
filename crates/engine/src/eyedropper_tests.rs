@@ -26,7 +26,7 @@ fn rect(s: &mut Session, x: f32, fill: &str) -> u64 {
 
 /// A linear gradient across the shape's own width (local space: the shape is centred on 0).
 fn gradient() -> Paint {
-    Paint::Linear { start: Vec2::new(-50.0, 0.0), end: Vec2::new(50.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff8800) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0044ff) }] }
+    Paint::linear(Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0), vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff8800) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0044ff) }])
 }
 
 #[test]

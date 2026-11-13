@@ -330,3 +330,43 @@ fn a_cutter_over_a_curve_cuts_exact_pieces() {
     assert!(near(inside * 4.0, all, 1.0), "{inside} of {all}");
     assert_eq!(m.fills.len(), 2);
 }
+
+// ----- union and intersection (ADR 0080) --------------------------------------------------------
+
+/// Two overlapping squares: the union covers 10² + 10² − 5·5, and the even-odd area of the
+/// joined path agrees (no overlapping loops).
+#[test]
+fn union_of_overlapping_squares() {
+    let (a, b) = (rect(0.0, 0.0, 10.0, 10.0), rect(5.0, 5.0, 10.0, 10.0));
+    let u = union(&[(&a, FillRule::NonZero), (&b, FillRule::NonZero)]).expect("merges");
+    assert!((area(&u) - 175.0).abs() < 0.05, "{}", area(&u));
+    assert!(u.contains(Vec2::new(12.0, 12.0), &crate::Affine::IDENTITY, FillRule::EvenOdd));
+    assert!(u.contains(Vec2::new(7.0, 7.0), &crate::Affine::IDENTITY, FillRule::EvenOdd), "the overlap is covered once");
+    assert!(!u.contains(Vec2::new(12.0, 2.0), &crate::Affine::IDENTITY, FillRule::EvenOdd));
+    assert!(union(&[]).expect("nothing to merge").is_empty());
+}
+
+/// A bar across a square keeps only the part inside it; a disc inside a square with a hole
+/// loses the hole.
+#[test]
+fn intersect_clips_to_the_region() {
+    let bar = rect(-20.0, 4.0, 60.0, 2.0);
+    let square = rect(0.0, 0.0, 10.0, 10.0);
+    let clipped = intersect(&bar, FillRule::NonZero, &square).expect("merges");
+    assert!((area(&clipped) - 20.0).abs() < 0.05, "{}", area(&clipped));
+    // Nothing in common.
+    let far = rect(100.0, 100.0, 5.0, 5.0);
+    assert!(intersect(&far, FillRule::NonZero, &square).expect("merges").is_empty());
+    // A ring (square with a square hole, even-odd) clipping a square that covers it all.
+    let mut ring = rect(0.0, 0.0, 30.0, 30.0);
+    ring.cmds.extend(rect(10.0, 10.0, 10.0, 10.0).cmds);
+    let cover = rect(-5.0, -5.0, 40.0, 40.0);
+    let inside = intersect(&cover, FillRule::NonZero, &ring).expect("merges");
+    assert!((area(&inside) - 800.0).abs() < 0.1, "{}", area(&inside));
+    assert!(!inside.contains(Vec2::new(15.0, 15.0), &crate::Affine::IDENTITY, FillRule::EvenOdd), "the hole stays empty");
+    // A circle's quarter: exact to the curve.
+    let disc = Path::ellipse(0.0, 0.0, 10.0, 10.0);
+    let quarter = intersect(&disc, FillRule::NonZero, &rect(0.0, 0.0, 20.0, 20.0)).expect("merges");
+    let want = std::f32::consts::PI * 100.0 / 4.0;
+    assert!((area(&quarter) - want).abs() < want * 0.002, "{} vs {want}", area(&quarter));
+}

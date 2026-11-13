@@ -23,7 +23,7 @@ pub const MENU_ID: &str = "onion_menu";
 
 /// What the shown items depend on: document state, scene, the symbol open (and how deep),
 /// playhead and the markers' frames.
-type ItemsKey = (u64, usize, (usize, Option<u64>), u32, u32, u32);
+type ItemsKey = (u64, usize, (usize, Option<u64>, Option<u64>), u32, u32, u32);
 /// Every element Edit Multiple Frames shows, with its stage bounds.
 pub type Shown = Arc<Vec<(FrameItem, GRect)>>;
 
@@ -169,10 +169,11 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui) {
         for past in [true, false] {
             let name = if past { tr!("Before colour") } else { tr!("After colour") };
             ui.label(text(Type::Body, if past { tr!("Before") } else { tr!("After") }));
-            let mut c = to_color32(if past { o.past } else { o.future });
-            let r = ui.color_edit_button_srgba(&mut c).named(name).on_hover_text(if past { tr!("Colour of the frames before the playhead") } else { tr!("Colour of the frames after the playhead") });
+            let [r0, g0, b0, _] = to_color32(if past { o.past } else { o.future }).to_srgba_unmultiplied();
+            let mut px = [r0, g0, b0];
+            let r = crate::colour::button(ui, &mut px).named(name).on_hover_text(if past { tr!("Colour of the frames before the playhead") } else { tr!("Colour of the frames after the playhead") });
             if r.changed() {
-                let [cr, cg, cb, _] = c.to_srgba_unmultiplied();
+                let [cr, cg, cb] = px;
                 change(app, &ctx, |o, p| {
                     let pick = [cr, cg, cb];
                     if past {
@@ -308,7 +309,7 @@ pub fn ruler(app: &mut App, ui: &mut egui::Ui, ruler: Rect, cell_w: f32, x_of: i
 /// playhead and markers).
 pub fn items(app: &mut App) -> Shown {
     let (first, last) = range(app);
-    let key = (app.s.state, app.s.scene, (app.s.editing.len(), app.s.editing_symbol().map(|s| s.0)), app.s.frame, first, last);
+    let key = (app.s.state, app.s.scene, (app.s.editing.len(), app.s.editing_symbol().map(|s| s.0), app.s.editing.last().and_then(|l| l.instance).map(|(_, e)| e.0)), app.s.frame, first, last);
     if let Some((k, v)) = &app.onion_ui.cache
         && *k == key
     {

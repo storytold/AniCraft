@@ -78,7 +78,8 @@ const IMAGE: u32 = 4;
 
 /// Op header flag: the fill is drawn inside the current clip.
 pub const CLIPPED: u32 = 1;
-/// Op header flag: the op is clip artwork (its coverage joins the current level's union).
+/// Op header flag: the op is clip artwork (its coverage joins the current level's union; in a
+/// soft mask its paint composites into the level's colour).
 pub const ART: u32 = 2;
 
 /// An entry whose first word has this bit is a control entry, not a fill.
@@ -89,10 +90,22 @@ pub const OPEN: u32 = CTRL | 1;
 pub const CLOSE: u32 = CTRL | 2;
 /// The clip coverage starts at 1 (a new clip's chain follows).
 pub const MASK_RESET: u32 = CTRL | 3;
-/// One level of the clip chain starts: its union of artwork coverage starts at 0.
+/// `[LEVEL_BEGIN, mask mode, 0, 0]`: one level of the clip chain starts: its union of artwork
+/// coverage starts at 0, or for a soft mask ([`mask_code`]) its artwork's colour starts
+/// transparent.
 pub const LEVEL_BEGIN: u32 = CTRL | 4;
-/// The level ends: the clip coverage is multiplied by its union.
+/// The level ends: the clip coverage is multiplied by its union (or by the soft mask's
+/// opacity or luminance, ADR 0070).
 pub const LEVEL_END: u32 = CTRL | 5;
+
+/// Mask modes as the shader numbers them (`fine.wgsl` › `LEVEL_END`).
+pub fn mask_code(m: anicraft_doc::MaskMode) -> u32 {
+    match m {
+        anicraft_doc::MaskMode::Coverage => 0,
+        anicraft_doc::MaskMode::Alpha => 1,
+        anicraft_doc::MaskMode::Luminance => 2,
+    }
+}
 
 /// Blend modes as the shader numbers them (`fine.wgsl` › `blend`).
 pub fn blend_code(m: BlendMode) -> u32 {
@@ -252,7 +265,16 @@ pub fn bin_with(scene: &Scene, width: u32, height: u32, gpu: Option<&crate::gpu_
     let mut images: Vec<Arc<Pixels>> = Vec::new();
     let ramps_at = (PAINT_VEC4S * ops.len()) as u32;
     // Where each layer shown by a fill goes, after the tables (the tables' size is known first).
-    let table_len: usize = ops.iter().filter(|f| matches!(f.shader, Shader::Linear { .. } | Shader::Radial { .. }) && f.layer.is_none()).count() * RAMP;
+    // Gradients' ramps, and each bitmap's colour transform (two entries).
+    let table_len: usize = ops
+        .iter()
+        .filter(|f| f.layer.is_none())
+        .map(|f| match &f.shader {
+            Shader::Linear { .. } | Shader::Radial { .. } => RAMP,
+            Shader::Bitmap { pixels, .. } if pixels.width > 0 && pixels.height > 0 => 2,
+            _ => 0,
+        })
+        .sum();
     let mut layer_at: Vec<Option<u32>> = vec![None; scene.layers.len()];
     let mut cursor = PAINT_VEC4S * ops.len() + table_len;
     for f in &ops {
@@ -282,15 +304,17 @@ pub fn bin_with(scene: &Scene, width: u32, height: u32, gpu: Option<&crate::gpu_
             (_, Some((at, b))) => (IMAGE, [[u(at), u(b.width() as u32), u(b.height() as u32), 0.0], [u(b.x0 as u32), u(b.y0 as u32), 0.0, 0.0], [0.0; 4], [0.0; 4]]),
             (_, None) if f.layer.is_some() => (SOLID, [[0.0; 4]; 4]),
             (Shader::Solid(c), _) => (SOLID, [*c, [0.0; 4], [0.0; 4], [0.0; 4]]),
-            (Shader::Linear { inv, start, dir, lut }, _) => {
+            // A gradient's first vec4 holds what its colour slot doesn't need: the spread
+            // (0 pad, 1 reflect, 2 repeat) and a radial gradient's focal point (ADR 0074).
+            (Shader::Linear { inv, start, dir, spread, lut }, _) => {
                 ramps.extend_from_slice(&lut[..]);
                 let m = inv.m;
-                (LINEAR, [[0.0; 4], [m[0], m[1], m[2], m[3]], [m[4], m[5], start.x, start.y], [dir.x, dir.y, 0.0, 0.0]])
+                (LINEAR, [[spread_code(*spread), 0.0, 0.0, 0.0], [m[0], m[1], m[2], m[3]], [m[4], m[5], start.x, start.y], [dir.x, dir.y, 0.0, 0.0]])
             }
-            (Shader::Radial { inv, center, inv_radius, lut }, _) => {
+            (Shader::Radial { inv, center, inv_radius, focal, spread, lut }, _) => {
                 ramps.extend_from_slice(&lut[..]);
                 let m = inv.m;
-                (RADIAL, [[0.0; 4], [m[0], m[1], m[2], m[3]], [m[4], m[5], center.x, center.y], [0.0, 0.0, *inv_radius, 0.0]])
+                (RADIAL, [[spread_code(*spread), *focal, 0.0, 0.0], [m[0], m[1], m[2], m[3]], [m[4], m[5], center.x, center.y], [0.0, 0.0, *inv_radius, 0.0]])
             }
             // The oracle's sample of a bitmap (crates/render/src/paint.rs › sample).
             (Shader::Bitmap { inv, pixels, repeat, fx, smooth }, _) => {
@@ -306,9 +330,12 @@ pub fn bin_with(scene: &Scene, width: u32, height: u32, gpu: Option<&crate::gpu_
                         None => return Err(NeedsFull::Bitmaps),
                     };
                     let m = inv.m;
-                    let (k, alpha, tint, keep) = colour_effect(fx);
+                    // The colour transform (ADR 0056) rides in the ramp table: multiplies, then
+                    // offsets, sanitized as the oracle applies them.
+                    let fx = fx.sanitized();
+                    ramps.extend_from_slice(&[fx.mul, fx.add]);
                     // Bit 0: repeat; bit 1: the nearest pixel instead of bilinear (no smoothing).
-                    (BITMAP, [[u(slot as u32), u(u32::from(*repeat) | (u32::from(!*smooth) << 1)), u(pixels.width), u(pixels.height)], [m[0], m[1], m[2], m[3]], [m[4], m[5], k, alpha], [tint[0], tint[1], tint[2], u(keep)]])
+                    (BITMAP, [[u(slot as u32), u(u32::from(*repeat) | (u32::from(!*smooth) << 1)), u(pixels.width), u(pixels.height)], [m[0], m[1], m[2], m[3]], [m[4], m[5], 0.0, 0.0], [0.0; 4]])
                 }
             }
             // `prepare_scene` never hands these over; draw nothing rather than guess.
@@ -441,28 +468,6 @@ fn cpu_lists(ops: &[&Fill], tables: &Tables, tiles_x: u32, tiles_y: u32) -> List
     Lists { index, geo, entries_at: entries_at as u32, ops_at: ops_at as u32, entries: total, pieces, work }
 }
 
-/// A colour effect as the shader applies it to each bitmap tap, the same arithmetic as
-/// [`anicraft_doc::ColorEffect::apply`] then `premultiply`'s sanitizing: `(tint amount, alpha,
-/// tint, kept channels)`. Each straight channel `c` becomes `c + (tint − c)·k`, alpha `a·alpha`,
-/// clamped to `0..=1`. A NaN the oracle would carry into a channel (and its sanitizing turn
-/// into 0) is a channel left out of `kept` (bit per channel, red first) instead.
-fn colour_effect(fx: &anicraft_doc::ColorEffect) -> (f32, f32, [f32; 3], u32) {
-    let k = fx.tint_amount.clamp(0.0, 1.0);
-    let alpha = fx.alpha.clamp(0.0, 1.0);
-    let t = [fx.tint.r, fx.tint.g, fx.tint.b];
-    let mut keep = 0u32;
-    let mut tint = [0.0f32; 3];
-    for (i, (&v, out)) in t.iter().zip(tint.iter_mut()).enumerate() {
-        if v.is_finite() && k.is_finite() {
-            keep |= 1 << i;
-            *out = v;
-        }
-    }
-    // A NaN opacity makes every channel 0 (premultiplied by a sanitized alpha of 0).
-    let alpha = if alpha.is_finite() { alpha } else { 0.0 };
-    (if k.is_finite() { k } else { 0.0 }, alpha, tint, keep)
-}
-
 /// Tile row `r`'s streams: per tile, its fills in drawing order with the clip and group
 /// entries they need.
 fn row_streams(r: usize, tx: usize, locals: &[(Local, Vec<u32>)], piece_at: &[u32], t: &Tables) -> RowOut {
@@ -550,7 +555,8 @@ fn tile_stream(fills: &[[u32; 4]], arts: &[[u32; 4]], t: &Tables, out: &mut Vec<
             }
             out.push([MASK_RESET, 0, 0, 0]);
             for &l in chain {
-                out.push([LEVEL_BEGIN, 0, 0, 0]);
+                let mode = t.scene.clips.get(l as usize).map_or(0, |c| mask_code(c.mode));
+                out.push([LEVEL_BEGIN, mode, 0, 0]);
                 out.extend_from_slice(level(l));
                 out.push([LEVEL_END, 0, 0, 0]);
             }
@@ -968,4 +974,13 @@ fn avg_clamp(u0: f32, u1: f32) -> f32 {
 #[cfg(test)]
 pub(crate) fn solid_of(b: &Binned, op: usize) -> anicraft_render::paint::Premul {
     b.paints.get(PAINT_VEC4S * op).copied().unwrap_or([0.0; 4])
+}
+
+/// How `fine.wgsl` reads a gradient's spread.
+fn spread_code(s: anicraft_doc::Spread) -> f32 {
+    match s {
+        anicraft_doc::Spread::Pad => 0.0,
+        anicraft_doc::Spread::Reflect => 1.0,
+        anicraft_doc::Spread::Repeat => 2.0,
+    }
 }

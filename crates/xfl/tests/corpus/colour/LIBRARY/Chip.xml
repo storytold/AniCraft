@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Self-authored corpus symbol. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Chip" itemID="00000000-0000-0000-0000-000000000501" symbolType="graphic">
+  <timeline>
+    <DOMTimeline name="Chip">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="-20" y="-20" objectWidth="40" objectHeight="40"><fill><SolidColor color="#2A9D8F"/></fill></DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

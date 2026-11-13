@@ -157,14 +157,21 @@ mod imp {
             {
                 self.starting = None;
                 match r {
-                    Ok(g) => self.renderer = Some(Arc::new(g)),
-                    Err(e) => self.state = State::Failed(e),
+                    Ok(g) => {
+                        crate::startup::line(&format!("stage on the GPU: {}", g.adapter));
+                        self.renderer = Some(Arc::new(g));
+                    }
+                    Err(e) => {
+                        crate::startup::line(&format!("the stage is drawn on the CPU: {e}"));
+                        self.state = State::Failed(e);
+                    }
                 }
             }
             if let Some(g) = &self.renderer
                 && let Some(e) = g.broken()
             {
                 self.renderer = None;
+                crate::startup::line(&format!("the GPU stage stopped, the CPU draws: {e}"));
                 self.state = State::Failed(e);
             }
             if want && self.renderer.is_none() && self.starting.is_none() && !matches!(self.state, State::Failed(_)) {

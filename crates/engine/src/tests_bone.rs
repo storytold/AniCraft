@@ -31,7 +31,7 @@ pub(crate) fn three_bars() -> Session {
         k.elements.push(Arc::new(Element { id: ElementId(3), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, -5.0, 100.0, 10.0), Paint::Solid(Rgba::BLACK))) }));
         k
     });
-    d.library.push(Arc::new(Symbol { id: bar, name: "Bar".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![Arc::new(inner)] } }));
+    d.library.push(Arc::new(Symbol { id: bar, name: "Bar".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(inner)] } }));
     let inst = |id: u64, x: f32| Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::translate(x, 100.0), color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: bar, loop_mode: LoopMode::Loop, first_frame: 0, blend: BlendMode::Normal, filters: Vec::new(), events: Vec::new() } });
     let shape = Arc::new(Element { id: ElementId(SHAPE), name: String::new(), transform: Affine::translate(100.0, 250.0), color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 20.0, 20.0), Paint::Solid(Rgba::BLACK))) });
     let l = Arc::make_mut(&mut d.timeline_mut(0).layers[0]);

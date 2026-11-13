@@ -52,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Snap Point",
             "",
             None,
-            "{x, y, snap} where a point drawn at (x, y) snaps while Snap to Objects is on: the nearest anchor within `snap` stage units, else the nearest point on a line or fill edge; returns {x, y, snapped: {x, y, to} | null}",
+            "{x, y, snap, moving?: bool} where a point drawn at (x, y) snaps within `snap` stage units, by the snap engine's priority (ADR 0076): an anchor (Snap to Objects), a guide (Snap to Guides), a line or fill edge, the grid (Snap to Grid), a whole pixel (Snap to Pixels); `moving`: the selection is what moves (a Free Transform handle), so it isn't a target; returns {x, y, snapped: {x, y, to: point|guide|line|grid|pixel} | null}",
             false,
             snap_cmd,
         ),
@@ -238,8 +238,9 @@ fn convert_points(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn snap_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let at = Vec2::new(f32_req(p, "x")?, f32_req(p, "y")?);
-    let radius = s.style.snap_radius(opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0));
-    Ok(match snap_drawn(s, at, radius) {
+    let radius = opt_f32(p, "snap")?.unwrap_or(0.0).clamp(0.0, 1000.0);
+    let moving = opt_bool(p, "moving")?.unwrap_or(false);
+    Ok(match snap_drawn(s, at, radius, moving) {
         Some((q, kind)) => json!({"x": q.x, "y": q.y, "snapped": {"x": q.x, "y": q.y, "to": kind.key()}}),
         None => json!({"x": at.x, "y": at.y, "snapped": null}),
     })

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="100">
+  <!-- Self-authored test drawing for AniCraft's SVG import (ADR 0070): an alpha gradient mask,
+       a grey luminance mask and text on a curved path. -->
+  <defs>
+    <linearGradient id="fade" x1="0" x2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <mask id="soft" mask-type="alpha"><rect width="100" height="100" fill="url(#fade)"/></mask>
+    <mask id="grey"><rect x="100" width="100" height="100" fill="#808080"/></mask>
+    <path id="arc" d="M 20 90 Q 100 10 180 90"/>
+  </defs>
+  <rect width="200" height="100" fill="#000"/>
+  <rect width="100" height="100" fill="#ff0000" mask="url(#soft)"/>
+  <rect x="100" width="100" height="100" fill="#00ff00" mask="url(#grey)"/>
+  <text font-family="sans-serif" font-size="14" fill="#fff"><textPath xlink:href="#arc" startOffset="50%" text-anchor="middle">on the arc</textPath></text>
+</svg>

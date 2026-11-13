@@ -55,6 +55,8 @@ fn without_tests(src: &str) -> String {
 const NOT_UI: &[&str] = &[
     "eprintln!(", "println!(", "print!(", "panic!(", "assert", "unreachable!(", "Id::new(", "id_salt(", "persistent_id(", "json!(", "execute(", "perform(", "invoke(", ".run(", "find_command(", "#[", "env!(", "include_str!(", "include_bytes!(", "concat!(", "var(",
     "contains(", "starts_with(", "ends_with(", "strip_prefix(", "strip_suffix(", "matches!(", "== ", "!= ",
+    // The start-up log (`startup::line`): English, like console messages, for bug reports.
+    "line(&", "write(&format!(",
 ];
 
 /// Whether a prose literal outside the macros is allowed: not interface text by its context,
@@ -120,6 +122,7 @@ fn all_keys() -> BTreeSet<Key> {
     }
     add(&doc::Easing::Linear.label());
     doc::Property::ALL.iter().for_each(|p| add(p.label()));
+    doc::ColorStyle::ALL.iter().for_each(|s| add(s.label()));
     doc::ProfilePreset::ALL.iter().for_each(|p| add(p.label()));
     doc::Cap::ALL.iter().for_each(|c| add(c.label()));
     doc::Join::ALL.iter().for_each(|j| add(j.label()));
@@ -144,6 +147,12 @@ fn all_keys() -> BTreeSet<Key> {
         add(m.label());
         add(m.hint());
     }
+    // The brush library (ADR 0068): built-in brushes, their hints and the pressure curves.
+    for (k, n) in anicraft_engine::brush_library::BUILTIN {
+        add(n);
+        add(anicraft_engine::brush_library::builtin_hint(k));
+    }
+    anicraft_engine::geom::pressure::CURVE_PRESETS.iter().for_each(|(_, l)| add(l));
     keys
 }
 
@@ -478,8 +487,9 @@ fn plain_names(what: &str, app: &crate::app::App, nodes: Vec<(egui::accesskit::N
     for (_, n) in nodes {
         for name in [n.label(), n.description()].into_iter().flatten() {
             // egui names its own window close button; it offers no way to name it ourselves
-            // (docs/localisation.md › Not yet).
-            let translated = name.chars().any(pseudo::is_accented) || EGUI_OWN.contains(&name);
+            // (docs/localisation.md › Not yet). The product name stays as it is in every
+            // language (the macOS app menu is titled with it, ADR 0006), as the source scan allows.
+            let translated = name.chars().any(pseudo::is_accented) || EGUI_OWN.contains(&name) || name == "AniCraft";
             let ours = scan::is_prose(name) && !doc_text.contains(name) && !doc_text.iter().any(|d| name.contains(d.as_str()));
             if ours && !translated {
                 found.insert(format!("[{what}] {:?} {name:?}", n.role()));
@@ -578,10 +588,23 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
         a.run("symbol.set_kind", serde_json::json!({"symbol": symbol, "kind": "movie_clip"}));
         a.run("element.set_filters", serde_json::json!({"filters": [{"type": "drop_shadow"}, {"type": "gradient_glow"}]}));
     }));
-    for panel in ["sound", "camera", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol"] {
+    // Every colour effect style's controls in Properties (ADR 0056).
+    for style in ["brightness", "tint", "advanced", "alpha"] {
+        found.extend(click_everything(&format!("colour effect {style}"), |a, _| {
+            a.run("layer.select", serde_json::json!({"index": 0}));
+            a.run("edit.select_all", serde_json::json!({}));
+            a.run("element.set_color_effect", serde_json::json!({"style": style}));
+        }));
+    }
+    for panel in ["sound", "camera", "shapebones", "warp", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside", "templates", "savetemplate", "brushlibrary", "brushcurve"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
-    for tool in [crate::app::Tool::Brush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {
+    // Test Movie in a window of its own (ADR 0062; egui stands in for the window system here).
+    found.extend(click_everything("test movie window", |a, ctx| {
+        ctx.set_embed_viewports(false);
+        a.open_panel(Some("testmovie"));
+    }));
+    for tool in [crate::app::Tool::Brush, crate::app::Tool::PaintBrush, crate::app::Tool::Eraser, crate::app::Tool::PaintBucket, crate::app::Tool::Pencil, crate::app::Tool::Width] {
         found.extend(click_everything(&format!("{tool:?}"), |a, _| a.tool = tool));
     }
     assert!(found.is_empty(), "{} things in plain English after using the controls:\n{}", found.len(), found.join("\n"));
@@ -598,12 +621,12 @@ fn status_lines_for_every_result_are_translated() {
         "kb": 12, "layers": 2, "masks": 1, "elements": 3, "report": "Imported walk.fla.", "copied": 2, "cut": 2, "pasted": 2,
         "removed": 2, "cleared": 2, "original_newer": true, "sounds": 1, "name": "beat", "sound": 1, "log": ["Did it."],
         "installed": [{"name": "Tint", "version": "1.0"}], "failed": ["bad.wasm: not a plug-in"], "replaced": "Tint 0.9",
-        "plugin": {"name": "Tint", "version": "1.0"}, "undone": "Move", "redone": "Move",
+        "plugin": {"name": "Tint", "version": "1.0"}, "undone": "Move", "redone": "Move", "bytes": 4096, "stored_frames": 2,
     });
     let bare = json!({});
     let ids = [
         "file.new", "file.open", "file.recover", "file.discard_recovery", "file.save", "file.save_as", "file.import", "file.import_to_library",
-        "file.export_audio", "file.export_sprite_sheet", "file.export_html", "file.export_lottie", "file.export_png", "file.export_gif",
+        "file.export_audio", "file.export_sprite_sheet", "file.export_html", "file.export_lottie", "file.export_png", "file.export_gif", "file.export_apng", "file.export_webp",
         "sound.delete", "edit.undo", "edit.redo", "edit.delete", "layer.delete", "draw.erase_all", "scene.delete", "scene.new",
         "timeline.clear_keyframe", "timeline.copy_frames", "timeline.cut_frames", "timeline.paste_frames", "timeline.remove_frame",
         "plugin.run", "plugin.install", "plugin.remove", "plugin.reload",
@@ -735,7 +758,7 @@ fn screen_reader_names_are_translated_too() {
     // the source guideline can't see: ones passed through variables or built at run time).
     use crate::app::Tool;
     let mut found = untranslated_names("default", |_, _| {});
-    for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::Eyedropper, Tool::Pen, Tool::Camera, Tool::Bone] {
+    for tool in [Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::Eraser, Tool::PaintBucket, Tool::Eyedropper, Tool::Pen, Tool::Camera, Tool::Bone, Tool::Bind, Tool::Warp] {
         found.extend(untranslated_names(&format!("{tool:?} tool"), |a, _| a.tool = tool));
     }
     // Selections and states that change what Properties, the timeline and the dialogs show.
@@ -754,6 +777,13 @@ fn screen_reader_names_are_translated_too() {
         }
         crate::actions_panel::open(a, crate::actions_panel::Tab::Instance);
     }));
+    for style in ["brightness", "tint", "advanced", "alpha"] {
+        found.extend(untranslated_names(&format!("colour effect {style}"), |a, _| {
+            a.run("layer.select", serde_json::json!({"index": 0}));
+            a.run("edit.select_all", serde_json::json!({}));
+            a.run("element.set_color_effect", serde_json::json!({"style": style}));
+        }));
+    }
     found.extend(untranslated_names("close guard", |a, _| {
         a.run("layer.new", serde_json::json!({}));
         a.close_dialog = true;
@@ -761,7 +791,7 @@ fn screen_reader_names_are_translated_too() {
     found.extend(untranslated_names("library item", |a, _| {
         a.library_sel = a.s.doc.library.first().map(|s| crate::app::LibraryItem::Symbol(s.id));
     }));
-    for panel in ["select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "scriptproblems", "testmovie", "testscript", "exporthtml", "envelope"] {
+    for panel in ["start", "drop", "droplibrary", "select", "motion", "motionspan", "motionpath", "motionedit", "camera", "sound", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "filters", "plugins", "actions", "script", "scriptproblems", "testmovie", "testmovieinside", "testscript", "exporthtml", "envelope", "templates", "savetemplate", "droptimeline"] {
         found.extend(untranslated_names(panel, |a, _| a.open_panel(Some(panel))));
     }
     assert!(found.is_empty(), "{} screen-reader names not translated in the pseudo-locale:\n{}", found.len(), found.join("\n"));

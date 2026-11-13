@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A 10 × 10 square with only a left guide: not a usable 9-slice grid, so it scales as a
+     whole. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Ui/Half" itemID="00000000-0000-0000-0000-000000000904" scaleGridLeft="2">
+  <timeline>
+    <DOMTimeline name="Half">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="0" y="0" objectWidth="10" objectHeight="10">
+                  <fill><SolidColor color="#E76F51"/></fill>
+                </DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

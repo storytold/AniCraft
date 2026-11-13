@@ -41,19 +41,19 @@ fn key(start: u32, duration: u32, elements: Vec<Arc<Element>>, tween: Option<Eas
 
 /// Builds the demo document: a bouncing ball, a spinning star, a pulsing sun over hills.
 pub fn demo() -> Document {
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), next_id: 1 };
     let (w, h) = (1280.0, 720.0);
 
     // --- library -------------------------------------------------------------------------
     let ball_id = SymbolId(d.alloc_id());
     let ball_shape = Shape::filled(
         Path::ellipse(0.0, 0.0, 48.0, 48.0),
-        Paint::Radial { center: Vec2::new(-16.0, -18.0), radius: 70.0, stops: stops(&[(0.0, 0xfff1c4), (0.35, 0xff8a3d), (1.0, 0xb3261e)]) },
+        Paint::radial(Vec2::new(-16.0, -18.0), 70.0, stops(&[(0.0, 0xfff1c4), (0.35, 0xff8a3d), (1.0, 0xb3261e)])),
     )
     .with_stroke(Rgba::hex(0x5a1410), 3.0);
     let ball_el = el(&mut d, "ball body", Affine::IDENTITY, ElementKind::Shape(ball_shape));
     let ball_layer = layer(d.alloc_id(), "body", 0x4fa3ff, vec![key(0, 1, vec![ball_el], None)]);
-    d.library.push(Arc::new(Symbol { id: ball_id, name: "Ball".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![ball_layer] } }));
+    d.library.push(Arc::new(Symbol { id: ball_id, name: "Ball".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![ball_layer] } }));
 
     let star_id = SymbolId(d.alloc_id());
     let star_shape = Shape::filled(Path::star(0.0, 0.0, 60.0, 26.0, 5), Paint::Solid(Rgba::hex(0xfff6a8))).with_stroke(Rgba::hex(0xe0a400), 2.5);
@@ -67,7 +67,7 @@ pub fn demo() -> Document {
         })
         .collect();
     let star_layer = layer(d.alloc_id(), "spin", 0x4fa3ff, star_keys);
-    d.library.push(Arc::new(Symbol { id: star_id, name: "Star".into(), kind: SymbolKind::Graphic, linkage: None, timeline: Timeline { layers: vec![star_layer] } }));
+    d.library.push(Arc::new(Symbol { id: star_id, name: "Star".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![star_layer] } }));
 
     // --- main timeline (index 0 = top) ---------------------------------------------------
     const LEN: u32 = 48;
@@ -101,7 +101,7 @@ pub fn demo() -> Document {
     // Sun: pulses with an ease in-out.
     let sun_layer_id = d.alloc_id();
     let sun_inst = ElementId(d.alloc_id());
-    let sun_shape = Shape::filled(Path::ellipse(0.0, 0.0, 90.0, 90.0), Paint::Radial { center: Vec2::ZERO, radius: 90.0, stops: stops(&[(0.0, 0xfffbe0), (0.6, 0xffd36b), (1.0, 0xffa94d)]) });
+    let sun_shape = Shape::filled(Path::ellipse(0.0, 0.0, 90.0, 90.0), Paint::radial(Vec2::ZERO, 90.0, stops(&[(0.0, 0xfffbe0), (0.6, 0xffd36b), (1.0, 0xffa94d)])));
     let sun_keys = [(0u32, 24u32, 1.0f32), (24, 23, 1.15), (47, 1, 1.0)]
         .into_iter()
         .enumerate()
@@ -132,7 +132,7 @@ pub fn demo() -> Document {
         Affine::IDENTITY,
         ElementKind::Shape(Shape::filled(
             Path::rect(0.0, 0.0, w, h),
-            Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(0.0, h), stops: stops(&[(0.0, 0x27407a), (0.55, 0x8a79c9), (1.0, 0xf7b98b)]) },
+            Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(0.0, h), stops(&[(0.0, 0x27407a), (0.55, 0x8a79c9), (1.0, 0xf7b98b)])),
         )),
     );
     let mut sky = layer(sky_id, "Sky", 0x7e57c2, vec![key(0, LEN, vec![sky_el], None)]);
@@ -147,7 +147,7 @@ pub fn demo() -> Document {
 /// whose last frame traces a line and goes back to the menu.
 pub fn interactive() -> Document {
     use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, Target};
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), next_id: 1 };
     const LEN: u32 = 36;
     let solid = |c: u32| Paint::Solid(Rgba::hex(c));
 
@@ -161,7 +161,7 @@ pub fn interactive() -> Document {
     let (up, over, down) = (face(&mut d, 0x3d8bfd), face(&mut d, 0x6aa8ff), face(&mut d, 0x2a64c0));
     let hit_area = el(&mut d, "hit", Affine::IDENTITY, ElementKind::Shape(Shape::filled(Path::rect(-120.0, -50.0, 240.0, 100.0), solid(0x000000))));
     let states = layer(d.alloc_id(), "states", 0x4fa3ff, vec![key(0, 1, up, None), key(1, 1, over, None), key(2, 1, down, None), key(3, 1, vec![hit_area], None)]);
-    d.library.push(Arc::new(Symbol { id: button_id, name: "Play Button".into(), kind: SymbolKind::Button, linkage: None, timeline: Timeline { layers: vec![states] } }));
+    d.library.push(Arc::new(Symbol { id: button_id, name: "Play Button".into(), kind: SymbolKind::Button, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![states] } }));
 
     // A movie clip that spins on its own timeline.
     let spinner_id = SymbolId(d.alloc_id());
@@ -175,7 +175,7 @@ pub fn interactive() -> Document {
         })
         .collect();
     let spin = layer(d.alloc_id(), "spin", 0xffd54a, spin_keys);
-    d.library.push(Arc::new(Symbol { id: spinner_id, name: "Spinner".into(), kind: SymbolKind::MovieClip, linkage: None, timeline: Timeline { layers: vec![spin] } }));
+    d.library.push(Arc::new(Symbol { id: spinner_id, name: "Spinner".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![spin] } }));
 
     // Main timeline: actions on top, then the button (menu frame), the show, the backdrop.
     let mut menu = key(0, 1, Vec::new(), None);
@@ -211,7 +211,7 @@ pub fn interactive() -> Document {
 /// `shapes` shapes each, keyed every 12 frames over `frames` frames with classic tweens.
 /// Every element keeps one `Arc<Path>` across its keyframes, as a real tweened shape does.
 pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
-    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), next_id: 1 };
     let (layers, shapes, frames) = (layers.clamp(1, 1000), shapes.clamp(1, 100_000), frames.clamp(1, 10_000));
     let mut seed = 0x2545_f491_u32;
     let mut rnd = move || {
@@ -249,7 +249,7 @@ pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
                         name: String::new(),
                         transform: pose(x + dx, y + dy, 1.0, 1.0, phase * 20.0),
                         color: ColorEffect::default(),
-                        kind: ElementKind::Shape(Shape { path: path.clone(), fill: Some(fill.clone()), stroke: None, fill_rule: Default::default(), merge: false }),
+                        kind: ElementKind::Shape(Shape { path: path.clone(), fill: Some(fill.clone()), stroke: None, fill_rule: Default::default(), merge: false, warp: None }),
                     })
                 })
                 .collect();
