@@ -374,3 +374,5 @@ mod guidelines_tests;
 mod architecture_tests;
 #[cfg(test)]
 mod packaging_tests;
+#[cfg(test)]
+mod rulers_tests;
