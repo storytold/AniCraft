@@ -433,6 +433,7 @@ fn enabled(app: &App, id: &str) -> bool {
         "modify.ungroup" => app.s.selected_elements().iter().any(|(_, e)| matches!(e.kind, anicraft_engine::doc::ElementKind::Group { .. })),
         "modify.union" | "modify.intersect" | "modify.punch" | "modify.crop" => app.s.selected_elements().iter().filter(|(_, e)| matches!(e.kind, anicraft_engine::doc::ElementKind::Shape(_))).count() >= 2,
         "scene.prev" | "scene.move_up" => app.s.scene > 0,
+        "view.guides_clear" => !app.s.guides().is_empty(),
         "scene.next" | "scene.move_down" => app.s.scene + 1 < app.s.doc.scenes.len(),
         "timeline.clear_keyframe" => match app.frame_sel {
             Some(sel) => sel.has_keys(&app.s.timeline().layers),
@@ -451,6 +452,14 @@ fn checked(app: &App, id: &str) -> Option<bool> {
     match id {
         "draw.snap_to_objects" => Some(app.s.style.snap_objects),
         "draw.object_drawing" => Some(app.s.style.object_drawing),
+        // Rulers, grid and guides (ADR 0076).
+        "view.rulers" => Some(app.s.aids.rulers),
+        "view.grid_show" => Some(app.s.aids.show_grid),
+        "view.grid_snap" => Some(app.s.aids.snap_grid),
+        "view.guides_show" => Some(app.s.aids.show_guides),
+        "view.guides_lock" => Some(app.s.aids.lock_guides),
+        "view.guides_snap" => Some(app.s.aids.snap_guides),
+        "view.snap_pixels" => Some(app.s.aids.snap_pixels),
         _ => None,
     }
 }
@@ -551,6 +560,13 @@ fn registry_items(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSp
             ui.set_min_width(220.0);
             for spec in cmds.iter().filter(|c| c.menu == path) {
                 item(app, ui, spec);
+            }
+            // View › Snapping also has Snap to Grid and Snap to Guides, where Animate users
+            // look for them (ADR 0076); they live in View › Grid and View › Guides too.
+            if path == "View/Snapping" {
+                for id in ["view.grid_snap", "view.guides_snap"] {
+                    cmd_item(app, ui, id);
+                }
             }
         });
     }

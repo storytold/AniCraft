@@ -277,6 +277,8 @@ impl Tokens {
 
 /// Smallest click target (WCAG 2.5.8 asks for 24 × 24; we use 28).
 pub const TARGET: f32 = 28.0;
+/// The rulers' thickness along the stage's top and left edges (ADR 0076).
+pub const RULER: f32 = 18.0;
 /// Tool buttons in the tools bar, and the glyph inside them.
 pub const TOOL_BUTTON: f32 = 36.0;
 pub const TOOL_ICON: f32 = 18.0;

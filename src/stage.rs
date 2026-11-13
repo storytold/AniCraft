@@ -176,7 +176,7 @@ fn spans(len: u32, lo: f32, hi: f32, pasteboard: bool) -> Vec<(i64, u32)> {
 /// nearest to its centre first. The stage's tiles are filled with `bg`; with `pasteboard` the
 /// view beyond the stage gets tiles too, transparent over the pasteboard (#245), so artwork
 /// there shows while the stage keeps its exact colour and blending.
-fn tiles_for(z: f32, stage_px: (u32, u32), px: [f32; 4], margin: u32, bg: anicraft_engine::doc::Rgba, pasteboard: bool) -> Vec<TileSpec> {
+fn tiles_for(z: f32, stage_px: (u32, u32), px: [f32; 4], margin: u32, bg: Option<anicraft_engine::doc::Rgba>, pasteboard: bool) -> Vec<TileSpec> {
     let (sw, sh) = stage_px;
     if sw == 0 || sh == 0 {
         return Vec::new();
@@ -190,7 +190,7 @@ fn tiles_for(z: f32, stage_px: (u32, u32), px: [f32; 4], margin: u32, bg: anicra
         for &(ox, w) in &xs {
             let inside = ox >= 0 && oy >= 0 && ox < i64::from(sw) && oy < i64::from(sh);
             let (fx, fy) = (ox as f32, oy as f32);
-            let view = View { transform: Affine::translate(-fx, -fy).mul(&Affine::scale(z, z)), width: w, height: h, background: inside.then_some(bg) };
+            let view = View { transform: Affine::translate(-fx, -fy).mul(&Affine::scale(z, z)), width: w, height: h, background: if inside { bg } else { None } };
             let rect = [fx / z, fy / z, (fx + w as f32) / z, (fy + h as f32) / z];
             out.push(TileSpec { rect, view });
         }
@@ -208,7 +208,8 @@ fn to_v(p: Pos2) -> Vec2 {
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    let canvas = ui.max_rect();
+    // View › Rulers along the top and the left (ADR 0076); the stage view in what is left.
+    let (canvas, bars) = crate::rulers::layout(app, ui.max_rect());
     let now = ui.input(|i| i.time);
     crate::camera_tool::on_tool_change(app);
     crate::camera_tool::tick(app, ui.ctx(), now);
@@ -282,6 +283,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let st_origin = pos2((raw.x * ppp).round() / ppp, (raw.y * ppp).round() / ppp);
     let st_screen = |p: Vec2| pos2(st_origin.x + p.x * st_zoom, st_origin.y + p.y * st_zoom);
     let stage_rect = Rect::from_min_size(st_origin, size * st_zoom);
+    // Rulers, grid and guides are the stage's, in stage pixels (ADR 0076).
+    let geo = crate::rulers::Geo { canvas, origin: st_origin, zoom: st_zoom };
     // While a symbol is open (ADR 0045), tools and overlays work in its space, which the stage
     // shows moved and scaled where its instance stands.
     let edit_view = app.s.edit_view();
@@ -308,6 +311,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     app.cursor_stage = pointer.filter(|p| canvas.contains(*p)).map(to_stage);
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
     let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom);
+    // A drag from a ruler makes a guide (ADR 0076).
+    crate::rulers::input(app, ui, &bars, geo, preview);
+    let guide_hot = if app.drag == Drag::None && !panning && !preview { pointer.and_then(|p| crate::rulers::guide_at(app, geo, p)) } else { None };
     if paused && (resp.drag_started() || resp.clicked()) {
         app.status_ok(tr!("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit."));
     }
@@ -345,6 +351,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if resp.hovered() {
         let icon = match app.tool {
             _ if panning => CursorIcon::Grab,
+            _ if let Drag::Guide { index, .. } = app.drag => crate::rulers::cursor(app, index),
+            _ if let Some(i) = guide_hot => crate::rulers::cursor(app, i),
             _ if let Drag::SliceGuide { guide } = app.drag => guide.cursor(),
             _ if let Some(guide) = slice_hot => guide.cursor(),
             _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::BonePose { .. }) => CursorIcon::Grabbing,
@@ -403,6 +411,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Pan
         } else if paused {
             Drag::None
+        } else if let Some(i) = crate::rulers::guide_at(app, geo, press) {
+            // The Selection tool on a guide moves it; onto a ruler, deletes it (ADR 0076).
+            crate::rulers::drag_start(app, i)
         } else if let Some(guide) = crate::scale_grid::hit(app, press, xf) {
             crate::scale_grid::drag_start(app, guide)
         } else if let Some(m) = hint_at(press) {
@@ -551,6 +562,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             (Drag::Transform { kind, start, bounds, applied }, Some(c)) => {
+                // The handle being dragged (or the box, moving) snaps; Shift constrains instead.
+                let c = if shift { c } else { xf_snap(&mut app.s, &mut app.snap_ring, *kind, *bounds, *start, c, zoom) };
                 let total = xf_total(*kind, *bounds, *start, c, shift, alt);
                 // Send only the change since the last frame; the gesture makes it one undo step.
                 if let Some(inv) = applied.inverse() {
@@ -576,6 +589,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             (Drag::SliceGuide { guide }, Some(c)) => {
                 let guide = *guide;
                 crate::scale_grid::drag_to(app, guide, c);
+            }
+            (Drag::Guide { index, .. }, _) => {
+                let index = *index;
+                if let Some(p) = resp.interact_pointer_pos() {
+                    crate::rulers::drag_to(app, index, geo, p);
+                }
             }
             (Drag::Hint { index, side }, Some(c)) => {
                 // Live: the hint snaps to the nearest edge as the pointer moves.
@@ -612,6 +631,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => end_raw_drag(app),
             Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
             Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
+            Drag::Guide { index, .. } => crate::rulers::drag_end(app, index, geo, ui.input(|i| i.pointer.latest_pos())),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
@@ -819,6 +839,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_filled(stage_rect.translate(vec2(3.0, 4.0)), 0.0, T.stage_shadow);
     // Stage colour first, so a picture still rendering never shows as a hole.
     painter.rect_filled(stage_rect, 0.0, crate::theme::to_color32(app.s.doc.stage.background));
+    if !preview && crate::rulers::grid_under(app) {
+        crate::rulers::paint_grid(app, &painter, geo, stage_rect, ppp);
+    }
     // What gets rendered: the stage, and the pasteboard around it unless View › Clip Content
     // Outside the Stage is on (#251). Previewing through the camera shows what the movie shows.
     let pasteboard = !app.view.clip_to_stage && !preview;
@@ -836,7 +859,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         // Tiles on a device-pixel grid at this zoom (ADR 0007), of what the stage shows: the
         // document, or an open symbol in place (ADR 0045).
         let z = st_zoom * ppp;
-        let bg = app.s.doc.stage.background;
+        // The grid under the artwork (ADR 0076): the stage colour is painted under it, and the
+        // tiles come without it.
+        let grid_under = crate::rulers::grid_under(app) && !preview;
+        let bg = (!grid_under).then_some(app.s.doc.stage.background);
         let stage_px = ((size.x * z).ceil().max(1.0) as u32, (size.y * z).ceil().max(1.0) as u32);
         let px = [(vis.min.x - st_origin.x) * ppp, (vis.min.y - st_origin.y) * ppp, (vis.max.x - st_origin.x) * ppp, (vis.max.y - st_origin.y) * ppp];
         let visible = tiles_for(z, stage_px, px, 0, bg, pasteboard);
@@ -956,6 +982,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     painter.rect_stroke(stage_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    // The grid over the artwork, and the guides (ADR 0076): the stage's, not the camera's.
+    if !preview {
+        if !crate::rulers::grid_under(app) {
+            crate::rulers::paint_grid(app, &painter, geo, stage_rect, ppp);
+        }
+        crate::rulers::paint_guides(app, &painter, geo, ppp);
+    }
 
     // ---- overlays -------------------------------------------------------------------------
     // The camera frame (or, previewing, the Camera tool's handle) comes first, under the
@@ -1117,7 +1150,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     // The snap ring where a dragged point, selection or drawn point snapped (ADR 0041, 0045).
-    if let Some(at) = app.snap_ring.filter(|_| matches!(app.drag, Drag::SnapMove { .. } | Drag::RawPoint { .. } | Drag::Shape { .. }) || (draws && app.drag == Drag::None)) {
+    if let Some(at) = app.snap_ring.filter(|_| matches!(app.drag, Drag::SnapMove { .. } | Drag::RawPoint { .. } | Drag::Shape { .. } | Drag::Transform { .. }) || (draws && app.drag == Drag::None)) {
         let c = to_screen(at);
         painter.circle_stroke(c, SNAP_RING + 1.0, Stroke::new(3.0, Color32::WHITE));
         painter.circle_stroke(c, SNAP_RING, Stroke::new(2.0, T.selection));
@@ -1189,6 +1222,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::a11y::surface(ui, &resp, &name);
     // Its elements, one by one, while it has the keyboard (ADR 0064).
     crate::stage_a11y::show(app, ui, &resp, to_screen);
+    // The rulers last, with the pointer's place marked on them (ADR 0076).
+    crate::rulers::paint(ui, &bars, geo, pointer.or_else(|| ui.input(|i| i.pointer.latest_pos())));
 }
 
 // ----- raw shapes (ADR 0031, 0041) ----------------------------------------------------------------
@@ -1207,8 +1242,8 @@ const SNAP_RING: f32 = 6.0;
 /// to Objects is on. The snap ring shows where it snapped.
 pub fn snap_draw(app: &mut App, p: Pos2, zoom: f32) -> Pos2 {
     let v = app.s.execute("draw.snap", &json!({"x": p.x, "y": p.y, "snap": SNAP_PX / zoom.max(1e-3)}));
-    app.snap_ring = v.as_ref().ok().and_then(snapped_at);
-    app.snap_ring.map_or(p, |q| pos2(q.x, q.y))
+    app.snap_ring = v.as_ref().ok().and_then(ring_at);
+    v.as_ref().ok().and_then(snapped_at).map_or(p, |q| pos2(q.x, q.y))
 }
 
 /// A Selection-tool move, this frame: one of the selection's corners (the one nearest the
@@ -1226,10 +1261,38 @@ fn snap_move(app: &mut App, c: Pos2, zoom: f32, shift: bool) {
     if let Some(v) = app.run("element.translate", p) {
         let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
         app.drag = Drag::SnapMove { start, applied: applied + vec2(f("dx"), f("dy")) };
-        app.snap_ring = snapped_at(&v);
+        app.snap_ring = ring_at(&v);
         // Subselection's shown points go with the drawing.
         crate::pathtools::raw_follow(app, Vec2::new(f("dx"), f("dy")), true);
     }
+}
+
+/// Free Transform (ADR 0076): the pointer `c`, moved so that the handle being dragged (a scale
+/// handle, or while moving the box's corner or centre nearest where it was pressed) lands where
+/// the snap engine puts it: an object's point or line, a guide, the grid or a pixel. The
+/// selection itself is no target. Rotation doesn't snap.
+fn xf_snap(s: &mut anicraft_engine::Session, ring: &mut Option<Vec2>, kind: XfKind, b: [f32; 4], start: Pos2, c: Pos2, zoom: f32) -> Pos2 {
+    let side = |h: i8, lo: f32, hi: f32| match h {
+        ..0 => lo,
+        0 => (lo + hi) * 0.5,
+        _ => hi,
+    };
+    let handle = match kind {
+        XfKind::Scale { hx, hy } => pos2(side(hx, b[0], b[2]), side(hy, b[1], b[3])),
+        XfKind::Move => {
+            let pts = [pos2(b[0], b[1]), pos2(b[2], b[1]), pos2(b[2], b[3]), pos2(b[0], b[3]), pos2((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5)];
+            pts.into_iter().min_by(|p, q| p.distance(start).total_cmp(&q.distance(start))).unwrap_or(start)
+        }
+        XfKind::Rotate => {
+            *ring = None;
+            return c;
+        }
+    };
+    let h = handle + (c - start);
+    let v = s.execute("draw.snap", &json!({"x": h.x, "y": h.y, "snap": SNAP_PX / zoom.max(1e-3), "moving": true}));
+    let v = v.ok();
+    *ring = v.as_ref().and_then(ring_at);
+    v.as_ref().and_then(snapped_at).map_or(c, |q| c + (pos2(q.x, q.y) - h))
 }
 
 /// `d` along the nearest of the horizontal, vertical and 45° directions.
@@ -1256,7 +1319,7 @@ fn move_raw_point(app: &mut App, c: Pos2, zoom: f32) {
     let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
     crate::pathtools::raw_follow(app, Vec2::new(f("x") - at.x, f("y") - at.y), false);
     app.drag = Drag::RawPoint { at: pos2(f("x"), f("y")), off };
-    app.snap_ring = snapped_at(&v);
+    app.snap_ring = ring_at(&v);
     if let Some(points) = v.get("points").filter(|p| p.as_array().is_some_and(|a| !a.is_empty())) {
         let ids: Vec<serde_json::Value> = points.as_array().into_iter().flatten().filter_map(|pt| pt.get(0).cloned()).collect();
         app.raw_points = points.clone();
@@ -1338,6 +1401,12 @@ fn end_raw_drag(app: &mut App) {
 fn snapped_at(v: &serde_json::Value) -> Option<Vec2> {
     let s = v.get("snapped")?;
     Some(Vec2::new(s.get("x")?.as_f64()? as f32, s.get("y")?.as_f64()? as f32))
+}
+
+/// Where the snap ring goes: where it snapped, unless only to a whole pixel (Snap to Pixels
+/// moves every point a little; a ring on each would say nothing).
+fn ring_at(v: &serde_json::Value) -> Option<Vec2> {
+    snapped_at(v).filter(|_| v["snapped"]["to"] != "pixel")
 }
 
 /// Remembers the raw shapes a drag changed (`ids`: a list of element ids).
@@ -2081,7 +2150,7 @@ mod pasteboard_tests {
         // A 1280 × 720 stage at 100 %, seen with 700 px of pasteboard on each side (#245).
         let (z, stage) = (1.0, (1280, 720));
         let view = [-700.0, -300.0, 1980.0, 1020.0];
-        let tiles = tiles_for(z, stage, view, 0, BG, true);
+        let tiles = tiles_for(z, stage, view, 0, Some(BG), true);
         covered_once(&tiles, z, view);
         for t in &tiles {
             let inside = t.rect[0] >= 0.0 && t.rect[1] >= 0.0 && t.rect[2] <= 1280.0 && t.rect[3] <= 720.0;
@@ -2092,7 +2161,7 @@ mod pasteboard_tests {
             assert!(t.view.width <= TILE && t.view.height <= TILE);
         }
         // The stage's own tiles are the same with or without the pasteboard.
-        let clipped = tiles_for(z, stage, view, 0, BG, false);
+        let clipped = tiles_for(z, stage, view, 0, Some(BG), false);
         let rects = |ts: &[TileSpec], f: fn(&TileSpec) -> bool| {
             let mut v: Vec<[i32; 4]> = ts.iter().filter(|t| f(t)).map(|t| t.rect.map(|c| c as i32)).collect();
             v.sort_unstable();
@@ -2107,14 +2176,14 @@ mod pasteboard_tests {
     #[test]
     fn pasteboard_tiles_work_far_away_zoomed_and_stay_bounded() {
         // Zoomed in, looking only at the pasteboard, left of and below the stage.
-        let tiles = tiles_for(4.0, (2000, 1000), [-5000.0, 1500.0, -3000.0, 2600.0], 1, BG, true);
+        let tiles = tiles_for(4.0, (2000, 1000), [-5000.0, 1500.0, -3000.0, 2600.0], 1, Some(BG), true);
         assert!(!tiles.is_empty());
         assert!(tiles.iter().all(|t| t.view.background.is_none()));
         covered_once(&tiles, 4.0, [-5000.0, 1500.0, -3000.0, 2600.0]);
         // A wild view (zoomed far out on a huge canvas) still makes a bounded number of tiles.
-        let n = tiles_for(1.0, (100, 100), [-1e12, -1e12, 1e12, 1e12], 1, BG, true).len();
+        let n = tiles_for(1.0, (100, 100), [-1e12, -1e12, 1e12, 1e12], 1, Some(BG), true).len();
         assert!(n <= (2 * MAX_TILES_PER_AXIS + 1).pow(2), "{n} tiles");
         // Clipped and looking away from the stage: nothing to draw.
-        assert!(tiles_for(1.0, (100, 100), [-900.0, -900.0, -10.0, -10.0], 0, BG, false).is_empty());
+        assert!(tiles_for(1.0, (100, 100), [-900.0, -900.0, -10.0, -10.0], 0, Some(BG), false).is_empty());
     }
 }
