@@ -251,9 +251,47 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 /// Closes Test Movie, keeping where its window was.
 pub fn close(app: &mut App) {
     remember_place(app);
-    if app.test_movie.take().is_some_and(|tm| tm.audio) {
-        app.sound.stop();
+    if let Some(tm) = app.test_movie.take() {
+        if tm.audio {
+            app.sound.stop();
+        }
+        // The Output panel keeps the last run's lines (ADR 0075).
+        app.output_log = tm.movie.output;
     }
+}
+
+/// The Output panel (ADR 0075): what the running Test Movie writes (`trace`, frame-script logs
+/// and anything that couldn't run), or the last run's, with Clear.
+pub fn output_panel(app: &mut App, ui: &mut egui::Ui) {
+    let key = app.keymap.primary("control.test_movie").map(crate::platform::shortcut_label).unwrap_or_default();
+    let lines = match app.test_movie.as_mut() {
+        Some(tm) => &mut tm.movie.output,
+        None => &mut app.output_log,
+    };
+    ui.horizontal(|ui| {
+        let n = lines.len();
+        ui.label(text(Type::Data, format!("{n}")).color(T.text_faint)).on_hover_text(tr!("Lines written"));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add_enabled(n > 0, egui::Button::new(tr!("Clear"))).clicked() {
+                lines.clear();
+            }
+        });
+    });
+    egui::Frame::NONE.fill(T.field).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("output_panel").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if lines.is_empty() {
+                let hint = if key.is_empty() { tr!("Test the movie: its trace actions, frame-script logs and anything that couldn't run appear here.").to_string() } else { tr!("Test the movie ({key}): its trace actions, frame-script logs and anything that couldn't run appear here.", key = key) };
+                ui.label(text(Type::Caption, hint));
+            }
+            for (tick, line) in lines.iter() {
+                ui.horizontal(|ui| {
+                    ui.label(text(Type::DataSmall, format!("{tick:>5}")).color(T.text_faint));
+                    ui.label(text(Type::Data, line.as_str()));
+                });
+            }
+        });
+    });
 }
 
 /// Keeps where the window of its own is in the preferences, for next time (not in screenshot

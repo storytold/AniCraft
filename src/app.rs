@@ -156,14 +156,6 @@ impl Tool {
     }
 }
 
-/// What the timeline dock shows: the timeline, or the Motion Editor beside it (as in Animate).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum BottomTab {
-    #[default]
-    Timeline,
-    MotionEditor,
-}
-
 /// Text being typed on the stage (view state until it is committed as one command).
 pub struct TextEditing {
     /// Top-left of the text box, in stage space.
@@ -410,9 +402,12 @@ pub struct App {
     /// Selected frames on the timeline, and the drag on the frame grid.
     pub frame_sel: Option<timeline::FrameSel>,
     pub tl_drag: timeline::TlDrag,
-    /// Timeline or Motion Editor, and the Motion Editor's view state: the property whose curve
-    /// it shows, the picked key (frames into the span), its drag and its list scroll.
-    pub bottom: BottomTab,
+    /// Where the panels are (ADR 0075): the current workspace's arrangement.
+    pub dock: crate::dock::Layout,
+    /// The dock's view state: a tab being dragged, where groups were drawn.
+    pub dock_view: crate::dock_ui::DockView,
+    /// The Motion Editor's view state: the property whose curve it shows, the picked key
+    /// (frames into the span), its drag and its list scroll.
     pub me_prop: anicraft_engine::doc::Property,
     pub me_key: Option<u32>,
     pub me_drag: Option<motion_editor::MeDrag>,
@@ -430,8 +425,8 @@ pub struct App {
     pub plugin_dialog: Option<crate::plugins_ui::Dialog>,
     /// Commands › Manage Plug-ins.
     pub show_plugins: bool,
-    /// Window › Actions (F9), and what it addresses.
-    pub show_actions: bool,
+    /// The last Test Movie's Output, for the Output panel once it has closed.
+    pub output_log: Vec<(u64, String)>,
     /// Edit › Find and Replace (Ctrl+F) and its results (ADR 0058).
     pub find: crate::find_panel::FindState,
     /// File › Publish Settings and the publish running or last run (ADR 0060).
@@ -636,7 +631,8 @@ impl App {
             motion_drag: None,
             frame_sel: None,
             tl_drag: timeline::TlDrag::None,
-            bottom: BottomTab::Timeline,
+            dock: prefs.workspaces.layout(),
+            dock_view: Default::default(),
             me_prop: anicraft_engine::doc::Property::X,
             me_key: None,
             me_drag: None,
@@ -648,7 +644,7 @@ impl App {
             palette: None,
             plugin_dialog: None,
             show_plugins: false,
-            show_actions: false,
+            output_log: Vec::new(),
             find: Default::default(),
             publish: Default::default(),
             explorer: Default::default(),
@@ -1075,6 +1071,19 @@ impl App {
                 self.publish.selected = anicraft_engine::doc::publish::PublishFormat::Apng;
                 crate::publish_panel::open(self);
             }
+            // Dockable panels (ADR 0075): the timeline above the stage, the Output beside it,
+            // Colour stacked with Properties and Align floating.
+            Some("dock") => {
+                use crate::dock::{Panel as P, Side, Target};
+                self.dock.move_to(P::Timeline, Target::Split { side: Side::Top, before: None });
+                self.dock.move_to(P::Output, Target::Split { side: Side::Top, before: None });
+                self.dock.move_to(P::Colour, Target::Stack(P::Properties));
+                self.dock.move_to(P::Align, Target::Float(Some([980.0, 420.0])));
+                self.dock.top.size = Some(300.0);
+                self.dock_changed();
+            }
+            Some("animator") => self.switch_workspace("animator"),
+            Some("designer") => self.switch_workspace("designer"),
             Some("explorer") => {
                 // The Movie Explorer tab (ADR 0058), its first rows open: scene, layers, keyframes
                 // and the instances on them, opening into their symbols.
@@ -1955,7 +1964,7 @@ impl App {
                     self.s.mark_saved();
                 }
                 if which == "motion" {
-                    self.bottom = BottomTab::MotionEditor;
+                    self.show_panel(crate::dock::Panel::MotionEditor);
                 }
                 self.me_prop = anicraft_engine::doc::Property::Y;
                 self.me_key = Some(0);
@@ -2009,7 +2018,7 @@ impl App {
                 self.tool = Tool::Subselect;
                 self.motion_anchors = vec![2];
                 if which == "motionpins" {
-                    self.bottom = BottomTab::MotionEditor;
+                    self.show_panel(crate::dock::Panel::MotionEditor);
                 }
                 self.me_prop = anicraft_engine::doc::Property::Y;
                 self.me_key = None;
@@ -2674,7 +2683,7 @@ impl App {
                         self.run("timeline.goto", json!({"frame": 0}));
                     }
                 }
-                "view.actions" => self.show_actions = !self.show_actions,
+                "view.actions" => self.toggle_panel(crate::dock::Panel::Actions),
                 "view.find_next" => crate::find_panel::step(self, true),
                 "view.find_prev" => crate::find_panel::step(self, false),
                 "view.movie_explorer" => crate::movie_explorer::open(self),
@@ -2786,6 +2795,11 @@ impl App {
         });
         if submit {
             if let Some(p) = self.prompt.take() {
+                // Window › Workspace › Save Workspace… is the shell's (ADR 0075).
+                if p.cmd == "view.save_workspace" {
+                    self.save_workspace(&p.text);
+                    return;
+                }
                 // Through `request`, so opening over unsaved work or saving over a file asks first.
                 self.request(p.cmd, json!({ p.key: p.text }));
             }
@@ -2976,6 +2990,8 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // The Test Movie window's place, for next time (ADR 0062).
         crate::test_movie::remember_place(self);
+        // And the floating panels' windows (ADR 0075).
+        crate::dock_ui::remember(self);
         let clean = !self.s.is_dirty() || self.allow_close || self.shot.is_some();
         self.recovery.finish(&self.s, clean);
         #[cfg(not(target_arch = "wasm32"))]
@@ -3055,24 +3071,13 @@ impl App {
         self.windows(&ctx);
     }
 
-    /// The editor's panels: tools, stage, timeline, properties and Library.
+    /// The editor's panels (ADR 0075): the edit bar and status bar, then the tools, the docks
+    /// and the stage.
     fn workspace(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
         let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 2));
         egui::Panel::top("edit_bar").exact_size(theme::TARGET + 8.0).frame(bar(T.panel)).show(ui, |ui| panels::edit_bar(self, ui));
         egui::Panel::bottom("status_bar").exact_size(28.0).frame(bar(T.chrome)).show(ui, |ui| panels::status_bar(self, ui));
-        // Docks start at their usual size, but never take most of a small window or a large
-        // interface scale (200 % on a laptop leaves under 1000 × 600 points), and the stage
-        // always keeps room when the scale goes up later.
-        let room = ui.available_rect_before_wrap();
-        let room = egui::vec2(room.width(), room.height());
-        let (dock_w, timeline_h) = ((room.x * 0.3).clamp(220.0, 292.0), (room.y * 0.42).clamp(200.0, 292.0));
-        egui::Panel::left("tools").resizable(false).exact_size(theme::TOOL_BUTTON + 12.0).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::symmetric(0, 8))).show(ui, |ui| panels::tools(self, ui));
-        egui::Panel::right("properties").resizable(true).default_size(dock_w).max_size((room.x * 0.5).max(220.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| panels::right(self, ui));
-        egui::Panel::bottom("timeline").resizable(true).default_size(timeline_h).max_size((room.y * 0.6).max(200.0)).frame(egui::Frame::NONE.fill(T.panel).inner_margin(egui::Margin::same(0))).show(ui, |ui| timeline::show(self, ui));
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(T.pasteboard)).show(ui, |ui| stage::show(self, ui));
-        crate::a11y::name_splitter(&ctx, "properties", tr!("Resize the right-hand panels"));
-        crate::a11y::name_splitter(&ctx, "timeline", tr!("Resize the timeline"));
+        crate::dock_ui::workspace(self, ui);
     }
 
     /// Dialogs and floating windows, the close guard and the end-of-frame upkeep.
@@ -3087,7 +3092,7 @@ impl App {
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
-        crate::actions_panel::show(self, &ctx);
+        crate::dock_ui::floating(self, &ctx);
         crate::find_panel::show(self, &ctx);
         crate::brush_panel::show(self, &ctx);
         crate::publish_panel::show(self, &ctx);
@@ -3114,6 +3119,8 @@ impl App {
             self.s.end_gesture();
         }
 
+        // A changed arrangement of the panels, into the preferences (ADR 0075).
+        crate::dock_ui::save_when_settled(self, &ctx);
         // After this frame's edits: start a recovery copy when one is due (off this thread).
         autosave::tick(self, &ctx);
         // Open Recent changed (an open, a save, a pin): into the preferences.

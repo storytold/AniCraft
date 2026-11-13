@@ -417,49 +417,56 @@ fn row_prose(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     crate::theme::form_row(ui, crate::theme::FORM_LABEL_DOCK, label, add);
 }
 
-pub fn right(app: &mut App, ui: &mut egui::Ui) {
-    let h = ui.available_height();
-    let dock = ui.max_rect();
-    // Dock sections are layout bands; each folds away to give the others room.
-    // The Movie Explorer's tree needs room: Properties gives some up while it shows.
-    let props_share = if app.explorer.tab == crate::movie_explorer::DockTab::Explorer { 0.4 } else { 0.56 };
-    let props = egui::ScrollArea::vertical().id_salt("props").max_height(h * props_share).auto_shrink([false, true]).show(ui, |ui| {
-        crate::theme::section_with_header(ui, "dock_properties", Section::Band, tr!("Properties"), None, |ui| {
-            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| properties(app, ui));
-        })
-        .0
+/// The Colour panel (ADR 0075): the stroke and fill colours new drawing uses, and, with
+/// something selected, the selection's (one undo step per change), with Swap and Black and
+/// White as in Animate.
+pub(crate) fn colour_panel(app: &mut App, ui: &mut egui::Ui) {
+    let mut st = app.s.style.clone();
+    let to_rgba = |c: [u8; 3]| Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 1.0);
+    let (mut stroke, mut fill) = (rgb(st.stroke), rgb(st.fill));
+    let (mut stroke_changed, mut fill_changed) = (false, false);
+    row(ui, tr!("Stroke"), |ui| {
+        stroke_changed = crate::colour::button(ui, &mut stroke).named(tr!("Stroke colour")).changed();
+        ui.label(text(Type::Data, hex(stroke)).color(T.text_dim));
     });
-    section(ui, "dock_align", Section::Band, tr!("Align"), None, |ui| {
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| align_panel(app, ui));
+    row(ui, tr!("Fill"), |ui| {
+        fill_changed = crate::colour::button(ui, &mut fill).named(tr!("Fill colour")).changed();
+        ui.label(text(Type::Data, hex(fill)).color(T.text_dim));
     });
-    // Ctrl+F6 lands on the Properties and Library headers; each panel owns the dock down to the
-    // next one (Align goes with Properties, History with the Library).
-    let split = ui.cursor().top();
-    // The Library and the Movie Explorer share the band, as tabs (ADR 0058).
-    let explorer = app.explorer.tab == crate::movie_explorer::DockTab::Explorer;
-    let title = if explorer { tr!("Movie Explorer") } else { tr!("Library") };
-    let (library_header, _) = crate::theme::section_with_header(ui, "dock_library", Section::Band, title, None, |ui| {
-        // The Library scrolls on its own, so a short window still reaches every row (History's
-        // header stays below it).
-        let room = (ui.available_height() - 48.0).max(120.0);
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 0 }).show(ui, |ui| crate::movie_explorer::tabs(app, ui));
-        if explorer {
-            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 4)).show(ui, |ui| crate::movie_explorer::panel(app, ui));
-        } else {
-            egui::ScrollArea::vertical().id_salt("library_dock").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
-                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| library(app, ui));
-            });
+    let mut undo = tr_noop!("Colour");
+    ui.horizontal(|ui| {
+        if ui.button(tr!("Swap")).on_hover_text(tr!("Swap the stroke and fill colours")).clicked() {
+            (stroke, fill) = (fill, stroke);
+            (stroke_changed, fill_changed, undo) = (true, true, tr_noop!("Swap Colours"));
+        }
+        if ui.button(tr!("Black and White")).on_hover_text(tr!("A black stroke and a white fill")).clicked() {
+            (stroke, fill) = ([0, 0, 0], [255, 255, 255]);
+            (stroke_changed, fill_changed, undo) = (true, true, tr_noop!("Black and White"));
         }
     });
-    section(ui, "dock_history", Section::Band, tr!("History"), None, |ui| {
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| history(app, ui));
-    });
-    a11y::anchor(ui, a11y::Region::Properties, Rect::from_min_max(dock.min, pos2(dock.right(), split)), &props.inner);
-    a11y::anchor(ui, a11y::Region::Library, Rect::from_min_max(pos2(dock.left(), split), dock.max), &library_header);
+    if !(stroke_changed || fill_changed) {
+        ui.label(text(Type::Caption, if app.s.selection.is_empty() { tr!("New shapes and text use these colours.") } else { tr!("Changes apply to the selection and to new drawing.") }));
+        return;
+    }
+    if stroke_changed {
+        st.stroke = to_rgba(stroke);
+    }
+    if fill_changed {
+        st.set_fill_color(to_rgba(fill));
+    }
+    app.s.style = st;
+    if !app.s.selection.is_empty() {
+        if stroke_changed {
+            live(app, undo, "element.set_stroke", json!({"color": hex(stroke)}));
+        }
+        if fill_changed {
+            live(app, undo, "element.set_fill", json!({"color": hex(fill)}));
+        }
+    }
 }
 
 /// The Align panel: align edges or centres, distribute, relative to the selection or the stage.
-fn align_panel(app: &mut App, ui: &mut egui::Ui) {
+pub(crate) fn align_panel(app: &mut App, ui: &mut egui::Ui) {
     let has_sel = !app.s.selection.is_empty();
     let button = |app: &mut App, ui: &mut egui::Ui, icon: Icon, id: &str| {
         let (rect, resp) = ui.allocate_exact_size(vec2(TARGET + 4.0, TARGET), if has_sel { Sense::click() } else { Sense::hover() });
@@ -499,7 +506,7 @@ fn align_panel(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Undo history: past steps (click to go back), the current state, and redoable steps (dimmed).
-fn history(app: &mut App, ui: &mut egui::Ui) {
+pub(crate) fn history(app: &mut App, ui: &mut egui::Ui) {
     let hist = app.s.history();
     let past: Vec<String> = hist.undo_labels().map(str::to_string).collect();
     let future: Vec<String> = hist.redo_labels().map(str::to_string).collect();
@@ -529,7 +536,7 @@ fn history(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn properties(app: &mut App, ui: &mut egui::Ui) {
+pub(crate) fn properties(app: &mut App, ui: &mut egui::Ui) {
     // The selection on every layer (ADR 0044).
     let sel: Vec<_> = app.s.selected_elements().into_iter().map(|(_, e)| e).collect();
 
@@ -1815,7 +1822,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     }
                     ui.horizontal(|ui| {
                         if ui.button(tr!("Motion Editor")).on_hover_text(tr!("Edit the property curves and eases")).clicked() {
-                            app.bottom = crate::app::BottomTab::MotionEditor;
+                            app.show_panel(crate::dock::Panel::MotionEditor);
                         }
                         if ui.button(tr!("Remove Tween")).on_hover_text(tr!("The object stays as it is on the span's first frame")).clicked() {
                             app.run("timeline.remove_tween", json!({}));
@@ -2407,7 +2414,7 @@ fn ease_curve(ui: &mut egui::Ui, e: anicraft_engine::doc::Easing) {
     p.add(egui::Shape::line(pts, Stroke::new(2.0, T.tween)));
 }
 
-fn library(app: &mut App, ui: &mut egui::Ui) {
+pub(crate) fn library(app: &mut App, ui: &mut egui::Ui) {
     // Where the panel is, for files dropped on it (ADR 0059).
     let r = ui.scope(|ui| crate::library::panel(app, ui)).response.rect;
     app.library.drop_zone.panel = Some(r);

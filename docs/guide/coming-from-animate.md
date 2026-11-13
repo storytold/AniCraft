@@ -10,30 +10,32 @@ On macOS, press ⌘ where this guide says Ctrl, and ⌥ where it says Alt.
 
 ## Panels
 
-AniCraft keeps its panels docked in one fixed layout: tools on the left, the stage in the middle,
-Properties and the Library on the right, and the timeline at the bottom. You don't open or close
-most of them; they are always there.
+AniCraft opens with its panels docked as in Animate's Essentials: tools on the left, the stage
+in the middle, Properties and the Library on the right, and the timeline at the bottom. As in
+Animate, you drag a panel's tab to dock it elsewhere (the timeline above the stage, for
+example), stack it with other panels or float it, and **Window › Workspace** has Essentials,
+Animator and Designer, plus your own saved workspaces and Reset.
 
 | In Animate | In AniCraft |
 |---|---|
 | Tools | The tools column on the left. A drawing tool's options show at the top of Properties while it is active. |
 | Timeline | The timeline at the bottom (**Window › Timeline**). |
-| Properties | Properties on the right, always shown. |
+| Properties | Properties on the right (**Window › Properties**). |
 | Library | The Library on the right (**Window › Library**). |
 | Motion Editor | A tab beside the timeline (**Window › Motion Editor**). |
 | Actions (**F9**) | The Actions panel, same key (**Window › Actions**). |
 | Movie Explorer (**Alt+F3**) | Same key; a tab next to the Library (**Window › Movie Explorer**). |
-| Output | The Output panel inside Test Movie. |
-| Align | The Align section on the right, and **Modify › Align**. |
-| History | The History section on the right. |
-| Color and Swatches | Click the Fill or Stroke squares in the Tools panel, or any colour swatch in Properties: web-safe swatches, a mixer and a hex field. The fill's picker also sets its type (None, Solid, Linear, Radial, Bitmap) and a gradient's stops, overflow and Linear RGB, like the Color panel (no saved swatches yet). |
+| Output | The Output panel inside Test Movie, and **Window › Output**, which keeps the last run's lines. |
+| Align | The Align panel on the right, and **Modify › Align**. |
+| History | The History panel on the right. |
+| Color and Swatches | **Window › Colour** (stroke and fill, Swap, Black and White). Click the Fill or Stroke squares in the Tools panel, the Colour panel, or any colour swatch in Properties: web-safe swatches, a mixer and a hex field. The fill's picker also sets its type (None, Solid, Linear, Radial, Bitmap) and a gradient's stops, overflow and Linear RGB, like the Color panel (no saved swatches yet). |
 | Transform and Info | Position, scale and rotation rows in Properties, and the Free Transform tool. |
 | Scene | The scene menu at the top left of the stage, **Insert › Scene** and **Modify › Scene**. |
 | Find and Replace | **Edit › Find and Replace** (**Ctrl+F**). |
 | Publish Settings | **File › Publish Settings…** (**Ctrl+Shift+F12**). |
 
-Not in AniCraft yet: saved workspaces and rearranging panels, Components, Code Snippets and the
-Assets panel. See [The workspace](workspace.md) for a tour.
+Not in AniCraft yet: Components, Code Snippets, the Assets panel, and moving the Tools panel.
+See [The workspace](workspace.md) for a tour.
 
 ## Tools and their keys
 
@@ -117,7 +119,7 @@ frame, and **Shift+PageUp** and **Shift+PageDown** for the previous and next sce
   inside.
 * **Ctrl+F8** (New Symbol): not there yet. Draw something and convert it with **F8**.
 * **Ctrl+J** (Document Settings): it is **Modify › Document Settings**, with no key by default.
-* Panel toggles such as **Ctrl+L** for the Library aren't needed, because the panels are docked.
+* Panel toggles such as **Ctrl+L** for the Library have no key yet; use the **Window** menu.
 * **Ctrl+0** fits the stage in the window and **Ctrl+1** shows it at 100 %.
 
 Any key can be changed in **Help › Keyboard Shortcuts** (**F1**), so you can bring back a habit

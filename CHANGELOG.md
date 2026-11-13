@@ -21,6 +21,17 @@
   * **Improved**: gradients keep their overflow, Linear RGB, focal point and elliptical shape
     from Animate files and SVG drawings, on the GPU stage and in SVG export (HTML canvas draws
     them as near as canvas can). Radial gradients on skewed shapes are now drawn exactly.
+* **Dockable panels and workspaces** (M8, ADR 0075, fixes #249).
+  * Drag any panel's tab to dock it on any side of the stage (the timeline above the stage, for
+    example), stack it with other panels as a tab, or float it in a window of its own (inside
+    the editor where a system can't open one). Docks and the lines between panel groups resize,
+    groups fold, and every panel has a menu (☰, or right-click its tab) to dock, float or close
+    it from the keyboard.
+  * **Window** lists every panel; choosing one brings it forward, reopening it where it was.
+  * **Window › Workspace**: Essentials (the layout so far), Animator and Designer, your own with
+    **Save Workspace…**, and **Reset**. Where everything is is kept in your preferences.
+  * New **Colour** (stroke and fill, Swap, Black and White) and **Output** (Test Movie's lines,
+    kept after it closes) panels. Ctrl+F6 visits every docked panel in the order they are docked.
 * **Groups and Combine Objects** (ADR 0073, M1; issues #206, #229).
   * **Modify › Group** (**Ctrl+G**) and **Ungroup** (**Ctrl+Shift+G**): keep artwork together
     without a Library symbol. Double-click a group to edit it in place (the rest dims, the edit

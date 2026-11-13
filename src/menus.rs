@@ -650,22 +650,40 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             }
         }
         "Window" => {
-            use crate::app::BottomTab;
-            if ui_item(ui, tr!("Timeline"), "", Some(app.bottom == BottomTab::Timeline)) {
-                app.bottom = BottomTab::Timeline;
-            }
-            if ui_item(ui, tr!("Motion Editor"), "", Some(app.bottom == BottomTab::MotionEditor)) {
-                app.bottom = BottomTab::MotionEditor;
-            }
-            if ui_item(ui, tr!("Actions"), app.keymap.primary("view.actions").unwrap_or(""), Some(app.show_actions)) {
-                app.show_actions = !app.show_actions;
-            }
-            use crate::movie_explorer::DockTab;
-            if ui_item(ui, tr!("Library"), "", Some(app.explorer.tab == DockTab::Library)) {
-                app.explorer.tab = DockTab::Library;
-            }
-            if ui_item(ui, tr!("Movie Explorer"), app.keymap.primary("view.movie_explorer").unwrap_or(""), Some(app.explorer.tab == DockTab::Explorer)) {
-                crate::movie_explorer::open(app);
+            // Workspaces (ADR 0075): the built-in ones, yours, Save and Reset.
+            ui.menu_button(tr!("Workspace"), |ui| {
+                let current = app.prefs.workspaces.current.clone();
+                for key in app.prefs.workspaces.keys() {
+                    let name = crate::i18n::t_dyn(crate::dock::Workspaces::name(&key)).into_owned();
+                    if ui_item(ui, &name, "", Some(key == current)) && key != current {
+                        app.switch_workspace(&key);
+                    }
+                }
+                ui.separator();
+                if ui_item(ui, tr!("Save Workspace…"), "", None) {
+                    app.prompt = Some(crate::app::Prompt { title: tr_noop!("Save Workspace"), cmd: "view.save_workspace", key: "name", text: String::new() });
+                }
+                let name = crate::i18n::t_dyn(crate::dock::Workspaces::name(&current)).into_owned();
+                if ui_item(ui, &tr!("Reset “{name}”", name = name), "", None) {
+                    app.reset_workspace();
+                }
+            });
+            ui.separator();
+            // Every panel: ticked while it is in front; choosing one brings it forward, or
+            // closes it when it already is.
+            for p in crate::dock::Panel::ALL {
+                let key = match p {
+                    crate::dock::Panel::Actions => app.keymap.primary("view.actions").unwrap_or(""),
+                    crate::dock::Panel::MovieExplorer => app.keymap.primary("view.movie_explorer").unwrap_or(""),
+                    _ => "",
+                };
+                if ui_item(ui, crate::i18n::t(p.label()), key, Some(app.dock.is_shown(p))) {
+                    if p == crate::dock::Panel::MovieExplorer && !app.dock.is_shown(p) {
+                        crate::movie_explorer::open(app);
+                    } else {
+                        app.toggle_panel(p);
+                    }
+                }
             }
             // Brush presets with previews, and your own (ADR 0068).
             if ui_item(ui, tr!("Brush Library"), "", Some(app.brush_lib.open)) {
@@ -675,7 +693,7 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             if ui_item(ui, tr!("Onion Skin"), "", Some(app.onion.ghosts)) {
                 crate::onion::toggle_ghosts(app);
             }
-            ui.label(text(Type::Caption, tr!("Panels are docked: Tools, Stage, Timeline, Properties, Library and Movie Explorer")));
+            ui.label(text(Type::Caption, tr!("Drag a panel's tab to dock it on any side, stack it with others or float it")));
         }
         "Help" => {
             if ui_item(ui, tr!("User Guide"), "", None) {
