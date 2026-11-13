@@ -351,14 +351,20 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{bone} removes it and the bones below it; the instances they moved go to a layer of their own as they look at the playhead (with the last bone, the whole armature does); asks first when the armature has more than one pose`
 - **Joint Limits** `bone.set_limits` · changes the document
   Parameters: `{bone, constrain?: bool (false: turns freely), min?, max? (°, −360…360, from where it was drawn)} limits how far the joint turns, in every pose`
+- **Joint Translation** `bone.set_translation` · changes the document
+  Parameters: `{bone, axis: "x" | "y" (along the axes of what the bone starts on, as it is turned), enabled?: bool (false: the joint doesn't slide that way), constrain?: bool (false: slides freely), min?, max? (px, ±10,000, from where it was drawn)} lets the joint slide, in every pose; posing (bone.solve, the Selection tool) slides it only where turning can't reach`
+- **Bone Spring** `bone.set_spring` · changes the document
+  Parameters: `{bone, strength? (0–100: 0 is no spring; stiffer swings faster and lags less), damping? (0–100: how quickly the swing dies down; 100 absorbs it all)} secondary motion: the bone lags behind and swings past its pose as the bones it hangs from move, then settles. Evaluated, never stored: the keyed poses don't change`
+- **Enable Springs** `bone.enable_springs` · changes the document
+  Parameters: `{enabled: bool, layer? (the armature layer) | bone?} turns the armature's springs on or off (off: it plays its keyed poses exactly, as while posing)`
 - **Pin Bone** `bone.pin` · changes the document
   Parameters: `{bone, pinned: bool} a pinned bone (and the bones it hangs from) stays put while dragging bones below it`
 - **Pose Bone** `bone.pose` · changes the document
-  Parameters: `{bone?, angle? (°, the joint angle: 0 as drawn), rotate_by? (°), dx?, dy? (moves the whole armature), layer? (the armature layer, when no bone is given), frame?} keys the pose at the frame`
+  Parameters: `{bone?, angle? (°, the joint angle: 0 as drawn), rotate_by? (°), slide_x?, slide_y? (px: how far the joint slides, within its translation limits), dx?, dy? (moves the whole armature), layer? (the armature layer, when no bone is given), frame?} keys the pose at the frame`
 - **Drag Bone** `bone.solve` · changes the document
   Parameters: `{bone, x, y (stage px: where the bone's end goes), local?: [x, y] (the point dragged, in the bone's instance's space; default its end), frame?} → {reached, error (px), chain}; inverse kinematics turns the bone and the bones above it (limits respected, pinned bones kept)`
 - **Armatures** `bone.info`
-  Parameters: `{frame?, layer?, points?: bool} → every armature on the scene at the frame: its bones with joint and end (stage px), joint angle and limits (°), pinned; a shape armature's shape, how many points each bone moves, and with points the shape's points (stage px) and the bones each follows`
+  Parameters: `{frame?, layer?, points?: bool} → every armature on the scene at the frame: its bones with joint and end (stage px, as keyed), joint angle and limits (°), slide and translation limits (px), spring (0–100) and its swing at the frame (°, what the spring adds to the angle), pinned; whether springs are on; a shape armature's shape, how many points each bone moves, and with points the shape's points (stage px) and the bones each follows`
 - **Add Warp Pin** `warp.pin_add` · changes the document
   Parameters: `{element?, x, y (stage px, on the artwork)} → {element, pin, created}. Pins the artwork there (adding the mesh first if it has none), on every keyframe that bends the same mesh; nothing moves`
 - **Move Warp Pin** `warp.pin_move` · changes the document

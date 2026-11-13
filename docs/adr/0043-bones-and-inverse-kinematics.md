@@ -100,7 +100,8 @@ list, and every edit is a command.
 * ~~Shape armatures (bones inside a shape, with binding of its points) and the Bind tool~~:
   ADR 0071. Their bones join joint nodes inside the shape and reuse this ADR's poses, forward
   kinematics and CCD solver unchanged.
-* Spring and damping, joint translation (Animate's X/Y joint constraints), Animate's runtime
-  armatures (poses that ActionScript drives), and XFL import of armature layers.
-* Editing instance properties of armature members in place; armature layers under masks and
-  motion guides; an IK drag that keeps pinned bones *below* the dragged one in place.
+* ~~Spring and damping, joint translation (Animate's X/Y joint constraints)~~: ADR 0084.
+  Animate's runtime armatures (poses that ActionScript drives), and XFL import of armature
+  layers.
+* ~~Editing instance properties of armature members in place~~ (colour effect, blending,
+  filters: ADR 0084); armature layers under masks and motion guides; an IK drag that keeps pinned bones *below* the dragged one in place.
