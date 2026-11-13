@@ -355,7 +355,7 @@ fn a_sampled_ease_round_trips_through_the_file_format_and_survives_bad_files() {
 fn a_sampled_ease_becomes_a_custom_curve_through_its_samples() {
     let wave = SampledEase::new("Wave", "p", "w", (0..257).map(|i| { let t = i as f32 / 256.0; t + 0.2 * (t * std::f32::consts::TAU).sin() }).collect());
     let c = wave.to_polyline();
-    assert_eq!(c.points().len(), MAX_EASE_POINTS);
+    assert_eq!(c.points().len(), POLYLINE_POINTS);
     for i in 0..=100 {
         let t = i as f32 / 100.0;
         assert!((c.apply(t) - wave.apply(t)).abs() < 0.01, "t = {t}: {} vs {}", c.apply(t), wave.apply(t));

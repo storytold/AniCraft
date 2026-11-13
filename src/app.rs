@@ -485,6 +485,8 @@ pub struct App {
     pub palette: Option<dialogs::Palette>,
     /// The open plug-in dialog (its preview is an open gesture).
     pub plugin_dialog: Option<crate::plugins_ui::Dialog>,
+    /// File › Export with an exporter plug-in: its window, and the export while it runs (ADR 0088).
+    pub plugin_export: Option<crate::plugin_export_ui::Export>,
     /// Commands › Manage Plug-ins.
     pub show_plugins: bool,
     /// The last Test Movie's Output, for the Output panel once it has closed.
@@ -547,6 +549,11 @@ pub struct App {
     pub system_look: platform::SystemLook,
     /// Keys to press, a few frames apart (screenshots of keyboard states).
     pub key_script: std::collections::VecDeque<(Key, Modifiers)>,
+    /// Screenshots only: the ease menu (by its id salt) to show open on the next frame.
+    pub shot_ease_menu: std::cell::Cell<Option<&'static str>>,
+    /// Screenshots only: where to click once the frames have settled.
+    pub shot_click: std::cell::Cell<Option<egui::Pos2>>,
+    shot_step: u8,
     key_script_wait: u8,
     /// The system's look being read off the UI thread, and when it last was.
     look_probe: Option<std::sync::mpsc::Receiver<platform::SystemLook>>,
@@ -720,6 +727,7 @@ impl App {
             skip_confirm: HashSet::new(),
             palette: None,
             plugin_dialog: None,
+            plugin_export: None,
             show_plugins: false,
             output_log: Vec::new(),
             find: Default::default(),
@@ -754,6 +762,9 @@ impl App {
             menu_keys: Default::default(),
             system_look: platform::SystemLook::default(),
             key_script: Default::default(),
+            shot_ease_menu: std::cell::Cell::new(None),
+            shot_click: std::cell::Cell::new(None),
+            shot_step: 0,
             key_script_wait: 0,
             look_probe: None,
             look_asked: None,
@@ -1073,6 +1084,23 @@ impl App {
             // Keyboard states for screenshots (ADR 0064): keys pressed a few frames apart.
             Some("stagekeys") => self.script_keys([(K::F6, M::COMMAND), (K::Tab, M::NONE), (K::Space, M::NONE), (K::ArrowRight, M::NONE)]),
             Some("menukeys") => self.script_keys([(K::F10, M::NONE), (K::ArrowRight, M::NONE), (K::ArrowDown, M::NONE), (K::ArrowDown, M::NONE)]),
+            Some("pluginexport") => {
+                // File › Export open, the exporter plug-ins below the built-in formats (run with
+                // ANICRAFT_PLUGINS set to the built samples, examples/plugins/dist; ADR 0088).
+                // Export is the 13th entry of the File menu (New … Recover Autosaved Documents…,
+                // then the submenus); ANICRAFT_SHOT_DOWNS moves along it if that changes.
+                let n = std::env::var("ANICRAFT_SHOT_DOWNS").ok().and_then(|v| v.parse().ok()).unwrap_or(13);
+                let mut keys = vec![(K::F10, M::NONE)];
+                keys.extend(std::iter::repeat_n((K::ArrowDown, M::NONE), n));
+                keys.push((K::Enter, M::NONE));
+                self.script_keys(keys);
+            }
+            Some("pluginexportwindow") => {
+                if let Some(p) = anicraft_engine::plugin_export::exporters(&self.s).first() {
+                    let id = p.id().to_string();
+                    crate::plugin_export_ui::open(self, &id);
+                }
+            }
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
             Some("shortcuts") => self.show_shortcuts = true,
             Some("lastscene") => {
@@ -2035,6 +2063,19 @@ impl App {
                 if self.import_demo_beat() {
                     self.run("sound.set", json!({"frame": 0, "sync": "stream"}));
                     self.run("timeline.goto", json!({"frame": 14}));
+                }
+            }
+            Some("plugineases") => {
+                // The demo ball's tween on a plug-in's ease (Smooth Steps 4 of the sample
+                // Stepped Eases), the timeline's ease menu open on it (ANICRAFT_PLUGINS set).
+                let ball = self.s.timeline().layers.iter().find(|l| l.keyframes.first().is_some_and(|k| k.tween.is_some() && k.motion.is_none())).map(|l| l.id.0);
+                let ease = anicraft_engine::cmds_ease::plugin_eases(&self.s).into_iter().find(|(_, c)| c.id.starts_with("smooth")).or_else(|| anicraft_engine::cmds_ease::plugin_eases(&self.s).into_iter().next());
+                if let (Some(id), Some((p, c))) = (ball, ease) {
+                    self.run("layer.select", json!({"layer": id}));
+                    self.run("timeline.goto", json!({"frame": 4}));
+                    self.run("timeline.set_easing", json!({"easing": {"plugin": p.id(), "ease": c.id}}));
+                    self.s.mark_saved();
+                    self.shot_ease_menu.set(Some("tl_ease"));
                 }
             }
             Some(which @ ("ease" | "easepreset")) => {
@@ -3383,6 +3424,28 @@ pub(crate) fn open_in_system(path: &std::path::Path) -> Result<(), String> {
 }
 
 impl eframe::App for App {
+    /// Screenshots only: a click where `shot_click` says, pressed and released over two frames
+    /// before they begin, as a person's would be, then a scroll to the end of what it opened.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let Some(at) = self.shot_click.get() else { return };
+        // Press, release, then scroll what opened to its end (a menu's last items).
+        self.shot_step += 1;
+        match self.shot_step {
+            1 | 2 => {
+                raw.events.push(egui::Event::PointerMoved(at));
+                raw.events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: self.shot_step == 1, modifiers: Modifiers::NONE });
+            }
+            3 => {}
+            _ => {
+                let over = at - egui::vec2(0.0, 120.0);
+                raw.events.push(egui::Event::PointerMoved(over));
+                raw.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -2000.0), modifiers: Modifiers::NONE, phase: egui::TouchPhase::Move });
+                self.shot_click.set(None);
+            }
+        }
+        ctx.request_repaint();
+    }
+
     /// A clean exit (saved, or the user chose Don't Save) removes this session's recovery
     /// copy; otherwise the work is written once more and offered at the next start.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -3494,6 +3557,7 @@ impl App {
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
+        crate::plugin_export_ui::show(self, &ctx);
         crate::dock_float::floating(self, &ctx);
         crate::workspaces_window::show(self, &ctx);
         crate::find_panel::show(self, &ctx);

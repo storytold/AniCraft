@@ -398,7 +398,7 @@ impl Easing {
     /// the Quad, Cubic, Back and Bounce families and custom eases; Circ is two circular arcs,
     /// and Quart, Quint, Sine and Elastic are fitted by matching values and slopes at a few
     /// points (all within 0.5 % of the range everywhere, see the tests). A sampled ease becomes
-    /// the straight segments through 64 of its samples.
+    /// the straight segments through 48 of its samples.
     pub fn to_custom(&self) -> CustomEase {
         match self {
             Easing::Custom(c) => (**c).clone(),
@@ -874,6 +874,8 @@ impl CustomEase {
 /// Most samples a sampled ease keeps (longer tables are thinned evenly); plug-in eases are
 /// sampled at 257 points.
 pub const MAX_EASE_SAMPLES: usize = 1025;
+/// Points of the custom curve a sampled ease becomes when edited (of [`MAX_EASE_POINTS`]).
+pub const POLYLINE_POINTS: usize = 48;
 /// Longest plug-in or ease id a sampled ease keeps.
 const MAX_EASE_ID: usize = 64;
 
@@ -972,11 +974,12 @@ impl SampledEase {
         a + (b - a) * f
     }
 
-    /// The custom curve of straight segments through [`MAX_EASE_POINTS`] of its samples, for
-    /// the graph editor: editing a plug-in's ease makes it a custom ease drawn like it.
+    /// The custom curve of straight segments through [`POLYLINE_POINTS`] of its samples, for
+    /// the graph editor: editing a plug-in's ease makes it a custom ease drawn like it, with
+    /// room left to add points.
     pub fn to_polyline(&self) -> CustomEase {
         let n = self.values.len();
-        let m = MAX_EASE_POINTS.min(n).max(2);
+        let m = POLYLINE_POINTS.min(n).max(2);
         let at: Vec<Vec2> = (0..m)
             .map(|k| {
                 let i = k * (n - 1) / (m - 1);
