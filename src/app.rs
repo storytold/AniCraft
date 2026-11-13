@@ -251,6 +251,9 @@ pub enum Drag {
     ArmatureMove { layer: anicraft_engine::doc::LayerId, last: egui::Pos2 },
     /// Moving one of the open symbol's 9-slice guides (ADR 0055).
     SliceGuide { guide: crate::scale_grid::Guide },
+    /// Selection tool: moving the scene's guide `index` (ADR 0076); `off`: the pointer is over a
+    /// ruler or off the stage, where letting go deletes it.
+    Guide { index: usize, off: bool },
     Pan,
 }
 
@@ -370,6 +373,10 @@ pub struct App {
     pub raw_ends: Vec<anicraft_engine::geom::Vec2>,
     /// Where what is being dragged snapped this frame (stage space): the snap ring.
     pub snap_ring: Option<anicraft_engine::geom::Vec2>,
+    /// A guide being dragged out of a ruler (ADR 0076).
+    pub new_guide: Option<crate::rulers::NewGuide>,
+    /// Edit Grid and Edit Guides, while open.
+    pub aids_dialogs: crate::aids_dialog::AidsDialogs,
     pub pencil_mode: pathtools::PencilMode,
     /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
     /// when there is one) and the pen's last pressure (ADR 0033).
@@ -481,15 +488,16 @@ pub struct App {
     pub tl_refocus: bool,
     /// The menu bar from the keyboard: Alt, F10 and the arrows (ADR 0064).
     pub menu_keys: menus::MenuKeys,
-    /// What the system last said about contrast (ADR 0064): `None` until it has, or if it
-    /// can't. Screenshot runs never ask, so they look the same everywhere.
-    pub system_contrast: Option<bool>,
+    /// What the system last said about contrast and light or dark (ADR 0064, ADR 0077): each part
+    /// `None` until it has, or if it can't. Screenshot runs never ask, so they look the same
+    /// everywhere.
+    pub system_look: platform::SystemLook,
     /// Keys to press, a few frames apart (screenshots of keyboard states).
     pub key_script: std::collections::VecDeque<(Key, Modifiers)>,
     key_script_wait: u8,
-    /// The system's contrast setting being read off the UI thread, and when it last was.
-    contrast_probe: Option<std::sync::mpsc::Receiver<Option<bool>>>,
-    contrast_asked: Option<f64>,
+    /// The system's look being read off the UI thread, and when it last was.
+    look_probe: Option<std::sync::mpsc::Receiver<platform::SystemLook>>,
+    look_asked: Option<f64>,
     /// The start screen, while it is up (ADR 0059).
     pub start: Option<crate::start::StartScreen>,
     /// Files dragged over and dropped onto the window (ADR 0059).
@@ -500,8 +508,8 @@ pub struct App {
     pub templates: crate::templates::Templates,
 }
 
-/// How often (seconds) the system's contrast setting is asked again (ADR 0064).
-const SYSTEM_CONTRAST_EVERY: f64 = 4.0;
+/// How often (seconds) the system's contrast and light or dark setting are asked again (ADR 0064).
+const SYSTEM_LOOK_EVERY: f64 = 4.0;
 
 /// How finished this version is, shown next to the version number (docs/release.md). English:
 /// translated where the interface shows it (`--version` prints it as is).
@@ -565,6 +573,8 @@ impl App {
         // Open Recent is the session's list, kept in the preferences (ADR 0059).
         session.recent = prefs.recent.clone();
         session.brushes = prefs.brushes.clone();
+        // Whether rulers, grid and guides show and snap carries over between sessions (ADR 0076).
+        session.aids = prefs.aids;
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
@@ -617,6 +627,8 @@ impl App {
             raw_anchors: Vec::new(),
             raw_ends: Vec::new(),
             snap_ring: None,
+            new_guide: None,
+            aids_dialogs: Default::default(),
             pencil_mode: pathtools::PencilMode::default(),
             brush: crate::brushtool::BrushOptions::default(),
             paint_brush: crate::brushtool::BrushOptions::paint_brush(),
@@ -680,11 +692,11 @@ impl App {
             tl_heard: None,
             tl_refocus: false,
             menu_keys: Default::default(),
-            system_contrast: None,
+            system_look: platform::SystemLook::default(),
             key_script: Default::default(),
             key_script_wait: 0,
-            contrast_probe: None,
-            contrast_asked: None,
+            look_probe: None,
+            look_asked: None,
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
@@ -789,7 +801,7 @@ impl App {
         crate::i18n::set_language(&self.prefs.language);
         ctx.request_repaint();
         ctx.set_zoom_factor(self.prefs.ui_scale);
-        theme::apply_palette(ctx, self.prefs.palette(self.system_contrast));
+        theme::apply_palette(ctx, self.prefs.palette(self.system_look));
         crate::onion::refresh_colors(self);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
@@ -888,58 +900,58 @@ impl App {
         }
     }
 
-    /// Follows the system's contrast setting (ADR 0064): asks it on a worker now and then (at
+    /// Follows the system's look (ADR 0064, ADR 0077): asks it on a worker now and then (at
     /// start, every few seconds, and when the window comes back to the front), and switches the
     /// palette in the same frame the answer changes, while Preferences says "Follow system".
-    fn follow_system_contrast(&mut self, ctx: &egui::Context) {
+    fn follow_system_look(&mut self, ctx: &egui::Context) {
         if self.shot.is_some() {
             return;
         }
-        if let Some(rx) = &self.contrast_probe {
+        if let Some(rx) = &self.look_probe {
             match rx.try_recv() {
                 Ok(v) => {
-                    self.contrast_probe = None;
-                    self.set_system_contrast(ctx, v);
+                    self.look_probe = None;
+                    self.set_system_look(ctx, v);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => return,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.contrast_probe = None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.look_probe = None,
             }
         }
         let (now, came_back) = ctx.input(|i| (i.time, i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))));
-        let due = self.contrast_asked.is_none_or(|t| now - t >= SYSTEM_CONTRAST_EVERY || came_back);
+        let due = self.look_asked.is_none_or(|t| now - t >= SYSTEM_LOOK_EVERY || came_back);
         if !due {
             return;
         }
-        self.contrast_asked = Some(now);
+        self.look_asked = Some(now);
         let (tx, rx) = std::sync::mpsc::channel();
         #[cfg(not(target_arch = "wasm32"))]
         let started = {
             let ctx2 = ctx.clone();
             std::thread::Builder::new()
-                .name("anicraft-contrast".into())
+                .name("anicraft-look".into())
                 .spawn(move || {
-                    let _ = tx.send(platform::system_high_contrast());
+                    let _ = tx.send(platform::system_look());
                     ctx2.request_repaint();
                 })
                 .is_ok()
         };
         // (No threads in a browser: the media query answers at once.)
         #[cfg(target_arch = "wasm32")]
-        let started = tx.send(platform::system_high_contrast()).is_ok();
+        let started = tx.send(platform::system_look()).is_ok();
         if started {
-            self.contrast_probe = Some(rx);
+            self.look_probe = Some(rx);
         }
         // Ask again later even if nothing else happens.
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(SYSTEM_CONTRAST_EVERY));
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(SYSTEM_LOOK_EVERY));
     }
 
-    /// What the system says about contrast: the palette follows at once, if it follows.
-    pub fn set_system_contrast(&mut self, ctx: &egui::Context, v: Option<bool>) {
-        if v == self.system_contrast {
+    /// What the system says about its look: the palette follows at once, if it follows.
+    pub fn set_system_look(&mut self, ctx: &egui::Context, v: platform::SystemLook) {
+        if v == self.system_look {
             return;
         }
-        let before = self.prefs.palette(self.system_contrast);
-        self.system_contrast = v;
+        let before = self.prefs.palette(self.system_look);
+        self.system_look = v;
         let after = self.prefs.palette(v);
         if after != before {
             theme::apply_palette(ctx, after);
@@ -1572,6 +1584,27 @@ impl App {
                 self.tool = Tool::Line;
                 self.drag = Drag::Shape { start: egui::pos2(240.0, 400.0), cur: egui::pos2(560.0, 140.0) };
                 self.snap_ring = Some(anicraft_engine::geom::Vec2::new(560.0, 140.0));
+            }
+            Some("rulers") | Some("editguides") | Some("editgrid") => {
+                // Rulers, grid and guides (ADR 0076): a rectangle being drawn from one guide
+                // crossing to a grid crossing, the snap ring on its corner; `editguides` and
+                // `editgrid`: their dialogs.
+                self.run("view.rulers", json!({"on": true}));
+                self.run("view.grid_set", json!({"spacing": 40, "show": true, "snap": true, "over_objects": true}));
+                for (axis, at) in [("vertical", 320), ("vertical", 960), ("horizontal", 160), ("horizontal", 560)] {
+                    self.run("view.guide_add", json!({"axis": axis, "at": at}));
+                }
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 320, "y": 160, "w": 240, "h": 160, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": true}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Rect;
+                self.drag = Drag::Shape { start: egui::pos2(960.0, 160.0), cur: egui::pos2(1120.0, 400.0) };
+                self.snap_ring = Some(anicraft_engine::geom::Vec2::new(1120.0, 400.0));
+                match which {
+                    Some("editguides") => crate::aids_dialog::open_guides(self, true),
+                    Some("editgrid") => crate::aids_dialog::open_grid(self),
+                    _ => {}
+                }
             }
             Some("symboledit") => {
                 // A symbol open for editing in place (ADR 0045): a raw drawing inside it, merged
@@ -2361,6 +2394,23 @@ impl App {
             crate::layer_props::open(self, None);
             return;
         }
+        // View › Grid › Edit Grid and View › Guides › Edit Guides, Add Guide (ADR 0076): their
+        // dialogs (headless, the commands take the settings).
+        if id == "view.grid_set" {
+            crate::aids_dialog::open_grid(self);
+            return;
+        }
+        if matches!(id, "view.guides_set" | "view.guide_add") {
+            crate::aids_dialog::open_guides(self, id == "view.guide_add");
+            return;
+        }
+        if id == "view.guides_clear" && !self.s.guides().is_empty() {
+            let n = self.s.guides().len();
+            if self.run(id, json!({})).is_some() {
+                self.status_ok(trn!("Cleared {n} guide. {undo} to undo.", "Cleared {n} guides. {undo} to undo.", n, undo = self.undo_key()));
+            }
+            return;
+        }
         if id == "modify.convert_to_symbol" {
             // Name, type and Library folder (ADR 0053).
             crate::convert_symbol::open(self);
@@ -3041,7 +3091,7 @@ impl App {
         }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
-        self.follow_system_contrast(&ctx);
+        self.follow_system_look(&ctx);
         if let Some(p) = platform::picked_file() {
             self.open_picked(p);
         }
@@ -3111,6 +3161,7 @@ impl App {
         crate::drop::frame(self, &ctx);
         self.prompt_window(&ctx);
         crate::convert_symbol::window(self, &ctx);
+        crate::aids_dialog::window(self, &ctx);
         crate::templates::save_window(self, &ctx);
         crate::layer_props::window(self, &ctx);
         self.about_window(&ctx);
@@ -3151,6 +3202,7 @@ impl App {
         // Open Recent changed (an open, a save, a pin): into the preferences.
         crate::recent::sync(self);
         crate::brush_panel::sync(self);
+        crate::rulers::sync(self);
         // A browser asks before leaving a page with unsaved work (its close guard).
         platform::set_unsaved(self.s.is_dirty());
 

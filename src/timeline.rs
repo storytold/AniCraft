@@ -747,7 +747,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         for f in first..first + visible_cols + 1 {
             let x = x_of(f);
             if (f + 1) % 5 == 0 && cell_w >= 6.0 {
-                cp.rect_filled(Rect::from_min_size(pos2(x, y), vec2(cell_w, rh)), 0.0, Color32::from_white_alpha(6));
+                cp.rect_filled(Rect::from_min_size(pos2(x, y), vec2(cell_w, rh)), 0.0, T.cell_tint);
             }
             // Cell lines thin out with the ruler when zoomed out, so rows never turn to hatching.
             if (f + 1) % minor == 0 {
@@ -851,7 +851,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         {
             let (f0, f1) = sel.frames();
             let g = Rect::from_min_max(pos2(x_of(f0), y + 1.0), pos2(x_of(f1 + 1) - 1.0, y + rh - 1.0)).translate(vec2(by as f32 * cell_w, 0.0));
-            cp.rect_stroke(g, SQUARE, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+            cp.rect_stroke(g, SQUARE, Stroke::new(2.0, T.text), StrokeKind::Inside);
         }
         // Span length being dragged on this row: the new end line and its length readout.
         if let TlDrag::Span { layer: lid, start, end, to } = app.tl_drag
@@ -862,7 +862,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let changed = Rect::from_min_max(pos2(a, y + 2.0), pos2(b - 1.0, y + rh - 2.0));
             cp.rect_filled(changed, SQUARE, if to > end { T.selection.gamma_multiply(0.35) } else { Color32::from_black_alpha(120) });
             let x = x_of(to);
-            cp.line_segment([pos2(x, y + 1.0), pos2(x, y + rh - 1.0)], Stroke::new(2.0, Color32::WHITE));
+            cp.line_segment([pos2(x, y + 1.0), pos2(x, y + rh - 1.0)], Stroke::new(2.0, T.text));
             let n = to - start;
             let secs = n as f32 / app.s.doc.stage.fps.max(1.0);
             let label = trn!("{n} frame · {secs} s", "{n} frames · {secs} s", n, secs = format!("{secs:.2}"));

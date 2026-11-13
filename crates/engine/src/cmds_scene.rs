@@ -127,7 +127,7 @@ fn duplicate_scene(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(src) = s.doc.scenes.get(i).cloned() else { return Err(EngineError::State("no such scene".into())) };
     let timeline = reid(s, &src.timeline);
     let name = unused_name(s, &format!("{} copy", src.name));
-    s.doc.scenes.insert(i + 1, Arc::new(Scene { name, timeline }));
+    s.doc.scenes.insert(i + 1, Arc::new(Scene { name, timeline, guides: src.guides.clone() }));
     open_scene(s, i + 1);
     Ok(scene_json(s))
 }

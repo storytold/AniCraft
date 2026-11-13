@@ -178,6 +178,8 @@ fn every_command_namespace_has_a_plugin_policy() {
             "brush" => assert_eq!(verdict.is_ok(), c.id == "brush.preset_list", "{}", c.id),
             // Swatches (ADR 0078): document data yes, swatch files no.
             "swatch" => assert_eq!(verdict.is_ok(), !matches!(c.id, "swatch.import" | "swatch.export"), "{}", c.id),
+            // Rulers, grid and guides (ADR 0076): a scene's guides yes, how you see and snap no.
+            "view" => assert_eq!(verdict.is_ok(), matches!(c.id, "view.aids" | "view.guide_add" | "view.guide_move" | "view.guide_delete" | "view.guides_clear"), "{}", c.id),
             _ => assert!(verdict.is_ok() || matches!(c.id, "edit.undo" | "edit.redo") || c.id.contains("copy") || c.id.contains("cut") || c.id.contains("paste"), "{} has no plug-in policy (add its namespace to plugin_may_call)", c.id),
         }
     }

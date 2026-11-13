@@ -87,7 +87,8 @@ time with size limits. No new licence.
 ### System contrast setting (2026-11-11, ADR 0064)
 
 New direct dependency on Windows only: `winreg` 0.55 (MIT, crates.io), already in the tree
-through `craft-update`. It reads one registry value, the high-contrast flag. The web build
+through `craft-update`. It reads one registry value, the high-contrast flag (and, since ADR 0077,
+`AppsUseLightTheme` for the system's light or dark mode, with `prefers-color-scheme` on the web). The web build
 turns on web-sys's `MediaQueryList` feature (same crate, same licence). macOS and Linux ask
 system tools (`defaults`, `gdbus`, `gsettings`), so nothing is linked. No new licence.
 

@@ -78,6 +78,14 @@ This page is generated from the editor's shortcut map, so it always matches the 
 | Action | Windows and Linux | macOS |
 |---|---|---|
 | Snapping › Snap to Objects | Ctrl+Shift+/, Ctrl+Shift+? | ⇧⌘/, ⇧⌘? |
+| Rulers | Ctrl+Alt+Shift+R | ⌥⇧⌘R |
+| Grid › Show Grid | Ctrl+' | ⌘' |
+| Grid › Snap to Grid | Ctrl+Shift+' | ⇧⌘' |
+| Grid › Edit Grid… | Ctrl+Alt+G | ⌥⌘G |
+| Guides › Show Guides | Ctrl+; | ⌘; |
+| Guides › Lock Guides | Ctrl+Alt+; | ⌥⌘; |
+| Guides › Snap to Guides | Ctrl+Shift+; | ⇧⌘; |
+| Guides › Edit Guides… | Ctrl+Alt+Shift+G | ⌥⇧⌘G |
 | Fit Stage in Window | Ctrl+2 | ⌘2 |
 | Onion Skin On / Off | Alt+Shift+O | ⌥⇧O |
 | Select All Frames | Ctrl+Alt+A | ⌥⌘A |

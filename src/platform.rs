@@ -83,15 +83,92 @@ pub fn system_high_contrast() -> Option<bool> {
     }
 }
 
+/// What the system says about how interfaces should look (ADR 0064, ADR 0077), for Preferences ›
+/// Appearance › Follow system. Each part is `None` where this system doesn't say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemLook {
+    /// More contrast asked for ([`system_high_contrast`]).
+    pub high_contrast: Option<bool>,
+    /// Dark mode on ([`system_dark_mode`]); `Some(false)`: light.
+    pub dark: Option<bool>,
+}
+
+/// Asks the system for both parts of its look. Can block for a moment: call it off the UI thread.
+pub fn system_look() -> SystemLook {
+    SystemLook { high_contrast: system_high_contrast(), dark: system_dark_mode() }
+}
+
+/// Whether the system's apps are set to dark (ADR 0077): Windows' "default app mode"
+/// (`AppsUseLightTheme`), macOS' Appearance (`AppleInterfaceStyle`, also while it switches
+/// automatically), the desktop portal's `color-scheme` on Linux (GNOME's own setting where there is
+/// no portal), the browser's `prefers-color-scheme`. `None`: this system doesn't say. Can block for
+/// a moment: call it off the UI thread.
+pub fn system_dark_mode() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize").ok()?; // i18n-exempt: a registry path
+        let light: u32 = key.get_value("AppsUseLightTheme").ok()?; // i18n-exempt: a registry value name
+        Some(light == 0)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // The key exists only while the appearance is dark; `defaults` fails when it is missing.
+        let out = std::process::Command::new("defaults").args(["read", "-g", "AppleInterfaceStyle"]).output().ok()?; // i18n-exempt: a command line
+        Some(out.status.success() && String::from_utf8_lossy(&out.stdout).trim().eq_ignore_ascii_case("dark"))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()?.match_media("(prefers-color-scheme: dark)").ok()??.matches().into() // i18n-exempt: a media query
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+    {
+        portal_color_scheme().or_else(gnome_color_scheme)
+    }
+}
+
+/// The XDG desktop portal's `org.freedesktop.appearance color-scheme`: 1 prefers dark, 2 light,
+/// 0 says nothing.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn portal_color_scheme() -> Option<bool> {
+    portal_appearance("color-scheme").and_then(scheme_from_portal)
+}
+
+#[cfg_attr(any(windows, target_os = "macos", target_arch = "wasm32"), allow(dead_code))]
+fn scheme_from_portal(v: u32) -> Option<bool> {
+    match v {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
+}
+
+/// GNOME's `color-scheme` (`'prefer-dark'`, `'prefer-light'`, `'default'`), for desktops without
+/// the portal setting.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn gnome_color_scheme() -> Option<bool> {
+    let out = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output().ok().filter(|o| o.status.success())?; // i18n-exempt: a command line
+    match String::from_utf8_lossy(&out.stdout).trim().trim_matches('\'') {
+        "prefer-dark" => Some(true),
+        "prefer-light" => Some(false),
+        _ => None,
+    }
+}
+
 /// The XDG desktop portal's `org.freedesktop.appearance contrast` (1: high), through `gdbus`.
 #[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
 fn portal_contrast() -> Option<bool> {
+    portal_appearance("contrast").map(|v| v == 1)
+}
+
+/// One `org.freedesktop.appearance` number from the desktop portal, through `gdbus`.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn portal_appearance(key: &str) -> Option<u32> {
     let out = std::process::Command::new("gdbus") // i18n-exempt: a command line
-        .args(["call", "--session", "--timeout", "1", "--dest", "org.freedesktop.portal.Desktop", "--object-path", "/org/freedesktop/portal/desktop", "--method", "org.freedesktop.portal.Settings.ReadOne", "org.freedesktop.appearance", "contrast"]) // i18n-exempt: a command line
+        .args(["call", "--session", "--timeout", "1", "--dest", "org.freedesktop.portal.Desktop", "--object-path", "/org/freedesktop/portal/desktop", "--method", "org.freedesktop.portal.Settings.ReadOne", "org.freedesktop.appearance", key]) // i18n-exempt: a command line
         .output()
         .ok()
         .filter(|o| o.status.success())?;
-    parse_portal_uint(&String::from_utf8_lossy(&out.stdout)).map(|v| v == 1)
+    parse_portal_uint(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// GNOME's own switch, for desktops without the portal setting.
@@ -780,12 +857,16 @@ mod tests {
         assert_eq!(parse_portal_uint("(<uint32 0>,)
 "), Some(0));
         assert_eq!(parse_portal_uint("Error: no such key"), None);
+        // color-scheme: 1 dark, 2 light, 0 (no preference) and anything else say nothing.
+        assert_eq!([0, 1, 2, 7].map(scheme_from_portal), [None, Some(true), Some(false), None]);
     }
 
     #[test]
     fn the_system_contrast_setting_can_be_read_without_panicking() {
         // Whatever this machine says (or doesn't), asking never fails loudly.
         let _ = system_high_contrast();
+        let look = system_look();
+        assert_eq!(look.dark, system_dark_mode());
     }
 
     #[test]
