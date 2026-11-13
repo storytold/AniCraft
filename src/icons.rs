@@ -76,11 +76,19 @@ pub enum Icon {
     InsertKeyframe,
     InsertBlankKeyframe,
     ClipStage,
+    Plus,
+    Trash,
+    Copy,
+    Ellipsis,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 62] = [
+    pub const ALL: [Icon; 66] = [
+        Icon::Plus,
+        Icon::Trash,
+        Icon::Copy,
+        Icon::Ellipsis,
         Icon::ClipStage,
         Icon::InsertFrame,
         Icon::InsertKeyframe,
@@ -148,7 +156,7 @@ impl Icon {
     /// Drawn filled as well as outlined: the Selection arrow is solid, the Subselection arrow
     /// hollow, the way animators tell the two apart at a glance.
     fn solid(self) -> bool {
-        matches!(self, Icon::Select | Icon::InsertKeyframe)
+        matches!(self, Icon::Select | Icon::InsertKeyframe | Icon::Ellipsis)
     }
 
     /// Lucide icon file and whether it is drawn mirrored.
@@ -240,6 +248,11 @@ impl Icon {
             // The stage with crop marks at its corners (AniCraft original, on Lucide's grid):
             // Clip Content Outside the Stage.
             Icon::ClipStage => ("anicraft-clip-stage", false),
+            // New layer, Delete, Duplicate and a panel's options menu.
+            Icon::Plus => ("plus", false),
+            Icon::Trash => ("trash", false),
+            Icon::Copy => ("copy", false),
+            Icon::Ellipsis => ("ellipsis", false),
         }
     }
 }
@@ -305,6 +318,10 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-edit-multiple", include_str!("../assets/icons/anicraft-edit-multiple.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
+    ("plus", include_str!("../assets/icons/plus.svg")),
+    ("trash", include_str!("../assets/icons/trash.svg")),
+    ("copy", include_str!("../assets/icons/copy.svg")),
+    ("ellipsis", include_str!("../assets/icons/ellipsis.svg")),
 ];
 
 /// The value of attribute `name` in an element's tag text.

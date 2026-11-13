@@ -179,9 +179,23 @@ fn clear_and_reset_ask_first_and_undo() {
     assert_eq!(s.doc.swatches.len(), 2);
 }
 
+/// Runs `f` on a thread of its own with the in-memory file store, so no other test's files
+/// (on a reused test thread) see it.
+fn in_memory(f: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(move || {
+        crate::vfs::use_memory();
+        f();
+    })
+    .join()
+    .unwrap();
+}
+
 #[test]
 fn swatch_files_export_and_import() {
-    crate::vfs::use_memory();
+    in_memory(swatch_files_export_and_import_in_memory);
+}
+
+fn swatch_files_export_and_import_in_memory() {
     let mut s = blank();
     run(&mut s, "swatch.add", json!({"type": "linear", "stops": [{"offset": 0, "color": "#000000"}, {"offset": 1, "color": "#ffffff00"}], "name": "Fade"}));
     let v = run(&mut s, "swatch.export", json!({"path": "set.json"}));
@@ -209,7 +223,10 @@ fn swatch_files_export_and_import() {
 
 #[test]
 fn gimp_palettes_import() {
-    crate::vfs::use_memory();
+    in_memory(gimp_palettes_import_in_memory);
+}
+
+fn gimp_palettes_import_in_memory() {
     let mut s = blank();
     crate::vfs::put(Path::new("brand.gpl"), b"GIMP Palette\nName: Brand\nColumns: 3\n#\n230  57  70\tRed\n 29  53  87\tNavy\n241 250 238 Untitled\n".to_vec()).unwrap();
     run(&mut s, "swatch.import", json!({"path": "brand.gpl", "replace": true, "confirm": true}));

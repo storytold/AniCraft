@@ -190,6 +190,10 @@ pub fn fill_picker(ui: &mut egui::Ui, popup: Id, paint: Option<&Paint>, bitmaps:
         }
     });
     ui.add_space(4.0);
+    // The document's gradient swatches (ADR 0078): a click fills with one.
+    if let Some(edit) = gradient_swatches(ui, paint) {
+        return Some(edit);
+    }
     if pick != now {
         return Some(match pick {
             "none" => FillEdit::None(true),
@@ -233,6 +237,39 @@ pub fn fill_picker(ui: &mut egui::Ui, popup: Id, paint: Option<&Paint>, bitmaps:
             (want != current).then(|| FillEdit::Set { label: tr_noop!("Fill"), live: false, params: json!({"type": "bitmap", "bitmap": want}) })
         }
     }
+}
+
+/// The document's gradient swatches as a row (two at most; the Swatches panel has them all).
+/// The fill a click asks for.
+fn gradient_swatches(ui: &mut egui::Ui, paint: Option<&Paint>) -> Option<FillEdit> {
+    const CELL: f32 = 16.0;
+    const PER_ROW: usize = 16;
+    let all = crate::swatches_panel::for_pickers(ui.ctx());
+    let grads: Vec<&anicraft_engine::doc::Swatch> = all.iter().filter(|s| s.paint.is_gradient()).take(PER_ROW * 2).collect();
+    if grads.is_empty() {
+        return None;
+    }
+    let mut out = None;
+    ui.label(text(Type::Caption, tr!("Gradient swatches")));
+    for row in grads.chunks(PER_ROW) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for sw in row {
+                let (r, resp) = ui.allocate_exact_size(vec2(CELL, CELL), Sense::click());
+                crate::swatches_panel::preview(ui.painter(), r, &sw.paint);
+                let on = paint.is_some_and(|p| crate::swatches_panel::matches(&sw.paint, p));
+                let edge = if on { Stroke::new(2.0, T.accent) } else if resp.hovered() { Stroke::new(1.5, T.selection) } else { Stroke::new(1.0, T.border) };
+                ui.painter().rect_stroke(r, 0.0, edge, StrokeKind::Outside);
+                let name = crate::swatches_panel::describe(&sw.paint, &sw.name);
+                a11y::control(ui, &resp, WidgetType::Button, &tr!("Gradient swatch: {name}", name = name.as_str()), Some(on));
+                if resp.on_hover_text(name).clicked() {
+                    out = Some(FillEdit::Set { label: tr_noop!("Fill"), live: false, params: crate::swatches_panel::fill_params(&sw.paint) });
+                }
+            }
+        });
+    }
+    ui.add_space(4.0);
+    out
 }
 
 /// A gradient: overflow, Linear RGB and the focal point, the stop bar, the picked stop's

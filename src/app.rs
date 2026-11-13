@@ -387,6 +387,10 @@ pub struct App {
     pub bucket_gap: GapSize,
     /// Align panel: align to the stage rather than the selection's bounds.
     pub align_to_stage: bool,
+    /// Whether swatch clicks set the stroke or the fill (the Colour and Swatches panels).
+    pub colour_target: crate::swatches_panel::ColourTarget,
+    /// The swatch picked in the Swatches panel (Duplicate and Delete act on it).
+    pub swatch_sel: Option<usize>,
     /// Subselection: selected anchors and handles.
     pub points: Vec<pathtools::PointRef>,
     /// Width tool: the selected width point (shape, index).
@@ -623,6 +627,8 @@ impl App {
             eraser: crate::erasertool::EraserOptions::default(),
             bucket_gap: GapSize::default(),
             align_to_stage: false,
+            colour_target: Default::default(),
+            swatch_sel: None,
             points: Vec::new(),
             width_sel: None,
             open_fill_swatch: false,
@@ -1910,6 +1916,20 @@ impl App {
                 // The fill swatch's colour picker open.
                 self.open_fill_swatch = true;
             }
+            Some("swatchpanel") => {
+                // The Swatches panel (ADR 0078): a palette of the artist's own added to the
+                // default set, one picked, a gradient on the selected shape.
+                // i18n-exempt: swatch names are document data (a screenshot sample), not interface text
+                for (c, name) in [("#264653", "Deep teal"), ("#2a9d8f", "Teal"), ("#e9c46a", "Saffron"), ("#f4a261", "Sandy"), ("#e76f51", "Burnt sienna")] {
+                    self.run("swatch.add", json!({"color": c, "name": name}));
+                }
+                self.run("swatch.add", json!({"type": "linear", "stops": [{"offset": 0, "color": "#264653"}, {"offset": 0.5, "color": "#e9c46a"}, {"offset": 1, "color": "#e76f51"}], "name": "Dusk"}));
+                self.run("edit.select_all", json!({}));
+                let n = self.s.doc.swatches.len();
+                self.swatch_sel = n.checked_sub(4);
+                self.colour_target = crate::swatches_panel::ColourTarget::Fill;
+                self.show_panel(crate::dock::Panel::Swatches);
+            }
             Some("width") => {
                 // A tapered brush-like stroke being shaped with the Width tool: one width point
                 // pushed out on its left side and selected.
@@ -2375,10 +2395,13 @@ impl App {
             // A brush set (ADR 0068): your brushes as a small JSON file.
             "brush.preset_export" => Some((tr_noop!("Export your brushes (a brush set file)"), "path", "brushes.json".to_string())),
             "brush.preset_import" => Some((tr_noop!("Import brushes (a brush set file)"), "path", "brushes.json".to_string())),
+            // The document's swatches (ADR 0078): a swatch file, or a GIMP palette to import.
+            "swatch.export" => Some((tr_noop!("Export swatches (a swatch file)"), "path", "swatches.json".to_string())),
+            "swatch.import" => Some((tr_noop!("Import swatches (a swatch file or a GIMP palette)"), "path", "swatches.json".to_string())),
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
-            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "brush.preset_export" | "brush.preset_import"));
+            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "brush.preset_export" | "brush.preset_import" | "swatch.export" | "swatch.import"));
             if is_file && platform::WEB && platform::reads_file(id) {
                 // The browser's file picker (ADR 0036). The file arrives on a later frame
                 // (`open_picked`); a save or export asks for the download's name below.
@@ -3033,6 +3056,8 @@ impl App {
             self.glyph_check = false;
         }
         self.press_scripted_key(&ctx);
+        // The colour pickers show the document's swatches (ADR 0078).
+        crate::swatches_panel::publish_to_pickers(&ctx, self);
         self.handle_shortcuts(&ctx);
         timeline::announce(self, &ctx);
         // Switching away from a path tool keeps its work: a Pen path in progress is finished.

@@ -1112,31 +1112,43 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     {
         painter.rect_filled(footer, 0.0, T.panel_alt);
         painter.line_segment([footer.left_top(), footer.right_top()], Stroke::new(1.0, T.border));
-        // New folder, Up and Down as icon buttons, laid out first from the right edge so they
-        // always show; the text buttons share what is left, shortened if a language makes them
-        // long (pseudo-locale screenshots lost the Down chevron off the column's edge).
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(footer.shrink2(vec2(8.0, 4.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
-        for (icon, id, tip) in [
-            (Icon::ChevronDown, "layer.move_down", tr!("Move layer down")),
-            (Icon::ChevronUp, "layer.move_up", tr!("Move layer up")),
-            (Icon::FolderPlus, "layer.new_folder", tr!("New folder above the active layer (move layers in under it with Up and Down)")),
-        ] {
-            let (r, resp) = child.allocate_exact_size(vec2(TARGET, TARGET), Sense::click());
-            if resp.hovered() {
-                child.painter().rect_filled(r, T.rc(), T.hover);
+        // Icon buttons only (as the timeline header since #256), so they fit the layer column
+        // at any size and in any language: New Layer and Delete on the left as in Animate, New
+        // Folder, Up and Down on the right. Each is named by its tooltip for screen readers.
+        let footer_button = |ui: &mut egui::Ui, icon: Icon, tip: &str, enabled: bool| -> bool {
+            let (r, resp) = ui.allocate_exact_size(vec2(TARGET, TARGET), if enabled { Sense::click() } else { Sense::hover() });
+            if enabled && resp.hovered() {
+                ui.painter().rect_filled(r, T.rc(), T.hover);
             }
-            icons::paint(child.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), icon, if resp.hovered() { T.icon_hot } else { T.icon });
-            a11y::control(&child, &resp, WidgetType::Button, tip, None);
-            if resp.on_hover_text(tip).clicked() {
-                app.run(id, json!({}));
-            }
+            let colour = if !enabled {
+                T.text_faint
+            } else if resp.hovered() {
+                T.icon_hot
+            } else {
+                T.icon
+            };
+            icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), icon, colour);
+            a11y::control(ui, &resp, WidgetType::Button, tip, None);
+            resp.on_hover_text(tip).clicked()
+        };
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(footer.shrink2(vec2(6.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        child.spacing_mut().item_spacing.x = 2.0;
+        if footer_button(&mut child, Icon::Plus, tr!("New layer"), true) {
+            app.run("layer.new", json!({}));
         }
-        child.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(tr!("+ Layer")).truncate()).named(tr!("New layer")).on_hover_text(tr!("New layer")).clicked() {
-                app.run("layer.new", json!({}));
-            }
-            if ui.add_enabled(layers.len() > 1, egui::Button::new(tr!("Delete")).truncate()).named(tr!("Delete layer")).on_hover_text(tr!("Delete the active layer")).clicked() {
-                app.request("layer.delete", json!({}));
+        if footer_button(&mut child, Icon::Trash, tr!("Delete layer"), layers.len() > 1) {
+            app.request("layer.delete", json!({}));
+        }
+        child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (icon, id, tip) in [
+                (Icon::ChevronDown, "layer.move_down", tr!("Move layer down")),
+                (Icon::ChevronUp, "layer.move_up", tr!("Move layer up")),
+                (Icon::FolderPlus, "layer.new_folder", tr!("New folder above the active layer (move layers in under it with Up and Down)")),
+            ] {
+                if footer_button(ui, icon, tip, true) {
+                    app.run(id, json!({}));
+                }
             }
         });
     }
