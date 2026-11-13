@@ -677,7 +677,7 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
                 }
                 ui.separator();
                 if ui_item(ui, tr!("Save Workspace…"), "", None) {
-                    app.prompt = Some(crate::app::Prompt { title: tr_noop!("Save Workspace"), cmd: "view.save_workspace", key: "name", text: String::new() });
+                    app.prompt = Some(crate::app::Prompt { title: tr_noop!("Save Workspace"), cmd: "view.save_workspace", key: "name", text: String::new(), focus: true });
                 }
                 let name = crate::i18n::t_dyn(crate::dock::Workspaces::name(&current)).into_owned();
                 if ui_item(ui, &tr!("Reset “{name}”", name = name), "", None) {
