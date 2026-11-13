@@ -213,9 +213,31 @@ Select a bone to see **Properties › Bone**:
   pose.
 * **Pin**: the bone, and the bones it hangs from, stay put while you drag the bones below it.
   Handy for keeping a shoulder in place while you pose a hand.
+* **X translation** and **Y translation**: **Enable** lets the joint slide along the x or y axis
+  of what the bone starts on (as that part is turned), so the bone can stretch away from it,
+  like a piston or a neck that extends. **Constrain** limits how far, with **Limits** (min and
+  max, in pixels). **Slide** sets how far the joint has slid at the playhead, and keys the pose.
+  When you drag with the **Selection** tool, joints turn first and slide only to reach where
+  turning can't.
+* **Spring** and **Damping** (0 to 100): secondary motion. A bone with a spring lags behind
+  when the bones it hangs from move, swings past its pose and settles back, like a tail, an
+  antenna or a ponytail. A higher **Spring** is stiffer: it swings faster and lags less; 0 is
+  no spring. **Damping** sets how quickly the swing dies down: 0 swings on for a while, 100
+  absorbs it all.
+* **Springs: Enable** turns every spring of the armature on or off. Turn them off while you
+  pose, to see exactly the poses you key; Test Movie and every export play them while they
+  are on.
 * **Remove Bone** (or **Delete**): removes the bone and those below it. Their instances stay
   where they are, on a layer of their own. If the armature has more than one pose, AniCraft asks
   first.
+
+Selecting a bone also selects the instance it moves. Properties then shows that instance's
+**Colour effect**, and for movie clips and buttons its **Blending** and **Filters**. Change
+them there, and the instance keeps the look in every pose, while its bone still places it.
+
+Springs never change your poses: AniCraft works out the swing from how the armature moves up
+to each frame, so jumping to a frame shows exactly what playing to it shows. Each swing fades
+out within six seconds of the motion that caused it.
 
 ### Bones inside a shape
 
@@ -247,9 +269,10 @@ to pick it, and the points it moves fill in. Then:
 back to the automatic binding. Adding or removing bones rebinds the points you haven't bound
 by hand.
 
+Bones inside a shape take joint translation and springs too.
+
 Not there yet: symbols and shapes in one armature, reshaping a shape after it has bones,
-springs, joints that slide, armatures that scripts pose while the movie plays, and armatures
-from Animate files.
+armatures that scripts pose while the movie plays, and armatures from Animate files.
 
 ## Asset Warp
 

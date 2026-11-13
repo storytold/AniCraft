@@ -446,7 +446,7 @@ fn set_alpha(s: &mut Session, p: &Value) -> Result<Value> {
     if !(0.0..=1.0).contains(&a) {
         return Err(EngineError::Param("param 'alpha' must be between 0 and 1".into()));
     }
-    for e in s.selected_elements_mut()? {
+    for e in s.selected_props_mut()? {
         e.color = e.color.with_alpha(a);
     }
     Ok(json!({"alpha": a}))
@@ -543,7 +543,7 @@ impl EffectEdit {
 fn set_color_effect(s: &mut Session, p: &Value) -> Result<Value> {
     let edit = EffectEdit::parse(p)?.ok_or_else(|| EngineError::Param("give a style, or a value to set".into()))?;
     let mut first = None;
-    for e in s.selected_elements_mut()? {
+    for e in s.selected_props_mut()? {
         if matches!(e.kind, ElementKind::Camera) && edit.touches_alpha() {
             return Err(EngineError::State("the camera has no opacity: its colour effect is None, Brightness, Tint or Advanced (without alpha)".into()));
         }
@@ -591,7 +591,7 @@ fn set_filters(s: &mut Session, p: &Value) -> Result<Value> {
     let filters: Vec<anicraft_doc::Filter> = filters.iter().map(anicraft_doc::Filter::sanitized).collect();
     let kinds: std::collections::HashMap<SymbolId, SymbolKind> = s.doc.library.iter().map(|x| (x.id, x.kind)).collect();
     let (mut set, mut graphics) = (0, 0);
-    for e in s.selected_elements_mut()? {
+    for e in s.selected_props_mut()? {
         if let ElementKind::Symbol { symbol, filters: f, .. } = &mut e.kind {
             if kinds.get(symbol) == Some(&SymbolKind::Graphic) {
                 graphics += 1;
@@ -621,7 +621,7 @@ fn set_blend(s: &mut Session, p: &Value) -> Result<Value> {
     let kinds: std::collections::HashMap<SymbolId, SymbolKind> = s.doc.library.iter().map(|x| (x.id, x.kind)).collect();
     let mut set = 0;
     let mut graphics = 0;
-    for e in s.selected_elements_mut()? {
+    for e in s.selected_props_mut()? {
         if let ElementKind::Symbol { symbol, blend, .. } = &mut e.kind {
             if kinds.get(symbol) == Some(&SymbolKind::Graphic) {
                 graphics += 1;

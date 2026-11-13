@@ -2105,6 +2105,33 @@ impl App {
                 self.bone_sel = Some(anicraft_engine::doc::BoneId(b2));
                 self.tool = Tool::Select;
             }
+            Some("springbones") => {
+                // A tail on springs (ADR 0084): a body that bobs up and back down over half a
+                // second, its three-piece tail swinging after it, mid-swing at frame 17; the tip's
+                // bone picked (its joint slides along X), so Properties shows Spring and
+                // Translation.
+                self.run("layer.new", json!({"name": "Critter"}));
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                self.run("draw.rect", json!({"x": 260, "y": 300, "w": 190, "h": 110, "radius": 36, "fill": "#5f8dd3", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let body = id(self.run("modify.convert_to_symbol", json!({"name": "Body"})), "instance");
+                self.run("draw.rect", json!({"x": 450, "y": 341, "w": 120, "h": 28, "radius": 14, "fill": "#ff9f43", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let made = self.run("modify.convert_to_symbol", json!({"name": "Tail"}));
+                let (symbol, t1) = (id(made.clone(), "symbol"), id(made, "instance"));
+                let t2 = id(self.run("library.place", json!({"symbol": symbol, "x": 620, "y": 355})), "element");
+                let t3 = id(self.run("library.place", json!({"symbol": symbol, "x": 730, "y": 355})), "element");
+                let b1 = id(self.run("bone.add", json!({"from": body, "to": t1, "head": [452, 355], "tail": [562, 355]})), "bone");
+                let b2 = id(self.run("bone.add", json!({"from": t1, "to": t2, "tail": [672, 355]})), "bone");
+                let b3 = id(self.run("bone.add", json!({"from": t2, "to": t3, "tail": [782, 355]})), "bone");
+                self.run("bone.pose", json!({"dx": 0, "dy": -50, "frame": 6}));
+                self.run("bone.pose", json!({"dx": 0, "dy": 50, "frame": 12}));
+                for b in [b1, b2, b3] {
+                    self.run("bone.set_spring", json!({"bone": b, "strength": 45, "damping": 30}));
+                }
+                self.run("bone.set_translation", json!({"bone": b3, "axis": "x", "min": -20, "max": 40}));
+                self.run("timeline.goto", json!({"frame": 16}));
+                self.tool = Tool::Select;
+                crate::bone_tool::select(self, self.s.layer, Some(anicraft_engine::doc::BoneId(b3)));
+            }
             Some("shapebones") => {
                 // A tail with bones inside it (ADR 0071): four bones, curled at frame 1 and the
                 // other way at frame 24, the second bone picked with the Bind tool in hand.

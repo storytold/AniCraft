@@ -30,7 +30,7 @@ use crate::stroke::stroke_outline;
 use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
 use anicraft_doc::player::TimelineRef;
-use anicraft_doc::{ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, MaskMode, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
+use anicraft_doc::{ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, MaskMode, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_shown, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -758,7 +758,7 @@ impl<'a> Bake<'a> {
                 }
                 let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, f));
                 let mut items = Vec::new();
-                if let Some((start, els)) = evaluate_guided(layer, f, walk.as_ref()) {
+                if let Some((start, els)) = evaluate_shown(layer, f, walk.as_ref(), self.doc.stage.fps) {
                     for el in els.iter() {
                         self.element(el, layer, f, start, &mut items);
                     }
