@@ -119,7 +119,7 @@ pub(crate) fn movie() -> (Session, SymbolId, SymbolId, SymbolId) {
         k.script = Some(FrameScript::Source(Arc::new(SourceScript::new(Default::default(), "stop(); // say hello"))));
     }
     b.scene("Scene 1", vec![actions, art]);
-    let r = b.rect(Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(10.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(RED) }, GradientStop { offset: 1.0, color: Rgba::WHITE }] }, None);
+    let r = b.rect(Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), vec![GradientStop { offset: 0.0, color: Rgba::hex(RED) }, GradientStop { offset: 1.0, color: Rgba::WHITE }]), None);
     let l = b.layer("Back", vec![(0, 1, "", vec![r])]);
     b.scene("Scene 2", vec![l]);
     (Session::new(b.doc), outer, inner, unused)

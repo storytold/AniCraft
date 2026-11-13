@@ -359,6 +359,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             _ if mp_hot.is_some() => CursorIcon::Grab,
             _ if pen_hot.is_some() => CursorIcon::Copy,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
+            Tool::GradientTransform => crate::gradient_tool::cursor(app, pointer, xf),
             Tool::Transform => {
                 let zone = match app.drag {
                     Drag::Transform { kind, .. } | Drag::MultiTransform { kind, .. } => Some(kind),
@@ -453,6 +454,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Bone => crate::bone_tool::drag_start(app, xf, press),
                 Tool::Bind => crate::bind_tool::drag_start(app, xf, press),
                 Tool::Width => crate::widthtool::drag_start(app, press, xf),
+                Tool::GradientTransform => crate::gradient_tool::drag_start(app, press, xf),
                 Tool::Pencil => {
                     app.pencil = vec![to_v(sp)];
                     Drag::Pencil
@@ -594,6 +596,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let d = *d;
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
             }
+            (d @ Drag::Gradient { .. }, Some(c)) => {
+                let d = *d;
+                crate::gradient_tool::drag_to(app, d, to_v(c), shift);
+            }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
             (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf, now),
             (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf, now),
@@ -613,6 +619,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
             Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
+            Drag::Gradient { .. } => crate::gradient_tool::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
@@ -656,6 +663,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 Tool::Width if !panning => crate::widthtool::click(app, p, xf),
+                Tool::GradientTransform if !panning => crate::gradient_tool::pick(app, p, xf),
                 Tool::PaintBucket if !panning => {
                     // The gap size is set in screen points, so it feels the same at any zoom.
                     let gap = app.bucket_gap.screen_px() / zoom.max(1e-3);
@@ -1032,8 +1040,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max)).expand(1.0);
-        if matches!(app.tool, Tool::Subselect | Tool::Width) {
-            // Subselection and Width show outlines and points instead (below).
+        if matches!(app.tool, Tool::Subselect | Tool::Width | Tool::GradientTransform) {
+            // Subselection and Width show outlines and points instead (below); Gradient
+            // Transform shows the fill's handles (ADR 0074).
             continue;
         }
         if app.tool == Tool::Select && raw.contains(&(layer, id)) {
@@ -1080,6 +1089,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
+    crate::gradient_tool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
     crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     // After this frame's edits, so a drag on the path shows where it is now.

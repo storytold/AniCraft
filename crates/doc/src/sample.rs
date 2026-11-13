@@ -48,7 +48,7 @@ pub fn demo() -> Document {
     let ball_id = SymbolId(d.alloc_id());
     let ball_shape = Shape::filled(
         Path::ellipse(0.0, 0.0, 48.0, 48.0),
-        Paint::Radial { center: Vec2::new(-16.0, -18.0), radius: 70.0, stops: stops(&[(0.0, 0xfff1c4), (0.35, 0xff8a3d), (1.0, 0xb3261e)]) },
+        Paint::radial(Vec2::new(-16.0, -18.0), 70.0, stops(&[(0.0, 0xfff1c4), (0.35, 0xff8a3d), (1.0, 0xb3261e)])),
     )
     .with_stroke(Rgba::hex(0x5a1410), 3.0);
     let ball_el = el(&mut d, "ball body", Affine::IDENTITY, ElementKind::Shape(ball_shape));
@@ -101,7 +101,7 @@ pub fn demo() -> Document {
     // Sun: pulses with an ease in-out.
     let sun_layer_id = d.alloc_id();
     let sun_inst = ElementId(d.alloc_id());
-    let sun_shape = Shape::filled(Path::ellipse(0.0, 0.0, 90.0, 90.0), Paint::Radial { center: Vec2::ZERO, radius: 90.0, stops: stops(&[(0.0, 0xfffbe0), (0.6, 0xffd36b), (1.0, 0xffa94d)]) });
+    let sun_shape = Shape::filled(Path::ellipse(0.0, 0.0, 90.0, 90.0), Paint::radial(Vec2::ZERO, 90.0, stops(&[(0.0, 0xfffbe0), (0.6, 0xffd36b), (1.0, 0xffa94d)])));
     let sun_keys = [(0u32, 24u32, 1.0f32), (24, 23, 1.15), (47, 1, 1.0)]
         .into_iter()
         .enumerate()
@@ -132,7 +132,7 @@ pub fn demo() -> Document {
         Affine::IDENTITY,
         ElementKind::Shape(Shape::filled(
             Path::rect(0.0, 0.0, w, h),
-            Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(0.0, h), stops: stops(&[(0.0, 0x27407a), (0.55, 0x8a79c9), (1.0, 0xf7b98b)]) },
+            Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(0.0, h), stops(&[(0.0, 0x27407a), (0.55, 0x8a79c9), (1.0, 0xf7b98b)])),
         )),
     );
     let mut sky = layer(sky_id, "Sky", 0x7e57c2, vec![key(0, LEN, vec![sky_el], None)]);

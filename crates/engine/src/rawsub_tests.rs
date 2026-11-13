@@ -291,13 +291,14 @@ fn a_pasted_raw_shape_cuts_what_it_lands_on() {
 }
 
 fn linear() -> Paint {
-    Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(200.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff0000) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0000ff) }] }
+    Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff0000) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0000ff) }])
 }
 
 #[test]
 fn gradient_fills_take_part_in_the_merge() {
     let mut s = raw_session();
     s.style.fill_paint = Some(linear());
+    s.style.lock_fill = true;
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 100, "stroke": null}));
     assert_eq!(fills(&s).len(), 1, "raw, not an object");
     // A line across cuts it in two; each half shows its part of the gradient where it was.
@@ -383,6 +384,7 @@ fn subselection_timings() {
 fn the_eraser_takes_gradient_fills_too() {
     let mut s = raw_session();
     s.style.fill_paint = Some(linear());
+    s.style.lock_fill = true;
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 100, "stroke": null}));
     let before: f32 = fills(&s).iter().map(|e| area(e)).sum();
     run(&mut s, "draw.erase", json!({"points": [[100, -20], [100, 120]], "size": 20}));

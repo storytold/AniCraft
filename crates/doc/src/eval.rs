@@ -705,10 +705,26 @@ fn sliced_shape(s: &Shape, own: &Affine, sl: &Slicing) -> (Arc<Path>, Affine, Op
     let stroke = s.stroke.as_ref().map(|st| if (k - 1.0).abs() > 1e-6 { st.scaled(k) } else { st.clone() });
     let at = |p: anicraft_geom::Vec2| sl.map.map(own.apply(p));
     let size = k * sl.scale.mean_scale();
-    let fill = s.fill.as_ref().map(|f| match f {
-        Paint::Linear { start, end, stops } => Paint::Linear { start: at(*start), end: at(*end), stops: stops.clone() },
-        Paint::Radial { center, radius, stops } => Paint::Radial { center: at(*center), radius: radius * size, stops: stops.clone() },
-        Paint::Solid(_) | Paint::Bitmap { .. } => f.clone(),
+    let fill = s.fill.as_ref().map(|f| {
+        let mut f = f.clone();
+        match &mut f {
+            Paint::Linear { start, end, .. } => {
+                *start = at(*start);
+                *end = at(*end);
+            }
+            Paint::Radial { center, radius, matrix, .. } => {
+                // The ring's shape (its matrix's linear part) stays, round the mapped centre.
+                let c = at(matrix.apply(*center));
+                let l = Affine { m: [matrix.m[0], matrix.m[1], matrix.m[2], matrix.m[3], 0.0, 0.0] };
+                if *matrix != Affine::IDENTITY {
+                    *matrix = Affine::translate(c.x, c.y).mul(&l).mul(&Affine::translate(-c.x, -c.y));
+                }
+                *center = c;
+                *radius *= size;
+            }
+            Paint::Solid(_) | Paint::Bitmap { .. } => {}
+        }
+        f
     });
     (path, sl.post, fill, stroke)
 }

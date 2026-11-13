@@ -16,6 +16,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Select => Icon::Select,
         Tool::Subselect => Icon::Subselect,
         Tool::Transform => Icon::Transform,
+        Tool::GradientTransform => Icon::GradientTransform,
         Tool::Width => Icon::Width,
         Tool::Pen => Icon::Pen,
         Tool::Text => Icon::Type,
@@ -139,7 +140,32 @@ fn tool_swatches(app: &mut App, ui: &mut egui::Ui) {
         if fill && std::mem::take(&mut app.open_fill_swatch) {
             egui::Popup::open_id(ui.ctx(), resp.id.with("colour_popup"));
         }
-        if crate::colour::popup_for(ui, &resp, resp.id.with("colour_popup"), &mut c, false, Some(&mut none)) {
+        // The fill opens the one colour picker with the fill's type on top (ADR 0074): what the
+        // selection is filled with, else the swatch. Solid colours and None go on as below.
+        let picked = if fill {
+            let (paint, selected) = crate::colour_panel::current(app);
+            let shown = (selected || st.use_fill).then_some(paint);
+            match crate::colour_panel::popup_for(ui, &resp, resp.id.with("colour_popup"), shown.as_ref(), &crate::colour_panel::bitmaps(app)) {
+                Some(crate::colour_panel::FillEdit::Solid(p)) => {
+                    c = [p[0], p[1], p[2], 255];
+                    none = false;
+                    true
+                }
+                Some(crate::colour_panel::FillEdit::None(n)) => {
+                    none = n;
+                    true
+                }
+                Some(edit) => {
+                    app.s.style.use_fill = true;
+                    crate::colour_panel::apply_set(app, &edit, true);
+                    false
+                }
+                None => false,
+            }
+        } else {
+            crate::colour::popup_for(ui, &resp, resp.id.with("colour_popup"), &mut c, false, Some(&mut none))
+        };
+        if picked {
             // No Colour toggled says which; a colour picked turns the colour back on.
             let none = none != was && none;
             let pick = Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 1.0);
@@ -163,6 +189,16 @@ fn tool_swatches(app: &mut App, ui: &mut egui::Ui) {
                 live(app, label, id, p);
             }
         }
+    }
+}
+
+/// What a gradient or bitmap fill is, for the caption beside its swatch (nothing for a colour).
+fn fill_kind_label(p: Option<&Paint>) -> Option<&'static str> {
+    match p? {
+        Paint::Linear { .. } => Some(tr!("Linear gradient")),
+        Paint::Radial { .. } => Some(tr!("Radial gradient")),
+        Paint::Bitmap { .. } => Some(tr!("Bitmap fill")),
+        Paint::Solid(_) => None,
     }
 }
 
@@ -866,18 +902,27 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         if let ElementKind::Shape(sh) = &e.kind {
             ui.add_space(4.0);
             let fill = sh.fill.as_ref().map(Paint::primary_color);
+            let bitmaps = crate::colour_panel::bitmaps(app);
             row(ui, tr!("Fill"), |ui| {
-                let is_grad = matches!(sh.fill, Some(Paint::Linear { .. } | Paint::Radial { .. }));
-                let mut c = rgb(fill.unwrap_or(Rgba::WHITE));
-                if crate::colour::button(ui, &mut c).named(tr!("Fill colour")).changed() {
-                    live(app, tr_noop!("Fill colour"), "element.set_fill", json!({"color": hex(c)}));
+                let c = rgb(fill.unwrap_or(Rgba::WHITE));
+                // The one colour picker, with the fill's type (ADR 0074): a gradient shows as its
+                // ramp here and is edited in the picker.
+                let (r, edit) = crate::colour_panel::swatch(ui, sh.fill.as_ref(), &bitmaps);
+                r.named(tr!("Fill colour")).on_hover_text(tr!("Fill: click for its colour, or a gradient or bitmap fill"));
+                match edit {
+                    Some(crate::colour_panel::FillEdit::Solid(p)) => live(app, tr_noop!("Fill colour"), "element.set_fill", json!({"color": hex(p)})),
+                    Some(crate::colour_panel::FillEdit::None(n)) => {
+                        app.run("element.set_fill", if n { json!({"color": null}) } else { json!({"color": hex(c)}) });
+                    }
+                    Some(edit) => crate::colour_panel::apply_set(app, &edit, true),
+                    None => {}
                 }
                 let mut on = fill.is_some();
                 if crate::theme::checkbox(ui, &mut on, "").named(tr!("Fill")).on_hover_text(tr!("Fill on/off")).changed() {
                     app.run("element.set_fill", if on { json!({"color": hex(c)}) } else { json!({"color": null}) });
                 }
-                if is_grad {
-                    ui.label(text(Type::Caption, tr!("gradient")));
+                if let Some(what) = fill_kind_label(sh.fill.as_ref()) {
+                    ui.label(text(Type::Caption, what));
                 }
                 mixed(ui, m.fill);
             });
@@ -1295,7 +1340,7 @@ fn side_rows(ui: &mut egui::Ui, fname: &str, side: &mut anicraft_engine::doc::Fi
 }
 
 /// A colour swatch with opacity (Animate's bevel colours carry alpha). True when changed.
-fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
+pub(crate) fn alpha_swatch(ui: &mut egui::Ui, c: &mut Rgba, name: &str) -> bool {
     let s = c.sanitized();
     let b = |v: f32| (v * 255.0).round() as u8;
     let mut px = [b(s.r), b(s.g), b(s.b), b(s.a)];
@@ -1970,26 +2015,36 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
     let (fills, ink) = (matches!(app.tool, Tool::PaintBucket | Tool::Brush), stroke_only(app.tool));
     let brush_line = app.tool == Tool::PaintBrush;
     if !ink {
+        let bitmaps = crate::colour_panel::bitmaps(app);
+        let mut set = None;
         row(ui, tr!("Fill"), |ui| {
-            let mut c = rgb(st.fill);
-            if crate::colour::button(ui, &mut c).named(tr!("Fill colour")).changed() {
-                st.set_fill_color(Rgba::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0));
+            // The fill swatch: what new shapes, the Paint Bucket and the Brush pour, in the one
+            // colour picker with the fill's type (ADR 0074).
+            let paint = st.fill_paint();
+            let (r, edit) = crate::colour_panel::swatch(ui, (st.use_fill || fills).then_some(&paint), &bitmaps);
+            r.named(tr!("Fill colour")).on_hover_text(tr!("Fill: click for its colour, or a gradient or bitmap fill"));
+            match edit {
+                Some(crate::colour_panel::FillEdit::Solid(p)) => {
+                    st.set_fill_color(Rgba::new(f32::from(p[0]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[2]) / 255.0, 1.0));
+                    st.use_fill = true;
+                }
+                Some(crate::colour_panel::FillEdit::None(n)) => st.use_fill = !n || fills,
+                other => set = other,
             }
-            // A gradient or bitmap picked with the Eyedropper (ADR 0034): the swatch shows its
-            // first colour, and says what it holds.
-            if let Some(p) = &st.fill_paint {
-                let what = match p {
-                    Paint::Linear { .. } => tr!("Linear gradient"),
-                    Paint::Radial { .. } => tr!("Radial gradient"),
-                    Paint::Bitmap { .. } => tr!("Bitmap fill"),
-                    Paint::Solid(_) => tr!("Solid"),
-                };
-                ui.label(text(Type::Caption, what)).on_hover_text(tr!("Picked with the Eyedropper. It stays where it was on the stage (lock fill). Pick a colour to fill with a solid colour again."));
+            if let Some(what) = fill_kind_label(st.fill_paint.as_ref()) {
+                ui.label(text(Type::Caption, what)).on_hover_text(tr!("Set in the colour picker or picked with the Eyedropper. Choose Solid in the picker to fill with a colour again."));
             }
             if !fills {
                 crate::theme::checkbox(ui, &mut st.use_fill, "").named(tr!("Fill")).on_hover_text(tr!("Fill on/off"));
             }
         });
+        // A type, stops or bitmap: the swatch through the command (the rest of the options go
+        // on from what it set).
+        if let Some(edit) = set {
+            app.s.style = st;
+            crate::colour_panel::apply_set(app, &edit, false);
+            st = app.s.style.clone();
+        }
     }
     if !fills {
         row(ui, tr!("Stroke"), |ui| {
@@ -2017,6 +2072,13 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         {
             st.line = line;
         }
+    }
+    // Lock Fill (ADR 0074): a gradient or bitmap runs on across shapes instead of being fitted
+    // to each one. The Eyedropper turns it on for what it picks, as in Animate.
+    if matches!(app.tool, Tool::PaintBucket | Tool::Brush) {
+        row_prose(ui, tr!("Lock fill"), |ui| {
+            crate::theme::checkbox(ui, &mut st.lock_fill, "").named(tr!("Lock fill")).on_hover_text(tr!("On: a gradient or bitmap is poured where it lies on the stage, so it runs on across shapes. Off: each shape gets it fitted to its own bounds."));
+        });
     }
     // Merge drawing (ADR 0031) or drawing objects, for the tools that draw shapes.
     if matches!(app.tool, Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush) {

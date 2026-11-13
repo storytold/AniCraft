@@ -204,6 +204,55 @@ fn color(c: Rgba) -> Vec<Value> {
     [c.r, c.g, c.b, c.a].into_iter().map(|v| num(v, 10_000.0)).collect()
 }
 
+/// A gradient's stops for a canvas, which only pads: with `Reflect` or `Repeat`, how many
+/// copies of the ramp lie each side of it, and the stops of them all laid end to end (the
+/// ramp is `2·copies + 1` times as long; `outward`, for a radial ramp, which has no inside of
+/// its centre: the ramp first, then all the copies). Linear-light mixing is sampled into stops.
+fn spread_stops(s: &[anicraft_doc::GradientStop], spread: anicraft_doc::Spread, linear_rgb: bool, outward: bool) -> (usize, Vec<anicraft_doc::GradientStop>) {
+    use anicraft_doc::{GradientStop, Spread};
+    let mut base: Vec<GradientStop> = s.iter().filter(|g| g.offset.is_finite()).copied().collect();
+    base.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+    if linear_rgb && base.len() >= 2 {
+        // Sixteen samples per span, mixed in linear light as the renderer's ramp is.
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let enc = |c: f32| if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.max(0.0).powf(1.0 / 2.4) - 0.055 };
+        let mut out = Vec::new();
+        for w in base.windows(2) {
+            if let [a, b] = w {
+                let (ca, cb) = (a.color.sanitized(), b.color.sanitized());
+                for k in 0..16 {
+                    let t = k as f32 / 16.0;
+                    let m = |x: f32, y: f32| enc(lin(x) + (lin(y) - lin(x)) * t);
+                    out.push(GradientStop { offset: a.offset + (b.offset - a.offset) * t, color: Rgba::new(m(ca.r, cb.r), m(ca.g, cb.g), m(ca.b, cb.b), ca.a + (cb.a - ca.a) * t) });
+                }
+            }
+        }
+        if let Some(l) = base.last() {
+            out.push(*l);
+        }
+        base = out;
+    }
+    if spread == Spread::Pad || base.is_empty() {
+        return (0, base);
+    }
+    // Enough copies to cover a shape many times the ramp's length, within a bounded size.
+    let copies = (240 / base.len()).saturating_sub(1) / 2;
+    let copies = copies.clamp(0, 8);
+    let n = 2 * copies + 1;
+    let mut out = Vec::with_capacity(n * base.len());
+    for k in 0..n {
+        // Copy `k` runs forward unless it reflects (every other copy, counting from the ramp
+        // itself: copy 0 outward, else the middle one).
+        let from_ramp = if outward { k } else { k + copies };
+        let backwards = spread == Spread::Reflect && from_ramp % 2 == 1;
+        let ramp: Vec<GradientStop> = if backwards { base.iter().rev().map(|g| GradientStop { offset: 1.0 - g.offset, color: g.color }).collect() } else { base.clone() };
+        for g in ramp {
+            out.push(GradientStop { offset: (k as f32 + g.offset.clamp(0.0, 1.0)) / n as f32, color: g.color });
+        }
+    }
+    (copies, out)
+}
+
 /// `[a, b, c, d, e, f]`, the linear part finer than the offset; `None` for the identity.
 fn matrix(m: &Affine) -> Option<Value> {
     if *m == Affine::IDENTITY {
@@ -392,8 +441,30 @@ impl<'a> Bake<'a> {
         };
         let v = match p {
             Paint::Solid(c) => json!({"s": color(*c)}),
-            Paint::Linear { start, end, stops: s } => json!({"l": [coord(start.x), coord(start.y), coord(end.x), coord(end.y)], "st": stops(s)}),
-            Paint::Radial { center, radius, stops: s } => json!({"r": [coord(center.x), coord(center.y), coord(radius.max(0.0))], "st": stops(s)}),
+            Paint::Linear { start, end, stops: s, spread, linear_rgb } => {
+                // Canvas gradients only pad: a reflecting or repeating one is drawn as its ramp
+                // laid end to end, far enough to cover any shape it is on (ADR 0074).
+                let (copies, s) = spread_stops(s, *spread, *linear_rgb, false);
+                let d = *end - *start;
+                let (a, b) = (*start - d * copies as f32, *end + d * copies as f32);
+                json!({"l": [coord(a.x), coord(a.y), coord(b.x), coord(b.y)], "st": stops(&s)})
+            }
+            Paint::Radial { center, radius, stops: s, spread, linear_rgb, focal, matrix: own } => {
+                // The ring as canvas draws it: a circle round the centre (an ellipse drawn
+                // with its mean radius), the focal point on its own x axis.
+                let (copies, s) = spread_stops(s, *spread, *linear_rgb, true);
+                let c = own.apply(*center);
+                let r = radius.max(0.0) * own.mean_scale();
+                let axis = own.apply_vector(anicraft_geom::Vec2::new(1.0, 0.0));
+                let axis = if axis.length() > 1e-9 { axis * (1.0 / axis.length()) } else { anicraft_geom::Vec2::new(1.0, 0.0) };
+                let f = c + axis * (focal.clamp(-anicraft_doc::MAX_FOCAL, anicraft_doc::MAX_FOCAL) * r);
+                let big = r * (1 + 2 * copies) as f32;
+                let mut o = json!({"r": [coord(c.x), coord(c.y), coord(big)], "st": stops(&s)});
+                if *focal != 0.0 && focal.is_finite() {
+                    o["f"] = json!([coord(f.x), coord(f.y)]);
+                }
+                o
+            }
             Paint::Bitmap { bitmap, repeat, matrix: m } => match self.doc.bitmap(*bitmap) {
                 Some(b) => {
                     let n = self.images.len();

@@ -15,6 +15,7 @@ pub enum Tool {
     Select,
     Subselect,
     Transform,
+    GradientTransform,
     Width,
     Bone,
     Bind,
@@ -68,13 +69,14 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 22] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 23] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::GradientTransform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => tr_noop!("Selection"),
             Tool::Subselect => tr_noop!("Subselection"),
             Tool::Transform => tr_noop!("Free Transform"),
+            Tool::GradientTransform => tr_noop!("Gradient Transform"),
             Tool::Width => tr_noop!("Width"),
             Tool::Bone => tr_noop!("Bone"),
             Tool::Bind => tr_noop!("Bind"),
@@ -102,6 +104,7 @@ impl Tool {
             Tool::Select => Some("V"),
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
+            Tool::GradientTransform => Some("F"),
             Tool::Width => Some("U"),
             Tool::Bone => Some("M"),
             Tool::Bind => Some("Shift+M"),
@@ -137,6 +140,7 @@ impl Tool {
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer), or drag inside a shape to draw a bone in it (the shape bends with its bones); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
             Tool::Bind => tr_noop!("Shows the points of shapes with bones: a square follows one bone, a triangle several. Click a bone to see the points it moves (filled). Click a point, or drag a box around points, to make them follow only that bone; Shift shares the bone with the ones they follow, Ctrl takes them from it."),
+            Tool::GradientTransform => tr_noop!("Click a shape with a gradient or bitmap fill to show its handles. Drag the centre to move the fill, the square to change its width, the circle to change its size, the knob to rotate it (Shift: 15° steps) and, on a radial gradient, the triangle to move its focal point. A bitmap fill also has a square for its height and diamonds to skew it. Each drag is one undo step."),
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
             Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
@@ -218,6 +222,9 @@ pub enum Drag {
     /// `sub`; `start` is its left and right width when the drag began.
     /// `index` is the grabbed width point (None: one the drag adds at `t`).
     Width { id: anicraft_engine::doc::ElementId, sub: usize, index: Option<usize>, t: f32, grip: crate::widthtool::Grip, start: (f32, f32) },
+    /// Gradient Transform tool (ADR 0074): dragging `grip` of shape `id`'s fill, whose frame was
+    /// `frame` when the drag began at stage point `press`.
+    Gradient { id: anicraft_engine::doc::ElementId, grip: crate::gradient_tool::Grip, frame: anicraft_engine::geom::Affine, press: egui::Pos2 },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
@@ -1378,7 +1385,7 @@ impl App {
                 }
                 let mask = self.run("layer.new", json!({"name": "Soft mask"})).and_then(|v| v["layer"].as_u64());
                 let stops = vec![anicraft_engine::doc::GradientStop { offset: 0.0, color: anicraft_engine::doc::Rgba::WHITE }, anicraft_engine::doc::GradientStop { offset: 1.0, color: anicraft_engine::doc::Rgba::WHITE.with_alpha(0.0) }];
-                let swatch = self.s.style.fill_paint.replace(anicraft_engine::doc::Paint::Radial { center: anicraft_engine::geom::Vec2::new(320.0, 200.0), radius: 190.0, stops });
+                let swatch = self.s.style.fill_paint.replace(anicraft_engine::doc::Paint::radial(anicraft_engine::geom::Vec2::new(320.0, 200.0), 190.0, stops));
                 self.run("draw.ellipse", json!({"x": 130, "y": 10, "w": 380, "h": 380, "stroke": null}));
                 self.s.style.fill_paint = swatch;
                 self.run("layer.toggle_mask", json!({}));
@@ -1914,6 +1921,31 @@ impl App {
                     }
                 }
                 self.tool = Tool::Width;
+            }
+            Some(which @ ("gradient" | "gradientbucket")) => {
+                // The gradient tools (ADR 0074): a reflecting linear gradient turned on a panel,
+                // and an oval with a stretched radial gradient and its focal point off centre,
+                // selected with the Gradient Transform tool (its handles show) while the colour
+                // picker edits its stops.
+                self.perform("file.new", json!({"width": 640, "height": 400}));
+                self.run("draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 400, "fill": "#14213d", "stroke": null}));
+                self.run("draw.rect", json!({"x": 40, "y": 60, "w": 200, "h": 280, "stroke": null}));
+                self.run("paint.set_fill", json!({"type": "linear", "stops": [{"offset": 0, "color": "#e76f51"}, {"offset": 1, "color": "#f4a261"}], "spread": "reflect"}));
+                self.run("paint.transform_fill", json!({"scale_x": 0.3, "rotate": 30}));
+                self.run("draw.ellipse", json!({"x": 280, "y": 50, "w": 320, "h": 300, "stroke": null}));
+                self.run("paint.set_fill", json!({"type": "radial", "stops": [{"offset": 0, "color": "#ffffff"}, {"offset": 0.45, "color": "#8ecae6"}, {"offset": 1, "color": "#023047"}], "focal": 0.55}));
+                self.run("paint.transform_fill", json!({"scale_x": 1.1, "scale_y": 0.8, "rotate": -35}));
+                self.tool = Tool::GradientTransform;
+                if which == "gradient" {
+                    // The colour picker open on it, in gradient mode: the stop bar, overflow and
+                    // the picked stop's colour.
+                    self.open_fill_swatch = true;
+                }
+                if which == "gradientbucket" {
+                    // The Paint Bucket in hand, nothing selected: the swatch's gradient and Lock Fill.
+                    self.run("edit.deselect", json!({}));
+                    self.tool = Tool::PaintBucket;
+                }
             }
             Some(which @ ("motion" | "motionspan")) => {
                 // The Star layer's span as a motion tween: it moves, turns and fades out, with
