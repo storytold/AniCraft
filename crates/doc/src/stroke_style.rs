@@ -175,15 +175,22 @@ impl Dash {
 
     /// The pattern as stored, cleaned up (a file, a command): lengths finite and in range, an
     /// odd count repeated whole (so the dash/gap alternation holds where the pattern wraps), at
-    /// most [`MAX_DASH_ENTRIES`] read, the offset within one period.
+    /// most twice [`MAX_DASH_ENTRIES`] kept, the offset within one period.
     /// `None` when it draws solid (no gaps, or nothing at all to repeat).
     pub fn sanitized(self) -> Option<Dash> {
         match self {
             Dash::Dashed { lengths, offset } => {
-                let mut v: Vec<f32> = lengths.iter().take(MAX_DASH_ENTRIES).map(|&x| length(x)).collect();
+                // Up to twice the limit is read, so a whole repeated odd pattern (the stored form)
+                // survives sanitizing again (so lists of up to twice the limit are kept whole,
+                // even ones too); an odd list longer than the limit is cut to it.
+                let mut v: Vec<f32> = lengths.iter().take(2 * MAX_DASH_ENTRIES).map(|&x| length(x)).collect();
                 if v.len() % 2 == 1 {
-                    let again = v.clone();
-                    v.extend(again);
+                    if v.len() > MAX_DASH_ENTRIES {
+                        v.truncate(MAX_DASH_ENTRIES);
+                    } else {
+                        let again = v.clone();
+                        v.extend(again);
+                    }
                 }
                 let period: f32 = v.iter().sum();
                 let gaps: f32 = v.iter().skip(1).step_by(2).sum();
@@ -315,7 +322,7 @@ mod tests {
         let d = Dash::Dashed { lengths: vec![f32::NAN, -3.0, 1e30, 2.0].into(), offset: f32::INFINITY }.sanitized().unwrap();
         assert_eq!(d, Dash::Dashed { lengths: vec![0.0, 0.0, MAX_DASH_LENGTH, 2.0].into(), offset: 0.0 });
         let long = Dash::Dashed { lengths: vec![1.0; 99].into(), offset: 0.0 }.sanitized().unwrap();
-        assert!(matches!(long, Dash::Dashed { lengths, .. } if lengths.len() == MAX_DASH_ENTRIES));
+        assert!(matches!(long, Dash::Dashed { lengths, .. } if lengths.len() == 2 * MAX_DASH_ENTRIES));
         assert_eq!(Dash::dotted(f32::NAN), Some(Dash::Dotted { spacing: 0.0 }));
     }
 
@@ -326,6 +333,28 @@ mod tests {
             let d = Dash::Dashed { lengths: base.clone().into(), offset: 0.0 }.sanitized().unwrap();
             let want: Vec<f32> = base.iter().chain(base.iter()).copied().collect();
             assert_eq!(d, Dash::Dashed { lengths: want.into(), offset: 0.0 }, "n = {n}");
+        }
+    }
+
+    #[test]
+    fn odd_dash_patterns_are_stable() {
+        for n in (9..=15).step_by(2) {
+            let base: Vec<f32> = (1..=n).map(|i| i as f32).collect();
+            let d = Dash::Dashed { lengths: base.into(), offset: 3.0 }.sanitized().unwrap();
+            assert_eq!(d.clone().sanitized().as_ref(), Some(&d), "n = {n}");
+            for t in [0.0, 0.5, 1.0] {
+                assert_eq!(Dash::lerp(Some(&d), Some(&d), t).as_ref(), Some(&d), "n = {n}, t = {t}");
+            }
+        }
+    }
+
+    #[test]
+    fn lerp_of_identical_unsanitized_endpoints_is_sanitized() {
+        let raw = Dash::Dashed { lengths: vec![1.0, 1e30, 3.0].into(), offset: 0.0 };
+        let want = raw.clone().sanitized();
+        assert_eq!(want, Some(Dash::Dashed { lengths: vec![1.0, MAX_DASH_LENGTH, 3.0, 1.0, MAX_DASH_LENGTH, 3.0].into(), offset: 0.0 }));
+        for t in [0.0, 0.5, 1.0] {
+            assert_eq!(Dash::lerp(Some(&raw), Some(&raw), t), want, "t = {t}");
         }
     }
 
