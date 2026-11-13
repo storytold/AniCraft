@@ -249,6 +249,6 @@ pub fn unique_bytes(old: &Document, new: &Document) -> usize {
 
 /// Estimated total bytes of a document (as if nothing were shared). Used for reporting.
 pub fn document_bytes(doc: &Document) -> usize {
-    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), next_id: doc.next_id };
+    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), swatches: doc.swatches.clone(), next_id: doc.next_id };
     unique_bytes(doc, &empty)
 }

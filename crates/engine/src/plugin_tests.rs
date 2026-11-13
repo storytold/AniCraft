@@ -176,6 +176,8 @@ fn every_command_namespace_has_a_plugin_policy() {
             "publish" => assert_eq!(verdict.is_ok(), c.id == "publish.settings_get", "{}", c.id),
             // Brushes (ADR 0068): list yes; your own brushes and brush set files no.
             "brush" => assert_eq!(verdict.is_ok(), c.id == "brush.preset_list", "{}", c.id),
+            // Swatches (ADR 0078): document data yes, swatch files no.
+            "swatch" => assert_eq!(verdict.is_ok(), !matches!(c.id, "swatch.import" | "swatch.export"), "{}", c.id),
             _ => assert!(verdict.is_ok() || matches!(c.id, "edit.undo" | "edit.redo") || c.id.contains("copy") || c.id.contains("cut") || c.id.contains("paste"), "{} has no plug-in policy (add its namespace to plugin_may_call)", c.id),
         }
     }

@@ -28,6 +28,7 @@ pub mod publish;
 pub mod sample;
 pub mod templates;
 pub mod sound;
+pub mod swatch;
 
 pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_decode, base64_encode, decode_png, image_to_png};
@@ -40,6 +41,7 @@ pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, Soun
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
 pub use camera::Camera;
+pub use swatch::{MAX_SWATCHES, Swatch, SwatchPaint};
 pub use nine_slice::symbol_box;
 pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, evaluate_timeline_at, guide_walk, instance_start};
@@ -1655,8 +1657,20 @@ pub struct Document {
     /// File › Publish Settings: the formats Publish writes and their options (ADR 0060).
     #[serde(default, skip_serializing_if = "publish_is_default")]
     pub publish: Arc<publish::PublishProfile>,
+    /// The Swatches panel's colours and gradients (ADR 0078). A file without them opens with
+    /// the default set, which is written only once changed.
+    #[serde(default = "default_swatches", skip_serializing_if = "swatches_are_default")]
+    pub swatches: Arc<Vec<Swatch>>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
+}
+
+fn default_swatches() -> Arc<Vec<Swatch>> {
+    Arc::new(swatch::default_set())
+}
+
+fn swatches_are_default(v: &Arc<Vec<Swatch>>) -> bool {
+    swatch::is_default_set(v)
 }
 
 /// What a document file may hold: `scenes`, or (files before scenes) a single `timeline`.
@@ -1680,6 +1694,8 @@ struct DocumentFile {
     document_class: String,
     #[serde(default)]
     publish: Arc<publish::PublishProfile>,
+    #[serde(default = "default_swatches")]
+    swatches: Arc<Vec<Swatch>>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -1690,7 +1706,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, swatches: f.swatches, next_id: f.next_id }
     }
 }
 
@@ -1711,13 +1727,13 @@ static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish)
+        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish) && arc_eq(&self.swatches, &o.swatches)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), swatches: default_swatches(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -1830,6 +1846,11 @@ impl Document {
         // Script class names are text nothing runs yet; ones that aren't names are dropped.
         if !self.document_class.is_empty() && !actions::valid_class_name(&self.document_class) {
             self.document_class.clear();
+        }
+        // Swatches that can't be repaired are dropped; at most MAX_SWATCHES are kept.
+        let swatches: Vec<Swatch> = self.swatches.iter().filter_map(Swatch::sanitized).take(MAX_SWATCHES).collect();
+        if swatches != *self.swatches {
+            self.swatches = Arc::new(swatches);
         }
         let mut publish = (*self.publish).clone();
         publish.sanitize();

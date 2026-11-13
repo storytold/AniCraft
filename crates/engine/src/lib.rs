@@ -38,6 +38,7 @@ pub mod cmds_text;
 mod cmds_timeline;
 mod cmds_width;
 mod cmds_stroke;
+pub mod cmds_swatch;
 pub mod confirm;
 pub mod editing;
 pub mod explorer;
@@ -153,6 +154,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_brush::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
+    v.extend(cmds_swatch::specs());
     v.extend(cmds_text::specs());
     v.extend(cmds_width::specs());
     v.extend(cmds_stroke::specs());
@@ -1089,3 +1091,5 @@ mod tests_bone_chain;
 mod path_text_tests;
 #[cfg(test)]
 mod group_tests;
+#[cfg(test)]
+mod swatch_tests;

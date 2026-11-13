@@ -479,7 +479,7 @@ fn default_stops() -> Vec<GradientStop> {
 }
 
 /// The `stops` param: 2 to 15 stops, each `{offset, color}`, put in order of offset.
-fn opt_stops(p: &Value) -> Result<Option<Vec<GradientStop>>> {
+pub(crate) fn opt_stops(p: &Value) -> Result<Option<Vec<GradientStop>>> {
     let bad = || EngineError::Param(format!("param 'stops' must be a list of 2 to {MAX_GRADIENT_STOPS} stops like {{\"offset\": 0.5, \"color\": \"#ff8800\"}}"));
     let list = match p.get("stops") {
         None | Some(Value::Null) => return Ok(None),
@@ -596,7 +596,7 @@ pub fn fill_json(p: &Paint) -> Value {
     }
 }
 
-fn opt_focal(p: &Value) -> Result<Option<f32>> {
+pub(crate) fn opt_focal(p: &Value) -> Result<Option<f32>> {
     let f = opt_f32(p, "focal")?;
     if f.is_some_and(|f| !(-MAX_FOCAL..=MAX_FOCAL).contains(&f)) {
         return Err(EngineError::Param(format!("param 'focal' must be between -{MAX_FOCAL} and {MAX_FOCAL}")));
@@ -605,7 +605,7 @@ fn opt_focal(p: &Value) -> Result<Option<f32>> {
 }
 
 /// `paint.set_fill`: the Colour panel's fill (type, stops, overflow, linear RGB, bitmap).
-fn set_fill(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn set_fill(s: &mut Session, p: &Value) -> Result<Value> {
     let swatch = s.style.fill_paint();
     let kind = match opt_str(p, "type")? {
         None => fill_kind(&swatch),

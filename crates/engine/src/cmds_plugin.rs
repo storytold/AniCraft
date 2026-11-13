@@ -47,6 +47,9 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
             // user's own brushes are their preferences, and a brush set is a file.
             "brush" if id == "brush.preset_list" => Ok(()),
             "brush" => Err("plug-ins can't change your brushes or read and write brush sets"),
+            // The document's swatches are document data; swatch files are files.
+            "swatch" if matches!(id, "swatch.import" | "swatch.export") => Err("plug-ins can't read or write swatch files"),
+            "swatch" => Ok(()),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
             "control" => Err("plug-ins can't play the movie"),
             ns if DOCUMENT.contains(&ns) => Ok(()),
