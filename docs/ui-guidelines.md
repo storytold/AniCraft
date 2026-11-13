@@ -32,7 +32,7 @@ Two families, chosen by **what the text is**, not by where it sits:
 | `DataSmall` | **monospace** 10 | Dense numeric scales | timeline ruler, playhead number |
 | `DataLarge` | **monospace** 14.5 | The hero number | current frame in the timeline header |
 | `Key` | **monospace** 11.5 | Shortcuts and keycaps | Ctrl+Shift+S, F6 |
-| `Path` | **monospace** 11 | Paths, ids, preformatted text | file locations, licence texts |
+| `Path` | **monospace** 11 | Paths, ids, preformatted text | file locations, licence texts, frame scripts, class names |
 
 **Why monospace for data:** fixed-width digits don't jitter while a value is scrubbed or
 played back, numbers line up in columns, and technical readouts read as instruments rather than
@@ -65,9 +65,17 @@ are not used for UI text, because they would change metrics per OS.
   playhead, errors and destructive buttons (`danger`).
 * Text has three steps: `text`, `text_dim`, `text_faint`. Use the role's default colour unless
   you are showing a state.
-* **Contrast** (checked by `guidelines_tests`): body text ≥ 7:1 on panels; dim and faint text
-  ≥ 4.5:1; text on filled buttons ≥ 4.5:1; marks on timeline blocks ≥ 4.5:1; focus rings,
-  selection, checkbox edges and timeline blocks ≥ 3:1 against their background.
+* **Contrast** (checked by `guidelines_tests` for every palette): body text ≥ 7:1 on panels;
+  dim, faint, accent-coloured (`accent_text`), error and ok text ≥ 4.5:1; text on filled
+  buttons (`on_fill`) and on the active tool (`on_active`) ≥ 4.5:1; marks on timeline blocks and
+  the playhead flag (`ink`) ≥ 4.5:1; focus rings, selection, checkbox edges and timeline blocks
+  ≥ 3:1 against their background.
+* **Three palettes, one set of roles** (ADR 0022, ADR 0077): Graphite (dark), Light and High
+  contrast (Preferences › Appearance › Theme). Code reads `T.role`, never a palette by name, and
+  never assumes a colour or a direction: text on an accent fill is `T.on_fill`, not white; an icon
+  under the pointer is `T.icon_hot`; a mark drawn across the timeline is `T.text`, not white,
+  because the panels may be light. A new token needs a value in every palette and a line in the
+  contrast test. Check UI changes with `--theme light` as well.
 * No raw colours outside `theme.rs`: add a token.
 
 ## 4. Shapes, borders, spacing and sizes (ADR 0008)
@@ -145,6 +153,27 @@ are not used for UI text, because they would change metrics per OS.
   (and sideways wheels or trackpad swipes) horizontally, Ctrl+wheel zooms, over the whole
   panel, not only its empty parts.
 * F1 shows every shortcut (generated from the registry); Ctrl+K runs anything.
+* Ctrl+F6 / Ctrl+Shift+F6 move focus between the panels (Stage, Timeline, Properties, Library,
+  Tools); Tab moves within one. A focused button keeps Enter, Space and the arrows; the other
+  shortcuts still work (ADR 0022, `a11y::keyboard`).
+
+## 7a. Accessibility (ADR 0022, `docs/accessibility.md`)
+
+* **Every interactive thing has a name and a role** for screen readers; the AccessKit audit in
+  `src/a11y.rs` fails the build otherwise. Widgets with their own text (buttons, checkboxes,
+  menu items) name themselves. Others go through `a11y`:
+  * a custom-painted control: `a11y::control(ui, &resp, WidgetType::Button, name, on)` (also
+    draws its focus ring);
+  * a field, colour well or menu showing a value: `.named("Position X")` /
+    `.response.set_name("Easing")`;
+  * a slider in a form row: `a11y::slider` (it names the number field beside it too).
+* **Names say what and how**: an icon-only control is named like its tooltip's first line, with
+  the key in effect (`a11y::with_key("Pen tool", key)` → "Pen tool (P)"); repeated controls
+  carry their row ("Lock Hills", "Drop Shadow blur X").
+* **Pointer-only surfaces are not Tab stops** (`a11y::pointer_only()`); say in the docs what
+  the keyboard route to the same thing is.
+* **Panels register an anchor** (`a11y::anchor`) for Ctrl+F6.
+* Layouts survive the 200 % interface scale: scroll or truncate, never clip controls away.
 
 ## 8. Copy and numbers
 
@@ -154,6 +183,17 @@ are not used for UI text, because they would change metrics per OS.
   (`0.50 s`). Units follow the number with a space: `24.00 fps`, `1280 × 720 px`, `78%`.
 * Use "×" for dimensions and "·" to separate inline facts.
 
+## 8a. Interface languages (ADR 0040, `docs/localisation.md`)
+
+* Write interface text in English through the macros: `tr!("Save")`, `tr!("Saved {path}",
+  path = p)`, `trn!("{n} layer", "{n} layers", n)`; `tr_noop!` in tables, `i18n::t` where they
+  are drawn. Screen-reader names too.
+* One sentence is one template with named placeholders; never glue translated pieces. Counts
+  use `trn!`, never `if n == 1`.
+* Keys stay English (ids, stored values, engine params); translate at the point of display.
+  Translated window titles carry an explicit `.id(..)`.
+* Leave room: labels must survive text a third longer. Check with `--lang pseudo`.
+
 ## 9. Checklist for a UI change
 
 1. Uses `theme::text(Type::…)` / `theme::font` / `with_type`, with no raw sizes or families,
@@ -162,4 +202,8 @@ are not used for UI text, because they would change metrics per OS.
    borders only for layout, groups as collapsible `theme::section`s, Lucide icons.
 2. Data in monospace, prose proportional (section 2).
 3. Reachable by menu, palette and, if frequent, a shortcut and a right-click menu.
-4. Screenshot checked (`cargo run -- --screenshot shots/now.png`, `--open <panel>` for dialogs).
+4. Screenshot checked (`cargo run -- --screenshot shots/now.png`, `--open <panel>` for dialogs),
+   also with `--theme high-contrast` and `--scale 200`.
+5. Named for screen readers (section 7a); `cargo test --bin anicraft a11y` passes.
+6. Text goes through `tr!` (section 8a); `cargo test --bin anicraft i18n` passes and a
+   `--lang pseudo` screenshot shows no plain English and no cut-off `]`.

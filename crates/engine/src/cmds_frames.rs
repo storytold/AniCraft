@@ -42,6 +42,8 @@ pub struct FrameClipboard {
     pub layers: Vec<FrameSlice>,
     pub count: u32,
     pub symbols: Vec<Arc<Symbol>>,
+    /// Sounds the copied keyframes play, so they paste into other documents too.
+    pub sounds: Vec<Arc<anicraft_doc::Sound>>,
 }
 
 impl FrameClipboard {
@@ -81,21 +83,27 @@ fn copy_frames(s: &mut Session, p: &Value) -> Result<Value> {
     let count = count_param(p)?;
     let mut ids = target_layers(s, p)?;
     // Top to bottom, whatever order the params gave.
-    let order: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).collect();
+    let order: Vec<LayerId> = s.timeline().layers.iter().map(|l| l.id).collect();
     ids.sort_by_key(|id| order.iter().position(|o| o == id));
     let mut layers = Vec::with_capacity(ids.len());
     for id in ids {
-        let l = s.doc.timeline(s.scene).layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
+        let l = s.timeline().layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
         layers.push(FrameSlice { name: l.name.clone(), keys: slice(l, frame, count)? });
     }
-    let clip = FrameClipboard { layers, count, symbols: Vec::new() };
+    let clip = FrameClipboard { layers, count, symbols: Vec::new(), sounds: Vec::new() };
     if clip.is_empty() {
         return Err(EngineError::State("no frames there to copy".into()));
     }
     let elements: Vec<Element> = clip.layers.iter().flat_map(|l| l.keys.iter().flat_map(|k| k.elements.iter().map(|e| (**e).clone()))).collect();
     let symbols = collect_symbols(s, &elements);
     let n = clip.layers.len();
-    s.frame_clipboard = FrameClipboard { symbols, ..clip };
+    let mut sounds: Vec<Arc<anicraft_doc::Sound>> = Vec::new();
+    for id in clip.layers.iter().flat_map(|l| l.keys.iter().filter_map(|k| k.sound.as_ref().map(|f| f.sound))) {
+        if let Some(x) = s.doc.sounds.iter().find(|x| x.id == id) && !sounds.iter().any(|y| y.id == id) {
+            sounds.push(x.clone());
+        }
+    }
+    s.frame_clipboard = FrameClipboard { symbols, sounds, ..clip };
     Ok(json!({"copied": count, "layers": n}))
 }
 
@@ -115,14 +123,20 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
     if frame.saturating_add(clip.count) > MAX_FRAME || s.frame_count().saturating_add(clip.count) > MAX_FRAME {
         return Err(EngineError::State("the timeline would grow past its maximum length".into()));
     }
-    let mut row = s.doc.timeline(s.scene).layers.iter().position(|l| l.id == top).ok_or_else(|| EngineError::State(format!("no layer with id {}", top.0)))?;
+    let mut row = s.timeline().layers.iter().position(|l| l.id == top).ok_or_else(|| EngineError::State(format!("no layer with id {}", top.0)))?;
     import_symbols(s, &clip.symbols);
+    for x in &clip.sounds {
+        if s.doc.sound(x.id).is_none() {
+            s.doc.next_id = s.doc.next_id.max(x.id.0.saturating_add(1));
+            s.doc.sounds.push(x.clone());
+        }
+    }
     let mut remap: HashMap<ElementId, ElementId> = HashMap::new();
     let mut pasted = Vec::new();
     for sl in &clip.layers {
         // Missing layers below are created, named after the copied ones.
-        if s.doc.timeline(s.scene).layers.get(row).is_none() {
-            if s.doc.timeline(s.scene).layers.len() >= 1000 {
+        if s.timeline().layers.get(row).is_none() {
+            if s.timeline().layers.len() >= 1000 {
                 return Err(EngineError::State("too many layers (limit 1000)".into()));
             }
             let id = LayerId(s.doc.alloc_id());
@@ -131,7 +145,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
                 // The pasted keys are its frames (no stray blank frame at 1).
                 l.keyframes.clear();
             }
-            s.doc.timeline_mut(s.scene).layers.push(Arc::new(l));
+            crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?.layers.push(Arc::new(l));
         }
         let mut keys = Vec::with_capacity(sl.keys.len());
         for k in &sl.keys {
@@ -142,9 +156,13 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
                 let new = *remap.entry(old).or_insert_with(|| ElementId(s.doc.alloc_id()));
                 Arc::make_mut(e).id = new;
             }
+            if let Some(m) = k.motion.as_mut() {
+                m.target = *remap.entry(m.target).or_insert_with(|| ElementId(s.doc.alloc_id()));
+            }
             keys.push(Arc::new(k));
         }
-        let Some(layer) = s.doc.timeline_mut(s.scene).layers.get_mut(row).map(Arc::make_mut) else { continue };
+        let Some(layer) = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing).ok().and_then(|tl| tl.layers.get_mut(row).map(Arc::make_mut)) else { continue };
+        crate::cmds_camera::keys_fit(layer.kind, keys.iter().map(|k| &**k))?;
         if layer.keyframe_index_at(frame).is_some() {
             insert_keyframe_at(layer, frame, true)?;
         }

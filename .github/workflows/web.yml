@@ -1,0 +1,43 @@
+# The web build (ADR 0036, docs/web.md), so it never regresses: every crate of the workspace
+# builds for wasm32-unknown-unknown, the engine's tests/wasm.rs runs inside WebAssembly in Node
+# (what a build can't catch: clock, thread and file calls that compile but trap), and
+# packaging/web/package.sh produces the web/ bundle and its release zip. Nothing is deployed.
+name: Web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a PR branch cancels its older run; every push to main runs to the end.
+concurrency:
+  group: web-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  wasm:
+    name: Web build (wasm32)
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      timeout-minutes: 60
+      # As before: no craft-fonts, apt packages or nextest; the gate adds the wasm32 target.
+      craft-fonts-ref: ""
+      tools: ""
+      # Its own cache, apart from ci.yml's gate.
+      cache-version: v1-web
+      command: |
+        # Every crate builds for wasm32.
+        cargo build --workspace --target wasm32-unknown-unknown --locked
+        # wasm-bindgen CLI at the version Cargo.lock pins.
+        version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+        cargo install wasm-bindgen-cli --version "$version" --locked
+        # The engine inside WebAssembly (Node).
+        CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner           cargo test -p anicraft-engine --target wasm32-unknown-unknown --test wasm --locked
+        # The web editor bundle and its release zip (#210): what the release workflow's web job runs.
+        packaging/web/package.sh
+        ls -l web dist/release

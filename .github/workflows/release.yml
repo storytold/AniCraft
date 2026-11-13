@@ -1,17 +1,25 @@
+# Builds every installer from packaging/ (docs/release.md, ADR 0026) through the Craft family's
+# shared release workflow: Windows MSI and portable zip (x64, arm64), macOS universal DMG and CLI
+# zip, Linux AppImage, deb, rpm, tar.gz, Flatpak and Arch packages (x86_64, aarch64; riscv64
+# without the AppImage), FreeBSD archives, then one draft GitHub Release with SHA256SUMS.txt.
+# A push to `release` builds signed artifacts (missing signing secrets fail the run); a manual run
+# from any branch builds them unsigned, to try the packaging. Nothing is published: a maintainer
+# publishes the draft, which creates the v<version> tag.
 name: Release
 
 on:
+  # A nightly dry run on main: every release build except macOS, nothing signed or released
+  # (craft-common-actions release.yml `dry-run`). Finds release-only breakage before release day.
+  schedule:
+    - cron: "0 1 * * *"
   push:
     branches: [release]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version override for a test run, e.g. 0.2.0-rc.1 (empty: Cargo.toml)"
-        type: string
-        default: ""
 
 permissions:
   contents: write
+  # The Flatpak job pushes its OCI image to GHCR.
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -22,10 +30,13 @@ jobs:
     # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
     uses: storytold/craft-common-actions/.github/workflows/release.yml@main
     with:
+      dry-run: ${{ github.event_name == 'schedule' }}
       app-name: anicraft
       app-title: AniCraft
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      version: ${{ inputs.version }}
+      # The web editor builds (ADR 0036) and packaging/web/package.sh makes its zip (#210), but
+      # releases don't carry it until the team decides where it is hosted: off for now.
+      has-web: false
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -41,3 +52,4 @@ jobs:
       AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
       AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
       AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+      LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}

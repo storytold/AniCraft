@@ -12,19 +12,20 @@ use anicraft_engine::{SHORTCUT_ALIASES, commands};
 use egui::{Key, Modifiers};
 use std::collections::BTreeMap;
 
-/// Keys handled before the shortcut map, which the editor will not assign.
+/// Keys handled before the shortcut map, which the editor will not assign, and what for
+/// (English: translated where it is shown).
 pub const RESERVED: &[(&str, &str)] = &[
-    ("Ctrl+K", "the command palette"),
-    ("Ctrl+Shift+P", "the command palette"),
-    ("F1", "the shortcut editor"),
-    ("Ctrl+Alt+Shift+K", "the shortcut editor"),
-    ("Ctrl+U", "Preferences"),
-    ("Ctrl+,", "Preferences"),
-    ("Ctrl+Q", "quitting"),
-    ("Enter", "play / stop"),
-    ("Escape", "cancelling"),
-    ("Space", "panning with any tool"),
-    ("Tab", "moving between fields"),
+    ("Ctrl+K", tr_noop!("the command palette")),
+    ("Ctrl+Shift+P", tr_noop!("the command palette")),
+    ("F1", tr_noop!("the shortcut editor")),
+    ("Ctrl+Alt+Shift+K", tr_noop!("the shortcut editor")),
+    ("Ctrl+U", tr_noop!("Preferences")),
+    ("Ctrl+,", tr_noop!("Preferences")),
+    ("Ctrl+Q", tr_noop!("quitting")),
+    ("Enter", tr_noop!("play / stop")),
+    ("Escape", tr_noop!("cancelling")),
+    ("Space", tr_noop!("panning with any tool")),
+    ("Tab", tr_noop!("moving between fields")),
 ];
 
 /// Most keys one action may have.
@@ -34,8 +35,9 @@ pub const MAX_KEYS: usize = 4;
 #[derive(Clone, Debug)]
 pub struct Action {
     pub id: &'static str,
+    /// English, as the registry has it: translated where it is shown (`i18n::t_cmd`, `i18n::t`).
     pub label: &'static str,
-    /// Where it lives (a top menu, "Tools" or "View").
+    /// Where it lives (a top menu, "Tools" or "View"); English, translated where it is shown.
     pub group: &'static str,
     pub defaults: Vec<&'static str>,
 }
@@ -46,15 +48,25 @@ pub fn tool_id(t: Tool) -> &'static str {
         Tool::Select => "tool.selection",
         Tool::Subselect => "tool.subselection",
         Tool::Transform => "tool.free_transform",
+        Tool::GradientTransform => "tool.gradient_transform",
+        Tool::Width => "tool.width",
         Tool::Pen => "tool.pen",
         Tool::Text => "tool.text",
         Tool::Pencil => "tool.pencil",
+        Tool::Brush => "tool.brush",
+        Tool::PaintBrush => "tool.paint_brush",
+        Tool::Eraser => "tool.eraser",
         Tool::Rect => "tool.rectangle",
         Tool::Oval => "tool.oval",
         Tool::Star => "tool.polystar",
         Tool::Line => "tool.line",
         Tool::PaintBucket => "tool.paint_bucket",
         Tool::InkBottle => "tool.ink_bottle",
+        Tool::Eyedropper => "tool.eyedropper",
+        Tool::Camera => "tool.camera",
+        Tool::Bone => "tool.bone",
+        Tool::Bind => "tool.bind",
+        Tool::Warp => "tool.warp",
         Tool::Hand => "tool.hand",
         Tool::Zoom => "tool.zoom",
     }
@@ -66,12 +78,19 @@ pub fn tool_for(id: &str) -> Option<Tool> {
 
 fn view_label(id: &str) -> &'static str {
     match id {
-        "view.fit" => "Fit Stage in Window",
-        "view.onion" => "Onion Skin On / Off",
-        "view.select_all_frames" => "Select All Frames",
-        "view.align_to_stage" => "Align to Stage On / Off",
-        "view.test" => "Test (Play from Frame 1)",
-        _ => "View action",
+        "view.fit" => tr_noop!("Fit Stage in Window"),
+        "view.onion" => tr_noop!("Onion Skin On / Off"),
+        "view.select_all_frames" => tr_noop!("Select All Frames"),
+        "view.align_to_stage" => tr_noop!("Align to Stage On / Off"),
+        "view.next_panel" => tr_noop!("Next Panel"),
+        "view.prev_panel" => tr_noop!("Previous Panel"),
+        "view.actions" => tr_noop!("Actions Panel"),
+        "view.find_next" => tr_noop!("Find Next"),
+        "view.find_prev" => tr_noop!("Find Previous"),
+        "view.movie_explorer" => tr_noop!("Movie Explorer"),
+        "view.brush_smaller" => tr_noop!("Brush Size Down"),
+        "view.brush_larger" => tr_noop!("Brush Size Up"),
+        _ => tr_noop!("View action"),
     }
 }
 
@@ -84,11 +103,11 @@ pub fn actions() -> Vec<Action> {
         .map(|c| Action {
             id: c.id,
             label: c.label,
-            group: if c.menu.is_empty() { "Other" } else { c.menu.split('/').next().unwrap_or("Other") },
+            group: if c.menu.is_empty() { tr_noop!("Other") } else { c.menu.split('/').next().unwrap_or(tr_noop!("Other")) },
             defaults: c.shortcut.into_iter().chain(SHORTCUT_ALIASES.iter().filter(|(_, id)| *id == c.id).map(|(k, _)| *k)).collect(),
         })
         .collect();
-    v.extend(Tool::ALL.into_iter().map(|t| Action { id: tool_id(t), label: t.label(), group: "Tools", defaults: t.shortcut().into_iter().collect() }));
+    v.extend(Tool::ALL.into_iter().map(|t| Action { id: tool_id(t), label: t.label(), group: tr_noop!("Tools"), defaults: t.shortcut().into_iter().collect() }));
     let mut views: Vec<&str> = Vec::new();
     for (_, id) in VIEW_SHORTCUTS {
         if !views.contains(id) {
@@ -98,7 +117,7 @@ pub fn actions() -> Vec<Action> {
     v.extend(views.into_iter().map(|id| Action {
         id,
         label: view_label(id),
-        group: "View",
+        group: tr_noop!("View"),
         defaults: VIEW_SHORTCUTS.iter().filter(|(_, i)| *i == id).map(|(k, _)| *k).collect(),
     }));
     v
@@ -111,6 +130,10 @@ fn key_name(k: Key) -> &'static str {
         Key::Period => ".",
         Key::Minus => "-",
         Key::Equals => "=",
+        Key::OpenBracket => "[",
+        Key::CloseBracket => "]",
+        Key::Semicolon => ";",
+        Key::Quote => "'",
         other => other.name(),
     }
 }
@@ -228,7 +251,7 @@ pub enum Refusal {
 /// With `steal`, a chord bound elsewhere moves here; otherwise that is refused.
 pub fn assign(overrides: &BTreeMap<String, Vec<String>>, id: &str, replace: Option<usize>, chord: &str, steal: bool) -> Result<BTreeMap<String, Vec<String>>, Refusal> {
     let map = Keymap::new(overrides);
-    let c = normalize(chord).ok_or(Refusal::Reserved("nothing (not a key)"))?;
+    let c = normalize(chord).ok_or(Refusal::Reserved(tr_noop!("nothing (not a key)")))?;
     if let Some(why) = reserved(&c) {
         return Err(Refusal::Reserved(why));
     }
@@ -350,6 +373,11 @@ mod tests {
         assert_eq!(m.keys("edit.undo"), ["Ctrl+Z"]);
         assert_eq!(m.keys("edit.delete"), ["Delete", "Backspace"], "aliases are second keys");
         assert_eq!(m.primary("tool.pen"), Some("P"));
+        assert_eq!(m.primary("tool.brush"), Some("B"));
+        assert_eq!(m.primary("tool.eraser"), Some("E"));
+        assert_eq!(m.primary("tool.eyedropper"), Some("I"));
+        assert_eq!(m.keys("view.brush_smaller"), ["["]);
+        assert_eq!(m.keys("view.brush_larger"), ["]"]);
         assert_eq!(m.primary("view.onion"), Some("Alt+Shift+O"));
         assert_eq!(m.owner("ctrl+z").map(|a| a.id), None, "chords are case-sensitive registry names");
         assert_eq!(m.owner("Ctrl+Shift+Z").map(|a| a.id), Some("modify.remove_transform"));
@@ -364,7 +392,7 @@ mod tests {
 
     #[test]
     fn chords_round_trip_in_one_spelling() {
-        for s in ["Ctrl+Shift+Z", "Shift+,", "Ctrl+Up", "F5", "Ctrl+Alt+Shift+K", "Ctrl+-", "Alt+Shift+O", "Backspace"] {
+        for s in ["Ctrl+Shift+Z", "Shift+,", "Ctrl+Up", "F5", "Ctrl+Alt+Shift+K", "Ctrl+-", "Alt+Shift+O", "Backspace", "[", "]"] {
             assert_eq!(normalize(s).as_deref(), Some(s), "{s}");
         }
         assert_eq!(normalize("Shift+Ctrl+Z").as_deref(), Some("Ctrl+Shift+Z"));

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A button with Up, Over, Down and Hit frames. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Next Button" itemID="00000000-0000-0000-0000-000000000402" symbolType="button">
+  <timeline>
+    <DOMTimeline name="Next Button">
+      <layers>
+        <DOMLayer name="States" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" name="Up" keyMode="9728"><elements><DOMRectangleObject x="-40" y="-15" objectWidth="80" objectHeight="30"><fill><SolidColor color="#2A9D8F"/></fill></DOMRectangleObject></elements></DOMFrame>
+            <DOMFrame index="1" keyMode="9728"><elements><DOMRectangleObject x="-40" y="-15" objectWidth="80" objectHeight="30"><fill><SolidColor color="#E9C46A"/></fill></DOMRectangleObject></elements></DOMFrame>
+            <DOMFrame index="2" keyMode="9728"><elements><DOMRectangleObject x="-40" y="-15" objectWidth="80" objectHeight="30"><fill><SolidColor color="#E76F51"/></fill></DOMRectangleObject></elements></DOMFrame>
+            <DOMFrame index="3" keyMode="9728"><elements><DOMRectangleObject x="-45" y="-20" objectWidth="90" objectHeight="40"><fill><SolidColor color="#000000"/></fill></DOMRectangleObject></elements></DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

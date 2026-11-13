@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A graphic nesting other symbols: a ring, two dots (one tinted) and the Blink graphic held
+     on its last frame. Two levels of nesting below the stage. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Parts/Badge" itemID="00000000-0000-0000-0000-000000000103" symbolType="graphic">
+  <timeline>
+    <DOMTimeline name="Badge">
+      <layers>
+        <DOMLayer name="Dots" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="6" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Parts/Dot" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="-12" ty="0"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Dot" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="12" ty="0"/></matrix>
+                  <color><Color tintMultiplier="1" tintColor="#F4A261"/></color>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Blink" symbolType="graphic" loop="single frame" firstFrame="3">
+                  <matrix><Matrix a="0.4" d="0.4" tx="0" ty="-14"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Ring" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="6" keyMode="9728">
+              <elements>
+                <DOMOvalObject x="-24" y="-24" objectWidth="48" objectHeight="48">
+                  <stroke><SolidStroke weight="3"><fill><SolidColor color="#264653"/></fill></SolidStroke></stroke>
+                </DOMOvalObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

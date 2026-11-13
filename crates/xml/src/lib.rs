@@ -1,9 +1,11 @@
 //! AniCraft XML (layer L0): a small, strict-enough XML element reader shared by the importers.
 //!
 //! XFL and SVG keep everything that matters in elements and attributes (XFL even stores shape
-//! geometry as an attribute), so the reader builds a tree of elements with attributes and
-//! ignores text. It handles the prolog, comments, CDATA, doctype, processing instructions, the
-//! five standard entities and numeric character references. Limits on input size, depth and
+//! geometry as an attribute), so the reader builds a tree of elements with attributes. An
+//! element's own character data (text and CDATA, such as XFL's `<characters>`) is kept in
+//! [`Element::text`], except whitespace-only text between child elements (indentation). It
+//! handles the prolog, comments, CDATA, doctype, processing instructions, the five standard
+//! entities and numeric character references. Limits on input size, depth and
 //! element count keep a hostile file from exhausting memory or the stack. Never panics.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -19,6 +21,9 @@ pub struct Element {
     pub name: String,
     pub attrs: HashMap<String, String>,
     pub children: Vec<Element>,
+    /// The element's character data, entities resolved (XFL's `<characters>`). Whitespace
+    /// between child elements is dropped.
+    pub text: String,
 }
 
 impl Element {
@@ -56,10 +61,17 @@ pub enum XmlError {
     Syntax(usize, &'static str),
 }
 
+/// The name of the pseudo-elements that hold character data in mixed content (see
+/// [`parse_mixed`]).
+pub const TEXT_NODE: &str = "#text";
+
 struct P<'a> {
     s: &'a [u8],
     i: usize,
     count: usize,
+    /// Elements (by name without namespace prefix) whose character data is also kept in order
+    /// among their children, as [`TEXT_NODE`] children.
+    mixed: &'a [&'a str],
 }
 
 impl P<'_> {
@@ -98,16 +110,32 @@ impl P<'_> {
         }
         Ok(String::from_utf8_lossy(self.s.get(start..self.i).unwrap_or_default()).into_owned())
     }
-    /// Skips text, comments and other non-element content up to the next tag.
-    fn skip_misc(&mut self) -> Result<(), XmlError> {
+    /// Skips text, comments and other non-element content up to the next tag, adding text and
+    /// CDATA to `text` when there is one.
+    fn skip_misc(&mut self, mut text: Option<&mut String>) -> Result<(), XmlError> {
         loop {
+            let start = self.i;
             while self.peek().is_some_and(|c| c != b'<') {
                 self.i += 1;
+            }
+            if let Some(t) = text.as_deref_mut()
+                && self.i > start
+            {
+                let raw = String::from_utf8_lossy(self.s.get(start..self.i).unwrap_or_default());
+                if raw.contains('&') {
+                    t.push_str(&unescape(&raw));
+                } else {
+                    t.push_str(&raw);
+                }
             }
             if self.starts(b"<!--") {
                 self.skip_until(b"-->")?;
             } else if self.starts(b"<![CDATA[") {
+                let from = self.i + 9;
                 self.skip_until(b"]]>")?;
+                if let Some(t) = text.as_deref_mut() {
+                    t.push_str(&String::from_utf8_lossy(self.s.get(from..self.i.saturating_sub(3)).unwrap_or_default()));
+                }
             } else if self.starts(b"<?") {
                 self.skip_until(b"?>")?;
             } else if self.starts(b"<!") {
@@ -172,9 +200,21 @@ impl P<'_> {
                 None => return self.err("unexpected end inside a tag"),
             }
         }
-        // Content: children until the matching end tag.
+        // Content: children until the matching end tag. In mixed content each stretch of
+        // character data also becomes a text node, so it keeps its place among the children.
+        let local = el.name.rsplit(':').next().unwrap_or(&el.name);
+        let mixed = self.mixed.contains(&local);
         loop {
-            self.skip_misc()?;
+            let before = el.text.len();
+            self.skip_misc(Some(&mut el.text))?;
+            if mixed && el.text.len() > before {
+                self.count += 1;
+                if self.count > MAX_ELEMENTS {
+                    return Err(XmlError::TooMany);
+                }
+                let text = el.text.get(before..).unwrap_or_default().to_string();
+                el.children.push(Element { name: TEXT_NODE.to_string(), text, ..Element::default() });
+            }
             if self.peek().is_none() {
                 return self.err("missing end tag");
             }
@@ -186,6 +226,9 @@ impl P<'_> {
                     return self.err("mismatched end tag");
                 }
                 self.i += 1;
+                if !mixed && !el.children.is_empty() && el.text.trim().is_empty() {
+                    el.text = String::new();
+                }
                 return Ok(el);
             }
             el.children.push(self.element(depth + 1)?);
@@ -238,13 +281,21 @@ fn unescape(s: &str) -> String {
 
 /// Parses a document and returns its root element.
 pub fn parse(src: &[u8]) -> Result<Element, XmlError> {
+    parse_mixed(src, &[])
+}
+
+/// Parses a document whose `mixed` elements (named without namespace prefix, such as SVG's
+/// `text` and `tspan`) have mixed content: their character data is also kept among their
+/// children, in order, as [`TEXT_NODE`] elements whose `text` is that stretch (whitespace
+/// included). Everything else is read as [`parse`] reads it.
+pub fn parse_mixed(src: &[u8], mixed: &[&str]) -> Result<Element, XmlError> {
     if src.len() > MAX_INPUT {
         return Err(XmlError::TooLarge);
     }
     // A UTF-8 byte-order mark is allowed.
     let src = src.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(src);
-    let mut p = P { s: src, i: 0, count: 0 };
-    p.skip_misc()?;
+    let mut p = P { s: src, i: 0, count: 0, mixed };
+    p.skip_misc(None)?;
     if p.peek().is_none() {
         return p.err("no root element");
     }
@@ -271,7 +322,33 @@ mod tests {
         let tl = &root.list("timelines")[0];
         assert_eq!(tl.attr("name"), Some("Scene & \"1\" AB"));
         assert!(tl.list("layers").is_empty());
-        assert_eq!(root.children.len(), 1, "CDATA and text are skipped");
+        assert_eq!(root.children.len(), 1, "CDATA and text are not elements");
+        assert!(root.text.contains(" <ignored/> ") && root.text.contains("text is ignored"), "{:?}", root.text);
+    }
+
+    #[test]
+    fn character_data_is_kept_and_indentation_dropped() {
+        let x = b"<t>\n  <characters>a &lt;b&gt;&#xD;line 2</characters>\n  <characters> </characters><c><![CDATA[x<y]]>z</c>\n</t>";
+        let root = parse(x).unwrap();
+        assert_eq!(root.text, "", "whitespace between elements");
+        let texts: Vec<&str> = root.children.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["a <b>\rline 2", " ", "x<yz"]);
+    }
+
+    #[test]
+    fn mixed_content_keeps_text_in_order() {
+        let x = b"<svg><text x='1'>Hello <tspan>big</tspan> world&amp;<!-- c --> more</text>
+  <g>
+</g></svg>";
+        let root = parse_mixed(x, &["text", "tspan"]).unwrap();
+        let t = &root.children[0];
+        let parts: Vec<(&str, &str)> = t.children.iter().map(|c| (c.name.as_str(), c.text.as_str())).collect();
+        assert_eq!(parts, [(TEXT_NODE, "Hello "), ("tspan", "big"), (TEXT_NODE, " world& more")]);
+        assert_eq!(t.children[1].children.len(), 1, "a tspan's own text is a node too");
+        assert_eq!(t.text, "Hello  world& more", "the concatenation is kept as before");
+        assert_eq!(root.children.len(), 2, "elements not listed keep dropping whitespace");
+        assert!(root.children[1].children.is_empty());
+        assert_eq!(parse(x).unwrap().children[0].children.len(), 1, "plain parsing makes no text nodes");
     }
 
     #[test]

@@ -215,16 +215,16 @@ fn undoable_bulk_deletions_ask_but_are_not_blocked() {
 fn copy_paste_cut_and_paste_in_place() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 20, "h": 20}));
-    let orig = s.selection[0];
+    let orig = s.selection.ids().next().unwrap();
     run(&mut s, "edit.copy", json!({}));
     run(&mut s, "edit.paste", json!({}));
     let els = s.visible_elements();
     assert_eq!(els.len(), 2);
-    assert_ne!(s.selection[0], orig, "pasted elements get fresh ids");
-    let pasted = els.iter().find(|e| e.id == s.selection[0]).unwrap();
+    assert_ne!(s.selection.ids().next().unwrap(), orig, "pasted elements get fresh ids");
+    let pasted = els.iter().find(|e| e.id == s.selection.ids().next().unwrap()).unwrap();
     assert_eq!(pasted.transform.translation(), Vec2::new(30.0, 30.0));
     run(&mut s, "edit.paste_in_place", json!({}));
-    let last = s.visible_elements().into_iter().find(|e| e.id == s.selection[0]).unwrap();
+    let last = s.visible_elements().into_iter().find(|e| e.id == s.selection.ids().next().unwrap()).unwrap();
     assert_eq!(last.transform.translation(), Vec2::new(20.0, 20.0));
     // paste centred on a point
     run(&mut s, "edit.paste", json!({"x": 500, "y": 400}));
@@ -241,12 +241,17 @@ fn copy_paste_cut_and_paste_in_place() {
 fn clipboard_carries_symbols_into_another_document() {
     let mut s = Session::new(sample::demo());
     run(&mut s, "layer.select", json!({"index": 0}));
+    // Select All takes every unlocked layer's artwork (ADR 0044).
     run(&mut s, "edit.select_all", json!({}));
-    run(&mut s, "edit.copy", json!({}));
+    let copied = run(&mut s, "edit.copy", json!({}));
+    let used = s.doc.library.len();
     run(&mut s, "file.new", json!({"confirm": true}));
     assert!(s.doc.library.is_empty());
     run(&mut s, "edit.paste_in_place", json!({}));
-    assert_eq!(s.doc.library.len(), 1, "the Ball symbol came along");
+    assert!(s.doc.library.iter().any(|x| x.name == "Ball"), "the Ball symbol came along");
+    assert_eq!(s.doc.library.len(), used);
+    // Each copied layer lands on a layer of its own, made for it here.
+    assert_eq!(s.doc.timeline(0).layers.len() as u64, copied["layers"].as_u64().unwrap());
     assert!(!anicraft_doc::evaluate(&s.doc, 0).items.is_empty(), "and it renders");
     let ids: Vec<u64> = s.doc.library.iter().map(|x| x.id.0).collect();
     assert!(s.doc.next_id > *ids.iter().max().unwrap());
@@ -280,10 +285,10 @@ fn align_and_distribute() {
     }
     run(&mut s, "edit.select_all", json!({}));
     run(&mut s, "align.left", json!({}));
-    let lefts: Vec<f32> = s.selection.iter().map(|id| s.element_bounds(*id).min.x).collect();
+    let lefts: Vec<f32> = s.selection.ids().map(|id| s.element_bounds(id).min.x).collect();
     assert!(lefts.iter().all(|x| (x - 10.0).abs() < 1e-3), "{lefts:?}");
     run(&mut s, "align.distribute_v", json!({}));
-    let mut ys: Vec<f32> = s.selection.iter().map(|id| s.element_bounds(*id).center().y).collect();
+    let mut ys: Vec<f32> = s.selection.ids().map(|id| s.element_bounds(id).center().y).collect();
     ys.sort_by(f32::total_cmp);
     assert!(((ys[1] - ys[0]) - (ys[2] - ys[1])).abs() < 1e-3, "{ys:?}");
     // a single element aligns to the stage
@@ -481,13 +486,13 @@ fn commands_png(s: &Session) -> Vec<u8> {
 fn pick_selects_topmost() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
-    let a = s.selection[0];
+    let a = s.selection.ids().next().unwrap();
     run(&mut s, "draw.rect", json!({"x": 50, "y": 50, "w": 100, "h": 100}));
-    let b = s.selection[0];
+    let b = s.selection.ids().next().unwrap();
     run(&mut s, "element.pick", json!({"x": 75, "y": 75}));
-    assert_eq!(s.selection, vec![b]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![b]);
     run(&mut s, "element.pick", json!({"x": 10, "y": 10}));
-    assert_eq!(s.selection, vec![a]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![a]);
     run(&mut s, "element.pick", json!({"x": 500, "y": 500}));
     assert!(s.selection.is_empty());
 }
@@ -508,7 +513,7 @@ fn save_load_round_trip() {
 /// Adversarial params for every command: must return Ok or Err, never panic.
 #[test]
 fn panic_hunt_every_command() {
-    let hostile: Vec<Value> = vec![
+    let mut hostile: Vec<Value> = vec![
         Value::Null,
         json!({}),
         json!([]),
@@ -544,10 +549,340 @@ fn panic_hunt_every_command() {
         json!({"d": "M 0 0 C", "points": [[0, 0]], "mode": "straighten", "tolerance": 0}),
         json!({"id": 3, "points": [[0, 0], [99, 9], [1, 2]], "dx": 1e30, "dy": 0, "cmds": [0, 1, 2, 3, 4, 5, 99], "cmd": 0, "smooth": true}),
         json!({"id": 5, "points": [[1, 1]], "dx": 3, "dy": 4, "x": 0, "y": 0, "slop": 1e9, "cmds": [1, 1, 0], "cmd": 1, "smooth": false}),
+        json!({"id": 3, "profile": [[0, 1e30, -5], ["x"], [0.5, 16, 16]], "index": u64::MAX, "t": -0.5, "left": 1e9, "width": f64::MAX}),
+        json!({"id": 3, "profile": "taper_both", "index": 0, "t": 1, "x": 1e30, "y": -1e30, "left": 0, "right": 16}),
+        json!({"profile": (0..500).map(|i| json!([f64::from(i) / 500.0, 2, 2])).collect::<Vec<_>>()}),
+        // Brush presets, curves and the Paint Brush (ADR 0068): junk, extremes, both modes.
+        json!({"points": [[0, 0, 0.5], [300, 40, 1], [600, 0, 0]], "preset": "chalk", "as_stroke": true, "curve": [[0, 1], [0.5, 0], [1, 1]], "taper_start": 50, "taper_end": 50}),
+        json!({"points": [[0, 0], [1e5, 1e5]], "preset": "dotted", "spacing": 5, "jitter": 50, "size": 2000, "name": "x", "to": "y"}),
+        json!({"points": [[0, 0], [10, 0]], "preset": "nope", "curve": "wobbly", "spacing": 1, "jitter": -1, "name": "", "from": "missing", "names": [1, 2]}),
+        json!({"points": [[f64::MAX, 0]], "curve": [[f64::NAN, 2]], "pressure_size": "yes", "pressure_opacity": 1, "as_stroke": "no", "name": "Chalk", "to": "Pencil"}),
+        json!({"points": (0..2000).map(|i| json!([f64::from(i), f64::from(i % 7) * 3.0, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "preset": "ink_pen", "as_stroke": true, "name": "a".repeat(5000)}),
+        // Swatches (ADR 0078): junk kinds, indices and paints, both targets, a missing file.
+        json!({"index": 0, "from": 18, "to": 0, "target": "stroke", "name": "a".repeat(5000)}),
+        json!({"index": 12, "target": "stroke", "selection": false, "type": "radial", "stops": [{"offset": 0, "color": "#000000"}, {"offset": 1, "color": "#ffffff"}], "focal": 0.98, "at": 0}),
+        json!({"index": u64::MAX, "from": "nowhere", "target": 3, "type": "conic", "stops": [{"offset": 2, "color": "#00"}], "spread": "wrap", "path": "no/such/palette.gpl"}),
+        json!({"color": "#ff000000", "name": "\u{0}\n", "at": u64::MAX, "replace": true, "path": ""}),
+        // Stroke styles (ADR 0046): junk, extremes and patterns that would be very fine.
+        json!({"cap": "none", "join": "miter", "miter": 100, "dash": [0, 1e-30], "dash_offset": -1e4, "style": "dashed"}),
+        json!({"cap": 7, "join": "mitre", "miter": f64::NAN, "dash": vec![1e4; 16], "dot_spacing": 0, "style": "dotted"}),
+        json!({"style": "dotted", "dot_spacing": 0, "x0": 0, "y0": 0, "x1": 1e6, "y1": 1, "stroke_width": 1000}),
+        json!({"dash": [0.001, 0.001], "x0": -1e6, "y0": 0, "x1": 1e6, "y1": 0, "x": 0, "y": 0}),
+        json!({"dash": "x", "cap": "square", "style": "ragged", "dash_offset": 1e30}),
+        json!({"sound": SOUND, "sync": "stream", "repeat": 9999, "loop": true, "extend": true, "frame": 99_999}),
+        json!({"sound": SOUND, "sync": "nope", "repeat": 0, "loop": "x", "name": ""}),
+        json!({"sound": SOUND, "frame": 3, "extend": true, "name": "renamed"}),
+        json!({"sound": u64::MAX, "repeat": 1e9}),
+        json!({"sound": "a", "sync": 3}),
+        // Effects, envelopes and layer volumes (ADR 0039).
+        json!({"effect": "custom", "envelope": [{"at": 1e300, "left": 2, "right": -1}], "volume": 1e30, "muted": "x"}),
+        json!({"effect": "fade_in", "envelope": (0..40).map(|i| json!([i, 0.5, 0.5])).collect::<Vec<_>>(), "volume": -0.5}),
+        json!({"effect": "nope", "envelope": [[0, 1]], "volume": 0.5, "muted": true}),
+        json!({"effect": "custom", "sync": "stream", "loop": true, "envelope": [[0, 0, 1], [86_400, 1, 0]]}),
+        json!({"effect": 7, "envelope": "x", "volume": f64::NAN}),
+        json!({"hint": "a", "x": 1e7, "y": -1e7, "side": "end"}),
+        json!({"hint": u64::MAX, "side": "middle", "x": 0, "y": 0}),
+        json!({"hint": "zz", "frame": 0}),
+        json!({"filters": [{"type": "bevel", "blur_x": 1e30, "distance": -1e30, "angle": f64::MAX, "side": "full", "shadow_color": "#zz"}]}),
+        json!({"filters": [{"type": "gradient_glow", "stops": [1, "x", null]}, {"type": "gradient_bevel", "stops": "x"}]}),
+        json!({"filters": [{"type": "gradient_bevel", "stops": [{"offset": 1e30, "color": {"r": 9, "g": -9, "b": 0, "a": 2}}], "strength": -1, "quality": 255}]}),
+        json!({"orient": true, "d": "M0 0 C 1e5 -1e5 -1e5 1e5 10 10 Q 5 5 0 0 Z M 9 9 L 1 1"}),
+        json!({"orient": "x", "d": 5, "property": "x", "value": 1e6}),
+        json!({"orient": false, "d": "M 1e6 1e6 L -1e6 -1e6", "dx": 1e6, "dy": -1e6}),
+        // Motion path points (ADR 0038): ends, repeats and out-of-range anchors, segments.
+        json!({"anchors": [0, 1, 2, 3, u64::MAX], "anchor": 1, "smooth": true, "segment": 1, "t": 0.5}),
+        json!({"anchors": [1, 1, 1], "anchor": u64::MAX, "smooth": false, "segment": u64::MAX, "t": f64::NAN}),
+        json!({"x": 75, "y": 0, "slop": 1000, "anchors": [1], "anchor": 0, "smooth": true, "dx": -0.5, "dy": 3}),
+        // Brush strokes: huge tips over long drags, specks, pressure at the limits.
+        json!({"points": [[0, 0, 0.0], [99_999, 99_999, 1.0], [-99_999, 5, 0.5]], "size": 2000, "shape": "square", "angle": 1e6, "roundness": 5, "smoothing": 0, "mode": "behind", "unit": 0.001}),
+        json!({"points": (0..3000).map(|i| json!([i % 7, (i * 13) % 11, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "size": 0.1, "mode": "fills", "smoothing": 100, "unit": 1000}),
+        json!({"points": [[5, 5, -1], [6, 6, "x"]], "shape": 3, "mode": null, "roundness": f64::NAN}),
+        // Eraser and Eyedropper (ADR 0034): strokes over the raw shapes, a tip larger than the
+        // stage, picks into the other swatch, styles applied to whatever is selected.
+        json!({"points": [[0, 0], [40, 40], [90, 5]], "size": 30, "mode": "selected_fills", "x": 30, "y": 30, "slop": 0}),
+        json!({"points": [[45, 45]], "size": 2000, "mode": "inside", "x": 45, "y": 45, "other": true, "fill": false, "stroke": true}),
+        json!({"points": [[5, 5], [55, 55]], "size": 4, "mode": "lines", "shape": "square", "x": 1, "y": 1, "fill": "yes"}),
+        // The Selection tool on raw shapes (ADR 0041): corners and edges of the raw rectangles,
+        // stale and hostile point lists, huge snaps and marquees, segments that aren't there.
+        json!({"x": 30, "y": 30, "to_x": 1e7, "to_y": -1e7, "snap": 1e9, "merge": false, "dx": 1e7, "dy": -1e7}),
+        json!({"x": 60, "y": 45, "to_x": 30.1, "to_y": 30, "snap": 10, "points": [[1, 99_999], [u64::MAX, 0]], "cmd": 1, "t": 2}),
+        json!({"x": 45, "y": 30, "dx": 5, "dy": 5, "cmd": u64::MAX, "t": f64::NAN, "id": 2, "slop": 1e9}),
+        json!({"x0": 10, "y0": 10, "x1": 45, "y1": 75, "add": true, "from": [1, 2, 3], "snap": 3}),
+        json!({"x0": -1e7, "y0": 1e7, "x1": 1e7, "y1": -1e7, "add": false, "from": [45, 45], "snap": 0.2}),
+        json!({"x0": 30, "y0": 30, "x1": 30, "y1": 30, "point_slop": -5, "ids": [u64::MAX], "points": "x"}),
+        // Subselection on raw shapes (ADR 0042): handles that aren't there or move too far,
+        // anchors to move along that are hostile, connected sets of anything.
+        json!({"id": 3, "cmd": 1, "slot": 2, "dx": 1e30, "dy": 0, "x": 30, "y": 30, "to_x": 31, "to_y": 30, "with": [[30, 30], [1e30, 0]]}),
+        json!({"id": 5, "cmd": u64::MAX, "slot": 9, "dx": 1, "dy": 1, "with": "x", "x0": 0, "y0": 0, "x1": 1e9, "y1": 1e9}),
+        json!({"id": 4, "cmd": 2, "slot": 1, "dx": -3, "dy": 2, "x": 60, "y": 60, "to_x": 61, "to_y": 61, "with": [[60, 60], [30, 90], [90, 30]], "merge": false}),
+        // Kept scripts (ADR 0013 tier 1): odd text, unknown languages, class names that aren't.
+        json!({"text": "\u{0}\r\n]]>\u{202e}stop();", "language": "other", "class": "a.b", "base": "c", "symbol": 1}),
+        json!({"text": "x".repeat(1 << 20), "language": 3, "class": "not a class", "base": ""}),
+        json!({"text": "", "language": "ActionScript3", "class": "", "base": "Orphan"}),
+        // Bones (ADR 0043): the rigged session's bones are 100 and 102 (its armature layer 101),
+        // its instances 10–12.
+        json!({"bone": 102, "x": 1e30, "y": -1e30, "local": [1e9, "a"], "frame": 99_999}),
+        json!({"bone": 102, "x": 0, "y": 0, "local": [f64::MAX, 0], "angle": 1e9, "rotate_by": -1e9, "dx": 1e7, "dy": -1e7}),
+        json!({"bone": 100, "min": 400, "max": -400, "constrain": true, "pinned": "x"}),
+        json!({"bone": 100, "min": 10, "max": 10, "constrain": "yes", "pinned": true, "x": 250, "y": 250}),
+        json!({"from": 10, "to": 12, "head": [0, 0], "tail": [1e30, 0], "name": "x".repeat(300)}),
+        json!({"from": 12, "to": 10, "head": [5], "tail": "x", "bone": u64::MAX}),
+        json!({"from": 11, "to": 13, "head": [-1e6, 1e6], "layer": 101}),
+        // Springs and joint translation (ADR 0084): hostile strengths, damping and limits.
+        json!({"bone": 102, "axis": "x", "enabled": true, "constrain": true, "min": 1e30, "max": -1e30, "strength": 1e30, "damping": -1e30, "slide_x": 1e30, "slide_y": f64::NAN}),
+        json!({"bone": 102, "axis": "y", "enabled": "yes", "constrain": false, "min": -10_000, "max": 10_000, "strength": 100, "damping": 0, "slide_y": -10_000, "x": 1e5, "y": -1e5}),
+        json!({"bone": 100, "axis": 7, "min": 0, "max": 0, "strength": 0.000_001, "damping": 99.999_99, "slide_x": 0.5, "enabled": false}),
+        json!({"bone": u64::MAX, "axis": "x", "strength": f64::MAX, "damping": f64::MIN, "enabled": true, "layer": 101}),
+        // Shape armatures (ADR 0071): the shaped session's tail is 3, its bones 100 and 103.
+        json!({"shape": 3, "head": [1e30, 0], "tail": [-1e30, 0], "parent": 103, "points": [0, 1, u64::MAX], "mode": "add"}),
+        json!({"shape": 3, "head": [150, 150], "tail": [150, 150], "bone": 103, "points": (0..30).collect::<Vec<_>>(), "mode": "remove"}),
+        json!({"parent": 100, "tail": [250, 290], "bone": 100, "points": [], "mode": "auto", "points_": true}),
+        json!({"bone": 100, "points": ["a", -1, 1e30], "mode": 7}),
+        // Edit Multiple Frames (ADR 0047): ranges past the end or reversed, items that aren't
+        // there or aren't triples, moves at the limits.
+        json!({"first": 0, "last": 99_999, "dx": 1e7, "dy": -1e7, "items": [[0, 0, 1], "x", [u64::MAX, u64::MAX, u64::MAX]]}),
+        json!({"first": u64::MAX, "last": 0, "dx": 5, "dy": 5, "items": []}),
+        json!({"first": 40, "last": 0, "dx": 3, "dy": -2}),
+        json!({"first": 0, "last": 100_001, "dx": f64::NAN, "dy": 0, "items": [[1, 2]]}),
+        // Edit Multiple Frames, complete (ADR 0051): transforms at the limits, pivots and edges
+        // that aren't, pastes onto ranges with nothing in them, merges of what isn't raw.
+        json!({"first": 0, "last": 99_999, "a": 0, "b": 0, "c": 0, "d": 0, "e": 1e30, "f": 0, "merge": "x"}),
+        json!({"first": 0, "last": 50, "a": 1e9, "b": 1, "c": 1, "d": 1e-9, "e": 0, "f": f64::NAN}),
+        json!({"first": 0, "last": 50, "rotate": 1e9, "scale_x": 1e-9, "scale_y": -1e9, "skew_x": 90, "skew_y": -90, "pivot": [1e30, 0]}),
+        json!({"first": 0, "last": 50, "rotate": 45, "skew_x": 89.999, "pivot": [5], "edge": "nope", "to_stage": "x"}),
+        json!({"first": 0, "last": 50, "scale_x": -1, "pivot": [0, 0], "edge": "vcenter", "to_stage": true, "merge": false}),
+        json!({"first": 3, "last": 1, "edge": "right", "layer": u64::MAX, "items": [[0, 0, 0]]}),
+        json!({"first": 0, "last": 99_999, "layer": 0, "items": (0..200).map(|i| json!([i, i, i])).collect::<Vec<_>>()}),
+        // 9-slice guides (ADR 0055): crossed, huge, not numbers, moved while turned off.
+        json!({"on": true, "left": 90, "right": 10, "top": 1e30, "bottom": -1e30, "symbol": 1}),
+        json!({"on": false, "left": 5}),
+        json!({"on": "x", "left": f64::NAN, "right": "y", "top": null}),
+        json!({"left": -1e7, "right": 1e7, "top": -1e7, "bottom": 1e7}),
+        json!({"on": true, "symbol": u64::MAX}),
+        // Publish Settings (ADR 0060): ends past the movie, junk scales and names, whole
+        // profiles out of range.
+        json!({"format": "gif", "from": u64::MAX, "to": -1, "scale": f64::NAN, "output": "{name}\u{0}.gif"}),
+        json!({"format": "png", "frame": u64::MAX, "scale": 1e-30, "output": "a/b/c/../../{name}"}),
+        json!({"format": "sprite_sheet", "columns": u64::MAX, "padding": 256, "from": null, "to": null, "output": "{name}{name}{name}.png"}),
+        json!({"profile": {"gif": {"scale": 1e30, "range": {"from": 5, "to": 1}, "output": ""}, "audio": {"bits": 3, "rate": 0}, "html": {"title": "x"}}}),
+        json!({"profile": {"png": {"frame": 99_999, "enabled": true}}, "format": "svg", "enabled": true}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
-    for start in [Session::default(), Session::new(sample::demo())] {
+    // A document with a sound in the library and on a keyframe.
+    const SOUND: u64 = 900_000;
+    let mut with_sound = sample::demo();
+    let wav = crate::cmds_sound::test_wav(8000, &[0.25; 4000]);
+    with_sound.sounds.push(Arc::new(anicraft_doc::Sound::from_data(anicraft_doc::SoundId(SOUND), "t.wav", wav).unwrap()));
+    if let Some(k) = Arc::make_mut(&mut with_sound.timeline_mut(0).layers[0]).keyframe_mut(0) {
+        k.sound = Some(anicraft_doc::FrameSound { effect: anicraft_doc::SoundEffect::FadeOut, ..anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)) });
+    }
+    // ...and a stream with a custom envelope inside every symbol (sounds in symbols, ADR 0039).
+    for sym in &mut with_sound.library {
+        let tl = &mut Arc::make_mut(sym).timeline;
+        if let Some(l) = tl.layers.first_mut()
+            && let Some(k) = Arc::make_mut(l).keyframe_mut(0)
+        {
+            let env = anicraft_doc::SoundEffect::Custom(vec![anicraft_doc::EnvelopePoint::new(0.0, 0.0, 1.0), anicraft_doc::EnvelopePoint::new(0.1, 1.0, 0.0)]);
+            k.sound = Some(anicraft_doc::FrameSound { sync: anicraft_doc::SoundSync::Stream, looping: true, effect: env, ..anicraft_doc::FrameSound::new(anicraft_doc::SoundId(SOUND)) });
+        }
+    }
+    // A motion tween on an oriented motion path, playhead mid-span (ADR 0030).
+    let mut on_path = Session::default();
+    for (id, p) in [("draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10})), ("timeline.create_motion_tween", json!({})), ("motion.set_path", json!({"d": "M0 0 C 50 -80 100 80 150 0"})), ("motion.orient", json!({"orient": true}))] {
+        on_path.execute(id, &p).unwrap();
+    }
+    on_path.set_frame(9);
+    // Merge drawing (ADR 0031): every drawing command cuts into raw shapes already there.
+    let mut raw = Session::default();
+    raw.style.object_drawing = false;
+    for p in [json!({"x": 0, "y": 0, "w": 60, "h": 60}), json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"}), json!({"x": 1, "y": 1, "w": 10, "h": 10, "radius": 5})] {
+        raw.execute("draw.rect", &p).unwrap();
+    }
+    // An armature: two bones, posed at two frames with a limit and a pin (ADR 0043).
+    let (mut rig, b1, b2) = crate::tests_bone::rigged();
+    for (id, p) in [("bone.pose", json!({"bone": b1, "angle": 30, "frame": 8})), ("bone.set_limits", json!({"bone": b2, "min": -30, "max": 30})), ("bone.pin", json!({"bone": b1, "pinned": true}))] {
+        rig.execute(id, &p).unwrap();
+    }
+    // A bouncy, sliding elbow (ADR 0084), the root moving under it.
+    for (id, p) in [("bone.set_spring", json!({"bone": b2, "strength": 100, "damping": 0})), ("bone.set_translation", json!({"bone": b2, "axis": "x", "min": -40, "max": 40})), ("bone.pose", json!({"dx": 0, "dy": 90, "frame": 12}))] {
+        rig.execute(id, &p).unwrap();
+    }
+    assert_eq!((b1, b2), (100, 102), "the hostile params name these bones");
+    rig.set_frame(4);
+    // A shape armature: a tail with two bones, bent at frame 8, a point bound by hand (ADR 0071).
+    let mut shaped = Session::default();
+    shaped.style.object_drawing = false;
+    shaped.execute("draw.rect", &json!({"x": 100, "y": 140, "w": 200, "h": 20})).unwrap();
+    shaped.doc.next_id = 100;
+    let tail = shaped.doc.timeline(0).layers[0].keyframes[0].elements[0].id.0;
+    let sb1 = shaped.execute("bone.add_in_shape", &json!({"shape": tail, "head": [100, 150], "tail": [200, 150]})).unwrap()["bone"].as_u64().unwrap();
+    let sb2 = shaped.execute("bone.add_in_shape", &json!({"parent": sb1, "tail": [300, 150]})).unwrap()["bone"].as_u64().unwrap();
+    for (id, p) in [("bone.pose", json!({"bone": sb2, "angle": 60, "frame": 8})), ("bone.bind", json!({"bone": sb1, "points": [0], "mode": "add"}))] {
+        shaped.execute(id, &p).unwrap();
+    }
+    assert_eq!((tail, sb1, sb2), (3, 100, 103), "the hostile params name these");
+    shaped.set_frame(4);
+    // Asset Warp (ADR 0079): a warped rectangle and bitmap, a pin moved at frame 8 inside a
+    // tween, the playhead mid-tween, the rectangle selected.
+    let (mut warped, wr, wb) = crate::tests_warp::warped();
+    let pin = |s: &mut Session, el: u64, x: f32, y: f32| s.execute("warp.pin_add", &json!({"element": el, "x": x, "y": y})).unwrap()["pin"].as_u64().unwrap();
+    let (wp1, wp2) = (pin(&mut warped, wr, 110.0, 140.0), pin(&mut warped, wr, 290.0, 140.0));
+    let wp3 = pin(&mut warped, wb, 290.0, 230.0);
+    for (id, p) in [("timeline.goto", json!({"frame": 8})), ("timeline.insert_keyframe", json!({})), ("timeline.goto", json!({"frame": 0})), ("timeline.create_tween", json!({})), ("warp.pin_move", json!({"element": wr, "pin": wp2, "x": 300, "y": 220, "frame": 8}))] {
+        warped.execute(id, &p).unwrap();
+    }
+    warped.selection = crate::Selection::only(warped.layer, [anicraft_doc::ElementId(wr)]);
+    warped.set_frame(4);
+    hostile.extend([
+        json!({"element": wr, "pin": wp2, "x": 1e30, "y": -1e30, "dx": 1e7, "dy": -1e7, "frame": 99_999, "resolution": 0}),
+        json!({"element": wr, "pin": wp1, "x": 200, "y": 140, "dx": f64::NAN, "resolution": 48}),
+        json!({"element": wb, "pin": wp3, "x": 0, "y": 0, "dx": -1e6, "dy": 1e6, "resolution": u64::MAX}),
+        json!({"element": wb, "pin": u64::MAX, "x": 290, "y": 231, "frame": 4, "resolution": 2}),
+        json!({"element": u64::MAX, "pin": "a", "x": "b", "y": [1], "resolution": -3}),
+        json!({"element": wr, "x": 299.9, "y": 179.9, "pin": wp1, "dx": 0.0001}),
+    ]);
+    // Raw drawings and an object on two layers, selected on both through a marquee's cut that
+    // is still provisional (ADR 0041, 0044).
+    let mut layered = Session::default();
+    layered.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("layer.new", json!({})),
+        ("draw.rect", json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("draw.rect", json!({"x": 200, "y": 0, "w": 20, "h": 20, "object": true})),
+        ("raw.select_rect", json!({"x0": 20, "y0": 20, "x1": 250, "y1": 50})),
+    ] {
+        layered.execute(id, &p).unwrap();
+    }
+    assert_eq!(layered.selected_layers().len(), 2, "the fuzz starts with a selection on two layers");
+    // Raw drawings inside a symbol open for editing in place (ADR 0045), with a point added.
+    let mut in_symbol = Session::default();
+    in_symbol.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("modify.convert_to_symbol", json!({"name": "Inner"})),
+        ("element.translate", json!({"dx": 30, "dy": 15})),
+        ("symbol.edit", json!({})),
+        ("draw.rect", json!({"x": 30, "y": 30, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("raw.add_point", json!({"x": 45, "y": 90})),
+    ] {
+        in_symbol.execute(id, &p).unwrap();
+    }
+    assert_eq!(in_symbol.editing.len(), 1, "the fuzz starts inside a symbol");
+    // Raw drawings on several keyframes, artwork copied from two of them (ADR 0051).
+    let mut keyed = Session::default();
+    keyed.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("draw.rect", json!({"x": 100, "y": 0, "w": 60, "h": 60, "fill": "#ff0000"})),
+        ("timeline.goto", json!({"frame": 4})),
+        ("timeline.insert_keyframe", json!({})),
+        ("timeline.goto", json!({"frame": 8})),
+        ("timeline.insert_keyframe", json!({})),
+        ("frames.copy", json!({"first": 0, "last": 8})),
+        ("timeline.goto", json!({"frame": 4})),
+    ] {
+        keyed.execute(id, &p).unwrap();
+    }
+    // Library folders, nested, with items in them (ADR 0050); the fuzz moves, renames and
+    // deletes them, folders into themselves, names that clash or hold a slash.
+    let mut library = Session::new(sample::demo());
+    let outer = library.execute("library.new_folder", &json!({"name": "Characters"})).unwrap()["folder"].as_u64().unwrap();
+    let inner = library.execute("library.new_folder", &json!({"name": "Hero", "parent": outer})).unwrap()["folder"].as_u64().unwrap();
+    let ball = library.doc.library.first().map(|x| x.id.0).unwrap();
+    library.execute("library.move", &json!({"items": [{"symbol": ball}], "to": inner})).unwrap();
+    library.execute("library.duplicate", &json!({"symbol": ball})).unwrap();
+    // ...and a bitmap placed on the stage, for Swap Bitmap (ADR 0053).
+    let bm = anicraft_doc::BitmapId(library.doc.alloc_id());
+    let png = anicraft_render::encode_png(3, 2, &[0, 0, 255, 255].repeat(6)).unwrap();
+    library.doc.bitmaps.push(Arc::new(anicraft_doc::Bitmap::from_png(bm, "b.png", png).unwrap()));
+    library.execute("library.place", &json!({"bitmap": bm.0})).unwrap();
+    hostile.push(json!({"bitmap": bm.0, "items": [{"bitmap": bm.0}, {"symbol": ball}], "x": 3, "y": 4}));
+    hostile.extend([
+        json!({"items": [{"folder": outer}], "to": inner, "folder": outer, "name": "Hero", "parent": inner, "confirm": true}),
+        json!({"items": [{"folder": inner}, {"symbol": ball}, {"folder": inner}], "to": null, "folder": inner, "name": "a/b", "symbol": ball}),
+        json!({"items": [{"symbol": ball, "folder": outer}, "x", {"sound": u64::MAX}], "to": u64::MAX, "parent": "x", "name": " "}),
+        json!({"items": (0..200).map(|i| json!({"folder": i})).collect::<Vec<_>>(), "to": outer, "symbol": ball, "name": "x".repeat(300), "on": "x", "bitmap": 1}),
+        json!({"items": [{"symbol": ball}], "to": outer, "symbol": ball, "name": "Ball copy", "confirm": true}),
+        // Drops from the Library and Swap Bitmap (ADR 0053): mixed lists, two sounds, far points.
+        json!({"items": [{"symbol": ball}, {"sound": SOUND}, {"bitmap": u64::MAX}], "x": 1e300, "y": -1e300}),
+        json!({"items": [{"sound": SOUND}, {"sound": SOUND}, {"symbol": ball}], "x": 999_999, "y": -999_999, "bitmap": 0}),
+        json!({"items": [{"symbol": ball}, {"symbol": ball}, {"folder": inner}, null], "x": "a"}),
+        json!({"items": (0..1500).map(|_| json!({"symbol": ball})).collect::<Vec<_>>(), "x": 0, "y": 0}),
+        json!({"sound": SOUND, "symbol": ball, "x": 10, "y": 10}),
+        // Find and Replace and the Movie Explorer (ADR 0058): patterns that are slow in
+        // backtracking engines or too large, replacements that would nest a symbol in itself,
+        // stale hits, junk paths, rows and pages.
+        json!({"kind": "text", "text": "(a+)+$", "regex": true, "with": "$1$1$1${x}", "in": ["text", "labels", "layers", "instances", "scripts"], "scope": "document"}),
+        json!({"kind": "text", "text": "a{1000}{1000}", "regex": true, "with": ""}),
+        json!({"kind": "text", "text": "", "with": "x"}),
+        json!({"kind": "text", "text": "[a-z]", "regex": true, "with": "", "whole_word": false, "match_case": true, "confirm": true}),
+        json!({"kind": "text", "text": "L", "with": "", "at": {"scene": 0, "layer": 1, "field": "layer_name", "start": u64::MAX}}),
+        json!({"kind": "text", "text": "e", "with": "x".repeat(1000), "at": {"symbol": ball, "layer": u64::MAX, "field": "text", "frame": -1}}),
+        json!({"kind": "color", "color": "#ff0000", "with": "#00ff00", "in": ["fills", "strokes", "text", "nope"]}),
+        json!({"kind": "color", "color": "#3d8bfd", "with": "#000000", "scope": "document"}),
+        json!({"kind": "font", "font": "Inter", "with": "No Such Font"}),
+        json!({"kind": "symbol", "symbol": ball, "with": ball, "scope": "document"}),
+        json!({"kind": "sound", "sound": SOUND, "with": SOUND}),
+        json!({"kind": "bitmap", "bitmap": bm.0, "with": bm.0, "scope": "document"}),
+        json!({"kind": "nope", "layer": u64::MAX, "path": [{"layer": 1, "frame": u32::MAX, "element": u64::MAX}], "symbol": ball, "scene": 0}),
+        json!({"path": (0..100).map(|i| json!({"layer": i, "frame": i, "element": i})).collect::<Vec<_>>(), "layer": 1}),
+        json!({"all": true, "filter": "a", "show": {"frames": false, "symbols": "x"}, "expanded": ["s0", 5], "offset": u64::MAX, "limit": u64::MAX}),
+        json!({"all": true, "scope": "scene", "definitions": false, "show": {"frames": false}, "limit": 0}),
+    ]);
+    // Eases (ADR 0081): a classic tween with a custom ease of several segments and property
+    // groups of their own, an ease saved and one copied; the fuzz edits, saves and pastes them
+    // with hostile curves (NaN-like and reversed points, thousands of them, ends that move).
+    let mut eased = Session::new(sample::demo());
+    let tl = eased.doc.timeline(0).layers.iter().find(|l| l.keyframes.first().is_some_and(|k| k.tween.is_some() && k.motion.is_none())).map(|l| l.id.0).unwrap();
+    for (id, p) in [
+        ("timeline.set_easing", json!({"easing": {"custom": [[0, 0], [0.2, 1.4], [0.3, 1.4], [0.4, 1.4], [0.5, 1.4], [0.6, 0.8], [0.7, 0.8], [0.8, 0.8], [0.9, 1], [1, 1]]}, "frame": 0, "layer": tl})),
+        ("ease.separate", json!({"separate": true, "frame": 0, "layer": tl})),
+        ("ease.set", json!({"easing": "ElasticOut", "group": "rotation", "frame": 0, "layer": tl})),
+        ("ease.save", json!({"name": "Wobble", "easing": "BounceOut"})),
+        ("ease.copy", json!({"frame": 0, "layer": tl})),
+        ("timeline.goto", json!({"frame": 5})),
+        ("layer.select", json!({"layer": tl})),
+    ] {
+        eased.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
+    hostile.extend([
+        json!({"easing": {"custom": (0..30_000).map(|i| json!([f64::from(i) / 30_000.0, f64::from(i % 7) * 1e30])).collect::<Vec<_>>()}, "t": 0.5, "index": 1, "x": 0.5, "y": 1e30, "handle": "out", "smooth": true, "name": "Wobble", "group": "position"}),
+        json!({"easing": {"custom": {"points": [{"at": {"x": 1, "y": 1}}, {"at": {"x": -5, "y": 1e30}, "in": {"x": 9, "y": -1e30}}, {"at": {"x": 0.5, "y": 0.5}, "out": {"x": -9, "y": 0}}]}}, "saved": "Wobble", "index": 0, "handle": "sideways", "t": 2}),
+        json!({"easing": {"custom": {"points": (0..20_000).map(|i| json!({"at": {"x": f64::from(20_000 - i) / 20_000.0, "y": 0.5}})).collect::<Vec<_>>()}}, "saved": "Wobble", "index": u64::MAX, "x": f64::MAX, "y": f64::MIN}),
+        json!({"easing": {"saved": 3}, "group": "sparkle", "to": "", "name": "a".repeat(500), "replace": "yes", "separate": true}),
+        json!({"easing": {"saved": "Wobble"}, "group": "filters", "name": "Wobble", "replace": true, "to": "wobble", "separate": false, "property": "x", "index": 1, "smooth": false}),
+        json!({"easing": {"custom": [[0, 0], [1, 1]]}, "t": f64::NAN, "index": 1, "handle": "in", "x": -1e7, "y": 1e7, "property": "nope", "saved": ""}),
+    ]);
+    // A button open for editing, its hit area drawn over its other states (ADR 0057).
+    let mut button = Session::new(sample::interactive());
+    if let Some(id) = button.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::Button).map(|x| x.id) {
+        button.execute("symbol.edit", &json!({"symbol": id.0})).unwrap();
+    }
+    // Groups (ADR 0073): raw shapes, an object and a symbol instance in a group inside a group,
+    // the outer one moved and translucent, the inner one open for editing in place.
+    let mut grouped = Session::new(sample::demo());
+    grouped.style.object_drawing = false;
+    for (id, p) in [
+        ("draw.rect", json!({"x": 0, "y": 0, "w": 60, "h": 60})),
+        ("draw.ellipse", json!({"x": 20, "y": 20, "w": 60, "h": 60, "fill": "#ff0000", "object": true})),
+        ("edit.select_all", json!({})),
+        ("modify.group", json!({})),
+        ("draw.rect", json!({"x": 100, "y": 0, "w": 60, "h": 60, "object": true})),
+        ("edit.select_all", json!({})),
+        ("modify.group", json!({})),
+        ("element.translate", json!({"dx": 30, "dy": 15})),
+        ("element.set_alpha", json!({"alpha": 0.5})),
+        ("symbol.edit", json!({})),
+        ("edit.select_all", json!({})),
+    ] {
+        grouped.execute(id, &p).unwrap();
+    }
+    let inner = grouped.visible_elements().into_iter().find(|e| matches!(e.kind, anicraft_doc::ElementKind::Group { .. })).map(|e| e.id.0).unwrap();
+    grouped.execute("symbol.edit", &json!({"id": inner})).unwrap();
+    assert_eq!(grouped.editing.len(), 2, "the fuzz starts inside a group inside a group");
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, warped, layered, in_symbol, keyed, library, button, grouped, eased] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -559,10 +894,27 @@ fn panic_hunt_every_command() {
                 let _ = s.execute(spec.id, p);
             }
         }
-        // The document must still evaluate and render.
+        // The document must still evaluate and render, and so must what the stage shows.
         for f in [0, 1, 5, 47, 1000] {
             let _ = anicraft_render::render_frame(&s.doc, f, 0.1);
         }
+        s.hit_area = Some((anicraft_doc::Rgba::WHITE, 0.4));
+        let pic = s.stage_picture();
+        // ...and every button's hit area draws, under a pointer that goes over and presses.
+        let mut ns = anicraft_doc::player::NoScripts;
+        let st = anicraft_doc::player::start(&s.doc, &mut ns).state;
+        let p = anicraft_geom::Vec2::new(640.0, 400.0);
+        let st = anicraft_doc::player::input(&s.doc, &st, &[anicraft_doc::player::Event::Move(p), anicraft_doc::player::Event::Down(p), anicraft_doc::player::Event::Up(p)], &mut ns).state;
+        let _ = anicraft_render::render(&anicraft_doc::player::hit_overlay(&s.doc, &st, anicraft_doc::Rgba::WHITE, 0.4), &anicraft_render::View { transform: anicraft_geom::Affine::scale(0.1, 0.1), width: 128, height: 72, background: None });
+        let _ = anicraft_render::render_frame(&pic.doc, pic.frame, 0.1);
+        // ...and its sounds lay out and mix.
+        let voices = anicraft_doc::sound::voices(&s.doc, 8000);
+        let mut out = vec![0.0; 2 * 4096];
+        anicraft_doc::audio::mix(&voices, 8000, Default::default(), 0, &mut out);
+        // ...and its Library tree stays whole: nothing a load would have to repair.
+        let mut loaded = s.doc.clone();
+        loaded.sanitize();
+        assert_eq!(loaded.library_tree, s.doc.library_tree);
     }
 }
 
@@ -575,6 +927,129 @@ fn file_commands_reject_bad_params() {
     assert!(s.execute("file.open", &json!({"path": "/definitely/not/here.anicraft"})).is_err());
     assert!(s.execute("file.new", &json!({"width": 0})).is_err());
     assert!(s.execute("no.such.command", &json!({})).is_err());
+}
+
+// ----- crash recovery (ADR 0015) -------------------------------------------------------------
+
+/// A crash simulated end to end: a session autosaves unsaved work and dies without a clean
+/// exit; the next session finds the copy, restores it as unsaved work with its original path,
+/// and the copy can then be discarded (only with consent).
+#[test]
+fn crash_recovery_round_trip() {
+    use crate::recovery::{Autosaver, Outcome, SessionLock};
+    let dir = std::env::temp_dir().join(format!("anicraft-crash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = dir.join("walk.anicraft");
+    let d = dir.display().to_string();
+
+    // Session 1: saves, keeps working, autosaves in the background, then "crashes".
+    let mut s1 = Session::new(sample::demo());
+    run(&mut s1, "file.save", json!({"path": original.display().to_string()}));
+    run(&mut s1, "draw.rect", json!({"x": 10, "y": 10, "w": 50, "h": 40}));
+    assert!(s1.is_dirty());
+    let mut saver = Autosaver::start(SessionLock::acquire(&dir).unwrap()).unwrap();
+    saver.write(s1.doc.clone(), s1.path.as_deref());
+    let mut done = false;
+    for _ in 0..500 {
+        if saver.poll().iter().any(|o| matches!(o, Outcome::Written { .. })) {
+            done = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(done, "autosave finished");
+    // While it runs, nobody else is offered its copy.
+    let mut s2 = Session::default();
+    assert_eq!(run(&mut s2, "file.recovery_list", json!({"dir": d}))["documents"].as_array().unwrap().len(), 0);
+    drop(saver); // the crash: no clean finish, the OS drops the lock
+
+    // Session 2 (the next start) finds it.
+    let list = run(&mut s2, "file.recovery_list", json!({"dir": d}));
+    let docs = list["documents"].as_array().unwrap();
+    assert_eq!(docs.len(), 1, "{list}");
+    assert_eq!(docs[0]["name"], "walk.anicraft");
+    assert_eq!(docs[0]["original_newer"], false);
+    let id = docs[0]["session"].as_str().unwrap().to_string();
+
+    // Restoring over unsaved work asks first (irreversible), like Open.
+    run(&mut s2, "draw.rect", json!({"x": 0, "y": 0, "w": 5, "h": 5}));
+    assert!(matches!(s2.execute("file.recover", &json!({"dir": d, "session": id})), Err(EngineError::NeedsConfirmation(_))));
+    let v = run(&mut s2, "file.recover", json!({"dir": d, "session": id, "confirm": true}));
+    assert_eq!(v["recovered"], json!(id));
+    assert_eq!(s2.doc, s1.doc, "the work is back exactly");
+    assert!(s2.is_dirty(), "restored work is unsaved");
+    assert_eq!(s2.path.as_deref(), Some(original.as_path()), "Save goes back to the original");
+    assert_eq!(s2.history_len(), 0);
+
+    // Discarding needs explicit consent, whoever asks.
+    assert!(matches!(s2.execute("file.discard_recovery", &json!({"dir": d, "session": id})), Err(EngineError::NeedsConfirmation(_))));
+    assert!(s2.confirmation("file.discard_recovery", &json!({"dir": d, "session": id})).is_some_and(|c| c.irreversible));
+    run(&mut s2, "file.discard_recovery", json!({"dir": d, "session": id, "confirm": true}));
+    assert_eq!(run(&mut s2, "file.recovery_list", json!({"dir": d}))["documents"].as_array().unwrap().len(), 0);
+    assert!(original.exists(), "the user's own file is untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The original was saved after the autosave (a save just before the crash): restoring must
+/// not point Save at it, or older work would replace newer work.
+#[test]
+fn recovery_never_replaces_a_newer_original() {
+    let dir = std::env::temp_dir().join(format!("anicraft-crash-newer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = dir.join("a.anicraft");
+    let d = dir.display().to_string();
+    let mut s = Session::new(sample::demo());
+    s.path = Some(original.clone());
+    let mut meta = crate::recovery::RecoveryMeta::describe("old", &s.doc, Some(&original));
+    meta.saved_at = 1; // long ago
+    crate::recovery::write(&dir, "old", &s.doc, &meta).unwrap();
+    std::fs::write(&original, b"newer").unwrap();
+    let mut s2 = Session::default();
+    let v = run(&mut s2, "file.recover", json!({"dir": d, "session": "old"}));
+    assert_eq!(v["original_newer"], true);
+    assert!(s2.path.is_none(), "Save asks for a name instead");
+    assert!(s2.is_dirty());
+    assert_eq!(std::fs::read(&original).unwrap(), b"newer");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recovery_commands_survive_hostile_params() {
+    let dir = std::env::temp_dir().join(format!("anicraft-crash-hostile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = dir.display().to_string();
+    let mut s = Session::new(sample::demo());
+    let hostile = [
+        Value::Null,
+        json!({}),
+        json!({"dir": 5}),
+        json!({"dir": ""}),
+        json!({"dir": "   "}),
+        json!({"dir": d, "session": "../../etc/passwd"}),
+        json!({"dir": d, "session": "a\\..\\b"}),
+        json!({"dir": d, "session": ""}),
+        json!({"dir": d, "session": "x".repeat(10_000)}),
+        json!({"dir": d, "session": 7, "confirm": "yes"}),
+        json!({"dir": d, "session": "missing", "confirm": true}),
+        json!({"dir": "/no/such/folder/at/all", "session": "abc", "confirm": true}),
+    ];
+    for id in ["file.recovery_list", "file.recover", "file.discard_recovery", "file.autosave"] {
+        for p in &hostile {
+            let _ = s.execute(id, p);
+        }
+    }
+    // Nothing escaped the folder, and the document is intact.
+    assert!(!dir.join("..").join("etc").exists() || std::path::Path::new("/etc").exists());
+    // Headless autosave writes a copy that lists (no lock: headless sessions are not "live").
+    let v = run(&mut s, "file.autosave", json!({"dir": d}));
+    assert!(v["bytes"].as_u64().unwrap() > 0);
+    let list = run(&mut s, "file.recovery_list", json!({"dir": d}));
+    let ids: Vec<&str> = list["documents"].as_array().unwrap().iter().filter_map(|e| e["session"].as_str()).collect();
+    assert!(ids.contains(&format!("headless-{}", std::process::id()).as_str()), "{ids:?}");
+    assert!(ids.iter().all(|i| crate::recovery::valid_id(i)));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 
@@ -646,7 +1121,7 @@ fn moving_an_anchor_brings_its_handles_and_is_one_undo_step_in_a_gesture() {
 fn moves_follow_the_element_transform() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
-    let id = s.selection[0].0;
+    let id = s.selection.ids().next().unwrap().0;
     run(&mut s, "element.set_transform", json!({"sx": 2, "rotation": 90}));
     let a0 = stage_anchor(&s, id, 0);
     run(&mut s, "path.move_points", json!({"id": id, "points": [[0, 0]], "dx": 10, "dy": 0}));
@@ -657,7 +1132,7 @@ fn moves_follow_the_element_transform() {
 fn add_delete_and_convert_points() {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100}));
-    let id = s.selection[0].0;
+    let id = s.selection.ids().next().unwrap().0;
     let area = |s: &Session| shape_path(s, id).flatten(&anicraft_geom::Affine::IDENTITY, 0.1)[0].points.len();
     let n0 = shape_path(&s, id).editable_anchors().len();
     // The closing edge (left side, x = 0) can take a point too.
@@ -679,7 +1154,7 @@ fn add_delete_and_convert_points() {
     assert!(s.execute("path.delete_points", &json!({"id": id, "cmds": [0]})).is_err());
     // Symbols are not point-editable.
     run(&mut s, "modify.convert_to_symbol", json!({}));
-    let inst = s.selection[0].0;
+    let inst = s.selection.ids().next().unwrap().0;
     assert!(s.execute("path.add_point", &json!({"id": inst, "x": 0, "y": 0})).is_err());
 }
 
@@ -864,7 +1339,7 @@ fn shapes_on_layer(s: &Session) -> Vec<(u64, Option<anicraft_doc::Paint>, Option
     s.visible_elements()
         .iter()
         .filter_map(|e| match &e.kind {
-            ElementKind::Shape(sh) => Some((e.id.0, sh.fill.clone(), sh.stroke)),
+            ElementKind::Shape(sh) => Some((e.id.0, sh.fill.clone(), sh.stroke.clone())),
             _ => None,
         })
         .collect()
@@ -915,7 +1390,7 @@ fn ink_bottle_strokes_the_clicked_shape() {
     run(&mut s, "draw.ellipse", json!({"x": 0, "y": 0, "w": 40, "h": 40, "stroke": null}));
     assert!(shapes_on_layer(&s)[0].2.is_none());
     run(&mut s, "paint.ink", json!({"x": 20, "y": 20, "color": "#123456", "width": 4}));
-    let st = shapes_on_layer(&s)[0].2.expect("stroked");
+    let st = shapes_on_layer(&s)[0].2.clone().expect("stroked");
     assert_eq!((st.color, st.width), (anicraft_doc::Rgba::hex(0x123456), 4.0));
     assert!(s.execute("paint.ink", &json!({"x": 300, "y": 300})).is_err(), "nothing there");
     // Symbols keep their colours.
@@ -959,7 +1434,8 @@ fn opening_an_xfl_folder_imports_it_untitled() {
         dir.join("DOMDocument.xml"),
         r##"<DOMDocument width="320" height="240" frameRate="12"><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Art"><frames><DOMFrame index="0" duration="6"><elements>
         <DOMShape><fills><FillStyle index="1"><SolidColor color="#FF8800"/></FillStyle></fills><edges><Edge fillStyle1="1" edges="!0 0|2000 0|2000 2000|0 2000|0 0"/></edges></DOMShape>
-        <DOMStaticText/></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"##,
+        <DOMDynamicText name="title" width="200"><matrix><Matrix tx="20" ty="30"/></matrix><textRuns><DOMTextRun><characters>Hello</characters><textAttrs><DOMTextAttrs face="NoSuchFamilyAtAll-Bold" size="20" fillColor="#0000FF"/></textAttrs></DOMTextRun></textRuns></DOMDynamicText>
+        </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"##,
     )
     .unwrap();
     let mut s = Session::default();
@@ -967,12 +1443,32 @@ fn opening_an_xfl_folder_imports_it_untitled() {
     assert_eq!((s.doc.stage.width, s.doc.stage.fps), (320, 12.0));
     assert_eq!(s.doc.timeline(s.scene).layers[0].name, "Art");
     assert_eq!(s.doc.frame_count(), 6);
-    assert!(v["report"].as_str().unwrap().contains("1 text fields"), "{v}");
+    assert!(v["report"].as_str().unwrap().contains("Runs in Test Movie: 1 dynamic text fields"), "{v}");
     assert!(s.path.is_none(), "imported documents are untitled: Save never writes over the original");
     assert!(s.execute("file.save", &json!({})).is_err());
     // It renders.
     let dl = s.display_list();
     assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0xff8800))));
+    // Text comes across as an editable text block when this computer has fonts (ADR 0014),
+    // with the missing family named.
+    if !anicraft_text::Fonts::get().families().is_empty() {
+        assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"), "{v}");
+        assert_eq!(v["missing_fonts"], json!(["No Such Family At All"]));
+        let text = s.doc.timeline(s.scene).layers[0].keyframes[0].elements.iter().find(|e| matches!(e.kind, ElementKind::Text(_))).cloned().expect("a text element");
+        assert_eq!(text.name, "title");
+        assert!(dl.items.iter().any(|i| matches!(i.fill, Some(anicraft_doc::Paint::Solid(c)) if c == anicraft_doc::Rgba::hex(0x0000ff))), "the text renders");
+        s.select_only([text.id]);
+        run(&mut s, "text.edit", json!({"text": "Hello again"}));
+        // Saved and opened again, it is the same text.
+        let file = dir.join("imported.anicraft");
+        run(&mut s, "file.save", json!({"path": file.display().to_string()}));
+        let mut back = Session::default();
+        run(&mut back, "file.open", json!({"path": file.display().to_string()}));
+        let ElementKind::Text(t) = &back.doc.timeline(0).layers[0].keyframes[0].elements.iter().find(|e| e.id == text.id).unwrap().kind else { panic!("text") };
+        assert_eq!((t.text.as_str(), t.size, t.bold), ("Hello again", 20.0, true));
+        assert_eq!(t.kind(), anicraft_doc::TextKind::Dynamic, "a dynamic field stays one (ADR 0066)");
+        assert_eq!((t.box_width, t.field.as_ref().map(|f| f.lines)), (200.0, Some(anicraft_doc::LineType::Single)));
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1004,6 +1500,7 @@ fn animate_default_keys_map_to_the_same_commands() {
         ("Shift+,", "timeline.first_frame"),
         ("Shift+.", "timeline.last_frame"),
         ("F8", "modify.convert_to_symbol"),
+        ("Ctrl+Enter", "control.test_movie"),
         ("Ctrl+B", "modify.break_apart"),
         ("Ctrl+Shift+Z", "modify.remove_transform"),
         ("Ctrl+Shift+9", "modify.rotate_cw"),
@@ -1057,6 +1554,165 @@ fn bring_forward_send_backward_and_remove_transform() {
     let t = s.visible_elements().iter().find(|e| e.id.0 == ids[0]).unwrap().transform;
     assert_eq!(t.m[..4], [1.0, 0.0, 0.0, 1.0]);
     assert_eq!(t.translation(), before);
+}
+
+#[test]
+fn masked_frames_round_trip_through_svg_onto_mask_layers() {
+    // A drawing with a mask: a background, artwork under an ellipse mask, a layer on top.
+    let mut src = Session::default();
+    run(&mut src, "draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 360, "fill": "#20304a"}));
+    run(&mut src, "layer.new", json!({"name": "Art"}));
+    run(&mut src, "draw.rect", json!({"x": 100, "y": 60, "w": 400, "h": 240, "fill": "#ff6b4a"}));
+    run(&mut src, "draw.star", json!({"cx": 300, "cy": 180, "outer": 150, "inner": 60, "points": 5, "fill": "#ffd54a"}));
+    run(&mut src, "layer.new", json!({"name": "Mask"}));
+    run(&mut src, "draw.ellipse", json!({"x": 180, "y": 80, "w": 260, "h": 200}));
+    run(&mut src, "layer.toggle_mask", json!({}));
+    run(&mut src, "layer.new", json!({"name": "Top"}));
+    run(&mut src, "draw.rect", json!({"x": 20, "y": 20, "w": 60, "h": 60, "fill": "#66bb6a"}));
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-mask-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("masked.svg");
+    std::fs::write(&svg, crate::cmds_file::frame_svg(&src.doc, 0)).unwrap();
+
+    // Import it at the origin of an empty document of the same size.
+    let mut s = Session::default();
+    let before = s.doc.timeline(s.scene).layers.len();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    assert_eq!((v["masks"].as_u64(), v["layers"].as_u64()), (Some(1), Some(5)), "{v}");
+    let tl = s.doc.timeline(s.scene);
+    use anicraft_doc::LayerKind;
+    let kinds: Vec<(LayerKind, usize)> = tl.layers.iter().take(5).map(|l| (l.kind, tl.depth(tl.layers.iter().position(|x| x.id == l.id).unwrap()))).collect();
+    assert_eq!(kinds, [(LayerKind::Folder, 0), (LayerKind::Normal, 1), (LayerKind::Mask, 1), (LayerKind::Normal, 2), (LayerKind::Normal, 1)], "folder › top art, mask › masked art, background");
+    assert_eq!(tl.layers[0].name, "masked");
+    assert_eq!(tl.layers.len(), before + 5);
+    assert_eq!(s.selection.len(), 2, "the top layer's artwork (exported as a fill and a stroke) is selected");
+
+    // The same picture comes back.
+    let a = anicraft_render::render_frame(&src.doc, 0, 0.5).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&s.doc, 0, 0.5).unwrap().to_rgba8();
+    let worst = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs()).max().unwrap();
+    let mean = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs() as f64).sum::<f64>() / a.len() as f64;
+    assert!(mean < 0.01 && worst <= 2, "mean {mean:.3}, worst {worst} of 255");
+    // Exporting the import again gives the same masks.
+    assert_eq!(crate::cmds_file::frame_svg(&s.doc, 0).matches("<clipPath").count(), 1);
+
+    // One undo step removes the folder and all its layers.
+    s.undo().unwrap();
+    assert_eq!(s.doc.timeline(s.scene).layers.len(), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn soft_masks_round_trip_through_svg_onto_soft_mask_layers() {
+    // A grey ellipse as a luminance mask (ADR 0070) over an orange rect, on a dark background.
+    let mut src = Session::default();
+    run(&mut src, "draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 360, "fill": "#20304a"}));
+    run(&mut src, "layer.new", json!({"name": "Art"}));
+    run(&mut src, "draw.rect", json!({"x": 100, "y": 60, "w": 400, "h": 240, "fill": "#ff6b4a"}));
+    run(&mut src, "layer.new", json!({"name": "Mask"}));
+    run(&mut src, "draw.ellipse", json!({"x": 180, "y": 80, "w": 260, "h": 200, "fill": "#808080", "stroke": null}));
+    run(&mut src, "layer.toggle_mask", json!({}));
+    run(&mut src, "layer.set_mask", json!({"mask": "luminance"}));
+    // The middle shows half the orange (grey #808080 is 0.502 bright) over the background.
+    let pm = anicraft_render::render_frame(&src.doc, 0, 1.0).unwrap();
+    let px = pm.pixel(310, 180).unwrap();
+    let k = 128.0 / 255.0;
+    let want = [k * 1.0 + (1.0 - k) * 0x20 as f32 / 255.0, k * 0x6b as f32 / 255.0 + (1.0 - k) * 0x30 as f32 / 255.0];
+    assert!((px[0] - want[0]).abs() < 2e-3 && (px[1] - want[1]).abs() < 2e-3, "{px:?} vs {want:?}");
+    let svg_text = crate::cmds_file::frame_svg(&src.doc, 0);
+    assert!(svg_text.contains("<mask id=\"c0\"") && !svg_text.contains("mask-type"), "{svg_text}");
+
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-soft-mask-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("soft.svg");
+    std::fs::write(&svg, &svg_text).unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    assert_eq!(v["masks"].as_u64(), Some(1), "{v}");
+    let tl = s.doc.timeline(s.scene);
+    let mask = tl.layers.iter().find(|l| l.kind == anicraft_doc::LayerKind::Mask).unwrap();
+    assert_eq!(mask.mask_mode, anicraft_doc::MaskMode::Luminance);
+    let mask_id = mask.id;
+    // The same picture comes back, and exports the same mask again.
+    let a = anicraft_render::render_frame(&src.doc, 0, 0.5).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&s.doc, 0, 0.5).unwrap().to_rgba8();
+    let worst = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs()).max().unwrap();
+    let mean = a.iter().zip(&b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).unsigned_abs() as f64).sum::<f64>() / a.len() as f64;
+    assert!(mean < 0.01 && worst <= 2, "mean {mean:.3}, worst {worst} of 255");
+    assert_eq!(crate::cmds_file::frame_svg(&s.doc, 0).matches("<mask ").count(), 1);
+    // As an alpha mask the opaque grey ellipse reveals fully: it comes back as a plain mask.
+    run(&mut s, "layer.select", json!({"layer": mask_id.0}));
+    run(&mut s, "layer.set_mask", json!({"mask": "alpha"}));
+    std::fs::write(&svg, crate::cmds_file::frame_svg(&s.doc, 0)).unwrap();
+    let mut t = Session::default();
+    run(&mut t, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    let tl = t.doc.timeline(t.scene);
+    assert_eq!(tl.layers.iter().find(|l| l.kind == anicraft_doc::LayerKind::Mask).unwrap().mask_mode, anicraft_doc::MaskMode::Coverage);
+    let a = anicraft_render::render_frame(&s.doc, 0, 0.5).unwrap().to_rgba8();
+    let b = anicraft_render::render_frame(&t.doc, 0, 0.5).unwrap().to_rgba8();
+    assert!(a.iter().zip(&b).all(|(x, y)| (i32::from(*x) - i32::from(*y)).abs() <= 2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_soft_mask_and_text_path_fixture_imports_with_its_goldens() {
+    // crates/svg/fixtures/soft-masks-text-paths.svg (ADR 0070): pixel values worked out from
+    // the drawing itself.
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-fixture-0070-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("fixture.svg");
+    std::fs::write(&svg, include_str!("../../svg/fixtures/soft-masks-text-paths.svg")).unwrap();
+    let mut s = Session::default();
+    run(&mut s, "file.new", json!({"width": 200, "height": 100}));
+    run(&mut s, "file.import", json!({"path": svg.display().to_string(), "x": 0, "y": 0}));
+    let tl = s.doc.timeline(s.scene);
+    let mut modes: Vec<anicraft_doc::MaskMode> = tl.layers.iter().filter(|l| l.kind == anicraft_doc::LayerKind::Mask).map(|l| l.mask_mode).collect();
+    modes.sort_by_key(|m| m.key());
+    assert_eq!(modes, [anicraft_doc::MaskMode::Alpha, anicraft_doc::MaskMode::Luminance]);
+    let pm = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
+    let px = |x, y| pm.pixel(x, y).unwrap();
+    // Alpha mask: red fades out left to right, x 25 → 1 − 25.5 / 100.
+    for (x, y) in [(25u32, 10u32), (75, 10)] {
+        let want = 1.0 - (x as f32 + 0.5) / 100.0;
+        assert!((px(x, y)[0] - want).abs() < 6e-3 && px(x, y)[1] < 1e-3, "({x}, {y}): {:?} vs {want}", px(x, y));
+    }
+    // Luminance mask: #808080 shows 128 / 255 of the green.
+    assert!((px(150, 95)[1] - 128.0 / 255.0).abs() < 3e-3 && px(150, 95)[0] < 1e-3, "{:?}", px(150, 95));
+    // The text follows the arc, centred on it, when this computer has fonts.
+    if !anicraft_text::Fonts::get().families().is_empty() {
+        let els: Vec<std::sync::Arc<anicraft_doc::Element>> = s.timeline().layers.iter().filter_map(|l| anicraft_doc::evaluate_layer_elements(l, 0)).flat_map(|(_, e)| e.into_owned()).collect();
+        let text = els.into_iter().find_map(|e| match &e.kind {
+            anicraft_doc::ElementKind::Text(t) => Some((e.transform, t.clone())),
+            _ => None,
+        });
+        let (xf, t) = text.expect("the text");
+        assert_eq!(t.text, "on the arc");
+        let on = t.on_path.as_ref().expect("on its path");
+        assert!(t.align == anicraft_doc::TextAlign::Center && on.offset > 50.0);
+        let b = t.outline.bounds().transformed(&xf);
+        assert!((b.center().x - 100.0).abs() < 4.0 && b.min.y > 20.0 && b.max.y < 70.0, "{b:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn imported_svg_text_is_editable_text() {
+    if anicraft_text::Fonts::get().families().is_empty() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("anicraft-svg-text-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("title.svg");
+    std::fs::write(&svg, r##"<svg width="300" height="80"><text x="150" y="50" text-anchor="middle" font-family="Zz Not Installed" font-size="32" fill="#ff0000">Title</text><rect width="10" height="10"/></svg>"##).unwrap();
+    let mut s = Session::default();
+    let v = run(&mut s, "file.import", json!({"path": svg.display().to_string()}));
+    assert_eq!((v["texts"].as_u64(), v["elements"].as_u64(), v["layers"].as_u64()), (Some(1), Some(2), Some(1)));
+    assert_eq!(v["missing_fonts"], json!(["Zz Not Installed"]));
+    assert!(v["report"].as_str().unwrap().contains("Fonts not on this computer"));
+    let text = s.visible_elements().into_iter().find(|e| matches!(e.kind, anicraft_doc::ElementKind::Text(_))).unwrap();
+    run(&mut s, "element.select", json!({"ids": [text.id.0]}));
+    run(&mut s, "text.edit", json!({"text": "Longer title"}));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1121,7 +1777,7 @@ fn create_shape_tween_morphs_and_keeps_the_easing() {
     run(&mut s, "timeline.create_tween", json!({"easing": "ease-in"}));
     let v = run(&mut s, "timeline.create_shape_tween", json!({}));
     assert_eq!(v["kind"], "shape");
-    let t = s.active_layer().unwrap().keyframes[0].tween.unwrap();
+    let t = s.active_layer().unwrap().keyframes[0].tween.clone().unwrap();
     assert_eq!(t.kind, anicraft_doc::TweenKind::Shape);
     assert_ne!(t.easing, anicraft_doc::Easing::Linear, "switching kinds keeps the easing");
     // Midway the shape has moved off the square.
@@ -1129,7 +1785,7 @@ fn create_shape_tween_morphs_and_keeps_the_easing() {
     let mid = item.path.bounds().transformed(&item.transform);
     assert!(mid.max.x > 110.0, "{mid:?}");
     s.undo().unwrap();
-    assert_eq!(s.active_layer().unwrap().keyframes[0].tween.unwrap().kind, anicraft_doc::TweenKind::Classic);
+    assert_eq!(s.active_layer().unwrap().keyframes[0].tween.clone().unwrap().kind, anicraft_doc::TweenKind::Classic);
 }
 
 #[test]
@@ -1297,7 +1953,7 @@ fn add_motion_guide_steers_the_tween_and_stays_out_of_exports() {
     // Orient to path, and the guided type.
     run(&mut s, "layer.select", json!({"layer": art.0}));
     assert_eq!(run(&mut s, "timeline.set_orient", json!({"orient": true}))["orient"], true);
-    assert!(s.active_layer().unwrap().keyframes[0].tween.unwrap().orient);
+    assert!(s.active_layer().unwrap().keyframes[0].tween.clone().unwrap().orient);
     assert_eq!(run(&mut s, "layer.set_type", json!({"type": "normal"}))["type"], "normal");
     assert_eq!(run(&mut s, "layer.set_type", json!({"type": "guided"}))["type"], "guided");
     // A masked layer can't also follow a guide.
@@ -1455,9 +2111,10 @@ fn images_import_as_bitmaps_render_save_and_export() {
     run(&mut s, "edit.select_all", json!({}));
     run(&mut s, "edit.duplicate", json!({}));
     let svg = crate::cmds_file::frame_svg(&s.doc, 0);
-    // Two images, three instances (the JPEG one was duplicated): each image is embedded once.
+    // Two images, four instances (Select All took both layers, ADR 0044): each image is
+    // embedded once.
     assert_eq!(svg.matches("data:image/png;base64,").count(), 2);
-    assert_eq!(svg.matches("<pattern ").count(), 3);
+    assert_eq!(svg.matches("<pattern ").count(), 4);
     // Undo takes an import back, bitmap and all.
     let n = s.doc.bitmaps.len();
     s.undo().unwrap();
@@ -1482,7 +2139,7 @@ fn library_bitmaps_place_centred_on_the_stage() {
     // Placing it again from the Library adds a second picture, centred, on the current layer.
     let v = run(&mut s, "library.place", json!({"bitmap": bitmap, "x": 100, "y": 50}));
     let id = anicraft_doc::ElementId(v["element"].as_u64().unwrap());
-    assert_eq!(s.selection, vec![id]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![id]);
     let el = s.active_layer().unwrap().keyframe_at(s.frame).unwrap().elements.iter().find(|e| e.id == id).unwrap().clone();
     assert_eq!(el.name, "dot.png");
     assert_eq!(el.transform.apply(anicraft_geom::Vec2::new(3.0, 2.0)), anicraft_geom::Vec2::new(100.0, 50.0), "centred on x/y");
@@ -1535,6 +2192,33 @@ fn lottie_export_writes_the_movie_and_asks_before_replacing() {
 }
 
 #[test]
+fn html_export_writes_one_page_that_holds_the_interactive_movie() {
+    let dir = std::env::temp_dir().join(format!("anicraft-html-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("menu.html");
+    let mut s = Session::new(sample::interactive());
+    let v = run(&mut s, "file.export_html", json!({"path": path.display().to_string()}));
+    let html = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(v["bytes"].as_u64(), Some(html.len() as u64));
+    assert!(html.starts_with("<!DOCTYPE html>") && html.contains("<title>menu</title>"), "the title defaults to the file name");
+    assert!(html.contains("\"op\":\"goto_and_play\"") && html.contains("new AniCraft.Player"), "actions and the player are in the page");
+    assert_eq!((v["scenes"].as_u64(), v["frames"].as_u64()), (Some(1), Some(u64::from(s.doc.frame_count()))));
+    assert!(v["timelines"].as_u64().unwrap() >= 3, "the scene, the button and the spinner: {v}");
+    assert_eq!(v["report"], "");
+    // Replacing needs consent; params are checked.
+    let p = json!({"path": path.display().to_string(), "title": "Menu", "fit": false, "sound": false});
+    assert!(s.execute("file.export_html", &p).is_err());
+    let mut p = p;
+    p["confirm"] = json!(true);
+    run(&mut s, "file.export_html", p);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("<title>Menu</title>"));
+    assert!(s.execute("file.export_html", &json!({"path": dir.join("x.html").display().to_string(), "title": "t".repeat(300)})).is_err());
+    assert!(s.execute("file.export_html", &json!({"path": dir.join("x.html").display().to_string(), "fit": "yes"})).is_err());
+    assert!(s.execute("file.export_html", &json!({})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     if anicraft_text::Fonts::get().families().is_empty() {
         eprintln!("no fonts on this computer: text test skipped");
@@ -1543,7 +2227,7 @@ fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     let mut s = Session::default();
     let v = run(&mut s, "text.create", json!({"text": "Hello", "x": 100, "y": 50, "size": 64, "color": "#cc2200"}));
     let id = ElementId(v["element"].as_u64().unwrap());
-    assert_eq!(s.selection, vec![id]);
+    assert_eq!(s.selection.ids().collect::<Vec<_>>(), vec![id]);
     assert!(v["width"].as_f64().unwrap() > 64.0);
     let text = |s: &Session| match &s.visible_elements().iter().find(|e| e.id == id).unwrap().kind {
         ElementKind::Text(t) => t.clone(),
@@ -1597,7 +2281,7 @@ fn text_lays_out_renders_edits_saves_and_breaks_apart() {
     run(&mut s, "element.select", json!({"ids": [id.0]}));
     let before = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
     run(&mut s, "modify.break_apart", json!({}));
-    assert!(matches!(s.visible_elements().iter().find(|e| s.selection.contains(&e.id)).unwrap().kind, ElementKind::Shape(_)));
+    assert!(matches!(s.visible_elements().iter().find(|e| s.selection.has_id(e.id)).unwrap().kind, ElementKind::Shape(_)));
     assert_eq!(anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().data, before.data, "a shape exactly like the text");
     let fonts = run(&mut s, "text.fonts", json!({}));
     assert!(fonts["families"].as_array().is_some_and(|f| !f.is_empty()));
@@ -1675,4 +2359,101 @@ fn filters_render_on_movie_clips_clip_after_masks_and_save() {
     run(&mut s, "edit.undo", json!({}));
     run(&mut s, "edit.undo", json!({}));
     assert!(px(&s, 160, 150)[1] < 0.5, "unmasked again: the box shows");
+}
+
+/// Extreme values in every new filter, on a movie clip: sanitized, rendered at several scales
+/// and exported, never a panic or a non-number.
+#[test]
+fn hostile_bevel_and_gradient_filters_render_and_export() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 10, "w": 30, "h": 20, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    let stops = json!([{"offset": -5, "color": "#ff000000"}, {"offset": 0.5, "color": "#00ff00"}, {"offset": 0.5, "color": "#0000ff"}, {"offset": 99, "color": "#ffffff"}]);
+    for side in ["inner", "outer", "full"] {
+        for knockout in [false, true] {
+            // Huge values once (they clamp to the largest reach, which is slow to draw).
+            let huge = side == "full" && knockout;
+            let cases: &[(f64, f64, f64)] = if huge { &[(1e30, 1e30, 1e30), (255.0, -1000.0, 10.0)] } else { &[(0.0, 0.0, 0.0), (0.5, 0.3, 0.001), (12.0, -40.0, 3.0)] };
+            for &(blur, distance, strength) in cases {
+                let common = json!({"blur_x": blur, "blur_y": blur / 3.0, "distance": distance, "strength": strength, "quality": 3, "angle": -720, "side": side, "knockout": knockout});
+                let with = |t: &str| {
+                    let mut f = common.clone();
+                    f["type"] = json!(t);
+                    f["stops"] = stops.clone();
+                    f
+                };
+                run(&mut s, "element.set_filters", json!({"filters": [with("bevel"), with("gradient_glow"), with("gradient_bevel")]}));
+                for scale in [0.05, if huge { 0.25 } else { 1.0 }] {
+                    let img = anicraft_render::render_frame(&s.doc, 0, scale).unwrap();
+                    assert!(img.pixel(0, 0).unwrap().iter().all(|v| v.is_finite()));
+                }
+                let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+                assert!(!svg.contains("NaN") && !svg.contains("inf"));
+            }
+        }
+    }
+}
+
+/// A filtered instance on a surface as wide as the renderer allows keeps its shadow: the reach
+/// is cut only where the buffer would outgrow the renderer, not around the artwork.
+#[test]
+fn filters_keep_their_reach_on_large_surfaces() {
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "drop_shadow", "blur_x": 0, "blur_y": 0, "distance": 20, "angle": 0, "color": "#000000"}]}));
+    // The stage at 3.2× is 4096 px wide.
+    let img = anicraft_render::render_frame(&s.doc, 0, 3.2).unwrap();
+    assert_eq!(img.pixel(670, 480).unwrap(), [0.0, 0.0, 0.0, 1.0], "the shadow 20 px (64 px here) right of the box");
+}
+
+#[test]
+fn bevel_and_gradient_filters_render_save_and_export() {
+    use anicraft_doc::{ElementKind, Filter, FilterSide};
+    let mut s = Session::default();
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Box"}));
+    run(&mut s, "symbol.set_kind", json!({"kind": "movie_clip"}));
+    let px = |s: &Session, x, y| anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap().pixel(x, y).unwrap();
+    // A bevel lit from the top left, hex colours as in every command.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "blur_x": 0, "blur_y": 0, "distance": 6, "highlight_color": "#00ff00", "shadow_color": "#0000ff"}]}));
+    assert_eq!(px(&s, 102, 102), [0.0, 1.0, 0.0, 1.0], "highlight inside the top-left corner");
+    assert_eq!(px(&s, 197, 197), [0.0, 0.0, 1.0, 1.0], "shadow inside the bottom-right corner");
+    assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(px(&s, 95, 95), [1.0, 1.0, 1.0, 1.0], "inner: nothing outside");
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "blur_x": 0, "blur_y": 0, "distance": 6, "side": "outer", "knockout": true, "highlight_color": "#00ff00"}]}));
+    assert_eq!(px(&s, 97, 97), [0.0, 1.0, 0.0, 1.0], "outer: highlight outside the lit corner");
+    assert_eq!(px(&s, 150, 150), [1.0, 1.0, 1.0, 1.0], "knocked out");
+    // A gradient glow whose ramp ends in blue; its start stays transparent whatever is sent.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "gradient_glow", "blur_x": 0, "blur_y": 0, "distance": 0, "stops": [{"offset": 0, "color": "#ff00ffff"}, {"offset": 1, "color": "#0000ff"}]}]}));
+    let ElementKind::Symbol { filters, .. } = &s.doc.timeline(s.scene).layers[0].keyframes[0].elements[0].kind else { panic!() };
+    let Some(Filter::GradientGlow { stops, side: FilterSide::Outer, .. }) = filters.first() else { panic!("{filters:?}") };
+    assert_eq!(stops[0].color.a, 0.0, "pinned transparent");
+    assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0]);
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "gradient_bevel", "stops": vec![json!({"offset": 0.5, "color": "#ffffff"}); 16]}]})).is_err(), "too many stops");
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "bevel", "side": "sideways"}]})).is_err());
+    assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "gradient_glow", "stops": [{"offset": 0, "color": "red"}]}]})).is_err());
+    // All three save, load and export to SVG with standard primitives.
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "bevel", "side": "full"}, {"type": "gradient_glow", "side": "full", "knockout": true}, {"type": "gradient_bevel"}]}));
+    let text = crate::format::to_json(&s.doc).unwrap();
+    assert_eq!(crate::format::from_json(&text).unwrap(), s.doc);
+    let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+    for want in ["operator=\"arithmetic\" k2=\"1\" k3=\"-1\"", "<feFuncA type=\"table\"", "operator=\"atop\"", "k4=\"0.5\"", "result=\"ei1\"", "result=\"eo1\""] {
+        assert!(svg.contains(want), "{want} in {svg}");
+    }
+    assert!(!svg.contains("NaN") && !svg.contains("inf"));
+    // The filter region is the stage grown by the filters' reach (in stage units), so a far
+    // bevel isn't cut; each margin is blur 5 × 0.5 + distance 5 + 1 = 8.5.
+    assert!(svg.contains("filterUnits=\"userSpaceOnUse\" x=\"-25.5\" y=\"-25.5\" width=\"1331\" height=\"771\""), "{svg}");
+    // A narrow ramp peak survives in the tables (one sample per CPU table step).
+    run(&mut s, "element.set_filters", json!({"filters": [{"type": "gradient_glow", "stops": [{"offset": 0, "color": "#00000000"}, {"offset": 0.015625, "color": "#ff0000"}, {"offset": 0.03125, "color": "#00000000"}, {"offset": 1, "color": "#00000000"}]}]}));
+    let svg = crate::cmds_file::frame_svg(&s.doc, 0);
+    let alpha = svg.split("<feFuncA type=\"table\" tableValues=\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or("");
+    let values: Vec<&str> = alpha.split(' ').collect();
+    assert_eq!(values.len(), 257);
+    assert_eq!(values[4], "1", "the peak at 4/256");
+    // Lottie reports them, as it does every filter.
+    assert!(anicraft_render::lottie::to_lottie(&s.doc, "f", 0, 0, false).report.keys().any(|k| k.starts_with("filters")));
 }

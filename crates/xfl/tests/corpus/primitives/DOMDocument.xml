@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: rectangle and oval primitives and groups (with their own matrices,
+     nested), and a hidden layer that must not draw. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Hidden" color="#9933CC" visible="false">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="0" y="0" objectWidth="320" objectHeight="180">
+                  <fill><SolidColor color="#FF00FF"/></fill>
+                </DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Group" color="#4FFF4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMGroup>
+                  <matrix><Matrix tx="180" ty="20"/></matrix>
+                  <members>
+                    <DOMOvalObject x="0" y="0" objectWidth="60" objectHeight="40">
+                      <fill><SolidColor color="#E07A5F"/></fill>
+                      <stroke><SolidStroke weight="3"><fill><SolidColor color="#3D405B"/></fill></SolidStroke></stroke>
+                    </DOMOvalObject>
+                    <DOMGroup>
+                      <matrix><Matrix a="0.5" d="0.5" tx="70" ty="0"/></matrix>
+                      <members>
+                        <DOMShape>
+                          <fills><FillStyle index="1"><SolidColor color="#81B29A"/></FillStyle></fills>
+                          <edges><Edge fillStyle1="1" edges="!0 0|1600 0|1600 1600|0 1600|0 0"/></edges>
+                        </DOMShape>
+                      </members>
+                    </DOMGroup>
+                  </members>
+                </DOMGroup>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Primitives" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="20" y="20" objectWidth="120" objectHeight="60" topLeftRadius="12">
+                  <fill><SolidColor color="#F2CC8F"/></fill>
+                  <stroke><SolidStroke weight="4"><fill><SolidColor color="#3D405B"/></fill></SolidStroke></stroke>
+                </DOMRectangleObject>
+                <DOMRectangleObject x="20" y="100" objectWidth="80" objectHeight="60">
+                  <matrix><Matrix a="0.866" b="0.5" c="-0.5" d="0.866" tx="40" ty="-20"/></matrix>
+                  <fill><SolidColor color="#3D405B" alpha="0.5"/></fill>
+                </DOMRectangleObject>
+                <DOMOvalObject x="180" y="100" objectWidth="120" objectHeight="60">
+                  <stroke><SolidStroke weight="6"><fill><SolidColor color="#E07A5F"/></fill></SolidStroke></stroke>
+                </DOMOvalObject>
+                <!-- Nothing to draw: no fill and no stroke, and a zero-sized one. -->
+                <DOMOvalObject x="10" y="10" objectWidth="20" objectHeight="20"/>
+                <DOMRectangleObject x="10" y="10" objectWidth="0" objectHeight="20"><fill><SolidColor color="#000000"/></fill></DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

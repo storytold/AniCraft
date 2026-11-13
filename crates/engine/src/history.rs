@@ -5,7 +5,7 @@
 //! actually copied. History is bounded by an estimate of that unique memory, not by step count,
 //! so a thousand small nudges are cheap while one huge import is still evictable.
 
-use anicraft_doc::{Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, Symbol};
+use anicraft_doc::{Document, Element, ElementKind, Keyframe, Layer, LayerId, Symbol};
 use std::collections::{HashSet, VecDeque};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -28,9 +28,11 @@ pub struct Snapshot {
     pub doc: Document,
     pub state: StateId,
     pub scene: usize,
+    /// The symbols open for editing (ADR 0045).
+    pub editing: Vec<crate::editing::EditLevel>,
     pub frame: u32,
     pub layer: LayerId,
-    pub selection: Vec<ElementId>,
+    pub selection: crate::Selection,
     /// Estimated bytes this snapshot keeps alive that the neighbouring state does not share.
     pub bytes: usize,
 }
@@ -142,7 +144,7 @@ fn path_bytes(e: &Element) -> usize {
     match &e.kind {
         ElementKind::Shape(s) => size_of::<anicraft_geom::Path>() + s.path.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
         ElementKind::Text(t) => size_of::<anicraft_geom::Path>() + t.outline.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
-        ElementKind::Symbol { .. } => 0,
+        ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => 0,
     }
 }
 
@@ -155,6 +157,10 @@ fn element_bytes(e: &Element, shared_paths: &HashSet<usize>) -> usize {
         if let Some(anicraft_doc::Paint::Linear { stops, .. } | anicraft_doc::Paint::Radial { stops, .. }) = &s.fill {
             b += stops.len() * size_of::<anicraft_doc::GradientStop>();
         }
+    }
+    // A group's members, as if each stood alone (ADR 0073; nesting is bounded by MAX_GROUP_DEPTH).
+    if let ElementKind::Group { .. } = &e.kind {
+        b += size_of::<anicraft_doc::Layer>() + e.kind.group_members().iter().map(|m| element_bytes(m, shared_paths)).sum::<usize>();
     }
     if let ElementKind::Text(t) = &e.kind {
         b += size_of::<anicraft_doc::TextBlock>() + t.text.len() + t.font.len();
@@ -174,12 +180,18 @@ fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>) -> usize {
                 .filter_map(|e| match &e.kind {
                     ElementKind::Shape(s) => Some(ptr(&s.path)),
                     ElementKind::Text(t) => Some(ptr(&t.outline)),
-                    ElementKind::Symbol { .. } => None,
+                    ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => None,
                 })
                 .collect()
         })
         .unwrap_or_default();
     let mut b = size_of::<Keyframe>() + k.label.len() + k.elements.len() * size_of::<usize>();
+    // A kept script's text (up to 1 MiB), unless the other keyframe shares it.
+    if let Some(anicraft_doc::FrameScript::Source(src)) = &k.script
+        && !matches!(other.and_then(|o| o.script.as_ref()), Some(anicraft_doc::FrameScript::Source(o)) if Arc::ptr_eq(o, src))
+    {
+        b += src.text.len();
+    }
     for e in &k.elements {
         if !shared_els.contains(&ptr(e)) {
             b += element_bytes(e, &shared_paths);
@@ -237,6 +249,6 @@ pub fn unique_bytes(old: &Document, new: &Document) -> usize {
 
 /// Estimated total bytes of a document (as if nothing were shared). Used for reporting.
 pub fn document_bytes(doc: &Document) -> usize {
-    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), next_id: doc.next_id };
+    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: doc.aids.clone(), swatches: doc.swatches.clone(), eases: doc.eases.clone(), next_id: doc.next_id };
     unique_bytes(doc, &empty)
 }

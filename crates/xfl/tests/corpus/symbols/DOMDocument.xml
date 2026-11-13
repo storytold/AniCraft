@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: symbols. Graphic instances in every loop mode with first frames, a
+     graphic nesting graphics, a movie clip playing on its own timeline, a button showing its Up
+     frame, and the colour effects (alpha, tint, brightness up and down, advanced). The library
+     is in folders, and one Include names a file that isn't there. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F1FAEE">
+  <folders>
+    <DOMFolderItem name="Movie" itemID="00000000-0000-0000-0000-000000000201"/>
+    <DOMFolderItem name="Parts" itemID="00000000-0000-0000-0000-000000000202"/>
+    <DOMFolderItem name="Ui" itemID="00000000-0000-0000-0000-000000000203"/>
+  </folders>
+  <symbols>
+    <Include href="Movie/Spinner.xml" itemIcon="1" loadImmediate="false"/>
+    <Include href="Parts/Badge.xml" itemIcon="1" loadImmediate="false"/>
+    <Include href="Parts/Blink.xml" loadImmediate="false"/>
+    <Include href="Parts/Dot.xml" loadImmediate="false"/>
+    <Include href="Parts/Lost.xml" loadImmediate="false"/>
+    <Include href="Ui/Play Button.xml" itemIcon="0" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Effects" color="#9933CC">
+          <frames>
+            <DOMFrame index="0" duration="6" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Parts/Dot" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="2" d="2" tx="170" ty="130"/></matrix>
+                  <color><Color alphaMultiplier="0.4"/></color>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Dot" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="2" d="2" tx="200" ty="130"/></matrix>
+                  <color><Color tintMultiplier="0.7" tintColor="#0000FF"/></color>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Dot" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="2" d="2" tx="230" ty="130"/></matrix>
+                  <color><Color brightness="0.6"/></color>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Dot" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="2" d="2" tx="260" ty="130"/></matrix>
+                  <color><Color brightness="-0.5"/></color>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Dot" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="2" d="2" tx="290" ty="130"/></matrix>
+                  <color><Color redMultiplier="0.2" greenOffset="120" alphaMultiplier="0.8"/></color>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Missing" symbolType="graphic" loop="loop"/>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Clips" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="6" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Movie/Spinner" name="spinner">
+                  <matrix><Matrix tx="40" ty="130"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Ui/Play Button" symbolType="button">
+                  <matrix><Matrix a="1.2" d="1.2" tx="110" ty="130"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Loops" color="#4F80FF" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" duration="6" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Parts/Blink" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="30" ty="40"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Blink" symbolType="graphic" loop="play once" firstFrame="1">
+                  <matrix><Matrix tx="80" ty="40"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Blink" symbolType="graphic" loop="single frame" firstFrame="2">
+                  <matrix><Matrix tx="130" ty="40"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Blink" symbolType="graphic" loop="play once reverse" firstFrame="3">
+                  <matrix><Matrix tx="180" ty="40"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Parts/Badge" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="1.5" d="1.5" tx="260" ty="45"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

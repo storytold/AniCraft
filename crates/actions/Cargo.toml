@@ -1,0 +1,17 @@
+[package]
+name = "anicraft-actions"
+description = "AniCraft L0: the timeline action IR shared by frame actions, frame scripts and button events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["rc"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

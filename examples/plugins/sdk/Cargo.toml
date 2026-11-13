@@ -1,0 +1,10 @@
+[package]
+name = "anicraft-plugin-sdk"
+description = "Guest-side helpers for AniCraft WebAssembly plug-ins (ABI v1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true

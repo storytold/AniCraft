@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
+use crate::{ColorEffect, Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
 
 fn shape_el(id: u64, x: f32) -> Element {
     Element {
@@ -81,11 +81,11 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
             name: String::new(),
             transform: Affine::translate(1.0, 0.0),
             color: ColorEffect::default(),
-            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new() },
+            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
         },
     );
     tl.layers.push(Arc::new(layer));
-    d.library.push(Arc::new(Symbol { id: sid, name: "loop".into(), kind: SymbolKind::Graphic, timeline: tl }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "loop".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: tl }));
     push(
         layer0(&mut d),
         0,
@@ -93,15 +93,15 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
             id: ElementId(60),
             name: String::new(),
             transform: Affine::translate(100.0, 0.0),
-            color: ColorEffect { alpha: 0.5, ..Default::default() },
-            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new() },
+            color: ColorEffect::Alpha(0.5),
+            kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
         },
     );
     let dl = evaluate(&d, 0);
     assert_eq!(dl.items.len(), MAX_SYMBOL_DEPTH);
     assert_eq!(dl.items[0].transform.translation().x, 100.0);
     // The instance's opacity is its group's: it fades as one.
-    assert_eq!((dl.items[0].color.alpha, dl.effective_alpha(&dl.items[0])), (1.0, 0.5));
+    assert_eq!((dl.items[0].color.mul[3], dl.effective_alpha(&dl.items[0])), (1.0, 0.5));
     assert_eq!(dl.groups.len(), 1);
     assert!(dl.items.iter().all(|i| i.element == ElementId(60)));
 }
@@ -140,13 +140,13 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
     // The main timeline's masked layer holds an instance of a symbol that has its own mask.
     let mut d = mask_doc();
     let sid = SymbolId(99);
-    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, timeline: mask_doc().timeline(0).clone() }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: mask_doc().timeline(0).clone() }));
     let inst = Element {
         id: ElementId(60),
         name: String::new(),
         transform: Affine::IDENTITY,
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new() },
+        kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
     };
     push(Arc::make_mut(&mut d.timeline_mut(0).layers[1]), 0, inst);
     let dl = evaluate(&d, 0);
@@ -154,6 +154,27 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
     let inner: Vec<_> = dl.items.iter().filter(|i| i.element == ElementId(60)).map(|i| (i.clip, i.masks)).collect();
     // inside: unmasked layer keeps the outer clip; masked layers use the nested clip.
     assert_eq!(inner, vec![(Some(0), None), (Some(1), None), (Some(1), None), (Some(0), Some(1))]);
+}
+
+#[test]
+fn a_soft_mask_layer_gives_its_clip_its_mode() {
+    let mut d = mask_doc();
+    assert_eq!((evaluate(&d, 0).clip_mode(0), evaluate(&d, 0).clip_modes.len()), (crate::MaskMode::Coverage, 0), "coverage stays implicit");
+    Arc::make_mut(&mut d.timeline_mut(0).layers[0]).mask_mode = crate::MaskMode::Luminance;
+    let dl = evaluate(&d, 0);
+    assert_eq!(dl.clip_mode(0), crate::MaskMode::Luminance);
+    // Appended lists keep their modes on their renumbered clips.
+    let mut a = evaluate(&mask_doc(), 0);
+    a.append(dl);
+    assert_eq!((a.clip_mode(0), a.clip_mode(1)), (crate::MaskMode::Coverage, crate::MaskMode::Luminance));
+    // The mode is saved only when it isn't coverage, and older files (without it) open as coverage.
+    let json = serde_json::to_string(&*d.timeline(0).layers[0]).unwrap();
+    assert!(json.contains("\"mask_mode\":\"luminance\""), "{json}");
+    let plain = serde_json::to_string(&*mask_doc().timeline(0).layers[0]).unwrap();
+    assert!(!plain.contains("mask_mode"));
+    let back: Layer = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.mask_mode, crate::MaskMode::Luminance);
+    assert_eq!(serde_json::from_str::<Layer>(&plain).unwrap().mask_mode, crate::MaskMode::Coverage);
 }
 
 #[test]
@@ -295,14 +316,14 @@ fn movie_clips_play_their_own_timeline_graphics_keep_step_buttons_hold_up() {
         })
         .collect();
     let mut d = Document::default();
-    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, timeline: Timeline { layers: vec![Arc::new(st)] } }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(st)] } }));
     // The same instance on two keyframes back to back (frames 0–4 and 5–11), moved on the second.
     let inst = |x: f32| Element {
         id: ElementId(60),
         name: String::new(),
         transform: Affine::translate(x, 0.0),
         color: ColorEffect::default(),
-        kind: ElementKind::Symbol { symbol: sid, loop_mode: crate::LoopMode::Loop, first_frame: 0, blend: Default::default(), filters: Vec::new() },
+        kind: ElementKind::Symbol { symbol: sid, loop_mode: crate::LoopMode::Loop, first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
     };
     let (mut k0, mut k1) = (Keyframe::new(0, 5), Keyframe::new(5, 7));
     k0.elements.push(Arc::new(inst(0.0)));
@@ -325,4 +346,237 @@ fn movie_clips_play_their_own_timeline_graphics_keep_step_buttons_hold_up() {
     k1b.elements.push(Arc::new(Element { id: ElementId(61), ..inst(1000.0) }));
     layer0(&mut d).keyframes[1] = Arc::new(k1b);
     assert_eq!(x(&d, 7), 1020.0);
+}
+
+/// A 24-frame motion tween on one shape: X keyed at 0, 12 (ease in) and 23; alpha keyed at 23.
+fn motion_doc() -> Document {
+    use crate::{MotionTween, Property};
+    let mut d = Document::default();
+    let mut k = Keyframe::new(0, 24);
+    k.elements.push(Arc::new(shape_el(10, 0.0)));
+    let mut m = MotionTween::new(ElementId(10));
+    m.set_key(Property::X, 12, 120.0, 0.0);
+    m.set_key(Property::X, 23, 120.0, 0.0);
+    if let Some(t) = m.track_mut(Property::X) {
+        t.keys[0].ease = Easing::QuadIn;
+    }
+    m.set_key(Property::Alpha, 23, 0.0, 100.0);
+    k.motion = Some(m);
+    // A classic tween on the same span is ignored: the motion tween wins.
+    k.tween = Some(Tween::default());
+    layer0(&mut d).keyframes = vec![Arc::new(k)];
+    d
+}
+
+#[test]
+fn a_motion_tween_drives_each_property_on_its_own_curve() {
+    let d = motion_doc();
+    let at = |f| {
+        let dl = evaluate(&d, f);
+        (dl.items[0].transform.translation().x, dl.items[0].color.mul[3])
+    };
+    assert_eq!(at(0), (0.0, 1.0));
+    // X eases in over 0..12 (a quarter of the way at half time); alpha runs linearly over 0..23.
+    let (x6, a6) = at(6);
+    assert!((x6 - 30.0).abs() < 1e-3, "{x6}");
+    assert!((a6 - (1.0 - 6.0 / 23.0)).abs() < 1e-5, "{a6}");
+    // X holds on 12..23 while alpha keeps fading.
+    let (x18, a18) = at(18);
+    assert!((x18 - 120.0).abs() < 1e-3 && a18 < a6);
+    assert_eq!(at(23).1, 0.0);
+    // Y, scale and rotation were never keyed: they stay the element's own.
+    let item = &evaluate(&d, 18).items[0];
+    let dc = item.transform.decompose();
+    assert!(dc.ty.abs() < 1e-4 && (dc.sx - 1.0).abs() < 1e-5 && dc.rotation.abs() < 1e-5);
+}
+
+#[test]
+fn motion_tweens_survive_a_file_round_trip_and_old_files_have_none() {
+    let d = motion_doc();
+    let json = serde_json::to_string(&d).unwrap();
+    let back: Document = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, d);
+    assert!(back.timeline(0).layers[0].keyframes[0].motion.is_some());
+    // A keyframe written before motion tweens existed loads with none.
+    let old: Keyframe = serde_json::from_str(r#"{"start": 0, "duration": 3}"#).unwrap();
+    assert!(old.motion.is_none());
+    // Loading repairs a hostile tween and drops a classic tween beside it.
+    let mut d2 = d.clone();
+    let k = layer0(&mut d2).keyframe_mut(0).unwrap();
+    if let Some(m) = k.motion.as_mut() {
+        m.tracks[0].keys.reverse();
+        m.tracks[0].keys[0].value = f32::INFINITY;
+    }
+    d2.sanitize();
+    let k = &d2.timeline(0).layers[0].keyframes[0];
+    assert!(k.tween.is_none() && k.motion.as_ref().is_some_and(crate::MotionTween::is_sane));
+    for f in 0..30 {
+        assert!(evaluate(&d2, f).items.iter().all(|i| i.transform.is_finite()));
+    }
+}
+
+/// A square on frame 0 shape-tweening to a circle on frame 10 (the square moved 200 right,
+/// so element transforms count too).
+fn square_to_circle(hints: Vec<crate::ShapeHint>) -> Document {
+    let mut d = Document::default();
+    let el = |id, x, path| Element { id: ElementId(id), name: String::new(), transform: Affine::translate(x, 0.0), color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(path, Paint::Solid(Rgba::BLACK))) };
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(el(1, 0.0, Path::rect(0.0, 0.0, 100.0, 100.0))));
+    k0.tween = Some(Tween { easing: Easing::Linear, kind: TweenKind::Shape, ..Default::default() });
+    k0.hints = hints;
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(el(1, 200.0, Path::ellipse(50.0, 50.0, 50.0, 50.0))));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    d
+}
+
+fn has_anchor(p: &Path, m: &Affine, q: anicraft_geom::Vec2) -> bool {
+    p.cmds.iter().any(|c| match *c {
+        anicraft_geom::PathCmd::MoveTo(a) | anicraft_geom::PathCmd::CubicTo(_, _, a) => m.apply(a).distance(q) < 1e-2,
+        _ => false,
+    })
+}
+
+#[test]
+fn shape_hints_carry_the_hinted_corner_where_asked() {
+    use anicraft_geom::Vec2;
+    let (corner, bottom) = (Vec2::new(0.0, 0.0), Vec2::new(250.0, 100.0));
+    let hinted = square_to_circle(vec![crate::ShapeHint { start: corner, end: bottom }]);
+    let at = |d: &Document, f| {
+        let dl = evaluate(d, f);
+        let i = &dl.items[0];
+        ((*i.path).clone(), i.transform)
+    };
+    // Halfway the corner is exactly halfway along its way (stage space).
+    let (p, m) = at(&hinted, 5);
+    assert!(has_anchor(&p, &m, corner.lerp(bottom, 0.5)), "{p:?}");
+    // Without the hint it goes elsewhere.
+    let (p, m) = at(&square_to_circle(Vec::new()), 5);
+    assert!(!has_anchor(&p, &m, corner.lerp(bottom, 0.5)));
+    // An unplaced hint (off the outline, as when just added) changes nothing.
+    let off = square_to_circle(vec![crate::ShapeHint { start: Vec2::new(50.0, 50.0), end: bottom }]);
+    let plain = square_to_circle(Vec::new());
+    assert_eq!(*evaluate(&off, 5).items[0].path, *evaluate(&plain, 5).items[0].path);
+    // The keyframes themselves are untouched by hints.
+    assert_eq!(*evaluate(&hinted, 0).items[0].path, Path::rect(0.0, 0.0, 100.0, 100.0));
+    // Placement and the hinted tween lookup.
+    let l = &hinted.timeline(0).layers[0];
+    assert_eq!(l.hint_tween_at(0), Some((0, crate::HintSide::Start)));
+    assert_eq!(l.hint_tween_at(9), Some((0, crate::HintSide::Start)));
+    assert_eq!(l.hint_tween_at(10), Some((0, crate::HintSide::End)));
+    assert_eq!(crate::placed_on(&l.keyframes[0].elements, corner), Some(0));
+    assert_eq!(crate::placed_on(&l.keyframes[1].elements, bottom), Some(0));
+    assert_eq!(crate::placed_on(&l.keyframes[0].elements, Vec2::new(50.0, 50.0)), None);
+    assert!(crate::shapes_centre(&l.keyframes[1].elements).unwrap().distance(Vec2::new(250.0, 50.0)) < 1e-3);
+}
+
+#[test]
+fn shape_hints_survive_a_round_trip_and_old_files_have_none() {
+    let d = square_to_circle(vec![crate::ShapeHint { start: anicraft_geom::Vec2::new(0.0, 0.0), end: anicraft_geom::Vec2::new(250.0, 100.0) }]);
+    let k = &d.timeline(0).layers[0].keyframes[0];
+    let json = serde_json::to_string(&**k).unwrap();
+    assert!(json.contains("\"hints\""));
+    let back: Keyframe = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, **k);
+    // A keyframe without hints writes none, and a file from before hints reads with none.
+    let plain = serde_json::to_string(&Keyframe::new(0, 1)).unwrap();
+    assert!(!plain.contains("hints"));
+    let old: Keyframe = serde_json::from_str(r#"{"start":0,"duration":3}"#).unwrap();
+    assert!(old.hints.is_empty());
+}
+
+/// A tween from (0, 0), unturned, full size and opaque to (100, 0), half a turn, double size
+/// and transparent, over 10 frames.
+fn group_doc(tween: Tween) -> Document {
+    let mut d = Document::default();
+    let mut a = shape_el(10, 0.0);
+    a.color = ColorEffect::Alpha(1.0);
+    let mut b = shape_el(10, 100.0);
+    b.transform = Affine::translate(100.0, 0.0).mul(&Affine::rotate(std::f32::consts::FRAC_PI_2)).mul(&Affine::scale(2.0, 2.0));
+    b.color = ColorEffect::Alpha(0.0);
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(a));
+    k0.tween = Some(tween);
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(b));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    d
+}
+
+#[test]
+fn classic_tweens_ease_each_property_group_its_own_way() {
+    use crate::EaseGroup;
+    let mut tw = Tween::new(Easing::Linear, TweenKind::Classic);
+    tw.set_ease(EaseGroup::Position, Some(Easing::BounceOut));
+    tw.set_ease(EaseGroup::Scale, Some(Easing::QuadIn));
+    tw.set_ease(EaseGroup::Color, Some(Easing::CubicOut));
+    let d = group_doc(tw.clone());
+    let it = |f| {
+        let dl = evaluate(&d, f);
+        let i = &dl.items[0];
+        (i.transform.decompose(), i.color.mul[3])
+    };
+    let (m, alpha) = it(5);
+    assert!((m.tx - 100.0 * Easing::BounceOut.apply(0.5)).abs() < 1e-2, "position: {}", m.tx);
+    assert!((m.sx - (1.0 + Easing::QuadIn.apply(0.5))).abs() < 1e-3, "scale: {}", m.sx);
+    // Rotation has no ease of its own: the tween's (linear).
+    assert!((m.rotation - std::f32::consts::FRAC_PI_4).abs() < 1e-3, "rotation: {}", m.rotation);
+    assert!((alpha - (1.0 - Easing::CubicOut.apply(0.5))).abs() < 1e-3, "colour: {alpha}");
+    // Groups stay in order, once each; clearing one gives it the tween's ease again.
+    tw.set_ease(EaseGroup::Position, Some(Easing::SineIn));
+    assert_eq!(tw.groups.iter().map(|g| g.0).collect::<Vec<_>>(), [EaseGroup::Position, EaseGroup::Scale, EaseGroup::Color]);
+    tw.set_ease(EaseGroup::Scale, None);
+    assert_eq!(tw.ease(EaseGroup::Scale), &Easing::Linear);
+    // With one ease for everything, every group follows it exactly as before.
+    let one = group_doc(Tween::new(Easing::QuadOut, TweenKind::Classic));
+    let mut same = Tween::new(Easing::QuadOut, TweenKind::Classic);
+    for g in EaseGroup::ALL {
+        same.set_ease(g, Some(Easing::QuadOut));
+    }
+    let both = group_doc(same);
+    for f in 0..=10 {
+        assert_eq!(evaluate(&one, f).items[0].transform, evaluate(&both, f).items[0].transform);
+    }
+    // Older files' tweens (no groups) still read.
+    let t: Tween = serde_json::from_str(r#"{"easing": "QuadIn"}"#).unwrap();
+    assert!(t.groups.is_empty());
+}
+
+#[test]
+fn a_custom_ease_drives_a_classic_tween() {
+    let c = crate::CustomEase::from_flat(&[(0.0, 0.0), (0.2, 1.5), (0.4, 1.5), (0.5, 1.2), (0.6, 0.9), (0.8, 1.0), (1.0, 1.0)].map(|(x, y)| anicraft_geom::Vec2::new(x, y))).unwrap();
+    let e = Easing::Custom(Arc::new(c.clone()));
+    let d = tween_doc(e);
+    for f in 0..10 {
+        let x = evaluate(&d, f).items[0].transform.translation().x;
+        assert!((x - 100.0 * c.apply(f as f32 / 10.0)).abs() < 1e-2, "frame {f}: {x}");
+    }
+    // It overshoots past the second keyframe and comes back.
+    assert!(evaluate(&d, 5).items[0].transform.translation().x > 100.0);
+}
+
+#[test]
+fn instance_filters_tween_when_they_pair_up() {
+    use crate::Filter;
+    let mut d = Document::default();
+    let sid = SymbolId(90);
+    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(Layer::new(LayerId(91), "x"))] } }));
+    let inst = |filters: Vec<Filter>| Element { id: ElementId(92), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters, events: Vec::new() } };
+    let blur = |b: f32| Filter::Blur { blur_x: b, blur_y: b, quality: 1 };
+    let mut tw = Tween::new(Easing::Linear, TweenKind::Classic);
+    tw.set_ease(crate::EaseGroup::Filters, Some(Easing::QuadIn));
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(inst(vec![blur(0.0), Filter::new("glow").unwrap()])));
+    k0.tween = Some(tw);
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(inst(vec![blur(40.0), Filter::new("glow").unwrap()])));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    let filters = |f| match &crate::evaluate_layer_elements(&d.timeline(0).layers[0], f).unwrap().1[0].kind {
+        ElementKind::Symbol { filters, .. } => filters.clone(),
+        _ => Vec::new(),
+    };
+    assert_eq!(filters(5)[0], blur(40.0 * 0.25), "eased by the filters group's ease");
+    // Lists that don't pair up hold the first keyframe's.
+    assert_eq!(crate::filter::lerp_filters(&[blur(1.0)], &[Filter::new("glow").unwrap()], 0.5), None);
+    assert_eq!(crate::filter::lerp_filters(&[blur(1.0)], &[blur(1.0), blur(2.0)], 0.5), None);
 }

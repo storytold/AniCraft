@@ -2,23 +2,24 @@
 
 use crate::params::*;
 use crate::{CommandSpec, EngineError, MAX_FRAME, Result, Session};
-use anicraft_doc::{Keyframe, Layer, LayerId, LayerKind, Tween, TweenKind, evaluate_layer_elements};
+use anicraft_doc::{ElementId, Keyframe, Layer, LayerId, LayerKind, Tween, TweenKind, evaluate_layer_elements};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("timeline.insert_frame", "Frame", "Insert/Timeline", Some("F5"), "{layer? | layers?: [..], frame?, count?}", true, insert_frame as crate::RunFn),
+        c("timeline.insert_frame", "Frame", "Insert/Timeline", Some("F5"), "{layer? | layers?: [..] | all_layers?: true (every layer with frames at or after the frame, as F5 with no frame selection; the active layer when none has), frame?, count?, advance?: true (the playhead moves onto the last frame inserted, as the key does in the editor)}", true, insert_frame as crate::RunFn),
         c("timeline.remove_frame", "Remove Frame", "Insert/Timeline", Some("Shift+F5"), "{layer? | layers?: [..], frame?, count?}", true, remove_frame),
-        c("timeline.insert_keyframe", "Keyframe", "Insert/Timeline", Some("F6"), "{layer? | layers?: [..], frame?}", true, insert_keyframe),
-        c("timeline.insert_blank_keyframe", "Blank Keyframe", "Insert/Timeline", Some("F7"), "{layer? | layers?: [..], frame?}", true, insert_blank_keyframe),
+        c("timeline.insert_keyframe", "Keyframe", "Insert/Timeline", Some("F6"), "{layer? | layers?: [..], frame?, advance?: true (on a keyframe the new key goes on the next frame, and the playhead moves onto it, as the key does in the editor)}", true, insert_keyframe),
+        c("timeline.insert_blank_keyframe", "Blank Keyframe", "Insert/Timeline", Some("F7"), "{layer? | layers?: [..], frame?, advance?: true (on a keyframe the blank key goes on the next frame instead of clearing it, and the playhead moves onto it)}", true, insert_blank_keyframe),
         c("timeline.clear_keyframe", "Clear Keyframe", "Insert/Timeline", Some("Shift+F6"), "{layer? | layers?: [..], frame?, count?}", true, clear_keyframe),
         c("timeline.move_keyframes", "Move Keyframes", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}", true, move_keyframes),
-        c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_tween),
-        c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_shape_tween),
-        c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?}", true, remove_tween),
-        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing, layer?, frame?}", true, set_easing),
+        c("timeline.create_motion_tween", "Create Motion Tween", "Insert", None, "{layer?, frame?} (several objects on the key become one graphic symbol; a one-frame span grows to a second)", true, crate::cmds_motion::create),
+        c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_tween),
+        c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_shape_tween),
+        c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?} (a motion tween leaves its object as it is on the first frame)", true, remove_tween),
+        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}", true, set_easing),
         c("timeline.set_orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}", true, set_orient),
         c("timeline.set_label", "Frame Label", "", None, "{label, layer?, frame?}", true, set_label),
         c("timeline.goto", "Go to Frame", "", None, "{frame}", false, goto),
@@ -40,7 +41,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("layer.toggle_visible", "Show/Hide Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.visible = !l.visible)),
         c("layer.toggle_lock", "Lock/Unlock Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.locked = !l.locked)),
         c("layer.toggle_outline", "Outline Layer", "", None, "{layer?}", true, |s, p| toggle(s, p, |l| l.outline = !l.outline)),
-        c("layer.select", "Select Layer", "", None, "{layer: id} or {index}", false, select_layer),
+        c("layer.select", "Select Layer", "", None, "{layer: id} or {index}, select?: bool (also select all of its artwork at the playhead, as a click on the layer's name does; nothing on a locked or hidden layer)", false, select_layer),
         c("layer.move_up", "Move Layer Up", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, -1)),
         c("layer.move_down", "Move Layer Down", "Modify/Timeline", None, "{layer?}", true, |s, p| move_layer(s, p, 1)),
         c("layer.toggle_mask", "Mask", "Modify/Timeline", None, "{layer?}", true, toggle_mask),
@@ -53,11 +54,11 @@ pub fn specs() -> Vec<CommandSpec> {
 /// mask back into a normal layer (its masked layers become normal too).
 fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let is_mask = s.doc.timeline(s.scene).layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?.kind == LayerKind::Mask;
+    let is_mask = s.timeline().layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?.kind == LayerKind::Mask;
     let ty = if is_mask { "normal" } else { "mask" };
     set_type(s, id, ty)?;
     if !is_mask {
-        let tl = s.doc.timeline_mut(s.scene);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
         // The normal layer directly below, in the same folder, becomes masked.
         let mask_parent = tl.layer(id).and_then(|m| m.parent);
         if let Some(i) = tl.layers.iter().position(|l| l.id == id)
@@ -75,7 +76,7 @@ fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
 /// Draw a line on the guide; the layer's classic tweens travel along it.
 fn add_motion_guide(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let Some(l) = tl.layers.get(i) else { return Err(EngineError::State("no such layer".into())) };
     if l.kind != LayerKind::Normal {
@@ -99,7 +100,7 @@ fn add_motion_guide(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(k) = guide.keyframe_mut(0) {
         k.duration = s.frame_count().max(1);
     }
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     tl.layers.insert(i, Arc::new(guide));
     if let Some(l) = tl.layers.get_mut(i + 1) {
         Arc::make_mut(l).parent = Some(gid);
@@ -125,11 +126,17 @@ fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(layer_type_json(s, id))
 }
 
-fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
-    let tl = s.doc.timeline_mut(s.scene);
+pub(crate) fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder) {
         return Err(EngineError::State("a folder holds layers; it can't become another kind of layer".into()));
+    }
+    if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Camera) {
+        return Err(EngineError::State("the camera layer holds the camera; it can't become another kind of layer (Remove Camera takes it away)".into()));
+    }
+    if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Armature) {
+        return Err(EngineError::State("an armature layer holds its armature; it can't become another kind of layer (removing its bones frees the instances)".into()));
     }
     // Whatever the type, the layer stays in the folder it is in.
     let folder = tl.folder_of(i);
@@ -154,9 +161,9 @@ fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
     Ok(())
 }
 
-fn layer_type_json(s: &Session, id: LayerId) -> Value {
-    let Some(l) = s.doc.timeline(s.scene).layer(id) else { return json!({}) };
-    let tl = s.doc.timeline(s.scene);
+pub(crate) fn layer_type_json(s: &Session, id: LayerId) -> Value {
+    let Some(l) = s.timeline().layer(id) else { return json!({}) };
+    let tl = s.timeline();
     let parent_kind = l.parent.and_then(|p| tl.layer(p)).map(|x| x.kind);
     let masked_by = l.parent.filter(|_| parent_kind == Some(LayerKind::Mask));
     let guided_by = l.parent.filter(|_| parent_kind == Some(LayerKind::Guide));
@@ -164,6 +171,8 @@ fn layer_type_json(s: &Session, id: LayerId) -> Value {
         LayerKind::Mask => "mask",
         LayerKind::Guide => "guide",
         LayerKind::Folder => "folder",
+        LayerKind::Camera => "camera",
+        LayerKind::Armature => "armature",
         LayerKind::Normal if masked_by.is_some() => "masked",
         LayerKind::Normal if guided_by.is_some() => "guided",
         LayerKind::Normal => "normal",
@@ -191,7 +200,7 @@ pub(crate) fn target_layers(s: &Session, p: &Value) -> Result<Vec<LayerId>> {
     let mut out: Vec<LayerId> = Vec::with_capacity(ids.len());
     let mut folders = 0;
     for id in ids {
-        let Some(l) = s.doc.timeline(s.scene).layer(id) else { return Err(EngineError::State(format!("no layer with id {}", id.0))) };
+        let Some(l) = s.timeline().layer(id) else { return Err(EngineError::State(format!("no layer with id {}", id.0))) };
         // Folders have no frames: a range across a folder row acts on the layers only.
         if l.kind == LayerKind::Folder {
             folders += 1;
@@ -223,22 +232,57 @@ pub(crate) fn shift_after(layer: &mut Layer, from: u32, delta: i64) {
     }
 }
 
-/// F5 over a range: `count` frames on each target layer.
+/// F5 over a range: `count` frames on each target layer. With `all_layers` (F5 with no frame
+/// selection) every layer that has frames at or after `frame` grows, so the layers stay in step;
+/// layers that end before it are left alone. With `advance` the playhead moves onto the last
+/// frame inserted, as holding F5 walks along the timeline.
 fn insert_frame(s: &mut Session, p: &Value) -> Result<Value> {
     let (_, frame) = target(s, p)?;
     let count = count_param(p)?;
+    let all = opt_bool(p, "all_layers")?.unwrap_or(false);
+    let ids = if all { layers_at_or_after(s, frame) } else { target_layers(s, p)? };
     let mut frames = 0;
-    for id in target_layers(s, p)? {
+    for &id in &ids {
         let layer = s.layer_mut(Some(id))?;
         for _ in 0..count {
-            insert_frame_at(layer, frame)?;
+            if all && layer.keyframe_index_at(frame).is_none() && layer.end_frame() > frame {
+                // A gap (or the frames before the first key) under the playhead: insert an
+                // empty frame there, so what follows moves along with the other layers.
+                insert_empty_frame_at(layer, frame)?;
+            } else {
+                insert_frame_at(layer, frame)?;
+            }
         }
         frames = frames.max(layer.end_frame());
     }
-    Ok(json!({"frames": frames}))
+    let mut out = json!({"frames": frames, "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>()});
+    if opt_bool(p, "advance")?.unwrap_or(false) {
+        s.set_frame(frame.saturating_add(count).min(frames.saturating_sub(1)));
+        out["playhead"] = json!(s.frame);
+    }
+    Ok(out)
 }
 
-fn insert_frame_at(layer: &mut Layer, frame: u32) -> Result<()> {
+/// The layers F5 with no frame selection extends: every layer of the timeline with frames at or
+/// after `frame` (folders have none). When no layer reaches that far, the active layer, so F5
+/// past the end still lengthens what you are working on.
+fn layers_at_or_after(s: &Session, frame: u32) -> Vec<LayerId> {
+    let tl = s.timeline();
+    let ids: Vec<LayerId> = tl.layers.iter().filter(|l| l.kind != LayerKind::Folder && l.end_frame() > frame).map(|l| l.id).collect();
+    if ids.is_empty() { vec![s.layer] } else { ids }
+}
+
+/// One empty frame at `frame`: everything from there on moves one frame later.
+fn insert_empty_frame_at(layer: &mut Layer, frame: u32) -> Result<()> {
+    if layer.end_frame() >= MAX_FRAME {
+        return Err(EngineError::State("the timeline is at its maximum length".into()));
+    }
+    shift_after(layer, frame, 1);
+    layer.normalize();
+    Ok(())
+}
+
+pub(crate) fn insert_frame_at(layer: &mut Layer, frame: u32) -> Result<()> {
     if layer.end_frame() >= MAX_FRAME {
         return Err(EngineError::State("the timeline is at its maximum length".into()));
     }
@@ -320,20 +364,42 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
             if let Some(k) = layer.keyframe_starting_at(frame).and_then(|i| layer.keyframe_mut(i)) {
                 k.elements.clear();
                 k.tween = None;
+                k.motion = None;
+                k.pose = anicraft_doc::Pose::default();
             }
         }
         return Ok(());
     }
     let elements = if copy { evaluate_layer_elements(layer, frame).map(|(_, e)| e.into_owned()) } else { None };
+    // On an armature layer a copy keeps the pose the frame shows (tweened between keys).
+    let pose = if copy { anicraft_doc::armature::pose_at(layer, frame) } else { None };
+    // Past the end of a motion tween, a copy starts from how its object looks at the end.
+    let last_state = match layer.keyframes.iter().rposition(|k| k.start < frame) {
+        Some(i) if copy && layer.keyframe_index_at(frame).is_none() => {
+            layer.keyframes.get(i).filter(|k| k.motion.is_some()).and_then(|k| evaluate_layer_elements(layer, k.end() - 1)).map(|(_, e)| e.into_owned())
+        }
+        _ => None,
+    };
     match layer.keyframe_index_at(frame) {
         Some(i) => {
             let Some(k) = layer.keyframe_mut(i) else { return Ok(()) };
             let end = k.end();
-            let tween = if copy { k.tween } else { None };
+            let tween = if copy { k.tween.clone() } else { None };
+            // A motion tween split in two keeps moving the same way in both halves.
+            let motion = if copy {
+                k.motion.as_ref().map(|m| {
+                    let base = m.target_index(&k.elements).and_then(|t| k.elements.get(t)).map_or(anicraft_doc::Props([0.0; anicraft_doc::PROPERTIES]), |e| anicraft_doc::Props::of(e));
+                    m.split_at(&base, frame - k.start)
+                })
+            } else {
+                None
+            };
             k.duration = frame - k.start;
             let mut nk = Keyframe::new(frame, end - frame);
             nk.elements = elements.unwrap_or_default();
             nk.tween = tween;
+            nk.motion = motion;
+            nk.pose = pose.unwrap_or_default();
             layer.keyframes.insert(i + 1, Arc::new(nk));
         }
         None => {
@@ -344,7 +410,8 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
                 let next_start = layer.keyframes.get(i + 1).map(|k| k.start);
                 if let Some(k) = layer.keyframe_mut(i) {
                     if copy {
-                        nk.elements = k.elements.clone();
+                        nk.elements = last_state.unwrap_or_else(|| k.elements.clone());
+                        nk.pose = k.pose.clone();
                     }
                     k.duration = frame - k.start;
                 }
@@ -361,19 +428,46 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
 }
 
 fn insert_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
-    let (_, frame) = target(s, p)?;
+    let frame = key_frame(s, p)?;
     for id in target_layers(s, p)? {
-        insert_keyframe_at(s.layer_mut(Some(id))?, frame, true)?;
+        let layer = s.layer_mut(Some(id))?;
+        // Inside a motion tween F6 keys every property there; the span stays whole.
+        if !crate::cmds_motion::key_all_at(layer, frame) {
+            insert_keyframe_at(layer, frame, true)?;
+        }
     }
-    Ok(json!({"keyframe": frame}))
+    advanced(s, p, frame)
 }
 
 fn insert_blank_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
-    let (_, frame) = target(s, p)?;
+    let frame = key_frame(s, p)?;
     for id in target_layers(s, p)? {
         insert_keyframe_at(s.layer_mut(Some(id))?, frame, false)?;
     }
-    Ok(json!({"keyframe": frame}))
+    advanced(s, p, frame)
+}
+
+/// Where F6 / F7 put the key. With `advance`, a frame that is already a keyframe on every target
+/// layer means "the next one": pressing F6 again after drawing makes the next drawing's key.
+fn key_frame(s: &Session, p: &Value) -> Result<u32> {
+    let (_, frame) = target(s, p)?;
+    if !opt_bool(p, "advance")?.unwrap_or(false) {
+        return Ok(frame);
+    }
+    let ids = target_layers(s, p)?;
+    let tl = s.timeline();
+    let on_keys = !ids.is_empty() && ids.iter().all(|id| tl.layer(*id).is_some_and(|l| l.keyframe_starting_at(frame).is_some()));
+    if on_keys && frame < MAX_FRAME { Ok(frame + 1) } else { Ok(frame) }
+}
+
+/// The result of F6 / F7; with `advance` the playhead moves onto the new key.
+fn advanced(s: &mut Session, p: &Value, frame: u32) -> Result<Value> {
+    let mut out = json!({"keyframe": frame});
+    if opt_bool(p, "advance")?.unwrap_or(false) {
+        s.set_frame(frame);
+        out["playhead"] = json!(frame);
+    }
+    Ok(out)
 }
 
 /// Shift+F6 over a range: clears every keyframe starting in `frame..frame + count` on each
@@ -427,7 +521,7 @@ fn move_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
 /// keep their content. Lifting everything before placing anything makes overlapping row
 /// ranges (dragging two rows down by one) come out right.
 fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, layer_by: i64) -> Result<Value> {
-    let order: Vec<LayerId> = s.doc.timeline(s.scene).layers.iter().map(|l| l.id).collect();
+    let order: Vec<LayerId> = s.timeline().layers.iter().map(|l| l.id).collect();
     let mut rows: Vec<usize> = target_layers(s, p)?.iter().filter_map(|id| order.iter().position(|o| o == id)).collect();
     rows.sort_unstable();
     let mut plan = Vec::with_capacity(rows.len());
@@ -460,6 +554,7 @@ fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, l
         }
         let (a, b) = (a as u32, b as u32);
         let layer = s.layer_mut(Some(dst))?;
+        crate::cmds_camera::keys_fit(layer.kind, keys.iter())?;
         // Cut the target at both ends of the landing range so what lies outside it stays.
         if layer.keyframe_index_at(a).is_some_and(|i| layer.keyframes.get(i).is_some_and(|k| k.start < a)) {
             insert_keyframe_at(layer, a, true)?;
@@ -524,6 +619,8 @@ fn clear_keyframe_at(layer: &mut Layer, frame: u32) -> Result<()> {
         if let Some(k) = layer.keyframe_mut(0) {
             k.elements.clear();
             k.tween = None;
+            k.motion = None;
+            k.hints.clear();
         }
     } else {
         let removed = layer.keyframes.remove(i);
@@ -535,7 +632,7 @@ fn clear_keyframe_at(layer: &mut Layer, frame: u32) -> Result<()> {
     Ok(())
 }
 
-fn keyframe_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Keyframe> {
+pub(crate) fn keyframe_mut<'a>(s: &'a mut Session, p: &Value) -> Result<&'a mut Keyframe> {
     let (lid, frame) = target(s, p)?;
     let layer = s.layer_mut(lid)?;
     let i = layer.keyframe_index_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;
@@ -552,30 +649,45 @@ fn create_shape_tween(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
+    let given = opt_easing_in(&s.doc, p, "easing")?;
     let k = keyframe_mut(s, p)?;
-    // Switching kinds keeps the easing the span already had, unless one is given.
-    let easing = match opt_easing(p, "easing")? {
-        Some(e) => e,
-        None => k.tween.map(|t| t.easing).unwrap_or_default(),
-    };
-    let orient = k.tween.is_some_and(|t| t.orient);
-    k.tween = Some(Tween { easing, kind, orient });
+    // Switching kinds keeps the easing the span already had, unless one is given; a classic
+    // tween keeps its property groups' eases (a shape tween has one ease, as in Animate).
+    let easing = given.unwrap_or_else(|| k.tween.as_ref().map(|t| t.easing.clone()).unwrap_or_default());
+    let orient = k.tween.as_ref().is_some_and(|t| t.orient);
+    let groups = if kind == TweenKind::Classic { k.tween.as_ref().map(|t| t.groups.clone()).unwrap_or_default() } else { Vec::new() };
+    // It replaces a motion tween, keeping the object as it is on the first frame.
+    crate::cmds_motion::bake_first_frame(k);
+    let label = easing.label();
+    k.tween = Some(Tween { easing, kind, orient, groups });
+    // Shape hints only mean something to a shape tween.
+    if kind != TweenKind::Shape {
+        k.hints.clear();
+    }
     let kind = if kind == TweenKind::Shape { "shape" } else { "classic" };
-    Ok(json!({"tween": k.start, "easing": easing.label(), "kind": kind}))
+    Ok(json!({"tween": k.start, "easing": label, "kind": kind}))
 }
 
 fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {
     let k = keyframe_mut(s, p)?;
     k.tween = None;
+    k.hints.clear();
+    crate::cmds_motion::bake_first_frame(k);
     Ok(json!({"removed": k.start}))
 }
 
 fn set_easing(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing(p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let easing = opt_easing_in(&s.doc, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let group = crate::cmds_ease::group(p)?;
     let k = keyframe_mut(s, p)?;
     let t = k.tween.as_mut().ok_or_else(|| EngineError::State("this span has no tween; create one first".into()))?;
-    t.easing = easing;
-    Ok(json!({"easing": easing.label()}))
+    let label = easing.label();
+    match group {
+        Some(_) if t.kind == TweenKind::Shape => return Err(EngineError::State("a shape tween has one ease for everything; property groups ease separately in classic tweens".into())),
+        Some(g) => t.set_ease(g, Some(easing)),
+        None => t.easing = easing,
+    }
+    Ok(json!({"easing": label, "group": group.map_or("all", |g| g.key())}))
 }
 
 fn set_label(s: &mut Session, p: &Value) -> Result<Value> {
@@ -607,8 +719,15 @@ fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
     add_layer(s, p, LayerKind::Folder)
 }
 
+/// The colour the `n`th layer gets (its outline and timeline bar).
+pub(crate) fn layer_color(n: usize) -> anicraft_doc::Rgba {
+    // The first seven of the layer colours, in turn.
+    const TURN: usize = 7;
+    anicraft_doc::Rgba::hex(crate::LAYER_COLORS.get(n % TURN).copied().unwrap_or(0x4fa3ff))
+}
+
 fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     if tl.layers.len() >= 1000 {
         return Err(EngineError::State("too many layers (limit 1000)".into()));
     }
@@ -634,9 +753,8 @@ fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
         // Match the timeline length so the new layer spans the existing frames.
         k.duration = s.frame_count().max(1);
     }
-    let palette = [0x4fa3ff, 0xff6b4a, 0x66bb6a, 0xffd54a, 0xba68c8, 0x4dd0e1, 0xff8a65];
-    layer.color = anicraft_doc::Rgba::hex(palette[n % palette.len()]);
-    let tl = s.doc.timeline_mut(s.scene);
+    layer.color = layer_color(n);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     tl.layers.insert(at, Arc::new(layer));
     tl.repair_masks();
     s.layer = id;
@@ -648,16 +766,16 @@ fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
 /// stays where it is, in the mask's folder.
 fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = s.doc.timeline(s.scene);
+    let tl = s.timeline();
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let is_folder = tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder);
     let range = if is_folder { tl.group_range(i) } else { i..i + 1 };
-    let drawable_left = tl.layers.iter().enumerate().filter(|(j, l)| !range.contains(j) && l.kind != LayerKind::Folder).count();
+    let drawable_left = tl.layers.iter().enumerate().filter(|(j, l)| !range.contains(j) && !matches!(l.kind, LayerKind::Folder | LayerKind::Camera)).count();
     if drawable_left == 0 {
         return Err(EngineError::State("a document needs at least one layer to draw on".into()));
     }
     let up = tl.layers.get(i).and_then(|l| l.parent);
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     if !is_folder {
         for l in tl.layers.iter_mut().filter(|l| l.parent == Some(id)) {
             Arc::make_mut(l).parent = up;
@@ -666,8 +784,8 @@ fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let removed: Vec<LayerId> = tl.layers.drain(range.clone()).map(|l| l.id).collect();
     tl.repair_masks();
     if removed.contains(&s.layer) {
-        let j = range.start.min(s.doc.timeline(s.scene).layers.len().saturating_sub(1));
-        s.layer = s.doc.timeline(s.scene).layers.get(j).map_or(LayerId(0), |l| l.id);
+        let j = range.start.min(s.timeline().layers.len().saturating_sub(1));
+        s.layer = s.timeline().layers.get(j).map_or(LayerId(0), |l| l.id);
         s.selection.clear();
     }
     Ok(json!({"deleted": id.0, "layers": removed.len()}))
@@ -695,12 +813,20 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = if let Some(id) = opt_u64(p, "layer")? {
         LayerId(id)
     } else if let Some(i) = opt_u64(p, "index")? {
-        usize::try_from(i).ok().and_then(|i| s.doc.timeline(s.scene).layers.get(i)).map(|l| l.id).ok_or_else(|| EngineError::Param("layer index out of range".into()))?
+        usize::try_from(i).ok().and_then(|i| s.timeline().layers.get(i)).map(|l| l.id).ok_or_else(|| EngineError::Param("layer index out of range".into()))?
     } else {
         return Err(EngineError::Param("pass {\"layer\": id} or {\"index\": n}".into()));
     };
-    if s.doc.timeline(s.scene).layer(id).is_none() {
+    if s.timeline().layer(id).is_none() {
         return Err(EngineError::State(format!("no layer with id {}", id.0)));
+    }
+    // A click on a layer's name in Animate: the layer becomes active with all of its artwork at
+    // the playhead selected (ADR 0044).
+    if opt_bool(p, "select")? == Some(true) {
+        s.layer = id;
+        let ids: Vec<ElementId> = if s.selectable(id) { s.elements_on(id).iter().map(|e| e.id).collect() } else { Vec::new() };
+        s.selection = crate::Selection::only(id, ids);
+        return Ok(json!({"layer": id.0, "selected": s.selection.id_list()}));
     }
     if s.layer != id {
         s.layer = id;
@@ -714,7 +840,7 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
 /// where it landed: moving it in under a folder or mask puts it inside, moving it out frees it.
 fn move_layer(s: &mut Session, p: &Value, d: i64) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = s.doc.timeline_mut(s.scene);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let n = tl.layers.len();
     if tl.layers.get(i).is_some_and(|l| matches!(l.kind, LayerKind::Mask | LayerKind::Folder)) {

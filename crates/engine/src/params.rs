@@ -2,8 +2,10 @@
 //! can show, never panics, and rejects non-finite numbers.
 
 use crate::{EngineError, Result};
-use anicraft_doc::{Easing, Rgba};
-use serde_json::Value;
+use anicraft_doc::{CustomEase, Document, EasePoint, Easing, ProfilePreset, Rgba, WidthPoint, WidthProfile};
+use anicraft_geom::Vec2;
+use std::sync::Arc;
+use serde_json::{Value, json};
 
 fn bad(key: &str, want: &str) -> EngineError {
     EngineError::Param(format!("param '{key}' must be {want}"))
@@ -81,25 +83,17 @@ pub fn opt_u64_list(p: &Value, key: &str) -> Result<Option<Vec<u64>>> {
     }
 }
 
-/// Easing from a preset name (`"Linear"`, `"QuadIn"`…), `{"classic": n}` or `{"bezier": [x1,y1,x2,y2]}`.
+/// Easing from a preset name (`"Linear"`, `"QuadIn"`, `"ElasticOut"`…), `{"classic": n}`,
+/// `{"bezier": [x1, y1, x2, y2]}` or `{"custom": …}` (a custom ease: `{"points": [{at, in,
+/// out, smooth}, ..]}` as `ease.info` gives it, or the flat list `[[x, y], ..]` of 3n + 1
+/// points XFL uses). Saved eases (`{"saved": name}`) need the document: [`opt_easing_in`].
 pub fn opt_easing(p: &Value, key: &str) -> Result<Option<Easing>> {
     let Some(v) = p.get(key) else { return Ok(None) };
     if v.is_null() {
         return Ok(None);
     }
     if let Some(s) = v.as_str() {
-        let e = match s.to_ascii_lowercase().replace(['-', '_', ' '], "").as_str() {
-            "linear" | "none" => Easing::Linear,
-            "quadin" | "easein" => Easing::QuadIn,
-            "quadout" | "easeout" => Easing::QuadOut,
-            "quadinout" | "easeinout" => Easing::QuadInOut,
-            "cubicin" => Easing::CubicIn,
-            "cubicout" => Easing::CubicOut,
-            "cubicinout" => Easing::CubicInOut,
-            "smooth" => Easing::CubicBezier(0.25, 0.1, 0.25, 1.0),
-            _ => return Err(bad(key, "one of Linear, QuadIn, QuadOut, QuadInOut, CubicIn, CubicOut, CubicInOut, Smooth")),
-        };
-        return Ok(Some(e));
+        return Easing::from_name(s).map(Some).ok_or_else(|| bad(key, "a preset name: Linear, Smooth, or a family (Quad, Cubic, Quart, Quint, Sine, Back, Circ, Bounce, Elastic) with In, Out or InOut, e.g. BackOut"));
     }
     if let Some(c) = v.get("classic") {
         let s = c.as_f64().filter(|f| f.is_finite()).ok_or_else(|| bad(key, "{\"classic\": -100..100}"))?;
@@ -111,5 +105,175 @@ pub fn opt_easing(p: &Value, key: &str) -> Result<Option<Easing>> {
             return Ok(Some(Easing::CubicBezier(x1.clamp(0.0, 1.0), y1.clamp(-5.0, 5.0), x2.clamp(0.0, 1.0), y2.clamp(-5.0, 5.0))));
         }
     }
-    Err(bad(key, "an easing name, {\"classic\": n} or {\"bezier\": [x1, y1, x2, y2]}"))
+    if let Some(c) = v.get("custom") {
+        return custom_ease(c).map(|c| Some(Easing::Custom(Arc::new(c)))).ok_or_else(|| bad(key, "{\"custom\": {\"points\": [{\"at\": {\"x\", \"y\"}, \"in\": {..}, \"out\": {..}, \"smooth\"}, ..]}} or {\"custom\": [[x, y], ..]} (3n + 1 points)"));
+    }
+    Err(bad(key, "an easing name, {\"classic\": n}, {\"bezier\": [x1, y1, x2, y2]}, {\"custom\": …} or {\"saved\": name}"))
+}
+
+/// Most points read from a custom ease param before it is thinned to the cap.
+const MAX_EASE_PARAM: usize = 16_384;
+
+fn custom_ease(v: &Value) -> Option<CustomEase> {
+    match v {
+        Value::Array(flat) if flat.len() <= MAX_EASE_PARAM * 3 => {
+            let pts: Option<Vec<Vec2>> = flat.iter().map(|q| match q.as_array().map(Vec::as_slice) {
+                Some([x, y]) => Some(Vec2::new(x.as_f64()? as f32, y.as_f64()? as f32)),
+                _ => None,
+            }).collect();
+            CustomEase::from_flat(&pts?)
+        }
+        Value::Object(o) => {
+            let pts = o.get("points")?.as_array()?;
+            if pts.len() > MAX_EASE_PARAM {
+                return None;
+            }
+            serde_json::from_value::<Vec<EasePoint>>(Value::Array(pts.clone())).ok().map(CustomEase::new)
+        }
+        _ => None,
+    }
+}
+
+/// [`opt_easing`], and `{"saved": name}` for an ease saved in `doc` (ADR 0081).
+pub fn opt_easing_in(doc: &Document, p: &Value, key: &str) -> Result<Option<Easing>> {
+    if let Some(name) = p.get(key).and_then(|v| v.get("saved")) {
+        let name = name.as_str().ok_or_else(|| bad(key, "{\"saved\": name}"))?;
+        return saved_ease(doc, name).map(Some);
+    }
+    opt_easing(p, key)
+}
+
+/// The ease saved as `name` (any case).
+pub fn saved_ease(doc: &Document, name: &str) -> Result<Easing> {
+    let want = name.trim().to_lowercase();
+    doc.eases.iter().find(|e| e.name.to_lowercase() == want).map(|e| e.ease.clone()).ok_or_else(|| {
+        let names: Vec<&str> = doc.eases.iter().map(|e| e.name.as_str()).take(20).collect();
+        EngineError::State(if names.is_empty() { format!("no ease is saved as '{name}' (save one with ease.save)") } else { format!("no ease is saved as '{name}' (saved: {})", names.join(", ")) })
+    })
+}
+
+/// An ease as commands take it back (see [`opt_easing`]): a name for presets, else its values.
+pub fn easing_json(e: &Easing) -> Value {
+    match e {
+        Easing::Classic(s) => json!({"classic": s}),
+        Easing::CubicBezier(a, b, c, d) => json!({"bezier": [a, b, c, d]}),
+        Easing::Custom(c) => json!({"custom": serde_json::to_value(&**c).unwrap_or(Value::Null)}),
+        named => named.name().map_or(Value::Null, Value::from),
+    }
+}
+
+/// A width profile (ADR 0018): a preset name (`"uniform"`, `"taper_both"`, `"taper_start"`,
+/// `"taper_end"`, `"bulge"`, `"pinch"`) or width points as `[[t, left, right], ..]` (or
+/// `{t, left, right}` objects; factors of the nominal width, 1 = as set). `Some(None)` is
+/// uniform; `None` when the param is absent.
+pub fn opt_profile(p: &Value, key: &str) -> Result<Option<Option<WidthProfile>>> {
+    let want = "a profile name (uniform, taper_both, taper_start, taper_end, bulge, pinch) or a list of [t, left, right] width points";
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(name)) => ProfilePreset::from_key(name).map(|pr| Some(pr.profile())).ok_or_else(|| bad(key, want)),
+        Some(Value::Array(list)) => {
+            if list.len() > anicraft_doc::MAX_WIDTH_POINTS {
+                return Err(bad(key, &format!("at most {} width points", anicraft_doc::MAX_WIDTH_POINTS)));
+            }
+            let num = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|f| f.is_finite()).map(|f| f as f32);
+            let mut pts = Vec::with_capacity(list.len());
+            for v in list {
+                let (t, l, r) = match v {
+                    Value::Array(a) => (num(a.first()), num(a.get(1)), num(a.get(2))),
+                    Value::Object(_) => (num(v.get("t")), num(v.get("left")), num(v.get("right"))),
+                    _ => (None, None, None),
+                };
+                let (Some(t), Some(l), Some(r)) = (t, l, r) else { return Err(bad(key, want)) };
+                if !(0.0..=1.0).contains(&t) || !(0.0..=anicraft_doc::MAX_WIDTH_FACTOR).contains(&l) || !(0.0..=anicraft_doc::MAX_WIDTH_FACTOR).contains(&r) {
+                    return Err(bad(key, &format!("width points with t in 0..=1 and widths in 0..={}", anicraft_doc::MAX_WIDTH_FACTOR)));
+                }
+                pts.push(WidthPoint::new(t, l, r));
+            }
+            Ok(Some(WidthProfile::new(pts)))
+        }
+        Some(_) => Err(bad(key, want)),
+    }
+}
+
+/// What the stroke style params take (`stroke.set_style`, `element.set_stroke`, the drawing
+/// commands, `paint.ink`).
+pub const STROKE_STYLE_PARAMS: &str = "cap?: none|round|square, join?: miter|round|bevel, miter? (limit, 1..=100), style?: solid|dashed|dotted, dash? ([on, off, ..] lengths; implies dashed), dash_offset?, dot_spacing? (implies dotted)";
+
+/// The stroke style params (ADR 0046) applied to `base`, for a stroke `width` wide (which sizes
+/// a new dash pattern or dot spacing); `None` when none are given.
+pub fn opt_stroke_style(p: &Value, base: &anicraft_doc::StrokeStyle, width: f32) -> Result<Option<anicraft_doc::StrokeStyle>> {
+    use anicraft_doc::stroke_style::{MAX_DASH_ENTRIES, MAX_DASH_LENGTH, MAX_MITER_LIMIT, MIN_MITER_LIMIT};
+    use anicraft_doc::{Cap, Dash, DashKind, Join};
+    let keys = ["cap", "join", "miter", "style", "dash", "dash_offset", "dot_spacing"];
+    if !keys.iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+        return Ok(None);
+    }
+    let mut st = base.clone();
+    if let Some(c) = opt_str(p, "cap")? {
+        st.cap = Cap::from_key(c).ok_or_else(|| bad("cap", "none, round or square"))?;
+    }
+    if let Some(j) = opt_str(p, "join")? {
+        st.join = Join::from_key(j).ok_or_else(|| bad("join", "miter, round or bevel"))?;
+    }
+    if let Some(m) = opt_f32(p, "miter")? {
+        if !(MIN_MITER_LIMIT..=MAX_MITER_LIMIT).contains(&m) {
+            return Err(bad("miter", &format!("a miter limit in {MIN_MITER_LIMIT}..={MAX_MITER_LIMIT}")));
+        }
+        st.miter_limit = m;
+    }
+    let len_ok = |v: f32| (0.0..=MAX_DASH_LENGTH).contains(&v);
+    let dash = match p.get("dash") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(list)) => {
+            if list.is_empty() || list.len() > MAX_DASH_ENTRIES {
+                return Err(bad("dash", &format!("a list of 1 to {MAX_DASH_ENTRIES} lengths")));
+            }
+            let mut v = Vec::with_capacity(list.len());
+            for x in list {
+                match x.as_f64().filter(|f| f.is_finite()).map(|f| f as f32) {
+                    Some(f) if len_ok(f) => v.push(f),
+                    _ => return Err(bad("dash", &format!("lengths in 0..={MAX_DASH_LENGTH}"))),
+                }
+            }
+            Some(v)
+        }
+        Some(_) => return Err(bad("dash", "a list of [on, off, ..] lengths")),
+    };
+    let offset = opt_f32(p, "dash_offset")?;
+    if offset.is_some_and(|o| o.abs() > MAX_DASH_LENGTH) {
+        return Err(bad("dash_offset", &format!("in -{MAX_DASH_LENGTH}..={MAX_DASH_LENGTH}")));
+    }
+    let spacing = opt_f32(p, "dot_spacing")?;
+    if spacing.is_some_and(|s| !len_ok(s)) {
+        return Err(bad("dot_spacing", &format!("in 0..={MAX_DASH_LENGTH}")));
+    }
+    let kind = match opt_str(p, "style")? {
+        Some(k) => DashKind::from_key(k).ok_or_else(|| bad("style", "solid, dashed or dotted"))?,
+        None if dash.is_some() || offset.is_some() => DashKind::Dashed,
+        None if spacing.is_some() => DashKind::Dotted,
+        None => st.dash_kind(),
+    };
+    // A new pattern is sized by the stroke: dashes three widths long with two-width gaps, dots
+    // one width apart.
+    let w = if width.is_finite() { width.clamp(0.0, MAX_DASH_LENGTH) } else { 1.0 };
+    st.dash = match kind {
+        DashKind::Solid => None,
+        DashKind::Dashed => {
+            let (lengths, old_offset) = match &st.dash {
+                Some(Dash::Dashed { lengths, offset }) => (lengths.to_vec(), *offset),
+                _ => (vec![(3.0 * w).max(2.0), (2.0 * w).max(2.0)], 0.0),
+            };
+            let lengths = dash.unwrap_or(lengths);
+            let d = Dash::Dashed { lengths: lengths.into(), offset: offset.unwrap_or(old_offset) }.sanitized();
+            Some(d.ok_or_else(|| bad("dash", "a pattern with a gap (some off length above 0)"))?)
+        }
+        DashKind::Dotted => {
+            let old = match &st.dash {
+                Some(Dash::Dotted { spacing }) => *spacing,
+                _ => w.max(2.0),
+            };
+            Dash::dotted(spacing.unwrap_or(old))
+        }
+    };
+    Ok(Some(st.sanitized()))
 }
