@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Rulers, grid and guides** (ADR 0076, M1).
+  * **View › Rulers** (**Ctrl+Alt+Shift+R**): rulers along the top and left of the stage, in
+    pixels from its corner, following zoom and pan and marking the pointer.
+  * **Guides**: drag one out of a ruler; drag it with the Selection tool to move it, or back
+    onto a ruler to delete it. Each scene keeps its guides in the document. **View › Guides**:
+    Show (**Ctrl+;**), Lock (**Ctrl+Alt+;**), Snap to Guides (**Ctrl+Shift+;**), Edit Guides
+    (**Ctrl+Alt+Shift+G**: colour, accuracy, and every guide by position, so the keyboard can
+    add, move and delete them), Add Guide and Clear Guides.
+  * **Grid**: **View › Grid** › Show Grid (**Ctrl+'**), Snap to Grid (**Ctrl+Shift+'**), Edit
+    Grid (**Ctrl+Alt+G**: spacing, colour, show over objects, accuracy up to Always snap).
+  * **Snap to Pixels** in View › Snapping, next to Snap to Objects, Grid and Guides.
+  * One snap engine for every drawing tool, the Selection tool's moves (symbols, text and
+    bitmaps now snap by their box's corners and centre) and Free Transform's handles, in a
+    fixed order: point, guide, line, grid, pixel.
+  * Shown on the stage only, never in Test Movie or exports.
+  * Headless: `view.*` commands (`view.guide_add`, `view.grid_set`, `view.guides_clear`, …)
+    and `view.aids`.
+
 * **A light theme** (ADR 0077, M8). Fixes #227.
   * **Preferences › Appearance › Theme** offers **Light** beside **Dark (Graphite)** and **High
     contrast**: light grey panels, near-black text, hairline-edged buttons and fields, soft

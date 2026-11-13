@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 274 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 288 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -91,7 +91,29 @@ This page is generated from the command registry, so it always matches the versi
 ## View
 
 - **Snap to Objects** `draw.snap_to_objects` · View › Snapping · **Ctrl+Shift+/** (macOS **⇧⌘/**)
-  Parameters: ``{on?: bool} (default: toggle) dragged points and selections, and the points the Line, Rectangle, Oval, PolyStar and Pen tools draw, snap to points, lines and fill edges (the `snap` params of element.translate, raw.move_point, raw.move_handle and draw.snap do nothing while it is off)``
+  Parameters: ``{on?: bool} (default: toggle) dragged points and selections, and the points the Line, Rectangle, Oval, PolyStar and Pen tools draw, snap to points, lines and fill edges (while it is off, the `snap` params of element.translate, raw.move_point and draw.snap only snap to guides, the grid and pixels, as View › Guides, Grid and Snapping say)``
+- **Rulers** `view.rulers` · **Ctrl+Alt+Shift+R** (macOS **⌥⇧⌘R**)
+  Parameters: `{on?: bool} (default: toggle) rulers along the stage's top and left edges, in stage pixels from its top-left corner; drag from one to make a guide`
+- **Show Grid** `view.grid_show` · View › Grid · **Ctrl+'** (macOS **⌘'**)
+  Parameters: `{on?: bool} (default: toggle) the grid on the stage (never in pictures or exports)`
+- **Snap to Grid** `view.grid_snap` · View › Grid · **Ctrl+Shift+'** (macOS **⇧⌘'**)
+  Parameters: `{on?: bool} (default: toggle) points being drawn, dragged or moved snap to the grid's lines (shown or not)`
+- **Edit Grid…** `view.grid_set` · View › Grid · **Ctrl+Alt+G** (macOS **⌥⌘G**) · changes the document
+  Parameters: `{spacing?, spacing_x?, spacing_y? (stage pixels, 1..=4096), color?: "#rrggbb[aa]", over_objects?: bool, show?: bool, snap?: bool, accuracy?: "close"|"normal"|"distant"|"always"} sets the grid; spacing and colour are saved with the document (one undo step), the rest is the editor's; returns everything as view.aids does`
+- **Show Guides** `view.guides_show` · View › Guides · **Ctrl+;** (macOS **⌘;**)
+  Parameters: `{on?: bool} (default: toggle) this scene's guides on the stage (never in pictures or exports)`
+- **Lock Guides** `view.guides_lock` · View › Guides · **Ctrl+Alt+;** (macOS **⌥⌘;**)
+  Parameters: `{on?: bool} (default: toggle) locked guides can't be dragged, moved or deleted one by one (new ones can still be added, and Clear Guides clears them)`
+- **Snap to Guides** `view.guides_snap` · View › Guides · **Ctrl+Shift+;** (macOS **⇧⌘;**)
+  Parameters: `{on?: bool} (default: toggle) points being drawn, dragged or moved snap to the guides`
+- **Edit Guides…** `view.guides_set` · View › Guides · **Ctrl+Alt+Shift+G** (macOS **⌥⇧⌘G**) · changes the document
+  Parameters: `{color?: "#rrggbb[aa]", show?: bool, lock?: bool, snap?: bool, accuracy?: "close"|"normal"|"distant"} sets the guides; the colour is saved with the document (one undo step), the rest is the editor's; returns everything as view.aids does`
+- **Add Guide…** `view.guide_add` · View › Guides · changes the document
+  Parameters: ``{axis: "horizontal"|"vertical", at} adds a guide to this scene at `at` stage pixels (y for a horizontal guide, x for a vertical one); returns {index, guides}``
+- **Clear Guides** `view.guides_clear` · View › Guides · changes the document
+  Parameters: `{} removes every guide from this scene (undoable)`
+- **Snap to Pixels** `view.snap_pixels` · View › Snapping
+  Parameters: `{on?: bool} (default: toggle) points being drawn, dragged or moved go to whole stage pixels where nothing else snaps them`
 
 ## Insert
 
@@ -388,7 +410,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Select at Point** `element.pick`
   Parameters: ``{x, y, add?: bool} the topmost element there on a visible, unlocked layer; `add` (Shift) adds it to the selection, or lets go of it, on any layer``
 - **Move** `element.translate` · changes the document
-  Parameters: ``{dx, dy, snap?, from?: [x, y]} moves the selection, on every layer; with `snap` (a distance) one of its corners or ends (the nearest to `from`) then snaps onto a point, line or fill edge of the rest within that distance``
+  Parameters: ``{dx, dy, snap?, from?: [x, y]} moves the selection, on every layer; with `snap` (a distance) one of its corners or ends, or its box's corners or centre (the nearest to `from`), then snaps within that distance by the snap engine's priority (ADR 0076): a point, guide, line or fill edge of the rest, the grid, a whole pixel``
 - **Transform** `element.set_transform` · changes the document
   Parameters: `{x?, y?, sx?, sy?, rotation? (degrees)}`
 - **Fill Colour** `element.set_fill` · changes the document
@@ -413,6 +435,12 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{name}`
 - **Place on Stage** `library.place` · changes the document
   Parameters: `{symbol | bitmap | sound: id, x?, y?} or {items: [{symbol | bitmap | sound: id}, ..], x?, y?} → {element, elements, sound?}: symbols and bitmaps centred on x, y (default: the stage centre; inside an open symbol, in its space) in the active layer's keyframe at the playhead, selected; a sound goes onto that keyframe, its span grown to fit (one sound per keyframe). One undo step`
+- **Move Guide** `view.guide_move` · changes the document
+  Parameters: ``{index, at} moves this scene's guide `index` (as view.aids lists them) to `at`; refused while guides are locked``
+- **Delete Guide** `view.guide_delete` · changes the document
+  Parameters: ``{index} removes this scene's guide `index`; refused while guides are locked``
+- **Rulers, Grid and Guides** `view.aids`
+  Parameters: `{} whether the rulers, grid and guides show and snap, the grid's and guides' settings, and this scene's guides [{axis, at}, ..]`
 - **Combine Objects** `modify.combine` · changes the document
   Parameters: `{op: union|intersect|punch|crop} combines the selected shapes on the active layer, bottom to top as they are stacked (ADR 0073). union: one drawing object of everything (a group of the merged pieces when they have more than one colour or keep lines); intersect: the area every one covers, in the topmost's fill and stroke; punch: the topmost's area cut out of each of the others; crop: each of the others cut to the topmost's area. Punch and crop remove the topmost. A result of one fill (or one line) is a drawing object, one of several is a group of raw shapes → {op, created}`
 - **List Library** `library.items`
@@ -480,7 +508,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Convert Anchor Points** `raw.convert_points` · changes the document
   Parameters: `{points: [[x, y], ..], smooth: bool} makes the raw anchors at those positions smooth (their handles in one line) or corners (handles drawn in), in every shape that has them`
 - **Snap Point** `draw.snap`
-  Parameters: ``{x, y, snap} where a point drawn at (x, y) snaps while Snap to Objects is on: the nearest anchor within `snap` stage units, else the nearest point on a line or fill edge; returns {x, y, snapped: {x, y, to} | null}``
+  Parameters: ``{x, y, snap, moving?: bool} where a point drawn at (x, y) snaps within `snap` stage units, by the snap engine's priority (ADR 0076): an anchor (Snap to Objects), a guide (Snap to Guides), a line or fill edge, the grid (Snap to Grid), a whole pixel (Snap to Pixels); `moving`: the selection is what moves (a Free Transform handle), so it isn't a target; returns {x, y, snapped: {x, y, to: point|guide|line|grid|pixel} | null}``
 - **Replace** `find.replace` · changes the document
   Parameters: ``{the find.search query, with: text (kind text; $1 and ${name} insert groups when regex) | family (font) | #rrggbb (color; each place keeps its alpha) | library id (symbol, sound, bitmap), at?: one hit as find.search returned it (Replace); without `at`, every hit (Replace All, one undo step; asks first above 100 places)} → {replaced, skipped, notes}``
 - **Go to Found Item** `find.goto`

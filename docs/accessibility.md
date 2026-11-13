@@ -41,6 +41,10 @@ frames, the keyboard menu bar, the system's contrast setting); the rules for con
     or Ctrl+D.
   * **Esc** goes back to the stage itself, where the arrows nudge the selection again.
   * Elements on locked layers are listed, but can't be selected.
+* **Guides from the keyboard** (ADR 0076): **View › Guides › Edit Guides**
+  (Ctrl+Alt+Shift+G) or **Add Guide** lists the scene's guides by direction and position. Type a
+  new position or delete a guide there, or add one with the direction, position and **Add
+  guide**. The rulers are named *Horizontal ruler* and *Vertical ruler*.
 * **The timeline from the keyboard.** With the timeline focused, **Left** and **Right** move
   the playhead a frame, and **Up** and **Down** move to the layer above or below.
   * Each move is announced: "Frame 12 · Ball · Frames 1–24: keyframe · motion tween".
