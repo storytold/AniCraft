@@ -75,7 +75,7 @@ pub(crate) fn begin_edit(layer: LayerId, kf: &mut Keyframe, frame: u32) -> Optio
 /// the base back. On the span's first frame a property without keys changes the base itself.
 pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     let scene = s.scene;
-    let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).layer_mut(e.layer) else { return };
+    let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).ok().and_then(|tl| tl.layer_mut(e.layer)) else { return };
     let Some(kf) = layer.keyframe_starting_at(e.start).and_then(|i| layer.keyframe_mut(i)) else { return };
     let Some(idx) = kf.elements.iter().position(|x| x.id == e.target) else { return };
     let Some(after) = kf.elements.get(idx).map(|x| (**x).clone()) else { return };

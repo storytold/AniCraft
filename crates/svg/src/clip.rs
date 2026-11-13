@@ -46,7 +46,7 @@ fn element_bounds(e: &ImportedElement) -> Rect {
     match &e.kind {
         ElementKind::Shape(s) => s.path.bounds().inflate(s.stroke.as_ref().map_or(0.0, Stroke::reach)).transformed(&e.transform),
         ElementKind::Text(t) => t.outline.bounds().union(&Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0))).transformed(&e.transform),
-        ElementKind::Symbol { .. } | ElementKind::Camera => Rect::EMPTY,
+        ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => Rect::EMPTY,
     }
 }
 
@@ -122,7 +122,7 @@ impl Region {
             let (path, rule) = match &p.kind {
                 ElementKind::Shape(s) => (s.path.transformed(&p.transform), s.fill_rule),
                 ElementKind::Text(t) => (t.outline.transformed(&p.transform), FillRule::NonZero),
-                ElementKind::Symbol { .. } | ElementKind::Camera => continue,
+                ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => continue,
             };
             let cut = clip_convex(&path, poly);
             if !cut.is_empty() {
@@ -217,7 +217,7 @@ impl<'a> Builder<'a> {
                     }
                 }
                 ElementKind::Text(t) => r = r.union(&Rect::new(0.0, 0.0, t.box_width, t.box_height).transformed(&to_user)),
-                ElementKind::Symbol { .. } | ElementKind::Camera => {}
+                ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => {}
             }
         }
         (r.min.x <= r.max.x && r.min.y <= r.max.y).then_some(r)
@@ -349,7 +349,7 @@ impl<'a> Builder<'a> {
                 && match &e.kind {
                     ElementKind::Shape(s) => s.stroke.is_none() && matches!(s.fill, Some(Paint::Solid(c)) if opaque(c)),
                     ElementKind::Text(t) => opaque(t.color),
-                    ElementKind::Symbol { .. } | ElementKind::Camera => false,
+                    ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => false,
                 }
         };
         let area = mask_part(String::new(), Path::rect(rect.min.x, rect.min.y, rect.width(), rect.height()), *m, FillRule::NonZero);

@@ -452,9 +452,9 @@ trace(n);]]></script></Actionscript><elements><DOMSymbolInstance libraryItemName
 }
 
 #[test]
-fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
+fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_groups() {
     // Animate's raw shapes (merge drawing) are loose `DOMShape`s; a drawing object says so, and
-    // a group is an object whatever it holds (ADR 0042).
+    // a group is a group (ADR 0073) whose shapes merge only with each other.
     let square = |attrs: &str, x: u32| {
         format!(
             r##"<DOMShape {attrs}><fills><FillStyle index="1"><SolidColor color="#FF0000"/></FillStyle></fills><strokes><StrokeStyle index="1"><SolidStroke weight="2"><fill><SolidColor/></fill></SolidStroke></StrokeStyle></strokes>
@@ -471,9 +471,14 @@ fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
     );
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, _) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
-    let merge: Vec<bool> = d.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
-    // Each square is a fill and a stroke.
-    assert_eq!(merge, [true, true, false, false, false, false]);
+    let els = &d.timeline(0).layers[0].keyframes[0].elements;
+    let merge: Vec<bool> = els.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    // Each square is a fill and a stroke; the third is in a group (ADR 0073), raw inside it.
+    assert_eq!(merge, [true, true, false, false, false]);
+    let group = els.last().unwrap();
+    assert!(matches!(group.kind, ElementKind::Group { .. }));
+    let inside: Vec<bool> = group.kind.group_members().iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    assert_eq!(inside, [true, true]);
 }
 
 #[test]

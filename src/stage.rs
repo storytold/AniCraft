@@ -425,7 +425,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Select | Tool::Transform if multi => crate::onion::drag_start(app, sp, shift, zoom),
                 // On an armature, a drag poses it (ADR 0043).
                 Tool::Select if let Some(d) = crate::bone_tool::select_drag_start(app, xf, press) => d,
-                Tool::Select => select_press(app, sp, shift, command, zoom),
+                Tool::Select => select_press(app, sp, shift, command, alt, zoom),
                 Tool::Transform => {
                     let zone = sel_rect.and_then(|r| xf_zone(r, press));
                     match (zone, sel_bounds) {
@@ -509,7 +509,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.run("element.translate", json!({"dx": d.x, "dy": d.y}));
                 }
             }
-            (Drag::SnapMove { .. }, Some(c)) => snap_move(app, c, zoom),
+            (Drag::SnapMove { .. }, Some(c)) => snap_move(app, c, zoom, shift),
             (Drag::MultiMove { last }, Some(c)) => {
                 let mut l = *last;
                 crate::onion::drag_to(app, &mut l, c);
@@ -734,8 +734,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let slop = 3.0 / zoom.max(1e-3);
         if !open_text_at(app, sp, slop) {
             match app.s.hit_test(to_v(sp), slop) {
-                // A symbol instance opens for editing in place (ADR 0045).
-                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. })) => {
+                // A symbol instance (ADR 0045) or a group (ADR 0073) opens for editing in place.
+                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. } | anicraft_engine::doc::ElementKind::Group { .. })) => {
                     app.run("symbol.edit", json!({"id": id.0}));
                 }
                 // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and
@@ -743,7 +743,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Some(_) => {
                     app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": slop}));
                 }
-                // Empty space inside a symbol goes back up a level, as in Animate.
+                // Empty space inside a symbol or group goes back up a level, as in Animate.
                 None if !app.s.editing.is_empty() => {
                     app.run("symbol.exit", json!({}));
                 }
@@ -794,9 +794,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
             ui.separator();
-            for id in ["modify.convert_to_symbol", "modify.break_apart"] {
+            for id in ["modify.convert_to_symbol", "modify.break_apart", "modify.group", "modify.ungroup"] {
                 crate::menus::cmd_item(app, ui, id);
             }
+            // Modify › Combine Objects (ADR 0073), as in Animate's menu.
+            ui.menu_button(tr!("Combine Objects"), |ui| {
+                for id in ["modify.union", "modify.intersect", "modify.punch", "modify.crop"] {
+                    crate::menus::cmd_item(app, ui, id);
+                }
+            });
             ui.menu_button(tr!("Arrange"), |ui| {
                 for id in ["arrange.bring_to_front", "arrange.send_to_back"] {
                     crate::menus::cmd_item(app, ui, id);
@@ -1207,13 +1213,16 @@ pub fn snap_draw(app: &mut App, p: Pos2, zoom: f32) -> Pos2 {
 
 /// A Selection-tool move, this frame: one of the selection's corners (the one nearest the
 /// pointer) snaps within 10 screen pixels.
-fn snap_move(app: &mut App, c: Pos2, zoom: f32) {
+fn snap_move(app: &mut App, c: Pos2, zoom: f32, shift: bool) {
     let Drag::SnapMove { start, applied } = app.drag else { return };
-    let d = (c - start) - applied;
+    // Shift keeps the move horizontal, vertical or at 45° (Animate), and wins over snapping.
+    let total = if shift { constrain_45(c - start) } else { c - start };
+    let d = total - applied;
     if d.length_sq() <= 0.0 {
         return;
     }
-    let p = json!({"dx": d.x, "dy": d.y, "snap": SNAP_PX / zoom, "from": [c.x, c.y]});
+    let snap = if shift { 0.0 } else { SNAP_PX / zoom };
+    let p = json!({"dx": d.x, "dy": d.y, "snap": snap, "from": [c.x, c.y]});
     if let Some(v) = app.run("element.translate", p) {
         let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
         app.drag = Drag::SnapMove { start, applied: applied + vec2(f("dx"), f("dy")) };
@@ -1221,6 +1230,14 @@ fn snap_move(app: &mut App, c: Pos2, zoom: f32) {
         // Subselection's shown points go with the drawing.
         crate::pathtools::raw_follow(app, Vec2::new(f("dx"), f("dy")), true);
     }
+}
+
+/// `d` along the nearest of the horizontal, vertical and 45° directions.
+pub(crate) fn constrain_45(d: egui::Vec2) -> egui::Vec2 {
+    let r = std::f32::consts::FRAC_1_SQRT_2;
+    let dirs = [vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(r, r), vec2(r, -r)];
+    let best = dirs.into_iter().map(|u| (u, d.dot(u))).max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()));
+    best.map_or(d, |(u, k)| u * k)
 }
 
 /// A shared point's drag, this frame: the point (and everything on it) goes under the pointer,
@@ -1251,7 +1268,7 @@ fn move_raw_point(app: &mut App, c: Pos2, zoom: f32) {
 /// moves, an unselected segment or fill edge bends; anything else is picked (unless it already
 /// is) and moved. With `corner` (Ctrl, ⌘ on macOS), as in Animate, an edge gets a corner point
 /// where it was pressed and the drag pulls that point, so the edge peaks there (#200).
-fn select_press(app: &mut App, sp: Pos2, shift: bool, corner: bool, zoom: f32) -> Drag {
+fn select_press(app: &mut App, sp: Pos2, shift: bool, corner: bool, copy: bool, zoom: f32) -> Drag {
     let point_drag = |app: &mut App, at: Vec2| {
         app.raw_points = serde_json::Value::Null;
         app.raw_with.clear();
@@ -1293,7 +1310,13 @@ fn select_press(app: &mut App, sp: Pos2, shift: bool, corner: bool, zoom: f32) -
             if !app.s.selection.contains(layer, id) {
                 app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
             }
-            app.s.begin_gesture(tr_noop!("Move"));
+            if copy {
+                // Alt (Option) drags a copy away and leaves the original whole (Animate, ADR 0073).
+                app.s.begin_gesture(tr_noop!("Copy"));
+                app.run("edit.duplicate", json!({"dx": 0, "dy": 0}));
+            } else {
+                app.s.begin_gesture(tr_noop!("Move"));
+            }
             Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
         }
         None => Drag::Marquee { start: sp, cur: sp },
@@ -1938,7 +1961,7 @@ mod draw_tests {
         app.s.style.object_drawing = false;
         app.run("draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 80, "fill": "#ff0000", "stroke": "#000000"}));
         app.run("edit.deselect", json!({}));
-        app.drag = select_press(&mut app, pos2(50.0, 0.0), false, ctrl, 1.0);
+        app.drag = select_press(&mut app, pos2(50.0, 0.0), false, ctrl, false, 1.0);
         let to = pos2(50.0, -30.0);
         match app.drag {
             Drag::RawPoint { .. } => move_raw_point(&mut app, to, 1.0),
@@ -1979,6 +2002,16 @@ mod xf_tests {
 
     fn apply(m: &Affine, x: f32, y: f32) -> Vec2 {
         m.apply(Vec2::new(x, y))
+    }
+
+    #[test]
+    fn shift_keeps_a_move_level_upright_or_at_45_degrees() {
+        let near = |a: egui::Vec2, b: egui::Vec2| (a - b).length() < 1e-4;
+        assert!(near(constrain_45(vec2(10.0, 2.0)), vec2(10.0, 0.0)));
+        assert!(near(constrain_45(vec2(-1.0, -9.0)), vec2(0.0, -9.0)));
+        assert!(near(constrain_45(vec2(10.0, 9.0)), vec2(9.5, 9.5)));
+        assert!(near(constrain_45(vec2(-10.0, 9.0)), vec2(-9.5, 9.5)));
+        assert_eq!(constrain_45(egui::Vec2::ZERO), egui::Vec2::ZERO);
     }
 
     #[test]

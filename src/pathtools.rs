@@ -213,7 +213,7 @@ fn selected_shapes(app: &App) -> Vec<(ElementId, Arc<Path>, Affine)> {
             // Raw shapes show their shared points instead (ADR 0042, below).
             ElementKind::Shape(sh) if sh.merge => None,
             ElementKind::Shape(sh) => Some((e.id, sh.path.clone(), e.transform)),
-            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => None,
         })
         .take(64)
         .collect()

@@ -380,8 +380,28 @@ pub(crate) fn merge_document(doc: &mut Document) -> usize {
 }
 
 fn merge_timeline(doc: &mut Document, tl: &mut Timeline) -> usize {
+    merge_timeline_at(doc, tl, 0)
+}
+
+/// [`merge_timeline`], inside groups too (ADR 0073): a group's raw shapes merge with each other.
+fn merge_timeline_at(doc: &mut Document, tl: &mut Timeline, depth: usize) -> usize {
     let mut n = 0;
+    let is_group = |e: &Element| matches!(e.kind, ElementKind::Group { .. });
     for layer in tl.layers.iter_mut() {
+        if depth < anicraft_doc::MAX_GROUP_DEPTH && layer.keyframes.iter().any(|k| k.elements.iter().any(|e| is_group(e))) {
+            let layer = Arc::make_mut(layer);
+            for kf in layer.keyframes.iter_mut().filter(|k| k.elements.iter().any(|e| is_group(e))) {
+                for e in Arc::make_mut(kf).elements.iter_mut().filter(|e| is_group(e)) {
+                    let ElementKind::Group { members } = &e.kind else { continue };
+                    let mut members = members.clone();
+                    let k = merge_timeline_at(doc, &mut members, depth + 1);
+                    if k > 0 {
+                        Arc::make_mut(e).kind = ElementKind::Group { members };
+                        n += k;
+                    }
+                }
+            }
+        }
         if !layer.keyframes.iter().any(|k| k.elements.iter().any(|e| mergeable(e).is_some())) {
             continue;
         }

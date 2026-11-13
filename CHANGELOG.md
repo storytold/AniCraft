@@ -13,6 +13,20 @@
     **Save Workspace…**, and **Reset**. Where everything is is kept in your preferences.
   * New **Colour** (stroke and fill, Swap, Black and White) and **Output** (Test Movie's lines,
     kept after it closes) panels. Ctrl+F6 visits every docked panel in the order they are docked.
+* **Groups and Combine Objects** (ADR 0073, M1; issues #206, #229).
+  * **Modify › Group** (**Ctrl+G**) and **Ungroup** (**Ctrl+Shift+G**): keep artwork together
+    without a Library symbol. Double-click a group to edit it in place (the rest dims, the edit
+    bar says `Scene 1 › Group`); groups nest; merged drawing inside a group only cuts and joins
+    the shapes in that group. Ungroup puts everything back exactly where it showed. Break Apart
+    on a group ungroups it.
+  * **Modify › Combine Objects › Union, Intersect, Punch, Crop** on two or more selected shapes,
+    with the exact geometry of merge drawing.
+  * **Selection tool**: **Alt-drag** (Option-drag) to drag a copy away; **Shift** keeps a move
+    horizontal, vertical or at 45°.
+  * **Break Apart** on a group ungroups it; its merged drawing merges with the drawing below.
+  * Animate files keep their groups (`DOMGroup` used to be flattened).
+  * Headless: `modify.group`, `modify.ungroup`, `modify.combine {op}`, `symbol.edit {id}` on a
+    group.
 
 * **Fixed: start-up, files and display, from user reports** (M8).
   * Fixed: Flash files that opened in 0.1 no longer opening (#226). One damaged or unreadable

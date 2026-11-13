@@ -23,7 +23,7 @@ pub const MENU_ID: &str = "onion_menu";
 
 /// What the shown items depend on: document state, scene, the symbol open (and how deep),
 /// playhead and the markers' frames.
-type ItemsKey = (u64, usize, (usize, Option<u64>), u32, u32, u32);
+type ItemsKey = (u64, usize, (usize, Option<u64>, Option<u64>), u32, u32, u32);
 /// Every element Edit Multiple Frames shows, with its stage bounds.
 pub type Shown = Arc<Vec<(FrameItem, GRect)>>;
 
@@ -309,7 +309,7 @@ pub fn ruler(app: &mut App, ui: &mut egui::Ui, ruler: Rect, cell_w: f32, x_of: i
 /// playhead and markers).
 pub fn items(app: &mut App) -> Shown {
     let (first, last) = range(app);
-    let key = (app.s.state, app.s.scene, (app.s.editing.len(), app.s.editing_symbol().map(|s| s.0)), app.s.frame, first, last);
+    let key = (app.s.state, app.s.scene, (app.s.editing.len(), app.s.editing_symbol().map(|s| s.0), app.s.editing.last().and_then(|l| l.instance).map(|(_, e)| e.0)), app.s.frame, first, last);
     if let Some((k, v)) = &app.onion_ui.cache
         && *k == key
     {
