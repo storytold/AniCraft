@@ -259,12 +259,12 @@ fn evaluate_tweened<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) 
         }
         return Some((kf.start, Cow::Owned(els)));
     }
-    let Some(tween) = kf.tween else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
+    let Some(tween) = &kf.tween else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
     let Some(next) = layer.keyframes.get(idx + 1) else { return Some((kf.start, Cow::Borrowed(&kf.elements))) };
     if next.start != kf.end() || frame == kf.start {
         return Some((kf.start, Cow::Borrowed(&kf.elements)));
     }
-    let t = tween.easing.apply((frame - kf.start) as f32 / kf.duration.max(1) as f32);
+    let t = Progress::of(tween, (frame - kf.start) as f32 / kf.duration.max(1) as f32);
     let morph = tween.kind == TweenKind::Shape;
     let path = guide.map(|g| (g, tween.orient));
     let pairs = if morph && !kf.hints.is_empty() { crate::hints::hint_pairs(kf, next) } else { Vec::new() };
@@ -280,11 +280,42 @@ fn evaluate_tweened<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) 
     Some((kf.start, Cow::Owned(els)))
 }
 
+/// How far a classic tween has gone, eased, for each property group (ADR 0081): `main` for
+/// what has no group (outlines, fills, strokes, a group's members), the rest each by its
+/// group's ease (the tween's own when the group has none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Progress {
+    pub main: f32,
+    pub position: f32,
+    pub rotation: f32,
+    pub scale: f32,
+    pub color: f32,
+    pub filters: f32,
+}
+
+impl Progress {
+    /// Everything at `t`.
+    pub fn uniform(t: f32) -> Progress {
+        Progress { main: t, position: t, rotation: t, scale: t, color: t, filters: t }
+    }
+
+    /// `tween` at linear progress `t`.
+    pub fn of(tween: &crate::Tween, t: f32) -> Progress {
+        let main = tween.easing.apply(t);
+        if tween.groups.is_empty() {
+            return Progress::uniform(main);
+        }
+        let g = |g: crate::EaseGroup| if tween.has_own(g) { tween.ease(g).apply(t) } else { main };
+        Progress { main, position: g(crate::EaseGroup::Position), rotation: g(crate::EaseGroup::Rotation), scale: g(crate::EaseGroup::Scale), color: g(crate::EaseGroup::Color), filters: g(crate::EaseGroup::Filters) }
+    }
+}
+
 /// Interpolates two elements; `None` when they cannot tween. With `morph` (a shape tween),
 /// shapes of different structure blend through [`anicraft_geom::morph`], steered by `hints`
 /// (shape hints in each element's own space, ADR 0023); otherwise a shape changes only when
 /// both keyframes share its structure.
-fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft_geom::Vec2, anicraft_geom::Vec2)], guide: Option<(&PathWalk, bool)>) -> Option<Element> {
+fn interpolate(a: &Element, b: &Element, pr: Progress, morph: bool, hints: &[(anicraft_geom::Vec2, anicraft_geom::Vec2)], guide: Option<(&PathWalk, bool)>) -> Option<Element> {
+    let t = pr.main;
     let kind = match (&a.kind, &b.kind) {
         (ElementKind::Shape(sa), ElementKind::Shape(sb)) => {
             let path = if Arc::ptr_eq(&sa.path, &sb.path) && hints.is_empty() {
@@ -304,7 +335,15 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
             };
             ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge })
         }
-        (ElementKind::Symbol { symbol: s1, .. }, ElementKind::Symbol { symbol: s2, .. }) if s1 == s2 => a.kind.clone(),
+        // An instance tweens its filters when both keyframes have the same kinds in the same
+        // order (Animate's rule); otherwise they hold.
+        (ElementKind::Symbol { symbol: s1, filters: fa, .. }, ElementKind::Symbol { symbol: s2, filters: fb, .. }) if s1 == s2 => {
+            let mut k = a.kind.clone();
+            if let (ElementKind::Symbol { filters, .. }, Some(lerped)) = (&mut k, crate::filter::lerp_filters(fa, fb, pr.filters)) {
+                *filters = lerped;
+            }
+            k
+        }
         // Text tweens its placement and colour effect; the words stay the first keyframe's.
         (ElementKind::Text(_), ElementKind::Text(_)) => a.kind.clone(),
         (ElementKind::Camera, ElementKind::Camera) => ElementKind::Camera,
@@ -314,7 +353,7 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
             let mut members = ma.clone();
             for (la, lb) in members.layers.iter_mut().zip(&mb.layers) {
                 let (Some(ka), Some(kb)) = (la.keyframe_at(0), lb.keyframe_at(0)) else { continue };
-                let els: Vec<Arc<Element>> = ka.elements.iter().enumerate().map(|(i, x)| kb.elements.get(i).and_then(|y| interpolate(x, y, t, morph, &[], None)).map_or_else(|| x.clone(), Arc::new)).collect();
+                let els: Vec<Arc<Element>> = ka.elements.iter().enumerate().map(|(i, x)| kb.elements.get(i).and_then(|y| interpolate(x, y, Progress::uniform(t), morph, &[], None)).map_or_else(|| x.clone(), Arc::new)).collect();
                 if let Some(k) = Arc::make_mut(la).keyframe_mut(0) {
                     k.elements = els;
                 }
@@ -323,11 +362,17 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
         }
         _ => return None,
     };
-    let mut transform = a.transform.decompose().lerp(&b.transform.decompose(), t).compose();
-    if let Some((g, orient)) = guide {
-        transform = follow(g, orient, &a.transform, &b.transform, t, transform);
+    let (da, db) = (a.transform.decompose(), b.transform.decompose());
+    let mut d = da.lerp(&db, pr.position);
+    if pr.rotation != pr.position || pr.scale != pr.position {
+        let (r, s) = (da.lerp(&db, pr.rotation), da.lerp(&db, pr.scale));
+        (d.rotation, d.skew, d.sx, d.sy) = (r.rotation, r.skew, s.sx, s.sy);
     }
-    Some(Element { id: a.id, name: a.name.clone(), transform, color: a.color.lerp(&b.color, t), kind })
+    let mut transform = d.compose();
+    if let Some((g, orient)) = guide {
+        transform = follow(g, orient, &a.transform, &b.transform, pr.position, transform);
+    }
+    Some(Element { id: a.id, name: a.name.clone(), transform, color: a.color.lerp(&b.color, pr.color), kind })
 }
 
 /// What a timeline is evaluated inside of.

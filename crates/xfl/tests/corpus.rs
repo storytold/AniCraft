@@ -208,9 +208,24 @@ fn colour_effects_come_across_in_every_style() {
 #[test]
 fn tweens_keep_their_kinds_eases_and_hints() {
     let (doc, _) = import("tweens");
-    let t = |l: usize| doc.timeline(0).layers[l].keyframes[0].tween.expect("a tween");
+    let t = |l: usize| doc.timeline(0).layers[l].keyframes[0].tween.clone().expect("a tween");
     assert_eq!((t(0).kind, t(0).easing), (TweenKind::Classic, Easing::Classic(-100.0)));
     assert_eq!(t(1).easing, Easing::CubicBezier(0.7, 0.0, 0.3, 1.0), "a one-segment custom ease is a cubic Bézier");
+    // Per-property custom eases (ADR 0081): position's of three segments, exactly, overshooting
+    // and settling; scale's of one; the rest linear.
+    use anicraft_doc::EaseGroup;
+    let per = t(5);
+    assert_eq!(per.easing, Easing::Linear);
+    let Easing::Custom(pos) = per.ease(EaseGroup::Position) else { panic!("{per:?}") };
+    let anchors: Vec<(f32, f32)> = pos.points().iter().map(|p| (p.at.x, p.at.y)).collect();
+    assert_eq!(anchors, [(0.0, 0.0), (0.4, 1.3), (0.7, 0.8), (1.0, 1.0)]);
+    assert!((pos.points()[1].h_in.x + 0.15).abs() < 1e-5 && (pos.points()[1].out.x - 0.15).abs() < 1e-5);
+    assert_eq!(per.ease(EaseGroup::Scale), &Easing::CubicBezier(0.8, 0.0, 0.9, 0.5));
+    assert_eq!(per.ease(EaseGroup::Rotation), &Easing::Linear);
+    // At the middle frame the ball is past its end (x 180), still at full size.
+    let el = anicraft_doc::evaluate_layer_elements(&doc.timeline(0).layers[5], 6).unwrap().1[0].clone();
+    let m = el.transform.decompose();
+    assert!(m.tx > 180.0 && (m.sx - (1.0 + 0.5 * Easing::CubicBezier(0.8, 0.0, 0.9, 0.5).apply(0.5))).abs() < 1e-3, "{m:?}");
     assert_eq!((t(3).kind, t(3).easing), (TweenKind::Shape, Easing::Classic(50.0)));
     let hints = &doc.timeline(0).layers[3].keyframes[0].hints;
     assert_eq!(hints.len(), 1);
@@ -251,7 +266,7 @@ fn guides_guide_and_never_draw() {
     let l = &doc.timeline(0).layers;
     assert_eq!((l[0].kind, l[1].kind), (LayerKind::Guide, LayerKind::Guide));
     assert_eq!((l[2].parent, l[3].parent), (Some(l[1].id), Some(l[1].id)), "both riders follow the arc");
-    assert!(l[2].keyframes[0].tween.is_some_and(|t| t.orient));
+    assert!(l[2].keyframes[0].tween.as_ref().is_some_and(|t| t.orient));
     // Half-way the riders are on the arc, well above the straight line between their ends.
     let mid = evaluate(&doc, 6);
     let drawn: Vec<_> = mid.items.iter().filter(|i| !i.guide).collect();

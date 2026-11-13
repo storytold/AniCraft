@@ -813,6 +813,35 @@ mod tests {
     }
 
     #[test]
+    fn custom_eases_are_baked_frame_by_frame() {
+        // ADR 0081: Lottie's own eases are one cubic per keyframe pair, so a custom curve of
+        // several segments (or Bounce, Elastic) can't map onto them exactly; the outline is
+        // baked at every frame from `evaluate`, so the player shows AniCraft's motion exactly.
+        use anicraft_doc::{ColorEffect, CustomEase, Document, Easing, Element, ElementId, ElementKind, Keyframe, Shape, Tween, TweenKind};
+        use std::sync::Arc;
+        let curve = CustomEase::from_flat(&[(0.0, 0.0), (0.2, 1.4), (0.3, 1.4), (0.4, 1.4), (0.6, 0.5), (0.8, 1.0), (1.0, 1.0)].map(|(x, y)| Vec2::new(x, y))).unwrap();
+        let ease = Easing::Custom(Arc::new(curve));
+        let sq = |x: f32| Arc::new(Element { id: ElementId(70), name: String::new(), transform: Affine::translate(x, 0.0), color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 10.0, 10.0), Paint::Solid(Rgba::BLACK))) });
+        let mut doc = Document::default();
+        let mut k0 = Keyframe::new(0, 10);
+        k0.elements = vec![sq(0.0)];
+        k0.tween = Some(Tween::new(ease.clone(), TweenKind::Classic));
+        let mut k1 = Keyframe::new(10, 1);
+        k1.elements = vec![sq(100.0)];
+        std::sync::Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+        let v = parse(&to_lottie(&doc, "eased", 0, 10, false));
+        let it = v["layers"][0]["shapes"][0]["it"].as_array().unwrap();
+        let sh = it.iter().find(|i| i["ty"] == "sh").expect("an outline");
+        let keys = sh["ks"]["k"].as_array().unwrap();
+        assert_eq!(keys.len(), 11, "a key at every frame of the eased motion");
+        for k in keys {
+            let t = k["t"].as_u64().unwrap() as f32;
+            let x0 = k["s"][0]["v"][0][0].as_f64().unwrap() as f32;
+            assert!((x0 - 100.0 * ease.apply(t / 10.0)).abs() < 2e-3, "frame {t}: {x0}");
+        }
+    }
+
+    #[test]
     fn every_colour_effect_style_is_baked_into_the_colours() {
         // ADR 0056: Lottie has no colour transform, so the effect is in each fill colour (and
         // tweening effects become colour keyframes); nothing is reported lost.

@@ -1415,3 +1415,38 @@ fn gradient_options_are_drawn_the_nearest_way_canvas_can() {
     assert_eq!(r["f"], json!([60, 50]));
     assert_eq!(r["r"][2], json!(20));
 }
+
+#[test]
+fn custom_and_per_property_eases_play_in_the_page_as_they_evaluate() {
+    // ADR 0081: a classic tween eased by a custom curve of several segments that overshoots, its
+    // rotation and scale by presets of their own, and a looping movie clip inside tweened with
+    // Elastic; the page plays the same frames, step by step, as the Rust player draws them.
+    use anicraft_doc::{CustomEase, EaseGroup, Easing};
+    let curve = CustomEase::from_flat(&[(0.0, 0.0), (0.2, 1.5), (0.3, 1.5), (0.4, 1.5), (0.5, 1.5), (0.6, 0.6), (0.7, 0.6), (0.8, 0.6), (0.9, 1.0), (1.0, 1.0)].map(|(x, y)| Vec2::new(x, y))).unwrap();
+    let mut tw = Tween::new(Easing::Custom(Arc::new(curve)), anicraft_doc::TweenKind::Classic);
+    tw.set_ease(EaseGroup::Rotation, Some(Easing::BounceOut));
+    tw.set_ease(EaseGroup::Scale, Some(Easing::BackInOut));
+    let mut a = (*rect(1, 0.0, 0.0, 40.0, 40.0, 0x2a9d8f)).clone();
+    a.transform = Affine::translate(20.0, 100.0);
+    let mut b = a.clone();
+    b.transform = Affine::translate(500.0, 160.0).mul(&Affine::rotate(2.5)).mul(&Affine::scale(2.0, 0.5));
+    let mut k0 = Keyframe::new(0, 20);
+    k0.elements = vec![Arc::new(a)];
+    k0.tween = Some(tw);
+    let mut k1 = Keyframe::new(20, 4);
+    k1.elements = vec![Arc::new(b)];
+    let mut inner_a = (*rect(2, 0.0, 0.0, 10.0, 10.0, 0xe76f51)).clone();
+    inner_a.transform = Affine::IDENTITY;
+    let mut inner_b = inner_a.clone();
+    inner_b.transform = Affine::translate(60.0, 0.0);
+    let mut i0 = Keyframe::new(0, 8);
+    i0.elements = vec![Arc::new(inner_a)];
+    i0.tween = Some(Tween::new(Easing::ElasticOut, anicraft_doc::TweenKind::Classic));
+    let mut i1 = Keyframe::new(8, 1);
+    i1.elements = vec![Arc::new(inner_b)];
+    let mut d = Document::default();
+    d.library.push(symbol(50, SymbolKind::MovieClip, vec![layer(51, vec![Arc::new(i0), Arc::new(i1)])]));
+    d.timeline_mut(0).layers = vec![layer(1, vec![Arc::new(k0), Arc::new(k1)]), layer(2, vec![kf(0, 24, vec![inst(3, 50, "", Affine::translate(100.0, 250.0), Vec::new())], vec![], "")])];
+    d.sanitize();
+    compare(&d, &vec![(vec![], vec![]); 30]);
+}
