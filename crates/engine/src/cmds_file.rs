@@ -397,7 +397,7 @@ pub(crate) fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
             cl.keyframes = keys(els);
             stack.push(cl);
         }
-        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
         for (k, l) in stack.into_iter().enumerate() {
             tl.layers.insert((at + k).min(tl.layers.len()), Arc::new(l));
         }

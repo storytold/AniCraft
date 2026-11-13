@@ -147,7 +147,7 @@ fn armature_layer(s: &mut Session, from: LayerId, index: usize, elements: Vec<Ar
     k.elements = elements;
     k.tween = Some(Tween::default());
     layer.keyframes = vec![Arc::new(k)];
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     layer.parent = tl.container_at(index, LayerKind::Armature);
     tl.layers.insert(index.min(tl.layers.len()), Arc::new(layer));
     tl.repair_masks();
@@ -264,7 +264,7 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let mut k = Keyframe::new(start, end.saturating_sub(start).max(1));
     k.elements = shown;
     freed_layer.keyframes = vec![Arc::new(k)];
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     if dissolve {
         tl.layers.retain(|l| l.id != lid);
         tl.layers.insert(index.min(tl.layers.len()), Arc::new(freed_layer));

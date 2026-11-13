@@ -569,6 +569,8 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
         let path_walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, els)) = evaluate_guided(layer, frame, path_walk.as_ref()) else { continue };
         let layer_xf = camera.map_or(xf, |c| c.view(&doc.stage, layer.depth));
+        // Instances inside a group belong to the group's timeline (ADR 0073).
+        let els = crate::expand_groups(&els).into_owned();
         for el in els.iter() {
             if out.len() >= MAX_NODES {
                 return;

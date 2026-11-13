@@ -144,7 +144,7 @@ fn path_bytes(e: &Element) -> usize {
     match &e.kind {
         ElementKind::Shape(s) => size_of::<anicraft_geom::Path>() + s.path.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
         ElementKind::Text(t) => size_of::<anicraft_geom::Path>() + t.outline.cmds.len() * size_of::<anicraft_geom::PathCmd>(),
-        ElementKind::Symbol { .. } | ElementKind::Camera => 0,
+        ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => 0,
     }
 }
 
@@ -157,6 +157,10 @@ fn element_bytes(e: &Element, shared_paths: &HashSet<usize>) -> usize {
         if let Some(anicraft_doc::Paint::Linear { stops, .. } | anicraft_doc::Paint::Radial { stops, .. }) = &s.fill {
             b += stops.len() * size_of::<anicraft_doc::GradientStop>();
         }
+    }
+    // A group's members, as if each stood alone (ADR 0073; nesting is bounded by MAX_GROUP_DEPTH).
+    if let ElementKind::Group { .. } = &e.kind {
+        b += size_of::<anicraft_doc::Layer>() + e.kind.group_members().iter().map(|m| element_bytes(m, shared_paths)).sum::<usize>();
     }
     if let ElementKind::Text(t) = &e.kind {
         b += size_of::<anicraft_doc::TextBlock>() + t.text.len() + t.font.len();
@@ -176,7 +180,7 @@ fn keyframe_bytes(k: &Keyframe, other: Option<&Keyframe>) -> usize {
                 .filter_map(|e| match &e.kind {
                     ElementKind::Shape(s) => Some(ptr(&s.path)),
                     ElementKind::Text(t) => Some(ptr(&t.outline)),
-                    ElementKind::Symbol { .. } | ElementKind::Camera => None,
+                    ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => None,
                 })
                 .collect()
         })

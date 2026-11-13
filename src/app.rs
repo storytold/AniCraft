@@ -1573,6 +1573,59 @@ impl App {
                 self.run("raw.subselect", json!({"x": 0, "y": 60, "slop": 4}));
                 self.raw_ends = Vec::new();
             }
+            Some("groups") => {
+                // Groups (ADR 0073): a badge of raw shapes and a drawing object grouped, the group
+                // grouped again with a star, moved; the inner group open in place, a line just
+                // drawn across its raw drawing (it cut only the group's own fill), the stage and the
+                // outer group dimmed, the way back above (Scene 1 › Group › Group).
+                self.run("layer.new", json!({"name": "Badges"}));
+                self.run("draw.rect", json!({"x": 300, "y": 180, "w": 260, "h": 200, "radius": 30, "fill": "#e8553b", "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.run("draw.ellipse", json!({"x": 380, "y": 220, "w": 100, "h": 100, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": true}));
+                let mine: Vec<u64> = self.s.visible_elements().iter().map(|e| e.id.0).collect();
+                self.run("element.select", json!({"ids": mine}));
+                self.run("modify.group", json!({}));
+                let inner = self.s.selection.id_list().first().copied();
+                self.run("draw.star", json!({"cx": 660, "cy": 280, "outer": 70, "inner": 32, "points": 5, "fill": "#3d8bfd", "stroke": "#1b2a4a", "stroke_width": 3, "object": true}));
+                let mine: Vec<u64> = self.s.visible_elements().iter().map(|e| e.id.0).collect();
+                self.run("element.select", json!({"ids": mine}));
+                self.run("modify.group", json!({}));
+                self.run("element.translate", json!({"dx": 40, "dy": 40}));
+                self.run("symbol.edit", json!({}));
+                if let Some(id) = inner {
+                    self.run("symbol.edit", json!({"id": id}));
+                }
+                self.run("draw.line", json!({"x0": 280, "y0": 300, "x1": 580, "y1": 260, "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                self.tool = Tool::Select;
+            }
+            Some("combine") => {
+                // Combine Objects (ADR 0073): the same two drawing objects (a red square under a
+                // blue circle) combined four ways, left to right: Union (a group of the merged
+                // pieces), Intersect (the overlap, blue), Punch (the square, a bite out of it) and
+                // Crop (the part of the square inside the circle). Punch's result is selected.
+                self.run("layer.new", json!({"name": "Combined"}));
+                let mut punched = None;
+                for (i, op) in ["union", "intersect", "punch", "crop"].iter().enumerate() {
+                    let x = 120.0 + 260.0 * i as f32;
+                    self.run("edit.deselect", json!({}));
+                    let a = self.run("draw.rect", json!({"x": x, "y": 260, "w": 140, "h": 140, "fill": "#e8553b", "stroke": null, "object": true}));
+                    let b = self.run("draw.ellipse", json!({"x": x + 70.0, "y": 200, "w": 120, "h": 120, "fill": "#3d8bfd", "stroke": null, "object": true}));
+                    let ids: Vec<u64> = [a, b].iter().flatten().filter_map(|v| v["element"].as_u64()).collect();
+                    self.run("element.select", json!({"ids": ids}));
+                    let v = self.run("modify.combine", json!({"op": op}));
+                    if *op == "punch" {
+                        punched = v.and_then(|v| v["created"].as_array().and_then(|a| a.first()).and_then(serde_json::Value::as_u64));
+                    }
+                }
+                self.tool = Tool::Select;
+                match punched {
+                    Some(id) => {
+                        self.run("element.select", json!({"ids": [id]}));
+                    }
+                    None => {
+                        self.run("edit.deselect", json!({}));
+                    }
+                }
+            }
             Some(which @ ("nineslice" | "nineslicedit")) => {
                 // 9-slice scaling (ADR 0055): a rounded panel symbol with its guides on, one
                 // instance as drawn and one stretched wide (its corners stay round), the wide one

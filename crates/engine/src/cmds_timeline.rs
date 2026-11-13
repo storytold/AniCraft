@@ -58,7 +58,7 @@ fn toggle_mask(s: &mut Session, p: &Value) -> Result<Value> {
     let ty = if is_mask { "normal" } else { "mask" };
     set_type(s, id, ty)?;
     if !is_mask {
-        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
         // The normal layer directly below, in the same folder, becomes masked.
         let mask_parent = tl.layer(id).and_then(|m| m.parent);
         if let Some(i) = tl.layers.iter().position(|l| l.id == id)
@@ -100,7 +100,7 @@ fn add_motion_guide(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(k) = guide.keyframe_mut(0) {
         k.duration = s.frame_count().max(1);
     }
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     tl.layers.insert(i, Arc::new(guide));
     if let Some(l) = tl.layers.get_mut(i + 1) {
         Arc::make_mut(l).parent = Some(gid);
@@ -127,7 +127,7 @@ fn set_layer_type(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(crate) fn set_type(s: &mut Session, id: LayerId, ty: &str) -> Result<()> {
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     if tl.layers.get(i).is_some_and(|l| l.kind == LayerKind::Folder) {
         return Err(EngineError::State("a folder holds layers; it can't become another kind of layer".into()));
@@ -747,7 +747,7 @@ fn add_layer(s: &mut Session, p: &Value, kind: LayerKind) -> Result<Value> {
         k.duration = s.frame_count().max(1);
     }
     layer.color = layer_color(n);
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     tl.layers.insert(at, Arc::new(layer));
     tl.repair_masks();
     s.layer = id;
@@ -768,7 +768,7 @@ fn delete_layer(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::State("a document needs at least one layer to draw on".into()));
     }
     let up = tl.layers.get(i).and_then(|l| l.parent);
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     if !is_folder {
         for l in tl.layers.iter_mut().filter(|l| l.parent == Some(id)) {
             Arc::make_mut(l).parent = up;
@@ -833,7 +833,7 @@ fn select_layer(s: &mut Session, p: &Value) -> Result<Value> {
 /// where it landed: moving it in under a folder or mask puts it inside, moving it out frees it.
 fn move_layer(s: &mut Session, p: &Value, d: i64) -> Result<Value> {
     let id = opt_u64(p, "layer")?.map_or(s.layer, LayerId);
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     let i = tl.layers.iter().position(|l| l.id == id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
     let n = tl.layers.len();
     if tl.layers.get(i).is_some_and(|l| matches!(l.kind, LayerKind::Mask | LayerKind::Folder)) {

@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 267 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 274 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -166,6 +166,18 @@ This page is generated from the command registry, so it always matches the versi
   Parameters: `{name? (default: the next free “Symbol n”; a name the folder holds gets a number), kind?: graphic|movie_clip|button (default: graphic), folder?: Library folder id (default: the top level)} → {symbol, instance, name, layer, folder} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)`
 - **Break Apart** `modify.break_apart` · **Ctrl+B** (macOS **⌘B**) · changes the document
   Parameters: `{} the selected symbol instances become their contents, text becomes shapes, and drawing objects become raw shapes that merge with the raw shapes they touch`
+- **Group** `modify.group` · **Ctrl+G** (macOS **⌘G**) · changes the document
+  Parameters: `{} puts the selected elements on each layer into one group there (ADR 0073), where the topmost of them was, and selects it → {group, members} (one layer) or {layers: [..]}. Members keep their places exactly: the group's transform starts as the identity. Raw shapes inside merge only with each other; double-click the group (symbol.edit) to edit it in place`
+- **Ungroup** `modify.ungroup` · **Ctrl+Shift+G** (macOS **⇧⌘G**) · changes the document
+  Parameters: `{} puts each selected group's members back on its layer where it was, each placed and coloured as the group showed it, and selects them; raw shapes among them merge with the drawing there → {members}`
+- **Union** `modify.union` · Modify › Combine Objects · changes the document
+  Parameters: `{} combine with op union`
+- **Intersect** `modify.intersect` · Modify › Combine Objects · changes the document
+  Parameters: `{} combine with op intersect`
+- **Punch** `modify.punch` · Modify › Combine Objects · changes the document
+  Parameters: `{} combine with op punch`
+- **Crop** `modify.crop` · Modify › Combine Objects · changes the document
+  Parameters: `{} combine with op crop`
 - **Rotate 90° CW** `modify.rotate_cw` · Modify › Transform · **Ctrl+Shift+9** (macOS **⇧⌘9**) · changes the document
   Parameters: `{}`
 - **Rotate 90° CCW** `modify.rotate_ccw` · Modify › Transform · **Ctrl+Shift+7** (macOS **⇧⌘7**) · changes the document
@@ -401,6 +413,8 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{name}`
 - **Place on Stage** `library.place` · changes the document
   Parameters: `{symbol | bitmap | sound: id, x?, y?} or {items: [{symbol | bitmap | sound: id}, ..], x?, y?} → {element, elements, sound?}: symbols and bitmaps centred on x, y (default: the stage centre; inside an open symbol, in its space) in the active layer's keyframe at the playhead, selected; a sound goes onto that keyframe, its span grown to fit (one sound per keyframe). One undo step`
+- **Combine Objects** `modify.combine` · changes the document
+  Parameters: `{op: union|intersect|punch|crop} combines the selected shapes on the active layer, bottom to top as they are stacked (ADR 0073). union: one drawing object of everything (a group of the merged pieces when they have more than one colour or keep lines); intersect: the area every one covers, in the topmost's fill and stroke; punch: the topmost's area cut out of each of the others; crop: each of the others cut to the topmost's area. Punch and crop remove the topmost. A result of one fill (or one line) is a drawing object, one of several is a group of raw shapes → {op, created}`
 - **List Library** `library.items`
   Parameters: ``{} every folder (id, name, parent, path) and item (symbol | bitmap | sound id, kind, name, folder, path, uses, unused) in Library order; `uses` counts instances, bitmap fills and keyframe sounds once per keyframe``
 - **New Folder** `library.new_folder` · changes the document

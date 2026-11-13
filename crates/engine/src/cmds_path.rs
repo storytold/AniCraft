@@ -130,6 +130,7 @@ fn shape_mut<'a>(s: &'a mut Session, p: &Value) -> Result<(&'a mut Shape, Affine
         ElementKind::Symbol { .. } => Err(EngineError::State("symbol instances have no points to edit (double-click to edit the symbol)".into())),
         ElementKind::Text(_) => Err(EngineError::State("text has no points to edit; break it apart (Ctrl+B) to edit its outlines".into())),
         ElementKind::Camera => Err(EngineError::State("the camera has no points to edit".into())),
+        ElementKind::Group { .. } => Err(EngineError::State("a group has no points of its own (double-click it to edit what is inside)".into())),
     }
 }
 

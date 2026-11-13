@@ -357,7 +357,7 @@ fn shapes_mut(s: &mut Session) -> Result<Vec<&mut Shape>> {
         .into_iter()
         .filter_map(|e| match &mut e.kind {
             ElementKind::Shape(sh) => Some(sh),
-            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => None,
         })
         .collect();
     if shapes.is_empty() {
@@ -659,7 +659,7 @@ fn selected_symbol(s: &Session, p: &Value) -> Result<SymbolId> {
                 .find(|e| e.id == sel)
                 .and_then(|e| match e.kind {
                     ElementKind::Symbol { symbol, .. } => Some(symbol),
-                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
+                    ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => None,
                 })
                 .ok_or_else(|| EngineError::State("the selection is not a symbol instance".into()))?
         }
@@ -899,6 +899,25 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
             out.push(Arc::new(c));
             continue;
         }
+        // A group breaks apart into its members (Animate's Ctrl+B on a group ungroups it).
+        if let ElementKind::Group { .. } = &e.kind
+            && sel.contains(&e.id)
+        {
+            for child in e.kind.group_members() {
+                let mut c = (*child).clone();
+                c.id = ElementId(s.doc.alloc_id());
+                c.transform = e.transform.mul(&child.transform);
+                c.color = e.color.nested(&child.color);
+                // Its raw shapes merge with the drawing they now stand in, as drawing objects do.
+                if crate::merge::mergeable(&c).is_some() {
+                    objects.push(c);
+                    continue;
+                }
+                fresh_ids.push(c.id);
+                out.push(Arc::new(c));
+            }
+            continue;
+        }
         let ElementKind::Symbol { symbol, .. } = &e.kind else {
             out.push(e);
             continue;
@@ -923,7 +942,7 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
         }
     }
     if fresh_ids.is_empty() && objects.is_empty() {
-        return Err(EngineError::State("the selection has no symbol instances, text or drawing objects to break apart".into()));
+        return Err(EngineError::State("the selection has no symbol instances, groups, text or drawing objects to break apart".into()));
     }
     s.editable_keyframe()?.elements = out;
     if !objects.is_empty() {

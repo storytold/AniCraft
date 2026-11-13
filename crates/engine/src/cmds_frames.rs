@@ -145,7 +145,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
                 // The pasted keys are its frames (no stray blank frame at 1).
                 l.keyframes.clear();
             }
-            crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing).layers.push(Arc::new(l));
+            crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?.layers.push(Arc::new(l));
         }
         let mut keys = Vec::with_capacity(sl.keys.len());
         for k in &sl.keys {
@@ -161,7 +161,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
             }
             keys.push(Arc::new(k));
         }
-        let Some(layer) = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing).layers.get_mut(row).map(Arc::make_mut) else { continue };
+        let Some(layer) = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing).ok().and_then(|tl| tl.layers.get_mut(row).map(Arc::make_mut)) else { continue };
         crate::cmds_camera::keys_fit(layer.kind, keys.iter().map(|k| &**k))?;
         if layer.keyframe_index_at(frame).is_some() {
             insert_keyframe_at(layer, frame, true)?;

@@ -342,7 +342,7 @@ fn going_to_a_hit_opens_the_symbols_in_place_and_selects_it() {
     // Inner's text: through hero (Outer) and wheel (Inner), in place.
     let h = hits(&mut s, json!({"kind": "text", "text": "inside"})).remove(0);
     let v = run(&mut s, "find.goto", h.clone());
-    let open: Vec<SymbolId> = s.editing.iter().map(|l| l.symbol).collect();
+    let open: Vec<SymbolId> = s.editing.iter().map(|l| l.symbol().unwrap_or(SymbolId(0))).collect();
     assert_eq!(open, [outer, inner], "{v}");
     assert!(s.editing.iter().all(|l| l.instance.is_some()));
     assert_eq!(s.selection.id_list(), [h["element"].as_u64().unwrap()]);
