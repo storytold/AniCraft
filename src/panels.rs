@@ -651,24 +651,44 @@ fn mixed(ui: &mut egui::Ui, differs: bool) {
     }
 }
 
+/// Whose colour effect the rows edit: the selected elements' (every style), or the camera's
+/// (ADR 0082: no opacity, so no Alpha style and no alpha channel in Advanced).
+#[derive(Clone, Copy, PartialEq)]
+enum EffectOf {
+    Selection,
+    Camera,
+}
+
+impl EffectOf {
+    fn command(self) -> &'static str {
+        match self {
+            EffectOf::Selection => "element.set_color_effect",
+            EffectOf::Camera => "camera.set",
+        }
+    }
+}
+
 /// The colour effect (ADR 0056): Animate's Style menu, then the chosen style's controls. Each
-/// change sets that value on every selected element (ADR 0053), as one undo step per drag.
-fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: crate::mixed::ColorMixed) {
+/// change sets that value on every selected element (ADR 0053), or on the camera, as one undo
+/// step per drag.
+fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: crate::mixed::ColorMixed, of: EffectOf) {
     let current = fx.style();
+    let cmd = of.command();
+    let camera = of == EffectOf::Camera;
     row_prose(ui, tr!("Colour effect"), |ui| {
-        egui::ComboBox::from_id_salt("prop_color_style").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
-            for st in ColorStyle::ALL {
+        egui::ComboBox::from_id_salt(if camera { "prop_camera_color_style" } else { "prop_color_style" }).selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
+            for st in ColorStyle::ALL.into_iter().filter(|st| !camera || *st != ColorStyle::Alpha) {
                 if ui.selectable_label(st == current, crate::i18n::t(st.label())).clicked() && (st != current || m.style) {
-                    app.run("element.set_color_effect", json!({"style": st.key()}));
+                    app.run(cmd, json!({"style": st.key()}));
                 }
             }
         })
         .response
-        .set_name(tr!("Colour effect style"));
+        .set_name(if camera { tr!("Camera colour effect style") } else { tr!("Colour effect style") });
         mixed(ui, m.style);
     });
     let pct = a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() };
-    let set = |app: &mut App, p: Value| live(app, tr_noop!("Colour Effect"), "element.set_color_effect", p);
+    let set = |app: &mut App, p: Value| live(app, if camera { tr_noop!("Camera Colour Effect") } else { tr_noop!("Colour Effect") }, cmd, p);
     match *fx {
         ColorEffect::None => {}
         ColorEffect::Alpha(a) => {
@@ -709,7 +729,8 @@ fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: cra
         ColorEffect::Advanced(t) => {
             // Each channel: its multiplier in percent, then the offset added (−255..255).
             let channels = [(tr!("Red"), tr!("Red multiplier"), tr!("Red offset"), "red"), (tr!("Green"), tr!("Green multiplier"), tr!("Green offset"), "green"), (tr!("Blue"), tr!("Blue multiplier"), tr!("Blue offset"), "blue"), (tr!("Alpha"), tr!("Alpha multiplier"), tr!("Alpha offset"), "alpha")];
-            for (i, (label, mul_name, off_name, key)) in channels.into_iter().enumerate() {
+            // The camera has no opacity: its Advanced effect has no alpha channel.
+            for (i, (label, mul_name, off_name, key)) in channels.into_iter().enumerate().take(if camera { 3 } else { 4 }) {
                 let mut mv = t.mul.get(i).copied().unwrap_or(1.0) * 100.0;
                 let mut ov = t.add.get(i).copied().unwrap_or(0.0) * 255.0;
                 row(ui, label, |ui| {
@@ -776,7 +797,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             mixed(ui, m.rotation);
         });
         if !matches!(e.kind, ElementKind::Camera) {
-            colour_effect_rows(app, ui, &e.color, m.color);
+            colour_effect_rows(app, ui, &e.color, m.color, EffectOf::Selection);
         }
         // Blending and filters, on movie clips and buttons as in Animate.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
@@ -1576,7 +1597,8 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
     out
 }
 
-/// The camera at the playhead: where it looks, its zoom, turn and tint, and the preview switch.
+/// The camera at the playhead: where it looks, its zoom, turn and colour effect, and the
+/// preview switch.
 /// Edits key the playhead like any edit of a tweened object.
 fn camera_props(app: &mut App, ui: &mut egui::Ui) {
     let Some(cam) = crate::camera_tool::camera(app) else { return };
@@ -1602,26 +1624,19 @@ fn camera_props(app: &mut App, ui: &mut egui::Ui) {
             live(app, tr_noop!("Rotate Camera"), "camera.set", json!({"rotation": rot}));
         }
     });
-    let mut tint = rgb(cam.tint);
-    let mut amount = cam.tint_amount * 100.0;
-    row(ui, tr!("Tint"), |ui| {
-        let a = crate::colour::button(ui, &mut tint).named(tr!("Camera tint colour"));
-        let b = ui.add(egui::DragValue::new(&mut amount).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Camera tint amount"));
-        if a.changed() || b.changed() {
-            live(app, tr_noop!("Camera Tint"), "camera.set", json!({"tint": hex(tint), "tint_amount": amount}));
-        }
-    });
+    // Brightness, Tint or Advanced over the whole view, as on an instance (ADR 0082).
+    colour_effect_rows(app, ui, &cam.color, crate::mixed::ColorMixed::default(), EffectOf::Camera);
     ui.horizontal_wrapped(|ui| {
         let mut on = app.camera_preview;
         if crate::theme::checkbox(ui, &mut on, tr!("Preview through camera")).on_hover_text(tr!("Show the stage as the movie shows it (View › Preview Through Camera)")).changed() {
             app.toggle_camera_preview();
         }
-        if ui.button(tr!("Reset")).named(tr!("Reset camera")).on_hover_text(tr!("Back to the stage as it is: centred, 100 %, no turn, no tint")).clicked() {
+        if ui.button(tr!("Reset")).named(tr!("Reset camera")).on_hover_text(tr!("Back to the stage as it is: centred, 100 %, no turn, no colour effect")).clicked() {
             app.run("camera.set", json!({"reset": true}));
         }
     });
     let hidden = app.s.timeline().camera_layer().is_some_and(|l| !l.visible);
-    ui.label(text(Type::Caption, if hidden { tr!("The camera layer is hidden: the movie shows the stage as it is.") } else { tr!("The movie shows what the frame on the stage shows. Layer depth (in Frame, per layer) moves far layers less.") }));
+    ui.label(text(Type::Caption, if hidden { tr!("The camera layer is hidden: the movie shows the stage as it is.") } else { tr!("The movie shows what the frame on the stage shows. Deeper layers (Window › Layer Depth) move and zoom less.") }));
 }
 
 /// The selected bone: its joint angle at the playhead (editing it keys the pose), the joint's
@@ -1723,16 +1738,10 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
         ui.label(text(Type::Caption, tr!("Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down.")));
         return;
     }
-    // Layer depth matters once the scene has a camera: deeper layers move less as it pans.
-    if layer.kind != anicraft_engine::doc::LayerKind::Camera && app.s.timeline().camera_layer().is_some() {
-        let mut depth = layer.depth;
-        let (lo, hi) = (anicraft_engine::doc::camera::MIN_DEPTH, anicraft_engine::doc::camera::MAX_DEPTH);
-        row(ui, tr!("Depth"), |ui| {
-            let r = ui.add(egui::DragValue::new(&mut depth).suffix(" px").speed(2.0).range(lo..=hi).max_decimals(0)).named(tr!("Layer depth"));
-            if r.on_hover_text(tr!("How far behind the stage this layer is: when the camera pans, a deeper layer moves less (parallax). Negative is in front.")).changed() {
-                live(app, tr_noop!("Layer Depth"), "layer.set_depth", json!({"depth": depth}));
-            }
-        });
+    // Layer depth matters once the scene has a camera (ADR 0082): deeper layers move and zoom
+    // less, and draw behind nearer ones.
+    if crate::layer_depth::has_depth(layer.kind) && app.s.timeline().camera_layer().is_some() && app.s.editing.is_empty() {
+        crate::layer_depth::depth_row(app, ui, layer, frame);
     }
     {
         match layer.keyframe_at(frame) {

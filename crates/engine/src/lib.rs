@@ -59,7 +59,7 @@ pub mod publish;
 pub mod vfs;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
-use anicraft_geom::{Rect, Vec2};
+use anicraft_geom::{Affine, Rect, Vec2};
 use serde_json::{Value, json};
 use history::History;
 use std::cell::RefCell;
@@ -835,6 +835,32 @@ impl Session {
         // The timeline being edited: a symbol open in place picks in its own layers (ADR 0045).
         let tl = self.timeline();
         let dl = self.display_list();
+        let i = pick_index(&dl, p, slop, |_, it| tl.layer(it.layer).is_some_and(|layer| !layer.locked && !tl.locked_by_folder(layer.id)))?;
+        dl.items.get(i).map(|it| (it.layer, it.element))
+    }
+
+    /// Stage → output for layer `id` at the playhead as the camera shows it (ADR 0082): the
+    /// camera and the layer's depth then, the identity for an attached layer. `None` without a
+    /// camera that does something, while a symbol is open, or when the camera has passed the
+    /// layer. What editing through the camera maps the pointer back with.
+    pub fn camera_view(&self, id: LayerId) -> Option<Affine> {
+        if !self.editing.is_empty() {
+            return None;
+        }
+        let tl = self.doc.timeline(self.scene);
+        let cam = tl.camera_at(self.frame, &self.doc.stage)?;
+        cam.layer_view(&self.doc.stage, tl.layer(id)?, self.frame)
+    }
+
+    /// [`Session::hit_test`] through the scene's camera: the topmost element under output
+    /// point `p` (the movie's pixels) on a visible, unlocked layer, `slop` in output pixels.
+    /// Without a camera that does something this is the stage's hit test.
+    pub fn hit_test_camera(&self, p: Vec2, slop: f32) -> Option<(LayerId, ElementId)> {
+        if !self.editing.is_empty() || self.doc.timeline(self.scene).camera_at(self.frame, &self.doc.stage).is_none() {
+            return self.hit_test(p, slop);
+        }
+        let tl = self.timeline();
+        let dl = anicraft_doc::evaluate_scene_camera(&self.doc, self.scene, self.frame);
         let i = pick_index(&dl, p, slop, |_, it| tl.layer(it.layer).is_some_and(|layer| !layer.locked && !tl.locked_by_folder(layer.id)))?;
         dl.items.get(i).map(|it| (it.layer, it.element))
     }

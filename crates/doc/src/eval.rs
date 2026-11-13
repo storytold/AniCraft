@@ -446,7 +446,13 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
     let clip_of = |id: LayerId| clips.iter().find(|(l, _)| *l == id).map(|(_, c)| *c);
     // Folders draw nothing, and a hidden folder hides everything in it.
     let has_folders = tl.layers.iter().any(|l| l.kind == LayerKind::Folder);
-    for (index, layer) in tl.layers.iter().enumerate().rev() {
+    // Deepest first, ties in timeline order (ADR 0082); depth belongs to a scene's own layers.
+    // (Only sorted when some layer has a depth: nested timelines allocate nothing.)
+    let sorted = (cx.depth == 0 && tl.layers.iter().any(|l| l.has_depth())).then(|| tl.draw_order(frame));
+    let n = tl.layers.len();
+    for k in 0..n {
+        let index = sorted.as_ref().map_or(n - 1 - k, |o| o.get(k).copied().unwrap_or(n));
+        let Some(layer) = tl.layers.get(index) else { continue };
         // Guide artwork is listed (marked, for editing) but never drawn; inside mask artwork
         // it plays no part at all.
         let is_guide = layer.kind == LayerKind::Guide;
@@ -465,8 +471,15 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline && cx.stage { Some(layer.color) } else { None });
-        // Through a camera, each layer is placed by the camera and its own depth.
-        let layer_xf = cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth));
+        // Through a camera, each layer is placed by the camera and its own depth (an attached
+        // layer stays put); a layer the camera has passed isn't drawn.
+        let layer_xf = match cx.camera {
+            Some(c) => match c.layer_view(&doc.stage, layer, frame) {
+                Some(v) => v,
+                None => continue,
+            },
+            None => cx.xf,
+        };
         let lc = LayerCtx { layer, frame, kf_start, clip, masks, guide, outline: layer_outline, xf: layer_xf };
         for el in elements.iter() {
             eval_element(doc, cx, &lc, el, out, play);

@@ -719,11 +719,18 @@ impl<'a> Bake<'a> {
         for f in 0..n {
             let camera = if scene { tl.camera_at(f, &stage) } else { None };
             let mut layers = Vec::new();
-            for &index in playing.iter().rev() {
+            // Drawn deepest first, ties in timeline order, as the evaluator does (ADR 0082).
+            let order = if scene { tl.draw_order(f) } else { (0..tl.layers.len()).rev().collect() };
+            for index in order.into_iter().filter(|i| playing.contains(i)) {
                 let Some(layer) = tl.layers.get(index).filter(|l| l.kind != LayerKind::Camera) else { continue };
                 let mut entry = Map::new();
-                if let Some(v) = camera.and_then(|c| matrix(&c.view(&stage, layer.depth))) {
-                    entry.insert("v".into(), v);
+                // Each layer's view: the camera and its depth then (none when attached); a
+                // layer the camera has passed isn't drawn.
+                if let Some(c) = camera {
+                    let Some(view) = c.layer_view(&stage, layer, f) else { continue };
+                    if let Some(v) = matrix(&view) {
+                        entry.insert("v".into(), v);
+                    }
                 }
                 // The layer's volume, for the sounds inside the symbols on it.
                 if layer.sound_gain() != 1.0 {

@@ -505,6 +505,9 @@ pub fn panel_body(app: &mut App, ui: &mut egui::Ui, p: Panel) {
         Panel::History => {
             pad(12, 8).show(ui, |ui| crate::panels::history(app, ui));
         }
+        Panel::LayerDepth => {
+            scroll("layer_depth").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::layer_depth::panel(app, ui)));
+        }
         Panel::Timeline => crate::timeline::show(app, ui),
         Panel::MotionEditor => crate::motion_editor::show(app, ui),
         Panel::Actions => {

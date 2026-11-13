@@ -499,7 +499,7 @@ fn f32_diff(a: &[Premul], b: &[Premul]) -> (f64, f32) {
 /// deep, so every transform the camera adds reaches the GPU's fills.
 fn camera_sample() -> anicraft_doc::Document {
     let mut doc = sample::demo();
-    let cam = anicraft_doc::Camera { center: Vec2::new(700.0, 380.0), zoom: 1.6, rotation: -0.15, tint: Rgba::hex(0x3366ff), tint_amount: 0.3 };
+    let cam = anicraft_doc::Camera { center: Vec2::new(700.0, 380.0), zoom: 1.6, rotation: -0.15, color: anicraft_doc::ColorEffect::Tint { color: Rgba::hex(0x3366ff), amount: 0.3 } };
     let mut layer = anicraft_doc::Layer::new(LayerId(9_000), "Camera");
     layer.kind = anicraft_doc::LayerKind::Camera;
     let mut k = anicraft_doc::Keyframe::new(0, doc.frame_count());
