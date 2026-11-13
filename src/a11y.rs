@@ -710,10 +710,17 @@ mod tests {
         let followed = crate::theme::palette();
         app.set_system_look(&ctx, look(Some(false), Some(true)));
         let back = crate::theme::palette();
-        // The system switches its apps to light (ADR 0077): so does the interface, and egui's
-        // own style with it.
+        // The system switches its apps to light: the default look stays dark (#266)...
+        app.set_system_look(&ctx, look(Some(false), Some(false)));
+        let default_on_light = crate::theme::palette();
+        // ...and with Follow system chosen, so does the interface (ADR 0077), egui's own style
+        // with it.
+        let mut p = app.prefs.clone();
+        p.theme_follows_system = Some(true);
+        app.set_prefs(&ctx, p);
         app.set_system_look(&ctx, look(Some(false), Some(false)));
         let light = (crate::theme::palette(), ctx.global_style().visuals.panel_fill, ctx.global_style().visuals.dark_mode);
+        assert_eq!(default_on_light, Palette::Graphite);
         // Chosen by hand: the system's setting no longer changes it.
         let mut p = app.prefs.clone();
         p.theme_follows_system = Some(false);

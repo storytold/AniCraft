@@ -7,7 +7,7 @@
     contrast**: light grey panels, near-black text, hairline-edged buttons and fields, soft
     shadows, and the timeline's mint, violet, amber and sky blocks in deeper tones made for a light
     background. Applied as you click, no restart.
-  * **Follow system** (the default) now follows your system's light or dark mode as well as its
+  * **Follow system** now follows your system's light or dark mode as well as its
     contrast setting: Windows' app mode, macOS' Appearance, the Linux desktop's colour scheme and
     the browser's `prefers-color-scheme`. The window's title bar follows too.
   * `anicraft --theme light` (also `dark`, `high-contrast`) previews a theme for one run.

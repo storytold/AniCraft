@@ -65,7 +65,10 @@ rules as Graphite.
    * Web: `prefers-color-scheme: dark`.
 
    More contrast wins; otherwise a light system gets Light and a dark one, or one that doesn't
-   say, Graphite. Follow system stays the default (ADR 0064).
+   say, Graphite. **Default (the lead's call, #266):** someone who never chose gets Dark
+   (Graphite), still switching to High contrast when the system asks for more contrast (ADR
+   0064); creative tools open dark whatever the system's light/dark setting. Follow system
+   (light/dark too) is an explicit choice.
 6. **`--theme dark|light|high-contrast`** previews a palette for one run (`graphite` still works),
    for screenshots.
 7. **Tests get a palette per thread.** The palette in use is process-wide view state; under
@@ -74,10 +77,8 @@ rules as Graphite.
 
 ## Consequences
 
-* People on a light system who never touched the setting now get the light theme. That matches
-  the platform conventions (macOS and Windows apps follow the appearance setting) and the people
-  who asked for it, but creative tools traditionally open dark; the lead may prefer Graphite as
-  the default for systems that are light (one line in `Prefs::palette`).
+* People on a light system who never touched the setting keep the dark editor, as creative
+  tools do; choosing Light or Follow system in Preferences is one click (decided on #266).
 * A new role must be given a value in three palettes; the contrast test fails until it meets the
   rules in each.
 * Not yet: a light high-contrast palette (Windows' white contrast themes still get the black one),

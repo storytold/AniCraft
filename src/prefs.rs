@@ -105,8 +105,9 @@ pub struct Prefs {
     #[serde(deserialize_with = "lenient_palette")]
     pub theme: crate::theme::Palette,
     /// Follow the system (ADR 0064, ADR 0077): high contrast while the system asks for more
-    /// contrast, otherwise light or dark as its apps are. `None` (files from before): it follows,
-    /// unless the file chose another palette than Graphite.
+    /// contrast, otherwise light or dark as its apps are. `None` (never chosen): Dark (Graphite),
+    /// still switching to high contrast when the system asks for more contrast, as creative tools
+    /// open dark whatever the system's light/dark setting (the lead's call on #266).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme_follows_system: Option<bool>,
     /// Interface scale (1.0 = 100%).
@@ -264,7 +265,12 @@ impl Prefs {
     /// (ADR 0064) and its light or dark mode (ADR 0077). A file that names a palette other than
     /// the default without saying whether it follows chose that palette.
     pub fn follows_system(&self) -> bool {
-        self.theme_follows_system.unwrap_or(self.theme == crate::theme::Palette::Graphite)
+        self.theme_follows_system.unwrap_or(false)
+    }
+
+    /// Never chose a look: Dark (Graphite), with high contrast when the system asks for it.
+    fn default_look(&self) -> bool {
+        self.theme_follows_system.is_none() && self.theme == crate::theme::Palette::Graphite
     }
 
     /// The palette to draw with, given what the system says (each part `None` where it doesn't
@@ -272,6 +278,9 @@ impl Prefs {
     /// Graphite.
     pub fn palette(&self, system: crate::platform::SystemLook) -> crate::theme::Palette {
         use crate::theme::Palette;
+        if self.default_look() {
+            return if system.high_contrast == Some(true) { Palette::HighContrast } else { Palette::Graphite };
+        }
         if !self.follows_system() {
             return self.theme;
         }
@@ -377,16 +386,22 @@ mod tests {
         use crate::platform::SystemLook;
         use crate::theme::Palette;
         let look = |high_contrast, dark| SystemLook { high_contrast, dark };
-        // New installs, and files from before ADR 0064 that kept the default, follow the system.
+        // New installs, and files that kept the default: dark, but high contrast when the system
+        // asks for more contrast; a light system doesn't turn the editor light (#266).
         for p in [Prefs::default(), Prefs::from_json(r#"{"theme": "Graphite"}"#)] {
-            assert!(p.follows_system());
+            assert!(!p.follows_system());
             assert_eq!(p.palette(look(Some(true), None)), Palette::HighContrast);
             assert_eq!(p.palette(look(Some(true), Some(false))), Palette::HighContrast, "more contrast wins over light");
             assert_eq!(p.palette(look(Some(false), None)), Palette::Graphite);
-            assert_eq!(p.palette(look(Some(false), Some(false))), Palette::Light, "a light system: light (ADR 0077)");
+            assert_eq!(p.palette(look(Some(false), Some(false))), Palette::Graphite, "a light system: still dark by default");
             assert_eq!(p.palette(look(None, Some(true))), Palette::Graphite);
             assert_eq!(p.palette(SystemLook::default()), Palette::Graphite, "a system that doesn't say: graphite");
         }
+        // Follow system, chosen: light or dark as the system is (ADR 0077).
+        let follow = Prefs { theme_follows_system: Some(true), ..Prefs::default() };
+        assert!(follow.follows_system());
+        assert_eq!(follow.palette(look(Some(false), Some(false))), Palette::Light, "a light system: light");
+        assert_eq!(follow.palette(look(Some(true), Some(false))), Palette::HighContrast);
         // A file that chose high contrast keeps it whatever the system says.
         let hc = Prefs::from_json(r#"{"theme": "HighContrast"}"#);
         assert!(!hc.follows_system());

@@ -20,8 +20,9 @@ bottom says which system you are on and where your settings are kept.
 
 * **Language**: the language of menus, panels and dialogs. See
   [Interface languages](#interface-languages) below.
-* **Theme**: **Follow system** (the default), **Dark (Graphite)**, **Light** or **High
-  contrast**. Follow system is light or dark as your computer's apps are, and switches to High
+* **Theme**: **Dark (Graphite)** (the default, which still switches to High contrast while
+  your computer asks for more contrast), **Follow system**, **Light** or **High contrast**.
+  Follow system is light or dark as your computer's apps are, and switches to High
   contrast while your computer asks for more contrast; it changes within a few seconds of your
   system, without a restart. The note under it says what your system is set to right now. A theme
   you pick by hand stays whatever the system says, and every theme applies as soon as you click it.
