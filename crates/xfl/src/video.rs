@@ -125,7 +125,7 @@ fn screen_video(p: &[u8]) -> Option<Video> {
             for (row, line) in bgr.chunks_exact(cw * 3).enumerate() {
                 // Rows count up from the bottom; the bitmap's rows count down from the top.
                 let y = h - 1 - (y0 + row);
-                for (col, px) in line.chunks_exact(3).enumerate() {
+                for (col, px) in line.as_chunks::<3>().0.iter().enumerate() {
                     let i = (y * w + x0 + col) * 4;
                     rgba.get_mut(i..i + 4)?.copy_from_slice(&[px[2], px[1], px[0], 255]);
                 }
