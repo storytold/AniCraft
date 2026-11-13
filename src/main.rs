@@ -65,6 +65,7 @@ mod prefs;
 mod recent;
 mod rulers;
 mod scale_grid;
+mod shape_envelope;
 mod sound;
 mod shape_hints;
 mod stage;

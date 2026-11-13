@@ -355,3 +355,140 @@ fn only_drawing_objects_open() {
     run(&mut s, "symbol.edit", json!({"id": id}));
     assert!(s.execute("timeline.insert_keyframe", &json!({})).is_err(), "one frame inside");
 }
+
+// ----- Envelope ----------------------------------------------------------------------------------
+
+fn points_of(v: &Value) -> Vec<[f32; 2]> {
+    v["points"].as_array().expect("points").iter().map(|p| [p[0].as_f64().unwrap_or(0.0) as f32, p[1].as_f64().unwrap_or(0.0) as f32]).collect()
+}
+
+/// A 100 × 50 orange drawing object at (10, 20), selected, with an envelope open on it.
+fn enveloped() -> (Session, Value) {
+    let mut s = blank(true);
+    run(&mut s, "draw.rect", json!({"x": 10, "y": 20, "w": 100, "h": 50, "stroke": null, "fill": "#ff8800"}));
+    let v = run(&mut s, "modify.envelope", json!({}));
+    (s, v)
+}
+
+/// At rest the envelope is the identity: its mesh is evenly over the bounds, and moving it to
+/// the rest mesh changes nothing.
+#[test]
+fn envelope_identity_at_rest() {
+    let (mut s, v) = enveloped();
+    assert_eq!(v["bounds"], json!([10.0, 20.0, 100.0, 50.0]));
+    let pts = points_of(&v);
+    assert_eq!(pts.len(), 16);
+    assert_eq!(pts[0], [10.0, 20.0]);
+    assert_eq!(pts[15], [110.0, 70.0]);
+    let before = shapes(&s);
+    run(&mut s, "modify.envelope_move", json!({"points": v["points"]}));
+    let after = shapes(&s);
+    assert_eq!(before.len(), after.len());
+    let flat = |sh: &Shape, m: &Affine| sh.path.flatten(m, 0.01).into_iter().flat_map(|p| p.points).collect::<Vec<_>>();
+    for ((a, ma), (b, mb)) in before.iter().zip(&after) {
+        let (pa, pb) = (flat(a, ma), flat(b, mb));
+        assert_eq!(pa.len(), pb.len());
+        assert!(pa.iter().zip(&pb).all(|(x, y)| x.distance(*y) < 1e-3));
+    }
+    assert!((fill_area(&s) - 5000.0).abs() < 0.01);
+}
+
+/// Lifting the top side's two handles by 30 bends the top edge up: the area grows by
+/// lift · width / 2 (∫ B₁ + B₂ = ½), and each move is one undo step.
+#[test]
+fn envelope_bends_by_the_mesh() {
+    let (mut s, v) = enveloped();
+    let steps = s.history_len();
+    let pts = points_of(&v);
+    run(&mut s, "modify.envelope_move", json!({"index": 1, "x": pts[1][0], "y": pts[1][1] - 30.0}));
+    let v = run(&mut s, "modify.envelope_move", json!({"index": 2, "x": pts[2][0], "y": pts[2][1] - 30.0}));
+    assert_eq!(s.history_len(), steps + 2, "one step per move");
+    let want = 5000.0 + 30.0 * 100.0 / 2.0;
+    assert!((fill_area(&s) - want).abs() < want * 1e-3, "{} vs {want}", fill_area(&s));
+    // The inner points followed the side (Coons).
+    let now = points_of(&v);
+    assert!(now[5][1] < pts[5][1] - 1.0 && now[6][1] < pts[6][1] - 1.0);
+    // Undo: the mesh that made the shapes on the stage.
+    run(&mut s, "edit.undo", json!({}));
+    let (_, _, mesh) = s.envelope().expect("still open");
+    assert!((mesh[2].y - pts[2][1]).abs() < 1e-4 && (mesh[1].y - (pts[1][1] - 30.0)).abs() < 1e-4);
+    run(&mut s, "edit.undo", json!({}));
+    let (_, rest, mesh) = s.envelope().expect("still open");
+    assert_eq!(mesh, anicraft_geom::envelope::rest_mesh(&rest));
+    assert!((fill_area(&s) - 5000.0).abs() < 0.01);
+}
+
+/// Moves bend the shapes as they were when the envelope opened, so a move and its reverse
+/// leave them exactly as they were.
+#[test]
+fn envelope_moves_do_not_compound() {
+    let (mut s, v) = enveloped();
+    let pts = points_of(&v);
+    let before = shapes(&s);
+    run(&mut s, "modify.envelope_move", json!({"index": 15, "x": 160, "y": 120}));
+    run(&mut s, "modify.envelope_move", json!({"index": 15, "x": pts[15][0], "y": pts[15][1]}));
+    let after = shapes(&s);
+    assert!((fill_area(&s) - 5000.0).abs() < 0.01);
+    assert_eq!(before[0].0.path.cmds.len(), after[0].0.path.cmds.len());
+}
+
+/// Symbols, text and groups can't be bent; nothing open is an error for a move.
+#[test]
+fn envelope_refuses_what_it_cannot_bend() {
+    let mut s = blank(true);
+    assert!(s.execute("modify.envelope", &json!({})).is_err(), "nothing selected");
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 50, "h": 50, "fill": "#ff0000"}));
+    run(&mut s, "modify.convert_to_symbol", json!({}));
+    assert!(s.execute("modify.envelope", &json!({})).is_err(), "a symbol instance");
+    assert!(s.execute("modify.envelope_move", &json!({"index": 0, "x": 1, "y": 1})).is_err());
+    let (mut t, _) = enveloped();
+    for p in [json!({"index": 16, "x": 0, "y": 0}), json!({"points": [[0, 0]]}), json!({"index": 0, "x": 1e9, "y": 0}), json!({})] {
+        assert!(t.execute("modify.envelope_move", &p).is_err(), "{p}");
+    }
+    // A new selection ends it.
+    run(&mut t, "edit.deselect", json!({}));
+    assert!(t.envelope().is_none());
+}
+
+/// Raw shapes bent by an envelope merge with the drawing they land on when it closes.
+#[test]
+fn envelope_close_merges_raw_shapes() {
+    let mut s = blank(false);
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "stroke": null, "fill": "#0000ff"}));
+    run(&mut s, "draw.rect", json!({"x": 200, "y": 0, "w": 100, "h": 100, "stroke": null, "fill": "#ff0000"}));
+    // The red square is selected (the last drawn): bend its left side over the blue one.
+    let v = run(&mut s, "modify.envelope", json!({}));
+    let pts = points_of(&v);
+    let mut m = pts.clone();
+    for i in [0usize, 4, 8, 12] {
+        m[i][0] -= 150.0;
+    }
+    run(&mut s, "modify.envelope_move", json!({"points": m}));
+    run(&mut s, "modify.envelope_close", json!({}));
+    assert!(s.envelope().is_none());
+    // The red covers 50 of the blue square's width now.
+    assert!((area_in(&s, 0x0000ff) - 5000.0).abs() < 5.0, "{}", area_in(&s, 0x0000ff));
+    assert!((area_in(&s, 0xff0000) - 25_000.0).abs() < 25.0, "{}", area_in(&s, 0xff0000));
+}
+
+/// A drag's moves are one undo step and remember only the last mesh; undo goes back to before
+/// the drag with the envelope still open.
+#[test]
+fn envelope_drag_is_one_step() {
+    let (mut s, v) = enveloped();
+    let pts = points_of(&v);
+    let steps = s.history_len();
+    s.begin_gesture("Envelope");
+    for k in 1..=300 {
+        run(&mut s, "modify.envelope_move", json!({"index": 15, "x": pts[15][0] + k as f32 * 0.1, "y": pts[15][1]}));
+    }
+    s.end_gesture();
+    assert_eq!(s.history_len(), steps + 1);
+    assert!(s.envelope.as_ref().is_some_and(|e| e.states_len() == 2));
+    run(&mut s, "edit.undo", json!({}));
+    let (_, rest, mesh) = s.envelope().expect("open");
+    assert_eq!(mesh, anicraft_geom::envelope::rest_mesh(&rest));
+    run(&mut s, "edit.redo", json!({}));
+    let (_, _, mesh) = s.envelope().expect("open");
+    assert!((mesh[15].x - (pts[15][0] + 30.0)).abs() < 1e-3);
+}

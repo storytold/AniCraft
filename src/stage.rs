@@ -212,6 +212,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let (canvas, bars) = crate::rulers::layout(app, ui.max_rect());
     let now = ui.input(|i| i.time);
     crate::camera_tool::on_tool_change(app);
+    crate::shape_envelope::settle(app);
     crate::camera_tool::tick(app, ui.ctx(), now);
     app.stage_cache.canvas = canvas;
     let resp = ui.allocate_rect(canvas, Sense::click_and_drag());
@@ -368,6 +369,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             _ if pen_hot.is_some() => CursorIcon::Copy,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::GradientTransform => crate::gradient_tool::cursor(app, pointer, xf),
+            Tool::Transform if matches!(app.drag, Drag::Envelope { .. }) => CursorIcon::Grabbing,
+            Tool::Transform if app.drag == Drag::None && pointer.is_some_and(|p| crate::shape_envelope::over_handle(app, xf, p)) => CursorIcon::Grab,
             Tool::Transform => {
                 let zone = match app.drag {
                     Drag::Transform { kind, .. } | Drag::MultiTransform { kind, .. } => Some(kind),
@@ -430,6 +433,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             match tool {
                 // Edit Multiple Frames (ADR 0047): artwork on every keyframe between the markers;
                 // Free Transform's handles transform it all about one pivot (ADR 0051).
+                // An open envelope's handles (ADR 0080).
+                Tool::Transform if !multi && let Some(d) = crate::shape_envelope::drag_start(app, xf, press) => d,
                 Tool::Transform if multi && let (Some(kind), Some(bounds)) = (sel_rect.and_then(|r| xf_zone(r, press)), sel_bounds) => {
                     app.s.begin_gesture(tr_noop!("Free Transform"));
                     Drag::MultiTransform { kind, start: sp, bounds, applied: Affine::IDENTITY }
@@ -624,6 +629,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let d = *d;
                 crate::gradient_tool::drag_to(app, d, to_v(c), shift);
             }
+            (d @ Drag::Envelope { .. }, Some(c)) => {
+                let d = *d;
+                crate::shape_envelope::drag_to(app, d, to_v(c));
+            }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
             (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf, now),
             (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf, now),
@@ -645,6 +654,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Guide { index, .. } => crate::rulers::drag_end(app, index, geo, ui.input(|i| i.pointer.latest_pos())),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::Gradient { .. } => crate::gradient_tool::drag_end(app),
+            Drag::Envelope { .. } => crate::shape_envelope::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
@@ -1114,7 +1124,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Free transform box: recomputed every frame so it follows the artwork while you drag.
     let xf_box = if multi { crate::onion::selection_bounds(app) } else { bounds_arr(app.s.selection_bounds()) };
-    if transforming && let Some(b) = xf_box {
+    let enveloped = crate::shape_envelope::shown(app).is_some();
+    if transforming && !enveloped && let Some(b) = xf_box {
         let r = Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))).expand(1.0);
         painter.rect_stroke(r, 0.0, Stroke::new(1.5, T.selection), StrokeKind::Middle);
         for (h, _, _) in handles(r) {
@@ -1131,6 +1142,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::gradient_tool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
+    crate::shape_envelope::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
     crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     // After this frame's edits, so a drag on the path shows where it is now.

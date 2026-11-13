@@ -230,6 +230,9 @@ pub enum Drag {
     /// Gradient Transform tool (ADR 0074): dragging `grip` of shape `id`'s fill, whose frame was
     /// `frame` when the drag began at stage point `press`.
     Gradient { id: anicraft_engine::doc::ElementId, grip: crate::gradient_tool::Grip, frame: anicraft_engine::geom::Affine, press: egui::Pos2 },
+    /// Envelope (ADR 0080): dragging boundary handle `index` of the mesh `mesh` (as it was when
+    /// the drag began at stage point `press`).
+    Envelope { index: usize, mesh: anicraft_engine::geom::envelope::Mesh, press: anicraft_engine::geom::Vec2 },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
@@ -386,6 +389,8 @@ pub struct App {
     pub font_families: Option<Vec<String>>,
     /// The PolyStar tool's settings (ADR 0080), as Animate's Tool Settings.
     pub polystar: PolyStarOptions,
+    /// An envelope is open (ADR 0080): it closes when it no longer shows.
+    pub envelope_open: bool,
     pub rect_radius: f32,
     /// Pen path being drawn (view state until it is committed as one command).
     pub pen: Option<pathtools::PenPath>,
@@ -651,6 +656,7 @@ impl App {
             path_pick: None,
             font_families: None,
             polystar: PolyStarOptions::default(),
+            envelope_open: false,
             rect_radius: 0.0,
             pen: None,
             pencil: Vec::new(),
@@ -2486,6 +2492,11 @@ impl App {
             if self.run(id, json!({})).is_some() {
                 self.status_ok(trn!("Cleared {n} guide. {undo} to undo.", "Cleared {n} guides. {undo} to undo.", n, undo = self.undo_key()));
             }
+            return;
+        }
+        if id == "modify.envelope" {
+            // The envelope's handles, with the Free Transform tool (ADR 0080).
+            crate::shape_envelope::open(self);
             return;
         }
         if id == "modify.convert_to_symbol" {
