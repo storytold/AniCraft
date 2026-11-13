@@ -106,8 +106,10 @@ With the Camera tool:
 * use the mouse wheel to zoom.
 
 Each drag is one undo step. For exact values, use **Properties › Camera**: **Position**,
-**Zoom** (5 to 2,000 %), **Rotation**, and a **Tint** over the whole view with its amount.
-**Reset** puts the camera back to the plain stage: centred, 100 %, no turn and no tint.
+**Zoom** (5 to 2,000 %), **Rotation**, and a **Colour effect** over the whole view: **Brightness**,
+**Tint** or **Advanced** (red, green and blue multipliers and offsets), as on a symbol instance.
+The camera has no opacity, so there is no Alpha style. Colour effects tween with the camera.
+**Reset** puts the camera back to the plain stage: centred, 100 %, no turn and no colour effect.
 
 ### Animating the camera
 
@@ -117,17 +119,37 @@ is **Scale X**.
 
 The Camera layer holds only the camera. Draw your artwork on other layers.
 
-### Depth and parallax
+### Layer depth
 
-Once the scene has a camera, each layer can have a **Depth** in **Properties › Frame**. A layer
-with more depth sits farther behind the stage and moves less as the camera pans, which gives a
-sense of distance (parallax). A negative depth puts the layer in front.
+Once the scene has a camera, each layer can have a **depth**: how far behind the stage it sits,
+in pixels (a negative depth puts it in front, down to −500). The camera sees the layers as a real
+camera would (a pinhole camera 1,000 px from the stage): when it pans, a deeper layer moves less;
+when it zooms in, a deeper layer grows less. Deeper layers are drawn behind nearer ones; layers at
+the same depth keep their timeline order. With the camera at rest, every layer looks just as you
+drew it, and a layer at depth 0 behaves exactly as it always did.
+
+Open **Window › Layer Depth** to see the layers listed by depth, nearest first. Drag a layer's
+handle along its track (left is nearer, right is farther) or type its depth. Each drag is one
+undo step. The **Depth** row in **Properties › Frame** sets the active layer's depth too.
+
+**Animating depth.** Click the diamond beside a depth to key it on the current frame. The depth
+then tweens evenly between keys and holds before the first and after the last. Click a filled
+diamond to remove that key.
+
+### Attaching a layer to the camera
+
+Titles, captions and HUDs should stay put while the camera moves. Click the camera icon on a
+layer's row in the timeline (or **Attach** in the Layer Depth panel) to attach the layer to the
+camera: it then stays exactly where you drew it on screen, whatever the camera does. Draw it as
+it should look in the frame, with the camera at rest.
 
 ### Preview Through Camera
 
 Choose **View › Preview Through Camera** (also in the Camera layer's right-click menu and in
 **Properties › Camera**) to see the stage just as the movie will look. While you preview, the
-drawing tools pause; turn the preview off to edit artwork again.
+**Selection** tool still works: click artwork where you see it to select it, and drag it to move
+it. It follows the pointer at any depth and zoom. The drawing tools pause; turn the preview off to
+draw.
 
 While you're editing, the stage otherwise stays in stage space, so your artwork doesn't jump
 around as the camera moves. Test Movie and every export always see through the camera.
@@ -140,8 +162,8 @@ around as the camera moves. Test Movie and every export always see through the c
   **Modify › Timeline › Remove Camera**. If the camera is animated, AniCraft asks first. Undo
   brings it back.
 
-Not there yet: editing artwork while previewing through the camera, a perspective mode where
-depth scales layers, depth inside symbols, and cameras from Animate files.
+Not there yet: tools other than Selection while previewing, depth inside symbols, depth keys that
+move with inserted frames, and cameras or layer depth from Animate files.
 
 ## Bones and inverse kinematics
 
