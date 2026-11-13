@@ -10,7 +10,7 @@ pub mod path_table;
 pub mod sample;
 
 pub use easing::Easing;
-pub use eval::{DisplayItem, DisplayList, MAX_SYMBOL_DEPTH, evaluate, evaluate_layer_elements};
+pub use eval::{DisplayItem, DisplayList, EvaluationBudget, MAX_SYMBOL_DEPTH, evaluate, evaluate_layer_elements, evaluate_with_budget};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use serde::{Deserialize, Serialize};
@@ -256,35 +256,53 @@ pub struct Element {
 }
 
 impl Element {
-    /// Local-space bounds (control-point bounds for shapes, `None` for symbols).
+    /// Local-space bounds, including symbol children. May be partial on budget exhaustion.
     pub fn local_bounds(&self, doc: &Document) -> Rect {
-        let mut budget = eval::MAX_EVAL_ELEMENTS;
-        element_bounds(doc, self, &Affine::IDENTITY, 0, &mut budget)
+        self.local_bounds_with_budget(doc, &mut EvaluationBudget::default())
     }
-    /// Bounds in the parent's space.
+    /// Bounds in the parent's space. May be partial on budget exhaustion.
     pub fn bounds(&self, doc: &Document) -> Rect {
-        let mut budget = eval::MAX_EVAL_ELEMENTS;
-        element_bounds(doc, self, &self.transform, 0, &mut budget)
+        self.bounds_with_budget(doc, &mut EvaluationBudget::default())
+    }
+
+    /// Local bounds with a shared allowance and an observable truncation flag.
+    pub fn local_bounds_with_budget(&self, doc: &Document, budget: &mut EvaluationBudget) -> Rect {
+        element_bounds(doc, self, &Affine::IDENTITY, 0, budget)
+    }
+
+    /// Parent-space bounds with a shared allowance for a batch of elements.
+    pub fn bounds_with_budget(&self, doc: &Document, budget: &mut EvaluationBudget) -> Rect {
+        element_bounds(doc, self, &self.transform, 0, budget)
     }
 }
 
-fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize, budget: &mut usize) -> Rect {
-    if depth > MAX_SYMBOL_DEPTH {
+fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize, budget: &mut EvaluationBudget) -> Rect {
+    // Rejected depth-limit visits consume work too; ancestors must not repeat free fan-out.
+    if !budget.charge(1) || depth > MAX_SYMBOL_DEPTH {
         return Rect::EMPTY;
     }
-    let Some(left) = budget.checked_sub(1) else { return Rect::EMPTY };
-    *budget = left;
     match &el.kind {
         ElementKind::Shape(s) => {
+            if !budget.charge(s.path.cmds.len()) {
+                return Rect::EMPTY;
+            }
             let pad = s.stroke.map_or(0.0, |st| st.width * 0.5);
             s.path.bounds().inflate(pad).transformed(xf)
         }
         ElementKind::Symbol { symbol, .. } => {
-            let Some(sym) = doc.symbol(*symbol) else { return Rect::EMPTY };
+            let Some(sym) = budget.symbol(doc, *symbol) else {
+                return Rect::EMPTY;
+            };
             let mut r = Rect::EMPTY;
             for layer in &sym.timeline.layers {
+                if !budget.charge(1) {
+                    return r;
+                }
                 if let Some(kf) = layer.keyframes.first() {
                     for child in &kf.elements {
+                        if !budget.charge(1) {
+                            return r;
+                        }
                         let m = xf.mul(&child.transform);
                         r = r.union(&element_bounds(doc, child, &m, depth + 1, budget));
                     }

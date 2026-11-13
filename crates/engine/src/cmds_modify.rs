@@ -94,11 +94,7 @@ fn cut(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"cut": s.clipboard.elements.len()}))
 }
 
-fn clipboard_bounds(s: &Session) -> Rect {
-    s.clipboard.elements.iter().fold(Rect::EMPTY, |r, e| r.union(&clip_element_bounds(s, e)))
-}
-
-fn clip_element_bounds(s: &Session, e: &Element) -> Rect {
+fn clipboard_bounds(s: &Session, budget: &mut anicraft_doc::EvaluationBudget) -> Result<Rect> {
     // Symbols may come from another document: look them up in the clipboard first.
     let mut doc = s.doc.clone();
     for sym in &s.clipboard.symbols {
@@ -106,7 +102,14 @@ fn clip_element_bounds(s: &Session, e: &Element) -> Rect {
             doc.library.push(sym.clone());
         }
     }
-    e.bounds(&doc)
+    let mut bounds = Rect::EMPTY;
+    for element in &s.clipboard.elements {
+        bounds = bounds.union(&element.bounds_with_budget(&doc, budget));
+        if budget.truncated() {
+            return Err(EngineError::State("clipboard artwork is too complex to center; paste in place or simplify it".into()));
+        }
+    }
+    Ok(bounds)
 }
 
 fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
@@ -156,7 +159,7 @@ pub(crate) fn import_symbols(s: &mut Session, symbols: &[Arc<Symbol>]) {
 fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     let offset = match (opt_f32(p, "x")?, opt_f32(p, "y")?) {
         (Some(x), Some(y)) => {
-            let b = clipboard_bounds(s);
+            let b = clipboard_bounds(s, &mut anicraft_doc::EvaluationBudget::default())?;
             if b.is_empty() { Vec2::new(10.0, 10.0) } else { Vec2::new(x, y) - b.center() }
         }
         _ => Vec2::new(10.0, 10.0),
@@ -166,6 +169,24 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn paste_in_place(s: &mut Session, _: &Value) -> Result<Value> {
     paste_with(s, Vec2::ZERO)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_bounds_report_exhaustion_across_elements() {
+        let mut session = Session::default();
+        session.execute("draw.rect", &json!({"x": 0, "y": 0, "w": 10, "h": 10})).unwrap();
+        session.execute("edit.copy", &json!({})).unwrap();
+        let element = session.clipboard.elements[0].clone();
+        session.clipboard.elements.push(element);
+        let mut budget = anicraft_doc::EvaluationBudget::new(6);
+        assert!(clipboard_bounds(&session, &mut budget).is_err());
+        assert!(budget.truncated());
+        assert!(clipboard_bounds(&session, &mut anicraft_doc::EvaluationBudget::new(12)).is_ok());
+    }
 }
 
 // ----- transforms -------------------------------------------------------------------------------

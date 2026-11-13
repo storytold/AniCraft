@@ -240,7 +240,13 @@ fn symbols_that_branch_into_themselves_stay_bounded() {
     // 50 shapes and two instances of itself: the depth cap alone would expand it 2^32 times.
     let mut d = Document::default();
     let sid = SymbolId(99);
-    let inst = |id| Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0 } };
+    let inst = |id| Element {
+        id: ElementId(id),
+        name: String::new(),
+        transform: Affine::IDENTITY,
+        color: ColorEffect::default(),
+        kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0 },
+    };
     let mut layer = Layer::new(LayerId(50), "s");
     for i in 0..50 {
         push(&mut layer, 0, shape_el(100 + i, 0.0));
@@ -250,8 +256,122 @@ fn symbols_that_branch_into_themselves_stay_bounded() {
     let tl = Timeline { layers: vec![Arc::new(layer)] };
     d.library.push(Arc::new(Symbol { id: sid, name: "fork".into(), kind: SymbolKind::Graphic, timeline: tl }));
     push(layer0(&mut d), 0, inst(60));
-    let n = evaluate(&d, 0).items.len();
-    assert!(n > MAX_SYMBOL_DEPTH && n <= MAX_EVAL_ELEMENTS, "{n} items");
+    let mut budget = EvaluationBudget::new(100);
+    let n = evaluate_with_budget(&d, 0, &mut budget).items.len();
+    assert_eq!(n, 15);
+    assert!(budget.truncated());
     // Selection bounds walk the same tree.
-    assert!(!d.timeline.layers[0].keyframes[0].elements[0].bounds(&d).is_empty());
+    let mut budget = EvaluationBudget::new(100);
+    assert!(!d.timeline.layers[0].keyframes[0].elements[0].bounds_with_budget(&d, &mut budget).is_empty());
+    assert!(budget.truncated());
+}
+
+#[test]
+fn shape_budget_boundaries_and_fresh_calls() {
+    let mut d = Document::default();
+    push(layer0(&mut d), 0, shape_el(10, 0.0));
+    push(layer0(&mut d), 0, shape_el(11, 20.0));
+    // Timeline + two layer visits + two (element + five path-command) charges.
+    for (units, count, truncated) in [(15, 2, false), (14, 1, true), (0, 0, true)] {
+        for _ in 0..2 {
+            let mut budget = EvaluationBudget::new(units);
+            assert_eq!(evaluate_with_budget(&d, 0, &mut budget).items.len(), count);
+            assert_eq!(budget.truncated(), truncated);
+        }
+    }
+    let el = shape_el(12, 20.0);
+    let mut budget = EvaluationBudget::new(12);
+    assert_eq!(el.local_bounds_with_budget(&d, &mut budget), anicraft_geom::Rect::new(0.0, 0.0, 10.0, 10.0));
+    assert_eq!(el.bounds_with_budget(&d, &mut budget), anicraft_geom::Rect::new(20.0, 0.0, 30.0, 10.0));
+    assert!(!budget.truncated());
+    assert!(el.bounds_with_budget(&d, &mut budget).is_empty());
+    assert!(el.local_bounds_with_budget(&d, &mut budget).is_empty());
+    assert!(budget.truncated());
+}
+
+#[test]
+fn layers_and_top_level_instances_share_work() {
+    let mut d = Document::default();
+    push(layer0(&mut d), 0, shape_el(10, 0.0));
+    let mut second = Layer::new(LayerId(2), "second");
+    push(&mut second, 0, shape_el(11, 20.0));
+    d.timeline.layers.push(Arc::new(second));
+    let mut budget = EvaluationBudget::new(10);
+    let list = evaluate_with_budget(&d, 0, &mut budget);
+    assert_eq!(list.items.len(), 1);
+    assert_eq!(list.items[0].element, ElementId(11));
+    assert!(budget.truncated());
+    d.timeline.layers = (0..100).map(|id| Arc::new(Layer::new(LayerId(id), "empty"))).collect();
+    let mut budget = EvaluationBudget::new(10);
+    assert!(evaluate_with_budget(&d, 0, &mut budget).items.is_empty());
+    assert!(budget.truncated());
+}
+
+#[test]
+fn sibling_instances_share_the_budget_and_large_paths_are_charged() {
+    let mut d = Document::default();
+    let mut layer = Layer::new(LayerId(50), "symbol");
+    push(&mut layer, 0, shape_el(50, 0.0));
+    d.library.push(Arc::new(Symbol {
+        id: SymbolId(99),
+        name: "one shape".into(),
+        kind: SymbolKind::Graphic,
+        timeline: Timeline { layers: vec![Arc::new(layer)] },
+    }));
+    for id in [10, 11] {
+        push(
+            layer0(&mut d),
+            0,
+            Element {
+                id: ElementId(id),
+                name: String::new(),
+                transform: Affine::IDENTITY,
+                color: ColorEffect::default(),
+                kind: ElementKind::Symbol { symbol: SymbolId(99), loop_mode: Default::default(), first_frame: 0 },
+            },
+        );
+    }
+    for (units, count, truncated) in [(15, 1, true), (27, 2, false)] {
+        let mut budget = EvaluationBudget::new(units);
+        assert_eq!(evaluate_with_budget(&d, 0, &mut budget).items.len(), count);
+        assert_eq!(budget.truncated(), truncated);
+    }
+    assert_eq!(evaluate(&d, 0).items.len(), 2);
+    assert_eq!(evaluate(&d, 0).items.len(), 2);
+    let mut large = shape_el(20, 0.0);
+    if let ElementKind::Shape(shape) = &mut large.kind {
+        Arc::make_mut(&mut shape.path).cmds = vec![anicraft_geom::PathCmd::LineTo(anicraft_geom::Vec2::ZERO); 100];
+    }
+    d.timeline.layers = vec![Arc::new(Layer::new(LayerId(1), "large"))];
+    push(layer0(&mut d), 0, large.clone());
+    let mut budget = EvaluationBudget::new(20);
+    assert!(evaluate_with_budget(&d, 0, &mut budget).items.is_empty());
+    assert!(budget.truncated());
+    let mut budget = EvaluationBudget::new(20);
+    assert!(large.bounds_with_budget(&d, &mut budget).is_empty());
+    assert!(budget.truncated());
+}
+
+#[test]
+fn bounds_charge_wide_children_at_the_depth_limit() {
+    let mut d = Document::default();
+    let instance = Element {
+        id: ElementId(10),
+        name: String::new(),
+        transform: Affine::IDENTITY,
+        color: ColorEffect::default(),
+        kind: ElementKind::Symbol { symbol: SymbolId(99), loop_mode: Default::default(), first_frame: 0 },
+    };
+    let mut layer = Layer::new(LayerId(50), "wide");
+    for _ in 0..1000 {
+        push(&mut layer, 0, instance.clone());
+    }
+    d.library.push(Arc::new(Symbol { id: SymbolId(99), name: "wide".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![Arc::new(layer)] } }));
+    let mut budget = EvaluationBudget::new(10);
+    assert!(crate::element_bounds(&d, &instance, &Affine::IDENTITY, MAX_SYMBOL_DEPTH, &mut budget).is_empty());
+    assert_eq!(budget.remaining, 0);
+    assert!(budget.truncated());
+    let mut budget = EvaluationBudget::new(1);
+    assert!(crate::element_bounds(&d, &instance, &Affine::IDENTITY, MAX_SYMBOL_DEPTH + 1, &mut budget).is_empty());
+    assert_eq!(budget.remaining, 0, "even a depth-rejected visit consumes work");
 }

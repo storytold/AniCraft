@@ -7,10 +7,57 @@ use std::sync::Arc;
 
 /// Symbols nested deeper than this are not drawn (guards cyclic libraries).
 pub const MAX_SYMBOL_DEPTH: usize = 32;
-/// Elements (shapes and symbol instances) visited per evaluation, at most. The depth cap alone
+/// Work units (elements, layers, lookups and path commands) visited per evaluation, at most. The depth cap alone
 /// still lets a symbol holding two instances of itself expand 2^32 times (a hostile file hangs
 /// and exhausts memory).
 pub const MAX_EVAL_ELEMENTS: usize = 1_000_000;
+
+/// Shared work allowance for an evaluation or a batch of bounds queries.
+/// Exhaustion returns partial results; callers can inspect [`Self::truncated`].
+#[derive(Debug)]
+pub struct EvaluationBudget {
+    remaining: usize,
+    truncated: bool,
+}
+
+impl Default for EvaluationBudget {
+    fn default() -> Self {
+        Self::new(MAX_EVAL_ELEMENTS)
+    }
+}
+
+impl EvaluationBudget {
+    pub fn new(units: usize) -> Self {
+        Self { remaining: units, truncated: false }
+    }
+
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    pub(crate) fn charge(&mut self, units: usize) -> bool {
+        if let Some(left) = self.remaining.checked_sub(units) {
+            self.remaining = left;
+            true
+        } else {
+            self.remaining = 0;
+            self.truncated = true;
+            false
+        }
+    }
+
+    pub(crate) fn symbol<'a>(&mut self, doc: &'a Document, id: crate::SymbolId) -> Option<&'a crate::Symbol> {
+        for symbol in &doc.library {
+            if !self.charge(1) {
+                return None;
+            }
+            if symbol.id == id {
+                return Some(symbol);
+            }
+        }
+        None
+    }
+}
 
 /// One shape to draw, fully resolved to stage space.
 #[derive(Clone, Debug)]
@@ -70,12 +117,17 @@ impl DisplayList {
     }
 }
 
-/// Evaluates the main timeline at `frame` (0-based).
+/// Evaluates the main timeline at `frame` (0-based), returning partial artwork on exhaustion.
+/// Use [`evaluate_with_budget`] to detect truncation or share an allowance across evaluations.
 pub fn evaluate(doc: &Document, frame: u32) -> DisplayList {
+    evaluate_with_budget(doc, frame, &mut EvaluationBudget::default())
+}
+
+/// Evaluates with a caller-owned allowance; inspect `budget.truncated()` afterwards.
+pub fn evaluate_with_budget(doc: &Document, frame: u32, budget: &mut EvaluationBudget) -> DisplayList {
     let mut out = DisplayList::default();
     let cx = Ctx { xf: Affine::IDENTITY, color: ColorEffect::default(), depth: 0, root: None, outline: None, clip: None, masks: None };
-    let mut budget = MAX_EVAL_ELEMENTS;
-    eval_timeline(doc, &doc.timeline, frame, &cx, &mut budget, &mut out);
+    eval_timeline(doc, &doc.timeline, frame, &cx, budget, &mut out);
     out
 }
 
@@ -141,21 +193,29 @@ struct Ctx {
     masks: Option<u32>,
 }
 
-fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, budget: &mut usize, out: &mut DisplayList) {
-    if cx.depth > MAX_SYMBOL_DEPTH {
+fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, budget: &mut EvaluationBudget, out: &mut DisplayList) {
+    if !budget.charge(1) || cx.depth > MAX_SYMBOL_DEPTH {
         return;
     }
     // One clip per visible mask layer, nested in the enclosing clip. Inside mask artwork every
     // layer is artwork, so masks there do not mask again. A hidden mask layer masks nothing.
-    let mut clips: Vec<(LayerId, u32)> = Vec::new();
+    let mut clips = std::collections::BTreeMap::new();
     if cx.masks.is_none() {
-        for layer in tl.layers.iter().filter(|l| l.kind == LayerKind::Mask && l.visible) {
-            clips.push((layer.id, out.clip_parents.len() as u32));
-            out.clip_parents.push(cx.clip);
+        for layer in &tl.layers {
+            if !budget.charge(1) {
+                return;
+            }
+            if layer.kind == LayerKind::Mask && layer.visible {
+                clips.entry(layer.id).or_insert(out.clip_parents.len() as u32);
+                out.clip_parents.push(cx.clip);
+            }
         }
     }
-    let clip_of = |id: LayerId| clips.iter().find(|(l, _)| *l == id).map(|(_, c)| *c);
+    let clip_of = |id: LayerId| clips.get(&id).copied();
     for layer in tl.layers.iter().rev() {
+        if !budget.charge(1 + layer.keyframes.len().checked_ilog2().unwrap_or(0) as usize) {
+            return;
+        }
         if !layer.visible || layer.kind == LayerKind::Guide {
             continue;
         }
@@ -164,30 +224,61 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, budget: &m
             (None, LayerKind::Mask) => (cx.clip, clip_of(layer.id)),
             (None, _) => (layer.parent.and_then(clip_of).or(cx.clip), None),
         };
-        let Some((kf_start, elements)) = evaluate_layer_elements(layer, frame) else { continue };
+        // Charge both tween endpoints before interpolation can allocate or scan their paths.
+        if let Some(index) = layer.keyframe_index_at(frame)
+            && let Some(kf) = layer.keyframes.get(index)
+            && kf.tween.is_some()
+        {
+            for keyframe in layer.keyframes.iter().skip(index).take(2) {
+                for el in &keyframe.elements {
+                    if !budget.charge(1) {
+                        return;
+                    }
+                    if let ElementKind::Shape(s) = &el.kind
+                        && !budget.charge(s.path.cmds.len())
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+        let Some((kf_start, elements)) = evaluate_layer_elements(layer, frame) else {
+            continue;
+        };
         let layer_outline = cx.outline.or(if layer.outline { Some(layer.color) } else { None });
         for el in elements.iter() {
-            let Some(left) = budget.checked_sub(1) else { return };
-            *budget = left;
+            if !budget.charge(1) {
+                return;
+            }
             let (root_layer, root_el) = cx.root.unwrap_or((layer.id, el.id));
             let xf = cx.xf.mul(&el.transform);
             let color = cx.color.concat(&el.color);
             match &el.kind {
-                ElementKind::Shape(s) => out.items.push(DisplayItem {
-                    path: s.path.clone(),
-                    transform: xf,
-                    fill: s.fill.clone(),
-                    stroke: s.stroke,
-                    fill_rule: s.fill_rule,
-                    color,
-                    layer: root_layer,
-                    element: root_el,
-                    outline: layer_outline,
-                    clip,
-                    masks,
-                }),
+                ElementKind::Shape(s) => {
+                    if !budget.charge(s.path.cmds.len()) {
+                        return;
+                    }
+                    out.items.push(DisplayItem {
+                        path: s.path.clone(),
+                        transform: xf,
+                        fill: s.fill.clone(),
+                        stroke: s.stroke,
+                        fill_rule: s.fill_rule,
+                        color,
+                        layer: root_layer,
+                        element: root_el,
+                        outline: layer_outline,
+                        clip,
+                        masks,
+                    });
+                }
                 ElementKind::Symbol { symbol, loop_mode, first_frame } => {
-                    let Some(sym) = doc.symbol(*symbol) else { continue };
+                    let Some(sym) = budget.symbol(doc, *symbol) else {
+                        continue;
+                    };
+                    if !budget.charge(sym.timeline.layers.len()) {
+                        return;
+                    }
                     let local = loop_mode.local_frame(frame.saturating_sub(kf_start), *first_frame, sym.timeline.frame_count());
                     let inner = Ctx { xf, color, depth: cx.depth + 1, root: Some((root_layer, root_el)), outline: layer_outline, clip, masks };
                     eval_timeline(doc, &sym.timeline, local, &inner, budget, out);
