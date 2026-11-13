@@ -1023,7 +1023,7 @@ mod tests {
     fn an_alpha_gradient_mask_fades_linearly() {
         // Transparent at x = 0 to opaque at x = 40: pixel x reveals (x + 0.5) / 40.
         let stops = vec![anicraft_doc::GradientStop { offset: 0.0, color: Rgba::new(1.0, 1.0, 1.0, 0.0) }, anicraft_doc::GradientStop { offset: 1.0, color: Rgba::WHITE }];
-        let grad = item(Path::rect(0.0, 0.0, 40.0, 40.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(40.0, 0.0), stops });
+        let grad = item(Path::rect(0.0, 0.0, 40.0, 40.0), Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(40.0, 0.0), stops));
         let pm = soft(MaskMode::Alpha, vec![grad.clone()]);
         for x in [0u32, 10, 20, 30, 39] {
             let a = pm.pixel(x, 20).unwrap()[3];
@@ -1101,7 +1101,7 @@ mod tests {
         assert!(near(pm.pixel(2, 2).unwrap(), want(c)), "{:?} vs {:?}", pm.pixel(2, 2), want(c));
         // A two-stop gradient of one colour is that colour, through the transform.
         let stops = vec![anicraft_doc::GradientStop { offset: 0.0, color: c }, anicraft_doc::GradientStop { offset: 1.0, color: c }];
-        let mut grad = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(4.0, 0.0), stops });
+        let mut grad = item(Path::rect(0.0, 0.0, 4.0, 4.0), Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(4.0, 0.0), stops));
         grad.color = fx;
         let (pm, _) = render(&list(vec![grad]), &view(4, 4)).unwrap();
         assert!(near(pm.pixel(1, 2).unwrap(), want(c)));

@@ -57,16 +57,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("bitmaps", &[("instances of missing bitmaps", 1), ("missing bitmap files", 1)]),
     ("colour", &[]),
     ("filters", &[("unknown filters", 1)]),
-    (
-        "gradients",
-        &[
-            ("elliptical radial gradients (drawn round)", 1),
-            ("gradient and bitmap strokes (drawn in one colour)", 1),
-            ("linear-RGB gradients (blended in sRGB)", 1),
-            ("radial gradient focal points (drawn centred)", 1),
-            ("repeating and reflecting gradients (drawn padded)", 2),
-        ],
-    ),
+    ("gradients", &[("gradient and bitmap strokes (drawn in one colour)", 1)]),
     ("guides", &[]),
     ("interactive", &[]),
     ("masks", &[]),

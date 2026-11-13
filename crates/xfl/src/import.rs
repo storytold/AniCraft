@@ -23,7 +23,7 @@ use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
     Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript,
+    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript, Spread, MAX_FOCAL,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
@@ -188,31 +188,24 @@ fn paint(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> O
             if stops.is_empty() {
                 return None;
             }
-            // What AniCraft's gradients can't draw yet is drawn the nearest way, and said.
-            if def.attr("spreadMethod").is_some_and(|s| s.trim() != "pad") {
-                report.skip("repeating and reflecting gradients (drawn padded)");
-            }
-            if def.attr("interpolationMethod").is_some_and(|s| s.trim() == "linearRGB") {
-                report.skip("linear-RGB gradients (blended in sRGB)");
-            }
-            if def.name == "RadialGradient" {
-                if def.f32("focalPointRatio").is_some_and(|f| f != 0.0) {
-                    report.skip("radial gradient focal points (drawn centred)");
+            // Overflow, interpolation and the focal point carry over as they are (ADR 0074).
+            let spread = def.attr("spreadMethod").and_then(|s| Spread::from_key(s.trim())).unwrap_or_default();
+            let linear_rgb = def.attr("interpolationMethod").is_some_and(|s| s.trim() == "linearRGB");
+            let frame = m.mul(&Affine::scale(GRADIENT_HALF, GRADIENT_HALF));
+            let mut p = if def.name == "LinearGradient" { Paint::linear(Vec2::new(-1.0, 0.0), Vec2::new(1.0, 0.0), stops) } else { Paint::radial(Vec2::ZERO, 1.0, stops) };
+            match &mut p {
+                Paint::Linear { spread: s, linear_rgb: l, .. } => {
+                    *s = spread;
+                    *l = linear_rgb;
                 }
-                let (x, y) = (m.apply_vector(Vec2::new(1.0, 0.0)), m.apply_vector(Vec2::new(0.0, 1.0)));
-                let (lx, ly) = (x.length(), y.length());
-                // Columns of different lengths, or not at right angles: an ellipse.
-                if (lx - ly).abs() > 0.01 * lx.max(ly) || x.dot(y).abs() > 0.01 * lx * ly {
-                    report.skip("elliptical radial gradients (drawn round)");
+                Paint::Radial { spread: s, linear_rgb: l, focal, .. } => {
+                    *s = spread;
+                    *l = linear_rgb;
+                    *focal = def.f32("focalPointRatio").filter(|f| f.is_finite()).unwrap_or(0.0).clamp(-MAX_FOCAL, MAX_FOCAL);
                 }
+                _ => {}
             }
-            Some(if def.name == "LinearGradient" {
-                Paint::Linear { start: m.apply(Vec2::new(-GRADIENT_HALF, 0.0)), end: m.apply(Vec2::new(GRADIENT_HALF, 0.0)), stops }
-            } else {
-                let c = m.apply(Vec2::ZERO);
-                let r = (m.apply_vector(Vec2::new(GRADIENT_HALF, 0.0)).length() + m.apply_vector(Vec2::new(0.0, GRADIENT_HALF)).length()) * 0.5;
-                Paint::Radial { center: c, radius: r, stops }
-            })
+            Some(p.with_frame(&frame, None))
         }
         "BitmapFill" => {
             let Some(&bitmap) = def.attr("bitmapPath").and_then(|n| bitmaps.get(n)) else {

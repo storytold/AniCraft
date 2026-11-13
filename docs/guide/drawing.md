@@ -19,6 +19,7 @@ your hand.
 | Selection | **V** | Select, move and bend artwork |
 | Subselection | **A** | Edit points and curve handles |
 | Free Transform | **Q** | Scale, rotate and move |
+| Gradient Transform | **F** | Move, turn and stretch a gradient or bitmap fill |
 | Width | **U** | Vary a line's thickness along it |
 | Bone | **M** | Join symbol instances into a poseable armature |
 | Pen | **P** | Draw precise curves point by point |
@@ -177,9 +178,11 @@ Click any colour swatch to open the colour picker. **Swatches**, the default, sh
 web-safe colours with greys and primaries beside them; a shade or highlight of a colour is
 usually one cell away. The colours you mix or type are kept in the row below for this session.
 **Mixer** sets any colour by hue, saturation and brightness (and alpha where the colour has
-one). The hex field shows the colour as `#rrggbb` and takes one you type. In the Tools panel's
-picker, **No colour** draws without a fill or a stroke, and with shapes selected, the colour
-you pick goes onto them too.
+one). The hex field shows the colour as `#rrggbb` and takes one you type. A fill's picker
+starts with the fill's type: **None** (no fill), **Solid**, **Linear**, **Radial** or
+**Bitmap** (see [Gradients and bitmap fills](#gradients-and-bitmap-fills)); the stroke's picker
+has **No colour** instead. In the Tools panel's picker, with shapes selected, the colour you
+pick goes onto them too.
 
 To recolour existing artwork, select it and change **Fill** and **Stroke** in Properties.
 For transparency, use the colour effect's **Alpha** (see
@@ -194,11 +197,48 @@ corner can get before it's bevelled.
 
 ### Gradients and bitmap fills
 
-AniCraft draws linear and radial gradients and bitmap fills, and keeps them from Animate
-files and SVG drawings you import. There isn't a gradient editor for fills yet, so you can't
-make a new gradient from scratch in AniCraft. You can reuse one, though: pick it up with the
-Eyedropper and pour it with the Paint Bucket. A picked gradient stays where it was on the
-stage, so it carries on across every shape you pour it into.
+Choose **Linear**, **Radial** or **Bitmap** at the top of a fill's colour picker: the Tools
+panel's Fill square, or the **Fill** swatch in Properties. With a shape selected it changes
+that shape's fill; with a drawing tool in your hand, the Fill swatch in its options sets what
+new shapes, the Paint Bucket and the Brush pour. A gradient's swatch shows its ramp.
+
+A gradient shows as a bar with its colour stops under it:
+
+* **Click the bar** to add a stop there. **Drag a stop** to move it, or drag it down off the
+  bar to remove it. A gradient has 2 to 15 stops.
+* Click a stop to pick it. Its **position** and **Remove** show under the bar, and the colour
+  picker below them (Swatches, Mixer, the **hex** field and **alpha**) sets its colour and
+  opacity. Type `#rrggbbaa` for a colour with opacity.
+* From the keyboard, **Tab** to a stop, move it with the **arrow keys** (**Shift** for bigger
+  steps) and press **Delete** to remove it. The bar itself adds a stop in the widest gap.
+* **Overflow** sets what shows past the ends: **Extend** (the end colours carry on),
+  **Reflect** (the ramp mirrors back and forth) or **Repeat**.
+* **Linear RGB** mixes the colours in linear light, for brighter, more even blends.
+* A radial gradient has a **Focal point**: where its ramp starts, from the centre.
+
+Editing the stops never moves a gradient. A shape that gets a new kind of fill gets it fitted
+to its own bounds: a linear gradient runs across its width, a radial one is centred and
+touches its longer side, and a bitmap tiles from its top-left corner.
+
+The **Gradient Transform** tool (**F**) changes where a gradient or bitmap fill lies. Click a
+shape with one to show its handles:
+
+| Handle | Linear | Radial | Bitmap | What a drag does |
+|---|---|---|---|---|
+| Round dot in the middle | ✓ | ✓ | ✓ | Moves the fill |
+| Square | ✓ | ✓ | ✓ (left and bottom) | Changes its width (bitmap: width or height) |
+| Circle with a dot | | ✓ | ✓ (corner) | Changes its size |
+| Knob | ✓ | ✓ | ✓ | Turns it (**Shift**: 15° steps) |
+| Triangle | | ✓ | | Moves the focal point along its axis |
+| Diamonds | | | ✓ (top and right) | Skews it |
+
+Each drag is one undo step. Gradients and bitmap fills from Animate files and SVG drawings
+keep their overflow, Linear RGB, focal point and shape.
+
+**Lock Fill** (in the Paint Bucket's and the Brush's options) pours the fill where it lies on
+the stage instead of fitting it to each shape, so one gradient runs on across many shapes.
+When you pick up a gradient or bitmap with the Eyedropper, Lock Fill turns on, so it stays
+where it was.
 
 ### Paint Bucket, Ink Bottle and Eyedropper
 
@@ -339,8 +379,8 @@ on its symbol (see [Symbols and the Library](symbols-and-library.md#9-slice-scal
 
 ## Not there yet
 
-Not in AniCraft yet: rulers, a grid and guides; Envelope and **Delete Envelope**; a gradient editor, the
-Gradient Transform tool and a Swatches panel (saved custom swatches); entering a drawing object
+Not in AniCraft yet: rulers, a grid and guides; Envelope and **Delete Envelope**; gradient and bitmap
+strokes, and a Swatches panel (saved custom colours and gradients); entering a drawing object
 with a double-click; PolyStar's Polygon option; the Paint Selection and Paint Inside
 brush modes, brush libraries and tilt; erasing inside symbols; and Animate's ragged, stipple
 and hatched line styles (drawn solid when you open an Animate file).

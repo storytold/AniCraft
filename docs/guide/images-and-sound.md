@@ -72,7 +72,8 @@ SVG files from illustration tools come in as artwork you can keep editing, not a
   limits and dashes.
 * Groups, reused parts (`use` and symbols), transforms and the drawing's view box.
 * Inline and attribute styles, and opacity.
-* Linear and radial gradients.
+* Linear and radial gradients, with their spread (reflect, repeat), linear-RGB blending, focal
+  point and transform.
 * **Clip paths and masks.** A drawing with clipping comes in as a layer folder named after the
   file. Each clipped group sits on a masked layer under a mask layer that holds the clip's shape,
   so you can move or reshape the mask afterwards. Clips that cut nothing, like the frame clip
@@ -89,7 +90,7 @@ SVG files from illustration tools come in as artwork you can keep editing, not a
 AniCraft lists these in the status bar after the import, instead of guessing:
 
 * images embedded in the SVG, filters, style sheets (inline styles are read) and pattern fills;
-* gradient strokes (drawn in one colour), and repeated or reflected gradients (drawn padded).
+* gradient strokes (drawn in one colour).
 
 ### An SVG as a symbol
 

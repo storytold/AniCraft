@@ -13,6 +13,25 @@
   * `anicraft --theme light` (also `dark`, `high-contrast`) previews a theme for one run.
   * Every palette is checked by the contrast test (WCAG AA text, 3:1 controls and focus).
 
+* **Gradient editor, the Gradient Transform tool and Lock Fill** (M1, ADR 0074; #208, #203).
+  * **Added**: gradients in the colour picker. The fill's picker (the Tools panel's Fill square,
+    and every Fill swatch in Properties) starts with the fill's type: None, Solid, Linear,
+    Radial or Bitmap. A gradient shows a bar of colour stops (click to add, drag to move, drag
+    off to remove; arrow keys and Delete on a focused stop), overflow (Extend, Reflect, Repeat),
+    Linear RGB and a radial gradient's focal point, above the same swatches, mixer and hex
+    field, which then set the picked stop's colour and opacity. A gradient's swatch in
+    Properties shows its ramp. One picker, as Animate has one Color panel; the fill's No Colour
+    is its type None.
+  * **Added**: the **Gradient Transform** tool (**F**): move, turn, stretch and resize a gradient,
+    move a radial gradient's focal point, and scale, turn and skew a bitmap fill. Each drag is
+    one undo step.
+  * **Added**: **Lock Fill** for the Paint Bucket and the Brush. Without it, gradients and bitmaps
+    are fitted to each shape, as in Animate; the Eyedropper turns it on for what it picks.
+  * **Added**: commands `paint.set_fill`, `paint.transform_fill` and `paint.lock_fill`, for
+    scripts, the CLI and MCP.
+  * **Improved**: gradients keep their overflow, Linear RGB, focal point and elliptical shape
+    from Animate files and SVG drawings, on the GPU stage and in SVG export (HTML canvas draws
+    them as near as canvas can). Radial gradients on skewed shapes are now drawn exactly.
 * **Dockable panels and workspaces** (M8, ADR 0075, fixes #249).
   * Drag any panel's tab to dock it on any side of the stage (the timeline above the stage, for
     example), stack it with other panels as a tab, or float it in a window of its own (inside

@@ -91,7 +91,8 @@ exactly; the status bar names them after the export:
 * bitmaps and bitmap fills, and sound;
 * masks inside masks (the innermost is kept);
 * symbols fading as one (each shape fades on its own);
-* stretched round gradients (drawn as circles).
+* stretched round gradients (drawn as circles), gradient focal points (drawn centred),
+  reflected or repeated gradients (drawn extended) and linear-RGB gradients.
 
 ### HTML canvas
 

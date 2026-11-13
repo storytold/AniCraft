@@ -262,11 +262,36 @@ fn shade(op: u32, kind: u32, ramp: u32, p: vec2<f32>, x: u32, y: u32) -> vec4<f3
     let g = paints[base + 3u];
     // Pixel back to paint space: x' = a x + c y + e, y' = b x + d y + f.
     let q = vec2<f32>(m.x * p.x + m.z * p.y + n.x, m.y * p.x + m.w * p.y + n.y);
+    // Spread and focal point (crates/render/src/paint.rs › Spread::apply, focal_t).
+    let o = paints[base];
     var t: f32;
     if kind == 1u {
         t = dot(q - n.zw, g.xy);
     } else {
-        t = length(q - n.zw) * g.z;
+        let u = (q - n.zw) * g.z;
+        let f = o.y;
+        if f == 0.0 {
+            t = length(u);
+        } else {
+            let d = vec2<f32>(u.x - f, u.y);
+            let a = 1.0 - f * f;
+            let fd = f * d.x;
+            t = (fd + sqrt(max(fd * fd + a * dot(d, d), 0.0))) / a;
+        }
+    }
+    let spread = u32(o.x + 0.5);
+    if spread == 2u {
+        t = t - floor(t);
+        if t >= 1.0 {
+            t = 0.0;
+        }
+    } else if spread == 1u {
+        let m = t - 2.0 * floor(t * 0.5);
+        if m > 1.0 {
+            t = 2.0 - m;
+        } else {
+            t = m;
+        }
     }
     t = clamp(t, 0.0, 1.0);
     let i = u32(t * 255.0 + 0.5) & 255u;
