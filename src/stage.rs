@@ -768,8 +768,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let slop = 3.0 / zoom.max(1e-3);
         if !open_text_at(app, sp, slop) {
             match app.s.hit_test(to_v(sp), slop) {
-                // A symbol instance (ADR 0045) or a group (ADR 0073) opens for editing in place.
-                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. } | anicraft_engine::doc::ElementKind::Group { .. })) => {
+                // A symbol instance (ADR 0045), a group (ADR 0073) or a drawing object (ADR 0080)
+                // opens for editing in place.
+                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && anicraft_engine::editing::opens(e)) => {
                     app.run("symbol.edit", json!({"id": id.0}));
                 }
                 // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and

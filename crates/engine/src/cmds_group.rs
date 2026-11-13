@@ -71,8 +71,8 @@ pub(crate) fn group_depth(e: &Element) -> usize {
 }
 
 /// How many groups are open around the timeline being edited (inside the innermost open symbol).
-fn open_groups(s: &Session) -> usize {
-    s.editing.iter().rev().take_while(|l| l.open == crate::editing::Opened::Group).count()
+pub(crate) fn open_groups(s: &Session) -> usize {
+    s.editing.iter().rev().take_while(|l| l.open.is_group()).count()
 }
 
 fn group(s: &mut Session, _: &Value) -> Result<Value> {

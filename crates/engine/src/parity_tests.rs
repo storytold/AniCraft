@@ -255,3 +255,103 @@ fn paint_inside_as_a_drawing_object() {
     assert!((area_in(&s, 0xff0000) - want).abs() < want * 0.01);
     assert!((area_in(&s, 0x0000ff) - 10_000.0).abs() < 0.5, "objects don't cut each other");
 }
+
+// ----- drawing objects edited in place -----------------------------------------------------------
+
+/// A drawing object (an orange rectangle at 100..300 × 100..200) beside a raw blue square on the
+/// same layer; returns the object's id.
+fn object_and_raw() -> (Session, u64) {
+    let mut s = blank(false);
+    run(&mut s, "draw.rect", json!({"x": 400, "y": 100, "w": 100, "h": 100, "stroke": null, "fill": "#0000ff"}));
+    let v = run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 200, "h": 100, "stroke": null, "fill": "#ff8800", "object": true}));
+    let id = v["element"].as_u64().expect("the object");
+    run(&mut s, "edit.deselect", json!({}));
+    (s, id)
+}
+
+/// Double-clicking a drawing object opens it in place; opening and closing it without an edit
+/// changes nothing: the same document and state, no undo step, the object selected.
+#[test]
+fn drawing_object_opens_and_closes_unchanged() {
+    let (mut s, id) = object_and_raw();
+    let (doc, state, steps) = (s.doc.clone(), s.state, s.history_len());
+    let v = run(&mut s, "symbol.edit", json!({"id": id}));
+    assert_eq!(v["editing"][0]["drawing"], id, "{v}");
+    assert!(s.editing_drawing() && s.editing_group());
+    // Inside, its one raw shape, where it showed.
+    let inside = s.visible_elements();
+    assert_eq!(inside.len(), 1);
+    assert!(matches!(&inside[0].kind, ElementKind::Shape(sh) if sh.merge));
+    run(&mut s, "symbol.exit", json!({}));
+    assert!(s.doc == doc, "the document is as it was");
+    assert_eq!(s.state, state, "no unsaved change");
+    assert_eq!(s.history_len(), steps);
+    assert_eq!(s.selection.id_list(), vec![id]);
+    assert!(s.visible_elements().iter().any(|e| e.id.0 == id && matches!(&e.kind, ElementKind::Shape(sh) if !sh.merge)));
+}
+
+/// Inside, a line drawn across merges only with the object's own shape: it splits the fill, the
+/// raw square outside is untouched, and closing it leaves a group of the pieces (several
+/// shapes stay one object, as Combine Objects' Union makes them).
+#[test]
+fn drawing_object_merges_only_inside() {
+    let (mut s, id) = object_and_raw();
+    run(&mut s, "symbol.edit", json!({"id": id}));
+    // Positions inside are in the object's own space (its centre at the origin).
+    run(&mut s, "draw.line", json!({"x0": 0, "y0": -100, "x1": 0, "y1": 100, "stroke": "#000000", "stroke_width": 2, "object": false}));
+    let inside = s.visible_elements();
+    let fills = inside.iter().filter(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.fill.is_some())).count();
+    assert_eq!(fills, 2, "the line cut the fill in two");
+    run(&mut s, "symbol.exit", json!({}));
+    let els = s.visible_elements();
+    let obj = els.iter().find(|e| e.id.0 == id).expect("the object stays, with its id");
+    assert!(matches!(obj.kind, ElementKind::Group { .. }), "several pieces: a group");
+    assert!((area_in(&s, 0x0000ff) - 10_000.0).abs() < 0.5, "the raw square outside is whole");
+    assert_eq!(els.len(), 2);
+}
+
+/// An edit that leaves one shape makes it one drawing object again, moved as edited; undo goes
+/// back inside, and closing then gives the object as it was.
+#[test]
+fn drawing_object_edit_keeps_one_object() {
+    let (mut s, id) = object_and_raw();
+    let before = s.element_bounds(anicraft_doc::ElementId(id));
+    run(&mut s, "symbol.edit", json!({"id": id}));
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "element.translate", json!({"dx": 30, "dy": 10}));
+    run(&mut s, "symbol.exit", json!({}));
+    let els = s.visible_elements();
+    let obj = els.iter().find(|e| e.id.0 == id).expect("the object");
+    assert!(matches!(&obj.kind, ElementKind::Shape(sh) if !sh.merge), "one drawing object again");
+    let after = s.element_bounds(anicraft_doc::ElementId(id));
+    assert!((after.min.x - before.min.x - 30.0).abs() < 1e-3 && (after.min.y - before.min.y - 10.0).abs() < 1e-3, "{before:?} → {after:?}");
+    // Undo: inside again, before the move.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.editing_drawing());
+    run(&mut s, "symbol.exit", json!({}));
+    assert!((s.element_bounds(anicraft_doc::ElementId(id)).min.x - before.min.x).abs() < 1e-3);
+}
+
+/// Everything inside deleted: closing it removes the object.
+#[test]
+fn an_emptied_drawing_object_is_gone() {
+    let (mut s, id) = object_and_raw();
+    run(&mut s, "symbol.edit", json!({"id": id}));
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "edit.delete", json!({}));
+    run(&mut s, "symbol.exit", json!({}));
+    assert!(s.visible_elements().iter().all(|e| e.id.0 != id));
+    assert!(s.selection.is_empty());
+    assert_eq!(s.visible_elements().len(), 1, "the raw square stays");
+}
+
+/// Raw shapes don't open (they are the drawing itself); the timeline stays one frame inside.
+#[test]
+fn only_drawing_objects_open() {
+    let (mut s, _) = object_and_raw();
+    let raw = s.visible_elements().iter().find(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.merge)).map(|e| e.id.0).expect("raw");
+    assert!(s.execute("symbol.edit", &json!({"id": raw})).is_err());
+    let id = s.visible_elements().iter().find(|e| matches!(&e.kind, ElementKind::Shape(sh) if !sh.merge)).map(|e| e.id.0).expect("object");
+    run(&mut s, "symbol.edit", json!({"id": id}));
+    assert!(s.execute("timeline.insert_keyframe", &json!({})).is_err(), "one frame inside");
+}
