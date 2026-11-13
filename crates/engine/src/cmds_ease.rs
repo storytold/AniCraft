@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
         c("ease.info", "Ease", "", None, "{target: layer?, frame?, group? | property? | saved?} → the ease (as easing params take it), its label, and its curve as points (exact unless the preset is fitted)", false, info as crate::RunFn),
-        c("ease.set", "Set Ease", "", None, "{easing: a preset name | {classic: n} | {bezier: [..]} | {custom: ..} | {saved: name}, layer?, frame?, group? | property? | saved?}", true, set),
+        c("ease.set", "Set Ease", "", None, "{easing: a preset name | {classic: n} | {bezier: [..]} | {custom: ..} | {saved: name} | {plugin: id, ease: id} (the tween keeps the sampled curve) | {sampled: ..}, layer?, frame?, group? | property? | saved?}", true, set),
         c("ease.add_point", "Add Ease Point", "", None, "{t: time 0..1 on the curve (its shape stays), layer?, frame?, group? | property? | saved?} → {index}", true, add_point),
         c("ease.move_point", "Move Ease Point", "", None, "{index, x (time, kept between its neighbours), y (value, may overshoot), layer?, frame?, group? | property? | saved?} (the ends stay at (0, 0) and (1, 1))", true, move_point),
         c("ease.move_handle", "Move Ease Handle", "", None, "{index, handle: in|out, x, y (absolute; x stays between the point and its neighbour), layer?, frame?, group? | property? | saved?} (a smooth point's other handle turns with it)", true, move_handle),
@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("ease.save", "Save Ease", "", None, "{name, easing? (default: the target's ease), replace?: bool, layer?, frame?, group? | property?} → saved in the document, offered with the presets", true, save),
         c("ease.delete", "Delete Saved Ease", "", None, "{name} (tweens using it keep their curves)", true, delete),
         c("ease.rename", "Rename Saved Ease", "", None, "{name, to}", true, rename),
-        c("ease.list", "Eases", "", None, "{} → the presets (name, label, family, direction) and the eases saved in the document", false, list),
+        c("ease.list", "Eases", "", None, "{} → the presets (name, label, family, direction), the eases saved in the document, and the installed ease plug-ins' eases ({plugin, ease} as easing params take them)", false, list),
         c("ease.copy", "Copy Ease", "", None, "{layer?, frame?, group? | property? | saved?}: the ease, for ease.paste", false, copy),
         c("ease.paste", "Paste Ease", "", None, "{layer?, frame?, group? | property? | saved?}: the copied ease onto this target", true, paste),
     ]
@@ -163,6 +163,7 @@ fn kind(e: &Easing) -> &'static str {
         Easing::Classic(_) => "classic",
         Easing::CubicBezier(..) => "bezier",
         Easing::Custom(_) => "custom",
+        Easing::Sampled(_) => "plugin",
         _ => "preset",
     }
 }
@@ -187,7 +188,7 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
-    let e = opt_easing_in(&s.doc, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let e = opt_easing_in(s, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
     let at = ease_target(s, p)?;
     write(s, &at, e)
 }
@@ -266,7 +267,7 @@ fn separate(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
     let name = ease_name(str_req(p, "name")?).ok_or_else(|| EngineError::Param("param 'name' must have something in it".into()))?;
-    let e = match opt_easing_in(&s.doc, p, "easing")? {
+    let e = match opt_easing_in(s, p, "easing")? {
         Some(e) => e,
         None => {
             let at = ease_target(s, p)?;
@@ -321,7 +322,13 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
         .chain(std::iter::once(json!({"name": "Classic", "label": "Classic Ease", "easing": {"classic": 0}, "strength": "-100 (in) … 100 (out)"})))
         .collect();
     let saved: Vec<Value> = s.doc.eases.iter().map(|x| json!({"name": x.name, "label": x.ease.label(), "kind": kind(&x.ease), "easing": easing_json(&x.ease)})).collect();
-    Ok(json!({"presets": presets, "saved": saved}))
+    let plugins: Vec<Value> = plugin_eases(s).into_iter().map(|(p, c)| json!({"name": c.name, "plugin": p.id(), "plugin_name": p.manifest().name, "ease": c.id, "easing": {"plugin": p.id(), "ease": c.id}})).collect();
+    Ok(json!({"presets": presets, "saved": saved, "plugins": plugins}))
+}
+
+/// The eases of every installed ease plug-in, by plug-in id then in declaration order.
+pub fn plugin_eases(s: &Session) -> Vec<(Arc<anicraft_plugins::Plugin>, anicraft_plugins::SampledCurve)> {
+    s.plugins.list().filter(|p| p.manifest().kind == anicraft_plugins::Kind::Ease).flat_map(|p| p.eases().iter().map(|c| (p.clone(), c.clone())).collect::<Vec<_>>()).collect()
 }
 
 fn copy(s: &mut Session, p: &Value) -> Result<Value> {

@@ -13,6 +13,9 @@
 //! * **A custom ease** ([`CustomEase`]): a curve of several Bézier segments from (0, 0) to
 //!   (1, 1), as the graph editor draws it. Time never runs backwards (x is monotonic along the
 //!   whole curve); values may overshoot 0..1.
+//! * **A sampled ease** ([`SampledEase`], ADR 0088): a table of values an ease plug-in's
+//!   function gave when it loaded, read back by linear interpolation. The document keeps the
+//!   table, so it plays the same on a computer without the plug-in.
 
 use anicraft_geom::Vec2;
 use serde::{Deserialize, Serialize};
@@ -181,6 +184,8 @@ pub enum Easing {
     ElasticInOut,
     /// A curve of several Bézier segments (the graph editor's), shared when copied.
     Custom(Arc<CustomEase>),
+    /// An ease plug-in's curve, sampled into a table when the plug-in loaded (ADR 0088).
+    Sampled(Arc<SampledEase>),
 }
 
 /// A named ease the artist saved in the document (ADR 0081): any ease, usually a custom
@@ -290,7 +295,7 @@ impl Easing {
             Easing::ElasticIn => (Elastic, In),
             Easing::ElasticOut => (Elastic, Out),
             Easing::ElasticInOut => (Elastic, InOut),
-            Easing::Linear | Easing::Classic(_) | Easing::CubicBezier(..) | Easing::Custom(_) => return None,
+            Easing::Linear | Easing::Classic(_) | Easing::CubicBezier(..) | Easing::Custom(_) | Easing::Sampled(_) => return None,
         })
     }
 
@@ -332,6 +337,7 @@ impl Easing {
                 Easing::PRESETS.iter().find(|(_, e)| e == self).map_or_else(|| format!("Bezier({a:.2}, {b:.2}, {c:.2}, {d:.2})"), |(n, _)| (*n).to_string())
             }
             Easing::Custom(_) => "Custom".to_string(),
+            Easing::Sampled(s) => s.name().to_string(),
             other => other.family().map_or_else(|| "Custom".to_string(), |(f, d)| format!("{} {}", f.label(), d.label())),
         }
     }
@@ -380,6 +386,7 @@ impl Easing {
             }
             Easing::CubicBezier(x1, y1, x2, y2) => cubic_bezier(t, *x1, *y1, *x2, *y2),
             Easing::Custom(c) => c.apply(t),
+            Easing::Sampled(s) => s.apply(t),
             named => match named.family() {
                 Some((f, d)) => eval_named(f, d, f64::from(t)) as f32,
                 None => t,
@@ -390,10 +397,12 @@ impl Easing {
     /// This ease as a custom curve for the graph editor: exact for linear, Classic, a Bézier,
     /// the Quad, Cubic, Back and Bounce families and custom eases; Circ is two circular arcs,
     /// and Quart, Quint, Sine and Elastic are fitted by matching values and slopes at a few
-    /// points (all within 0.5 % of the range everywhere, see the tests).
+    /// points (all within 0.5 % of the range everywhere, see the tests). A sampled ease becomes
+    /// the straight segments through 64 of its samples.
     pub fn to_custom(&self) -> CustomEase {
         match self {
             Easing::Custom(c) => (**c).clone(),
+            Easing::Sampled(s) => s.to_polyline(),
             Easing::Linear => CustomEase::linear(),
             Easing::Classic(_) | Easing::CubicBezier(..) => {
                 let Some((x1, y1, x2, y2)) = self.as_bezier() else { return CustomEase::linear() };
@@ -410,6 +419,14 @@ impl Easing {
     pub fn custom(&self) -> Option<&CustomEase> {
         match self {
             Easing::Custom(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// The sampled curve, when this is a plug-in's ease.
+    pub fn sampled(&self) -> Option<&SampledEase> {
+        match self {
+            Easing::Sampled(s) => Some(s),
             _ => None,
         }
     }
@@ -851,6 +868,131 @@ impl CustomEase {
             }
         }
         out
+    }
+}
+
+/// Most samples a sampled ease keeps (longer tables are thinned evenly); plug-in eases are
+/// sampled at 257 points.
+pub const MAX_EASE_SAMPLES: usize = 1025;
+/// Longest plug-in or ease id a sampled ease keeps.
+const MAX_EASE_ID: usize = 64;
+
+/// An ease plug-in's curve as a table (ADR 0088): `values[i]` is the eased progress at
+/// `t = i / (n - 1)`, read between samples by linear interpolation, so evaluation is a pure,
+/// constant-time function of `t` that needs no plug-in. It remembers its name and where it came
+/// from (the plug-in's id and the ease's id), for the ease menu.
+///
+/// Always valid, however it was made (a plug-in, a file, a command): 2 to
+/// [`MAX_EASE_SAMPLES`] finite values within ±[`MAX_EASE_Y`], starting at exactly 0 and ending
+/// at exactly 1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SampledEaseFile")]
+pub struct SampledEase {
+    name: String,
+    plugin: String,
+    ease: String,
+    values: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+struct SampledEaseFile {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    plugin: String,
+    #[serde(default)]
+    ease: String,
+    #[serde(default)]
+    values: Vec<f32>,
+}
+
+impl From<SampledEaseFile> for SampledEase {
+    fn from(f: SampledEaseFile) -> SampledEase {
+        SampledEase::new(&f.name, &f.plugin, &f.ease, f.values)
+    }
+}
+
+/// An id as a sampled ease keeps it: `[A-Za-z0-9._-]`, at most [`MAX_EASE_ID`] characters.
+fn ease_id(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')).take(MAX_EASE_ID).collect()
+}
+
+impl SampledEase {
+    /// A valid table from any values (see the type's docs): a longer table is thinned evenly,
+    /// a value that isn't finite becomes the straight line's, values are clamped, the ends
+    /// pinned; fewer than two values make the straight line.
+    pub fn new(name: &str, plugin: &str, ease: &str, mut values: Vec<f32>) -> SampledEase {
+        if values.len() > MAX_EASE_SAMPLES {
+            let n = values.len();
+            values = (0..MAX_EASE_SAMPLES).filter_map(|k| values.get(k * (n - 1) / (MAX_EASE_SAMPLES - 1)).copied()).collect();
+        }
+        if values.len() < 2 {
+            values = vec![0.0, 1.0];
+        }
+        let last = (values.len() - 1) as f32;
+        for (i, v) in values.iter_mut().enumerate() {
+            *v = if v.is_finite() { v.clamp(-MAX_EASE_Y, MAX_EASE_Y) } else { i as f32 / last };
+        }
+        if let Some(v) = values.first_mut() {
+            *v = 0.0;
+        }
+        if let Some(v) = values.last_mut() {
+            *v = 1.0;
+        }
+        SampledEase { name: ease_name(name).unwrap_or_else(|| "Plug-in ease".to_string()), plugin: ease_id(plugin), ease: ease_id(ease), values }
+    }
+
+    /// The name the ease menus show.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// The id of the plug-in it came from.
+    pub fn plugin(&self) -> &str {
+        &self.plugin
+    }
+    /// Its id within that plug-in.
+    pub fn ease(&self) -> &str {
+        &self.ease
+    }
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    /// The eased value at time `t`, between the two nearest samples.
+    pub fn apply(&self, t: f32) -> f32 {
+        let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
+        let last = self.values.len().saturating_sub(1);
+        if last == 0 {
+            return t;
+        }
+        let x = t * last as f32;
+        let i = (x.floor() as usize).min(last - 1);
+        let f = x - i as f32;
+        let (a, b) = (self.values.get(i).copied().unwrap_or(0.0), self.values.get(i + 1).copied().unwrap_or(1.0));
+        a + (b - a) * f
+    }
+
+    /// The custom curve of straight segments through [`MAX_EASE_POINTS`] of its samples, for
+    /// the graph editor: editing a plug-in's ease makes it a custom ease drawn like it.
+    pub fn to_polyline(&self) -> CustomEase {
+        let n = self.values.len();
+        let m = MAX_EASE_POINTS.min(n).max(2);
+        let at: Vec<Vec2> = (0..m)
+            .map(|k| {
+                let i = k * (n - 1) / (m - 1);
+                Vec2::new(i as f32 / (n - 1).max(1) as f32, self.values.get(i).copied().unwrap_or(0.0))
+            })
+            .collect();
+        let pts = at
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let prev = if k == 0 { *p } else { at.get(k - 1).copied().unwrap_or(*p) };
+                let next = at.get(k + 1).copied().unwrap_or(*p);
+                EasePoint { at: *p, h_in: (prev - *p) * (1.0 / 3.0), out: (next - *p) * (1.0 / 3.0), smooth: false }
+            })
+            .collect();
+        CustomEase::new(pts)
     }
 }
 

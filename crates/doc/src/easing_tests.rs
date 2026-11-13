@@ -305,3 +305,62 @@ fn custom_eases_round_trip_through_files_and_flat_lists() {
     assert_eq!(CustomEase::from_flat(&flat), Some(wave()));
     assert!(CustomEase::from_flat(&flat[..9]).is_none());
 }
+
+/// Four steps, as the sample ease plug-in samples them.
+fn steps() -> SampledEase {
+    SampledEase::new("Stepped 4", "org.anicraft.stepped-ease", "steps4", (0..257).map(|i| ((i as f32 / 256.0) * 4.0).floor() / 4.0).collect())
+}
+
+#[test]
+fn a_sampled_ease_reads_its_table_between_samples() {
+    let s = steps();
+    let e = Easing::Sampled(Arc::new(s.clone()));
+    assert_eq!((e.apply(0.0), e.apply(0.1), e.apply(0.25), e.apply(0.6), e.apply(0.9), e.apply(1.0)), (0.0, 0.0, 0.25, 0.5, 0.75, 1.0));
+    // Between two samples, the straight line between them.
+    let lin = SampledEase::new("Line", "p", "l", vec![0.0, 0.5, 1.0]);
+    assert!((lin.apply(0.25) - 0.25).abs() < 1e-6 && (lin.apply(0.75) - 0.75).abs() < 1e-6);
+    // Time outside 0..1, or not a number, is clamped.
+    assert_eq!((e.apply(-3.0), e.apply(7.0), e.apply(f32::NAN)), (0.0, 1.0, 0.0));
+    assert_eq!(e.label(), "Stepped 4");
+    assert!(e.family().is_none() && e.as_bezier().is_none());
+    assert_eq!(e.sampled().map(|s| (s.plugin(), s.ease())), Some(("org.anicraft.stepped-ease", "steps4")));
+}
+
+#[test]
+fn a_sampled_ease_is_always_valid() {
+    let s = SampledEase::new("  ", "bad id!/..", "x\u{202e}y", vec![0.3, f32::NAN, 99.0, -f32::INFINITY, 0.2]);
+    assert_eq!(s.values(), &[0.0, 0.25, MAX_EASE_Y, 0.75, 1.0]);
+    assert_eq!((s.name(), s.plugin(), s.ease()), ("Plug-in ease", "badid..", "xy"));
+    assert_eq!(SampledEase::new("x", "p", "e", vec![]).values(), &[0.0, 1.0]);
+    assert_eq!(SampledEase::new("x", "p", "e", vec![0.5]).values(), &[0.0, 1.0]);
+    let long = SampledEase::new("x", "p", "e", (0..100_000).map(|i| i as f32 / 99_999.0).collect());
+    assert_eq!(long.values().len(), MAX_EASE_SAMPLES);
+    assert!((long.apply(0.5) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn a_sampled_ease_round_trips_through_the_file_format_and_survives_bad_files() {
+    let e = Easing::Sampled(Arc::new(steps()));
+    let text = serde_json::to_string(&e).unwrap();
+    assert!(text.starts_with("{\"Sampled\":{\"name\":\"Stepped 4\",\"plugin\":\"org.anicraft.stepped-ease\",\"ease\":\"steps4\",\"values\":[0.0,"), "{text}");
+    assert_eq!(serde_json::from_str::<Easing>(&text).unwrap(), e);
+    // A hand-edited table is made valid on load.
+    let bad: Easing = serde_json::from_str(r#"{"Sampled":{"values":[5,0.5,"x"]}}"#).map_or(Easing::Linear, |e| e);
+    assert_eq!(bad, Easing::Linear, "a non-number value is a broken file, refused as any other");
+    let odd: Easing = serde_json::from_str(r#"{"Sampled":{"name":"Odd","values":[5,0.5,-20]}}"#).unwrap();
+    assert_eq!(odd.sampled().unwrap().values(), &[0.0, 0.5, 1.0]);
+}
+
+#[test]
+fn a_sampled_ease_becomes_a_custom_curve_through_its_samples() {
+    let wave = SampledEase::new("Wave", "p", "w", (0..257).map(|i| { let t = i as f32 / 256.0; t + 0.2 * (t * std::f32::consts::TAU).sin() }).collect());
+    let c = wave.to_polyline();
+    assert_eq!(c.points().len(), MAX_EASE_POINTS);
+    for i in 0..=100 {
+        let t = i as f32 / 100.0;
+        assert!((c.apply(t) - wave.apply(t)).abs() < 0.01, "t = {t}: {} vs {}", c.apply(t), wave.apply(t));
+    }
+    let short = SampledEase::new("Short", "p", "s", vec![0.0, 0.8, 1.0]).to_polyline();
+    assert_eq!(short.points().len(), 3);
+    assert!((short.apply(0.5) - 0.8).abs() < 1e-3);
+}
