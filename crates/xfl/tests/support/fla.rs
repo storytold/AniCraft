@@ -1,8 +1,8 @@
 //! Test support: packs an XFL package into `.fla` (zip) archives in memory, in each of the ways
 //! zip writers lay one out (ADR 0054), and writes hand-made entries for hostile archives.
 //!
-//! Written from the published format (PKWARE APPNOTE 6.3), independently of the reader in
-//! `src/zip.rs` (it has its own checksum), so a misreading in one is caught by the other.
+//! Written from the published format (PKWARE APPNOTE 6.3), independently of the shared
+//! `craft-xfl` reader (it has its own checksum), so a misreading in one is caught by the other.
 //! Shared by the xfl crate's unit and corpus tests and the engine's golden tests (`#[path]`).
 #![allow(dead_code)]
 

@@ -11,10 +11,19 @@ pub mod import;
 pub mod text;
 /// The shared XML reader (`anicraft-xml`), under its old path.
 pub use anicraft_xml as xml;
-pub mod zip;
+/// XFL/FLA ZIP package reader, shared with other consumers through `craft-xfl`.
+pub mod zip {
+    pub use craft_xfl::{Archive, MAX_DEPTH, MAX_ENTRIES, MAX_ENTRY, MAX_RATIO, MAX_TOTAL, ZipError};
+
+    #[cfg(test)]
+    pub(crate) use crate::pack;
+}
 
 pub use import::{MAX_FLA_BYTES, Report, XflError, import_fla, import_fla_with_fonts, import_path, import_with, import_with_fonts};
 
+#[cfg(test)]
+#[path = "../tests/support/fla.rs"]
+pub(crate) mod pack;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

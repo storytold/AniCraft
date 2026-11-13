@@ -13,11 +13,11 @@ anicraft-doc.workspace = true
 anicraft-xml.workspace = true
 # Lays imported text out with the fonts on this computer (ADR 0012, ADR 0014).
 anicraft-text.workspace = true
-# Inflate for .fla (zip) archives; already in the tree through png (MIT OR Zlib OR Apache-2.0).
-miniz_oxide = "0.8"
+craft-xfl.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+miniz_oxide = "0.8"
 png.workspace = true
 
 [lints]
