@@ -792,7 +792,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
     let tl = app.s.timeline();
     let layers = app.s.selected_layers();
     if !layers.is_empty() && layers.iter().all(|l| tl.layer(*l).is_some_and(|l| l.kind == anicraft_engine::doc::LayerKind::Armature)) {
-        colour_effect_rows(app, ui, &e.color, m.color);
+        colour_effect_rows(app, ui, &e.color, m.color, EffectOf::Selection);
         if let ElementKind::Symbol { symbol, filters, blend, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
         {
