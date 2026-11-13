@@ -28,7 +28,7 @@ Animator and Designer, plus your own saved workspaces and Reset.
 | Output | The Output panel inside Test Movie, and **Window › Output**, which keeps the last run's lines. |
 | Align | The Align panel on the right, and **Modify › Align**. |
 | History | The History panel on the right. |
-| Color and Swatches | **Window › Colour** (stroke and fill, Swap, Black and White). Click the Fill or Stroke squares in the Tools panel, the Colour panel, or any colour swatch in Properties: web-safe swatches, a mixer and a hex field. The fill's picker also sets its type (None, Solid, Linear, Radial, Bitmap) and a gradient's stops, overflow and Linear RGB, like the Color panel (no saved swatches yet). |
+| Color and Swatches | **Window › Colour** (stroke and fill, Swap, Black and White). Click the Fill or Stroke squares in the Tools panel, the Colour panel, or any colour swatch in Properties: web-safe swatches, a mixer and a hex field. The fill's picker also sets its type (None, Solid, Linear, Radial, Bitmap) and a gradient's stops, overflow and Linear RGB, like the Color panel. **Window › Swatches** keeps the document's colours and gradients (click applies to the active stroke or fill, drag to reorder, import and export swatch files and GIMP `.gpl` palettes; not Adobe `.aco`/`.ase`/`.clr`). |
 | Transform and Info | Position, scale and rotation rows in Properties, and the Free Transform tool. |
 | Scene | The scene menu at the top left of the stage, **Insert › Scene** and **Modify › Scene**. |
 | Find and Replace | **Edit › Find and Replace** (**Ctrl+F**). |

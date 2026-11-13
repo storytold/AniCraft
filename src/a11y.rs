@@ -381,6 +381,32 @@ mod tests {
         assert_eq!((score.role(), score.value()), (Role::Label, Some("Hello, Ada Lovelace!")));
     }
 
+    /// The layer footer (after #265 cut "Delete" short): icon buttons only, each named, side
+    /// by side inside the layer column at the default window size, none clipped or overlapping.
+    #[test]
+    fn the_layer_footer_buttons_fit_and_are_named() {
+        let (t, _, _) = tree(|_, _| {});
+        let names = ["New layer", "Delete layer", "New folder above the active layer (move layers in under it with Up and Down)", "Move layer up", "Move layer down"];
+        let rects: Vec<egui::accesskit::Rect> = names
+            .iter()
+            .map(|n| {
+                let node = t.nodes.iter().map(|(_, x)| x).find(|x| x.label() == Some(n)).unwrap_or_else(|| panic!("no footer button named {n}"));
+                assert_eq!(node.role(), Role::Button, "{n}");
+                node.bounds().unwrap_or_else(|| panic!("{n} has no bounds"))
+            })
+            .collect();
+        for (i, a) in rects.iter().enumerate() {
+            assert!(a.width() >= 20.0 && a.height() >= 20.0, "{} is too small: {a:?}", names[i]);
+            for (j, b) in rects.iter().enumerate().skip(i + 1) {
+                let apart = a.x1 <= b.x0 + 0.5 || b.x1 <= a.x0 + 0.5 || a.y1 <= b.y0 + 0.5 || b.y1 <= a.y0 + 0.5;
+                assert!(apart, "{} overlaps {}", names[i], names[j]);
+            }
+        }
+        // All on one row, New layer and Delete first.
+        assert!(rects.iter().all(|r| (r.y0 - rects[0].y0).abs() < 1.0));
+        assert!(rects[0].x0 < rects[1].x0 && rects[1].x1 < rects[2].x0);
+    }
+
     #[test]
     fn every_interactive_node_has_a_name_and_a_role() {
         let mut found = Vec::new();
@@ -388,7 +414,7 @@ mod tests {
         for tool in [Tool::Bone, Tool::Bind, Tool::Warp, Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
-        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "shapebones", "warp", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple", "library", "librarymenu", "edittransform", "onionsymbol", "layerprops", "frameview", "layercolour", "timelinepolish", "convert", "mixed", "bitmap", "nineslice", "nineslicedit", "find", "explorer", "publish", "publishreport", "publishanim", "start", "drop", "droplibrary", "testmovie", "testmovieinside", "templates", "savetemplate", "droptimeline", "textfields", "testtext", "softmask", "pathtext", "gradient", "gradientbucket", "swatches", "brushlibrary", "brushcurve", "paintbrush"] {
+        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "shapebones", "warp", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple", "library", "librarymenu", "edittransform", "onionsymbol", "layerprops", "frameview", "layercolour", "timelinepolish", "convert", "mixed", "bitmap", "nineslice", "nineslicedit", "find", "explorer", "publish", "publishreport", "publishanim", "start", "drop", "droplibrary", "testmovie", "testmovieinside", "templates", "savetemplate", "droptimeline", "textfields", "testtext", "softmask", "pathtext", "gradient", "gradientbucket", "swatches", "swatchpanel", "brushlibrary", "brushcurve", "paintbrush"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
         // Every panel in front where it docks, and floating (ADR 0075); the other workspaces.
