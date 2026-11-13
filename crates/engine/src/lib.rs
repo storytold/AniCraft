@@ -12,6 +12,7 @@ mod cmds_warp;
 pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
+pub mod cmds_ease;
 pub mod cmds_envelope;
 pub mod cmds_drop;
 pub mod cmds_erase;
@@ -140,6 +141,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_bone::specs());
     v.extend(cmds_warp::specs());
     v.extend(cmds_motion::specs());
+    v.extend(cmds_ease::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
@@ -328,6 +330,8 @@ pub struct Session {
     pub clipboard: cmds_modify::Clipboard,
     /// Copied frames (Copy Frames), separate from copied artwork as in Animate.
     pub frame_clipboard: cmds_frames::FrameClipboard,
+    /// A copied ease (Copy Ease, ADR 0081), for Paste Ease.
+    pub ease_clipboard: Option<anicraft_doc::Easing>,
     /// A command is editing a motion tween's target (auto-key, ADR 0016).
     motion_edit: Option<cmds_motion::MotionEdit>,
     /// Installed WebAssembly plug-ins (ADR 0017). They belong to the session, not the
@@ -421,6 +425,7 @@ impl Session {
             dl_cache: RefCell::new(None),
             clipboard: cmds_modify::Clipboard::default(),
             frame_clipboard: cmds_frames::FrameClipboard::default(),
+            ease_clipboard: None,
             motion_edit: None,
             plugins: anicraft_plugins::Registry::default(),
             step_label: None,
@@ -968,7 +973,7 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked, "volume": l.volume, "muted": l.muted,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.as_ref().map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping, "effect": f.effect.key()})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.as_ref().map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.as_ref().map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping, "effect": f.effect.key()})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -1066,6 +1071,8 @@ mod tests;
 
 #[cfg(test)]
 mod motion_tests;
+#[cfg(test)]
+mod ease_tests;
 #[cfg(test)]
 mod color_tests;
 #[cfg(test)]

@@ -79,7 +79,9 @@ Headless: `timeline.create_motion_tween`, `timeline.remove_tween`, `motion.set_k
 * Motion paths drawn and edited on the stage, with orient to path, came in ADR 0030.
 * Tint colour (red, green, blue), brightness and the eight Advanced properties came in ADR
   0056, with one colour effect style per tween as in Animate (keys in several styles compose).
-* Not yet (later PRs): dragging keys in time in the Motion Editor, ease presets with
-  strengths and saved custom eases, 3D rotation and position, Split Motion and joining tweens as commands, Lottie
+* Ease presets (Classic Ease and nine families), custom eases of several segments and saved
+  eases came in ADR 0081; a segment whose ease one Bézier can't draw is shaped in the Custom
+  Ease window.
+* Not yet (later PRs): dragging keys in time in the Motion Editor, 3D rotation and position, Split Motion and joining tweens as commands, Lottie
   export of property curves as eased keyframes (it exports frame-accurate hold keys today),
   and importing motion tweens from XFL (`motionObjectXML`; still reported, kept as keyframes).

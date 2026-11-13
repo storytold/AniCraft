@@ -23,7 +23,7 @@ use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
     Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript, Spread, MAX_FOCAL,
+    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, CustomEase, EaseGroup, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript, Spread, MAX_FOCAL,
 };
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
@@ -556,7 +556,8 @@ impl<'a> Builder<'a> {
                         if kind == TweenKind::Classic && f.attr("motionTweenRotate").is_some_and(|r| matches!(r.trim(), "clockwise" | "counter-clockwise")) {
                             self.report.skip("tween spins (turned the shortest way)");
                         }
-                        k.tween = Some(Tween { easing: self.easing(f), kind, orient });
+                        let (easing, groups) = self.easing(f);
+                        k.tween = Some(Tween { easing, kind, orient, groups });
                     }
                     Some("motion object") => self.report.skip("motion tweens (kept as keyframes)"),
                     _ => {}
@@ -614,26 +615,73 @@ impl<'a> Builder<'a> {
         Some(FrameScript::Source(Arc::new(script)))
     }
 
-    /// A tween's ease: the classic single-slider `acceleration`, or a custom ease curve. A
-    /// curve of one segment (four points from (0, 0) to (1, 1)) is a cubic Bézier exactly; a
-    /// longer one, or one per property, is drawn with the slider's ease and reported.
-    fn easing(&mut self, f: &X) -> Easing {
+    /// A tween's ease (ADR 0081): the classic single-slider `acceleration`, or its custom ease
+    /// curves exactly. A curve is `3n + 1` points (each segment's start, two handles, …, the
+    /// end) from (0, 0) to (1, 1); one segment is a cubic Bézier, more a custom ease. With
+    /// `useSingleEaseCurve="false"` each property group (`position`, `rotation`, `scale`,
+    /// `color`, `filters`) has its own curve, and `all` (or the slider) eases the rest.
+    fn easing(&mut self, f: &X) -> (Easing, Vec<(EaseGroup, Easing)>) {
         let acc = f.f32("acceleration").unwrap_or(0.0).clamp(-100.0, 100.0);
         let classic = if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) };
         if f.bool("hasCustomEase") != Some(true) {
-            return classic;
+            return (classic, Vec::new());
         }
         let curves: Vec<&X> = f.list("tweens").iter().filter(|c| c.name == "CustomEase").collect();
-        let one_curve = f.bool("useSingleEaseCurve") != Some(false) || curves.len() == 1;
-        let bezier = curves.first().filter(|_| one_curve).and_then(|c| {
-            let p: Vec<Vec2> = c.children.iter().filter(|p| p.name == "Point").take(5).map(|p| Vec2::new(p.f32("x").unwrap_or(0.0), p.f32("y").unwrap_or(0.0))).collect();
-            let [a, b, c, d] = p.as_slice() else { return None };
-            let near = |p: &Vec2, x: f32, y: f32| (p.x - x).abs() < 1e-3 && (p.y - y).abs() < 1e-3;
-            (near(a, 0.0, 0.0) && near(d, 1.0, 1.0)).then(|| Easing::CubicBezier(b.x.clamp(0.0, 1.0), b.y.clamp(-10.0, 10.0), c.x.clamp(0.0, 1.0), c.y.clamp(-10.0, 10.0)))
-        });
-        bezier.unwrap_or_else(|| {
-            self.report.skip("custom ease curves (drawn with the simple ease)");
-            classic
+        if curves.is_empty() {
+            self.report.skip("custom eases without their curve (drawn with the simple ease)");
+            return (classic, Vec::new());
+        }
+        let single = f.bool("useSingleEaseCurve") != Some(false) || curves.len() == 1;
+        let mut main = None;
+        let mut groups: Vec<(EaseGroup, Easing)> = Vec::new();
+        for (n, c) in curves.iter().enumerate() {
+            let target = c.attr("target").map_or("all", str::trim);
+            // One curve for everything: the first.
+            if single && n > 0 {
+                break;
+            }
+            let group = if single || target == "all" { None } else { EaseGroup::from_key(target) };
+            if group.is_none() && !single && target != "all" {
+                self.report.skip("custom eases of unknown properties (left out)");
+                continue;
+            }
+            let Some(e) = self.ease_curve(c) else { continue };
+            match group {
+                Some(g) if !groups.iter().any(|(x, _)| *x == g) => groups.push((g, e)),
+                None if main.is_none() => main = Some(e),
+                _ => {}
+            }
+        }
+        let mut t = Tween { easing: main.unwrap_or(classic), ..Tween::default() };
+        for (g, e) in groups {
+            t.set_ease(g, Some(e));
+        }
+        (t.easing, t.groups)
+    }
+
+    /// One `<CustomEase>` curve; `None` (reported) when its points don't make a curve.
+    fn ease_curve(&mut self, c: &X) -> Option<Easing> {
+        // Far more than a curve keeps (longer ones are thinned), and one more to tell.
+        const MAX_READ: usize = anicraft_doc::MAX_EASE_POINTS * 3 * 16 + 1;
+        let pts: Vec<Vec2> = c.children.iter().filter(|p| p.name == "Point").take(MAX_READ + 1).map(|p| Vec2::new(p.f32("x").unwrap_or(0.0), p.f32("y").unwrap_or(0.0))).collect();
+        if pts.len() > MAX_READ {
+            self.report.skip("custom ease curves too long to read (drawn with the simple ease)");
+            return None;
+        }
+        let Some(curve) = CustomEase::from_flat(&pts) else {
+            self.report.skip("custom ease curves with a broken point list (drawn with the simple ease)");
+            return None;
+        };
+        let near = |p: Option<&Vec2>, x: f32, y: f32| p.is_some_and(|p| (p.x - x).abs() < 1e-3 && (p.y - y).abs() < 1e-3);
+        if !near(pts.first(), 0.0, 0.0) || !near(pts.last(), 1.0, 1.0) {
+            self.report.skip("custom ease curves not from (0, 0) to (1, 1) (ends moved there)");
+        }
+        if pts.len() / 3 + 1 > anicraft_doc::MAX_EASE_POINTS {
+            self.report.skip("custom ease curves over 64 points (thinned)");
+        }
+        Some(match curve.points() {
+            [a, b] => Easing::CubicBezier(a.out.x, a.out.y, b.at.x + b.h_in.x, b.at.y + b.h_in.y),
+            _ => Easing::Custom(Arc::new(curve)),
         })
     }
 

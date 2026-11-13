@@ -484,3 +484,99 @@ fn shape_hints_survive_a_round_trip_and_old_files_have_none() {
     let old: Keyframe = serde_json::from_str(r#"{"start":0,"duration":3}"#).unwrap();
     assert!(old.hints.is_empty());
 }
+
+/// A tween from (0, 0), unturned, full size and opaque to (100, 0), half a turn, double size
+/// and transparent, over 10 frames.
+fn group_doc(tween: Tween) -> Document {
+    let mut d = Document::default();
+    let mut a = shape_el(10, 0.0);
+    a.color = ColorEffect::Alpha(1.0);
+    let mut b = shape_el(10, 100.0);
+    b.transform = Affine::translate(100.0, 0.0).mul(&Affine::rotate(std::f32::consts::FRAC_PI_2)).mul(&Affine::scale(2.0, 2.0));
+    b.color = ColorEffect::Alpha(0.0);
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(a));
+    k0.tween = Some(tween);
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(b));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    d
+}
+
+#[test]
+fn classic_tweens_ease_each_property_group_its_own_way() {
+    use crate::EaseGroup;
+    let mut tw = Tween::new(Easing::Linear, TweenKind::Classic);
+    tw.set_ease(EaseGroup::Position, Some(Easing::BounceOut));
+    tw.set_ease(EaseGroup::Scale, Some(Easing::QuadIn));
+    tw.set_ease(EaseGroup::Color, Some(Easing::CubicOut));
+    let d = group_doc(tw.clone());
+    let it = |f| {
+        let dl = evaluate(&d, f);
+        let i = &dl.items[0];
+        (i.transform.decompose(), i.color.mul[3])
+    };
+    let (m, alpha) = it(5);
+    assert!((m.tx - 100.0 * Easing::BounceOut.apply(0.5)).abs() < 1e-2, "position: {}", m.tx);
+    assert!((m.sx - (1.0 + Easing::QuadIn.apply(0.5))).abs() < 1e-3, "scale: {}", m.sx);
+    // Rotation has no ease of its own: the tween's (linear).
+    assert!((m.rotation - std::f32::consts::FRAC_PI_4).abs() < 1e-3, "rotation: {}", m.rotation);
+    assert!((alpha - (1.0 - Easing::CubicOut.apply(0.5))).abs() < 1e-3, "colour: {alpha}");
+    // Groups stay in order, once each; clearing one gives it the tween's ease again.
+    tw.set_ease(EaseGroup::Position, Some(Easing::SineIn));
+    assert_eq!(tw.groups.iter().map(|g| g.0).collect::<Vec<_>>(), [EaseGroup::Position, EaseGroup::Scale, EaseGroup::Color]);
+    tw.set_ease(EaseGroup::Scale, None);
+    assert_eq!(tw.ease(EaseGroup::Scale), &Easing::Linear);
+    // With one ease for everything, every group follows it exactly as before.
+    let one = group_doc(Tween::new(Easing::QuadOut, TweenKind::Classic));
+    let mut same = Tween::new(Easing::QuadOut, TweenKind::Classic);
+    for g in EaseGroup::ALL {
+        same.set_ease(g, Some(Easing::QuadOut));
+    }
+    let both = group_doc(same);
+    for f in 0..=10 {
+        assert_eq!(evaluate(&one, f).items[0].transform, evaluate(&both, f).items[0].transform);
+    }
+    // Older files' tweens (no groups) still read.
+    let t: Tween = serde_json::from_str(r#"{"easing": "QuadIn"}"#).unwrap();
+    assert!(t.groups.is_empty());
+}
+
+#[test]
+fn a_custom_ease_drives_a_classic_tween() {
+    let c = crate::CustomEase::from_flat(&[(0.0, 0.0), (0.2, 1.5), (0.4, 1.5), (0.5, 1.2), (0.6, 0.9), (0.8, 1.0), (1.0, 1.0)].map(|(x, y)| anicraft_geom::Vec2::new(x, y))).unwrap();
+    let e = Easing::Custom(Arc::new(c.clone()));
+    let d = tween_doc(e);
+    for f in 0..10 {
+        let x = evaluate(&d, f).items[0].transform.translation().x;
+        assert!((x - 100.0 * c.apply(f as f32 / 10.0)).abs() < 1e-2, "frame {f}: {x}");
+    }
+    // It overshoots past the second keyframe and comes back.
+    assert!(evaluate(&d, 5).items[0].transform.translation().x > 100.0);
+}
+
+#[test]
+fn instance_filters_tween_when_they_pair_up() {
+    use crate::Filter;
+    let mut d = Document::default();
+    let sid = SymbolId(90);
+    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(Layer::new(LayerId(91), "x"))] } }));
+    let inst = |filters: Vec<Filter>| Element { id: ElementId(92), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters, events: Vec::new() } };
+    let blur = |b: f32| Filter::Blur { blur_x: b, blur_y: b, quality: 1 };
+    let mut tw = Tween::new(Easing::Linear, TweenKind::Classic);
+    tw.set_ease(crate::EaseGroup::Filters, Some(Easing::QuadIn));
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(inst(vec![blur(0.0), Filter::new("glow").unwrap()])));
+    k0.tween = Some(tw);
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(inst(vec![blur(40.0), Filter::new("glow").unwrap()])));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    let filters = |f| match &crate::evaluate_layer_elements(&d.timeline(0).layers[0], f).unwrap().1[0].kind {
+        ElementKind::Symbol { filters, .. } => filters.clone(),
+        _ => Vec::new(),
+    };
+    assert_eq!(filters(5)[0], blur(40.0 * 0.25), "eased by the filters group's ease");
+    // Lists that don't pair up hold the first keyframe's.
+    assert_eq!(crate::filter::lerp_filters(&[blur(1.0)], &[Filter::new("glow").unwrap()], 0.5), None);
+    assert_eq!(crate::filter::lerp_filters(&[blur(1.0)], &[blur(1.0), blur(2.0)], 0.5), None);
+}

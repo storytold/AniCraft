@@ -41,7 +41,7 @@ fn key(start: u32, duration: u32, elements: Vec<Arc<Element>>, tween: Option<Eas
 
 /// Builds the demo document: a bouncing ball, a spinning star, a pulsing sun over hills.
 pub fn demo() -> Document {
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), eases: Default::default(), next_id: 1 };
     let (w, h) = (1280.0, 720.0);
 
     // --- library -------------------------------------------------------------------------
@@ -85,7 +85,8 @@ pub fn demo() -> Document {
     let ball_keys = poses
         .iter()
         .enumerate()
-        .map(|(i, &(start, (x, y, sx, sy), easing))| {
+        .map(|(i, (start, (x, y, sx, sy), easing))| {
+            let (start, (x, y, sx, sy), easing) = (*start, (*x, *y, *sx, *sy), easing.clone());
             let next = poses.get(i + 1).map_or(LEN, |p| p.0);
             let e = Element { id: ball_inst, name: "ball".into(), transform: pose(x, y, sx, sy, 0.0), color: ColorEffect::default(), kind: instance(ball_id) };
             key(start, next - start, vec![Arc::new(e)], (i + 1 < poses.len()).then_some(easing))
@@ -147,7 +148,7 @@ pub fn demo() -> Document {
 /// whose last frame traces a line and goes back to the menu.
 pub fn interactive() -> Document {
     use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, Target};
-    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1280, height: 720, fps: 24.0, background: Rgba::hex(0x1d2333) }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), eases: Default::default(), next_id: 1 };
     const LEN: u32 = 36;
     let solid = |c: u32| Paint::Solid(Rgba::hex(c));
 
@@ -211,7 +212,7 @@ pub fn interactive() -> Document {
 /// `shapes` shapes each, keyed every 12 frames over `frames` frames with classic tweens.
 /// Every element keeps one `Arc<Path>` across its keyframes, as a real tweened shape does.
 pub fn stress(layers: u32, shapes: u32, frames: u32) -> Document {
-    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), next_id: 1 };
+    let mut d = Document { stage: Stage { width: 1920, height: 1080, fps: 24.0, background: Rgba::WHITE }, scenes: vec![Arc::new(crate::Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: Default::default(), swatches: Arc::new(crate::swatch::default_set()), eases: Default::default(), next_id: 1 };
     let (layers, shapes, frames) = (layers.clamp(1, 1000), shapes.clamp(1, 100_000), frames.clamp(1, 10_000));
     let mut seed = 0x2545_f491_u32;
     let mut rnd = move || {

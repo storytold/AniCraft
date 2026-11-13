@@ -44,7 +44,7 @@ AniCraft doesn't save back to `.fla` or XFL.
 | Document | Stage size, frame rate and colour; every scene, in order |
 | Layers | Names, colours, visibility, lock, outline, height; guide, mask and folder layers, masks inside folders and symbols too |
 | Frames | Keyframes and their lengths, frame labels |
-| Tweens | Classic tweens with their ease (one-curve custom eases exactly), shape tweens with shape hints, motion guides and Orient to path |
+| Tweens | Classic tweens with their ease (custom eases of any number of points exactly, and eases set per property: position, rotation, scale, colour, filters), shape tweens with shape hints, motion guides and Orient to path |
 | Drawing | Shapes as merged drawings, drawing objects and groups, rectangle and oval primitives, solid and gradient fills, strokes with caps, joins, miter limit, dashed and dotted styles |
 | Symbols | Graphics, movie clips and buttons with their own timelines, nested to any depth; Library folders; loop mode and first frame; 9-slice guides |
 | Instances | Position and transform, instance names, colour effects in every style (Brightness, Tint, Advanced, Alpha), blend modes, all seven filters |
@@ -87,7 +87,6 @@ These come across, but look a little different from Animate, and the report coun
 * ragged, stipple and hatched strokes (drawn solid);
 * reverse loop modes (played forward) and extra spins on classic tweens (turned the shortest
   way);
-* custom eases with more than one curve (drawn with the simple ease);
 * in text: justified text (drawn left-aligned), first-line indents, superscript and subscript,
   vertical text, text rendered as HTML, and lines that mix styles (drawn in their main style).
   A field whose lines use different styles becomes one text block per style, stacked as in

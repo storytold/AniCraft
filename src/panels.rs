@@ -5,7 +5,7 @@ use crate::icons::{self, Icon};
 use crate::theme::{Section, T, TARGET, TOOL_BUTTON, TOOL_ICON, Type, color, section, text, to_color32, with_type};
 use anicraft_engine::doc::{ColorEffect, ColorStyle, ElementKind, LibraryItem, LineType, MAX_PATH_OFFSET, Paint, Rgba, SymbolKind, TextKind, evaluate_layer_elements};
 use crate::a11y::{self, Named};
-use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
+use egui::{Color32, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::{Value, json};
 
 // ----- tools --------------------------------------------------------------------------------
@@ -1921,19 +1921,34 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                     });
                     return;
                 }
-                match k.tween {
+                match k.tween.clone() {
                     Some(t) => {
-                        row_prose(ui, tr!("Tween"), |ui| {
-                            egui::ComboBox::from_id_salt("prop_ease").width(150.0).selected_text(crate::i18n::t_dyn(&t.easing.label()).into_owned()).show_ui(ui, |ui| {
-                                for (name, e) in anicraft_engine::doc::Easing::PRESETS {
-                                    if ui.selectable_label(t.easing == e, crate::i18n::t(name)).clicked() {
-                                        app.run("timeline.set_easing", json!({"easing": crate::timeline::easing_param(e)}));
-                                    }
+                        row_prose(ui, tr!("Ease"), |ui| {
+                            match crate::ease_editor::picker(app, ui, "prop_ease", &t.easing, 150.0, tr!("Easing")) {
+                                Some(crate::ease_editor::Picked::Ease(e)) => {
+                                    app.run("timeline.set_easing", json!({"easing": e}));
                                 }
-                            })
-                            .response
-                            .set_name(tr!("Easing"));
+                                Some(crate::ease_editor::Picked::Edit) => crate::ease_editor::open_here(app),
+                                None => {}
+                            }
+                            if ui.button("✎").on_hover_text(tr!("Edit Ease…")).named(tr!("Edit Ease…")).clicked() {
+                                crate::ease_editor::open_here(app);
+                            }
                         });
+                        // Classic Ease: its strength, as Animate's Ease field.
+                        if let anicraft_engine::doc::Easing::Classic(s) = t.easing {
+                            let mut v = s;
+                            row(ui, tr!("Strength"), |ui| {
+                                if ui.add(egui::Slider::new(&mut v, -100.0..=100.0).step_by(1.0)).named(tr!("Classic ease strength")).changed() {
+                                    live(app, tr_noop!("Ease"), "timeline.set_easing", json!({"easing": {"classic": v}}));
+                                }
+                            });
+                        }
+                        // Property groups eased their own way (ADR 0081), named.
+                        if !t.groups.is_empty() {
+                            let groups: Vec<String> = t.groups.iter().map(|(g, e)| format!("{} {}", crate::i18n::t(g.label()), crate::ease_editor::label(&app.s.doc, e))).collect();
+                            ui.label(text(Type::Caption, tr!("Eased separately: {groups}", groups = groups.join(", "))));
+                        }
                         let shape = t.kind == anicraft_engine::doc::TweenKind::Shape;
                         row_prose(ui, tr!("Kind"), |ui| {
                             egui::ComboBox::from_id_salt("prop_kind").width(150.0).selected_text(if shape { tr!("Shape") } else { tr!("Classic") }).show_ui(ui, |ui| {
@@ -1955,7 +1970,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                                 app.run("timeline.set_orient", json!({"orient": orient}));
                             }
                         }
-                        ease_curve(ui, t.easing);
+                        crate::ease_editor::preview(app, ui, &t.easing);
                     }
                     None => {
                         ui.horizontal_wrapped(|ui| {
@@ -2506,22 +2521,6 @@ fn line_style_rows(ui: &mut egui::Ui, which: ProfileRow, st: &anicraft_engine::d
         });
     }
     edit
-}
-
-/// Plots the easing curve (output against time).
-fn ease_curve(ui: &mut egui::Ui, e: anicraft_engine::doc::Easing) {
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().min(240.0), 70.0), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(r, T.rc(), T.field);
-    let inner = r.shrink(8.0);
-    let pts: Vec<Pos2> = (0..=48)
-        .map(|i| {
-            let t = i as f32 / 48.0;
-            pos2(inner.left() + t * inner.width(), inner.bottom() - e.apply(t) * inner.height())
-        })
-        .collect();
-    p.line_segment([inner.left_bottom(), inner.right_top()], Stroke::new(1.0, T.border));
-    p.add(egui::Shape::line(pts, Stroke::new(2.0, T.tween)));
 }
 
 pub(crate) fn library(app: &mut App, ui: &mut egui::Ui) {
