@@ -12,7 +12,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_rect as crate::RunFn),
         c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_ellipse),
-        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, cap?, join?, style?, dash?, object?}", true, draw_star),
+        c("draw.star", "PolyStar", "", None, "{cx, cy, outer (the corners' radius), shape?: star|polygon (default star; the PolyStar Tool Settings, ADR 0080), sides? (or points; 3..64, default 5), point_size? (0..1, default 0.5: how deep a star's points are, 1 is the polygon through its tips), inner? (an exact inner radius instead of point_size), fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash? (the line style), object?}", true, draw_star),
         c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (the line style, as stroke.set_style; default: the tool's), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
         c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
         c("draw.snap_to_objects", "Snap to Objects", "View/Snapping", Some("Ctrl+Shift+/"), "{on?: bool} (default: toggle) dragged points and selections, and the points the Line, Rectangle, Oval, PolyStar and Pen tools draw, snap to points, lines and fill edges (while it is off, the `snap` params of element.translate, raw.move_point and draw.snap only snap to guides, the grid and pixels, as View › Guides, Grid and Snapping say)", false, snap_to_objects),
@@ -24,13 +24,13 @@ pub fn specs() -> Vec<CommandSpec> {
         c("edit.delete", "Clear", "Edit", Some("Delete"), "{} (on every layer with selected items)", true, delete_selection),
         c("edit.duplicate", "Duplicate", "Edit", Some("Ctrl+D"), "{dx?, dy?} (each copy on its original's layer)", true, |s, p| s.each_layer(true, |s| duplicate(s, p))),
         c("element.select", "Select Elements", "", None, "{ids: [..], add?: bool, toggle?: bool, layer?} selects elements on any visible, unlocked layer at the playhead (ids are unique; `layer` looks only there); `toggle` takes each one that is selected out of the selection and adds the others (Shift+Space on a stage element); the active layer becomes the first one's unless it has some of them", false, select),
-        c("element.pick", "Select at Point", "", None, "{x, y, add?: bool} the topmost element there on a visible, unlocked layer; `add` (Shift) adds it to the selection, or lets go of it, on any layer", false, pick),
+        c("element.pick", "Select at Point", "", None, "{x, y, add?: bool, view?: stage|camera} the topmost element there on a visible, unlocked layer; `add` (Shift) adds it to the selection, or lets go of it, on any layer; with `view: camera` the point is on the movie's picture as the camera shows it (each layer through its depth)", false, pick),
         c("element.translate", "Move", "", None, "{dx, dy, snap?, from?: [x, y]} moves the selection, on every layer; with `snap` (a distance) one of its corners or ends, or its box's corners or centre (the nearest to `from`), then snaps within that distance by the snap engine's priority (ADR 0076): a point, guide, line or fill edge of the rest, the grid, a whole pixel", true, translate),
         c("element.set_transform", "Transform", "", None, "{x?, y?, sx?, sy?, rotation? (degrees)}", true, |s, p| s.each_layer(true, |s| set_transform(s, p))),
         c("element.set_fill", "Fill Colour", "", None, "{color: \"#rrggbb\" | null}", true, |s, p| s.each_layer(false, |s| set_fill(s, p))),
         c("element.set_stroke", "Stroke", "", None, "{color?: \"#rrggbb\" | null, width?, profile?: uniform|taper_both|taper_start|taper_end|bulge|pinch | [[t, left, right], ..], cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (as stroke.set_style)}", true, |s, p| s.each_layer(false, |s| set_stroke(s, p))),
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1} sets the alpha multiplier and keeps the rest of the colour effect (None becomes Alpha; Brightness and Tint become Advanced below 1)", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
-        c("element.set_color_effect", "Colour Effect", "", None, "{style?: none|brightness|tint|advanced|alpha (default: the style the values belong to, else each element's own), alpha? (%, 0..100), brightness? (%, -100..100), tint? (#rrggbb), tint_amount? (%, 0..100), red_multiplier?, green_multiplier?, blue_multiplier?, alpha_multiplier? (%, -100..100), red_offset?, green_offset?, blue_offset?, alpha_offset? (-255..255)} on every selected element (ADR 0056); values not given keep each element's own. A new style starts from the look it can keep: Advanced is exactly the effect before, Alpha keeps the opacity, Brightness and Tint start at 0 %. The camera's effect is a tint", true, |s, p| s.each_layer(true, |s| set_color_effect(s, p))),
+        c("element.set_color_effect", "Colour Effect", "", None, "{style?: none|brightness|tint|advanced|alpha (default: the style the values belong to, else each element's own), alpha? (%, 0..100), brightness? (%, -100..100), tint? (#rrggbb), tint_amount? (%, 0..100), red_multiplier?, green_multiplier?, blue_multiplier?, alpha_multiplier? (%, -100..100), red_offset?, green_offset?, blue_offset?, alpha_offset? (-255..255)} on every selected element (ADR 0056); values not given keep each element's own. A new style starts from the look it can keep: Advanced is exactly the effect before, Alpha keeps the opacity, Brightness and Tint start at 0 %. The camera has no opacity (no Alpha style, alpha multiplier or offset)", true, |s, p| s.each_layer(true, |s| set_color_effect(s, p))),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
         c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
@@ -118,7 +118,7 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
         name: String::new(),
         transform: Affine::translate(origin.x, origin.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill, stroke, fill_rule: Default::default(), merge }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill, stroke, fill_rule: Default::default(), merge, warp: None }),
     };
     if merge {
         let merged = crate::merge::merge_in(s, vec![el])?;
@@ -158,13 +158,36 @@ fn draw_star(s: &mut Session, p: &Value) -> Result<Value> {
     if !(0.5..=MAX_EXTENT).contains(&outer) {
         return Err(EngineError::Param("param 'outer' must be between 0.5 and 1,000,000".into()));
     }
-    let inner = opt_f32(p, "inner")?.unwrap_or(outer * 0.5).clamp(0.0, MAX_EXTENT);
-    let points = opt_u32(p, "points")?.unwrap_or(5);
+    // PolyStar's Tool Settings (ADR 0080): a polygon or a star, its sides (or points) and the
+    // star's point size.
+    let polygon = match opt_str(p, "shape")?.unwrap_or("star") {
+        "star" => false,
+        "polygon" => true,
+        other => return Err(EngineError::Param(format!("unknown PolyStar style '{other}' (polygon or star)"))),
+    };
+    let points = match (opt_u32(p, "sides")?, opt_u32(p, "points")?) {
+        (Some(n), _) | (None, Some(n)) => n,
+        (None, None) => 5,
+    };
     if !(3..=64).contains(&points) {
-        return Err(EngineError::Param("param 'points' must be between 3 and 64".into()));
+        return Err(EngineError::Param("param 'sides' (or 'points') must be between 3 and 64".into()));
     }
+    let point_size = match opt_f32(p, "point_size")? {
+        None => 0.5,
+        Some(v) if (0.0..=1.0).contains(&v) => v,
+        Some(_) => return Err(EngineError::Param("param 'point_size' must be between 0 and 1".into())),
+    };
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "star", Path::star(0.0, 0.0, outer, inner, points), Vec2::new(cx, cy), fill, stroke, object_param(s, p)?)
+    let object = object_param(s, p)?;
+    if polygon {
+        return add_shape(s, "polygon", Path::polystar(0.0, 0.0, outer, points, false, point_size), Vec2::new(cx, cy), fill, stroke, object);
+    }
+    // An explicit inner radius (scripts written before the point size) still wins.
+    let path = match opt_f32(p, "inner")? {
+        Some(inner) => Path::star(0.0, 0.0, outer, inner.clamp(0.0, MAX_EXTENT), points),
+        None => Path::polystar(0.0, 0.0, outer, points, true, point_size),
+    };
+    add_shape(s, "star", path, Vec2::new(cx, cy), fill, stroke, object)
 }
 
 fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
@@ -259,7 +282,13 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
 fn pick(s: &mut Session, p: &Value) -> Result<Value> {
     let pt = Vec2::new(f32_req(p, "x")?, f32_req(p, "y")?);
     let add = opt_bool(p, "add")?.unwrap_or(false);
-    match s.hit_test(pt, 2.0) {
+    // `view: "camera"`: the point is on the movie's picture, seen through the camera (ADR 0082).
+    let through = match opt_str(p, "view")? {
+        None | Some("stage") => false,
+        Some("camera") => true,
+        Some(v) => return Err(EngineError::Param(format!("unknown view '{v}' (stage or camera)"))),
+    };
+    match if through { s.hit_test_camera(pt, 2.0) } else { s.hit_test(pt, 2.0) } {
         Some((layer, el)) => {
             // Shift adds it to (or takes it from) the selection, whichever layers that is on.
             if add {
@@ -439,45 +468,60 @@ const EFFECT_VALUES: [(&str, ColorStyle, f32, f32, f32); 11] = [
     ("alpha_offset", ColorStyle::Advanced, -255.0, 255.0, 255.0),
 ];
 
-fn set_color_effect(s: &mut Session, p: &Value) -> Result<Value> {
-    let style = match opt_str(p, "style")? {
-        Some(k) => Some(ColorStyle::from_key(k).ok_or_else(|| EngineError::Param(format!("unknown style '{k}' (none, brightness, tint, advanced or alpha)")))?),
-        None => None,
-    };
-    let tint = opt_color(p, "tint")?;
-    let mut values: Vec<(usize, f32)> = Vec::new();
-    let mut families: Vec<ColorStyle> = tint.map(|_| ColorStyle::Tint).into_iter().collect();
-    for (i, (key, fam, lo, hi, scale)) in EFFECT_VALUES.iter().enumerate() {
-        if let Some(v) = opt_f32(p, key)? {
-            if !(*lo..=*hi).contains(&v) {
-                return Err(EngineError::Param(format!("param '{key}' must be between {lo} and {hi}")));
-            }
-            values.push((i, v / scale));
-            if !families.contains(fam) {
-                families.push(*fam);
+/// A colour effect change as `element.set_color_effect` and `camera.set` take it (ADR 0056):
+/// a style, values in percent (or −255..255 for offsets), or both.
+pub(crate) struct EffectEdit {
+    style: Option<ColorStyle>,
+    tint: Option<anicraft_doc::Rgba>,
+    values: Vec<(usize, f32)>,
+}
+
+impl EffectEdit {
+    /// The change `p` asks for; `None` when it names no style and no value.
+    pub(crate) fn parse(p: &Value) -> Result<Option<EffectEdit>> {
+        let style = match opt_str(p, "style")? {
+            Some(k) => Some(ColorStyle::from_key(k).ok_or_else(|| EngineError::Param(format!("unknown style '{k}' (none, brightness, tint, advanced or alpha)")))?),
+            None => None,
+        };
+        let tint = opt_color(p, "tint")?;
+        let mut values: Vec<(usize, f32)> = Vec::new();
+        let mut families: Vec<ColorStyle> = tint.map(|_| ColorStyle::Tint).into_iter().collect();
+        for (i, (key, fam, lo, hi, scale)) in EFFECT_VALUES.iter().enumerate() {
+            if let Some(v) = opt_f32(p, key)? {
+                if !(*lo..=*hi).contains(&v) {
+                    return Err(EngineError::Param(format!("param '{key}' must be between {lo} and {hi}")));
+                }
+                values.push((i, v / scale));
+                if !families.contains(fam) {
+                    families.push(*fam);
+                }
             }
         }
+        let style = match (style, families.as_slice()) {
+            (Some(st), f) if f.iter().any(|x| *x != st) => return Err(EngineError::Param(format!("the {} style has none of these values: give only its own", st.key()))),
+            (Some(st), _) => Some(st),
+            (None, []) => return Ok(None),
+            (None, [one]) => Some(*one),
+            (None, _) => return Err(EngineError::Param("these values belong to different styles: give one style's values".into())),
+        };
+        Ok(Some(EffectEdit { style, tint, values }))
     }
-    let style = match (style, families.as_slice()) {
-        (Some(st), f) if f.iter().any(|x| *x != st) => return Err(EngineError::Param(format!("the {} style has none of these values: give only its own", st.key()))),
-        (Some(st), _) => Some(st),
-        (None, []) => return Err(EngineError::Param("give a style, or a value to set".into())),
-        (None, [one]) => Some(*one),
-        (None, _) => return Err(EngineError::Param("these values belong to different styles: give one style's values".into())),
-    };
-    let mut first = None;
-    for e in s.selected_elements_mut()? {
-        let target = style.unwrap_or(e.color.style());
-        if matches!(e.kind, ElementKind::Camera) && !matches!(target, ColorStyle::Tint | ColorStyle::None) {
-            return Err(EngineError::State("the camera's colour effect is a tint".into()));
-        }
-        let mut fx = e.color.to_style(target);
+
+    /// Whether it sets an alpha value (the Alpha style, or an alpha multiplier or offset).
+    pub(crate) fn touches_alpha(&self) -> bool {
+        self.style == Some(ColorStyle::Alpha) || self.values.iter().any(|(i, _)| matches!(i, 0 | 6 | 10))
+    }
+
+    /// `fx` changed: into the style (a new one starting from the look it can keep), with the
+    /// values given set and the rest kept.
+    pub(crate) fn apply(&self, fx: &ColorEffect) -> ColorEffect {
+        let mut fx = fx.to_style(self.style.unwrap_or(fx.style()));
         if let ColorEffect::Tint { color, .. } = &mut fx
-            && let Some(t) = tint
+            && let Some(t) = self.tint
         {
             *color = t.with_alpha(1.0);
         }
-        for &(i, v) in &values {
+        for &(i, v) in &self.values {
             match &mut fx {
                 ColorEffect::Alpha(a) if i == 0 => *a = v,
                 ColorEffect::Brightness(b) if i == 1 => *b = v,
@@ -492,7 +536,21 @@ fn set_color_effect(s: &mut Session, p: &Value) -> Result<Value> {
                 _ => {}
             }
         }
-        e.color = fx.sanitized();
+        fx.sanitized()
+    }
+}
+
+fn set_color_effect(s: &mut Session, p: &Value) -> Result<Value> {
+    let edit = EffectEdit::parse(p)?.ok_or_else(|| EngineError::Param("give a style, or a value to set".into()))?;
+    let mut first = None;
+    for e in s.selected_elements_mut()? {
+        if matches!(e.kind, ElementKind::Camera) && edit.touches_alpha() {
+            return Err(EngineError::State("the camera has no opacity: its colour effect is None, Brightness, Tint or Advanced (without alpha)".into()));
+        }
+        e.color = edit.apply(&e.color);
+        if matches!(e.kind, ElementKind::Camera) {
+            e.color = anicraft_doc::camera::camera_effect(&e.color);
+        }
         first.get_or_insert(e.color);
     }
     Ok(first.map_or(Value::Null, |fx| crate::color_effect_json(&fx)))
@@ -1061,6 +1119,7 @@ fn place_bitmap(s: &mut Session, bitmap: anicraft_doc::BitmapId, x: f32, y: f32)
             stroke: None,
             fill_rule: anicraft_geom::FillRule::NonZero,
             merge: false,
+            warp: None,
         }),
     };
     s.editable_keyframe()?.elements.push(Arc::new(el));

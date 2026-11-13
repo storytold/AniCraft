@@ -52,7 +52,7 @@ fn element_bounds(e: &ImportedElement) -> Rect {
 
 /// A fill-only shape for mask artwork (its colour doesn't matter: a mask is its fills' area).
 fn mask_part(name: String, path: Path, transform: Affine, rule: FillRule) -> ImportedElement {
-    let shape = Shape { path: Arc::new(path), fill: Some(Paint::Solid(Rgba::BLACK)), stroke: None, fill_rule: rule, merge: false };
+    let shape = Shape { path: Arc::new(path), fill: Some(Paint::Solid(Rgba::BLACK)), stroke: None, fill_rule: rule, merge: false, warp: None };
     ImportedElement { name, transform, alpha: 1.0, kind: ElementKind::Shape(shape) }
 }
 

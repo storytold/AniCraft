@@ -151,7 +151,13 @@ fn draw(item: &DisplayItem, d: &str, clip: &str, body: &mut String, defs: &mut S
         let _ = write!(body, "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"1\"{clip}/>", color_attrs("stroke", color));
         return;
     }
-    if let Some(fill) = &item.fill
+    // A warped bitmap (ADR 0079) has no SVG equivalent: it is baked as the image the
+    // renderer draws, at twice the stage's resolution, where it shows.
+    if item.warp.is_some() && matches!(item.fill, Some(Paint::Bitmap { .. })) {
+        if let Some((x, y, w, h, png)) = bake(item) {
+            let _ = write!(body, "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{}\"{clip}/>", num(x), num(y), num(w), num(h), anicraft_doc::base64_encode(&png));
+        }
+    } else if let Some(fill) = &item.fill
         && let Some(paint) = paint_attr(fill, &item.transform, &item.color, defs, grad, item.image.as_ref().map(|px| (px, item.smooth)), images)
     {
         let _ = write!(body, "<path d=\"{d}\"{paint}{}{clip}/>", rule_attr("fill-rule", item.fill_rule));
@@ -163,6 +169,29 @@ fn draw(item: &DisplayItem, d: &str, clip: &str, body: &mut String, defs: &mut S
             let _ = write!(body, "<path d=\"{d}\" fill=\"none\"{} stroke-width=\"{}\"{}{clip}/>", color_attrs("stroke", c), num(width), style_attrs(st, item.transform.mean_scale()));
         }
     }
+}
+
+/// Pixels per stage unit a warped bitmap is baked at, and the largest edge it may have.
+const BAKE_SCALE: f32 = 2.0;
+const BAKE_EDGE: f32 = 4096.0;
+
+/// `item`'s fill drawn on its own by the renderer (its colour effect included, no stroke):
+/// where it goes on the stage (x, y, width, height) and the PNG. `None` when it is empty.
+fn bake(item: &DisplayItem) -> Option<(f32, f32, f32, f32, Vec<u8>)> {
+    let r = item.path.bounds().transformed(&item.transform);
+    if r.is_empty() || !(r.min.is_finite() && r.max.is_finite()) {
+        return None;
+    }
+    let (x0, y0) = (r.min.x.floor(), r.min.y.floor());
+    let (w, h) = (r.max.x.ceil() - x0, r.max.y.ceil() - y0);
+    let k = BAKE_SCALE.min(BAKE_EDGE / w.max(h).max(1.0));
+    let (pw, ph) = ((w * k).ceil().max(1.0), (h * k).ceil().max(1.0));
+    let only = DisplayItem { clip: None, masks: None, group: None, guide: false, stroke: None, outline: None, ..item.clone() };
+    let dl = DisplayList { items: vec![only], ..Default::default() };
+    let view = crate::View { transform: Affine::scale(k, k).mul(&Affine::translate(-x0, -y0)), width: pw as u32, height: ph as u32, background: None };
+    let (pm, _) = crate::render(&dl, &view).ok()?;
+    let png = pm.encode_png().ok()?;
+    Some((x0, y0, pw / k, ph / k, png))
 }
 
 /// The item's path in stage space, or `None` when it has no geometry or a broken transform.
@@ -531,6 +560,7 @@ mod tests {
             group: None,
             image: None,
             smooth: true,
+            warp: None,
         }
     }
 
@@ -719,6 +749,7 @@ mod group_tests {
             group: g,
             image: None,
             smooth: true,
+            warp: None,
         };
         let dl = DisplayList { clip_modes: Vec::new(), items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };
         let svg = to_svg(&dl, &Stage { width: 4, height: 4, fps: 24.0, background: Rgba::WHITE });

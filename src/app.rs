@@ -15,6 +15,8 @@ pub enum Tool {
     Select,
     Subselect,
     Transform,
+    /// Asset Warp (ADR 0079): pins on shapes and bitmaps that bend them.
+    Warp,
     GradientTransform,
     Width,
     Bone,
@@ -69,13 +71,14 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 23] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::GradientTransform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 24] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Warp, Tool::GradientTransform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => tr_noop!("Selection"),
             Tool::Subselect => tr_noop!("Subselection"),
             Tool::Transform => tr_noop!("Free Transform"),
+            Tool::Warp => tr_noop!("Asset Warp"),
             Tool::GradientTransform => tr_noop!("Gradient Transform"),
             Tool::Width => tr_noop!("Width"),
             Tool::Bone => tr_noop!("Bone"),
@@ -104,6 +107,7 @@ impl Tool {
             Tool::Select => Some("V"),
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
+            Tool::Warp => Some("Shift+Q"),
             Tool::GradientTransform => Some("F"),
             Tool::Width => Some("U"),
             Tool::Bone => Some("M"),
@@ -140,11 +144,12 @@ impl Tool {
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer), or drag inside a shape to draw a bone in it (the shape bends with its bones); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
             Tool::Bind => tr_noop!("Shows the points of shapes with bones: a square follows one bone, a triangle several. Click a bone to see the points it moves (filled). Click a point, or drag a box around points, to make them follow only that bone; Shift shares the bone with the ones they follow, Ctrl takes them from it."),
+            Tool::Warp => tr_noop!("Click a shape or a bitmap to pin it (the first pin covers it with a warp mesh). Drag a pin to bend the artwork around the other pins; with one pin it moves. Click a pin and press Delete to remove it. A pin moved at another frame keys it, and pins tween."),
             Tool::GradientTransform => tr_noop!("Click a shape with a gradient or bitmap fill to show its handles. Drag the centre to move the fill, the square to change its width, the circle to change its size, the knob to rotate it (Shift: 15° steps) and, on a radial gradient, the triangle to move its focal point. A bitmap fill also has a square for its height and diamonds to skew it. Each drag is one undo step."),
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
             Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
-            Tool::Star => tr_noop!("Drag from the centre to draw a star."),
+            Tool::Star => tr_noop!("Drag from the centre to draw a star or a polygon (Shape in the options)."),
             Tool::Line => tr_noop!("Drag to draw a line. Shift snaps to 45°."),
             Tool::PaintBucket => tr_noop!("Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings."),
             Tool::InkBottle => tr_noop!("Click a shape to give it the current stroke colour and width."),
@@ -187,6 +192,10 @@ pub struct StageView {
 pub enum Drag {
     None,
     Move { last: egui::Pos2 },
+    /// Selection tool on the camera preview (ADR 0082): moving the selection with the pointer,
+    /// which was at picture point `last`; each move maps back through the camera and the
+    /// active layer's depth.
+    CameraMove { last: anicraft_engine::geom::Vec2 },
     /// Selection tool: moving the selection, snapping as it goes (ADR 0041): from stage point
     /// `start`, `applied` moved so far.
     SnapMove { start: egui::Pos2, applied: egui::Vec2 },
@@ -225,6 +234,9 @@ pub enum Drag {
     /// Gradient Transform tool (ADR 0074): dragging `grip` of shape `id`'s fill, whose frame was
     /// `frame` when the drag began at stage point `press`.
     Gradient { id: anicraft_engine::doc::ElementId, grip: crate::gradient_tool::Grip, frame: anicraft_engine::geom::Affine, press: egui::Pos2 },
+    /// Envelope (ADR 0080): dragging boundary handle `index` of the mesh `mesh` (as it was when
+    /// the drag began at stage point `press`).
+    Envelope { index: usize, mesh: anicraft_engine::geom::envelope::Mesh, press: anicraft_engine::geom::Vec2 },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
@@ -249,6 +261,8 @@ pub enum Drag {
     BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
     /// Moving a whole armature by its root, from stage point `last` last frame.
     ArmatureMove { layer: anicraft_engine::doc::LayerId, last: egui::Pos2 },
+    /// Asset Warp (ADR 0079): pin `pin` of `element` follows the pointer.
+    WarpPin { element: anicraft_engine::doc::ElementId, pin: anicraft_engine::doc::warp::PinId },
     /// Moving one of the open symbol's 9-slice guides (ADR 0055).
     SliceGuide { guide: crate::scale_grid::Guide },
     /// Selection tool: moving the scene's guide `index` (ADR 0076); `off`: the pointer is over a
@@ -295,6 +309,28 @@ pub const SHOT_FRAMES: u32 = 120;
 
 /// The item picked in the Library panel (view state).
 pub use anicraft_engine::doc::LibraryItem;
+
+/// The PolyStar tool's settings (ADR 0080): a polygon or a star, how many sides or points (3 to
+/// 32), and how deep a star's points are (0 to 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PolyStarOptions {
+    pub star: bool,
+    pub sides: u32,
+    pub point_size: f32,
+}
+
+impl Default for PolyStarOptions {
+    fn default() -> Self {
+        PolyStarOptions { star: true, sides: 5, point_size: 0.5 }
+    }
+}
+
+impl PolyStarOptions {
+    /// `draw.star`'s shape params.
+    pub fn params(&self) -> serde_json::Value {
+        serde_json::json!({"shape": if self.star { "star" } else { "polygon" }, "sides": self.sides.clamp(3, 32), "point_size": self.point_size.clamp(0.0, 1.0)})
+    }
+}
 
 pub struct App {
     #[cfg(not(target_arch = "wasm32"))]
@@ -355,7 +391,10 @@ pub struct App {
     pub path_pick: Option<anicraft_engine::doc::ElementId>,
     /// Font families on this computer, listed once on first need.
     pub font_families: Option<Vec<String>>,
-    pub star_points: u32,
+    /// The PolyStar tool's settings (ADR 0080), as Animate's Tool Settings.
+    pub polystar: PolyStarOptions,
+    /// An envelope is open (ADR 0080): it closes when it no longer shows.
+    pub envelope_open: bool,
     pub rect_radius: f32,
     /// Pen path being drawn (view state until it is committed as one command).
     pub pen: Option<pathtools::PenPath>,
@@ -407,6 +446,8 @@ pub struct App {
     pub open_fill_swatch: bool,
     /// The bone picked on the stage (ADR 0043; view state).
     pub bone_sel: Option<anicraft_engine::doc::BoneId>,
+    /// The warp pin picked with the Warp tool, and the artwork it is on (ADR 0079; view state).
+    pub warp_pin: Option<(anicraft_engine::doc::ElementId, anicraft_engine::doc::warp::PinId)>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
     pub motion_anchors: Vec<usize>,
     /// The motion path as it was when the drag on it began.
@@ -620,7 +661,8 @@ impl App {
             text_edit: None,
             path_pick: None,
             font_families: None,
-            star_points: 5,
+            polystar: PolyStarOptions::default(),
+            envelope_open: false,
             rect_radius: 0.0,
             pen: None,
             pencil: Vec::new(),
@@ -648,6 +690,7 @@ impl App {
             width_sel: None,
             open_fill_swatch: false,
             bone_sel: None,
+            warp_pin: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
             frame_sel: None,
@@ -1220,6 +1263,49 @@ impl App {
                 }
                 self.run("element.select", json!({"ids": ids}));
             }
+            Some("warp") => {
+                // Asset Warp (ADR 0079): a checkered bitmap and a striped banner, each pinned at
+                // three points and bent at frame 1, bent the other way at frame 24 (a classic
+                // tween between), with the tool in hand and the bitmap's right pin picked.
+                self.run("layer.new", json!({"name": "Warp"}));
+                let dir = std::env::temp_dir().join("anicraft-shot-warp");
+                let _ = std::fs::create_dir_all(&dir);
+                let (w, h) = (240u32, 150u32);
+                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+                for y in 0..h {
+                    for x in 0..w {
+                        let on = ((x / 30) + (y / 30)) % 2 == 0;
+                        let t = x as f32 / w as f32;
+                        let c = if on { [(60.0 + 180.0 * t) as u8, 90, (230.0 - 150.0 * t) as u8, 255] } else { [250, 244, 230, 255] };
+                        rgba.extend_from_slice(&c);
+                    }
+                }
+                let path = dir.join("checker.png");
+                let bitmap = anicraft_engine::render::encode_png(w, h, &rgba).ok().filter(|png| std::fs::write(&path, png).is_ok()).and_then(|_| self.run("file.import_to_library", json!({"path": path.display().to_string(), "name": "checker.png"}))).and_then(|v| v["bitmap"].as_u64());
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                let img = bitmap.map_or(0, |b| id(self.run("library.place", json!({"bitmap": b, "x": 380, "y": 330})), "element"));
+                let banner = id(self.run("draw.rect", json!({"x": 700, "y": 270, "w": 320, "h": 120, "fill": "#e8833a", "stroke": "#4a2c14", "stroke_width": 3, "object": true})), "element");
+                self.run("timeline.insert_frame", json!({"frame": 23}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                let mut pins = Vec::new();
+                for (el, x0, x1, y) in [(img, 270.0, 490.0, 330.0), (banner, 712.0, 1008.0, 330.0)] {
+                    let mid = (x0 + x1) * 0.5;
+                    let p = [x0, mid, x1].map(|x| id(self.run("warp.pin_add", json!({"element": el, "x": x, "y": y})), "pin"));
+                    pins.push((el, p, x1, y));
+                }
+                self.run("timeline.goto", json!({"frame": 23}));
+                self.run("timeline.insert_keyframe", json!({}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.run("timeline.create_tween", json!({}));
+                for &(el, p, x1, y) in &pins {
+                    self.run("warp.pin_move", json!({"element": el, "pin": p[1], "dx": 0, "dy": -30, "frame": 0}));
+                    self.run("warp.pin_move", json!({"element": el, "pin": p[2], "x": x1 - 20.0, "y": y + 80.0, "frame": 0}));
+                    self.run("warp.pin_move", json!({"element": el, "pin": p[2], "x": x1 - 10.0, "y": y - 70.0, "frame": 23}));
+                }
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.warp_pin = pins.first().map(|&(el, p, _, _)| (anicraft_engine::doc::ElementId(el), anicraft_engine::doc::warp::PinId(p[2])));
+                self.tool = Tool::Warp;
+            }
             Some(which @ ("onion" | "onionmenu")) => {
                 // Onion skin ±5 on a frame with frames before and after it, the markers on the
                 // ruler; with its menu open, in outlines (ADR 0047).
@@ -1775,6 +1861,70 @@ impl App {
                     self.drag = Drag::Brush;
                 }
             }
+            Some(which @ ("polystar" | "paintinside" | "drawingedit" | "shapeenvelope")) => {
+                // Drawing parity (ADR 0080) on a new layer: polygons and stars of several sides
+                // and point sizes; brush strokes clipped by Paint Inside and Paint Selection; a
+                // drawing object open in place with a line merged across it; an envelope bending
+                // a drawing object.
+                self.run("layer.new", json!({"name": "Parity"}));
+                self.run("draw.object_drawing", json!({"on": which != "paintinside"}));
+                let ink = json!({"stroke": "#1b2a4a", "stroke_width": 3});
+                let with = |mut p: Value| {
+                    for (k, v) in ink.as_object().into_iter().flatten() {
+                        p[k] = v.clone();
+                    }
+                    p
+                };
+                match which {
+                    "polystar" => {
+                        for (k, (shape, sides, size, fill)) in [("polygon", 3, 0.5, "#e8553b"), ("polygon", 6, 0.5, "#f2c14e"), ("star", 5, 0.5, "#3d8bfd"), ("star", 8, 0.2, "#7cc576"), ("star", 12, 0.8, "#d6336c")].into_iter().enumerate() {
+                            self.run("draw.star", with(json!({"cx": 170 + k as i32 * 190, "cy": 300, "outer": 80, "shape": shape, "sides": sides, "point_size": size, "fill": fill})));
+                        }
+                        self.run("edit.deselect", json!({}));
+                        self.tool = Tool::Star;
+                        self.polystar = PolyStarOptions { star: true, sides: 8, point_size: 0.2 };
+                    }
+                    "paintinside" => {
+                        self.run("draw.rect", with(json!({"x": 120, "y": 160, "w": 360, "h": 300, "fill": "#f2c14e"})));
+                        self.run("draw.ellipse", with(json!({"x": 600, "y": 160, "w": 360, "h": 300, "fill": "#3d8bfd"})));
+                        self.run("edit.deselect", json!({}));
+                        let wave = |y: f32| -> Vec<[f32; 2]> { (0..=80).map(|i| [60.0 + i as f32 * 12.0, y + (i as f32 * 0.25).sin() * 30.0]).collect() };
+                        // Started in the yellow rectangle: it paints only there.
+                        self.run("draw.brush", json!({"points": wave(250.0).into_iter().skip(10).collect::<Vec<_>>(), "size": 36, "mode": "inside", "color": "#e8553b"}));
+                        // The blue oval selected: Paint Selection keeps to it.
+                        if let Some(oval) = self.s.visible_elements().iter().find(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.fill == Some(anicraft_engine::doc::Paint::Solid(anicraft_engine::doc::Rgba::hex(0x3d8bfd))))).map(|e| e.id.0) {
+                            self.run("element.select", json!({"ids": [oval]}));
+                            self.run("draw.brush", json!({"points": wave(380.0), "size": 30, "mode": "selection", "color": "#7cc576"}));
+                        }
+                        self.run("edit.deselect", json!({}));
+                        self.tool = Tool::Brush;
+                        self.brush.mode = anicraft_engine::cmds_brush::PaintMode::Inside;
+                    }
+                    "drawingedit" => {
+                        self.run("draw.rect", with(json!({"x": 140, "y": 180, "w": 300, "h": 220, "radius": 24, "fill": "#e8553b"})));
+                        let v = self.run("draw.ellipse", with(json!({"x": 520, "y": 170, "w": 320, "h": 240, "fill": "#f2c14e"})));
+                        if let Some(id) = v.and_then(|v| v["element"].as_u64()) {
+                            self.run("symbol.edit", json!({"id": id}));
+                            // Inside, in the object's own space: a line across merges with it alone.
+                            self.run("draw.line", json!({"x0": -200, "y0": -40, "x1": 200, "y1": 60, "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                            self.run("edit.deselect", json!({}));
+                        }
+                        self.tool = Tool::Select;
+                    }
+                    _ => {
+                        self.run("draw.star", with(json!({"cx": 300, "cy": 320, "outer": 120, "shape": "star", "sides": 5, "point_size": 0.5, "fill": "#3d8bfd"})));
+                        self.run("draw.rect", with(json!({"x": 560, "y": 200, "w": 360, "h": 220, "fill": "#e8553b"})));
+                        crate::shape_envelope::open(self);
+                        if let Some((_, _, mesh)) = self.s.envelope() {
+                            let mut m = crate::shape_envelope::moved(&mesh, 1, anicraft_engine::geom::Vec2::new(0.0, -80.0));
+                            m = crate::shape_envelope::moved(&m, 13, anicraft_engine::geom::Vec2::new(30.0, 60.0));
+                            m = crate::shape_envelope::moved(&m, 3, anicraft_engine::geom::Vec2::new(40.0, -20.0));
+                            let points: Vec<[f32; 2]> = m.iter().map(|p| [p.x, p.y]).collect();
+                            self.run("modify.envelope_move", json!({"points": points}));
+                        }
+                    }
+                }
+            }
             Some(which @ ("eraser" | "erasing")) => {
                 // Erased artwork on a new layer (ADR 0034): a band through an outlined raw
                 // rectangle (Erase Normal), the outline of a raw oval erased but not its fill
@@ -1913,6 +2063,28 @@ impl App {
                 self.tool = Tool::Camera;
                 self.last_tool = Tool::Camera;
                 self.camera_preview = which == "cameraview";
+            }
+            Some(which @ ("layerdepth" | "layerdepthview")) => {
+                // A parallax scene mid-pan (ADR 0082): the camera pans right and pushes in over
+                // the first second; the sky is far back, the sun and hills between, the star
+                // attached to the camera like a title; the Layer Depth panel open, frame 12.
+                self.run("camera.add", json!({}));
+                self.run("timeline.insert_keyframe", json!({"frame": 23}));
+                self.run("camera.set", json!({"frame": 23, "dx": 100, "zoom": 125}));
+                self.run("timeline.create_tween", json!({"frame": 0}));
+                let id = |app: &App, name: &str| app.s.doc.timeline(0).layers.iter().find(|l| l.name.eq_ignore_ascii_case(name)).map(|l| l.id.0);
+                for (name, depth) in [("sky", 900), ("sun", 450), ("hills", 200)] {
+                    if let Some(l) = id(self, name) {
+                        self.run("layer.set_depth", json!({"layer": l, "depth": depth}));
+                    }
+                }
+                if let Some(l) = id(self, "star") {
+                    self.run("layer.set_attached", json!({"layer": l, "attached": true}));
+                }
+                self.run("timeline.goto", json!({"frame": 12}));
+                self.tool = Tool::Select;
+                self.camera_preview = which == "layerdepthview";
+                self.show_panel(crate::dock::Panel::LayerDepth);
             }
             Some("bones") => {
                 // A three-limb arm on an armature (ADR 0043): bent by IK at frame 1, the elbow
@@ -2441,6 +2613,11 @@ impl App {
             }
             return;
         }
+        if id == "modify.envelope" {
+            // The envelope's handles, with the Free Transform tool (ADR 0080).
+            crate::shape_envelope::open(self);
+            return;
+        }
         if id == "modify.convert_to_symbol" {
             // Name, type and Library folder (ADR 0053).
             crate::convert_symbol::open(self);
@@ -2726,6 +2903,7 @@ impl App {
             pathtools::consume_keys(self, ctx);
             crate::widthtool::consume_keys(self, ctx);
             crate::bone_tool::consume_keys(self, ctx);
+            crate::warp_tool::consume_keys(self, ctx);
         }
         crate::library::consume_keys(self, ctx);
         crate::ease_editor::consume_keys(self, ctx);
@@ -3157,6 +3335,7 @@ impl App {
         crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
         crate::bone_tool::upkeep(self);
+        crate::warp_tool::upkeep(self);
         // An open button shows its hit area over its other states, in the theme's colour (ADR 0057).
         self.s.hit_area = Some(theme::hit_area());
         self.tick_playback(&ctx);

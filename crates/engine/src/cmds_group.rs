@@ -71,8 +71,8 @@ pub(crate) fn group_depth(e: &Element) -> usize {
 }
 
 /// How many groups are open around the timeline being edited (inside the innermost open symbol).
-fn open_groups(s: &Session) -> usize {
-    s.editing.iter().rev().take_while(|l| l.open == crate::editing::Opened::Group).count()
+pub(crate) fn open_groups(s: &Session) -> usize {
+    s.editing.iter().rev().take_while(|l| l.open.is_group()).count()
 }
 
 fn group(s: &mut Session, _: &Value) -> Result<Value> {
@@ -226,7 +226,7 @@ fn object(doc: &mut anicraft_doc::Document, path: &Path, fill: Option<anicraft_d
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color,
-        kind: ElementKind::Shape(Shape { path: Arc::new(path.transformed(&to_local)), fill: fill.map(|f| f.transformed(&to_local)), stroke, fill_rule: FillRule::NonZero, merge: false }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(path.transformed(&to_local)), fill: fill.map(|f| f.transformed(&to_local)), stroke, fill_rule: FillRule::NonZero, merge: false, warp: None }),
     }
 }
 

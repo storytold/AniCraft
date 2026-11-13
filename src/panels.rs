@@ -34,6 +34,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Camera => Icon::Camera,
         Tool::Bone => Icon::Bone,
         Tool::Bind => Icon::Bind,
+        Tool::Warp => Icon::Warp,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
     }
@@ -248,8 +249,18 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
         .set_name(tr!("Scene"));
         // The symbols open for editing (ADR 0045), as in Animate's edit bar: a click on one
         // goes back to it; the last is the one being edited.
-        // A group (ADR 0073) shows as "Group", as Animate's edit bar does.
-        let open: Vec<String> = app.s.editing.iter().map(|l| l.symbol().map_or_else(|| tr!("Group").to_string(), |id| app.s.doc.symbol(id).map_or_else(String::new, |s| s.name.clone()))).collect();
+        // A group (ADR 0073) shows as "Group" and a drawing object (ADR 0080) as "Drawing
+        // Object", as Animate's edit bar does.
+        let open: Vec<String> = app
+            .s
+            .editing
+            .iter()
+            .map(|l| match l.symbol() {
+                Some(id) => app.s.doc.symbol(id).map_or_else(String::new, |s| s.name.clone()),
+                None if l.open == anicraft_engine::editing::Opened::Drawing => tr!("Drawing Object").to_string(),
+                None => tr!("Group").to_string(),
+            })
+            .collect();
         let mut back: Option<usize> = None;
         for (i, name) in open.iter().enumerate() {
             ui.label(text(Type::Caption, "›"));
@@ -586,6 +597,14 @@ pub(crate) fn properties(app: &mut App, ui: &mut egui::Ui) {
             section(ui, "prop_bone", Section::Rule, &title, None, |ui| bone_props(app, ui, id));
         }
     }
+    // ---- Asset Warp (ADR 0079): the warped artwork picked with the tool, or selected ----
+    let warp_target = app.warp_pin.map(|(e, _)| e).or_else(|| match sel.as_slice() {
+        [e] if matches!(&e.kind, ElementKind::Shape(sh) if sh.live_warp().is_some()) => Some(e.id),
+        _ => None,
+    });
+    if app.tool == Tool::Warp || warp_target.is_some() {
+        section(ui, "prop_warp", Section::Rule, tr!("Asset Warp"), None, |ui| warp_props(app, ui, warp_target));
+    }
     if let Some(e) = sel.first() {
         // One count per template: the layers' phrase is its own plural, with its preposition, so
         // its grammar travels with it, and the outer sentence places it.
@@ -651,24 +670,44 @@ fn mixed(ui: &mut egui::Ui, differs: bool) {
     }
 }
 
+/// Whose colour effect the rows edit: the selected elements' (every style), or the camera's
+/// (ADR 0082: no opacity, so no Alpha style and no alpha channel in Advanced).
+#[derive(Clone, Copy, PartialEq)]
+enum EffectOf {
+    Selection,
+    Camera,
+}
+
+impl EffectOf {
+    fn command(self) -> &'static str {
+        match self {
+            EffectOf::Selection => "element.set_color_effect",
+            EffectOf::Camera => "camera.set",
+        }
+    }
+}
+
 /// The colour effect (ADR 0056): Animate's Style menu, then the chosen style's controls. Each
-/// change sets that value on every selected element (ADR 0053), as one undo step per drag.
-fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: crate::mixed::ColorMixed) {
+/// change sets that value on every selected element (ADR 0053), or on the camera, as one undo
+/// step per drag.
+fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: crate::mixed::ColorMixed, of: EffectOf) {
     let current = fx.style();
+    let cmd = of.command();
+    let camera = of == EffectOf::Camera;
     row_prose(ui, tr!("Colour effect"), |ui| {
-        egui::ComboBox::from_id_salt("prop_color_style").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
-            for st in ColorStyle::ALL {
+        egui::ComboBox::from_id_salt(if camera { "prop_camera_color_style" } else { "prop_color_style" }).selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
+            for st in ColorStyle::ALL.into_iter().filter(|st| !camera || *st != ColorStyle::Alpha) {
                 if ui.selectable_label(st == current, crate::i18n::t(st.label())).clicked() && (st != current || m.style) {
-                    app.run("element.set_color_effect", json!({"style": st.key()}));
+                    app.run(cmd, json!({"style": st.key()}));
                 }
             }
         })
         .response
-        .set_name(tr!("Colour effect style"));
+        .set_name(if camera { tr!("Camera colour effect style") } else { tr!("Colour effect style") });
         mixed(ui, m.style);
     });
     let pct = a11y::SliderLook { suffix: " %", max_decimals: Some(0), ..Default::default() };
-    let set = |app: &mut App, p: Value| live(app, tr_noop!("Colour Effect"), "element.set_color_effect", p);
+    let set = |app: &mut App, p: Value| live(app, if camera { tr_noop!("Camera Colour Effect") } else { tr_noop!("Colour Effect") }, cmd, p);
     match *fx {
         ColorEffect::None => {}
         ColorEffect::Alpha(a) => {
@@ -709,7 +748,8 @@ fn colour_effect_rows(app: &mut App, ui: &mut egui::Ui, fx: &ColorEffect, m: cra
         ColorEffect::Advanced(t) => {
             // Each channel: its multiplier in percent, then the offset added (−255..255).
             let channels = [(tr!("Red"), tr!("Red multiplier"), tr!("Red offset"), "red"), (tr!("Green"), tr!("Green multiplier"), tr!("Green offset"), "green"), (tr!("Blue"), tr!("Blue multiplier"), tr!("Blue offset"), "blue"), (tr!("Alpha"), tr!("Alpha multiplier"), tr!("Alpha offset"), "alpha")];
-            for (i, (label, mul_name, off_name, key)) in channels.into_iter().enumerate() {
+            // The camera has no opacity: its Advanced effect has no alpha channel.
+            for (i, (label, mul_name, off_name, key)) in channels.into_iter().enumerate().take(if camera { 3 } else { 4 }) {
                 let mut mv = t.mul.get(i).copied().unwrap_or(1.0) * 100.0;
                 let mut ov = t.add.get(i).copied().unwrap_or(0.0) * 255.0;
                 row(ui, label, |ui| {
@@ -776,7 +816,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             mixed(ui, m.rotation);
         });
         if !matches!(e.kind, ElementKind::Camera) {
-            colour_effect_rows(app, ui, &e.color, m.color);
+            colour_effect_rows(app, ui, &e.color, m.color, EffectOf::Selection);
         }
         // Blending and filters, on movie clips and buttons as in Animate.
         if let ElementKind::Symbol { symbol, filters, .. } = &e.kind
@@ -1576,7 +1616,8 @@ pub fn text_style_rows(app: &mut App, ui: &mut egui::Ui, st: &mut anicraft_engin
     out
 }
 
-/// The camera at the playhead: where it looks, its zoom, turn and tint, and the preview switch.
+/// The camera at the playhead: where it looks, its zoom, turn and colour effect, and the
+/// preview switch.
 /// Edits key the playhead like any edit of a tweened object.
 fn camera_props(app: &mut App, ui: &mut egui::Ui) {
     let Some(cam) = crate::camera_tool::camera(app) else { return };
@@ -1602,30 +1643,71 @@ fn camera_props(app: &mut App, ui: &mut egui::Ui) {
             live(app, tr_noop!("Rotate Camera"), "camera.set", json!({"rotation": rot}));
         }
     });
-    let mut tint = rgb(cam.tint);
-    let mut amount = cam.tint_amount * 100.0;
-    row(ui, tr!("Tint"), |ui| {
-        let a = crate::colour::button(ui, &mut tint).named(tr!("Camera tint colour"));
-        let b = ui.add(egui::DragValue::new(&mut amount).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Camera tint amount"));
-        if a.changed() || b.changed() {
-            live(app, tr_noop!("Camera Tint"), "camera.set", json!({"tint": hex(tint), "tint_amount": amount}));
-        }
-    });
+    // Brightness, Tint or Advanced over the whole view, as on an instance (ADR 0082).
+    colour_effect_rows(app, ui, &cam.color, crate::mixed::ColorMixed::default(), EffectOf::Camera);
     ui.horizontal_wrapped(|ui| {
         let mut on = app.camera_preview;
         if crate::theme::checkbox(ui, &mut on, tr!("Preview through camera")).on_hover_text(tr!("Show the stage as the movie shows it (View › Preview Through Camera)")).changed() {
             app.toggle_camera_preview();
         }
-        if ui.button(tr!("Reset")).named(tr!("Reset camera")).on_hover_text(tr!("Back to the stage as it is: centred, 100 %, no turn, no tint")).clicked() {
+        if ui.button(tr!("Reset")).named(tr!("Reset camera")).on_hover_text(tr!("Back to the stage as it is: centred, 100 %, no turn, no colour effect")).clicked() {
             app.run("camera.set", json!({"reset": true}));
         }
     });
     let hidden = app.s.timeline().camera_layer().is_some_and(|l| !l.visible);
-    ui.label(text(Type::Caption, if hidden { tr!("The camera layer is hidden: the movie shows the stage as it is.") } else { tr!("The movie shows what the frame on the stage shows. Layer depth (in Frame, per layer) moves far layers less.") }));
+    ui.label(text(Type::Caption, if hidden { tr!("The camera layer is hidden: the movie shows the stage as it is.") } else { tr!("The movie shows what the frame on the stage shows. Deeper layers (Window › Layer Depth) move and zoom less.") }));
 }
 
 /// The selected bone: its joint angle at the playhead (editing it keys the pose), the joint's
 /// limits, the pin, and removal.
+/// A warped shape or bitmap (ADR 0079): its mesh's resolution, its pins, and taking the warp
+/// off. Without one, how to start.
+fn warp_props(app: &mut App, ui: &mut egui::Ui, target: Option<anicraft_engine::doc::ElementId>) {
+    let frame = app.s.frame;
+    let warp = target.and_then(|id| {
+        app.s.timeline().layers.iter().find_map(|l| {
+            let (_, els) = anicraft_engine::doc::evaluate_layer_elements(l, frame)?;
+            els.iter().find(|e| e.id == id).and_then(|e| match &e.kind {
+                ElementKind::Shape(sh) => sh.live_warp().cloned(),
+                _ => None,
+            })
+        })
+    });
+    let (Some(id), Some(warp)) = (target, warp) else {
+        ui.label(text(Type::Caption, tr!("Click a shape or a bitmap with the Asset Warp tool to pin it; drag a pin to bend it around the others.")));
+        return;
+    };
+    let mut res = warp.resolution;
+    let (cols, rows) = warp.grid().map_or((0, 0), |g| (g.nx, g.ny));
+    row(ui, tr!("Mesh"), |ui| {
+        let r = ui
+            .add(egui::DragValue::new(&mut res).range(anicraft_engine::doc::warp::MIN_RESOLUTION..=anicraft_engine::doc::warp::MAX_RESOLUTION).speed(0.1))
+            .named(tr!("Mesh resolution"))
+            .on_hover_text(tr!("Cells along the artwork's longer side: more bends more smoothly, fewer is faster"));
+        if r.changed() {
+            live(app, tr_noop!("Warp Mesh Resolution"), "warp.add", json!({"element": id.0, "resolution": res}));
+        }
+        ui.label(text(Type::Data, format!("{cols} × {rows}")));
+    });
+    let pins = warp.pins.len();
+    row(ui, tr!("Pins"), |ui| {
+        ui.label(text(Type::Data, pins.to_string()));
+    });
+    ui.horizontal_wrapped(|ui| {
+        if let Some((el, pin)) = app.warp_pin.filter(|(el, _)| *el == id)
+            && ui.button(tr!("Remove Pin")).named(tr!("Remove warp pin")).on_hover_text(tr!("Removes the picked pin from every keyframe (Delete)")).clicked()
+        {
+            app.run("warp.pin_remove", json!({"element": el.0, "pin": pin.0}));
+            app.warp_pin = None;
+        }
+        if ui.button(tr!("Remove Warp")).named(tr!("Remove warp")).on_hover_text(tr!("Takes the mesh and its pins off the artwork on every keyframe: it shows as drawn again")).clicked() {
+            app.run("warp.remove", json!({"element": id.0}));
+            app.warp_pin = None;
+        }
+    });
+    ui.label(text(Type::Caption, tr!("Drag pins with the Asset Warp tool to bend the artwork; a pin moved at another frame keys it, and pins tween.")));
+}
+
 fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId) {
     let tl = app.s.timeline();
     let Some((layer, bone)) = tl.layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| (l.clone(), b.clone()))) else { return };
@@ -1723,16 +1805,10 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
         ui.label(text(Type::Caption, tr!("Folders hold layers, not frames. Hiding or locking the folder hides or locks everything in it; move layers in under it with Up and Down.")));
         return;
     }
-    // Layer depth matters once the scene has a camera: deeper layers move less as it pans.
-    if layer.kind != anicraft_engine::doc::LayerKind::Camera && app.s.timeline().camera_layer().is_some() {
-        let mut depth = layer.depth;
-        let (lo, hi) = (anicraft_engine::doc::camera::MIN_DEPTH, anicraft_engine::doc::camera::MAX_DEPTH);
-        row(ui, tr!("Depth"), |ui| {
-            let r = ui.add(egui::DragValue::new(&mut depth).suffix(" px").speed(2.0).range(lo..=hi).max_decimals(0)).named(tr!("Layer depth"));
-            if r.on_hover_text(tr!("How far behind the stage this layer is: when the camera pans, a deeper layer moves less (parallax). Negative is in front.")).changed() {
-                live(app, tr_noop!("Layer Depth"), "layer.set_depth", json!({"depth": depth}));
-            }
-        });
+    // Layer depth matters once the scene has a camera (ADR 0082): deeper layers move and zoom
+    // less, and draw behind nearer ones.
+    if crate::layer_depth::has_depth(layer.kind) && app.s.timeline().camera_layer().is_some() && app.s.editing.is_empty() {
+        crate::layer_depth::depth_row(app, ui, layer, frame);
     }
     {
         match layer.keyframe_at(frame) {
@@ -2123,9 +2199,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         Tool::Rect => row(ui, tr!("Corners"), |ui| {
             ui.add(egui::DragValue::new(&mut app.rect_radius).suffix(" px").range(0.0..=500.0)).set_name(tr!("Corner radius"));
         }),
-        Tool::Star => row(ui, tr!("Points"), |ui| {
-            ui.add(egui::DragValue::new(&mut app.star_points).range(3..=32)).set_name(tr!("Star points"));
-        }),
+        Tool::Star => polystar_props(app, ui),
         Tool::PaintBucket => row_prose(ui, tr!("Gap size"), |ui| {
             egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(crate::i18n::t(app.bucket_gap.label())).show_ui(ui, |ui| {
                 for g in crate::app::GapSize::ALL {
@@ -2143,6 +2217,27 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }),
         Tool::Brush | Tool::PaintBrush => brush_props(app, ui),
         _ => {}
+    }
+}
+
+/// PolyStar's Tool Settings (ADR 0080), inline as the other tools' options: the style, the number
+/// of sides (or points) and, for a star, its point size.
+fn polystar_props(app: &mut App, ui: &mut egui::Ui) {
+    let o = &mut app.polystar;
+    // "Shape", not Animate's "Style": the line style's row above is Style.
+    row_prose(ui, tr!("Shape"), |ui| {
+        ui.selectable_value(&mut o.star, false, tr!("Polygon")).on_hover_text(tr!("Draws a regular polygon."));
+        ui.selectable_value(&mut o.star, true, tr!("Star")).on_hover_text(tr!("Draws a star."));
+    });
+    row(ui, if o.star { tr!("Points") } else { tr!("Sides") }, |ui| {
+        ui.add(egui::DragValue::new(&mut o.sides).range(3..=32)).set_name(if o.star { tr!("Number of points") } else { tr!("Number of sides") });
+    });
+    if o.star {
+        row(ui, tr!("Point size"), |ui| {
+            ui.add(egui::DragValue::new(&mut o.point_size).range(0.0..=1.0).speed(0.01).fixed_decimals(2))
+                .on_hover_text(tr!("How deep the points are: near 0 they are thin spikes, at 1 the star is the polygon through its tips."))
+                .set_name(tr!("Star point size"));
+        });
     }
 }
 

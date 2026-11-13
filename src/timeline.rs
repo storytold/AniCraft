@@ -516,8 +516,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let onion_t = (!is_camera && !is_folder).then(|| toggle(3.0));
         // A layer with sounds has a speaker before the others: Mute (ADR 0039).
         let speaker = layer.has_sounds().then(|| toggle(if onion_t.is_some() { 4.0 } else { 3.0 }));
+        // With a camera in the scene, layers with artwork can be attached to it (ADR 0082):
+        // they then stay put on screen while it moves.
+        let attach_t = (tl_now.camera_layer().is_some() && app.s.editing.is_empty() && crate::layer_depth::has_depth(layer.kind)).then(|| toggle(3.0 + f32::from(u8::from(onion_t.is_some())) + f32::from(u8::from(speaker.is_some()))));
         let hover = ui.input(|inp| inp.pointer.hover_pos());
-        for r in [eye, lock, outl].into_iter().take(if is_camera { 2 } else { 3 }).chain(onion_t).chain(speaker) {
+        for r in [eye, lock, outl].into_iter().take(if is_camera { 2 } else { 3 }).chain(onion_t).chain(speaker).chain(attach_t) {
             if hover.is_some_and(|h| r.contains(h)) {
                 painter.rect_filled(r, T.rc(), T.hover);
             }
@@ -543,6 +546,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 painter.line_segment([g.left_bottom(), g.right_top()], Stroke::new(1.5, c_off));
             }
         }
+        // Attached to the camera: the camera glyph, bright when attached.
+        if let Some(at) = attach_t {
+            icons::paint(&painter, glyph(at), Icon::Camera, if layer.attached { T.accent_text } else { c_off });
+        }
         // outline swatch
         let sw = Rect::from_center_size(outl.center(), vec2(10.0, 10.0));
         if is_camera {
@@ -553,7 +560,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else {
             painter.rect_filled(sw, 0.0, to_color32(layer.color));
         }
-        let name_rect = Rect::from_min_max(left.left_top(), pos2(speaker.or(onion_t).unwrap_or(eye).left() - 4.0, left.bottom()));
+        let name_rect = Rect::from_min_max(left.left_top(), pos2(attach_t.or(speaker).or(onion_t).unwrap_or(eye).left() - 4.0, left.bottom()));
         let nr = ui.interact(name_rect, ui.id().with(("lname", layer.id.0)), Sense::click());
         // Screen readers hear the row as a selectable item, "Ball · layer", then its toggles.
         let name = &layer.name;
@@ -586,6 +593,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let rr = if salt == "outline" { rr.on_hover_text(tr!("View as outlines in the layer's colour (on the stage only)")) } else { rr };
             if rr.clicked() {
                 app.run(id, json!({"layer": layer.id.0}));
+            }
+        }
+        if let Some(at) = attach_t {
+            let rr = ui.interact(at, ui.id().with(("attach", layer.id.0)), Sense::click());
+            a11y::control(ui, &rr, WidgetType::Checkbox, &tr!("Attach {name} to camera", name = name), Some(layer.attached));
+            if rr.on_hover_text(tr!("Attach Layer to Camera: the layer stays where it is on screen while the camera moves (titles, HUDs)")).clicked() {
+                app.run("layer.set_attached", json!({"layer": layer.id.0}));
             }
         }
         if let Some(ot) = onion_t {

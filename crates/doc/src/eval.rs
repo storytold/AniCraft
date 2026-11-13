@@ -44,6 +44,10 @@ pub struct DisplayItem {
     /// Whether `image` is filtered between its pixels (the bitmap's Allow Smoothing, ADR 0050);
     /// off, each pixel is a hard-edged square.
     pub smooth: bool,
+    /// A warped bitmap fill (ADR 0079): the mesh, in the item's local space, that carries the
+    /// image as drawn (`rest`) to where it shows (`shown`); renderers draw the image through
+    /// its triangles. `None` for everything else (a warped shape's path is already bent).
+    pub warp: Option<Arc<crate::warp::WarpMesh>>,
 }
 
 /// Back-to-front list of shapes.
@@ -318,7 +322,14 @@ fn interpolate(a: &Element, b: &Element, pr: Progress, morph: bool, hints: &[(an
     let t = pr.main;
     let kind = match (&a.kind, &b.kind) {
         (ElementKind::Shape(sa), ElementKind::Shape(sb)) => {
-            let path = if Arc::ptr_eq(&sa.path, &sb.path) && hints.is_empty() {
+            // Warped on both keyframes (ADR 0079): the pins tween and bend the outline as drawn.
+            let warp = match (sa.live_warp(), sb.live_warp()) {
+                (Some(wa), Some(wb)) if !morph || hints.is_empty() => wa.lerp(wb, t),
+                _ => None,
+            };
+            let path = if let Some(w) = &warp {
+                w.outline()
+            } else if Arc::ptr_eq(&sa.path, &sb.path) && hints.is_empty() {
                 sa.path.clone()
             } else if morph {
                 anicraft_geom::morph::morph_hinted(&sa.path, &sb.path, hints, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
@@ -333,7 +344,15 @@ fn interpolate(a: &Element, b: &Element, pr: Progress, morph: bool, hints: &[(an
                 (Some(x), Some(y)) => Some(x.lerp(y, t)),
                 (x, _) => x.clone(),
             };
-            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge })
+            let warp = match warp {
+                Some(mut w) => {
+                    w.shown = crate::warp::fingerprint(&path);
+                    Some(Arc::new(w))
+                }
+                // Not tweening the pins: the shape keeps its warp only while it shows it.
+                None => sa.warp.clone().filter(|w| w.shows(&path)),
+            };
+            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge, warp })
         }
         // An instance tweens its filters when both keyframes have the same kinds in the same
         // order (Animate's rule); otherwise they hold.
@@ -491,7 +510,13 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
     let clip_of = |id: LayerId| clips.iter().find(|(l, _)| *l == id).map(|(_, c)| *c);
     // Folders draw nothing, and a hidden folder hides everything in it.
     let has_folders = tl.layers.iter().any(|l| l.kind == LayerKind::Folder);
-    for (index, layer) in tl.layers.iter().enumerate().rev() {
+    // Deepest first, ties in timeline order (ADR 0082); depth belongs to a scene's own layers.
+    // (Only sorted when some layer has a depth: nested timelines allocate nothing.)
+    let sorted = (cx.depth == 0 && tl.layers.iter().any(|l| l.has_depth())).then(|| tl.draw_order(frame));
+    let n = tl.layers.len();
+    for k in 0..n {
+        let index = sorted.as_ref().map_or(n - 1 - k, |o| o.get(k).copied().unwrap_or(n));
+        let Some(layer) = tl.layers.get(index) else { continue };
         // Guide artwork is listed (marked, for editing) but never drawn; inside mask artwork
         // it plays no part at all.
         let is_guide = layer.kind == LayerKind::Guide;
@@ -510,8 +535,15 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
         let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
         let layer_outline = cx.outline.or(if layer.outline && cx.stage { Some(layer.color) } else { None });
-        // Through a camera, each layer is placed by the camera and its own depth.
-        let layer_xf = cx.camera.map_or(cx.xf, |c| c.view(&doc.stage, layer.depth));
+        // Through a camera, each layer is placed by the camera and its own depth (an attached
+        // layer stays put); a layer the camera has passed isn't drawn.
+        let layer_xf = match cx.camera {
+            Some(c) => match c.layer_view(&doc.stage, layer, frame) {
+                Some(v) => v,
+                None => continue,
+            },
+            None => cx.xf,
+        };
         let lc = LayerCtx { layer, frame, kf_start, clip, masks, guide, outline: layer_outline, xf: layer_xf };
         for el in elements.iter() {
             eval_element(doc, cx, &lc, el, out, play);
@@ -561,6 +593,7 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
             // Inside a 9-slice instance, the shape's outline is cut and mapped (bitmap
             // fills scale normally, as in Animate).
             let sliced = cx.slice.filter(|_| !matches!(s.fill, Some(Paint::Bitmap { .. }))).map(|sl| sliced_shape(s, &el.transform, &sl));
+            let is_sliced = sliced.is_some();
             let (path, transform, fill, stroke) = match sliced {
                 Some(x) => x,
                 None => (s.path.clone(), xf, s.fill.clone(), s.stroke.clone()),
@@ -587,6 +620,11 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
                     Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).is_none_or(|b| b.smoothing),
                     _ => true,
                 },
+                // A bitmap bent by its warp is drawn through the mesh (ADR 0079).
+                warp: match &s.fill {
+                    Some(Paint::Bitmap { .. }) if !is_sliced => s.live_warp().filter(|w| !w.at_rest()).and_then(crate::warp::Warp::mesh).map(Arc::new),
+                    _ => None,
+                },
             });
         }
         ElementKind::Text(t) => {
@@ -606,6 +644,7 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
                 group: cx.group,
                 image: None,
                 smooth: true,
+                warp: None,
             };
             match &t.field {
                 // Mask artwork: a field's text masks; its box and border don't.

@@ -10,6 +10,7 @@ pub use anicraft_actions as actions;
 pub mod aids;
 pub mod armature;
 pub mod skin;
+pub mod warp;
 mod bitmap;
 mod color_effect;
 pub mod camera;
@@ -41,7 +42,7 @@ pub use motion::{MotionTween, OnPath, PROPERTIES, Pin, PinError, Property, Prope
 pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
-pub use camera::Camera;
+pub use camera::{Camera, DepthKey};
 pub use swatch::{MAX_SWATCHES, Swatch, SwatchPaint};
 pub use aids::{Aids, GUIDE_REACH, Grid, Guide, GuideAxis, MAX_GUIDES};
 pub use nine_slice::symbol_box;
@@ -484,17 +485,30 @@ pub struct Shape {
     /// Otherwise a drawing object, which keeps to itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub merge: bool,
+    /// Asset Warp (ADR 0079): the mesh and pins that bend the outline (and a bitmap fill). The
+    /// path is the bent outline; the warp keeps the outline as drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp: Option<Arc<warp::Warp>>,
 }
 
 impl PartialEq for Shape {
     fn eq(&self, o: &Shape) -> bool {
-        arc_eq(&self.path, &o.path) && self.fill == o.fill && self.stroke == o.stroke && self.fill_rule == o.fill_rule && self.merge == o.merge
+        arc_eq(&self.path, &o.path)
+            && self.fill == o.fill
+            && self.stroke == o.stroke
+            && self.fill_rule == o.fill_rule
+            && self.merge == o.merge
+            && match (&self.warp, &o.warp) {
+                (Some(a), Some(b)) => arc_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
 impl Shape {
     pub fn filled(path: Path, fill: Paint) -> Shape {
-        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false }
+        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false, warp: None }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
         self.stroke = Some(Stroke::new(color, width));
@@ -1202,6 +1216,14 @@ pub struct Layer {
     /// move a deeper layer less (parallax). Not the nesting depth ([`Timeline::depth`]).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub depth: f32,
+    /// Depth over time (ADR 0082): with keys, the depth at a frame is theirs
+    /// ([`Layer::depth_at`]) and `depth` plays no part. Sorted by frame, one per frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depth_keys: Vec<camera::DepthKey>,
+    /// Attached to the camera (ADR 0082): the camera's moves leave the layer where it is on
+    /// screen (titles, HUDs); its coordinates are the output's.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub attached: bool,
     /// Volume of the sounds on this layer (and in the symbols on it), `0..=1` (ADR 0039).
     #[serde(default = "full", skip_serializing_if = "is_full")]
     pub volume: f32,
@@ -1299,6 +1321,8 @@ impl PartialEq for Layer {
             && self.onion == o.onion
             && self.height_rows == o.height_rows
             && self.depth.to_bits() == o.depth.to_bits()
+            && self.depth_keys == o.depth_keys
+            && self.attached == o.attached
             && self.volume.to_bits() == o.volume.to_bits()
             && self.muted == o.muted
             && self.mask_mode == o.mask_mode
@@ -1332,6 +1356,8 @@ impl Layer {
             height_rows: 1,
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
             depth: 0.0,
+            depth_keys: Vec::new(),
+            attached: false,
             volume: 1.0,
             muted: false,
             armature: None,
@@ -1931,6 +1957,12 @@ impl Document {
             for k in &l.keyframes {
                 for e in &k.elements {
                     *max_id = (*max_id).max(e.id.0);
+                    // Warp pins take ids from the same counter (ADR 0079).
+                    if let ElementKind::Shape(s) = &e.kind {
+                        for p in s.warp.iter().flat_map(|w| &w.pins) {
+                            *max_id = (*max_id).max(p.id.0);
+                        }
+                    }
                 }
             }
         };
@@ -1951,6 +1983,7 @@ impl Document {
                 sanitize_scripts(l);
                 sanitize_depth(l);
                 sanitize_armature(l);
+                sanitize_warps(l);
                 scan(l, &mut max_id);
                 sanitize_groups(l, 0, &mut max_id);
             }
@@ -1993,6 +2026,7 @@ impl Document {
                 }
                 sanitize_depth(l);
                 sanitize_armature(l);
+                sanitize_warps(l);
                 scan(l, &mut max_id);
                 sanitize_groups(l, 0, &mut max_id);
             }
@@ -2076,11 +2110,47 @@ fn sanitize_groups(layer: &mut Arc<Layer>, depth: usize, max_id: &mut u64) {
     }
 }
 
-/// Keeps a loaded layer's depth finite and in range (touching it only if it isn't).
+/// Repairs the warps on a loaded layer's shapes (ADR 0079): a warp with nothing usable left
+/// goes (the shape keeps the outline it shows), and hostile pins are dropped. Touches only what
+/// needs it.
+fn sanitize_warps(layer: &mut Arc<Layer>) {
+    let bad = |e: &Element| match &e.kind {
+        ElementKind::Shape(Shape { warp: Some(w), .. }) => {
+            let mut x = (**w).clone();
+            !x.sanitize() || x != **w
+        }
+        _ => false,
+    };
+    if !layer.keyframes.iter().any(|k| k.elements.iter().any(|e| bad(e))) {
+        return;
+    }
+    for k in &mut Arc::make_mut(layer).keyframes {
+        if !k.elements.iter().any(|e| bad(e)) {
+            continue;
+        }
+        for e in &mut Arc::make_mut(k).elements {
+            if !bad(e) {
+                continue;
+            }
+            if let ElementKind::Shape(s) = &mut Arc::make_mut(e).kind
+                && let Some(w) = &s.warp
+            {
+                let mut x = (**w).clone();
+                s.warp = x.sanitize().then(|| Arc::new(x));
+            }
+        }
+    }
+}
+
+/// Keeps a loaded layer's depth and depth keys finite and in range (touching it only if they
+/// aren't).
 fn sanitize_depth(layer: &mut Arc<Layer>) {
     let d = camera::clamp_depth(layer.depth);
     if d.to_bits() != layer.depth.to_bits() {
         Arc::make_mut(layer).depth = d;
+    }
+    if !layer.depth_keys_clean() {
+        Arc::make_mut(layer).sanitize_depth_keys();
     }
 }
 

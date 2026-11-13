@@ -29,7 +29,7 @@ your hand.
 | Eraser | **E** | Rub out lines and fills |
 | Rectangle | **R** | Draw rectangles and squares |
 | Oval | **O** | Draw ovals and circles |
-| PolyStar | none | Draw stars |
+| PolyStar | none | Draw polygons and stars |
 | Line | **N** | Draw straight lines |
 | Paint Bucket | **K** | Fill enclosed areas, or recolour fills |
 | Ink Bottle | **S** | Give a shape the current stroke |
@@ -73,6 +73,13 @@ The Eraser only erases merged drawing. Drawing objects, symbols and text are lef
 it. To turn a drawing object back into merged drawing, select it and choose **Modify › Break
 Apart** (**Ctrl+B**): it merges with the merged shapes it touches.
 
+To change a drawing object's shape, **double-click** it (or select it and press **Ctrl+E**).
+It opens in place, as a group does (see [Grouping](#grouping)): the rest of the stage dims, and
+the bar above the stage shows **Scene 1 › Drawing Object**. Inside, its lines and fills are
+merged drawing, cutting and joining only each other, and every tool works on them.
+Double-click empty stage to go back. It stays one object; if your edits left it in several
+pieces, it becomes a group of them.
+
 As in Animate, what you've just drawn isn't selected, so no box gets in the way of the next
 stroke. Switch to the Selection tool (**V**) to pick it up.
 
@@ -110,9 +117,11 @@ unlocked layer at once. **Edit › Deselect All** is **Ctrl+Shift+A**.
 * **Rectangle** (**R**): drag to draw. **Shift** draws a square. Set **Corners** in the
   options for rounded corners.
 * **Oval** (**O**): drag to draw. **Shift** draws a circle.
-* **PolyStar**: drag from the centre to draw a star. **Points** in the options sets how many
-  points it has (3 to 32). It has no shortcut by default, because P is the Pen, as in Animate.
-  Polygons aren't available yet.
+* **PolyStar**: drag from the centre to draw a polygon or a star. Its options (Animate's Tool
+  Settings) are the **Shape**, **Polygon** or **Star**; **Sides** (or **Points**), 3 to 32;
+  and for a star, the **Point size**, 0 to 1: near 0 the points are thin spikes, and at 1 the
+  star is the polygon through its tips. It has no shortcut by default, because P is the Pen, as
+  in Animate.
 * **Line** (**N**): drag to draw. **Shift** keeps the angle to steps of 45°.
 * **Pencil** (**Shift+Y**): drag to draw freehand. Choose a mode in the options:
   **Smooth** evens out your line into flowing curves, **Straighten** turns it into straight
@@ -130,8 +139,17 @@ takes back the last point, and **Alt**-click on a line or a selected shape adds 
 The **Brush** (**B**) paints filled shapes in the fill colour: the shape is exactly the area
 the tip sweeps. A click paints a single dab. The options set the **Size** (or press **[** and
 **]**), **Shape** (Round or Square), **Angle** and **Roundness** for calligraphic tips,
-**Smoothing** to steady a shaky hand, and the **Mode**: **Paint Normal** covers lines and
-fills, **Paint Fills** leaves lines alone, and **Paint Behind** paints only empty areas. With
+**Smoothing** to steady a shaky hand, and the **Mode**:
+
+* **Paint Normal** covers lines and fills.
+* **Paint Fills** leaves lines alone.
+* **Paint Behind** paints only empty areas.
+* **Paint Selection** paints only inside the selected fills. Select them with the Selection tool
+  first; they stay selected, so you can keep painting.
+* **Paint Inside** paints only inside the fill where your stroke starts, however far you go
+  past its edge. Started on empty stage inside an outline, it fills only that empty area.
+
+The last three never cover lines. With
 a pen tablet, pressure sets the width, from 10 % to the full size.
 
 **Snapping while you draw**: with **Snap to Objects** on (the magnet under the tools, or **Ctrl+Shift+/**), the Line,
@@ -315,6 +333,17 @@ the proportions, **Alt** scales from the centre), just outside a corner to **rot
 **Break Apart** turns text into shapes, a symbol instance into the artwork inside it, and a
 drawing object into merged drawing.
 
+### Envelope
+
+**Modify › Transform › Envelope** bends the selected shapes and drawing objects. A mesh of
+handles appears around them, with the Free Transform tool: **squares** move a corner (its
+side's handles move with it) and **circles** bend a side. Each drag is one undo step, and
+undo puts the mesh back where it was too. The envelope ends when you select something else or
+pick another tool; bent merged drawing then joins what it lies on. The bend is part of the
+shapes from then on, as in Animate, so there is nothing to delete (Animate's Delete Envelope
+isn't needed). Symbols, text, groups and bitmaps can't be bent: break them apart first. Artwork with an Asset
+Warp mesh can't either: remove its warp first.
+
 ## Copying, arranging and aligning
 
 ### Clipboard and duplicates
@@ -439,8 +468,7 @@ without snapping. Rulers, the grid and guides never show in Test Movie or in exp
 
 ## Not there yet
 
-Not in AniCraft yet: Envelope and **Delete Envelope**; gradient and bitmap
-strokes; swatch folders, bitmap swatches and the swatches inside Animate files; entering a drawing object
-with a double-click; PolyStar's Polygon option; the Paint Selection and Paint Inside
-brush modes, brush libraries and tilt; erasing inside symbols; and Animate's ragged, stipple
-and hatched line styles (drawn solid when you open an Animate file).
+Not in AniCraft yet: gradient and bitmap strokes; swatch folders, bitmap swatches and the
+swatches inside Animate files; moving the Envelope's handles from the keyboard; pen tilt for
+brushes; erasing inside symbols; and Animate's ragged, stipple and hatched line styles (drawn
+solid when you open an Animate file).

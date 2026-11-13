@@ -23,6 +23,7 @@ pub enum Panel {
     Library,
     MovieExplorer,
     History,
+    LayerDepth,
     Timeline,
     MotionEditor,
     Actions,
@@ -32,7 +33,7 @@ pub enum Panel {
 
 impl Panel {
     /// In the Window menu's order.
-    pub const ALL: [Panel; 11] = [Panel::Actions, Panel::Align, Panel::Colour, Panel::History, Panel::Library, Panel::MotionEditor, Panel::MovieExplorer, Panel::Output, Panel::Properties, Panel::Swatches, Panel::Timeline];
+    pub const ALL: [Panel; 12] = [Panel::Actions, Panel::Align, Panel::Colour, Panel::History, Panel::LayerDepth, Panel::Library, Panel::MotionEditor, Panel::MovieExplorer, Panel::Output, Panel::Properties, Panel::Swatches, Panel::Timeline];
 
     /// Its machine name, in the preferences (English, never translated).
     pub fn id(self) -> &'static str {
@@ -43,6 +44,7 @@ impl Panel {
             Panel::Library => "library",
             Panel::MovieExplorer => "movie_explorer",
             Panel::History => "history",
+            Panel::LayerDepth => "layer_depth",
             Panel::Timeline => "timeline",
             Panel::MotionEditor => "motion_editor",
             Panel::Actions => "actions",
@@ -64,6 +66,7 @@ impl Panel {
             Panel::Library => tr_noop!("Library"),
             Panel::MovieExplorer => tr_noop!("Movie Explorer"),
             Panel::History => tr_noop!("History"),
+            Panel::LayerDepth => tr_noop!("Layer Depth"),
             Panel::Timeline => tr_noop!("Timeline"),
             Panel::MotionEditor => tr_noop!("Motion Editor"),
             Panel::Actions => tr_noop!("Actions"),
@@ -80,6 +83,7 @@ impl Panel {
             Panel::Output => [520.0, 300.0],
             Panel::Align => [300.0, 140.0],
             Panel::Swatches => [300.0, 300.0],
+            Panel::LayerDepth => [440.0, 260.0],
             _ => [320.0, 460.0],
         }
     }
@@ -457,6 +461,9 @@ fn default_home(p: Panel) -> Home {
         Panel::History => (Side::Right, None),
         Panel::Timeline | Panel::MotionEditor | Panel::Output => (Side::Bottom, Some(Panel::Timeline)),
         Panel::Actions => (Side::Right, None),
+        // Layer Depth opens as a tab beside the Library, under Properties, where it has the
+        // width for its tracks.
+        Panel::LayerDepth => (Side::Right, Some(Panel::Library)),
     };
     Home { side, near, floating: p == Panel::Actions }
 }

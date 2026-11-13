@@ -1,7 +1,7 @@
 # Masks, guides, camera and bones
 
 Some layers do a special job. This chapter covers mask layers, guide layers and motion guides,
-the camera layer, and bones for posing a character.
+the camera layer, bones for posing a character, and Asset Warp for bending artwork with pins.
 
 A note on keys: AniCraft uses **Ctrl** on Windows and Linux and **⌘** (Command) on macOS, and
 **Alt** is **⌥** (Option) on macOS. So **Ctrl+Z** is **⌘Z** on a Mac.
@@ -106,8 +106,10 @@ With the Camera tool:
 * use the mouse wheel to zoom.
 
 Each drag is one undo step. For exact values, use **Properties › Camera**: **Position**,
-**Zoom** (5 to 2,000 %), **Rotation**, and a **Tint** over the whole view with its amount.
-**Reset** puts the camera back to the plain stage: centred, 100 %, no turn and no tint.
+**Zoom** (5 to 2,000 %), **Rotation**, and a **Colour effect** over the whole view: **Brightness**,
+**Tint** or **Advanced** (red, green and blue multipliers and offsets), as on a symbol instance.
+The camera has no opacity, so there is no Alpha style. Colour effects tween with the camera.
+**Reset** puts the camera back to the plain stage: centred, 100 %, no turn and no colour effect.
 
 ### Animating the camera
 
@@ -117,17 +119,37 @@ is **Scale X**.
 
 The Camera layer holds only the camera. Draw your artwork on other layers.
 
-### Depth and parallax
+### Layer depth
 
-Once the scene has a camera, each layer can have a **Depth** in **Properties › Frame**. A layer
-with more depth sits farther behind the stage and moves less as the camera pans, which gives a
-sense of distance (parallax). A negative depth puts the layer in front.
+Once the scene has a camera, each layer can have a **depth**: how far behind the stage it sits,
+in pixels (a negative depth puts it in front, down to −500). The camera sees the layers as a real
+camera would (a pinhole camera 1,000 px from the stage): when it pans, a deeper layer moves less;
+when it zooms in, a deeper layer grows less. Deeper layers are drawn behind nearer ones; layers at
+the same depth keep their timeline order. With the camera at rest, every layer looks just as you
+drew it, and a layer at depth 0 behaves exactly as it always did.
+
+Open **Window › Layer Depth** to see the layers listed by depth, nearest first. Drag a layer's
+handle along its track (left is nearer, right is farther) or type its depth. Each drag is one
+undo step. The **Depth** row in **Properties › Frame** sets the active layer's depth too.
+
+**Animating depth.** Click the diamond beside a depth to key it on the current frame. The depth
+then tweens evenly between keys and holds before the first and after the last. Click a filled
+diamond to remove that key.
+
+### Attaching a layer to the camera
+
+Titles, captions and HUDs should stay put while the camera moves. Click the camera icon on a
+layer's row in the timeline (or **Attach** in the Layer Depth panel) to attach the layer to the
+camera: it then stays exactly where you drew it on screen, whatever the camera does. Draw it as
+it should look in the frame, with the camera at rest.
 
 ### Preview Through Camera
 
 Choose **View › Preview Through Camera** (also in the Camera layer's right-click menu and in
 **Properties › Camera**) to see the stage just as the movie will look. While you preview, the
-drawing tools pause; turn the preview off to edit artwork again.
+**Selection** tool still works: click artwork where you see it to select it, and drag it to move
+it. It follows the pointer at any depth and zoom. The drawing tools pause; turn the preview off to
+draw.
 
 While you're editing, the stage otherwise stays in stage space, so your artwork doesn't jump
 around as the camera moves. Test Movie and every export always see through the camera.
@@ -140,8 +162,8 @@ around as the camera moves. Test Movie and every export always see through the c
   **Modify › Timeline › Remove Camera**. If the camera is animated, AniCraft asks first. Undo
   brings it back.
 
-Not there yet: editing artwork while previewing through the camera, a perspective mode where
-depth scales layers, depth inside symbols, and cameras from Animate files.
+Not there yet: tools other than Selection while previewing, depth inside symbols, depth keys that
+move with inserted frames, and cameras or layer depth from Animate files.
 
 ## Bones and inverse kinematics
 
@@ -228,6 +250,43 @@ by hand.
 Not there yet: symbols and shapes in one armature, reshaping a shape after it has bones,
 springs, joints that slide, armatures that scripts pose while the movie plays, and armatures
 from Animate files.
+
+## Asset Warp
+
+Asset Warp bends a shape or a bitmap with pins, without bones: a flag in the wind, a squashed
+ball, a character's sleeve, a photo curled at one corner.
+
+1. Pick the **Asset Warp** tool (**Shift+Q**, next to Free Transform).
+2. Click the artwork to pin it there. The first pin covers it with a **warp mesh**, a fine grid
+   that shows faintly while the tool is in hand. Add a few more pins: where the artwork should
+   hold still, and where you want to pull it.
+3. Drag a pin. The artwork bends around the other pins as you drag, keeping its parts as
+   rigid as it can (no shearing or squashing near the pins). With only one pin, the whole thing
+   moves. Dragging artwork where there is no pin adds one there and drags it. Each drag is one
+   undo step.
+
+Click a pin to pick it (it turns blue), then press **Delete** to remove it, or **Esc** to let
+it go. Pins don't move anything when you add them, and the artwork with all its pins where you
+placed them looks exactly as you drew it.
+
+**Animating a warp.** Pins live on keyframes, like a pose. Make a keyframe (**F6**), move the
+pins there, and add a classic tween between the keyframes: the pins tween with the span's
+easing and the artwork bends smoothly between the two shapes. Moving a pin in the middle of a
+tween adds a keyframe there. A pin you add later appears on every keyframe of the artwork.
+
+**Properties › Asset Warp** shows the mesh's **resolution** (cells along the artwork's longer
+side: more cells bend more smoothly, fewer are faster), how many pins it has, **Remove Pin**
+and **Remove Warp** (the artwork goes back to how you drew it, on every keyframe). The same
+commands are in **Modify › Asset Warp**.
+
+The warped artwork becomes a drawing object, so shapes you draw later don't cut into it. If you
+reshape it with another tool afterwards, the warp starts again from the new shape, with its
+pins where they are. A gradient fill keeps its place while the outline bends; a bitmap bends
+with the mesh. Every export shows the bent artwork. SVG writes a bent bitmap as an image, and
+HTML and Lottie can't bend a bitmap yet (the export report says so).
+
+Not there yet: warping symbols and text, tying pins to bones, and warped artwork from Animate
+files.
 
 ## Next steps
 

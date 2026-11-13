@@ -263,10 +263,16 @@ pub fn commit(app: &mut App, xf: Xf) {
         }
         return;
     }
-    if let Some(v) = app.draw("draw.brush", params)
+    // Paint Selection keeps the selection it paints in, for the next stroke (ADR 0080).
+    let v = if o.mode == PaintMode::Selection { app.run("draw.brush", params) } else { app.draw("draw.brush", params) };
+    if let Some(v) = v
         && v["elements"].as_array().is_some_and(Vec::is_empty)
     {
-        app.status_ok(tr!("Nothing to paint behind there: Paint Behind only paints empty areas."));
+        match o.mode {
+            PaintMode::Selection => app.status_ok(tr!("Nothing painted: Paint Selection paints only inside the selected fills. Select them with the Selection tool first.")),
+            PaintMode::Inside => app.status_ok(tr!("Nothing painted: Paint Inside paints only inside the fill where the stroke starts.")),
+            _ => app.status_ok(tr!("Nothing to paint behind there: Paint Behind only paints empty areas.")),
+        }
     }
 }
 

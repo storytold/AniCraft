@@ -427,7 +427,7 @@ fn enabled(app: &App, id: &str) -> bool {
         "scene.delete" => app.s.doc.scenes.len() > 1,
         // Ctrl+E opens the selected instance, or goes back to the document (ADR 0045).
         "symbol.exit" => !app.s.editing.is_empty(),
-        "symbol.edit" => !app.s.editing.is_empty() || app.s.selected_elements().iter().any(|(_, e)| matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. } | anicraft_engine::doc::ElementKind::Group { .. })),
+        "symbol.edit" => !app.s.editing.is_empty() || app.s.selected_elements().iter().any(|(_, e)| anicraft_engine::editing::opens(e)),
         // Groups and Combine Objects (ADR 0073).
         "modify.group" => !app.s.selection.is_empty(),
         "modify.ungroup" => app.s.selected_elements().iter().any(|(_, e)| matches!(e.kind, anicraft_engine::doc::ElementKind::Group { .. })),

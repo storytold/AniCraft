@@ -212,6 +212,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let (canvas, bars) = crate::rulers::layout(app, ui.max_rect());
     let now = ui.input(|i| i.time);
     crate::camera_tool::on_tool_change(app);
+    crate::shape_envelope::settle(app);
     crate::camera_tool::tick(app, ui.ctx(), now);
     app.stage_cache.canvas = canvas;
     let resp = ui.allocate_rect(canvas, Sense::click_and_drag());
@@ -295,8 +296,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let to_screen = |p: Vec2| pos2(origin.x + p.x * zoom, origin.y + p.y * zoom);
     let to_stage = |p: Pos2| pos2((p.x - origin.x) / zoom, (p.y - origin.y) / zoom);
     let painter = ui.painter_at(canvas);
-    // View > Preview Through Camera: the stage shows the movie's picture (ADR 0027). Artwork
-    // tools pause meanwhile (what they'd edit is in stage space, not where it shows).
+    // View > Preview Through Camera: the stage shows the movie's picture (ADR 0027). The
+    // Selection tool picks and moves artwork there, the pointer mapped back through the camera
+    // and each layer's depth (ADR 0082); the other artwork tools pause (what they'd edit is in
+    // stage space, not where it shows).
     let preview = crate::camera_tool::previewing(app);
     let cam_geo = crate::camera_tool::Geo { origin: st_origin, zoom: st_zoom, stage_rect, preview };
     // Library items dragged onto the stage land at the pointer (ADR 0053).
@@ -310,12 +313,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
     app.cursor_stage = pointer.filter(|p| canvas.contains(*p)).map(to_stage);
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
-    let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom);
+    let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom | Tool::Select);
+    // The Selection tool on the movie's picture: points there are the picture's (ADR 0082).
+    let through = preview && !panning && app.tool == Tool::Select;
     // A drag from a ruler makes a guide (ADR 0076).
     crate::rulers::input(app, ui, &bars, geo, preview);
     let guide_hot = if app.drag == Drag::None && !panning && !preview { pointer.and_then(|p| crate::rulers::guide_at(app, geo, p)) } else { None };
     if paused && (resp.drag_started() || resp.clicked()) {
-        app.status_ok(tr!("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit."));
+        app.status_ok(tr!("Previewing through the camera: the Selection tool picks and moves artwork here; other tools wait. Turn off View › Preview Through Camera to draw."));
     }
     // Selection box in screen space (free transform handles live on it).
     // Edit Multiple Frames takes the Selection and Free Transform tools' input (ADR 0047); Free
@@ -355,7 +360,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             _ if let Some(i) = guide_hot => crate::rulers::cursor(app, i),
             _ if let Drag::SliceGuide { guide } = app.drag => guide.cursor(),
             _ if let Some(guide) = slice_hot => guide.cursor(),
-            _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::BonePose { .. }) => CursorIcon::Grabbing,
+            _ if matches!(app.drag, Drag::Hint { .. } | Drag::CameraPan { .. } | Drag::BonePose { .. } | Drag::WarpPin { .. }) => CursorIcon::Grabbing,
             _ if matches!(app.drag, Drag::ArmatureMove { .. }) => CursorIcon::Move,
             Tool::Select if app.drag == Drag::None && pointer.is_some_and(|p| crate::bone_tool::hit(app, xf, p).is_some()) => CursorIcon::Grab,
             _ if paused => CursorIcon::NotAllowed,
@@ -368,6 +373,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             _ if pen_hot.is_some() => CursorIcon::Copy,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::GradientTransform => crate::gradient_tool::cursor(app, pointer, xf),
+            Tool::Transform if matches!(app.drag, Drag::Envelope { .. }) => CursorIcon::Grabbing,
+            Tool::Transform if app.drag == Drag::None && pointer.is_some_and(|p| crate::shape_envelope::over_handle(app, xf, p)) => CursorIcon::Grab,
             Tool::Transform => {
                 let zone = match app.drag {
                     Drag::Transform { kind, .. } | Drag::MultiTransform { kind, .. } => Some(kind),
@@ -383,7 +390,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     None => CursorIcon::Default,
                 }
             }
-            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone | Tool::Bind => CursorIcon::Crosshair,
+            Tool::Rect | Tool::Oval | Tool::Star | Tool::Line | Tool::Pen | Tool::Pencil | Tool::Brush | Tool::PaintBrush | Tool::Eraser | Tool::PaintBucket | Tool::InkBottle | Tool::Eyedropper | Tool::Bone | Tool::Bind | Tool::Warp => CursorIcon::Crosshair,
             Tool::Text => CursorIcon::Text,
             Tool::Zoom => {
                 if alt {
@@ -412,6 +419,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Pan
         } else if paused {
             Drag::None
+        } else if through {
+            crate::camera_tool::select_press(app, to_v(sp), shift)
         } else if let Some(i) = crate::rulers::guide_at(app, geo, press) {
             // The Selection tool on a guide moves it; onto a ruler, deletes it (ADR 0076).
             crate::rulers::drag_start(app, i)
@@ -430,6 +439,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             match tool {
                 // Edit Multiple Frames (ADR 0047): artwork on every keyframe between the markers;
                 // Free Transform's handles transform it all about one pivot (ADR 0051).
+                // An open envelope's handles (ADR 0080).
+                Tool::Transform if !multi && let Some(d) = crate::shape_envelope::drag_start(app, xf, press) => d,
                 Tool::Transform if multi && let (Some(kind), Some(bounds)) = (sel_rect.and_then(|r| xf_zone(r, press)), sel_bounds) => {
                     app.s.begin_gesture(tr_noop!("Free Transform"));
                     Drag::MultiTransform { kind, start: sp, bounds, applied: Affine::IDENTITY }
@@ -464,6 +475,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Subselect => crate::pathtools::subselect_drag_start(app, press, shift, xf),
                 Tool::Bone => crate::bone_tool::drag_start(app, xf, press),
                 Tool::Bind => crate::bind_tool::drag_start(app, xf, press),
+                Tool::Warp => crate::warp_tool::drag_start(app, xf, press),
                 Tool::Width => crate::widthtool::drag_start(app, press, xf),
                 Tool::GradientTransform => crate::gradient_tool::drag_start(app, press, xf),
                 Tool::Pencil => {
@@ -515,6 +527,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         match (&mut app.drag, cur) {
             (Drag::Pan, _) => app.view.pan += resp.drag_delta(),
+            (Drag::CameraMove { last }, Some(c)) => {
+                let mut l = *last;
+                crate::camera_tool::move_to(app, &mut l, to_v(c));
+                app.drag = Drag::CameraMove { last: l };
+            }
             (Drag::Move { last }, Some(c)) => {
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
@@ -611,6 +628,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             (Drag::PointMarquee { cur: m, .. } | Drag::BindMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (Drag::WarpPin { element, pin }, Some(c)) => {
+                let (element, pin) = (*element, *pin);
+                crate::warp_tool::drag_to(app, element, pin, c);
+            }
             (d @ Drag::Width { .. }, Some(c)) => {
                 let d = *d;
                 crate::widthtool::drag_to(app, d, to_v(c), alt, zoom);
@@ -618,6 +639,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             (d @ Drag::Gradient { .. }, Some(c)) => {
                 let d = *d;
                 crate::gradient_tool::drag_to(app, d, to_v(c), shift);
+            }
+            (d @ Drag::Envelope { .. }, Some(c)) => {
+                let d = *d;
+                crate::shape_envelope::drag_to(app, d, to_v(c));
             }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
             (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf, now),
@@ -630,16 +655,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::SnapMove { .. } => {
+            Drag::Move { .. } | Drag::SnapMove { .. } | Drag::CameraMove { .. } => {
                 app.drop_raw();
                 app.s.end_gesture();
             }
             Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => end_raw_drag(app),
-            Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
+            Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } | Drag::WarpPin { .. } => app.s.end_gesture(),
             Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
             Drag::Guide { index, .. } => crate::rulers::drag_end(app, index, geo, ui.input(|i| i.pointer.latest_pos())),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::Gradient { .. } => crate::gradient_tool::drag_end(app),
+            Drag::Envelope { .. } => crate::shape_envelope::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
@@ -671,6 +697,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
+                // Previewing: pick what the movie shows there (ADR 0082).
+                Tool::Select if through => {
+                    app.bone_sel = None;
+                    app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift, "view": "camera"}));
+                }
                 _ if !panning && let Some(text) = app.path_pick.take() => {
                     app.s.selection = anicraft_engine::Selection::only(app.s.layer, [text]);
                     if app.run("text.attach_path", json!({"x": sp.x, "y": sp.y})).is_some() {
@@ -717,6 +748,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tool::Bone if !panning => crate::bone_tool::click(app, xf, p),
                 Tool::Bind if !panning => crate::bind_tool::click(app, xf, p, shift, command),
+                Tool::Warp if !panning => crate::warp_tool::click(app, xf, p),
                 Tool::Select | Tool::Transform if !panning && multi => crate::onion::click(app, sp, shift, zoom),
                 // A click on a bone picks it (ADR 0043).
                 Tool::Select if !panning && let Some((layer, bone, _)) = crate::bone_tool::hit(app, xf, p) => crate::bone_tool::select(app, layer, Some(bone)),
@@ -762,8 +794,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let slop = 3.0 / zoom.max(1e-3);
         if !open_text_at(app, sp, slop) {
             match app.s.hit_test(to_v(sp), slop) {
-                // A symbol instance (ADR 0045) or a group (ADR 0073) opens for editing in place.
-                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. } | anicraft_engine::doc::ElementKind::Group { .. })) => {
+                // A symbol instance (ADR 0045), a group (ADR 0073) or a drawing object (ADR 0080)
+                // opens for editing in place.
+                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && anicraft_engine::editing::opens(e)) => {
                     app.run("symbol.edit", json!({"id": id.0}));
                 }
                 // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and
@@ -1029,10 +1062,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // Armatures' bones over their artwork (ADR 0043).
     crate::bone_tool::draw(app, &painter, xf);
     crate::bind_tool::draw(app, &painter, xf);
+    crate::warp_tool::draw(app, &painter, xf);
     let sel_stroke = Stroke::new(1.0, T.selection);
     let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None
         && !multi
+        && !preview
         && app.palette.is_none()
         && !app.modal_open()
         && let Some(sp) = app.cursor_stage
@@ -1045,8 +1080,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
     let transforming = app.tool == Tool::Transform;
+    // An open envelope (ADR 0080) shows its mesh instead of boxes.
+    let enveloped = crate::shape_envelope::shown(app).is_some();
     // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
-    if app.tool == Tool::Select {
+    if app.tool == Tool::Select && !preview {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
         let (mut spans, mut dots) = (Vec::new(), egui::Mesh::default());
         let mut budget = MAX_DOTS;
@@ -1072,6 +1109,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if b.is_empty() {
             continue;
         }
+        // Previewing: the box where the movie shows it, through the camera and the layer's
+        // depth (ADR 0082).
+        if preview {
+            let v = app.s.camera_view(layer).unwrap_or(Affine::IDENTITY);
+            let q = [b.min, Vec2::new(b.max.x, b.min.y), b.max, Vec2::new(b.min.x, b.max.y)].map(|p| to_screen(v.apply(p)));
+            painter.add(egui::Shape::closed_line(q.to_vec(), sel_stroke));
+            continue;
+        }
         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max)).expand(1.0);
         if matches!(app.tool, Tool::Subselect | Tool::Width | Tool::GradientTransform) {
             // Subselection and Width show outlines and points instead (below); Gradient
@@ -1080,6 +1125,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         if app.tool == Tool::Select && raw.contains(&(layer, id)) {
             continue; // dots above
+        }
+        if transforming && enveloped {
+            continue;
         }
         if transforming {
             // Free transform shows one box for the whole selection (below); members get a hint.
@@ -1106,7 +1154,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Free transform box: recomputed every frame so it follows the artwork while you drag.
     let xf_box = if multi { crate::onion::selection_bounds(app) } else { bounds_arr(app.s.selection_bounds()) };
-    if transforming && let Some(b) = xf_box {
+    if transforming && !enveloped && let Some(b) = xf_box {
         let r = Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))).expand(1.0);
         painter.rect_stroke(r, 0.0, Stroke::new(1.5, T.selection), StrokeKind::Middle);
         for (h, _, _) in handles(r) {
@@ -1123,6 +1171,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::gradient_tool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
+    crate::shape_envelope::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
     crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     // After this frame's edits, so a drag on the path shows where it is now.
@@ -1690,6 +1739,7 @@ mod pattern_tests {
             group: None,
             image: None,
             smooth: true,
+            warp: None,
         }
     }
 
@@ -1933,8 +1983,11 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
             app.draw("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
         }
         Tool::Star => {
-            let r = d.length();
-            app.draw("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
+            let mut p = app.polystar.params();
+            p["cx"] = json!(start.x);
+            p["cy"] = json!(start.y);
+            p["outer"] = json!(d.length());
+            app.draw("draw.star", p);
         }
         Tool::Line => {
             app.draw("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
@@ -1965,15 +2018,9 @@ fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32)
             painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
         }
         Tool::Star => {
-            let rr = (b - a).length();
-            let n = app.star_points.clamp(3, 64) as usize;
-            let pts: Vec<Pos2> = (0..n * 2)
-                .map(|i| {
-                    let r = if i % 2 == 0 { rr } else { rr * 0.45 };
-                    let t = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / n as f32;
-                    a + vec2(r * t.cos(), r * t.sin())
-                })
-                .collect();
+            // The same corners the command draws (ADR 0080).
+            let o = app.polystar;
+            let pts: Vec<Pos2> = anicraft_engine::geom::polystar_corners(a.x, a.y, (b - a).length(), o.sides.clamp(3, 32), o.star, o.point_size).into_iter().map(|v| Pos2::new(v.x, v.y)).collect();
             painter.add(egui::Shape::closed_line(pts, stroke));
         }
         Tool::Line => {
