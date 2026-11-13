@@ -498,6 +498,8 @@ pub struct App {
     pub test_movie: Option<crate::test_movie::TestMovie>,
     /// Edit Envelope: a keyframe sound's volume per channel, in its own window (ADR 0039).
     pub envelope: Option<crate::envelope::EnvelopeEditor>,
+    /// The Custom Ease window (ADR 0081), when open.
+    pub ease: Option<crate::ease_editor::EaseEditor>,
     pub show_shortcuts: bool,
     /// The window close was intercepted because of unsaved changes.
     pub close_dialog: bool,
@@ -723,6 +725,7 @@ impl App {
             actions: crate::actions_panel::State::default(),
             test_movie: None,
             envelope: None,
+            ease: None,
             show_shortcuts: false,
             close_dialog: false,
             allow_close: false,
@@ -1994,6 +1997,32 @@ impl App {
                     self.run("timeline.goto", json!({"frame": 14}));
                 }
             }
+            Some(which @ ("ease" | "easepreset")) => {
+                // The demo's ball: its classic tween eased by a custom curve of three segments
+                // that overshoots and settles (saved as "Overshoot"), the Custom Ease window open
+                // on it with a point picked; or Elastic Out on its own Position group.
+                let ball = self.s.timeline().layers.iter().find(|l| l.keyframes.first().is_some_and(|k| k.tween.is_some() && k.motion.is_none())).map(|l| l.id.0);
+                if let Some(id) = ball {
+                    self.run("layer.select", json!({"layer": id}));
+                    self.run("timeline.goto", json!({"frame": 4}));
+                    let start = self.s.active_layer().and_then(|l| l.keyframe_at(4)).map_or(0, |k| k.start);
+                    let curve = json!([[0, 0], [0.12, 0.6], [0.22, 1.25], [0.38, 1.25], [0.5, 1.25], [0.55, 0.85], [0.66, 0.85], [0.76, 0.85], [0.86, 1.0], [1, 1]]);
+                    self.run("timeline.set_easing", json!({"frame": start, "easing": {"custom": curve}}));
+                    self.run("ease.save", json!({"frame": start, "name": "Overshoot"}));
+                    if which == "easepreset" {
+                        self.run("ease.separate", json!({"separate": true, "frame": start}));
+                        self.run("timeline.set_easing", json!({"frame": start, "group": "position", "easing": "ElasticOut"}));
+                    }
+                    self.s.mark_saved();
+                    crate::ease_editor::open_here(self);
+                    if let Some(ed) = self.ease.as_mut()
+                        && which == "easepreset"
+                    {
+                        ed.group = Some(anicraft_engine::doc::EaseGroup::Position);
+                    }
+                    crate::ease_editor::select(self, if which == "ease" { 1 } else { 3 });
+                }
+            }
             Some("envelope") => {
                 // The beat with a custom envelope (in from the left, out to the right), its
                 // envelope editor open on a selected point, the layer at 80 %.
@@ -2085,6 +2114,33 @@ impl App {
                 self.run("timeline.goto", json!({"frame": 0}));
                 self.bone_sel = Some(anicraft_engine::doc::BoneId(b2));
                 self.tool = Tool::Select;
+            }
+            Some("springbones") => {
+                // A tail on springs (ADR 0084): a body that bobs up and back down over half a
+                // second, its three-piece tail swinging after it, mid-swing at frame 17; the tip's
+                // bone picked (its joint slides along X), so Properties shows Spring and
+                // Translation.
+                self.run("layer.new", json!({"name": "Critter"}));
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                self.run("draw.rect", json!({"x": 260, "y": 300, "w": 190, "h": 110, "radius": 36, "fill": "#5f8dd3", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let body = id(self.run("modify.convert_to_symbol", json!({"name": "Body"})), "instance");
+                self.run("draw.rect", json!({"x": 450, "y": 341, "w": 120, "h": 28, "radius": 14, "fill": "#ff9f43", "stroke": "#1b2a4a", "stroke_width": 3}));
+                let made = self.run("modify.convert_to_symbol", json!({"name": "Tail"}));
+                let (symbol, t1) = (id(made.clone(), "symbol"), id(made, "instance"));
+                let t2 = id(self.run("library.place", json!({"symbol": symbol, "x": 620, "y": 355})), "element");
+                let t3 = id(self.run("library.place", json!({"symbol": symbol, "x": 730, "y": 355})), "element");
+                let b1 = id(self.run("bone.add", json!({"from": body, "to": t1, "head": [452, 355], "tail": [562, 355]})), "bone");
+                let b2 = id(self.run("bone.add", json!({"from": t1, "to": t2, "tail": [672, 355]})), "bone");
+                let b3 = id(self.run("bone.add", json!({"from": t2, "to": t3, "tail": [782, 355]})), "bone");
+                self.run("bone.pose", json!({"dx": 0, "dy": -50, "frame": 6}));
+                self.run("bone.pose", json!({"dx": 0, "dy": 50, "frame": 12}));
+                for b in [b1, b2, b3] {
+                    self.run("bone.set_spring", json!({"bone": b, "strength": 45, "damping": 30}));
+                }
+                self.run("bone.set_translation", json!({"bone": b3, "axis": "x", "min": -20, "max": 40}));
+                self.run("timeline.goto", json!({"frame": 16}));
+                self.tool = Tool::Select;
+                crate::bone_tool::select(self, self.s.layer, Some(anicraft_engine::doc::BoneId(b3)));
             }
             Some("shapebones") => {
                 // A tail with bones inside it (ADR 0071): four bones, curled at frame 1 and the
@@ -2923,6 +2979,7 @@ impl App {
             crate::warp_tool::consume_keys(self, ctx);
         }
         crate::library::consume_keys(self, ctx);
+        crate::ease_editor::consume_keys(self, ctx);
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
         let mut play = false;
@@ -3403,6 +3460,7 @@ impl App {
         crate::publish_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
+        crate::ease_editor::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {

@@ -39,18 +39,60 @@ artwork.
 ## Easing
 
 Easing makes motion speed up or slow down instead of moving at one steady pace. Pick an ease
-for a classic or shape tween in any of these places:
+for a classic or shape tween in either of these places:
 
-* the **Easing** menu in the timeline header (it appears while the playhead is in a tween);
-* **Properties › Frame › Tween**, which also shows a small picture of the curve;
-* the right-click menu on the span, under **Ease**.
+* the ease menu in the timeline header (it appears while the playhead is in a tween);
+* **Properties › Frame › Ease**, which also shows a small picture of the curve (click it to
+  edit the curve).
 
-The presets are **Linear**, **Ease in (quad)**, **Ease out (quad)**, **Ease in-out (quad)**,
-**Ease in (cubic)**, **Ease out (cubic)**, **Ease in-out (cubic)** and **Smooth (bezier)**. An
-"in" ease starts slowly, an "out" ease ends slowly, and "in-out" does both.
+The menu holds:
 
-Motion tweens have their own, finer easing per property: see [The Motion
-Editor](#the-motion-editor).
+* **No Ease**: a steady pace.
+* **Classic Ease**: one **Strength**, from −100 (starts slowly) to +100 (ends slowly).
+* **Quad, Cubic, Quart, Quint, Sine, Back, Circ, Bounce and Elastic**, each **In**, **Out** and
+  **In Out**, drawn as small curves. An In ease starts slowly, an Out ease ends slowly, In Out
+  does both. Quad to Quint get steeper in turn; Back overshoots a little and comes back;
+  Bounce lands like a dropped ball; Elastic springs past the end and settles.
+* The eases you saved in this document (see below).
+* **Edit Ease…**, which opens the Custom Ease window.
+
+### Custom eases
+
+The **Custom Ease** window (Edit Ease…, the ✎ button in Properties, or **Edit Ease…** on the
+span's right-click menu) shows the ease as a graph: time goes across, progress goes up from
+0 % (the first keyframe) to 100 % (the next), and the curve may go above or below them for an
+overshoot or a wind-up.
+
+* Click the curve to add a point. The shape doesn't change until you move it.
+* Drag a point, or the handles of the selected point, to shape the curve. Each drag is one
+  undo step. A point can't pass its neighbours, so time never runs backwards.
+* Double-click a point to make it smooth (handles in line) or a corner. Right-click a point to
+  delete it. The two ends stay where they are.
+* The selected point's **Time** and **Value** can be typed below the graph.
+* With the graph focused, the keyboard does the same: `[` and `]` pick a point, the arrows move
+  it (Shift moves ten times further), `S` makes it smooth or a corner, `+` adds a point after
+  it, and Delete removes it.
+
+Picking a preset and then dragging its curve turns it into a custom ease. **Reset** goes back
+to No Ease.
+
+**Ease each property separately** gives a classic tween one ease for each of **Position**,
+**Rotation**, **Scale**, **Colour** and **Filters**: pick one at the top of the window and
+shape its curve. Turn it off to use one ease for everything again. (Shape tweens have one
+ease.)
+
+### Saving and copying eases
+
+Type a name beside **Save as** and click **Save** to keep the ease in the document. Saved eases
+appear in every ease menu, for classic tweens and Motion Editor properties alike. A tween
+given a saved ease gets a copy of its curve, so changing or deleting the saved ease later
+doesn't change tweens that already use it. Click a saved ease's name under the buttons to edit
+it, rename it or delete it.
+
+**Copy Ease** and **Paste Ease** (in the window, or on the span's right-click menu) carry an
+ease from one tween, property group or Motion Editor segment to another.
+
+Motion tweens have their own easing per property: see [The Motion Editor](#the-motion-editor).
 
 ## Shape tweens
 
@@ -132,8 +174,10 @@ On the right is the selected property's curve:
 * double-click to add a key;
 * click to move the playhead.
 
-Under **Ease**, pick a preset for the segment at the playhead. **Same for all** gives every
-property's segment there the same ease. Each drag is one undo step.
+Under **Ease**, pick a preset or a saved ease for the segment at the playhead, or click ✎ to
+shape it in the Custom Ease window. Eases that one curve can't draw (Bounce, Elastic, custom
+eases of several points) show no handles in the graph: shape them in the window. **Same for
+all** gives every property's segment there the same ease. Each drag is one undo step.
 
 **Remove Tween** takes the motion tween away, leaving the object as it is on the span's first
 frame.
@@ -239,8 +283,9 @@ Classic tweens can follow a path too, using a motion guide layer. See
 
 ## Tweens in Animate files
 
-When you open an Animate document, its classic tweens (with their eases), shape tweens and shape
-hints come across. Motion tweens and their motion paths don't come across from Animate files
+When you open an Animate document, its classic tweens (with their eases, custom eases of any
+number of points and eases set per property included), shape tweens and shape hints come
+across. Motion tweens and their motion paths don't come across from Animate files
 yet. See [Opening Animate files](opening-animate-files.md).
 
 ## Next steps

@@ -108,8 +108,9 @@ fn value_range(track: Option<&Track>, base: f32, frames: u32, p: Property) -> (f
         for (i, k) in t.keys.iter().enumerate() {
             lo = lo.min(k.value);
             hi = hi.max(k.value);
-            if let Some(n) = t.keys.get(i + 1) {
-                let (_, y1, _, y2) = k.ease.as_bezier();
+            if let Some(n) = t.keys.get(i + 1)
+                && let Some((_, y1, _, y2)) = k.ease.as_bezier()
+            {
                 for y in [y1, y2] {
                     let v = k.value + (n.value - k.value) * y;
                     lo = lo.min(v);
@@ -313,13 +314,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // Keys and the selected segment's handles.
-    let keys: Vec<(u32, f32, Easing)> = track.map(|t| t.keys.iter().filter(|k| k.frame < frames).map(|k| (k.frame, k.value, k.ease)).collect()).unwrap_or_default();
+    let keys: Vec<(u32, f32, Easing)> = track.map(|t| t.keys.iter().filter(|k| k.frame < frames).map(|k| (k.frame, k.value, k.ease.clone())).collect()).unwrap_or_default();
     // The selected key: the one picked, else the one starting the segment at the playhead.
     let sel_key = app.me_key.filter(|f| keys.iter().any(|k| k.0 == *f)).or_else(|| keys.iter().rev().find(|k| k.0 <= offset).map(|k| k.0));
     let handles: Option<[Pos2; 4]> = sel_key.and_then(|f| {
         let i = keys.iter().position(|k| k.0 == f)?;
         let (a, b) = (keys.get(i)?, track?.keys.get(i + 1)?);
-        let (x1, y1, x2, y2) = a.2.as_bezier();
+        // Eases one curve can't draw (Bounce, Elastic, custom curves) are shaped in the
+        // Custom Ease window instead.
+        let (x1, y1, x2, y2) = a.2.as_bezier()?;
         let (f0, f1) = (a.0 as f32, b.frame as f32);
         let dv = handle_span(a.1, b.value, lo, hi);
         let at = |x: f32, y: f32| pos2(x_of(f0 + x * (f1 - f0)), y_of(a.1 + y * dv));
@@ -459,7 +462,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     && let Some(i) = t.key_at(frame)
                     && let (Some(a), Some(b)) = (t.keys.get(i), t.keys.get(i + 1))
                 {
-                    let (mut x1, mut y1, mut x2, mut y2) = a.ease.as_bezier();
+                    let (mut x1, mut y1, mut x2, mut y2) = a.ease.as_bezier().unwrap_or((1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0));
                     let span = (b.frame - a.frame).max(1) as f32;
                     let nx = ((f_of(pt.x) - a.frame as f32) / span).clamp(0.0, 1.0);
                     let ny = ((v_of(pt.y) - a.value) / handle_span(a.value, b.value, lo, hi)).clamp(-5.0, 5.0);
@@ -652,21 +655,23 @@ fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, s
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(10.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     let ui = &mut child;
     let p = app.me_prop;
-    let seg = sel_key.zip(track).and_then(|(f, t)| t.key_at(f).filter(|i| *i + 1 < t.keys.len()).and_then(|i| t.keys.get(i)).map(|k| (f, k.ease)));
+    let seg = sel_key.zip(track).and_then(|(f, t)| t.key_at(f).filter(|i| *i + 1 < t.keys.len()).and_then(|i| t.keys.get(i)).map(|k| (f, k.ease.clone())));
     ui.label(text(Type::Label, tr!("{property} ease", property = crate::i18n::t(p.label()))));
     match seg {
         Some((f, ease)) => {
-            egui::ComboBox::from_id_salt("me_ease").width(160.0).selected_text(crate::timeline::easing_label(&ease)).show_ui(ui, |ui| {
-                for (name, e) in Easing::PRESETS {
-                    if ui.selectable_label(ease == e, crate::i18n::t(name)).clicked() {
-                        app.run("motion.set_ease", json!({"property": p.key(), "frame": start + f, "easing": crate::timeline::easing_param(e)}));
-                    }
+            // The presets and the saved eases (ADR 0081); Edit Ease… shapes the segment's curve.
+            match crate::ease_editor::picker(app, ui, "me_ease", &ease, 160.0, tr!("Ease")) {
+                Some(crate::ease_editor::Picked::Ease(e)) => {
+                    app.run("motion.set_ease", json!({"property": p.key(), "frame": start + f, "easing": e}));
                 }
-            })
-            .response
-            .set_name(tr!("Ease"));
+                Some(crate::ease_editor::Picked::Edit) => crate::ease_editor::open_motion(app, start + f, p),
+                None => {}
+            }
+            if ui.button("✎").on_hover_text(tr!("Edit Ease…")).named(tr!("Edit Ease…")).clicked() {
+                crate::ease_editor::open_motion(app, start + f, p);
+            }
             if ui.button(tr!("Same for all")).on_hover_text(tr!("Give every property's segment at this frame this ease")).clicked() {
-                app.run("motion.set_ease", json!({"frame": start + f, "easing": crate::timeline::easing_param(ease)}));
+                app.run("motion.set_ease", json!({"frame": start + f, "easing": anicraft_engine::params::easing_json(&ease)}));
             }
         }
         None => {

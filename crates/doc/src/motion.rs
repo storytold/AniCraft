@@ -315,7 +315,7 @@ impl Props {
 }
 
 /// A property keyframe.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PropertyKey {
     /// Frames from the span's first frame.
     pub frame: u32,
@@ -380,7 +380,7 @@ impl Track {
                 }
             }
             Err(i) => {
-                let ease = i.checked_sub(1).and_then(|p| self.keys.get(p)).map_or(Easing::Linear, |k| k.ease);
+                let ease = i.checked_sub(1).and_then(|p| self.keys.get(p)).map_or(Easing::Linear, |k| k.ease.clone());
                 if self.keys.len() < MAX_KEYS {
                     self.keys.insert(i, PropertyKey { frame, value, ease });
                 }
@@ -1115,9 +1115,9 @@ impl MotionTween {
             .iter()
             .filter_map(|t| {
                 let v = t.value_at(frame as f32)?;
-                let ease = t.segment_at(frame).and_then(|i| t.keys.get(i)).map_or(Easing::Linear, |k| k.ease);
+                let ease = t.segment_at(frame).and_then(|i| t.keys.get(i)).map_or(Easing::Linear, |k| k.ease.clone());
                 let mut keys = vec![PropertyKey { frame: 0, value: v, ease }];
-                keys.extend(t.keys.iter().filter(|k| k.frame > frame).map(|k| PropertyKey { frame: k.frame - frame, ..*k }));
+                keys.extend(t.keys.iter().filter(|k| k.frame > frame).map(|k| PropertyKey { frame: k.frame - frame, ..k.clone() }));
                 Some(Track { property: t.property, keys })
             })
             .collect();
@@ -1193,7 +1193,7 @@ mod tests {
     }
 
     fn track(p: Property, keys: &[(u32, f32, Easing)]) -> Track {
-        Track { property: p, keys: keys.iter().map(|&(frame, value, ease)| PropertyKey { frame, value, ease }).collect() }
+        Track { property: p, keys: keys.iter().map(|(frame, value, ease)| PropertyKey { frame: *frame, value: *value, ease: ease.clone() }).collect() }
     }
 
     #[test]
@@ -1253,7 +1253,7 @@ mod tests {
             t.keys[0].ease = Easing::CubicOut;
         }
         m.set_key(Property::X, 4, 70.0, 50.0);
-        assert_eq!(m.track(Property::X).map(|t| t.keys[1].ease), Some(Easing::CubicOut));
+        assert_eq!(m.track(Property::X).map(|t| t.keys[1].ease.clone()), Some(Easing::CubicOut));
         assert!(m.remove_key(Property::X, 4) && !m.remove_key(Property::X, 4));
         assert!(m.remove_key(Property::X, 0) && m.remove_key(Property::X, 10));
         assert!(m.tracks.is_empty(), "an emptied track goes");
@@ -1350,7 +1350,7 @@ mod tests {
     /// X 0 → 100 and Y 0 → 100 over frames 0..20 with `ease` on both.
     fn diagonal(ease: Easing) -> MotionTween {
         let mut m = MotionTween::new(ElementId(1));
-        m.tracks = vec![track(Property::X, &[(0, 0.0, ease), (20, 100.0, Easing::Linear)]), track(Property::Y, &[(0, 0.0, ease), (20, 100.0, Easing::Linear)])];
+        m.tracks = vec![track(Property::X, &[(0, 0.0, ease.clone()), (20, 100.0, Easing::Linear)]), track(Property::Y, &[(0, 0.0, ease), (20, 100.0, Easing::Linear)])];
         m
     }
 
@@ -1358,7 +1358,7 @@ mod tests {
     fn a_straight_path_reproduces_linear_and_eased_xy() {
         let base = el(1, 0.0, 0.0);
         for ease in [Easing::Linear, Easing::QuadIn, Easing::CubicBezier(0.2, 0.9, 0.4, 1.3)] {
-            let plain = diagonal(ease);
+            let plain = diagonal(ease.clone());
             let mut m = plain.clone();
             assert!(m.set_path(&line((0.0, 0.0), (100.0, 100.0)), &Props::of(&base), 20));
             assert_eq!(m.tracks, plain.tracks, "ends already in place: the keys stay as they were");
@@ -1610,7 +1610,7 @@ mod tests {
             assert!(m.set_path(&p, &Props::of(&base), 20));
             assert_eq!(m.pin(1, 10, &Props::of(&base)), Ok(()));
             if let Some(t) = m.track_mut(Property::X) {
-                t.keys[1].ease = second;
+                t.keys[1].ease = second.clone();
             }
             let x = m.track(Property::X).cloned().unwrap();
             for i in 0..=80 {
@@ -1705,7 +1705,7 @@ mod tests {
         let props = Props::of(&base);
         let mut cases = Vec::new();
         for ease in [Easing::Linear, Easing::QuadOut, Easing::CubicBezier(0.2, 0.9, 0.4, 1.3), Easing::CubicBezier(0.5, -0.6, 0.5, 1.6)] {
-            let mut m = diagonal(ease);
+            let mut m = diagonal(ease.clone());
             assert!(m.set_path(&quarter(100.0), &props, 20));
             cases.push(m.clone());
             // Position keys in the middle are timing keys, not pins, in ADR 0030 files.

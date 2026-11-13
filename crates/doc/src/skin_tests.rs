@@ -12,7 +12,7 @@ const N1: ElementId = ElementId(30);
 const N2: ElementId = ElementId(31);
 
 fn bone(id: BoneId, parent: ElementId, child: ElementId, head: Vec2, tail: Vec2) -> Bone {
-    Bone { id, name: String::new(), parent, child, head, tail, rest: Affine::IDENTITY, limits: None, pinned: false }
+    Bone::new(id, parent, child, head, tail, Affine::IDENTITY)
 }
 
 /// A tail 200 px long and 20 px thick along y = 0 (anchors every 25 px along both edges), with
@@ -36,6 +36,7 @@ fn rig() -> (Armature, Vec<Arc<Element>>) {
     let mut arm = Armature {
         bones: vec![bone(B1, TAIL, N1, Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0)), bone(B2, N1, N2, Vec2::new(100.0, 0.0), Vec2::new(200.0, 0.0))],
         skin: Some(Skin::new(TAIL, path.clone())),
+        ..Default::default()
     };
     rebind(&mut arm);
     let shape = Shape { path, ..Shape::filled(Path::new(), Paint::Solid(Rgba::BLACK)) }.with_stroke(Rgba::BLACK, 3.0);
@@ -88,7 +89,7 @@ fn the_rest_pose_reproduces_the_shape_exactly() {
     let (arm, mut els) = rig();
     let drawn = path_of(&els);
     // No pose, and a pose that lists every bone at 0.
-    for pose in [Pose::default(), Pose(vec![crate::JointAngle { bone: B1, angle: 0.0 }, crate::JointAngle { bone: B2, angle: 0.0 }])] {
+    for pose in [Pose::default(), Pose(vec![crate::JointAngle::new(B1, 0.0), crate::JointAngle::new(B2, 0.0)])] {
         let rest = deform(&arm, &pose).unwrap();
         assert!(Arc::ptr_eq(&rest, &drawn), "the very path as drawn");
         assert!(!apply(&arm, &mut els, &pose), "nothing changes");
@@ -286,11 +287,11 @@ fn skinning_is_fast() {
         let parent = if i == 0 { TAIL } else { ElementId(100 + i - 1) };
         bones.push(bone(BoneId(200 + i), parent, ElementId(100 + i), Vec2::new(50.0 * i as f32, 0.0), Vec2::new(50.0 * (i + 1) as f32, 0.0)));
     }
-    let mut arm = Armature { bones, skin: Some(Skin::new(TAIL, Arc::new(p))) };
+    let mut arm = Armature { bones, skin: Some(Skin::new(TAIL, Arc::new(p))), ..Default::default() };
     let t = std::time::Instant::now();
     rebind(&mut arm);
     let bind = t.elapsed();
-    let pose = Pose(arm.bones.iter().map(|b| crate::JointAngle { bone: b.id, angle: 0.1 }).collect());
+    let pose = Pose(arm.bones.iter().map(|b| crate::JointAngle::new(b.id, 0.1)).collect());
     let t = std::time::Instant::now();
     for _ in 0..10 {
         std::hint::black_box(deform(&arm, &pose));

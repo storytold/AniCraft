@@ -127,7 +127,7 @@ impl MotionTween {
                 if t.property == Property::X {
                     x_moves.push((k.frame, frame));
                 }
-                let k = PropertyKey { frame, ..*k };
+                let k = PropertyKey { frame, ..k.clone() };
                 match keys.last_mut() {
                     Some(prev) if prev.frame >= k.frame && prev.frame == 0 => {}
                     Some(prev) if prev.frame >= k.frame => *prev = PropertyKey { frame: prev.frame, ..k },
@@ -174,11 +174,11 @@ impl MotionTween {
             // a segment runs on past it.
             let mut keys: Vec<PropertyKey> = match ta {
                 Some(t) => {
-                    let mut v: Vec<PropertyKey> = t.keys.iter().filter(|k| k.frame < frames).copied().collect();
+                    let mut v: Vec<PropertyKey> = t.keys.iter().filter(|k| k.frame < frames).cloned().collect();
                     let runs_on = t.keys.iter().any(|k| k.frame > last);
                     if (v.is_empty() || runs_on) && t.key_at(last).is_none() {
                         let at = if v.is_empty() { 0 } else { last };
-                        let ease = t.segment_at(at).and_then(|i| t.keys.get(i)).map_or(Easing::Linear, |k| k.ease);
+                        let ease = t.segment_at(at).and_then(|i| t.keys.get(i)).map_or(Easing::Linear, |k| k.ease.clone());
                         v.push(PropertyKey { frame: at, value: t.value_at(at as f32).unwrap_or(pa.get(p)), ease });
                     }
                     v
@@ -189,7 +189,7 @@ impl MotionTween {
             // The next span's part, after the cut. Its rotation turns on from where this one
             // ended (the same look, whole turns added), so the curve doesn't spin back.
             let mut after: Vec<PropertyKey> = match tb {
-                Some(t) => t.keys.iter().map(|k| PropertyKey { frame: k.frame.saturating_add(frames), ..*k }).collect(),
+                Some(t) => t.keys.iter().map(|k| PropertyKey { frame: k.frame.saturating_add(frames), ..k.clone() }).collect(),
                 None => vec![PropertyKey { frame: frames, value: pb.get(p), ease: Easing::Linear }],
             };
             if p == Property::Rotation
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!((by, now), (4, vec![(Property::X, 14)]));
         let t = m.track(Property::X).expect("track");
         let k = t.keys.get(1).expect("key");
-        assert_eq!((k.frame, k.value, k.ease), (14, 100.0, Easing::QuadIn));
+        assert_eq!((k.frame, k.value, &k.ease), (14, 100.0, &Easing::QuadIn));
         assert_eq!(t.value_at(14.0), Some(100.0));
     }
 

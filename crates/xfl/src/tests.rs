@@ -88,7 +88,7 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(ball.keyframes.len(), 2);
     assert_eq!((ball.keyframes[0].start, ball.keyframes[0].duration), (0, 10));
     assert_eq!(ball.keyframes[0].label, "start");
-    assert!(matches!(ball.keyframes[0].tween.map(|t| t.easing), Some(anicraft_doc::Easing::Classic(e)) if e == -50.0));
+    assert!(matches!(ball.keyframes[0].tween.as_ref().map(|t| t.easing.clone()), Some(anicraft_doc::Easing::Classic(e)) if e == -50.0));
     assert!(doc.timeline(0).layers[1].locked);
     assert_eq!((doc.timeline(0).layers[0].height(), doc.timeline(0).layers[1].height()), (1, 2), "Layer Properties height");
     assert_eq!(doc.timeline(0).layers[2].kind, LayerKind::Guide);
@@ -238,7 +238,7 @@ fn shape_tweens_come_across_as_shape_tweens() {
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
     let k = &d.timeline(0).layers[0].keyframes[0];
-    let t = k.tween.expect("a tween");
+    let t = k.tween.clone().expect("a tween");
     assert_eq!(t.kind, anicraft_doc::TweenKind::Shape);
     assert!(matches!(t.easing, anicraft_doc::Easing::Classic(a) if a == 40.0));
     assert!(report.skipped.keys().all(|s| !s.contains("shape tween")), "{:?}", report.skipped);
@@ -384,27 +384,41 @@ fn eases_names_and_loop_modes_the_corpus_found_missing() {
     let frame = |attrs: &str, inner: &str| format!(r#"<DOMFrame index="0" duration="4" tweenType="motion" {attrs}>{inner}<elements><DOMSymbolInstance libraryItemName="Clip" name="my clip" loop="loop reverse"/></elements></DOMFrame><DOMFrame index="4"><elements/></DOMFrame>"#);
     let pts = |p: &[(f32, f32)]| p.iter().map(|(x, y)| format!(r#"<Point x="{x}" y="{y}"/>"#)).collect::<String>();
     let layers = [
-        // Seven points: a curve of two segments, drawn with the slider's ease.
+        // Seven points: a curve of two segments, exactly.
         frame(r#"hasCustomEase="true" acceleration="30""#, &format!(r#"<tweens><CustomEase target="all">{}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.2, 0.0), (0.3, 0.5), (0.5, 0.5), (0.7, 0.5), (0.8, 1.0), (1.0, 1.0)]))),
-        // One curve per property: also the slider's.
-        frame(r#"hasCustomEase="true" useSingleEaseCurve="false""#, &format!(r#"<tweens><CustomEase target="position">{0}</CustomEase><CustomEase target="rotation">{0}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (1.0, 1.0)]))),
-        // Said to have a custom ease, with none there.
+        // One curve per property: each its own; the slider eases the rest.
+        frame(r#"hasCustomEase="true" useSingleEaseCurve="false" acceleration="-50""#, &format!(r#"<tweens><CustomEase target="position">{0}</CustomEase><CustomEase target="rotation">{1}</CustomEase><CustomEase target="sparkle">{0}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (1.0, 1.0)]), pts(&[(0.0, 0.0), (0.1, 0.4), (0.2, 1.2), (0.4, 1.2), (0.6, 1.2), (0.9, 1.0), (1.0, 1.0)]))),
+        // Said to have a custom ease, with none there; and a broken point list.
         frame(r#"hasCustomEase="true""#, ""),
+        frame(r#"hasCustomEase="true" acceleration="10""#, &format!(r#"<tweens><CustomEase target="all">{}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.5, 0.0), (1.0, 1.0)]))),
     ];
     let layers: String = layers.iter().map(|f| format!(r#"<DOMLayer name="L"><frames>{f}</frames></DOMLayer>"#)).collect();
     let doc = format!(r#"<DOMDocument><symbols><Include href="Clip.xml"/></symbols><timelines><DOMTimeline name="Scene 1"><layers>{layers}</layers></DOMTimeline></timelines></DOMDocument>"#);
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let clip = r#"<DOMSymbolItem name="Clip"><timeline><DOMTimeline name="Clip"/></timeline></DOMSymbolItem>"#;
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc), ("LIBRARY/Clip.xml", clip)])).unwrap();
-    let eases: Vec<anicraft_doc::Easing> = d.timeline(0).layers.iter().map(|l| l.keyframes[0].tween.unwrap().easing).collect();
-    assert_eq!(eases, [anicraft_doc::Easing::Classic(30.0), anicraft_doc::Easing::Linear, anicraft_doc::Easing::Linear]);
-    assert_eq!(report.skipped.get("custom ease curves (drawn with the simple ease)"), Some(&3));
+    use anicraft_doc::{CustomEase, EaseGroup, Easing};
+    let tween = |l: usize| d.timeline(0).layers[l].keyframes[0].tween.clone().unwrap();
+    let v = |p: &[(f32, f32)]| p.iter().map(|(x, y)| anicraft_geom::Vec2::new(*x, *y)).collect::<Vec<_>>();
+    let two = CustomEase::from_flat(&v(&[(0.0, 0.0), (0.2, 0.0), (0.3, 0.5), (0.5, 0.5), (0.7, 0.5), (0.8, 1.0), (1.0, 1.0)])).unwrap();
+    assert_eq!(tween(0).easing, Easing::Custom(std::sync::Arc::new(two)), "a two-segment curve, exactly");
+    assert!((tween(0).easing.apply(0.5) - 0.5).abs() < 1e-5 && tween(0).easing.apply(0.25) < 0.4);
+    let per = tween(1);
+    assert_eq!(per.easing, Easing::Classic(-50.0));
+    assert_eq!(per.ease(EaseGroup::Position), &Easing::CubicBezier(0.5, 0.0, 0.5, 1.0));
+    assert!(matches!(per.ease(EaseGroup::Rotation), Easing::Custom(c) if c.points().len() == 3));
+    assert_eq!((per.has_own(EaseGroup::Scale), per.groups.len()), (false, 2));
+    assert_eq!((tween(2).easing, tween(3).easing), (Easing::Linear, Easing::Classic(10.0)));
+    assert_eq!(report.skipped.get("custom eases of unknown properties (left out)"), Some(&1));
+    assert_eq!(report.skipped.get("custom eases without their curve (drawn with the simple ease)"), Some(&1));
+    assert_eq!(report.skipped.get("custom ease curves with a broken point list (drawn with the simple ease)"), Some(&1));
+    assert!(!report.skipped.contains_key("custom ease curves (drawn with the simple ease)"));
     assert_eq!(d.library[0].kind, SymbolKind::MovieClip, "no symbolType: a movie clip");
     let ElementKind::Symbol { loop_mode, .. } = &d.timeline(0).layers[0].keyframes[0].elements[0].kind else { panic!() };
     assert_eq!(*loop_mode, LoopMode::Loop, "loop reverse plays forward");
-    assert_eq!(report.skipped.get("reverse loop modes (played forward)"), Some(&3));
+    assert_eq!(report.skipped.get("reverse loop modes (played forward)"), Some(&4));
     assert_eq!(d.timeline(0).layers[0].keyframes[0].elements[0].name, "", "not an identifier: left out");
-    assert_eq!(report.skipped.get("instance names actions can't use (left out)"), Some(&3));
+    assert_eq!(report.skipped.get("instance names actions can't use (left out)"), Some(&4));
 }
 
 #[test]

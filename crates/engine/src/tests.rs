@@ -628,6 +628,11 @@ fn panic_hunt_every_command() {
         json!({"from": 10, "to": 12, "head": [0, 0], "tail": [1e30, 0], "name": "x".repeat(300)}),
         json!({"from": 12, "to": 10, "head": [5], "tail": "x", "bone": u64::MAX}),
         json!({"from": 11, "to": 13, "head": [-1e6, 1e6], "layer": 101}),
+        // Springs and joint translation (ADR 0084): hostile strengths, damping and limits.
+        json!({"bone": 102, "axis": "x", "enabled": true, "constrain": true, "min": 1e30, "max": -1e30, "strength": 1e30, "damping": -1e30, "slide_x": 1e30, "slide_y": f64::NAN}),
+        json!({"bone": 102, "axis": "y", "enabled": "yes", "constrain": false, "min": -10_000, "max": 10_000, "strength": 100, "damping": 0, "slide_y": -10_000, "x": 1e5, "y": -1e5}),
+        json!({"bone": 100, "axis": 7, "min": 0, "max": 0, "strength": 0.000_001, "damping": 99.999_99, "slide_x": 0.5, "enabled": false}),
+        json!({"bone": u64::MAX, "axis": "x", "strength": f64::MAX, "damping": f64::MIN, "enabled": true, "layer": 101}),
         // Shape armatures (ADR 0071): the shaped session's tail is 3, its bones 100 and 103.
         json!({"shape": 3, "head": [1e30, 0], "tail": [-1e30, 0], "parent": 103, "points": [0, 1, u64::MAX], "mode": "add"}),
         json!({"shape": 3, "head": [150, 150], "tail": [150, 150], "bone": 103, "points": (0..30).collect::<Vec<_>>(), "mode": "remove"}),
@@ -697,6 +702,10 @@ fn panic_hunt_every_command() {
     // An armature: two bones, posed at two frames with a limit and a pin (ADR 0043).
     let (mut rig, b1, b2) = crate::tests_bone::rigged();
     for (id, p) in [("bone.pose", json!({"bone": b1, "angle": 30, "frame": 8})), ("bone.set_limits", json!({"bone": b2, "min": -30, "max": 30})), ("bone.pin", json!({"bone": b1, "pinned": true}))] {
+        rig.execute(id, &p).unwrap();
+    }
+    // A bouncy, sliding elbow (ADR 0084), the root moving under it.
+    for (id, p) in [("bone.set_spring", json!({"bone": b2, "strength": 100, "damping": 0})), ("bone.set_translation", json!({"bone": b2, "axis": "x", "min": -40, "max": 40})), ("bone.pose", json!({"dx": 0, "dy": 90, "frame": 12}))] {
         rig.execute(id, &p).unwrap();
     }
     assert_eq!((b1, b2), (100, 102), "the hostile params name these bones");
@@ -822,6 +831,30 @@ fn panic_hunt_every_command() {
         json!({"all": true, "filter": "a", "show": {"frames": false, "symbols": "x"}, "expanded": ["s0", 5], "offset": u64::MAX, "limit": u64::MAX}),
         json!({"all": true, "scope": "scene", "definitions": false, "show": {"frames": false}, "limit": 0}),
     ]);
+    // Eases (ADR 0081): a classic tween with a custom ease of several segments and property
+    // groups of their own, an ease saved and one copied; the fuzz edits, saves and pastes them
+    // with hostile curves (NaN-like and reversed points, thousands of them, ends that move).
+    let mut eased = Session::new(sample::demo());
+    let tl = eased.doc.timeline(0).layers.iter().find(|l| l.keyframes.first().is_some_and(|k| k.tween.is_some() && k.motion.is_none())).map(|l| l.id.0).unwrap();
+    for (id, p) in [
+        ("timeline.set_easing", json!({"easing": {"custom": [[0, 0], [0.2, 1.4], [0.3, 1.4], [0.4, 1.4], [0.5, 1.4], [0.6, 0.8], [0.7, 0.8], [0.8, 0.8], [0.9, 1], [1, 1]]}, "frame": 0, "layer": tl})),
+        ("ease.separate", json!({"separate": true, "frame": 0, "layer": tl})),
+        ("ease.set", json!({"easing": "ElasticOut", "group": "rotation", "frame": 0, "layer": tl})),
+        ("ease.save", json!({"name": "Wobble", "easing": "BounceOut"})),
+        ("ease.copy", json!({"frame": 0, "layer": tl})),
+        ("timeline.goto", json!({"frame": 5})),
+        ("layer.select", json!({"layer": tl})),
+    ] {
+        eased.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
+    hostile.extend([
+        json!({"easing": {"custom": (0..30_000).map(|i| json!([f64::from(i) / 30_000.0, f64::from(i % 7) * 1e30])).collect::<Vec<_>>()}, "t": 0.5, "index": 1, "x": 0.5, "y": 1e30, "handle": "out", "smooth": true, "name": "Wobble", "group": "position"}),
+        json!({"easing": {"custom": {"points": [{"at": {"x": 1, "y": 1}}, {"at": {"x": -5, "y": 1e30}, "in": {"x": 9, "y": -1e30}}, {"at": {"x": 0.5, "y": 0.5}, "out": {"x": -9, "y": 0}}]}}, "saved": "Wobble", "index": 0, "handle": "sideways", "t": 2}),
+        json!({"easing": {"custom": {"points": (0..20_000).map(|i| json!({"at": {"x": f64::from(20_000 - i) / 20_000.0, "y": 0.5}})).collect::<Vec<_>>()}}, "saved": "Wobble", "index": u64::MAX, "x": f64::MAX, "y": f64::MIN}),
+        json!({"easing": {"saved": 3}, "group": "sparkle", "to": "", "name": "a".repeat(500), "replace": "yes", "separate": true}),
+        json!({"easing": {"saved": "Wobble"}, "group": "filters", "name": "Wobble", "replace": true, "to": "wobble", "separate": false, "property": "x", "index": 1, "smooth": false}),
+        json!({"easing": {"custom": [[0, 0], [1, 1]]}, "t": f64::NAN, "index": 1, "handle": "in", "x": -1e7, "y": 1e7, "property": "nope", "saved": ""}),
+    ]);
     // A button open for editing, its hit area drawn over its other states (ADR 0057).
     let mut button = Session::new(sample::interactive());
     if let Some(id) = button.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::Button).map(|x| x.id) {
@@ -849,7 +882,7 @@ fn panic_hunt_every_command() {
     let inner = grouped.visible_elements().into_iter().find(|e| matches!(e.kind, anicraft_doc::ElementKind::Group { .. })).map(|e| e.id.0).unwrap();
     grouped.execute("symbol.edit", &json!({"id": inner})).unwrap();
     assert_eq!(grouped.editing.len(), 2, "the fuzz starts inside a group inside a group");
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, warped, layered, in_symbol, keyed, library, button, grouped] {
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, warped, layered, in_symbol, keyed, library, button, grouped, eased] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
@@ -1744,7 +1777,7 @@ fn create_shape_tween_morphs_and_keeps_the_easing() {
     run(&mut s, "timeline.create_tween", json!({"easing": "ease-in"}));
     let v = run(&mut s, "timeline.create_shape_tween", json!({}));
     assert_eq!(v["kind"], "shape");
-    let t = s.active_layer().unwrap().keyframes[0].tween.unwrap();
+    let t = s.active_layer().unwrap().keyframes[0].tween.clone().unwrap();
     assert_eq!(t.kind, anicraft_doc::TweenKind::Shape);
     assert_ne!(t.easing, anicraft_doc::Easing::Linear, "switching kinds keeps the easing");
     // Midway the shape has moved off the square.
@@ -1752,7 +1785,7 @@ fn create_shape_tween_morphs_and_keeps_the_easing() {
     let mid = item.path.bounds().transformed(&item.transform);
     assert!(mid.max.x > 110.0, "{mid:?}");
     s.undo().unwrap();
-    assert_eq!(s.active_layer().unwrap().keyframes[0].tween.unwrap().kind, anicraft_doc::TweenKind::Classic);
+    assert_eq!(s.active_layer().unwrap().keyframes[0].tween.clone().unwrap().kind, anicraft_doc::TweenKind::Classic);
 }
 
 #[test]
@@ -1920,7 +1953,7 @@ fn add_motion_guide_steers_the_tween_and_stays_out_of_exports() {
     // Orient to path, and the guided type.
     run(&mut s, "layer.select", json!({"layer": art.0}));
     assert_eq!(run(&mut s, "timeline.set_orient", json!({"orient": true}))["orient"], true);
-    assert!(s.active_layer().unwrap().keyframes[0].tween.unwrap().orient);
+    assert!(s.active_layer().unwrap().keyframes[0].tween.clone().unwrap().orient);
     assert_eq!(run(&mut s, "layer.set_type", json!({"type": "normal"}))["type"], "normal");
     assert_eq!(run(&mut s, "layer.set_type", json!({"type": "guided"}))["type"], "guided");
     // A masked layer can't also follow a guide.

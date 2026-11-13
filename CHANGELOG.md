@@ -19,6 +19,37 @@
     full name is in the tooltip), and at the narrowest the strip scrolls.
   * Headless: `motion.move_keys`, `timeline.resize_span`, `timeline.move_spans`,
     `motion.split`, `motion.join`.
+* **Bones, second slice: springs, joint translation and editing members** (ADR 0084, M7).
+  * **Joint translation**: Properties › Bone › X/Y translation lets a joint slide along the
+    axes of what the bone starts on, freely or within limits (pixels). Slides are part of each
+    pose and tween with it; the Selection tool's IK turns joints first and slides them only to
+    reach where turning can't.
+  * **Springs**: per-bone Spring (strength) and Damping, 0 to 100. A sprung bone lags behind
+    and swings past its pose as the bones it hangs from move, then settles, chaining down a
+    tail. Evaluated as a pure function of the motion up to the frame (no stored state, bounded
+    replay of at most six seconds), so seeking equals playing bit for bit, and the stage, Test
+    Movie and every export show it. Springs: Enable turns an armature's springs off for posing.
+  * **Members edited in place**: picking a bone selects the instance it moves; its colour
+    effect, blending and filters change on every pose, one undo step, the armature intact.
+  * Headless: `bone.set_translation`, `bone.set_spring`, `bone.enable_springs`, `slide_x` /
+    `slide_y` on `bone.pose`; `bone.info` reports slides, springs and each bone's swing.
+* **Ease presets, custom eases and saved eases** (ADR 0081, M7).
+  * One ease menu in the timeline header, Properties › Frame and the Motion Editor: No Ease,
+    **Classic Ease** with a strength, and **Quad, Cubic, Quart, Quint, Sine, Back, Circ, Bounce
+    and Elastic**, each In, Out and In Out, drawn as curves; then your saved eases.
+  * **Custom Ease** window: click the curve to add a point, drag points and handles (one undo
+    step per drag), double-click for smooth or corner, right-click to delete, type a point's
+    time and value, or use the keyboard (`[` `]`, arrows, `S`, `+`, Delete). Overshoot is
+    allowed; time never runs backwards.
+  * **Saved eases** live in the document and are offered to every classic tween and Motion
+    Editor property; **Copy Ease** / **Paste Ease** carry an ease between tweens.
+  * Classic tweens can **ease each property separately** (position, rotation, scale, colour,
+    filters), and instance filters now tween.
+  * Animate files: custom eases of several segments and per-property eases import exactly.
+  * Headless: `ease.info`, `ease.set`, `ease.add_point`, `ease.move_point`, `ease.move_handle`,
+    `ease.delete_point`, `ease.convert_point`, `ease.separate`, `ease.save`, `ease.delete`,
+    `ease.rename`, `ease.list`, `ease.copy`, `ease.paste`; `timeline.set_easing` takes `group`
+    and every ease (`{"saved": name}`, `{"custom": …}`).
 
 * **Camera, second slice: layer depth, attaching layers and colour** (ADR 0082, M7).
   * **Layer depth in perspective**: through the camera, a pinhole with a fixed focal length

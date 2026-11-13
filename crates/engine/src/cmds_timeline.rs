@@ -17,10 +17,10 @@ pub fn specs() -> Vec<CommandSpec> {
         c("timeline.move_keyframes", "Move Keyframes", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}", true, move_keyframes),
         c("timeline.move_spans", "Move Spans", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up), copy?: true (Alt-drag: the frames stay where they were too)}: the spans starting in from..=to move whole, keeping their lengths and tweens (as dragging a tween span in Animate), replacing what they land on; the frames they leave are empty", true, move_spans),
         c("timeline.create_motion_tween", "Create Motion Tween", "Insert", None, "{layer?, frame?} (several objects on the key become one graphic symbol; a one-frame span grows to a second)", true, crate::cmds_motion::create),
-        c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_tween),
-        c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing?}", true, create_shape_tween),
+        c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_tween),
+        c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_shape_tween),
         c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?} (a motion tween leaves its object as it is on the first frame)", true, remove_tween),
-        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing, layer?, frame?}", true, set_easing),
+        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}", true, set_easing),
         c("timeline.set_orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}", true, set_orient),
         c("timeline.set_label", "Frame Label", "", None, "{label, layer?, frame?}", true, set_label),
         c("timeline.goto", "Go to Frame", "", None, "{frame}", false, goto),
@@ -385,7 +385,7 @@ pub(crate) fn insert_keyframe_at(layer: &mut Layer, frame: u32, copy: bool) -> R
         Some(i) => {
             let Some(k) = layer.keyframe_mut(i) else { return Ok(()) };
             let end = k.end();
-            let tween = if copy { k.tween } else { None };
+            let tween = if copy { k.tween.clone() } else { None };
             // A motion tween split in two keeps moving the same way in both halves.
             let motion = if copy {
                 k.motion.as_ref().map(|m| {
@@ -677,22 +677,23 @@ fn create_shape_tween(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
+    let given = opt_easing_in(&s.doc, p, "easing")?;
     let k = keyframe_mut(s, p)?;
-    // Switching kinds keeps the easing the span already had, unless one is given.
-    let easing = match opt_easing(p, "easing")? {
-        Some(e) => e,
-        None => k.tween.map(|t| t.easing).unwrap_or_default(),
-    };
-    let orient = k.tween.is_some_and(|t| t.orient);
+    // Switching kinds keeps the easing the span already had, unless one is given; a classic
+    // tween keeps its property groups' eases (a shape tween has one ease, as in Animate).
+    let easing = given.unwrap_or_else(|| k.tween.as_ref().map(|t| t.easing.clone()).unwrap_or_default());
+    let orient = k.tween.as_ref().is_some_and(|t| t.orient);
+    let groups = if kind == TweenKind::Classic { k.tween.as_ref().map(|t| t.groups.clone()).unwrap_or_default() } else { Vec::new() };
     // It replaces a motion tween, keeping the object as it is on the first frame.
     crate::cmds_motion::bake_first_frame(k);
-    k.tween = Some(Tween { easing, kind, orient });
+    let label = easing.label();
+    k.tween = Some(Tween { easing, kind, orient, groups });
     // Shape hints only mean something to a shape tween.
     if kind != TweenKind::Shape {
         k.hints.clear();
     }
     let kind = if kind == TweenKind::Shape { "shape" } else { "classic" };
-    Ok(json!({"tween": k.start, "easing": easing.label(), "kind": kind}))
+    Ok(json!({"tween": k.start, "easing": label, "kind": kind}))
 }
 
 fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {
@@ -704,11 +705,17 @@ fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set_easing(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing(p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let easing = opt_easing_in(&s.doc, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let group = crate::cmds_ease::group(p)?;
     let k = keyframe_mut(s, p)?;
     let t = k.tween.as_mut().ok_or_else(|| EngineError::State("this span has no tween; create one first".into()))?;
-    t.easing = easing;
-    Ok(json!({"easing": easing.label()}))
+    let label = easing.label();
+    match group {
+        Some(_) if t.kind == TweenKind::Shape => return Err(EngineError::State("a shape tween has one ease for everything; property groups ease separately in classic tweens".into())),
+        Some(g) => t.set_ease(g, Some(easing)),
+        None => t.easing = easing,
+    }
+    Ok(json!({"easing": label, "group": group.map_or("all", |g| g.key())}))
 }
 
 fn set_label(s: &mut Session, p: &Value) -> Result<Value> {

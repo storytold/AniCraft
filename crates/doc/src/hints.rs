@@ -84,7 +84,7 @@ impl Layer {
     /// Whether keyframe `i` starts a shape tween that runs into the next keyframe.
     pub fn is_shape_tween(&self, i: usize) -> bool {
         let (Some(k), Some(next)) = (self.keyframes.get(i), self.keyframes.get(i + 1)) else { return false };
-        k.motion.is_none() && k.tween.is_some_and(|t| t.kind == TweenKind::Shape) && next.start == k.end()
+        k.motion.is_none() && k.tween.as_ref().is_some_and(|t| t.kind == TweenKind::Shape) && next.start == k.end()
     }
 
     /// The shape tween whose hints `frame` shows or edits, and which side: a frame inside a

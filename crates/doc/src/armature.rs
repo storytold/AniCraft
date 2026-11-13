@@ -18,6 +18,12 @@
 //! bone up its chain, each joint turns so the effector points at the target, clamped to the
 //! joint's limits. It works on joint angles directly, so limits are a clamp per step and the
 //! result is a pose by construction.
+//!
+//! A joint may also **slide** (ADR 0084, Animate's joint translation): along its parent's x and
+//! y axes, within limits, measured in layer pixels. A pose then holds the slide next to the
+//! angle, forward kinematics moves the joint (and what hangs from it) by it, and the solver
+//! slides joints only where turning them can't reach. **Springs** (per-bone strength and
+//! damping) add secondary motion on top of the keyed pose; see [`crate::spring`].
 
 use crate::skin::{self, Skin};
 use crate::{Element, ElementId, Keyframe, Layer};
@@ -41,6 +47,8 @@ pub const IK_SWEEPS: usize = 2048;
 /// How often a stalled solve bends its joints to get going again, and by how much (radians).
 const IK_KICKS: usize = 4;
 const IK_KICK: f32 = 0.3;
+/// Farthest a joint may slide either way along an axis (layer units, pixels).
+pub const MAX_SLIDE: f32 = 10_000.0;
 
 /// Unique id of a bone within a document (from the document's id counter).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -62,11 +70,40 @@ impl Limits {
 
     /// Finite, ordered and within [`MAX_LIMIT`]; `None` when nothing sane is left.
     pub fn sanitized(self) -> Option<Limits> {
+        self.sanitized_within(MAX_LIMIT)
+    }
+
+    /// Finite, ordered and within `±bound`; `None` when nothing sane is left.
+    pub fn sanitized_within(self, bound: f32) -> Option<Limits> {
         if !(self.min.is_finite() && self.max.is_finite()) {
             return None;
         }
-        let (a, b) = (self.min.clamp(-MAX_LIMIT, MAX_LIMIT), self.max.clamp(-MAX_LIMIT, MAX_LIMIT));
+        let (a, b) = (self.min.clamp(-bound, bound), self.max.clamp(-bound, bound));
         Some(Limits { min: a.min(b), max: a.max(b) })
+    }
+}
+
+/// A bone's spring (ADR 0084): secondary motion that makes it lag behind and swing past the
+/// pose it is keyed to when the bones it hangs from (or its own pose) move, then settle.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Spring {
+    /// How stiff the spring is, 0…1 (shown as 0–100): 0 is no spring at all; a stiffer spring
+    /// swings faster and lags less (from half a swing to ten swings a second).
+    pub strength: f32,
+    /// How quickly the swing dies down, 0…1 (shown as 0–100): 0 swings on, 1 absorbs all of it
+    /// (the same as no spring).
+    pub damping: f32,
+}
+
+impl Spring {
+    /// Whether it moves anything: some strength, and damping that lets it swing.
+    pub fn is_live(&self) -> bool {
+        self.strength > 0.0 && self.damping < 1.0
+    }
+
+    /// Both values finite and within 0…1; `None` when they aren't numbers.
+    pub fn sanitized(self) -> Option<Spring> {
+        (self.strength.is_finite() && self.damping.is_finite()).then(|| Spring { strength: self.strength.clamp(0.0, 1.0), damping: self.damping.clamp(0.0, 1.0) })
     }
 }
 
@@ -93,9 +130,45 @@ pub struct Bone {
     /// where it is while the rest of the armature follows a drag.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// How far the joint may slide along its parent's x axis (pixels, ADR 0084); `None`: it
+    /// doesn't slide that way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide_x: Option<Limits>,
+    /// How far the joint may slide along its parent's y axis (pixels); `None`: it doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide_y: Option<Limits>,
+    /// The bone's spring (ADR 0084); `None`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spring: Option<Spring>,
 }
 
 impl Bone {
+    /// A bone as drawn: turning freely, not sliding, no spring, not pinned.
+    pub fn new(id: BoneId, parent: ElementId, child: ElementId, head: Vec2, tail: Vec2, rest: Affine) -> Bone {
+        Bone { id, name: String::new(), parent, child, head, tail, rest, limits: None, pinned: false, slide_x: None, slide_y: None, spring: None }
+    }
+
+    /// Whether the joint may slide at all.
+    pub fn slides(&self) -> bool {
+        self.slide_x.is_some() || self.slide_y.is_some()
+    }
+
+    /// Slide `v` as this joint allows it: each axis within its limits, 0 along an axis it
+    /// doesn't slide on.
+    pub fn allow_slide(&self, v: Vec2) -> Vec2 {
+        let axis = |l: Option<Limits>, x: f32| match l {
+            Some(l) if x.is_finite() => l.clamp(x.clamp(-MAX_SLIDE, MAX_SLIDE)),
+            Some(l) => l.clamp(0.0),
+            None => 0.0,
+        };
+        Vec2::new(axis(self.slide_x, v.x), axis(self.slide_y, v.y))
+    }
+
+    /// Its spring, when it has one that moves anything.
+    pub fn live_spring(&self) -> Option<Spring> {
+        self.spring.filter(Spring::is_live)
+    }
+
     /// `a` as this joint allows it (finite, within its limits).
     pub fn allow(&self, a: f32) -> f32 {
         let a = if a.is_finite() { a.clamp(-MAX_ANGLE, MAX_ANGLE) } else { 0.0 };
@@ -117,6 +190,10 @@ pub struct Armature {
     /// [`crate::skin`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin: Option<Skin>,
+    /// The armature's springs are turned off (Properties › Bone › Springs, ADR 0084): it plays
+    /// its keyed poses exactly, for posing without the swing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub springs_off: bool,
 }
 
 impl Armature {
@@ -139,6 +216,11 @@ impl Armature {
     }
 
     /// The bone that moves instance `el` (ends in it), if any.
+    /// Whether any spring moves the armature (springs on, a bone with a live spring).
+    pub fn has_springs(&self) -> bool {
+        !self.springs_off && self.bones.iter().any(|b| b.live_spring().is_some())
+    }
+
     pub fn bone_into(&self, el: ElementId) -> Option<&Bone> {
         self.bones.iter().find(|b| b.child == el)
     }
@@ -219,6 +301,9 @@ impl Armature {
                 continue;
             }
             b.limits = b.limits.and_then(Limits::sanitized);
+            b.slide_x = b.slide_x.and_then(|l| l.sanitized_within(MAX_SLIDE));
+            b.slide_y = b.slide_y.and_then(|l| l.sanitized_within(MAX_SLIDE));
+            b.spring = b.spring.and_then(Spring::sanitized);
             if b.name.len() > MAX_NAME {
                 let cut = (0..=MAX_NAME).rev().find(|&i| b.name.is_char_boundary(i)).unwrap_or(0);
                 b.name.truncate(cut);
@@ -252,11 +337,30 @@ impl Armature {
     }
 }
 
-/// One joint's angle in a pose (radians, 0 as drawn).
+/// One joint in a pose: its angle (radians, 0 as drawn) and how far it slides along its
+/// parent's axes (pixels, ADR 0084; 0 for a joint that doesn't slide).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JointAngle {
     pub bone: BoneId,
     pub angle: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub x: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub y: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+impl JointAngle {
+    pub fn new(bone: BoneId, angle: f32) -> JointAngle {
+        JointAngle { bone, angle, x: 0.0, y: 0.0 }
+    }
+
+    pub fn slide(&self) -> Vec2 {
+        Vec2::new(self.x, self.y)
+    }
 }
 
 /// A pose: joint angles by bone. A bone it doesn't list is as drawn (angle 0).
@@ -277,7 +381,19 @@ impl Pose {
     pub fn set(&mut self, b: BoneId, angle: f32) {
         match self.0.iter_mut().find(|j| j.bone == b) {
             Some(j) => j.angle = angle,
-            None => self.0.push(JointAngle { bone: b, angle }),
+            None => self.0.push(JointAngle::new(b, angle)),
+        }
+    }
+
+    /// How far bone `b`'s joint slides (0 when the pose doesn't list it).
+    pub fn slide(&self, b: BoneId) -> Vec2 {
+        self.0.iter().find(|j| j.bone == b).map_or(Vec2::ZERO, JointAngle::slide)
+    }
+
+    pub fn set_slide(&mut self, b: BoneId, v: Vec2) {
+        match self.0.iter_mut().find(|j| j.bone == b) {
+            Some(j) => (j.x, j.y) = (v.x, v.y),
+            None => self.0.push(JointAngle { bone: b, angle: 0.0, x: v.x, y: v.y }),
         }
     }
 
@@ -288,13 +404,29 @@ impl Pose {
 
     /// Every bone of `arm` at the angle its joint allows: the pose as it shows.
     pub fn allowed(&self, arm: &Armature) -> Pose {
-        Pose(arm.bones.iter().map(|b| JointAngle { bone: b.id, angle: b.allow(self.angle(b.id)) }).collect())
+        Pose(
+            arm.bones
+                .iter()
+                .map(|b| {
+                    let s = b.allow_slide(self.slide(b.id));
+                    JointAngle { bone: b.id, angle: b.allow(self.angle(b.id)), x: s.x, y: s.y }
+                })
+                .collect(),
+        )
     }
 
-    /// The pose `t` of the way to `o`, joint by joint (angles blend linearly, so a joint that
-    /// turned a whole way round between keys turns that way in the tween).
+    /// The pose `t` of the way to `o`, joint by joint (angles and slides blend linearly, so a
+    /// joint that turned a whole way round between keys turns that way in the tween).
     pub fn lerp(&self, o: &Pose, t: f32, arm: &Armature) -> Pose {
-        Pose(arm.bones.iter().map(|b| JointAngle { bone: b.id, angle: b.allow(anicraft_geom::lerp(self.angle(b.id), o.angle(b.id), t)) }).collect())
+        Pose(
+            arm.bones
+                .iter()
+                .map(|b| {
+                    let s = b.allow_slide(self.slide(b.id).lerp(o.slide(b.id), t));
+                    JointAngle { bone: b.id, angle: b.allow(anicraft_geom::lerp(self.angle(b.id), o.angle(b.id), t)), x: s.x, y: s.y }
+                })
+                .collect(),
+        )
     }
 
     /// Repairs a loaded pose: finite angles in range, one per bone, at most [`MAX_BONES`].
@@ -310,6 +442,13 @@ impl Pose {
             if a.to_bits() != j.angle.to_bits() {
                 j.angle = a;
                 changed = true;
+            }
+            for v in [&mut j.x, &mut j.y] {
+                let s = if v.is_finite() { v.clamp(-MAX_SLIDE, MAX_SLIDE) } else { 0.0 };
+                if s.to_bits() != v.to_bits() {
+                    *v = s;
+                    changed = true;
+                }
             }
         }
         changed || self.0.len() != before
@@ -334,13 +473,43 @@ pub fn place(arm: &Armature, elements: &[Arc<Element>], pose: &Pose) -> HashMap<
         if !nodes && !world.contains_key(&b.child) {
             continue;
         }
-        let j = wp.apply(b.head);
-        let wc = turn_about(j, b.allow(pose.angle(b.id))).mul(&wp.mul(&b.rest));
+        let (_, wc) = joint(b, &wp, b.allow(pose.angle(b.id)), b.allow_slide(pose.slide(b.id)));
         if wc.is_finite() {
             world.insert(b.child, wc);
         }
     }
     world
+}
+
+/// The layer-space step a joint slides by `s` (pixels along its parent `wp`'s x and y axes).
+/// Exactly zero for no slide.
+pub fn slide_step(wp: &Affine, s: Vec2) -> Vec2 {
+    if s == Vec2::ZERO {
+        return Vec2::ZERO;
+    }
+    let (ex, ey) = slide_axes(wp);
+    ex * s.x + ey * s.y
+}
+
+/// The unit directions a joint on parent `wp` slides along: its x and y axes in layer space.
+pub fn slide_axes(wp: &Affine) -> (Vec2, Vec2) {
+    let ex = wp.apply_vector(Vec2::new(1.0, 0.0)).normalized();
+    let ey = wp.apply_vector(Vec2::new(0.0, 1.0)).normalized();
+    (if ex == Vec2::ZERO { Vec2::new(1.0, 0.0) } else { ex }, if ey == Vec2::ZERO { Vec2::new(0.0, 1.0) } else { ey })
+}
+
+/// One joint of forward kinematics: where bone `b`'s joint is and the transform of what it
+/// moves, from its parent's transform `wp`, joint angle `a` and slide `s` (both as the joint
+/// allows them). Without a slide this is exactly ADR 0043's `R_joint(a) · wp · rest`.
+pub fn joint(b: &Bone, wp: &Affine, a: f32, s: Vec2) -> (Vec2, Affine) {
+    let d = slide_step(wp, s);
+    let base = wp.mul(&b.rest);
+    if d == Vec2::ZERO {
+        let j = wp.apply(b.head);
+        return (j, turn_about(j, a).mul(&base));
+    }
+    let j = wp.apply(b.head) + d;
+    (j, turn_about(j, a).mul(&Affine::translate(d.x, d.y).mul(&base)))
 }
 
 /// Puts the instances of `elements` where `pose` has them, and bends a shape armature's shape
@@ -376,7 +545,7 @@ pub fn pose_at(layer: &Layer, frame: u32) -> Option<Pose> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf: &Keyframe = layer.keyframes.get(idx)?;
     let here = kf.pose.allowed(arm);
-    let (Some(tween), None) = (kf.tween, &kf.motion) else { return Some(here) };
+    let (Some(tween), None) = (&kf.tween, &kf.motion) else { return Some(here) };
     let Some(next) = layer.keyframes.get(idx + 1) else { return Some(here) };
     if next.start != kf.end() || frame == kf.start {
         return Some(here);
@@ -393,6 +562,8 @@ pub struct BoneAt {
     pub tail: Vec2,
     /// The joint angle (radians, as the joint allows it).
     pub angle: f32,
+    /// How far the joint slides (pixels along its parent's axes, as the joint allows it).
+    pub slide: Vec2,
 }
 
 /// Every bone's joint and end with the instances in `elements` placed as they show (posed:
@@ -404,7 +575,8 @@ pub fn bones_at(arm: &Armature, elements: &[Arc<Element>], pose: &Pose) -> Vec<B
         .iter()
         .filter_map(|b| {
             let (wp, wc) = (world.get(&b.parent)?, world.get(&b.child)?);
-            Some(BoneAt { id: b.id, head: wp.apply(b.head), tail: wc.apply(b.tail), angle: b.allow(pose.angle(b.id)) })
+            let slide = b.allow_slide(pose.slide(b.id));
+            Some(BoneAt { id: b.id, head: wp.apply(b.head) + slide_step(wp, slide), tail: wc.apply(b.tail), angle: b.allow(pose.angle(b.id)), slide })
         })
         .collect()
 }
@@ -444,20 +616,43 @@ pub fn movable_chain(arm: &Armature, id: BoneId) -> Vec<&Bone> {
 /// sweep turns the joints from the dragged bone upward so the effector points at the target,
 /// each clamped to its limits, until the effector is within [`IK_TOLERANCE`] or stops moving.
 /// An unreachable target leaves the chain stretched straight toward it, the root where it was.
-/// `None` when the armature has no bone `id` or its instances aren't on the keyframe.
+///
+/// Joints that slide (ADR 0084) slide only where turning can't reach: when the turning sweeps
+/// leave the effector short of the target, a second round of sweeps also slides each joint, after
+/// turning it, toward the target within its limits. A target the joints reach by turning is
+/// solved exactly as without sliding. `None` when the armature has no bone `id` or its instances
+/// aren't on the keyframe.
 pub fn solve(arm: &Armature, elements: &[Arc<Element>], pose: &Pose, id: BoneId, local: Vec2, target: Vec2) -> Option<Solved> {
     let bone = arm.bone(id)?;
     if !(local.x.is_finite() && local.y.is_finite() && target.x.is_finite() && target.y.is_finite()) {
         return None;
     }
-    let chain: Vec<(BoneId, ElementId, Vec2)> = movable_chain(arm, id).iter().map(|b| (b.id, b.parent, b.head)).collect();
-    let mut pose = pose.allowed(arm);
+    let chain: Vec<&Bone> = movable_chain(arm, id);
     let effector = |pose: &Pose| -> Option<(HashMap<ElementId, Affine>, Vec2)> {
         let world = place(arm, elements, pose);
         let e = world.get(&bone.child)?.apply(local);
         Some((world, e))
     };
-    let (_, start) = effector(&pose)?;
+    let start = pose.allowed(arm);
+    effector(&start)?;
+    let (mut pose, mut error) = ccd(arm, &chain, &effector, start, target, false);
+    if error > IK_TOLERANCE && chain.iter().any(|b| b.slides()) {
+        let (p, e) = ccd(arm, &chain, &effector, pose.clone(), target, true);
+        if e < error {
+            (pose, error) = (p, e);
+        }
+    }
+    Some(Solved { pose, error, chain: chain.len() })
+}
+
+/// The effector (with every instance's placement) for a pose; see [`solve`].
+type Effector<'a> = dyn Fn(&Pose) -> Option<(HashMap<ElementId, Affine>, Vec2)> + 'a;
+
+/// Cyclic coordinate descent from `pose` toward `target`, turning (and with `slide`, sliding)
+/// the joints of `chain`. Returns the best pose seen and its error.
+fn ccd(arm: &Armature, chain: &[&Bone], effector: &Effector<'_>, mut pose: Pose, target: Vec2, slide: bool) -> (Pose, f32) {
+    let chain: Vec<(BoneId, ElementId, Vec2)> = chain.iter().map(|b| (b.id, b.parent, b.head)).collect();
+    let Some((_, start)) = effector(&pose) else { return (pose, f32::INFINITY) };
     let mut error = start.distance(target);
     let mut best = (pose.clone(), error);
     let mut kicks = 0;
@@ -475,19 +670,41 @@ pub fn solve(arm: &Armature, elements: &[Arc<Element>], pose: &Pose, id: BoneId,
         for &(b, parent, head) in &chain {
             let Some(wp) = world.get(&parent) else { continue };
             let Some(joint) = arm.bone(b) else { continue };
-            let j = wp.apply(head);
+            let j = wp.apply(head) + slide_step(wp, pose.slide(b));
             let (u, v) = (e - j, target - j);
-            if u.length() < 1e-6 || v.length() < 1e-6 {
-                continue;
+            if u.length() >= 1e-6 && v.length() >= 1e-6 {
+                let want = u.cross(v).atan2(u.dot(v));
+                let cur = pose.angle(b);
+                let next = joint.allow(cur + want);
+                let by = next - cur;
+                if by != 0.0 {
+                    pose.set(b, next);
+                    e = turn_about(j, by).apply(e);
+                    turned = turned.max(by.abs());
+                }
             }
-            let want = u.cross(v).atan2(u.dot(v));
-            let cur = pose.angle(b);
-            let next = joint.allow(cur + want);
-            let by = next - cur;
-            if by != 0.0 {
-                pose.set(b, next);
-                e = turn_about(j, by).apply(e);
-                turned = turned.max(by.abs());
+            // Then slide the joint (and all below it) toward the target, along the axes it
+            // slides on: the effector moves by the same step.
+            if slide && joint.slides() {
+                let (ex, ey) = slide_axes(wp);
+                let r = target - e;
+                let cur = pose.slide(b);
+                let want = match (joint.slide_x.is_some(), joint.slide_y.is_some()) {
+                    (true, false) => Vec2::new(r.dot(ex), 0.0),
+                    (false, true) => Vec2::new(0.0, r.dot(ey)),
+                    _ => {
+                        // r = ex·sx + ey·sy (the axes may be skewed).
+                        let det = ex.cross(ey);
+                        if det.abs() < 1e-6 { Vec2::new(r.dot(ex), r.dot(ey)) } else { Vec2::new(r.cross(ey) / det, ex.cross(r) / det) }
+                    }
+                };
+                let next = joint.allow_slide(cur + want);
+                let by = next - cur;
+                if by != Vec2::ZERO {
+                    pose.set_slide(b, next);
+                    e = e + ex * by.x + ey * by.y;
+                    turned = turned.max(by.length() * 1e-2);
+                }
             }
         }
         let Some((_, e)) = effector(&pose) else { break };
@@ -518,7 +735,7 @@ pub fn solve(arm: &Armature, elements: &[Arc<Element>], pose: &Pose, id: BoneId,
     if error < best.1 {
         best = (pose, error);
     }
-    Some(Solved { pose: best.0, error: best.1, chain: chain.len() })
+    best
 }
 
 #[cfg(test)]
