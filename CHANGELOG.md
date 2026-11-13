@@ -2,6 +2,486 @@
 
 ## Unreleased
 
+* **Bones, second slice: springs, joint translation and editing members** (ADR 0084, M7).
+  * **Joint translation**: Properties › Bone › X/Y translation lets a joint slide along the
+    axes of what the bone starts on, freely or within limits (pixels). Slides are part of each
+    pose and tween with it; the Selection tool's IK turns joints first and slides them only to
+    reach where turning can't.
+  * **Springs**: per-bone Spring (strength) and Damping, 0 to 100. A sprung bone lags behind
+    and swings past its pose as the bones it hangs from move, then settles, chaining down a
+    tail. Evaluated as a pure function of the motion up to the frame (no stored state, bounded
+    replay of at most six seconds), so seeking equals playing bit for bit, and the stage, Test
+    Movie and every export show it. Springs: Enable turns an armature's springs off for posing.
+  * **Members edited in place**: picking a bone selects the instance it moves; its colour
+    effect, blending and filters change on every pose, one undo step, the armature intact.
+  * Headless: `bone.set_translation`, `bone.set_spring`, `bone.enable_springs`, `slide_x` /
+    `slide_y` on `bone.pose`; `bone.info` reports slides, springs and each bone's swing.
+* **Ease presets, custom eases and saved eases** (ADR 0081, M7).
+  * One ease menu in the timeline header, Properties › Frame and the Motion Editor: No Ease,
+    **Classic Ease** with a strength, and **Quad, Cubic, Quart, Quint, Sine, Back, Circ, Bounce
+    and Elastic**, each In, Out and In Out, drawn as curves; then your saved eases.
+  * **Custom Ease** window: click the curve to add a point, drag points and handles (one undo
+    step per drag), double-click for smooth or corner, right-click to delete, type a point's
+    time and value, or use the keyboard (`[` `]`, arrows, `S`, `+`, Delete). Overshoot is
+    allowed; time never runs backwards.
+  * **Saved eases** live in the document and are offered to every classic tween and Motion
+    Editor property; **Copy Ease** / **Paste Ease** carry an ease between tweens.
+  * Classic tweens can **ease each property separately** (position, rotation, scale, colour,
+    filters), and instance filters now tween.
+  * Animate files: custom eases of several segments and per-property eases import exactly.
+  * Headless: `ease.info`, `ease.set`, `ease.add_point`, `ease.move_point`, `ease.move_handle`,
+    `ease.delete_point`, `ease.convert_point`, `ease.separate`, `ease.save`, `ease.delete`,
+    `ease.rename`, `ease.list`, `ease.copy`, `ease.paste`; `timeline.set_easing` takes `group`
+    and every ease (`{"saved": name}`, `{"custom": …}`).
+
+* **Camera, second slice: layer depth, attaching layers and colour** (ADR 0082, M7).
+  * **Layer depth in perspective**: through the camera, a pinhole with a fixed focal length
+    (1,000 px), a deeper layer moves less when the camera pans and grows less when it zooms;
+    deeper layers draw behind nearer ones (ties in timeline order). The camera at rest shows
+    every layer as drawn, and depth 0 is bit-for-bit what it was. A layer the camera has passed
+    isn't drawn.
+  * **Depth over time**: key a layer's depth on any frame; it tweens linearly between keys.
+  * **Window › Layer Depth**: the layers by depth, nearest first, each with a track to drag
+    nearer or farther, its value, a key diamond and Attach.
+  * **Attach Layer to Camera**: a camera toggle on each layer's timeline row; an attached layer
+    stays where it is on screen while the camera moves (titles, HUDs).
+  * **Camera colour effects**: Brightness, Tint and Advanced (no alpha), in Properties and
+    `camera.set`, tweened, in every export.
+  * **Editing while previewing**: with View › Preview Through Camera the Selection tool picks
+    and moves artwork where the movie shows it, mapped back through the camera and the layer's
+    depth.
+  * Every export (PNG, sequences, GIF, video, SVG, Lottie, HTML canvas), Test Movie and the GPU
+    stage see the same picture. Headless: `layer.set_depth {key, frame}`,
+    `layer.remove_depth_key`, `layer.set_attached`, `layer.depths`, `element.pick {view:
+    camera}`; `camera.info` reports `color_effect`.
+  * Changed: depth now also scales under the camera's zoom (it was pan-only); files with a
+    depth and a zoomed camera look different.
+
+* **Drawing parity leftovers** (ADR 0080, M1).
+  * **PolyStar options**: Shape (**Polygon** or **Star**), **Sides**/**Points** (3 to 32) and
+    **Point size** (0 to 1; at 1 a star is the polygon through its tips) in the tool's options.
+    It merges or draws objects like the other shape tools.
+  * **Paint Selection** and **Paint Inside** brush modes: the paint is clipped exactly to the
+    selected fills, or to the fill (or the empty area closed off) where the stroke starts, and
+    never covers lines. Paint Selection keeps the selection for the next stroke.
+  * **Double-click a drawing object** (or Ctrl+E) to edit it in place, as groups and symbols
+    open: inside, its raw shapes merge only with each other. It closes as one drawing object
+    again; opening and closing it without an edit changes nothing.
+  * **Modify › Transform › Envelope**: corner and tangent handles bend the selected shapes and
+    drawing objects through a Bézier patch, one undo step per drag. Like Animate, the bend is
+    baked into the shapes, so there is no Delete Envelope.
+  * Headless: `shape`, `sides`, `point_size` on `draw.star`; `selection` and `inside` modes on
+    `draw.brush`; drawing objects on `symbol.edit`; `modify.envelope`,
+    `modify.envelope_move`, `modify.envelope_close`.
+
+* **Asset Warp** (M7, ADR 0079; refs #213).
+  * **Added**: the **Asset Warp** tool (**Shift+Q**). Click a shape or a bitmap to pin it (the
+    first pin covers it with a warp mesh), drag a pin to bend the artwork around the others,
+    live, one undo step per drag; Delete removes the picked pin. Bending is rigid moving least
+    squares, so the artwork stays as rigid as it can near the pins.
+  * **Added**: pin poses per keyframe, tweened with classic tweens and their easing; a pin added
+    later lands on every keyframe of the artwork. Properties › Asset Warp sets the mesh's
+    resolution and removes pins or the whole warp (also in Modify › Asset Warp).
+  * **Added**: bitmaps bend in the renderer and on the GPU stage (the same prepared image, so
+    they match exactly) and in every raster export; SVG writes a bent bitmap as an image; HTML
+    and Lottie report it. Warped shapes are bent outlines everywhere.
+  * **Added**: commands `warp.add`, `warp.pin_add`, `warp.pin_move`, `warp.pin_remove`,
+    `warp.remove` and `warp.info`, for scripts, plug-ins, the CLI and MCP.
+* **Swatches panel** (M1, ADR 0078).
+  * **Added**: **Window › Swatches**, the document's saved colours and gradients, saved in the
+    document (new documents and older files start with a default set). Click a swatch to apply
+    it to the selection and the tool colour, to the stroke or the fill, whichever is active
+    (the Tools panel's and Colour panel's squares choose, or the panel's own toggle); gradients
+    go to the fill. Add the current colour or gradient, Duplicate, Delete, drag to reorder
+    (Alt+arrows from the keyboard), names on hover, Clear and Load Default Swatches. Every
+    change is one undo step.
+  * **Added**: Import and Export Swatches as a small JSON swatch file, and import of GIMP `.gpl`
+    palettes. Adobe's `.aco`, `.ase` and `.clr` are proprietary and not read.
+  * **Added**: the colour picker shows the document's swatches, and the fill picker its gradient
+    swatches.
+  * **Added**: commands `swatch.list`, `swatch.add`, `swatch.remove`, `swatch.move`,
+    `swatch.duplicate`, `swatch.rename`, `swatch.apply`, `swatch.clear`, `swatch.reset`,
+    `swatch.import` and `swatch.export`, for scripts, the CLI and MCP (plug-ins may edit swatches
+    but not read or write swatch files).
+  * **Fixed**: the timeline's layer footer cut **Delete** to "Del…" at the default window size
+    since docking. Its buttons are now icon buttons (New Layer, Delete, New Folder, Up, Down),
+    named for screen readers, that fit at any size and in any language.
+* **Rulers, grid and guides** (ADR 0076, M1).
+  * **View › Rulers** (**Ctrl+Alt+Shift+R**): rulers along the top and left of the stage, in
+    pixels from its corner, following zoom and pan and marking the pointer.
+  * **Guides**: drag one out of a ruler; drag it with the Selection tool to move it, or back
+    onto a ruler to delete it. Each scene keeps its guides in the document. **View › Guides**:
+    Show (**Ctrl+;**), Lock (**Ctrl+Alt+;**), Snap to Guides (**Ctrl+Shift+;**), Edit Guides
+    (**Ctrl+Alt+Shift+G**: colour, accuracy, and every guide by position, so the keyboard can
+    add, move and delete them), Add Guide and Clear Guides.
+  * **Grid**: **View › Grid** › Show Grid (**Ctrl+'**), Snap to Grid (**Ctrl+Shift+'**), Edit
+    Grid (**Ctrl+Alt+G**: spacing, colour, show over objects, accuracy up to Always snap).
+  * **Snap to Pixels** in View › Snapping, next to Snap to Objects, Grid and Guides.
+  * One snap engine for every drawing tool, the Selection tool's moves (symbols, text and
+    bitmaps now snap by their box's corners and centre) and Free Transform's handles, in a
+    fixed order: point, guide, line, grid, pixel.
+  * Shown on the stage only, never in Test Movie or exports.
+  * Headless: `view.*` commands (`view.guide_add`, `view.grid_set`, `view.guides_clear`, …)
+    and `view.aids`.
+
+* **A light theme** (ADR 0077, M8). Fixes #227.
+  * **Preferences › Appearance › Theme** offers **Light** beside **Dark (Graphite)** and **High
+    contrast**: light grey panels, near-black text, hairline-edged buttons and fields, soft
+    shadows, and the timeline's mint, violet, amber and sky blocks in deeper tones made for a light
+    background. Applied as you click, no restart.
+  * **Follow system** now follows your system's light or dark mode as well as its
+    contrast setting: Windows' app mode, macOS' Appearance, the Linux desktop's colour scheme and
+    the browser's `prefers-color-scheme`. The window's title bar follows too.
+  * `anicraft --theme light` (also `dark`, `high-contrast`) previews a theme for one run.
+  * Every palette is checked by the contrast test (WCAG AA text, 3:1 controls and focus).
+
+* **Gradient editor, the Gradient Transform tool and Lock Fill** (M1, ADR 0074; #208, #203).
+  * **Added**: gradients in the colour picker. The fill's picker (the Tools panel's Fill square,
+    and every Fill swatch in Properties) starts with the fill's type: None, Solid, Linear,
+    Radial or Bitmap. A gradient shows a bar of colour stops (click to add, drag to move, drag
+    off to remove; arrow keys and Delete on a focused stop), overflow (Extend, Reflect, Repeat),
+    Linear RGB and a radial gradient's focal point, above the same swatches, mixer and hex
+    field, which then set the picked stop's colour and opacity. A gradient's swatch in
+    Properties shows its ramp. One picker, as Animate has one Color panel; the fill's No Colour
+    is its type None.
+  * **Added**: the **Gradient Transform** tool (**F**): move, turn, stretch and resize a gradient,
+    move a radial gradient's focal point, and scale, turn and skew a bitmap fill. Each drag is
+    one undo step.
+  * **Added**: **Lock Fill** for the Paint Bucket and the Brush. Without it, gradients and bitmaps
+    are fitted to each shape, as in Animate; the Eyedropper turns it on for what it picks.
+  * **Added**: commands `paint.set_fill`, `paint.transform_fill` and `paint.lock_fill`, for
+    scripts, the CLI and MCP.
+  * **Improved**: gradients keep their overflow, Linear RGB, focal point and elliptical shape
+    from Animate files and SVG drawings, on the GPU stage and in SVG export (HTML canvas draws
+    them as near as canvas can). Radial gradients on skewed shapes are now drawn exactly.
+* **Dockable panels and workspaces** (M8, ADR 0075, fixes #249).
+  * Drag any panel's tab to dock it on any side of the stage (the timeline above the stage, for
+    example), stack it with other panels as a tab, or float it in a window of its own (inside
+    the editor where a system can't open one). Docks and the lines between panel groups resize,
+    groups fold, and every panel has a menu (☰, or right-click its tab) to dock, float or close
+    it from the keyboard.
+  * **Window** lists every panel; choosing one brings it forward, reopening it where it was.
+  * **Window › Workspace**: Essentials (the layout so far), Animator and Designer, your own with
+    **Save Workspace…**, and **Reset**. Where everything is is kept in your preferences.
+  * New **Colour** (stroke and fill, Swap, Black and White) and **Output** (Test Movie's lines,
+    kept after it closes) panels. Ctrl+F6 visits every docked panel in the order they are docked.
+* **Groups and Combine Objects** (ADR 0073, M1; issues #206, #229).
+  * **Modify › Group** (**Ctrl+G**) and **Ungroup** (**Ctrl+Shift+G**): keep artwork together
+    without a Library symbol. Double-click a group to edit it in place (the rest dims, the edit
+    bar says `Scene 1 › Group`); groups nest; merged drawing inside a group only cuts and joins
+    the shapes in that group. Ungroup puts everything back exactly where it showed. Break Apart
+    on a group ungroups it.
+  * **Modify › Combine Objects › Union, Intersect, Punch, Crop** on two or more selected shapes,
+    with the exact geometry of merge drawing.
+  * **Selection tool**: **Alt-drag** (Option-drag) to drag a copy away; **Shift** keeps a move
+    horizontal, vertical or at 45°.
+  * **Break Apart** on a group ungroups it; its merged drawing merges with the drawing below.
+  * Animate files keep their groups (`DOMGroup` used to be flattened).
+  * Headless: `modify.group`, `modify.ungroup`, `modify.combine {op}`, `symbol.edit {id}` on a
+    group.
+
+* **Fixed: start-up, files and display, from user reports** (M8).
+  * Fixed: Flash files that opened in 0.1 no longer opening (#226). One damaged or unreadable
+    part of a `.fla` (a bitmap, a sound, a library symbol) no longer stops the whole file from
+    opening: the rest opens and the report says what was left out. A file double-clicked or
+    opened with **Open With** that can't be opened now says why in the status bar instead of
+    quietly showing the sample, and `anicraft-cli info`, `render` and the export commands open
+    `.fla` and `.xfl` files too.
+  * Fixed: Animate documents opening on a black stage instead of white (#163).
+  * Fixed: AniCraft not opening at all on some laptops with two graphics chips, such as the
+    Surface Book 2 (#207). If a way of drawing the window fails, AniCraft now tries the next one
+    (on Windows: DirectX 12 on the built-in chip, then OpenGL) instead of exiting, and a start that
+    crashed inside a graphics driver tries that way last next time. If nothing works, a message
+    says so. A start-up log in the settings folder (`Logs/anicraft.log`) records what was tried,
+    to attach to a bug report.
+  * New: **Preferences › Stage › Window graphics** chooses how the window is drawn (Automatic,
+    DirectX 12, Vulkan, Metal or OpenGL), for windows that flicker or flash black (#255).
+    `--renderer dx12`, `vulkan` and `metal` now pick that interface; before, they all meant the
+    default.
+  * Fixed: the selection shading on shapes stopping part way down when zoomed in or on a big
+    shape (#204). The dot pattern now covers the whole shape and its outline at any zoom, and
+    costs the same however much of the screen it covers.
+  * The web version's download is now built by `packaging/web/package.sh` and checked in CI; the
+    README no longer suggests releases carry it yet (#210).
+* **Drawing tools and colour fixes from user reports** (M1).
+  * **Fixed**: the Fill and Stroke colour squares in the Tools panel did nothing when clicked.
+    They open the colour picker now, with No Colour, and recolour selected shapes (#246).
+  * **Fixed**: the colour picker had no hex field. Every colour swatch's picker shows the colour
+    as `#rrggbb` and takes one you type (#201).
+  * **Fixed**: the colour picker had no web-safe palette. It opens on Animate's 216 web-safe
+    swatches, with greys and primaries beside them and the colours you mix or type in a row
+    below; **Mixer** has the full picker (#248).
+  * **Fixed**: the Pencil's Properties showed a Fill swatch, though the Pencil only draws lines.
+    The Pencil and the Line tool show only the stroke now (#252).
+  * **Fixed**: a squiggle drawn with Object Drawing on was trapped in its object. **Modify ›
+    Break Apart** (Ctrl+B) now turns a drawing object into merged drawing you can edit (#253).
+  * **Fixed**: the Width tool didn't thicken a line when you dragged on it, the pointer didn't
+    change, and the marker was a tiny dark box. A drag on the line widens it there, the pointer
+    is a crosshair (an add pointer over a line), and the marker is a white box with handles
+    (#250).
+  * **Fixed**: every new line segment came with a scale gizmo whose handles couldn't be dragged,
+    and a box appeared after every brush or pencil stroke. As in Animate, what you draw isn't
+    left selected, and the Selection tool's box no longer shows handles that do nothing (#205,
+    #243).
+  * **Fixed**: Ctrl-dragging a shape's edge made a smooth curve. It adds a corner point where you
+    pressed, with straight sides on a straight edge (#200).
+* **Filters, Subtract and Invert in HTML canvas export** (ADR 0072, M6). Exported web pages now
+  show every filter (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel and Adjust
+  Color, with inner, knockout, hide object and Inner/Outer/Full) and the Subtract and Invert blend
+  modes as AniCraft draws them, in every browser: the page runs a port of AniCraft's own filters
+  over the symbol's pixels instead of the browser's effects, and shadows and glows reach onto the
+  stage from symbols beside it. A filtered symbol that doesn't change is filtered once. Tested
+  against AniCraft's renderer pixel by pixel (35 filter set-ups at three view scales, within
+  1/1000) and checked in a browser. At 1080p the demo's filtered symbols cost 3.4 ms a frame while
+  they change; one covering the whole frame 50 to 150 ms. The export report no longer lists them.
+* **Timeline, bones, menus and stage fixes from user reports** (M1).
+  * **Fixed**: F5 with no frames selected only extended the active layer. It now extends every
+    layer that has frames at or after the playhead, as in Animate, and leaves the layers that end
+    before it alone (#242).
+  * **Fixed**: after F5, F6 or F7 you had to select the next frame by hand. F5 now moves onto the
+    frame it adds, and F6 or F7 on a keyframe makes the new keyframe on the next frame and moves
+    there, so draw, F6, draw keeps going (#254). F7 on a keyframe no longer clears its drawing.
+  * **Fixed**: the timeline's Frame, Keyframe and Blank buttons took a lot of room. They are icons
+    now (a frame, a filled dot and a hollow dot, each with a plus), named in their tooltips (#240).
+  * **Fixed**: bone chains looked broken and jumped while posing. A bone started anywhere on an
+    instance now starts at the end of the bone before it, so the chain stays joined, and dragging
+    a bone along its length moves it from where you grabbed it instead of snapping its end to the
+    pointer (#239).
+  * **Fixed**: on macOS there were no menus (no File, no Save). The title bar covered the menu
+    row; it is see-through now, as designed (#247).
+  * **Fixed**: you couldn't draw outside the stage; anything past its edge was hidden. The
+    pasteboard now shows your artwork, as in Animate, and **Clip content outside the stage**
+    (beside the zoom menu, and in the View menu) hides it again when you want (#245, #251).
+* **Soft masks and text on a path** (ADR 0070, M4).
+  * **Soft masks**: Layer Properties › **Mask type** on a mask layer: *Shape* (as in Animate),
+    *Alpha* (the mask's opacity reveals: a gradient to transparent fades the artwork out) or
+    *Luminance* (the mask's brightness reveals: white shows, black hides). On the stage, on the
+    GPU stage, in Test Movie and in every export: SVG writes a `mask`, Lottie a track matte, the
+    HTML canvas composites it. `layer.set_mask` does it headless.
+  * **Text on a path**: Properties › Path › **Attach to Path**, then click a shape: static text
+    follows its outline (a copy of it; the shape stays). Move it along with **Offset**, put it on
+    the other side with **Flip**, and **Release** it back to lines of text. The alignment says
+    whether the text starts, is centred or ends at the offset. Editing the words, the font or
+    the size keeps it on its path. Also Modify › Text › Attach Text to Path.
+  * **SVG import**: soft masks come in as soft mask layers (luminance, or alpha with
+    `mask-type: alpha`) instead of being drawn unmasked; `textPath` comes in as text on a path;
+    per-character `x`, `y`, `dx`, `dy` and `rotate` are kept where they are simple.
+* **Bones inside shapes** (ADR 0071, M7).
+  * The **Bone** tool now also draws bones inside a shape, so the shape itself bends like a tail
+    or a tentacle. Its points follow the nearest bones, and the bend stays smooth through the
+    joints. Lines keep their width, and the shape as drawn comes back exactly at rest.
+  * Pose by dragging bones with the Selection tool. Poses key per frame and tween with easing,
+    as symbol armatures do, and every export, Test Movie and the stage show the bend.
+  * The new **Bind** tool (**Shift+M**) shows which points follow which bone, and changes it by
+    click, Shift-click, Ctrl-click or a box. **Properties › Bone** counts the bone's points and
+    has **Rebind All**.
+  * Headless: `bone.add_in_shape`, `bone.bind`, and `bone.info` with `points`.
+* **CI on macOS and Windows** (ADR 0067, M8). Every pull request that changes code now builds,
+  tests and lints the workspace on macOS (arm64) and Windows (x64) runners as well as Linux, so
+  macOS-only and Windows-only code is checked before it merges. Documentation-only changes skip
+  them, and a newer push cancels the older run. Their first run
+  found one macOS-only failure: the screen-reader translation tests treated the macOS app
+  menu's title, the product name, as untranslated.
+* **The user guide** (ADR 0069, M8).
+  * **Help › User Guide** opens AniCraft's guide in your browser. It comes with the app, so it
+    works offline; the web editor serves it beside the editor. It is also in the command palette.
+  * Eighteen chapters written for artists, from getting started, drawing, symbols, the timeline and
+    tweens to masks, the camera and bones, text, images and sound, interactivity, exporting and
+    Publish, opening Animate files, preferences and accessibility, plug-ins, working headless, and
+    troubleshooting, plus **Coming from Animate**, which maps Animate's panels, tools and shortcuts
+    to AniCraft's.
+  * A **command reference** and a **shortcut reference** (with the macOS keys beside the others),
+    generated from AniCraft itself, so they always match the version you have.
+  * `anicraft-cli guide --out <folder>` writes the guide as HTML pages.
+  * On macOS, the fixed keys that hold a key while dragging ("Space+Drag") keep that key in their
+    label.
+* **Brush library, pressure curves and the Paint Brush** (ADR 0068, M7).
+  * **Window › Brush Library**: seven built-in brushes, each with a stroke preview drawn by the
+    renderer: Pencil, Ink Pen, Flat Calligraphy, Round Taper, Marker, Chalk (a ragged edge that
+    is the same every time) and Dotted. They are all made of parameters, with no bitmaps. A click
+    sets the brush in hand.
+  * **Your own brushes**: Save Brush keeps the brush in hand under a name, in your preferences.
+    Right-click to rename or delete one (deleting asks first). Import… and Export… move a brush
+    set between computers as a small JSON file.
+  * **Pressure curves**: an editor in Properties maps pen pressure to the size and, optionally,
+    to the stroke's opacity. It has Linear, Soft and Firm presets, or your own points.
+  * **Shaping**: tapers at the start and end, dab spacing and a rough edge, in Properties.
+  * **Velocity**: without a pen, drawing faster draws thinner (off by default).
+  * **Paint Brush (Y)**: draws a line in the stroke colour whose width follows the pressure and
+    tapers, as a width profile you can reshape with the Width tool.
+  * Headless: `brush.preset_list`, `brush.preset_save`, `brush.preset_rename`,
+    `brush.preset_delete`, `brush.preset_export`, `brush.preset_import`; `preset`, `curve`,
+    `pressure_size`, `pressure_opacity`, `taper_start`, `taper_end`, `spacing`, `jitter` and
+    `as_stroke` on `draw.brush`.
+  * Pen tilt isn't read yet: egui doesn't report it.
+
+* **Dynamic and input text fields** (ADR 0066, M5).
+  * **Properties › Text type**: Static, Dynamic or Input text, as in Animate. Dynamic and input
+    fields have an **instance name**, a **line type** (single line, multiline, multiline no wrap,
+    password), a fixed **box**, **Show border**, **Selectable** and **Max characters**.
+  * **Scripts** set and read fields: `score_txt.text = "Score: " + n`, `appendText`, `.length`.
+  * **Test Movie**: click an input field and type. Caret, selection with Shift and the pointer,
+    Backspace, Delete, the arrows, Home, End, Enter in multiline fields, Tab to the next field,
+    Select All, Copy, paste and input methods. Screen readers find fields as text inputs.
+  * **HTML canvas export**: input fields are real text inputs over the movie (input methods, the
+    on-screen keyboard and the clipboard work), and text that scripts set is drawn in the
+    browser. Authored text is drawn exactly as in AniCraft.
+  * **Animate files**: dynamic and input fields come across as fields, with their names, boxes,
+    borders and line types (they used to become static text).
+  * Every other export and the stage draw fields with their authored text, box and border.
+  * `text.field`, `text.create {type}` and `control.test_movie` `text` and `select_all` events
+    for agents and the CLI.
+* **Templates, SVG into the Library, and drops on the timeline** (ADR 0065, M8).
+  * **File › New from Template** and the start screen's new **Templates** row: Leaderboard banner
+    728 × 90, Rectangle banner 300 × 250, Social square 1080 × 1080 at 30 fps, Storyboard 16:9 (six
+    labelled panels), Character turnaround and a Lip-sync mouth chart. Each has named layers and
+    guides on a locked guide layer (they show while drawing and never export). They open as new,
+    untitled documents with a drawing layer active.
+  * **File › Save as Template** keeps the open document, with a picture, under a name and a
+    category in your settings folder. It shows under "My templates" on the start screen, with
+    Delete. Replacing or deleting a template asks first.
+  * **SVG into the Library**: dropping an SVG on the Library, or File › Import › Import to Library,
+    makes one graphic symbol named after the file, in the folder under the pointer.
+  * **Drops on the timeline**: a sound dropped on a layer's frame goes onto that keyframe. An image
+    or SVG goes onto that layer at that frame, in a new keyframe if needed. Either way it is one undo
+    step, and a highlight shows the cell. Locked layers, folders and the camera say why they won't
+    take it.
+  * The timeline's layer footer keeps its Move Down button in every language.
+  * Headless: `file.new_from_template`, `file.templates`, `file.save_as_template`,
+    `file.delete_template`, and `file.drop` with `to: "timeline"`.
+  * Exact drop positions from the desktop still wait for winit 0.31 (eframe 0.37 is still on 0.30).
+* **Accessibility, second pass** (ADR 0064, M8).
+  * **Select on the stage from the keyboard.** With the stage focused (Ctrl+F6), Tab goes to
+    its elements, and a ring shows the focused one on the artwork.
+    * Tab, Shift+Tab and the arrows move between elements.
+    * Enter or Space selects one; Shift+Enter or Shift+Space adds it to the selection or
+      takes it out.
+    * Esc goes back to the stage.
+  * **Screen readers hear what is on the stage.** While the stage has focus, its elements are
+    a list ("Rectangle", "Text: Hello", "ball · Graphic: Ball"), each with its layer, place,
+    size, on-screen bounds and whether it is selected.
+  * **The active layer's frames are a list too.** Each item reads "Frames 1–24: keyframe ·
+    motion tween · label “walk”", and activating one moves the playhead there.
+  * **The timeline from the keyboard.** On the focused timeline, the arrows move the playhead
+    and the active layer, and each move is announced.
+  * **The menu bar from the keyboard** on Windows and Linux.
+    * Press and let go of Alt, or press F10. Then the arrows, Enter and Esc work as in other
+      applications.
+    * Alt+F, Alt+E and the rest open a menu directly. While Alt is held, each title shows its
+      letter underlined.
+  * **Follow system** is the new default theme. AniCraft switches to high contrast while
+    Windows uses a contrast theme, macOS has Increase Contrast on, the Linux desktop asks for
+    high contrast, or the browser prefers more contrast. Choosing Graphite or High contrast
+    keeps that palette.
+  * Headless: `element.select` takes `toggle`.
+
+* **Test Movie in its own window, and opening documents on macOS** (ADR 0062, M8).
+  * **Control › Test Movie** (Ctrl+Enter) now opens in a **window of its own** on the desktop,
+    as in Animate. It is sized to the stage at 100 % (smaller if that wouldn't fit the
+    screen), titled with the document's name, and opens where it was last. It takes the
+    keyboard when it opens. **Esc** or **Ctrl+W (⌘W)** closes it, Ctrl+Enter restarts it in
+    place, and the editor's Ctrl and Alt shortcuts still work from it.
+  * In the web build, and wherever the system can't open another window, it floats inside the
+    editor as before and says why. **Preferences › Test Movie** keeps it inside the editor if
+    you prefer. On Wayland the desktop places the window, so it can't come back where it was
+    (Preferences says so).
+  * **macOS:** double-clicking a `.anicraft`, `.fla` or `.xfl` in Finder, dropping it on the
+    Dock icon, or choosing Open With › AniCraft opens it, whether AniCraft is running or
+    not. If there are unsaved changes it asks first, and the Dock's Quit asks to save too.
+    This uses the small `fmv-macos-events` crate (MIT OR Apache-2.0), so AniCraft's own code
+    stays free of `unsafe`. Still to be checked on a Mac (the list is in ADR 0062).
+  * Windows and Linux already open a double-clicked document from the command line; a test
+    now covers it.
+
+* **Timeline polish** (ADR 0061, M1).
+  * A **per-layer onion skin toggle** in each layer row (Alt-click: this layer only, again:
+    every layer). Layers left out show only their playhead frame; Edit Multiple Frames still
+    edits them.
+  * **View as Outlines** draws a layer's artwork as hairlines in its colour **on the stage
+    only**. Exports, Test Movie and the player draw it as it is (before, an outlined layer
+    exported as outlines). The **colour chip** on the row's edge opens the layer colour.
+  * **Onion skin inside a symbol edited in place** now also shows the parent timeline's frames
+    around it, dimmed.
+  * **Layer Height** 100 / 200 / 300 % (right-click menu), **Layer Properties** (double-click a
+    layer's icon, Properties… or Modify › Timeline), and a **Frame View** menu with frame widths
+    Tiny to Large and **Short** rows. Frame zoom and Frame View sit at the right end of the
+    timeline's bottom bar, as in Animate, so the header fits at the default window size again
+    (the tween-kind menu was cut off).
+  * Headless: `layer.set_onion`, `layer.set_color`, `layer.set_height`, `layer.set_properties`,
+    `layer.properties`. Saved in the document with defaults left out, so older files open as
+    before. XFL import reads a layer's height.
+* **Animated PNG and animated WebP export** (ADR 0063, M4).
+  * **File › Export › Export Animated PNG…** and **Export Animated WebP…** make full-colour
+    animations with real transparency, for the web and chat apps, where a GIF has 256 colours
+    and hard edges. WebP is lossless. Both are transparent by default; turn on the stage colour
+    as background if you want it. Loop forever, play once, or play a set number of times.
+  * Every frame is exactly what AniCraft renders. Frames that repeat the one before are stored
+    once and shown longer, and each later frame stores only the rectangle that changed, so
+    holds and small motions cost little.
+  * Timing is exact: APNG delays are fractions of the frame rate (29.97 fps stays 29.97), and
+    WebP's milliseconds never drift.
+  * Both are in **Publish Settings** (Animated PNG, Animated WebP) with frames, scale, loop and
+    background; in a browser they download. Headless: `file.export_apng`, `file.export_webp`
+    and `anicraft-cli apng` / `webp`.
+  * On the sample (48 frames, 1280 × 720) the APNG is 2.0 MB and the WebP 1.8 MB, against the
+    GIF's 1.4 MB, which has only 256 colours; both take less time to make than the GIF.
+
+* **Publish Settings and Publish** (ADR 0060, M8).
+  * **File › Publish Settings** (Ctrl+Shift+F12) is a window that stays open while you work.
+    It lists every format AniCraft exports (HTML canvas, animated GIF, video, Lottie, sprite
+    sheet, PNG sequence, PNG, SVG, audio), each with a checkbox. The selected format shows
+    its output name and the same options its File › Export command has. The settings are
+    saved **in the document** and every change can be undone. Older files open with the HTML
+    page on.
+  * Output names are relative to the document's folder, and `{name}` stands for the
+    document's name (`web/{name}.html`). Each name is checked as you type and the full path
+    is shown below it. A name can't point outside the document's folder, and two formats
+    can't write the same file.
+  * **File › Publish** (Shift+F12) writes every format that is on, in the background. A
+    window shows each format's progress and has a Cancel button. A single report then lists
+    what each format wrote, skipped (video in a browser, audio with no sounds), left out
+    (Lottie's and the HTML page's notes) or why it failed. One failing format doesn't stop
+    the others.
+  * Publishing over files that are already there asks once. After that, the files this
+    session published are replaced without asking.
+  * **Presets**: save the settings under a name, apply them to any document, or delete them.
+    Presets are kept in your preferences.
+  * In a browser, the files go to your downloads, as one ZIP when there are several.
+  * Headless: `publish.settings_get`, `publish.settings_set` and `file.publish`, which returns
+    the report. Publishing the sample in six formats takes 0.64 s.
+* **Files from the desktop, recent files and a start screen** (ADR 0059, M8).
+  * **Drop files onto the window**: `.anicraft`, `.fla` and `.xfl` open (asking first over
+    unsaved work); SVG drawings, PNG and JPEG images and WAV, Ogg and MP3 sounds dropped on the
+    **stage** go onto the active layer at the playhead, centred where they were dropped, and
+    dropped on the **Library** go into the folder under the pointer. One undo step per drop.
+    A highlight shows where they will land; anything AniCraft can't take gets one clear
+    status line. In the web editor too.
+  * **File › Open Recent**: the last 10 documents opened or saved, with pinned favourites on
+    top, missing files greyed out with Remove, and Clear Recent Files. Kept in the
+    preferences (browser storage on the web).
+  * **Start screen** when AniCraft starts without a document: New with HD, Full HD, square
+    and vertical presets or a custom size and frame rate, Open, the sample animation, and the
+    recent files with a picture of their first frame (captured on save). Esc goes back to the
+    document; File › Start Screen brings it back; it can be switched off.
+  * New commands for the CLI and MCP: `file.drop`, `file.open_recent`, `file.recent_list`,
+    `prefs.recent_pin`, `prefs.recent_remove`, `prefs.recent_clear`; `file.import` takes
+    `cx`/`cy` and `layer: "active"`.
+
+* **Buttons, complete: sounds on button frames and hit-area editing** (ADR 0057, M5).
+  * A sound on a button's **Over** or **Down** frame plays when the pointer goes over or
+    presses the button, in Test Movie and in the HTML canvas page (Web Audio). As the SWF format
+    keeps them, the Up frame's plays on leaving and the Hit frame's on letting go over it. A
+    stream on a button frame plays as an event. Buttons stay out of the soundtrack: Export Audio
+    and video are unchanged.
+  * Editing a button in place, the timeline names its four frames **Up, Over, Down, Hit** (and
+    widens them to fit while the button is open), and the stage draws the **Hit area**
+    translucent over the other states.
+  * Test Movie has a **Show hit areas** checkbox.
+  * XFL and `.fla` import bring sounds whose file is in the package (WAV, Ogg Vorbis, MP3), with
+    the sounds on frames that use them, buttons' states included; sounds kept only in Animate's
+    own format are reported.
+  * Headless: `control.test_movie` lists the sounds it started.
+  * 9-slice guides switched off are now kept, and come back where they were when switched on.
 * **Find and Replace, and the Movie Explorer** (ADR 0058, M8).
   * **Edit › Find and Replace** (Ctrl+F) is a window that stays open while you work. It finds
     text in text fields, frame labels, layer names, instance names and frame scripts, with

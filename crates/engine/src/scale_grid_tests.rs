@@ -38,13 +38,45 @@ fn turning_guides_on_puts_them_a_quarter_in_and_moving_one_keeps_the_rest() {
     run(&mut s, "symbol.set_scale_grid", json!({"left": -40, "right": 40, "top": -10, "bottom": 10}));
     run(&mut s, "symbol.set_scale_grid", json!({"top": -12}));
     assert_eq!(grid(&s, id), Some(ScaleGrid { left: -40.0, right: 40.0, top: -12.0, bottom: 10.0 }));
-    // Off forgets them (as in Animate, turning them on again starts from the artwork).
+    // Off hides them: the symbol scales as a whole (ADR 0057).
     let v = run(&mut s, "symbol.set_scale_grid", json!({"on": false}));
     assert_eq!(v["scale_grid"], Value::Null);
     assert_eq!(grid(&s, id), None);
-    // Moving a guide turns them on.
+    // Moving a guide turns them on, from where they were.
     run(&mut s, "symbol.set_scale_grid", json!({"symbol": id.0, "left": -45}));
-    assert_eq!(grid(&s, id).map(|g| g.left), Some(-45.0));
+    assert_eq!(grid(&s, id), Some(ScaleGrid { left: -45.0, right: 40.0, top: -12.0, bottom: 10.0 }));
+}
+
+#[test]
+fn guides_switched_off_and_on_again_come_back_where_they_were() {
+    let (mut s, id) = panel();
+    let moved = ScaleGrid { left: -40.0, right: 30.0, top: -12.0, bottom: 6.0 };
+    run(&mut s, "symbol.set_scale_grid", json!({"left": -40, "right": 30, "top": -12, "bottom": 6}));
+    run(&mut s, "symbol.set_scale_grid", json!({"on": false}));
+    let kept = |s: &Session| s.doc.symbol(id).and_then(|x| x.scale_grid_kept);
+    assert_eq!((grid(&s, id), kept(&s)), (None, Some(moved)), "kept, not applied");
+    // Off twice keeps them still; saved and opened, they are still there.
+    run(&mut s, "symbol.set_scale_grid", json!({"on": false}));
+    let file = crate::format::to_json(&s.doc).unwrap();
+    assert!(file.contains("scale_grid_kept"));
+    let mut s = Session::new(crate::format::from_json(&file).unwrap());
+    assert_eq!(kept(&s), Some(moved));
+    run(&mut s, "symbol.set_scale_grid", json!({"symbol": id.0, "on": true}));
+    assert_eq!((grid(&s, id), kept(&s)), (Some(moved), None), "on again: back where they were");
+    // Undo goes back to off with the guides kept.
+    s.undo().unwrap();
+    assert_eq!((grid(&s, id), kept(&s)), (None, Some(moved)));
+    // A kept grid that isn't usable, or kept beside guides that are on, is dropped on load.
+    let mut d = s.doc.clone();
+    let sym = std::sync::Arc::make_mut(&mut d.library[0]);
+    sym.scale_grid_kept = Some(ScaleGrid { left: 5.0, right: -5.0, top: 0.0, bottom: 1.0 });
+    let d = crate::format::from_json(&crate::format::to_json(&d).unwrap()).unwrap();
+    assert_eq!(d.library[0].scale_grid_kept, None);
+    let mut d = s.doc.clone();
+    let sym = std::sync::Arc::make_mut(&mut d.library[0]);
+    sym.scale_grid = Some(moved);
+    let d = crate::format::from_json(&crate::format::to_json(&d).unwrap()).unwrap();
+    assert_eq!((d.library[0].scale_grid, d.library[0].scale_grid_kept), (Some(moved), None));
 }
 
 #[test]
@@ -101,10 +133,12 @@ fn the_guides_survive_the_file_and_older_files_open_without_them() {
     assert!(text.contains("\"scale_grid\""));
     let back = crate::format::from_json(&text).unwrap();
     assert_eq!(back.symbol(id).and_then(|x| x.scale_grid), grid(&s, id));
-    // A symbol without guides writes nothing for them, so older files read the same.
+    // A symbol whose guides are off keeps them apart (ADR 0057), and one that never had any
+    // writes nothing for them, so older files read the same.
     run(&mut s, "symbol.set_scale_grid", json!({"on": false}));
     let text = crate::format::to_json(&s.doc).unwrap();
-    assert!(!text.contains("scale_grid"));
+    assert!(!text.contains("\"scale_grid\"") && text.contains("\"scale_grid_kept\""));
+    assert!(!crate::format::to_json(&panel().0.doc).unwrap().contains("scale_grid"));
     assert_eq!(crate::format::from_json(&text).unwrap().symbol(id).and_then(|x| x.scale_grid), None);
     // Unusable guides in a file are dropped, not drawn.
     let mut doc = s.doc.clone();

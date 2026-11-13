@@ -244,6 +244,15 @@ impl<'a> Lower<'a> {
                 if matches!(&obj.kind, E::Name(o) if o == "Math") {
                     return self.call_expr(pos, callee, args, u).map(|x| IS::Do { x });
                 }
+                // `field.appendText(v)` is `field.text += v` (ADR 0066).
+                if m == "appendText" {
+                    let [arg] = args else {
+                        self.problem(pos, "`appendText` takes one argument, the text to add");
+                        return None;
+                    };
+                    let (at, v) = (self.field_place(obj, u), self.expr(arg, u));
+                    return Some(IS::Do { x: X::Set { to: LValue::Text { at: at? }, op: Some(BinOp::Add), v: Box::new(v?) } });
+                }
                 if Method::from_name(m).is_none() && m != "addEventListener" && m != "removeEventListener" {
                     self.problem(pos, format!("calling `{m}` isn't supported (timeline methods such as `play()` and `gotoAndStop()`, `addEventListener` and `removeEventListener` are)"));
                     return None;
@@ -590,6 +599,17 @@ impl<'a> Lower<'a> {
         Some(at)
     }
 
+    /// The text field a script names (`score_txt`, `panel.name_txt`): an instance, not the
+    /// stage or a timeline (`this` is one only if it is a field, which a frame script's isn't).
+    fn field_place(&mut self, e: &Expr, u: &Unit) -> O<Place> {
+        let at = self.place(e, u)?;
+        if at.base == Base::Stage || (at.base == Base::This && at.path.is_this()) {
+            self.problem(e.pos, "this isn't a text field; name the field by its instance name, as in `score_txt.text`");
+            return None;
+        }
+        Some(at)
+    }
+
     /// Whether an expression names an instance rather than a value (for `==` between instances).
     fn is_instance(&self, e: &Expr, u: &Unit) -> bool {
         match &e.kind {
@@ -628,9 +648,10 @@ impl<'a> Lower<'a> {
                 self.free(n, e.pos, false);
                 Some(LValue::Var { n: n.clone() })
             }
+            E::Member(o, m) if m == "text" => Some(LValue::Text { at: self.field_place(o, u)? }),
             E::Member(o, m) => {
-                let Some(p) = Prop::from_name(m) else {
-                    self.problem(e.pos, format!("setting `{m}` isn't supported yet (x, y, alpha, visible, rotation, scaleX and scaleY are)"));
+                let Some(p) = Prop::from_member(m) else {
+                    self.problem(e.pos, format!("setting `{m}` isn't supported yet (x, y, alpha, visible, rotation, scaleX, scaleY and a text field's text are)"));
                     return None;
                 };
                 let Some(p) = p.settable() else {
@@ -841,11 +862,11 @@ impl<'a> Lower<'a> {
             self.problem(e.pos, format!("reading `{m}` of a value isn't supported yet"));
             return None;
         }
-        let Some(p) = Prop::from_name(m) else {
-            self.problem(e.pos, format!("reading `{m}` isn't supported yet (x, y, alpha, visible, rotation, scaleX, scaleY, currentFrame, totalFrames, currentLabel, mouseX, mouseY and name are)"));
+        let Some(p) = Prop::from_member(m) else {
+            self.problem(e.pos, format!("reading `{m}` isn't supported yet (x, y, alpha, visible, rotation, scaleX, scaleY, currentFrame, totalFrames, currentLabel, mouseX, mouseY, name, and a text field's text and length are)"));
             return None;
         };
-        let at = self.place(o, u)?;
+        let at = if matches!(p, Prop::Text | Prop::Length) { self.field_place(o, u)? } else { self.place(o, u)? };
         if at.base == Base::Stage && !matches!(p, Prop::MouseX | Prop::MouseY) {
             self.problem(e.pos, format!("`stage.{m}` isn't supported yet"));
             return None;

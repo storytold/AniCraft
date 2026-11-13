@@ -1,18 +1,21 @@
-//! The Bone tool and armatures on the stage (ADR 0043).
+//! The Bone tool and armatures on the stage (ADR 0043, ADR 0071).
 //!
 //! Bones show over the artwork of every visible armature layer as wedges, wide at the round
 //! joint they turn about and narrowing to a smaller round end, in the layer's colour; the
 //! selected bone in the selection colour. With the **Bone tool** a drag from one symbol
-//! instance to another adds a bone (a drag starting on a bone's end continues the chain from
-//! it), and a click picks a bone. With the **Selection tool** a drag on a bone, or on an
-//! instance a bone moves, poses the armature by inverse kinematics; a drag on the root instance
-//! moves the whole armature. Each drag is one undo step, and the pose keys the frame.
+//! instance to another adds a bone; a drag inside a shape draws a bone inside it (the shape
+//! bends with it: a shape armature); a drag starting on a bone's end continues the chain from
+//! it, and a click picks a bone. With the **Selection tool** a drag on a bone, or on an
+//! instance a bone moves, poses the armature by inverse kinematics (the point grabbed follows the
+//! pointer); a drag on the root instance, the root's joints (or a shape armature's shape) moves
+//! the whole armature. Each drag is one undo step, and the
+//! pose keys the frame.
 
 use crate::app::{App, Drag, Tool};
 use crate::pathtools::Xf;
 use crate::theme::{T, to_color32};
 use anicraft_engine::doc::armature::{self, BoneAt};
-use anicraft_engine::doc::{BoneId, ElementId, ElementKind, LayerId, LayerKind, evaluate_layer_elements};
+use anicraft_engine::doc::{BoneId, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_shown};
 use anicraft_engine::geom::Vec2;
 use egui::{Color32, Key, Modifiers, Pos2, Stroke, pos2};
 use serde_json::json;
@@ -43,8 +46,10 @@ pub fn shown(app: &App) -> Vec<Shown> {
         .filter(|(i, l)| l.kind == LayerKind::Armature && l.visible && !tl.hidden_by_folder(*i))
         .filter_map(|(_, l)| {
             let arm = l.armature.as_deref()?;
-            let (_, els) = evaluate_layer_elements(l, app.s.frame)?;
-            let pose = armature::pose_at(l, app.s.frame).unwrap_or_default();
+            // As the stage draws the armature: swung by its springs (ADR 0084).
+            let fps = app.s.doc.stage.fps;
+            let (_, els) = evaluate_shown(l, app.s.frame, None, fps)?;
+            let pose = anicraft_engine::doc::spring::sprung_pose(l, app.s.frame, fps).unwrap_or_default();
             Some(Shown { layer: l.id, color: to_color32(l.color), locked: l.locked || tl.locked_by_folder(l.id), bones: armature::bones_at(arm, &els, &pose) })
         })
         .collect()
@@ -84,6 +89,22 @@ fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
 /// The topmost symbol instance under stage point `sp` other than `skip`, on an unlocked layer:
 /// its layer and id.
 fn instance_at(app: &App, sp: Vec2, slop: f32, skip: Option<ElementId>) -> Option<(LayerId, ElementId)> {
+    item_at(app, sp, slop, skip, |_, e| matches!(e.kind, ElementKind::Symbol { .. }))
+}
+
+/// What a Bone tool press can start a bone on: an instance, a shape on a normal layer, or a
+/// shape armature's shape.
+fn rig_target(l: &Layer, e: &Element) -> bool {
+    match e.kind {
+        ElementKind::Symbol { .. } => true,
+        ElementKind::Shape(_) => l.kind == LayerKind::Normal || l.armature.as_ref().and_then(|a| a.skin_shape()) == Some(e.id),
+        _ => false,
+    }
+}
+
+/// The topmost item under stage point `sp` other than `skip`, on an unlocked layer, that `want`
+/// accepts: its layer and id.
+fn item_at(app: &App, sp: Vec2, slop: f32, skip: Option<ElementId>, want: impl Fn(&Layer, &Element) -> bool) -> Option<(LayerId, ElementId)> {
     let dl = app.s.display_list();
     let tl = app.s.timeline();
     for item in dl.items.iter().rev() {
@@ -99,19 +120,25 @@ fn instance_at(app: &App, sp: Vec2, slop: f32, skip: Option<ElementId>) -> Optio
         if !(inside || item.path.distance_to_edge(sp, &item.transform) <= hw + slop) {
             continue;
         }
-        let is_instance = evaluate_layer_elements(layer, app.s.frame).is_some_and(|(_, els)| els.iter().any(|e| e.id == item.element && matches!(e.kind, ElementKind::Symbol { .. })));
-        if is_instance {
+        let wanted = evaluate_layer_elements(layer, app.s.frame).is_some_and(|(_, els)| els.iter().any(|e| e.id == item.element && want(layer, e)));
+        if wanted {
             return Some((layer.id, item.element));
         }
     }
     None
 }
 
-/// Selects bone `bone` on armature layer `layer` (its layer becomes the active one).
+/// Selects bone `bone` on armature layer `layer` (its layer becomes the active one), and the
+/// instance it moves, so Properties shows that instance's colour effect, blending and filters
+/// to edit in place (ADR 0084).
 pub fn select(app: &mut App, layer: LayerId, bone: Option<BoneId>) {
     app.bone_sel = bone;
     if bone.is_some() && app.s.layer != layer {
         app.run("layer.select", json!({"layer": layer.0}));
+    }
+    let child = bone.and_then(|b| app.s.timeline().layer(layer).and_then(|l| l.armature.as_ref()).filter(|a| a.skin.is_none()).and_then(|a| a.bone(b)).map(|b| b.child));
+    if let Some(child) = child {
+        app.run("element.select", json!({"ids": [child.0], "layer": layer.0}));
     }
 }
 
@@ -127,18 +154,51 @@ pub fn drag_start(app: &mut App, xf: Xf, press: Pos2) -> Drag {
         let head = pos2(b.tail.x, b.tail.y);
         return Drag::Bone { from: child, head, cur: head };
     }
-    match instance_at(app, sp, 3.0 / xf.zoom.max(1e-3), None) {
+    match item_at(app, sp, 3.0 / xf.zoom.max(1e-3), None, rig_target) {
         Some((_, from)) => Drag::Bone { from, head: pos2(sp.x, sp.y), cur: pos2(sp.x, sp.y) },
         None => {
-            app.status_ok(tr!("Start a bone on a symbol instance (convert artwork with F8), then drag to the instance it moves."));
+            app.status_ok(tr!("Start a bone inside a shape, or on a symbol instance and drag to the instance it moves."));
             Drag::None
         }
     }
 }
 
-/// Ends a Bone tool drag: adds the bone if it ends on another instance.
+/// What a bone drawn from `from` goes into: a shape armature's bone it continues, or a shape.
+enum InShape {
+    Parent(BoneId),
+    Shape(ElementId),
+}
+
+fn in_shape(app: &App, from: ElementId) -> Option<InShape> {
+    let tl = app.s.timeline();
+    for l in tl.layers.iter().filter(|l| l.kind == LayerKind::Armature) {
+        let Some(a) = l.armature.as_deref().filter(|a| a.skin.is_some()) else { continue };
+        if let Some(b) = a.bone_into(from) {
+            return Some(InShape::Parent(b.id));
+        }
+    }
+    tl.layers.iter().find_map(|l| {
+        let (_, els) = evaluate_layer_elements(l, app.s.frame)?;
+        els.iter().find(|e| e.id == from && matches!(e.kind, ElementKind::Shape(_))).map(|_| InShape::Shape(from))
+    })
+}
+
+/// Ends a Bone tool drag: adds the bone if it ends on another instance, or inside a shape
+/// where it was released.
 pub fn drag_end(app: &mut App, xf: Xf, from: ElementId, head: Pos2, cur: Pos2) {
     let tail = Vec2::new(cur.x, cur.y);
+    if let Some(target) = in_shape(app, from) {
+        let p = match target {
+            InShape::Parent(b) => json!({"parent": b.0, "tail": [tail.x, tail.y]}),
+            InShape::Shape(id) => json!({"shape": id.0, "head": [head.x, head.y], "tail": [tail.x, tail.y]}),
+        };
+        if let Some(v) = app.run("bone.add_in_shape", p) {
+            let (layer, bone) = (LayerId(v["layer"].as_u64().unwrap_or(0)), v["bone"].as_u64().map(BoneId));
+            select(app, layer, bone);
+            app.status_ok(tr!("Added a bone inside the shape; its points follow the nearest bones. Drag a bone with the Selection tool to bend it, or adjust the points with the Bind tool. {undo} to undo.", undo = app.undo_key()));
+        }
+        return;
+    }
     let Some((_, to)) = instance_at(app, tail, 3.0 / xf.zoom.max(1e-3), Some(from)) else {
         app.status_ok(tr!("A bone ends on another symbol instance: release over the instance it should move."));
         return;
@@ -165,9 +225,24 @@ pub fn select_drag_start(app: &mut App, xf: Xf, press: Pos2) -> Option<Drag> {
     let sp = xf.to_stage(press);
     let tl = app.s.timeline();
     let (layer, bone, local) = match hit(app, xf, press) {
-        Some((layer, id, _)) => (layer, Some(id), None),
+        Some((layer, id, Part::End)) => (layer, Some(id), None),
+        // Along a bone: the point grabbed follows the pointer (pulling the bone's end there would
+        // make the chain jump, #239); on the joint a root's bone starts at, the armature moves.
+        Some((layer, id, Part::Body)) => {
+            let l = tl.layer(layer)?;
+            let arm = l.armature.as_deref()?;
+            let (_, els) = evaluate_layer_elements(l, app.s.frame)?;
+            let pose = armature::pose_at(l, app.s.frame).unwrap_or_default();
+            let from_root = arm.bone(id).is_some_and(|b| arm.bone_into(b.parent).is_none());
+            let at_head = armature::bones_at(arm, &els, &pose).iter().find(|b| b.id == id).is_some_and(|b| xf.to_screen(b.head).distance(press) <= GRAB_END);
+            if from_root && at_head {
+                (layer, None, None)
+            } else {
+                (layer, Some(id), armature::grab_point(arm, &els, &pose, id, sp))
+            }
+        }
         None => {
-            let (layer, el) = instance_at(app, sp, 3.0 / xf.zoom.max(1e-3), None).filter(|(l, _)| tl.layer(*l).is_some_and(|l| l.kind == LayerKind::Armature))?;
+            let (layer, el) = item_at(app, sp, 3.0 / xf.zoom.max(1e-3), None, rig_target).filter(|(l, _)| tl.layer(*l).is_some_and(|l| l.kind == LayerKind::Armature))?;
             let l = tl.layer(layer)?;
             let into = l.armature.as_ref().and_then(|a| a.bone_into(el)).map(|b| b.id);
             // The point grabbed, in the instance's own space: it follows the pointer.
@@ -217,7 +292,7 @@ pub fn drag_to(app: &mut App, drag: &mut Drag, c: Pos2) {
 /// Delete removes the selected bone (and those below it); Esc deselects it.
 pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
     let Some(id) = app.bone_sel else { return };
-    if !matches!(app.tool, Tool::Bone | Tool::Select) {
+    if !matches!(app.tool, Tool::Bone | Tool::Bind | Tool::Select) {
         return;
     }
     let take = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
@@ -240,7 +315,7 @@ pub fn upkeep(app: &mut App) {
 
 /// The bones of every visible armature, and the bone being drawn.
 pub fn draw(app: &App, painter: &egui::Painter, xf: Xf) {
-    let tool = matches!(app.tool, Tool::Bone | Tool::Select);
+    let tool = matches!(app.tool, Tool::Bone | Tool::Bind | Tool::Select);
     for s in shown(app) {
         for b in &s.bones {
             let picked = app.bone_sel == Some(b.id);

@@ -36,6 +36,9 @@ const PICKER_ID: &str = "anicraft_file_input";
 /// Largest file taken from the picker (the engine's own limits are lower for most kinds).
 const MAX_PICK_BYTES: f64 = 512.0 * 1024.0 * 1024.0;
 
+/// Files read from a drop: each one's name, and its bytes or why the browser couldn't read it.
+pub type ReadFiles = Vec<(String, Result<Vec<u8>, String>)>;
+
 thread_local! {
     /// Files the picker delivered, waiting for the next frame.
     static PICKED: RefCell<Vec<Picked>> = const { RefCell::new(Vec::new()) };
@@ -44,6 +47,12 @@ thread_local! {
     static UNSAVED: Cell<bool> = const { Cell::new(false) };
     /// Sessions whose tab is still open (they hold their lock); `None` until the browser said.
     static LIVE: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    /// Where the pointer is over the canvas while files are dragged (CSS pixels from its
+    /// top-left corner), ADR 0059: egui is told only that something hovers.
+    static DRAG_POS: Cell<Option<(f32, f32)>> = const { Cell::new(None) };
+    /// Dropped files read so far, by ticket: each file's name and bytes.
+    static DROPPED: RefCell<Vec<(u64, ReadFiles)>> = const { RefCell::new(Vec::new()) };
+    static TICKET: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Starts the editor on the page's canvas.
@@ -75,13 +84,19 @@ async fn run() -> Result<(), String> {
     // Text needs a face to lay out with, and a page can't see the computer's fonts.
     anicraft_engine::text::Fonts::register(fonts());
     let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+    track_drags(&canvas);
     eframe::WebRunner::new()
         .start(
             canvas,
             eframe::WebOptions::default(),
             Box::new(move |cc| {
                 CTX.with(|c| *c.borrow_mut() = Some(cc.egui_ctx.clone()));
-                Ok(Box::new(crate::app::App::new(cc, session, None)))
+                let mut app = crate::app::App::new(cc, session, None);
+                // The start screen, unless it was switched off (ADR 0059).
+                if app.prefs.start_screen {
+                    crate::start::open(&mut app);
+                }
+                Ok(Box::new(app))
             }),
         )
         .await
@@ -166,6 +181,67 @@ pub fn take_picked() -> Option<Picked> {
     PICKED.with(|p| {
         let mut p = p.borrow_mut();
         (!p.is_empty()).then(|| p.remove(0))
+    })
+}
+
+/// Keeps where the pointer is while files are dragged over the canvas (eframe's own listener
+/// tells egui only that files hover, ADR 0059).
+fn track_drags(canvas: &web_sys::HtmlCanvasElement) {
+    let target = canvas.clone();
+    let on_over = Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |e: web_sys::DragEvent| {
+        let r = target.get_bounding_client_rect();
+        DRAG_POS.with(|p| p.set(Some((e.client_x() as f32 - r.left() as f32, e.client_y() as f32 - r.top() as f32))));
+    });
+    if canvas.add_event_listener_with_callback("dragover", on_over.as_ref().unchecked_ref()).is_ok() {
+        on_over.forget();
+    }
+    let on_leave = Closure::<dyn FnMut(web_sys::DragEvent)>::new(|_e: web_sys::DragEvent| DRAG_POS.with(|p| p.set(None)));
+    if canvas.add_event_listener_with_callback("dragleave", on_leave.as_ref().unchecked_ref()).is_ok() {
+        on_leave.forget();
+    }
+}
+
+/// Where the pointer was over the canvas during the drag, in CSS pixels.
+pub fn drag_pos() -> Option<(f32, f32)> {
+    DRAG_POS.with(Cell::get)
+}
+
+pub fn clear_drag_pos() {
+    DRAG_POS.with(|p| p.set(None));
+}
+
+/// Reads dropped files' bytes; they arrive together through [`take_dropped`] with the ticket
+/// returned here.
+pub fn read_dropped(files: Vec<web_sys::File>) -> u64 {
+    let ticket = TICKET.with(|t| {
+        t.set(t.get().wrapping_add(1));
+        t.get()
+    });
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut out = Vec::with_capacity(files.len());
+        for file in files {
+            let name = file.name();
+            let data = if file.size() > MAX_PICK_BYTES {
+                Err(tr!("it is larger than {size} MB", size = MAX_PICK_BYTES as u64 >> 20))
+            } else {
+                match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+                    Ok(buf) => Ok(js_sys::Uint8Array::new(&buf).to_vec()),
+                    Err(_) => Err(tr!("the browser could not read it").to_string()),
+                }
+            };
+            out.push((name, data));
+        }
+        DROPPED.with(|d| d.borrow_mut().push((ticket, out)));
+        repaint();
+    });
+    ticket
+}
+
+/// The next dropped files the browser finished reading.
+pub fn take_dropped() -> Option<(u64, ReadFiles)> {
+    DROPPED.with(|d| {
+        let mut d = d.borrow_mut();
+        (!d.is_empty()).then(|| d.remove(0))
     })
 }
 
@@ -400,4 +476,10 @@ pub fn load(id: &str) -> Option<(String, RecoveryMeta)> {
 pub fn discard(id: &str) {
     storage_remove(&meta_key(id));
     storage_remove(&doc_key(id));
+}
+
+/// Opens a page served beside the editor (the user guide) in a new tab.
+pub fn open_page(url: &str) -> Result<(), String> {
+    let window = web_sys::window().ok_or_else(|| tr!("this page has no window").to_string())?;
+    window.open_with_url_and_target(url, "_blank").map(|_| ()).map_err(|_| tr!("the browser didn't open {url}", url = url).to_string())
 }

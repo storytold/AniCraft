@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- AniCraft XFL corpus: tweens. Classic tweens (eased in, a custom ease curve, a turn with
-     extra clockwise spins asked for), a shape tween eased out with a shape hint, and a motion
-     tween (kept as keyframes, reported). Self-authored. -->
+     extra clockwise spins asked for, and per-property custom eases of several segments), a
+     shape tween eased out with a shape hint, and a motion tween (kept as keyframes, reported).
+     Self-authored. -->
 <DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#FFFFFF">
   <symbols>
     <Include href="Ball.xml" loadImmediate="false"/>
@@ -106,6 +107,44 @@
               <elements>
                 <DOMSymbolInstance libraryItemName="Box" symbolType="graphic" loop="loop">
                   <matrix><Matrix a="0.5" d="0.5" tx="300" ty="160"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Per-property eases" color="#2A9D8F">
+          <frames>
+            <DOMFrame index="0" duration="12" tweenType="motion" motionTweenSnap="true" keyMode="22017" hasCustomEase="true" useSingleEaseCurve="false" acceleration="0">
+              <tweens>
+                <CustomEase target="position">
+                  <Point/>
+                  <Point x="0.1" y="0.5"/>
+                  <Point x="0.25" y="1.3"/>
+                  <Point x="0.4" y="1.3"/>
+                  <Point x="0.55" y="1.3"/>
+                  <Point x="0.6" y="0.8"/>
+                  <Point x="0.7" y="0.8"/>
+                  <Point x="0.8" y="0.8"/>
+                  <Point x="0.9" y="1"/>
+                  <Point x="1" y="1"/>
+                </CustomEase>
+                <CustomEase target="scale">
+                  <Point/>
+                  <Point x="0.8" y="0"/>
+                  <Point x="0.9" y="0.5"/>
+                  <Point x="1" y="1"/>
+                </CustomEase>
+              </tweens>
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="20" ty="145"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="12" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ball" symbolType="graphic" loop="loop">
+                  <matrix><Matrix a="1.5" d="1.5" tx="180" ty="145"/></matrix>
                 </DOMSymbolInstance>
               </elements>
             </DOMFrame>

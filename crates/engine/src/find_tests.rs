@@ -38,7 +38,7 @@ impl Build {
         self.doc.alloc_id()
     }
     pub fn text(&mut self, t: &str, color: Rgba) -> Element {
-        let block = TextBlock { text: t.into(), font: "Test Sans".into(), size: 20.0, bold: false, italic: false, color, align: TextAlign::Left, letter_spacing: 0.0, line_spacing: 0.0, width: None, outline: Arc::new(Path::new()), box_width: 10.0, box_height: 10.0 };
+        let block = TextBlock { text: t.into(), font: "Test Sans".into(), size: 20.0, bold: false, italic: false, color, align: TextAlign::Left, letter_spacing: 0.0, line_spacing: 0.0, width: None, outline: Arc::new(Path::new()), box_width: 10.0, box_height: 10.0, field: None, on_path: None };
         Element { id: ElementId(self.id()), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(block)) }
     }
     pub fn rect(&mut self, fill: Paint, stroke: Option<Rgba>) -> Element {
@@ -78,7 +78,7 @@ impl Build {
     }
     pub fn symbol(&mut self, name: &str, kind: SymbolKind) -> SymbolId {
         let id = SymbolId(self.id());
-        self.doc.library.push(Arc::new(Symbol { id, name: name.into(), kind, linkage: None, scale_grid: None, timeline: Timeline::default() }));
+        self.doc.library.push(Arc::new(Symbol { id, name: name.into(), kind, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline::default() }));
         id
     }
     pub fn fill(&mut self, id: SymbolId, layers: Vec<Layer>) {
@@ -119,7 +119,7 @@ pub(crate) fn movie() -> (Session, SymbolId, SymbolId, SymbolId) {
         k.script = Some(FrameScript::Source(Arc::new(SourceScript::new(Default::default(), "stop(); // say hello"))));
     }
     b.scene("Scene 1", vec![actions, art]);
-    let r = b.rect(Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(10.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(RED) }, GradientStop { offset: 1.0, color: Rgba::WHITE }] }, None);
+    let r = b.rect(Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), vec![GradientStop { offset: 0.0, color: Rgba::hex(RED) }, GradientStop { offset: 1.0, color: Rgba::WHITE }]), None);
     let l = b.layer("Back", vec![(0, 1, "", vec![r])]);
     b.scene("Scene 2", vec![l]);
     (Session::new(b.doc), outer, inner, unused)
@@ -342,7 +342,7 @@ fn going_to_a_hit_opens_the_symbols_in_place_and_selects_it() {
     // Inner's text: through hero (Outer) and wheel (Inner), in place.
     let h = hits(&mut s, json!({"kind": "text", "text": "inside"})).remove(0);
     let v = run(&mut s, "find.goto", h.clone());
-    let open: Vec<SymbolId> = s.editing.iter().map(|l| l.symbol).collect();
+    let open: Vec<SymbolId> = s.editing.iter().map(|l| l.symbol().unwrap_or(SymbolId(0))).collect();
     assert_eq!(open, [outer, inner], "{v}");
     assert!(s.editing.iter().all(|l| l.instance.is_some()));
     assert_eq!(s.selection.id_list(), [h["element"].as_u64().unwrap()]);

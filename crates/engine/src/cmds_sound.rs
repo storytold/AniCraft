@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import to Library…",
             "File/Import",
             None,
-            "{path (.wav, .ogg or .mp3 sound; .png or .jpg image), name?}",
+            "{path (.wav, .ogg or .mp3 sound; .png or .jpg image; .svg drawing: a graphic symbol named after the file holding its shapes), name?}",
             true,
             import_to_library as crate::RunFn,
         ),
@@ -99,7 +99,7 @@ fn sound_json(s: &Sound) -> Value {
 }
 
 /// Import to Library: a sound (or an image) goes into the library without being placed.
-fn import_to_library(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn import_to_library(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     if is_sound(&path) {
         let id = add_sound(s, &path, opt_str(p, "name")?)?;
@@ -115,7 +115,11 @@ fn import_to_library(s: &mut Session, p: &Value) -> Result<Value> {
         s.doc.bitmaps.push(Arc::new(bitmap));
         return Ok(json!({"bitmap": id.0, "width": w, "height": h}));
     }
-    Err(EngineError::Param("Import to Library reads WAV, Ogg Vorbis and MP3 sounds, and PNG and JPEG images".into()))
+    if ext.as_deref() == Some("svg") {
+        // A drawing becomes a graphic symbol holding its shapes (ADR 0065).
+        return crate::cmds_file::import_svg_symbol(s, &path, opt_str(p, "name")?);
+    }
+    Err(EngineError::Param("Import to Library reads WAV, Ogg Vorbis and MP3 sounds, PNG and JPEG images, and SVG drawings (as a graphic symbol)".into()))
 }
 
 /// Import to Stage with a sound: into the library, and onto a new layer named after the file,

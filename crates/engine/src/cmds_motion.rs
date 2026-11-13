@@ -25,7 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)", true, set_key as crate::RunFn),
         c("motion.remove_key", "Remove Property Keyframe", "", None, "{property? (default: every property), frame?, layer?}", true, remove_key),
-        c("motion.set_ease", "Property Ease", "", None, "{easing, property? (default: every property), frame? (inside the segment), layer?}", true, set_ease),
+        c("motion.set_ease", "Property Ease", "", None, "{easing (as timeline.set_easing takes it, saved eases too), property? (default: every property), frame? (inside the segment), layer?}", true, set_ease),
         c("motion.info", "Motion Tween", "", None, "{layer?, frame?} → the span's properties, keys, eases and values at the frame, its motion path, its anchors pinned to frames (pins) and where the object is", false, info),
         c("motion.set_path", "Edit Motion Path", "", None, "{d: SVG path data in stage space (its first subpath; ends are the start and end positions), layer?, frame?}", true, set_path),
         c("motion.clear_path", "Remove Motion Path", "", None, "{layer?, frame?}: back to the straight path the X/Y curves trace", true, clear_path),
@@ -75,7 +75,7 @@ pub(crate) fn begin_edit(layer: LayerId, kf: &mut Keyframe, frame: u32) -> Optio
 /// the base back. On the span's first frame a property without keys changes the base itself.
 pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     let scene = s.scene;
-    let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).layer_mut(e.layer) else { return };
+    let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).ok().and_then(|tl| tl.layer_mut(e.layer)) else { return };
     let Some(kf) = layer.keyframe_starting_at(e.start).and_then(|i| layer.keyframe_mut(i)) else { return };
     let Some(idx) = kf.elements.iter().position(|x| x.id == e.target) else { return };
     let Some(after) = kf.elements.get(idx).map(|x| (**x).clone()) else { return };
@@ -684,22 +684,23 @@ fn remove_key(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set_ease(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing(p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let easing = opt_easing_in(&s.doc, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
     let only = property(p)?;
+    let label = easing.label();
     let (kf, offset) = motion_span(s, p)?;
     let start = kf.start;
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
     let mut set = Vec::new();
     for t in m.tracks.iter_mut().filter(|t| only.is_none_or(|o| o == t.property)) {
         if let Some(k) = t.segment_at(offset).and_then(|i| t.keys.get_mut(i)) {
-            k.ease = easing;
+            k.ease = easing.clone();
             set.push(t.property.key());
         }
     }
     if set.is_empty() {
         return Err(EngineError::State(format!("frame {} is not between two property keyframes{}", start + offset + 1, only.map_or_else(String::new, |o| format!(" of {}", o.label())))));
     }
-    Ok(json!({"easing": easing.label(), "properties": set}))
+    Ok(json!({"easing": label, "properties": set}))
 }
 
 fn info(s: &mut Session, p: &Value) -> Result<Value> {
@@ -714,7 +715,7 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
         .tracks
         .iter()
         .map(|t| {
-            let keys: Vec<Value> = t.keys.iter().map(|k| json!({"frame": kf.start + k.frame, "value": k.value, "ease": k.ease.label(), "bezier": k.ease.as_bezier()})).collect();
+            let keys: Vec<Value> = t.keys.iter().map(|k| json!({"frame": kf.start + k.frame, "value": k.value, "ease": k.ease.label(), "easing": easing_json(&k.ease), "bezier": k.ease.as_bezier()})).collect();
             json!({"property": t.property.key(), "label": t.property.label(), "unit": t.property.unit(), "keys": keys})
         })
         .collect();

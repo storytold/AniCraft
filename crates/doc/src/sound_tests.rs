@@ -194,7 +194,7 @@ fn nested(kind: SymbolKind, len: u32, inner: &[(u32, u32, Option<FrameSound>)], 
     // Pad the symbol's timeline to `len` frames with a second, silent layer.
     let mut pad = Layer::new(LayerId(11), "pad");
     pad.keyframes = vec![Arc::new(Keyframe::new(0, len))];
-    d.library.push(Arc::new(Symbol { linkage: None, scale_grid: None, id: SymbolId(50), name: "S".into(), kind, timeline: Timeline { layers: vec![Arc::new(il), Arc::new(pad)] } }));
+    d.library.push(Arc::new(Symbol { linkage: None, scale_grid_kept: None, scale_grid: None, id: SymbolId(50), name: "S".into(), kind, timeline: Timeline { layers: vec![Arc::new(il), Arc::new(pad)] } }));
     let mut l = Layer::new(LayerId(1), "outer");
     l.keyframes = instances
         .iter()
@@ -347,7 +347,7 @@ fn start_skips_a_playing_sound_and_stop_cuts_it() {
 fn scenes_play_in_order_guides_are_silent_and_missing_sounds_are_skipped() {
     let mut d = doc_with(&[(0, 3, with(SoundSync::Event, 1, false))], vec![ramp_sound(7, 100)]);
     let first = d.scenes[0].clone();
-    d.scenes.insert(0, Arc::new(Scene { name: "Intro".into(), timeline: first.timeline.clone() }));
+    d.scenes.insert(0, Arc::new(Scene { name: "Intro".into(), timeline: first.timeline.clone(), guides: Vec::new() }));
     assert_eq!(spans(&voices(&d, 8000)), vec![(VoiceKind::Event, 0, 100), (VoiceKind::Event, 3000, 3100)]);
     Arc::make_mut(&mut d.timeline_mut(0).layers[0]).kind = LayerKind::Guide;
     assert_eq!(voices(&d, 8000).len(), 1, "guide layers are not exported, so not heard");

@@ -57,8 +57,12 @@ list, and every edit is a command.
 6. **Commands** (`bone.*`, a document namespace plug-ins may call): `bone.add {from, to,
    head?, tail?}` moves both instances to a new armature layer above them (one pose spanning
    from their keyframe to the end of the timeline, a classic tween on it) or adds the new one
-   to an existing armature (in every pose, at angle 0); a new bone's joint defaults to the end
-   of the bone into `from`, so chains join end to start. `bone.remove` takes a bone and those
+   to an existing armature (in every pose, at angle 0). An instance that hangs from a bone has
+   one joint, that bone's end: every bone from it starts there, wherever on the instance the
+   drag began, so chains always join end to start (a root's bones start where they are drawn,
+   by default at its registration point). Until #239 a given `head` won anywhere on the
+   instance, so a drag started a few pixels off the end left the chain looking broken and
+   turning about joints it didn't show. `bone.remove` takes a bone and those
    below it out of every pose; the instances they moved go to a normal layer of their own, as
    they look at the playhead; with the last bone the whole armature does and its layer goes.
    It asks first when the armature has more than one pose (undoable tier, ADR 0004).
@@ -74,8 +78,10 @@ list, and every edit is a command.
    draw over the artwork as wedges, widest by the round joint and narrowing to a smaller round
    end, in the armature layer's colour (green by default), the picked bone in the selection
    colour; they fade with other tools and on locked layers. The **Selection tool** drags a
-   bone, or an instance a bone moves (the grabbed point follows the pointer), to pose by IK,
-   and the root instance to move the armature; each drag is one undo step. Properties shows a
+   bone, or an instance a bone moves, to pose by IK: the grabbed point follows the pointer
+   (a bone's end when the press is on it; along a bone, the point pressed, so the bone never
+   jumps to put its end under the pointer, #239). The root instance, or the joint a root's bone
+   starts at, moves the armature; each drag is one undo step. Properties shows a
    **Bone** section: the joint angle at the playhead, Constrain rotation with min and max, Pin,
    and Remove Bone; Delete removes the picked bone. The timeline shows the armature layer with
    a bone icon.
@@ -91,8 +97,11 @@ list, and every edit is a command.
 
 ## Not yet
 
-* Shape armatures (bones inside a shape, with binding of its points), spring and damping,
-  joint translation (Animate's X/Y joint constraints), Animate's runtime armatures (poses that
-  ActionScript drives), the Bind tool, and XFL import of armature layers.
-* Editing instance properties of armature members in place; armature layers under masks and
-  motion guides; an IK drag that keeps pinned bones *below* the dragged one in place.
+* ~~Shape armatures (bones inside a shape, with binding of its points) and the Bind tool~~:
+  ADR 0071. Their bones join joint nodes inside the shape and reuse this ADR's poses, forward
+  kinematics and CCD solver unchanged.
+* ~~Spring and damping, joint translation (Animate's X/Y joint constraints)~~: ADR 0084.
+  Animate's runtime armatures (poses that ActionScript drives), and XFL import of armature
+  layers.
+* ~~Editing instance properties of armature members in place~~ (colour effect, blending,
+  filters: ADR 0084); armature layers under masks and motion guides; an IK drag that keeps pinned bones *below* the dragged one in place.

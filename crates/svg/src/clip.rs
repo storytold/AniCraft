@@ -1,9 +1,10 @@
-//! Clip paths and masks → mask layers (ADR 0021).
+//! Clip paths and masks → mask layers (ADR 0021, ADR 0070).
 //!
 //! While the drawing is read, every drawn item collects the clip regions of the elements
-//! around it: a `clipPath` (the union of its shapes' fills) or a `mask` whose content is
-//! opaque (the union of its fills, cut to the mask's region). At the end, [`Builder::layers`]
-//! resolves each item's regions:
+//! around it: a `clipPath` (the union of its shapes' fills), a `mask` whose content is opaque
+//! (the union of its fills, cut to the mask's region), or any other `mask`: a soft region, its
+//! content as drawn, revealing by luminance (the default) or by alpha (`mask-type: alpha`),
+//! onto a soft mask layer. At the end, [`Builder::layers`] resolves each item's regions:
 //! * a convex region that contains the item cuts nothing and is dropped; a region that misses
 //!   it hides it (it is left out);
 //! * one region left is the item's mask; several are intersected exactly when all but one are
@@ -11,7 +12,7 @@
 //! * consecutive items with the same mask share one masked layer under one mask layer.
 
 use crate::{Builder, ImportedElement, ImportedLayer, ImportedMask, Item, PaintSpec, Report, Style, declarations, get, hidden, length, local, name_of, paint_spec, transform};
-use anicraft_doc::{ElementKind, Paint, Rgba, Shape, Stroke};
+use anicraft_doc::{ElementKind, MaskMode, Paint, Rgba, Shape, Stroke};
 use anicraft_geom::clip::{clip_convex, convex_polygon};
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use anicraft_xml::Element as X;
@@ -35,6 +36,9 @@ pub(crate) struct Region {
     convex: Option<Vec<Vec2>>,
     /// Conservative drawing-space bounds.
     bounds: Rect,
+    /// Coverage, or a soft mask's mode (then `parts` are drawn as they look and `convex` is
+    /// `None`: a soft region never "cuts nothing").
+    mode: MaskMode,
 }
 
 /// Conservative drawing-space bounds of an element's artwork.
@@ -42,13 +46,13 @@ fn element_bounds(e: &ImportedElement) -> Rect {
     match &e.kind {
         ElementKind::Shape(s) => s.path.bounds().inflate(s.stroke.as_ref().map_or(0.0, Stroke::reach)).transformed(&e.transform),
         ElementKind::Text(t) => t.outline.bounds().union(&Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0))).transformed(&e.transform),
-        ElementKind::Symbol { .. } | ElementKind::Camera => Rect::EMPTY,
+        ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => Rect::EMPTY,
     }
 }
 
 /// A fill-only shape for mask artwork (its colour doesn't matter: a mask is its fills' area).
 fn mask_part(name: String, path: Path, transform: Affine, rule: FillRule) -> ImportedElement {
-    let shape = Shape { path: Arc::new(path), fill: Some(Paint::Solid(Rgba::BLACK)), stroke: None, fill_rule: rule, merge: false };
+    let shape = Shape { path: Arc::new(path), fill: Some(Paint::Solid(Rgba::BLACK)), stroke: None, fill_rule: rule, merge: false, warp: None };
     ImportedElement { name, transform, alpha: 1.0, kind: ElementKind::Shape(shape) }
 }
 
@@ -59,7 +63,13 @@ impl Region {
             [ImportedElement { kind: ElementKind::Shape(s), transform, .. }] => convex_polygon(&s.path.transformed(transform)),
             _ => None,
         };
-        Rc::new(Region { key, name: name.chars().take(128).collect(), parts, convex, bounds })
+        Rc::new(Region { key, name: name.chars().take(128).collect(), parts, convex, bounds, mode: MaskMode::Coverage })
+    }
+
+    /// A soft mask's region: its content as drawn.
+    fn soft(key: String, name: &str, parts: Vec<ImportedElement>, mode: MaskMode) -> Rc<Region> {
+        let bounds = parts.iter().fold(Rect::EMPTY, |r, p| r.union(&element_bounds(p)));
+        Rc::new(Region { key, name: name.chars().take(128).collect(), parts, convex: None, bounds, mode })
     }
 
     /// Whether the region is convex and holds all of `r`.
@@ -79,15 +89,40 @@ impl Region {
         })
     }
 
-    /// This region cut to the convex region `other`, exactly.
-    fn intersect(&self, other: &Region) -> Rc<Region> {
-        let Some(poly) = &other.convex else { return Region::new(self.key.clone(), &self.name, self.parts.clone()) };
+    /// This region cut to the convex region `other`, exactly. A soft region keeps its parts'
+    /// paints: unstroked shapes are cut in their own space; stroked shapes, text and symbols
+    /// reaching outside are kept whole (reported).
+    fn intersect(&self, other: &Region, report: &mut Report) -> Rc<Region> {
+        let Some(poly) = &other.convex else { return Rc::new(Region { key: self.key.clone(), name: self.name.clone(), parts: self.parts.clone(), convex: self.convex.clone(), bounds: self.bounds, mode: self.mode }) };
+        if self.mode.is_soft() {
+            let mut parts = Vec::with_capacity(self.parts.len());
+            for p in &self.parts {
+                if other.contains(&element_bounds(p)) {
+                    parts.push(p.clone());
+                    continue;
+                }
+                let local = p.transform.inverse().map(|inv| poly.iter().map(|q| inv.apply(*q)).collect::<Vec<_>>());
+                match (&p.kind, local) {
+                    (ElementKind::Shape(s), Some(lp)) if s.stroke.is_none() => {
+                        let cut = clip_convex(&s.path, &lp);
+                        if !cut.is_empty() {
+                            parts.push(ImportedElement { kind: ElementKind::Shape(Shape { path: Arc::new(cut), ..s.clone() }), ..p.clone() });
+                        }
+                    }
+                    _ => {
+                        report.skip("soft mask artwork crossing its mask's edge (kept whole)");
+                        parts.push(p.clone());
+                    }
+                }
+            }
+            return Region::soft(format!("{}&{}", self.key, other.key), &self.name, parts, self.mode);
+        }
         let mut parts = Vec::new();
         for p in &self.parts {
             let (path, rule) = match &p.kind {
                 ElementKind::Shape(s) => (s.path.transformed(&p.transform), s.fill_rule),
                 ElementKind::Text(t) => (t.outline.transformed(&p.transform), FillRule::NonZero),
-                ElementKind::Symbol { .. } | ElementKind::Camera => continue,
+                ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => continue,
             };
             let cut = clip_convex(&path, poly);
             if !cut.is_empty() {
@@ -95,6 +130,13 @@ impl Region {
             }
         }
         Region::new(format!("{}&{}", self.key, other.key), &self.name, parts)
+    }
+}
+
+impl Region {
+    /// Whether nothing of what this region masks shows.
+    fn hides_all(&self) -> bool {
+        self.parts.is_empty()
     }
 }
 
@@ -175,7 +217,7 @@ impl<'a> Builder<'a> {
                     }
                 }
                 ElementKind::Text(t) => r = r.union(&Rect::new(0.0, 0.0, t.box_width, t.box_height).transformed(&to_user)),
-                ElementKind::Symbol { .. } | ElementKind::Camera => {}
+                ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => {}
             }
         }
         (r.min.x <= r.max.x && r.min.y <= r.max.y).then_some(r)
@@ -296,35 +338,39 @@ impl<'a> Builder<'a> {
         self.children(target, &content_m, &style, 1.0, depth + 1, 0);
         self.resolving.pop();
         let content: Vec<Item> = self.items.drain(mark..).collect();
-        // Only an opaque mask is the coverage of its shapes: full alpha, no strokes, and for a
-        // luminance mask, white.
+        // An opaque mask is the coverage of its shapes (an Animate mask): full alpha, no strokes,
+        // and for a luminance mask, white. Any other is a soft mask (ADR 0070), its content as
+        // drawn.
         let opaque = |c: Rgba| c.a >= 0.999 && (alpha_mask || (c.r >= 0.996 && c.g >= 0.996 && c.b >= 0.996));
-        let mut parts = Vec::new();
-        let mut soft = false;
-        for it in content {
-            let e = it.el;
-            let ok = it.clips.is_empty()
+        let is_opaque = |it: &Item| {
+            let e = &it.el;
+            it.clips.is_empty()
                 && e.alpha >= 0.999
                 && match &e.kind {
                     ElementKind::Shape(s) => s.stroke.is_none() && matches!(s.fill, Some(Paint::Solid(c)) if opaque(c)),
                     ElementKind::Text(t) => opaque(t.color),
-                    ElementKind::Symbol { .. } | ElementKind::Camera => false,
-                };
-            if !ok {
-                soft = true;
-                break;
-            }
-            parts.push(match &e.kind {
-                ElementKind::Shape(s) => mask_part(e.name.clone(), (*s.path).clone(), e.transform, s.fill_rule),
-                _ => e,
-            });
-        }
-        if soft {
-            self.report.skip("soft, faded or coloured masks (drawn unmasked)");
-            return Some(Vec::new());
-        }
+                    ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => false,
+                }
+        };
         let area = mask_part(String::new(), Path::rect(rect.min.x, rect.min.y, rect.width(), rect.height()), *m, FillRule::NonZero);
-        Some(vec![Region::new(format!("mask:{target:p}:{:?}", content_m.m), id, parts), Region::new(format!("maskarea:{target:p}:{:?}:{rect:?}", m.m), id, vec![area])])
+        let area = Region::new(format!("maskarea:{target:p}:{:?}:{rect:?}", m.m), id, vec![area]);
+        let key = format!("mask:{target:p}:{:?}", content_m.m);
+        if !content.iter().all(is_opaque) {
+            if content.iter().any(|it| !it.clips.is_empty()) {
+                self.report.skip("clip paths and masks inside a mask (ignored)");
+            }
+            let mode = if alpha_mask { MaskMode::Alpha } else { MaskMode::Luminance };
+            let parts = content.into_iter().map(|it| it.el).collect();
+            return Some(vec![Region::soft(key, id, parts, mode), area]);
+        }
+        let parts = content
+            .into_iter()
+            .map(|it| match &it.el.kind {
+                ElementKind::Shape(s) => mask_part(it.el.name.clone(), (*s.path).clone(), it.el.transform, s.fill_rule),
+                _ => it.el,
+            })
+            .collect();
+        Some(vec![Region::new(key, id, parts), area])
     }
 
     /// What an item's clips come to (combinations are cached by key; `None` = hidden).
@@ -332,7 +378,7 @@ impl<'a> Builder<'a> {
         let b = element_bounds(&it.el);
         let mut keep: Vec<Rc<Region>> = Vec::new();
         for r in &it.clips {
-            if r.parts.is_empty() || r.bounds.intersect(&b).is_empty() {
+            if r.hides_all() || r.bounds.intersect(&b).is_empty() {
                 return Effective::Hidden;
             }
             if r.contains(&b) || keep.iter().any(|k| k.key == r.key) {
@@ -361,12 +407,18 @@ impl<'a> Builder<'a> {
                 if curved.len() > 1 {
                     self.report.skip("curved clips inside curved clips (drawn with the inner one)");
                 }
+                // A soft mask is kept over a curved clip (it is what the artwork fades by).
+                let mut curved = curved;
+                if let Some(i) = curved.iter().position(|r| r.mode.is_soft()) {
+                    curved.swap(0, i);
+                }
                 let mut rest = convex.into_iter();
                 let base = match curved.first() {
                     Some(c) => Some(c.clone()),
                     None => rest.next(),
                 };
-                let r = base.map(|base| rest.fold(base, |acc, c| acc.intersect(&c))).filter(|r| !r.parts.is_empty());
+                let report = &mut self.report;
+                let r = base.map(|base| rest.fold(base, |acc, c| acc.intersect(&c, report))).filter(|r| !r.parts.is_empty());
                 cache.insert(key, r.clone());
                 r
             }
@@ -407,6 +459,6 @@ impl<'a> Builder<'a> {
                 _ => runs.push((region, vec![it.el])),
             }
         }
-        runs.into_iter().map(|(r, elements)| ImportedLayer { mask: r.map(|r| ImportedMask { name: r.name.clone(), elements: r.parts.clone() }), elements }).collect()
+        runs.into_iter().map(|(r, elements)| ImportedLayer { mask: r.map(|r| ImportedMask { name: r.name.clone(), elements: r.parts.clone(), mode: r.mode }), elements }).collect()
     }
 }

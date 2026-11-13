@@ -2,7 +2,9 @@
 
 AniCraft also runs in a web browser: the same program, built for WebAssembly
 (`wasm32-unknown-unknown`), drawing into a page with WebGL2. How it is built, and why, is in
-[ADR 0036](adr/0036-web-build.md). Nothing is hosted yet; you build it and serve it yourself.
+[ADR 0036](adr/0036-web-build.md). Nothing is hosted yet and the releases don't carry it yet; you
+build it and serve it yourself. `packaging/web/package.sh` builds it and zips it as the release
+download `dist/release/anicraft-web-<version>.zip`, the static site to unzip onto a web server.
 
 ## Build
 
@@ -27,6 +29,7 @@ scripts\build-web.ps1         # Windows PowerShell
 | `anicraft.js` | wasm-bindgen's loader |
 | `anicraft_bg.wasm` | the editor, about 9 MB (3.3 MB gzipped) |
 | `anicraft.png` | the page icon |
+| `guide/` | the user guide as HTML pages (`anicraft-cli guide`), opened by Help › User Guide |
 
 A plain `cargo build --target wasm32-unknown-unknown` (the whole workspace, default features)
 also works: that is what CI checks.
@@ -54,7 +57,12 @@ autosave) work. On another host, serve over HTTPS for the same reason. Compressi
   a crash. Copies of tabs that are still open are never offered. Browsers keep only a few MB per
   site, so documents with large images or sounds may not fit; the status bar says when a copy
   fails.
-* **Preferences** are kept in the browser's storage too.
+* **Dropping files** on the page works as on the desktop (ADR 0059): documents open, drawings,
+  images and sounds land where they are dropped on the stage or in the Library. An XFL folder
+  can't be dropped (the browser hands over files, not folders): drop the `.fla`.
+* **Preferences** are kept in the browser's storage too, with Open Recent and the start
+  screen's pictures. A recent file reopens while the page still holds it; after a reload it
+  shows as missing (the browser never gives its path back): open it again with Open.
 * **Leaving the page** with unsaved changes asks first.
 * **Shortcuts** are the desktop ones; on a Mac they use ⌘.
 

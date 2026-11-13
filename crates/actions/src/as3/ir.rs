@@ -371,6 +371,10 @@ pub enum Prop {
     MouseY,
     /// The instance name.
     Name,
+    /// A text field's text, and its length in UTF-16 units (ADR 0066). Only as `field.text` and
+    /// `field.length`: a bare `text` is a variable.
+    Text,
+    Length,
 }
 
 impl Prop {
@@ -392,6 +396,15 @@ impl Prop {
             _ => return None,
         })
     }
+    /// A property read or set as `instance.m`: those [`Prop::from_name`] knows, and a text
+    /// field's `text` and `length`.
+    pub fn from_member(s: &str) -> Option<Prop> {
+        match s {
+            "text" => Some(Prop::Text),
+            "length" => Some(Prop::Length),
+            _ => Prop::from_name(s),
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Prop::X => "x",
@@ -407,6 +420,8 @@ impl Prop {
             Prop::MouseX => "mouseX",
             Prop::MouseY => "mouseY",
             Prop::Name => "name",
+            Prop::Text => "text",
+            Prop::Length => "length",
         }
     }
     /// The instance property a script may also set.
@@ -518,6 +533,8 @@ pub enum LValue {
     Var { n: String },
     /// An instance property.
     Prop { at: Place, p: Property },
+    /// A text field's text (`field.text = …`, `field.appendText(…)` as `+=`).
+    Text { at: Place },
 }
 
 /// An expression.

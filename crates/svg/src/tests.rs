@@ -112,7 +112,7 @@ fn gradients_in_both_unit_systems_with_inherited_stops() {
     </svg>"##);
     let i = Flat { shapes: i.shapes[1..].to_vec(), ..i };
     match &i.shapes[0].shape.fill {
-        Some(Paint::Linear { start, end, stops }) => {
+        Some(Paint::Linear { start, end, stops, .. }) => {
             assert_eq!((*start, *end), (Vec2::new(20.0, 10.0), Vec2::new(60.0, 10.0)), "bounding-box units map onto the shape");
             assert_eq!(stops.len(), 2);
             assert_eq!(stops[1].color, Rgba::WHITE.with_alpha(0.5));
@@ -120,7 +120,7 @@ fn gradients_in_both_unit_systems_with_inherited_stops() {
         other => panic!("{other:?}"),
     }
     match &i.shapes[1].shape.fill {
-        Some(Paint::Radial { center, radius, stops }) => {
+        Some(Paint::Radial { center, radius, stops, .. }) => {
             assert_eq!((*center, *radius), (Vec2::new(50.0, 50.0), 25.0));
             assert_eq!(stops[0].color.a, 0.5, "fill-opacity folds into the stops");
         }

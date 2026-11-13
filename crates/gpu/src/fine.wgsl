@@ -10,7 +10,8 @@
 // pixel centre to its nearest segment (crates/render/src/hairline.rs).
 //
 // Masks and groups (ADR 0029) are control entries in the same list, mirroring the oracle's band
-// compositor (crates/render/src/lib.rs): clip artwork unites into a level's coverage, levels
+// compositor (crates/render/src/lib.rs): clip artwork unites into a level's coverage (a soft
+// mask's, ADR 0070, composites its paint and gives its opacity or luminance), levels
 // multiply into the clip coverage that clipped fills are scaled by; a group pushes the colour
 // so far and continues on transparent, and its close blends it into the colour below at the
 // group's alpha, in its blend mode (the W3C separable formulas, as the oracle's `blend`).
@@ -261,11 +262,36 @@ fn shade(op: u32, kind: u32, ramp: u32, p: vec2<f32>, x: u32, y: u32) -> vec4<f3
     let g = paints[base + 3u];
     // Pixel back to paint space: x' = a x + c y + e, y' = b x + d y + f.
     let q = vec2<f32>(m.x * p.x + m.z * p.y + n.x, m.y * p.x + m.w * p.y + n.y);
+    // Spread and focal point (crates/render/src/paint.rs › Spread::apply, focal_t).
+    let o = paints[base];
     var t: f32;
     if kind == 1u {
         t = dot(q - n.zw, g.xy);
     } else {
-        t = length(q - n.zw) * g.z;
+        let u = (q - n.zw) * g.z;
+        let f = o.y;
+        if f == 0.0 {
+            t = length(u);
+        } else {
+            let d = vec2<f32>(u.x - f, u.y);
+            let a = 1.0 - f * f;
+            let fd = f * d.x;
+            t = (fd + sqrt(max(fd * fd + a * dot(d, d), 0.0))) / a;
+        }
+    }
+    let spread = u32(o.x + 0.5);
+    if spread == 2u {
+        t = t - floor(t);
+        if t >= 1.0 {
+            t = 0.0;
+        }
+    } else if spread == 1u {
+        let m = t - 2.0 * floor(t * 0.5);
+        if m > 1.0 {
+            t = 2.0 - m;
+        } else {
+            t = m;
+        }
     }
     t = clamp(t, 0.0, 1.0);
     let i = u32(t * 255.0 + 0.5) & 255u;
@@ -359,6 +385,10 @@ fn pixel(wg: vec3<u32>, lid: vec3<u32>) -> vec4<f32> {
     var depth = 0u;
     var mask = 1.0;
     var level = 0.0;
+    // A soft mask's level (ADR 0070): its mode (0 coverage, 1 alpha, 2 luminance) and its
+    // artwork's colour so far.
+    var level_mode = 0u;
+    var level_colour = vec4<f32>(0.0);
     let start = index[tile * 2u];
     let count = index[tile * 2u + 1u];
     for (var i = 0u; i < count; i++) {
@@ -380,8 +410,20 @@ fn pixel(wg: vec3<u32>, lid: vec3<u32>) -> vec4<f32> {
                     }
                 }
                 case MASK_RESET: { mask = 1.0; }
-                case LEVEL_BEGIN: { level = 0.0; }
-                case LEVEL_END: { mask *= level; }
+                case LEVEL_BEGIN: {
+                    level = 0.0;
+                    level_mode = index[e + 1u];
+                    level_colour = vec4<f32>(0.0);
+                }
+                case LEVEL_END: {
+                    // The oracle's MaskMode::reveal: opacity, or luminance (sRGB coefficients).
+                    if level_mode == 1u {
+                        level = level_colour.a;
+                    } else if level_mode == 2u {
+                        level = dot(level_colour.rgb, vec3<f32>(0.2125, 0.7154, 0.0721));
+                    }
+                    mask *= clamp(level, 0.0, 1.0);
+                }
                 default: {}
             }
             continue;
@@ -415,6 +457,14 @@ fn pixel(wg: vec3<u32>, lid: vec3<u32>) -> vec4<f32> {
         }
         let flags = index[h + 3u];
         if (flags & ART) != 0u {
+            if level_mode != 0u {
+                // Soft mask artwork composites as drawn (the oracle's `composite`).
+                if cov > 1e-4 {
+                    let s = shade(op, index[h], index[h + 2u], centre, x, y);
+                    level_colour = s * cov + level_colour * (1.0 - s.a * cov);
+                }
+                continue;
+            }
             let k = clamp(cov, 0.0, 1.0);
             level = level + k - level * k;
             continue;

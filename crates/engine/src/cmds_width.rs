@@ -51,7 +51,7 @@ pub(crate) fn visible_shape(s: &Session, id: ElementId) -> Result<std::sync::Arc
     match &el.kind {
         ElementKind::Shape(sh) if sh.stroke.is_some() => Ok(el),
         ElementKind::Shape(_) => Err(EngineError::State("this shape has no stroke (give it one in Properties or with the Ink Bottle)".into())),
-        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => Err(EngineError::State("only shapes have strokes (break it apart with Ctrl+B to edit its lines)".into())),
+        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => Err(EngineError::State("only shapes have strokes (break it apart with Ctrl+B to edit its lines)".into())),
     }
 }
 
@@ -62,7 +62,7 @@ pub(crate) fn shape_mut(s: &mut Session, id: ElementId) -> Result<&mut Shape> {
     let el = kf.elements_mut_where(|e| e == id).into_iter().next().ok_or_else(|| EngineError::State(format!("no element {}", id.0)))?;
     match &mut el.kind {
         ElementKind::Shape(sh) => Ok(sh),
-        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => Err(EngineError::State("only shapes have strokes".into())),
+        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => Err(EngineError::State("only shapes have strokes".into())),
     }
 }
 

@@ -141,7 +141,7 @@ pub fn commit_pen(app: &mut App, closed: bool) {
     if pen.knots.len() < 2 {
         return;
     }
-    app.run("draw.path", json!({"d": pen.to_svg(closed)}));
+    app.draw("draw.path", json!({"d": pen.to_svg(closed)}));
 }
 
 // ----- Pencil ------------------------------------------------------------------------------
@@ -195,7 +195,7 @@ pub fn commit_pencil(app: &mut App, xf: Xf) {
         return;
     }
     let points: Vec<[f32; 2]> = pts.iter().map(|p| [p.x, p.y]).collect();
-    app.run("draw.freehand", json!({"points": points, "mode": app.pencil_mode.id(), "tolerance": 1.5 * xf.unit()}));
+    app.draw("draw.freehand", json!({"points": points, "mode": app.pencil_mode.id(), "tolerance": 1.5 * xf.unit()}));
 }
 
 // ----- Subselection --------------------------------------------------------------------------
@@ -213,7 +213,7 @@ fn selected_shapes(app: &App) -> Vec<(ElementId, Arc<Path>, Affine)> {
             // Raw shapes show their shared points instead (ADR 0042, below).
             ElementKind::Shape(sh) if sh.merge => None,
             ElementKind::Shape(sh) => Some((e.id, sh.path.clone(), e.transform)),
-            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => None,
         })
         .take(64)
         .collect()

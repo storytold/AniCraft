@@ -18,9 +18,10 @@ use crate::actions::as3::ir::{Base, Function, ListenEvent, Place, Prop, Value};
 use crate::actions::as3::run::{self, Stop, World};
 use crate::actions::as3::{Compiled, Decls, Problem};
 use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Seg, Target};
-use crate::eval::{Play, evaluate_guided, evaluate_symbol, guide_walk};
+use crate::eval::{Play, evaluate_shown, evaluate_symbol, guide_walk};
+use crate::field::{Changed, Edit, Editor, FieldLook, FieldState, chars, fit, scroll_to_caret};
 use crate::sound::Started;
-use crate::{Document, Element, ElementId, ElementKind, LayerKind, MAX_SYMBOL_DEPTH, SymbolId, SymbolKind, Timeline};
+use crate::{BlendMode, ColorTransform, DisplayList, Document, Element, ElementId, ElementKind, FIELD_GUTTER, Group, LayerKind, MAX_SYMBOL_DEPTH, Rgba, SoundSync, SymbolId, SymbolKind, TextBlock, TextField, TextKind, Timeline};
 use anicraft_geom::{Affine, Vec2};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -198,6 +199,14 @@ pub struct PlayerState {
     pub pressed: Option<InstancePath>,
     /// Steps taken since the start.
     pub tick: u64,
+    /// Each text field a script or the viewer has touched (ADR 0066), by instance path.
+    pub fields: BTreeMap<InstancePath, FieldState>,
+    /// The field that has the keyboard (an input field, or a selectable dynamic one).
+    pub focus: Option<InstancePath>,
+    /// Shift is held (key code 16 down): caret moves extend the selection.
+    pub shift: bool,
+    /// The pointer went down in the focused field and is selecting as it drags.
+    pub selecting: bool,
 }
 
 impl PlayerState {
@@ -214,18 +223,60 @@ impl PlayerState {
     /// The frame a button shows: Up (0), Over (1) under the pointer, Down (2) while pressed on
     /// it; a button whose timeline is shorter shows its last frame.
     pub fn button_frame(&self, path: &[ElementId], len: u32) -> u32 {
-        let over = self.hover.as_deref() == Some(path);
-        let f = match (over, self.down && self.pressed.as_deref() == Some(path)) {
-            (true, true) => 2,
-            (true, false) => 1,
-            (false, _) => 0,
+        let f = match self.button_state(path) {
+            ButtonState::Down => 2,
+            ButtonState::Over => 1,
+            ButtonState::Up | ButtonState::OutDown => 0,
         };
         f.min(len.max(1) - 1)
+    }
+
+    /// Where the pointer leaves a button: [`ButtonState`].
+    pub fn button_state(&self, path: &[ElementId]) -> ButtonState {
+        ButtonState::of(self.hover.as_deref(), self.pressed.as_deref(), self.down, path)
     }
 
     /// A timeline's playhead: the main timeline's for the empty path.
     pub fn playhead(&self, path: &[ElementId]) -> Option<ClipState> {
         if path.is_empty() { Some(self.root) } else { self.clips.get(path).copied() }
+    }
+}
+
+/// Where the pointer is for one button, as the SWF file format names a button's states: away
+/// (Up), over it (Over), pressed on it (Down), or pressed on it and dragged off (shown Up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonState {
+    Up,
+    Over,
+    Down,
+    OutDown,
+}
+
+impl ButtonState {
+    /// The state of the button at `path` with the pointer over `hover`, pressed on `pressed`,
+    /// and down or not.
+    pub fn of(hover: Option<&[ElementId]>, pressed: Option<&[ElementId]>, down: bool, path: &[ElementId]) -> ButtonState {
+        match (hover == Some(path), down && pressed == Some(path)) {
+            (true, true) => ButtonState::Down,
+            (true, false) => ButtonState::Over,
+            (false, true) => ButtonState::OutDown,
+            (false, false) => ButtonState::Up,
+        }
+    }
+}
+
+/// The frame of a button whose sound plays when the button goes from state `from` to `to`
+/// (ADR 0057), as the SWF format's button sounds are kept: the Over frame's going over it, the
+/// Up frame's leaving it, the Down frame's pressing it, and the Hit frame's letting go over it.
+/// Dragging off a pressed button and back plays nothing.
+pub fn button_sound_frame(from: ButtonState, to: ButtonState) -> Option<u32> {
+    use ButtonState::*;
+    match (from, to) {
+        (Up, Over) => Some(1),
+        (Over, Up) => Some(0),
+        (Over, Down) => Some(2),
+        (Down, Over) => Some(3),
+        _ => None,
     }
 }
 
@@ -240,6 +291,10 @@ pub enum Event {
     /// A key went down (or repeats) and came up, by its ActionScript key code.
     KeyDown(u32),
     KeyUp(u32),
+    /// A character typed (or pasted) into the focused input field (ADR 0066).
+    Char(char),
+    /// Select All in the focused field.
+    SelectAll,
 }
 
 /// The state after a step, what the movie wrote to the Output panel (traces, and why an
@@ -261,6 +316,8 @@ pub enum NodeKind {
     Graphic,
     MovieClip,
     Button,
+    /// A dynamic or input text field (ADR 0066).
+    Text,
 }
 
 /// One symbol instance on the stage (or the main timeline), as the player sees it at a state.
@@ -289,6 +346,16 @@ pub struct Node {
     pub events: Vec<EventHandler>,
     /// The volume its sounds get: the layers holding it, from the main timeline down.
     pub gain: f32,
+    /// A text field's block (its style, box and authored text).
+    pub text: Option<Arc<TextBlock>>,
+}
+
+impl Node {
+    /// A text field's block and field settings.
+    pub fn field(&self) -> Option<(&TextBlock, &TextField)> {
+        let t = self.text.as_deref()?;
+        Some((t, t.field.as_ref()?))
+    }
 }
 
 /// Runs plug-in frame scripts for the player (the engine implements it over the plug-in host).
@@ -297,6 +364,13 @@ pub trait ScriptHost {
     fn begin_step(&mut self) {}
     /// Runs `script` for the timeline described by `cx`; returns the actions it emitted.
     fn run(&mut self, script: &PluginScript, cx: &ScriptContext<'_>) -> ScriptRun;
+    /// Lays out `shown` (a field's text as it is drawn) in `block`'s style and box (ADR 0066):
+    /// the fonts live above this crate. `None`: it can't, and the field keeps its authored
+    /// outline until its text changes (then it draws only its box).
+    fn lay_out_field(&mut self, block: &TextBlock, shown: &str) -> Option<FieldLook> {
+        let _ = (block, shown);
+        None
+    }
 }
 
 /// What a frame script sees.
@@ -380,7 +454,7 @@ pub fn input(doc: &Document, state: &PlayerState, events: &[Event], host: &mut d
 /// drawing order (parents before their contents).
 pub fn tree(doc: &Document, st: &PlayerState) -> Vec<Node> {
     let tl = doc.timeline(st.scene);
-    let mut out = vec![Node { path: Vec::new(), parent: None, owner: 0, name: String::new(), symbol: None, kind: NodeKind::Root, frame: st.root.frame, frames: tl.frame_count(), xf: Affine::IDENTITY, local: Affine::IDENTITY, alpha: 1.0, hittable: true, events: Vec::new(), gain: 1.0 }];
+    let mut out = vec![Node { path: Vec::new(), parent: None, owner: 0, name: String::new(), symbol: None, kind: NodeKind::Root, frame: st.root.frame, frames: tl.frame_count(), xf: Affine::IDENTITY, local: Affine::IDENTITY, alpha: 1.0, hittable: true, events: Vec::new(), gain: 1.0, text: None }];
     // The main timeline is seen through its camera (ADR 0027): instances are where the pointer
     // sees them.
     let camera = tl.camera_at(st.root.frame, &doc.stage);
@@ -391,6 +465,86 @@ pub fn tree(doc: &Document, st: &PlayerState) -> Vec<Node> {
 /// The button (or movie clip with event handlers) at stage point `p`, topmost first.
 pub fn hit(doc: &Document, st: &PlayerState, p: Vec2) -> Option<InstancePath> {
     hit_in(doc, st, &tree(doc, st), p)
+}
+
+/// The text field at stage point `p` the viewer can click into, topmost first (ADR 0066): what
+/// a window shows a text cursor over.
+pub fn field_at(doc: &Document, st: &PlayerState, p: Vec2) -> Option<InstancePath> {
+    field_hit(&tree(doc, st), p).map(|(_, path)| path)
+}
+
+/// The topmost focusable field node at `p`, with its index.
+fn field_hit(nodes: &[Node], p: Vec2) -> Option<(usize, InstancePath)> {
+    for (i, n) in nodes.iter().enumerate().rev() {
+        if n.kind != NodeKind::Text || !n.hittable {
+            continue;
+        }
+        let Some((t, f)) = n.field() else { continue };
+        if !f.focusable() {
+            continue;
+        }
+        let Some(q) = n.xf.inverse().map(|m| m.apply(p)) else { continue };
+        if q.x >= 0.0 && q.y >= 0.0 && q.x <= t.box_width && q.y <= t.box_height {
+            return Some((i, n.path.clone()));
+        }
+    }
+    None
+}
+
+/// The frame of a button's timeline, `len` frames long, that answers the pointer: the Hit
+/// frame (the fourth) when it has one, otherwise the Up frame.
+pub fn hit_frame(len: u32) -> u32 {
+    if len > 3 { 3 } else { 0 }
+}
+
+/// The area of a button with timeline `tl` that answers the pointer, placed by `xf`: its
+/// [`hit_frame`]'s artwork without guides and mask artwork (masks don't cut hit areas, and
+/// shapes count however faint they are drawn). The hit test and Test Movie's hit-area overlay
+/// both use it.
+pub fn hit_area(doc: &Document, tl: &Timeline, xf: Affine) -> DisplayList {
+    let mut dl = evaluate_symbol(doc, tl, hit_frame(tl.frame_count()), xf, None);
+    dl.items.retain(|i| !i.guide && i.masks.is_none());
+    for i in &mut dl.items {
+        i.clip = None;
+    }
+    for g in &mut dl.groups {
+        g.clip = None;
+    }
+    dl
+}
+
+/// `dl` drawn as one translucent area: every item filled and stroked in `tint` at full
+/// strength, composited together and laid over what is below at `alpha`, so overlapping shapes
+/// don't darken each other.
+pub fn tinted(dl: DisplayList, tint: Rgba, alpha: f32) -> DisplayList {
+    let mut out = DisplayList::default();
+    let alpha = if alpha.is_finite() { alpha.clamp(0.0, 1.0) } else { 1.0 };
+    out.groups.push(Group { parent: None, alpha, blend: BlendMode::default(), filters: Arc::from(Vec::new()), clip: None });
+    out.append(dl);
+    for g in out.groups.iter_mut().skip(1) {
+        g.alpha = 1.0;
+        g.blend = BlendMode::default();
+        g.filters = Arc::from(Vec::new());
+        g.parent = Some(g.parent.unwrap_or(0));
+    }
+    for it in &mut out.items {
+        it.color = ColorTransform::tint(tint, 1.0);
+        it.outline = None;
+        it.group = Some(it.group.unwrap_or(0));
+    }
+    out
+}
+
+/// Every button's hit area at `st`, each a translucent area in `tint` (Test Movie's Show Hit
+/// Areas): where the pointer finds the buttons, drawn over the movie.
+pub fn hit_overlay(doc: &Document, st: &PlayerState, tint: Rgba, alpha: f32) -> DisplayList {
+    let mut out = DisplayList::default();
+    for n in tree(doc, st).iter().filter(|n| n.kind == NodeKind::Button && n.hittable) {
+        if let Some(sym) = n.symbol.and_then(|s| doc.symbol(s)) {
+            out.append(tinted(hit_area(doc, &sym.timeline, n.xf), tint, alpha));
+        }
+    }
+    out
 }
 
 /// Whether timeline layer `index` takes part in playback: shown, not a folder or guide, not in
@@ -406,18 +560,45 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
     }
     let base: InstancePath = out.get(parent).map(|n| n.path.clone()).unwrap_or_default();
     let parent_gain = out.get(parent).map_or(1.0, |n| n.gain);
-    for (index, layer) in tl.layers.iter().enumerate().rev() {
+    // Drawn deepest first (ADR 0082), so the topmost hit is the one drawn last.
+    // (Only sorted when some layer has a depth: nested timelines allocate nothing.)
+    let sorted = (depth == 1 && tl.layers.iter().any(|l| l.has_depth())).then(|| tl.draw_order(frame));
+    let n = tl.layers.len();
+    for k in 0..n {
+        let index = sorted.as_ref().map_or(n - 1 - k, |o| o.get(k).copied().unwrap_or(n));
+        let Some(layer) = tl.layers.get(index) else { continue };
         if !plays(tl, index) {
             continue;
         }
         let gain = parent_gain * layer.sound_gain();
         let hit = hittable && layer.kind != LayerKind::Mask;
         let path_walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
-        let Some((kf_start, els)) = evaluate_guided(layer, frame, path_walk.as_ref()) else { continue };
-        let layer_xf = camera.map_or(xf, |c| c.view(&doc.stage, layer.depth));
+        let Some((kf_start, els)) = evaluate_shown(layer, frame, path_walk.as_ref(), doc.stage.fps) else { continue };
+        let layer_xf = match camera {
+            Some(c) => match c.layer_view(&doc.stage, layer, frame) {
+                Some(v) => v,
+                None => continue,
+            },
+            None => xf,
+        };
+        // Instances inside a group belong to the group's timeline (ADR 0073).
+        let els = crate::expand_groups(&els).into_owned();
         for el in els.iter() {
             if out.len() >= MAX_NODES {
                 return;
+            }
+            // Dynamic and input text fields are instances scripts can name (static text isn't).
+            if let ElementKind::Text(t) = &el.kind
+                && t.field.is_some()
+            {
+                let mut path = base.clone();
+                path.push(el.id);
+                let ov = st.props.get(&path);
+                let shown = ov.is_none_or(Overrides::shown);
+                let set = ov.map(|o| o.apply(el));
+                let e: &Element = set.as_ref().unwrap_or(el);
+                out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: None, kind: NodeKind::Text, frame: 0, frames: 0, xf: layer_xf.mul(&e.transform), local: el.transform, alpha: el.color.alpha(), hittable: hit && shown, events: Vec::new(), gain, text: Some(t.clone()) });
+                continue;
             }
             let ElementKind::Symbol { symbol, loop_mode, first_frame, events, .. } = &el.kind else { continue };
             let Some(sym) = doc.symbol(*symbol) else { continue };
@@ -435,7 +616,7 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
             };
             let idx = out.len();
             let node_xf = layer_xf.mul(&e.transform);
-            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, local: el.transform, alpha: el.color.alpha(), hittable: hit && shown, events: events.clone(), gain });
+            out.push(Node { path, parent: Some(parent), owner, name: e.name.clone(), symbol: Some(*symbol), kind, frame: local, frames: len, xf: node_xf, local: el.transform, alpha: el.color.alpha(), hittable: hit && shown, events: events.clone(), gain, text: None });
             // Names inside a movie clip (or a button's states) are its own; a graphic's
             // contents belong to the timeline the graphic is on.
             let inner_owner = if kind == NodeKind::Graphic { owner } else { idx };
@@ -452,9 +633,7 @@ fn hit_in(doc: &Document, st: &PlayerState, nodes: &[Node], p: Vec2) -> Option<I
         }
         let Some(sym) = n.symbol.and_then(|s| doc.symbol(s)) else { continue };
         let dl = if n.kind == NodeKind::Button {
-            // The Hit frame (the fourth) when the button has one; otherwise the Up frame.
-            let f = if n.frames > 3 { 3 } else { 0 };
-            evaluate_symbol(doc, &sym.timeline, f, n.xf, None)
+            hit_area(doc, &sym.timeline, n.xf)
         } else {
             evaluate_symbol(doc, &sym.timeline, n.frame, n.xf, Some(&Play { state: st, path: n.path.clone() }))
         };
@@ -519,12 +698,55 @@ impl<'a, 'h> Run<'a, 'h> {
     /// The sounds on keyframes of `tl` starting at `frame` (every layer but guides, as the
     /// soundtrack has them), at volume `gain` times their layer's.
     fn sounds_at(&mut self, tl: &Timeline, frame: u32, gain: f32) {
+        self.sounds_on(tl, frame, gain, false);
+    }
+
+    /// [`Run::sounds_at`]; on a button's frame (`button`) a stream sound plays as an event,
+    /// since a button's frame has no span to stream over (ADR 0057).
+    fn sounds_on(&mut self, tl: &Timeline, frame: u32, gain: f32, button: bool) {
         for layer in tl.layers.iter().filter(|l| !matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera)) {
             let Some(k) = layer.keyframe_starting_at(frame).and_then(|i| layer.keyframes.get(i)) else { continue };
             if let Some(fs) = &k.sound
                 && self.sounds.len() < MAX_SOUNDS_PER_STEP
             {
-                self.sounds.push(Started { sound: fs.clone(), gain: gain * layer.sound_gain(), span: k.duration });
+                let mut sound = fs.clone();
+                if button && sound.sync == SoundSync::Stream {
+                    sound.sync = SoundSync::Event;
+                }
+                self.sounds.push(Started { sound, gain: gain * layer.sound_gain(), span: k.duration });
+            }
+        }
+    }
+
+    /// Where the pointer is, for [`Run::button_sounds`]: what it is over, what it went down
+    /// on, and whether it is down.
+    fn pointer_now(&self) -> (Option<InstancePath>, Option<InstancePath>, bool) {
+        (self.st.hover.clone(), self.st.pressed.clone(), self.st.down)
+    }
+
+    /// Starts the sounds of the buttons whose state changed since `before` ([`pointer_now`]
+    /// then): the frame [`button_sound_frame`] gives for each change.
+    ///
+    /// [`pointer_now`]: Run::pointer_now
+    fn button_sounds(&mut self, before: (Option<InstancePath>, Option<InstancePath>, bool)) {
+        if before == self.pointer_now() {
+            return;
+        }
+        self.refresh();
+        let (h, p, d) = &before;
+        let mut paths: Vec<InstancePath> = Vec::new();
+        for path in [h, p, &self.st.hover, &self.st.pressed].into_iter().flatten() {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+        for path in paths {
+            let from = ButtonState::of(h.as_deref(), p.as_deref(), *d, &path);
+            let Some(frame) = button_sound_frame(from, self.st.button_state(&path)) else { continue };
+            let Some(n) = self.index_of(&path).and_then(|i| self.nodes.get(i)).filter(|n| n.kind == NodeKind::Button) else { continue };
+            let (gain, symbol) = (n.gain, n.symbol);
+            if let Some(sym) = symbol.and_then(|s| self.doc.symbol(s)) {
+                self.sounds_on(&sym.timeline, frame, gain, true);
             }
         }
     }
@@ -575,8 +797,13 @@ impl<'a, 'h> Run<'a, 'h> {
             all.contains(p) && !list.is_empty()
         });
         self.st.stage.retain(|l| all.contains(&l.owner));
-        // A timeline's variables go with its instance.
+        // A timeline's variables go with its instance, and a field's text with the field.
         self.st.vars.retain(|p, _| all.contains(p));
+        self.st.fields.retain(|p, _| all.contains(p));
+        if self.st.focus.as_ref().is_some_and(|p| !all.contains(p)) {
+            self.st.focus = None;
+            self.st.selecting = false;
+        }
         for slot in [&mut self.st.hover, &mut self.st.pressed] {
             if slot.as_ref().is_some_and(|p| !all.contains(p)) {
                 *slot = None;
@@ -653,7 +880,7 @@ impl<'a, 'h> Run<'a, 'h> {
         match n.kind {
             NodeKind::Root => Some(self.doc.timeline(self.st.scene)),
             NodeKind::MovieClip => n.symbol.and_then(|s| self.doc.symbol(s)).map(|s| &s.timeline),
-            NodeKind::Graphic | NodeKind::Button => None,
+            NodeKind::Graphic | NodeKind::Button | NodeKind::Text => None,
         }
     }
 
@@ -868,7 +1095,13 @@ impl<'a, 'h> Run<'a, 'h> {
                 Prop::MouseX => num(short(self.st.mouse.x)),
                 Prop::MouseY => num(short(self.st.mouse.y)),
                 Prop::Name => Ok(Value::str("root1")),
+                Prop::Text | Prop::Length => Err("the main timeline isn't a text field".into()),
             };
+        }
+        if matches!(p, Prop::Text | Prop::Length) {
+            let Some((t, _)) = n.field() else { return Err(format!("“{}” is {}, not a text field", n.name, kind_name(n.kind))) };
+            let v = self.st.fields.get(&n.path).map_or(t.text.as_str(), |f| f.value(t));
+            return Ok(if p == Prop::Text { Value::str(v) } else { Value::Num(crate::actions::as3::ir::text_len(v) as f64) });
         }
         let ov = self.st.props.get(&n.path).copied().unwrap_or_default();
         let d = decompose64(&n.local);
@@ -893,10 +1126,10 @@ impl<'a, 'h> Run<'a, 'h> {
                 let v = if p == Prop::MouseX { (m[3] * x - m[2] * y) / det } else { (m[0] * y - m[1] * x) / det };
                 num(fround_short(v))
             }
+            Prop::Text | Prop::Length => Err("not a text field".into()),
             Prop::CurrentFrame | Prop::TotalFrames | Prop::CurrentLabel => {
                 if n.kind != NodeKind::MovieClip {
-                    let what = if n.kind == NodeKind::Button { "a button" } else { "a graphic" };
-                    return Err(format!("“{}” is {what}; only movie clips and the main timeline have frames", n.name));
+                    return Err(format!("“{}” is {}; only movie clips and the main timeline have frames", n.name, kind_name(n.kind)));
                 }
                 match p {
                     Prop::CurrentFrame => num(f64::from(n.frame) + 1.0),
@@ -941,7 +1174,7 @@ impl<'a, 'h> Run<'a, 'h> {
             _ => matches!(node.kind, NodeKind::Button | NodeKind::MovieClip),
         };
         if !ok {
-            let why = if node.kind == NodeKind::Root { "the main timeline doesn't get pointer events here".to_string() } else { format!("“{}” is a graphic; only buttons and movie clips get pointer events", node.name) };
+            let why = if node.kind == NodeKind::Root { "the main timeline doesn't get pointer events here".to_string() } else { format!("“{}” is {}; only buttons and movie clips get pointer events", node.name, kind_name(node.kind)) };
             return self.out(format!("{what}: {why}"));
         }
         let (path, name) = (node.path.clone(), node.name.clone());
@@ -1015,8 +1248,7 @@ impl<'a, 'h> Run<'a, 'h> {
                 };
                 let Some(node) = self.nodes.get(i) else { return };
                 if !matches!(node.kind, NodeKind::Root | NodeKind::MovieClip) {
-                    let what = if node.kind == NodeKind::Button { "a button" } else { "a graphic" };
-                    return self.out(format!("{}: “{}” is {what}; only movie clips and the main timeline have a playhead", a.describe(), node.name));
+                    return self.out(format!("{}: “{}” is {}; only movie clips and the main timeline have a playhead", a.describe(), node.name, kind_name(node.kind)));
                 }
                 let (path, frame, frames) = (node.path.clone(), node.frame, node.frames.max(1));
                 match a {
@@ -1109,21 +1341,54 @@ impl<'a, 'h> Run<'a, 'h> {
     fn event(&mut self, e: Event) {
         self.refresh();
         match e {
-            Event::Move(p) => self.pointer(Some(p)),
+            Event::Move(p) => {
+                self.pointer(Some(p));
+                // Dragging in the focused field selects.
+                if self.st.selecting && self.st.down {
+                    self.point_field(p, true);
+                }
+            }
             Event::Down(p) => {
                 self.pointer(Some(p));
+                // A field the viewer can use takes the press (unless a button is above it): it
+                // gets the keyboard and the caret goes where it was clicked. Anywhere else the
+                // focused field loses the keyboard.
+                let hover_at = self.st.hover.as_ref().and_then(|h| self.index_of(h));
+                match self.field_at(p).filter(|(i, _)| hover_at.is_none_or(|h| *i > h)) {
+                    Some((_, path)) => {
+                        self.st.focus = Some(path);
+                        self.st.down = true;
+                        self.st.selecting = true;
+                        self.point_field(p, false);
+                        return;
+                    }
+                    None => {
+                        self.st.focus = None;
+                        self.st.selecting = false;
+                    }
+                }
+                let before = self.pointer_now();
                 self.st.down = true;
                 self.st.pressed = self.st.hover.clone();
                 self.dirty = true;
+                self.button_sounds(before);
                 if let Some(h) = self.st.hover.clone() {
                     self.fire(&h, ButtonEvent::Press);
                 }
             }
             Event::Up(p) => {
+                if self.st.selecting {
+                    self.st.selecting = false;
+                    self.st.down = false;
+                    self.pointer(Some(p));
+                    return;
+                }
                 self.pointer(Some(p));
+                let before = self.pointer_now();
                 self.st.down = false;
                 let pressed = self.st.pressed.take();
                 self.dirty = true;
+                self.button_sounds(before);
                 if let Some(h) = self.st.hover.clone() {
                     self.fire(&h, ButtonEvent::Release);
                     if pressed.as_ref() == Some(&h) {
@@ -1132,9 +1397,115 @@ impl<'a, 'h> Run<'a, 'h> {
                 }
             }
             Event::Leave => self.pointer(None),
-            Event::KeyDown(k) => self.key(ListenEvent::KeyDown, k),
-            Event::KeyUp(k) => self.key(ListenEvent::KeyUp, k),
+            // Keys edit the focused field, then go to the stage's listeners as well (as they
+            // reach the stage from a focused field in ActionScript).
+            Event::KeyDown(k) => {
+                if k == SHIFT {
+                    self.st.shift = true;
+                }
+                self.field_key(k);
+                self.key(ListenEvent::KeyDown, k);
+            }
+            Event::KeyUp(k) => {
+                if k == SHIFT {
+                    self.st.shift = false;
+                }
+                self.key(ListenEvent::KeyUp, k);
+            }
+            Event::Char(c) => {
+                let mut b = [0u8; 4];
+                let s: &str = c.encode_utf8(&mut b);
+                self.edit_field(|ed, _| ed.insert(s));
+            }
+            Event::SelectAll => self.edit_field(|ed, look| ed.key(Edit::SelectAll, false, look)),
         }
+    }
+
+    /// The topmost field at stage point `p` the viewer can use, with its node's index.
+    fn field_at(&self, p: Vec2) -> Option<(usize, InstancePath)> {
+        field_hit(&self.nodes, p)
+    }
+
+    /// Field `path`'s block and its place on the stage.
+    fn field_node(&self, path: &[ElementId]) -> Option<(Arc<TextBlock>, Affine)> {
+        let n = self.index_of(path).and_then(|i| self.nodes.get(i))?;
+        let t = n.text.clone().filter(|t| t.field.is_some())?;
+        Some((t, n.xf))
+    }
+
+    /// Lays field `path`'s text out as it is now (with the host's fonts) and keeps the caret
+    /// in the text and in view.
+    fn relayout(&mut self, path: &[ElementId]) {
+        let Some((t, _)) = self.field_node(path) else { return };
+        let Some(f) = t.field.as_ref() else { return };
+        let st = self.st.fields.entry(path.to_vec()).or_default();
+        let shown = f.shown(st.value(&t));
+        st.look = self.host.lay_out_field(&t, &shown).map(Arc::new);
+        let len = chars(st.value(&t));
+        st.caret = st.caret.min(len);
+        st.anchor = st.anchor.min(len);
+        scroll_to_caret(&t, f, st);
+    }
+
+    /// A script sets field `path`'s text.
+    fn set_field_text(&mut self, path: &[ElementId], text: &str) {
+        let Some((t, _)) = self.field_node(path) else { return };
+        let Some(f) = t.field.as_ref() else { return };
+        self.st.fields.entry(path.to_vec()).or_default().text = Some(fit(f, text));
+        self.relayout(path);
+    }
+
+    /// Runs an edit on the focused field (laying it out first if it never was).
+    fn edit_field(&mut self, go: impl FnOnce(&mut Editor<'_>, Option<&FieldLook>) -> Changed) {
+        let Some(path) = self.st.focus.clone() else { return };
+        let Some((t, _)) = self.field_node(&path) else { return };
+        let Some(f) = t.field.clone() else { return };
+        if self.st.fields.get(&path).is_none_or(|s| s.look.is_none()) {
+            self.relayout(&path);
+        }
+        let st = self.st.fields.entry(path.clone()).or_default();
+        let look = st.look.clone();
+        let changed = go(&mut Editor { block: &t, field: &f, st }, look.as_deref());
+        if changed.text {
+            self.relayout(&path);
+        } else if changed.caret {
+            scroll_to_caret(&t, &f, self.st.fields.entry(path).or_default());
+        }
+    }
+
+    /// The pointer at stage point `p` in the focused field: places the caret (`extend`: moves
+    /// it, keeping the selection's other end).
+    fn point_field(&mut self, p: Vec2, extend: bool) {
+        let Some(path) = self.st.focus.clone() else { return };
+        let Some((_, xf)) = self.field_node(&path) else { return };
+        let Some(q) = xf.inverse().map(|m| m.apply(p)) else { return };
+        let q = Vec2::new(q.x - FIELD_GUTTER, q.y - FIELD_GUTTER);
+        self.edit_field(|ed, look| ed.point(q, extend, look));
+    }
+
+    /// A key down for the focused field: an edit, or Tab to the next input field.
+    fn field_key(&mut self, code: u32) {
+        if self.st.focus.is_none() {
+            return;
+        }
+        if code == TAB {
+            let inputs: Vec<InstancePath> = self.nodes.iter().filter(|n| n.hittable && n.field().is_some_and(|(_, f)| f.kind == TextKind::Input)).map(|n| n.path.clone()).collect();
+            let at = inputs.iter().position(|p| Some(p) == self.st.focus.as_ref());
+            let n = inputs.len();
+            if n > 0 {
+                let next = match at {
+                    Some(i) if self.st.shift => (i + n - 1) % n,
+                    Some(i) => (i + 1) % n,
+                    None => 0,
+                };
+                self.st.focus = inputs.get(next).cloned();
+                self.edit_field(|ed, look| ed.key(Edit::SelectAll, false, look));
+            }
+            return;
+        }
+        let Some(e) = Edit::from_key(code) else { return };
+        let shift = self.st.shift;
+        self.edit_field(|ed, look| ed.key(e, shift, look));
     }
 
     /// Moves the pointer: what it leaves gets Out, what it reaches gets Over.
@@ -1146,8 +1517,10 @@ impl<'a, 'h> Run<'a, 'h> {
         }
         let now = p.and_then(|p| hit_in(self.doc, &self.st, &self.nodes, p));
         if now != self.st.hover {
+            let before = self.pointer_now();
             let old = std::mem::replace(&mut self.st.hover, now.clone());
             self.dirty = true;
+            self.button_sounds(before);
             if let Some(o) = old {
                 self.fire(&o, ButtonEvent::Out);
             }
@@ -1198,6 +1571,21 @@ impl<'a, 'h> Run<'a, 'h> {
             self.output.push(format!("… {n} more lines"));
         }
         Step { state: self.st, output: self.output, sounds: self.sounds }
+    }
+}
+
+/// The key codes of Shift and Tab.
+const SHIFT: u32 = 16;
+const TAB: u32 = 9;
+
+/// How messages name a kind of instance.
+fn kind_name(k: NodeKind) -> &'static str {
+    match k {
+        NodeKind::Root => "the main timeline",
+        NodeKind::Graphic => "a graphic",
+        NodeKind::MovieClip => "a movie clip",
+        NodeKind::Button => "a button",
+        NodeKind::Text => "a text field",
     }
 }
 
@@ -1338,6 +1726,21 @@ impl World for Script<'_, '_, '_> {
         let (lo, hi) = p.range();
         let v = v.clamp(lo, hi) + 0.0;
         self.act(at.base, &Action::SetProperty { target: at.path.clone(), property: p, value: v })
+    }
+
+    fn set_text(&mut self, at: &Place, text: String) -> Result<(), Option<String>> {
+        if !self.r.budget() {
+            return Err(None);
+        }
+        let from = self.from().map_err(Some)?;
+        let i = self.r.place(from, self.ev.as_ref(), at).map_err(Some)?;
+        let Some(n) = i.and_then(|i| self.r.nodes.get(i)) else { return Err(Some("the stage isn't a text field".into())) };
+        if n.field().is_none() {
+            return Err(Some(format!("“{}” is {}, not a text field", n.name, kind_name(n.kind))));
+        }
+        let path = n.path.clone();
+        self.r.set_field_text(&path, &text);
+        Ok(())
     }
 
     fn trace(&mut self, line: String) {

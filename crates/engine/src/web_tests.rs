@@ -57,6 +57,8 @@ fn exports_come_back_as_files() {
             ("file.export_png", json!({"path": "frame.png"})),
             ("file.export_svg", json!({"path": "frame.svg"})),
             ("file.export_gif", json!({"path": "movie.gif", "to": 3})),
+            ("file.export_apng", json!({"path": "movie.png", "to": 3})),
+            ("file.export_webp", json!({"path": "movie.webp", "to": 3})),
             ("file.export_lottie", json!({"path": "movie.json"})),
             ("file.export_html", json!({"path": "movie.html"})),
             ("file.export_audio", json!({"path": "track.wav"})),
@@ -67,12 +69,16 @@ fn exports_come_back_as_files() {
         s.execute("file.export_png_sequence", &json!({"dir": "frames", "to": 2})).unwrap();
         let out = vfs::take_written();
         let n = names(&out);
-        for want in ["frame.png", "frame.svg", "movie.gif", "movie.json", "movie.html", "track.wav", "sheet.png", "sheet.json", "frames/frame_00001.png", "frames/frame_00003.png"] {
+        for want in ["frame.png", "frame.svg", "movie.gif", "movie.png", "movie.webp", "movie.json", "movie.html", "track.wav", "sheet.png", "sheet.json", "frames/frame_00001.png", "frames/frame_00003.png"] {
             assert!(n.iter().any(|x| x == want), "{want} missing from {n:?}");
         }
         assert!(out.iter().all(|(_, b)| !b.is_empty()));
         let png = &out.iter().find(|(p, _)| p == Path::new("frame.png")).unwrap().1;
         assert!(png.starts_with(b"\x89PNG"));
+        let apng = &out.iter().find(|(p, _)| p == Path::new("movie.png")).unwrap().1;
+        assert!(apng.starts_with(b"\x89PNG") && apng.windows(4).any(|w| w == b"acTL"), "an animated PNG");
+        let webp = &out.iter().find(|(p, _)| p == Path::new("movie.webp")).unwrap().1;
+        assert!(webp.starts_with(b"RIFF") && webp.windows(4).any(|w| w == b"ANMF"), "an animated WebP");
         let wav = &out.iter().find(|(p, _)| p == Path::new("track.wav")).unwrap().1;
         assert!(wav.starts_with(b"RIFF") && !n.iter().any(|x| x.ends_with(".tmp")));
         let err = s.execute("file.export_video", &json!({"path": "movie.webm"})).unwrap_err().to_string();

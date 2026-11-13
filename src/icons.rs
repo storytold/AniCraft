@@ -20,6 +20,7 @@ pub enum Icon {
     Pen,
     Pencil,
     Brush,
+    PaintBrush,
     Eraser,
     Eyedropper,
     Rect,
@@ -62,23 +63,47 @@ pub enum Icon {
     Image,
     Type,
     Width,
+    GradientTransform,
     Sound,
     SoundOff,
     Camera,
     Magnet,
     Bone,
+    Bind,
+    Warp,
     EditMultiple,
+    Layer,
+    InsertFrame,
+    InsertKeyframe,
+    InsertBlankKeyframe,
+    ClipStage,
+    Plus,
+    Trash,
+    Copy,
+    Ellipsis,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 54] = [
+    pub const ALL: [Icon; 67] = [
+        Icon::Warp,
+        Icon::Plus,
+        Icon::Trash,
+        Icon::Copy,
+        Icon::Ellipsis,
+        Icon::ClipStage,
+        Icon::InsertFrame,
+        Icon::InsertKeyframe,
+        Icon::InsertBlankKeyframe,
+        Icon::Bind,
+        Icon::Layer,
         Icon::EditMultiple,
         Icon::Bone,
         Icon::Magnet,
         Icon::SoundOff,
         Icon::Camera,
         Icon::Width,
+        Icon::GradientTransform,
         Icon::Sound,
         Icon::Guide,
         Icon::Image,
@@ -103,6 +128,7 @@ impl Icon {
         Icon::Pen,
         Icon::Pencil,
         Icon::Brush,
+        Icon::PaintBrush,
         Icon::Eraser,
         Icon::Eyedropper,
         Icon::Rect,
@@ -132,7 +158,7 @@ impl Icon {
     /// Drawn filled as well as outlined: the Selection arrow is solid, the Subselection arrow
     /// hollow, the way animators tell the two apart at a glance.
     fn solid(self) -> bool {
-        matches!(self, Icon::Select)
+        matches!(self, Icon::Select | Icon::InsertKeyframe | Icon::Ellipsis)
     }
 
     /// Lucide icon file and whether it is drawn mirrored.
@@ -144,10 +170,15 @@ impl Icon {
             Icon::Transform => ("scaling", false),
             // A stroke swelling and tapering, with a width point across it (AniCraft original).
             Icon::Width => ("anicraft-width", false),
+            // A box of gradient bands with a turning knob on its corner (AniCraft original).
+            Icon::GradientTransform => ("anicraft-gradient-transform", false),
             Icon::Pen => ("pen-tool", false),
             Icon::Pencil => ("pencil", false),
             // A round brush: handle, ferrule and a painted tip (AniCraft original, on Lucide's grid).
             Icon::Brush => ("anicraft-brush", false),
+            // The brush over a swelling and thinning line: the Paint Brush draws strokes
+            // (AniCraft original, on Lucide's grid).
+            Icon::PaintBrush => ("anicraft-paint-brush", false),
             // A block eraser on its edge, its sleeve marked off (AniCraft original).
             Icon::Eraser => ("anicraft-eraser", false),
             // A dropper: bulb, collar, glass tube and a drop (AniCraft original).
@@ -202,10 +233,30 @@ impl Icon {
             Icon::Magnet => ("anicraft-magnet", false),
             // A bone: a wedge from its joint to its end (AniCraft original, on Lucide's grid).
             Icon::Bone => ("anicraft-bone", false),
+            // A bone whose end is tied to two points (AniCraft original, on Lucide's grid): Bind.
+            Icon::Bind => ("anicraft-bind", false),
+            // A mesh bent around a pin (AniCraft original, on Lucide's grid): Asset Warp.
+            Icon::Warp => ("anicraft-warp", false),
             // Frames stacked one behind the other, all edited at once (AniCraft original, on
             // Lucide's grid): Edit Multiple Frames.
             Icon::EditMultiple => ("anicraft-edit-multiple", false),
             Icon::FolderOpen => ("folder-open", false),
+            // A layer: a row with a keyframe and its span (AniCraft original, on Lucide's grid).
+            Icon::Layer => ("anicraft-layer", false),
+            // Insert Frame / Keyframe / Blank Keyframe: the timeline's own marks (a frame cell, a
+            // filled keyframe dot, a hollow blank-keyframe dot), each with a plus (AniCraft
+            // originals, on Lucide's grid).
+            Icon::InsertFrame => ("anicraft-insert-frame", false),
+            Icon::InsertKeyframe => ("anicraft-insert-keyframe", false),
+            Icon::InsertBlankKeyframe => ("anicraft-insert-blank-keyframe", false),
+            // The stage with crop marks at its corners (AniCraft original, on Lucide's grid):
+            // Clip Content Outside the Stage.
+            Icon::ClipStage => ("anicraft-clip-stage", false),
+            // New layer, Delete, Duplicate and a panel's options menu.
+            Icon::Plus => ("plus", false),
+            Icon::Trash => ("trash", false),
+            Icon::Copy => ("copy", false),
+            Icon::Ellipsis => ("ellipsis", false),
         }
     }
 }
@@ -254,15 +305,28 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-distribute-v", include_str!("../assets/icons/anicraft-distribute-v.svg")),
     ("anicraft-mask", include_str!("../assets/icons/anicraft-mask.svg")),
     ("anicraft-width", include_str!("../assets/icons/anicraft-width.svg")),
+    ("anicraft-gradient-transform", include_str!("../assets/icons/anicraft-gradient-transform.svg")),
     ("anicraft-brush", include_str!("../assets/icons/anicraft-brush.svg")),
     ("anicraft-eraser", include_str!("../assets/icons/anicraft-eraser.svg")),
+    ("anicraft-paint-brush", include_str!("../assets/icons/anicraft-paint-brush.svg")),
     ("anicraft-eyedropper", include_str!("../assets/icons/anicraft-eyedropper.svg")),
     ("anicraft-masked", include_str!("../assets/icons/anicraft-masked.svg")),
+    ("anicraft-layer", include_str!("../assets/icons/anicraft-layer.svg")),
+    ("anicraft-insert-frame", include_str!("../assets/icons/anicraft-insert-frame.svg")),
+    ("anicraft-insert-keyframe", include_str!("../assets/icons/anicraft-insert-keyframe.svg")),
+    ("anicraft-insert-blank-keyframe", include_str!("../assets/icons/anicraft-insert-blank-keyframe.svg")),
+    ("anicraft-clip-stage", include_str!("../assets/icons/anicraft-clip-stage.svg")),
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("anicraft-bone", include_str!("../assets/icons/anicraft-bone.svg")),
+    ("anicraft-bind", include_str!("../assets/icons/anicraft-bind.svg")),
+    ("anicraft-warp", include_str!("../assets/icons/anicraft-warp.svg")),
     ("anicraft-edit-multiple", include_str!("../assets/icons/anicraft-edit-multiple.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
+    ("plus", include_str!("../assets/icons/plus.svg")),
+    ("trash", include_str!("../assets/icons/trash.svg")),
+    ("copy", include_str!("../assets/icons/copy.svg")),
+    ("ellipsis", include_str!("../assets/icons/ellipsis.svg")),
 ];
 
 /// The value of attribute `name` in an element's tag text.

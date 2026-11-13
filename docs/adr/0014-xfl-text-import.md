@@ -69,3 +69,9 @@ AniCraft's block has one style, but a field may have runs with different styles.
   `<characters>`; indentation between elements is dropped so memory doesn't grow with it.
 * Not yet: per-character styles, kerning and rendering-mode settings, links on text, text
   along a path, input and dynamic fields with scripting (M6), embedded fonts in the document.
+
+## Note (2026-11-11): fields stay fields
+
+Point 4 is superseded by ADR 0066: `DOMDynamicText` and `DOMInputText` now import as one dynamic
+or input field each, with their instance name, box, line type, border, selectability, maximum
+length and (kept, not run) variable name, and run in Test Movie and the HTML export.

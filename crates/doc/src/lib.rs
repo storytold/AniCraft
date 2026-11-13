@@ -7,13 +7,18 @@
 pub use anicraft_audio as audio;
 pub use anicraft_actions as actions;
 
+pub mod aids;
 pub mod armature;
+pub mod spring;
+pub mod skin;
+pub mod warp;
 mod bitmap;
 mod color_effect;
 pub mod camera;
 mod filter;
 mod easing;
 mod eval;
+pub mod field;
 mod hints;
 pub mod nine_slice;
 pub mod library;
@@ -22,12 +27,15 @@ pub mod path_table;
 pub mod width;
 pub mod stroke_style;
 pub mod player;
+pub mod publish;
 pub mod sample;
+pub mod templates;
 pub mod sound;
+pub mod swatch;
 
 pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
-pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_encode, decode_png, image_to_png};
-pub use easing::Easing;
+pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_decode, base64_encode, decode_png, image_to_png};
+pub use easing::{CustomEase, EaseDir, EaseFamily, EasePoint, Easing, Handle, MAX_EASE_NAME, MAX_EASE_POINTS, MAX_EASE_Y, MAX_SAVED_EASES, SavedEase, ease_name};
 pub use color_effect::{ADVANCED_ADD, ADVANCED_MUL, ColorEffect, ColorStyle, ColorTransform};
 pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
 pub use library::{FolderId, LibraryEntry, LibraryFolder, LibraryItem, LibraryTree, NameError};
@@ -35,10 +43,12 @@ pub use motion::{MotionTween, OnPath, PROPERTIES, Pin, PinError, Property, Prope
 pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
-pub use camera::Camera;
+pub use camera::{Camera, DepthKey};
+pub use swatch::{MAX_SWATCHES, Swatch, SwatchPaint};
+pub use aids::{Aids, GUIDE_REACH, Grid, Guide, GuideAxis, MAX_GUIDES};
 pub use nine_slice::symbol_box;
 pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
-pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, evaluate_timeline_at, guide_walk, instance_start};
+pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_shown, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, evaluate_timeline_at, guide_walk, instance_start};
 pub use actions::{Action, ButtonEvent, EventHandler, FrameScript, Language, PluginScript, SourceScript};
 
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
@@ -102,12 +112,103 @@ pub struct GradientStop {
     pub color: Rgba,
 }
 
+/// What a gradient shows past its ends (Animate's Overflow / Flow, SVG's `spreadMethod`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Spread {
+    /// The end colours carry on (Animate's Extend, SVG's `pad`).
+    #[default]
+    Pad,
+    /// The ramp mirrors back and forth.
+    Reflect,
+    /// The ramp starts again.
+    Repeat,
+}
+
+impl Spread {
+    pub const ALL: [Spread; 3] = [Spread::Pad, Spread::Reflect, Spread::Repeat];
+    pub fn is_pad(&self) -> bool {
+        *self == Spread::Pad
+    }
+    /// The key commands and files use (`extend` is Animate's name for `pad`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Spread::Pad => "extend",
+            Spread::Reflect => "reflect",
+            Spread::Repeat => "repeat",
+        }
+    }
+    pub fn from_key(s: &str) -> Option<Spread> {
+        match s {
+            "extend" | "pad" => Some(Spread::Pad),
+            "reflect" => Some(Spread::Reflect),
+            "repeat" => Some(Spread::Repeat),
+            _ => None,
+        }
+    }
+    /// Gradient position `t` (0 at the start, 1 at the end) → where on the ramp, in `0..=1`.
+    /// Non-finite positions read the start.
+    pub fn apply(self, t: f32) -> f32 {
+        if !t.is_finite() {
+            return 0.0;
+        }
+        match self {
+            Spread::Pad => t.clamp(0.0, 1.0),
+            Spread::Repeat => {
+                let f = t.rem_euclid(1.0);
+                // `rem_euclid` can round up to exactly 1 for tiny negative values.
+                if f >= 1.0 { 0.0 } else { f }
+            }
+            Spread::Reflect => {
+                let m = t.rem_euclid(2.0);
+                (if m > 1.0 { 2.0 - m } else { m }).clamp(0.0, 1.0)
+            }
+        }
+    }
+}
+
+/// Most stops a fill gradient may have (Animate allows 15).
+pub const MAX_GRADIENT_STOPS: usize = 15;
+/// How far the focal point may sit from the centre, as a share of the radius (a focal point on
+/// the ring itself is undefined; Animate's focal ratio runs to ±1 too).
+pub const MAX_FOCAL: f32 = 0.98;
+
 /// How a region is painted. Gradient geometry is in the element's local space.
+///
+/// Gradients may carry options that older files don't have (ADR 0074): what shows past the ends
+/// (`spread`), interpolation in linear light (`linear_rgb`), and for a radial gradient a focal
+/// point and a `matrix` that turns its circle into any ellipse. Each is written only when set,
+/// so a plain gradient is stored as before.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Paint {
     Solid(Rgba),
-    Linear { start: Vec2, end: Vec2, stops: Vec<GradientStop> },
-    Radial { center: Vec2, radius: f32, stops: Vec<GradientStop> },
+    Linear {
+        start: Vec2,
+        end: Vec2,
+        stops: Vec<GradientStop>,
+        #[serde(default, skip_serializing_if = "Spread::is_pad")]
+        spread: Spread,
+        /// Mix the stops in linear light (Animate's "Linear RGB"), not in sRGB.
+        #[serde(default, skip_serializing_if = "is_false")]
+        linear_rgb: bool,
+    },
+    /// The circle of `radius` round `center`, carried by `matrix` (an ellipse at any angle).
+    Radial {
+        center: Vec2,
+        radius: f32,
+        stops: Vec<GradientStop>,
+        #[serde(default, skip_serializing_if = "Spread::is_pad")]
+        spread: Spread,
+        #[serde(default, skip_serializing_if = "is_false")]
+        linear_rgb: bool,
+        /// Where the ramp starts, along the gradient's own x axis from the centre, as a share
+        /// of the radius in `-MAX_FOCAL..=MAX_FOCAL` (Animate's focal point ratio).
+        #[serde(default, skip_serializing_if = "is_zero")]
+        focal: f32,
+        /// Gradient space → shape space (identity: the plain circle).
+        #[serde(default, skip_serializing_if = "is_identity")]
+        matrix: Affine,
+    },
     /// A bitmap, its pixel (x, y) at local `matrix · (x, y)`; `repeat` tiles it, otherwise it
     /// shows once (an imported image is a rectangle of exactly its size, with no matrix).
     Bitmap {
@@ -124,7 +225,19 @@ fn is_identity(m: &Affine) -> bool {
     *m == Affine::IDENTITY
 }
 
+/// The canonical box a fill's frame maps: `-1..=1` on both axes (Animate's gradient square).
+pub const FRAME_BOX: Rect = Rect { min: Vec2 { x: -1.0, y: -1.0 }, max: Vec2 { x: 1.0, y: 1.0 } };
+
 impl Paint {
+    /// A linear gradient from `start` to `end`, with no options.
+    pub fn linear(start: Vec2, end: Vec2, stops: Vec<GradientStop>) -> Paint {
+        Paint::Linear { start, end, stops, spread: Spread::Pad, linear_rgb: false }
+    }
+    /// A radial gradient: the circle of `radius` round `center`, with no options.
+    pub fn radial(center: Vec2, radius: f32, stops: Vec<GradientStop>) -> Paint {
+        Paint::Radial { center, radius, stops, spread: Spread::Pad, linear_rgb: false, focal: 0.0, matrix: Affine::IDENTITY }
+    }
+
     /// A representative colour (first stop for gradients) for swatches and the properties panel.
     pub fn primary_color(&self) -> Rgba {
         match self {
@@ -134,15 +247,116 @@ impl Paint {
         }
     }
 
+    /// A gradient's colour stops.
+    pub fn stops(&self) -> Option<&[GradientStop]> {
+        match self {
+            Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => Some(stops),
+            _ => None,
+        }
+    }
+    pub fn stops_mut(&mut self) -> Option<&mut Vec<GradientStop>> {
+        match self {
+            Paint::Linear { stops, .. } | Paint::Radial { stops, .. } => Some(stops),
+            _ => None,
+        }
+    }
+    pub fn is_gradient(&self) -> bool {
+        matches!(self, Paint::Linear { .. } | Paint::Radial { .. })
+    }
+
     /// The paint carried by `m` (its geometry moved from one space to another), so a shape in
-    /// the new space shows it where it was: gradient ends and centre are mapped, a radial
-    /// gradient's radius scales by the mean scale, a bitmap's matrix is composed.
+    /// the new space shows it where it was: gradient ends are mapped, a radial gradient's and a
+    /// bitmap's matrix is composed (exact under any transform).
     pub fn transformed(&self, m: &Affine) -> Paint {
         match self {
             Paint::Solid(_) => self.clone(),
-            Paint::Linear { start, end, stops } => Paint::Linear { start: m.apply(*start), end: m.apply(*end), stops: stops.clone() },
-            Paint::Radial { center, radius, stops } => Paint::Radial { center: m.apply(*center), radius: radius * m.mean_scale(), stops: stops.clone() },
+            Paint::Linear { start, end, stops, spread, linear_rgb } => Paint::Linear { start: m.apply(*start), end: m.apply(*end), stops: stops.clone(), spread: *spread, linear_rgb: *linear_rgb },
+            Paint::Radial { .. } => match self.frame(None) {
+                Some(f) => self.with_frame(&m.mul(&f), None),
+                None => self.clone(),
+            },
             Paint::Bitmap { bitmap, repeat, matrix } => Paint::Bitmap { bitmap: *bitmap, repeat: *repeat, matrix: m.mul(matrix) },
+        }
+    }
+
+    /// The fill's frame: the map from [`FRAME_BOX`] to the paint's space, which the Gradient
+    /// Transform tool edits (ADR 0074).
+    ///
+    /// * Linear: x from −1 at the start to 1 at the end, y square to it at the same scale.
+    /// * Radial: the unit circle onto the gradient's ring (x is its own axis, where the focal
+    ///   point sits).
+    /// * Bitmap: the box onto one copy of the image (`image` is its size in pixels).
+    ///
+    /// `None` for solid colours and a bitmap of unknown size.
+    pub fn frame(&self, image: Option<(f32, f32)>) -> Option<Affine> {
+        match self {
+            Paint::Solid(_) => None,
+            Paint::Linear { start, end, .. } => {
+                let mid = start.lerp(*end, 0.5);
+                let h = (*end - *start) * 0.5;
+                Some(Affine { m: [h.x, h.y, -h.y, h.x, mid.x, mid.y] })
+            }
+            Paint::Radial { center, radius, matrix, .. } => Some(matrix.mul(&Affine::translate(center.x, center.y)).mul(&Affine::scale(*radius, *radius))),
+            Paint::Bitmap { matrix, .. } => {
+                let (w, h) = image?;
+                Some(matrix.mul(&Affine::translate(w * 0.5, h * 0.5)).mul(&Affine::scale(w * 0.5, h * 0.5)))
+            }
+        }
+    }
+
+    /// This paint with its frame set to `f` (see [`Paint::frame`]); the stops and options stay.
+    /// A linear gradient keeps only the frame's x axis. A radial gradient is stored as a
+    /// circle when `f` is one, else with a matrix about its centre. Solid colours (and bitmaps
+    /// without a size) are returned unchanged.
+    pub fn with_frame(&self, f: &Affine, image: Option<(f32, f32)>) -> Paint {
+        let finite = f.m.iter().all(|v| v.is_finite());
+        if !finite {
+            return self.clone();
+        }
+        match self {
+            Paint::Solid(_) => self.clone(),
+            Paint::Linear { stops, spread, linear_rgb, .. } => Paint::Linear { start: f.apply(Vec2::new(-1.0, 0.0)), end: f.apply(Vec2::new(1.0, 0.0)), stops: stops.clone(), spread: *spread, linear_rgb: *linear_rgb },
+            Paint::Radial { stops, spread, linear_rgb, focal, .. } => {
+                let center = f.apply(Vec2::ZERO);
+                let [a, b, c, d, ..] = f.m;
+                let radius = Vec2::new(a, b).length();
+                let (matrix, radius) = if radius > 1e-9 {
+                    // The linear part with the x axis's length taken out, about the centre.
+                    let l = Affine { m: [a / radius, b / radius, c / radius, d / radius, 0.0, 0.0] };
+                    let plain = (l.m[0] - 1.0).abs() < 1e-6 && l.m[1].abs() < 1e-6 && l.m[2].abs() < 1e-6 && (l.m[3] - 1.0).abs() < 1e-6;
+                    if plain { (Affine::IDENTITY, radius) } else { (Affine::translate(center.x, center.y).mul(&l).mul(&Affine::translate(-center.x, -center.y)), radius) }
+                } else {
+                    (Affine::IDENTITY, 0.0)
+                };
+                Paint::Radial { center, radius, stops: stops.clone(), spread: *spread, linear_rgb: *linear_rgb, focal: *focal, matrix }
+            }
+            Paint::Bitmap { bitmap, repeat, .. } => match image {
+                Some((w, h)) if w > 0.0 && h > 0.0 => Paint::Bitmap { bitmap: *bitmap, repeat: *repeat, matrix: f.mul(&Affine::scale(2.0 / w, 2.0 / h)).mul(&Affine::translate(-w * 0.5, -h * 0.5)) },
+                _ => self.clone(),
+            },
+        }
+    }
+
+    /// This gradient or bitmap placed on `bounds` (shape space), as Animate pours an unlocked
+    /// fill: a linear gradient across the width, left to right; a radial one centred, its
+    /// ring touching the longer side; a bitmap tiled from the top-left at its own size.
+    /// The stops and options stay.
+    pub fn fitted(&self, bounds: &Rect) -> Paint {
+        if bounds.is_empty() || !(bounds.min.is_finite() && bounds.max.is_finite()) {
+            return self.clone();
+        }
+        let c = bounds.center();
+        match self {
+            Paint::Solid(_) => self.clone(),
+            Paint::Linear { .. } => {
+                let hw = (bounds.width() * 0.5).max(0.5);
+                self.with_frame(&Affine { m: [hw, 0.0, 0.0, hw, c.x, c.y] }, None)
+            }
+            Paint::Radial { .. } => {
+                let r = (bounds.width().max(bounds.height()) * 0.5).max(0.5);
+                self.with_frame(&Affine { m: [r, 0.0, 0.0, r, c.x, c.y] }, None)
+            }
+            Paint::Bitmap { bitmap, .. } => Paint::Bitmap { bitmap: *bitmap, repeat: true, matrix: Affine::translate(bounds.min.x, bounds.min.y) },
         }
     }
 
@@ -154,13 +368,24 @@ impl Paint {
         };
         match (self, o) {
             (Paint::Solid(a), Paint::Solid(b)) => Paint::Solid(a.lerp(*b, t)),
-            (Paint::Linear { start: s0, end: e0, stops: a }, Paint::Linear { start: s1, end: e1, stops: b }) => match lerp_stops(a, b) {
-                Some(stops) => Paint::Linear { start: s0.lerp(*s1, t), end: e0.lerp(*e1, t), stops },
+            (Paint::Linear { start: s0, end: e0, stops: a, spread, linear_rgb }, Paint::Linear { start: s1, end: e1, stops: b, .. }) => match lerp_stops(a, b) {
+                Some(stops) => Paint::Linear { start: s0.lerp(*s1, t), end: e0.lerp(*e1, t), stops, spread: *spread, linear_rgb: *linear_rgb },
                 None => self.clone(),
             },
-            (Paint::Radial { center: c0, radius: r0, stops: a }, Paint::Radial { center: c1, radius: r1, stops: b }) => match lerp_stops(a, b) {
-                Some(stops) => Paint::Radial { center: c0.lerp(*c1, t), radius: anicraft_geom::lerp(*r0, *r1, t), stops },
-                None => self.clone(),
+            (Paint::Radial { stops: a, .. }, Paint::Radial { stops: b, focal: f1, .. }) => match (lerp_stops(a, b), self.frame(None), o.frame(None)) {
+                (Some(stops), Some(fa), Some(fb)) => {
+                    let mut m = [0.0; 6];
+                    for (k, v) in m.iter_mut().enumerate() {
+                        *v = anicraft_geom::lerp(fa.m[k], fb.m[k], t);
+                    }
+                    let mut p = self.with_frame(&Affine { m }, None);
+                    if let Paint::Radial { stops: s, focal, .. } = &mut p {
+                        *s = stops;
+                        *focal = anicraft_geom::lerp(*focal, *f1, t);
+                    }
+                    p
+                }
+                _ => self.clone(),
             },
             _ => self.clone(),
         }
@@ -261,17 +486,30 @@ pub struct Shape {
     /// Otherwise a drawing object, which keeps to itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub merge: bool,
+    /// Asset Warp (ADR 0079): the mesh and pins that bend the outline (and a bitmap fill). The
+    /// path is the bent outline; the warp keeps the outline as drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp: Option<Arc<warp::Warp>>,
 }
 
 impl PartialEq for Shape {
     fn eq(&self, o: &Shape) -> bool {
-        arc_eq(&self.path, &o.path) && self.fill == o.fill && self.stroke == o.stroke && self.fill_rule == o.fill_rule && self.merge == o.merge
+        arc_eq(&self.path, &o.path)
+            && self.fill == o.fill
+            && self.stroke == o.stroke
+            && self.fill_rule == o.fill_rule
+            && self.merge == o.merge
+            && match (&self.warp, &o.warp) {
+                (Some(a), Some(b)) => arc_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
 impl Shape {
     pub fn filled(path: Path, fill: Paint) -> Shape {
-        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false }
+        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false, warp: None }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
         self.stroke = Some(Stroke::new(color, width));
@@ -338,6 +576,71 @@ pub enum ElementKind {
     /// The camera, on a camera layer (ADR 0027): the element's transform is the camera on the
     /// stage and its tint colours the view. It draws nothing itself.
     Camera,
+    /// A group (Modify › Group, ADR 0073): elements kept together without a Library symbol. Its
+    /// members are a one-layer, one-frame timeline, so double-clicking it edits them in place
+    /// with every tool, and raw shapes inside merge only with each other. The group's transform
+    /// and colour effect apply to its members; it is always drawn at its members' frame 0.
+    Group {
+        #[serde(default)]
+        members: Timeline,
+    },
+}
+
+impl ElementKind {
+    /// A group of `elements` (ADR 0073), on one layer with id `layer`.
+    pub fn group(layer: LayerId, elements: Vec<Arc<Element>>) -> ElementKind {
+        let mut l = Layer::new(layer, "Layer 1");
+        if let Some(k) = l.keyframe_mut(0) {
+            k.elements = elements;
+        }
+        ElementKind::Group { members: Timeline { layers: vec![Arc::new(l)] } }
+    }
+
+    /// A group's members as they are drawn: every layer's elements at frame 0, bottom layer
+    /// first (back to front). Empty for anything else.
+    pub fn group_members(&self) -> Vec<Arc<Element>> {
+        match self {
+            ElementKind::Group { members } => members.layers.iter().rev().filter_map(|l| l.keyframe_at(0)).flat_map(|k| k.elements.iter().cloned()).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Groups nested deeper than this are not drawn, walked or kept (guards hostile files).
+pub const MAX_GROUP_DEPTH: usize = 32;
+
+/// `elements` with every group replaced by its members, however deep (ADR 0073), in drawing
+/// order, each placed and coloured as the group shows it (the group's transform and colour
+/// effect composed into it); borrowed when there is no group. For walkers that look for what is
+/// placed (symbol instances, sounds, the player's instances): members keep their own ids.
+pub fn expand_groups(elements: &[Arc<Element>]) -> std::borrow::Cow<'_, [Arc<Element>]> {
+    if !elements.iter().any(|e| matches!(e.kind, ElementKind::Group { .. })) {
+        return std::borrow::Cow::Borrowed(elements);
+    }
+    fn walk(els: &[Arc<Element>], at: Option<(&Affine, &ColorEffect)>, depth: usize, out: &mut Vec<Arc<Element>>) {
+        for e in els {
+            let placed = |e: &Arc<Element>| match at {
+                None => e.clone(),
+                Some((xf, fx)) => {
+                    let mut c = (**e).clone();
+                    c.transform = xf.mul(&e.transform);
+                    c.color = fx.nested(&e.color);
+                    Arc::new(c)
+                }
+            };
+            match &e.kind {
+                ElementKind::Group { .. } if depth < MAX_GROUP_DEPTH => {
+                    let g = placed(e);
+                    walk(&e.kind.group_members(), Some((&g.transform, &g.color)), depth + 1, out);
+                }
+                ElementKind::Group { .. } => {}
+                _ => out.push(placed(e)),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(elements, None, 0, &mut out);
+    std::borrow::Cow::Owned(out)
 }
 
 /// How an instance's pixels combine with what is below it, as Animate's Blending menu. Every
@@ -465,6 +768,170 @@ pub struct TextBlock {
     /// The layout box.
     pub box_width: f32,
     pub box_height: f32,
+    /// A dynamic or input text field (ADR 0066); `None`: static text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<TextField>,
+    /// Text on a path (ADR 0070): its baseline follows this path instead of running in lines;
+    /// `outline` holds the glyphs set along it. Static text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_path: Option<TextPath>,
+}
+
+/// The path a text block follows (ADR 0070), and where along it the text sits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextPath {
+    /// The baseline's path, in the block's own space (its first subpath counts).
+    pub path: Path,
+    /// Where the text is anchored along the path (pixels from its start): the block's
+    /// alignment says how (left: starts there, centre: centred on it, right: ends there).
+    #[serde(default)]
+    pub offset: f32,
+    /// The text runs along the path backwards, on its other side.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip: bool,
+}
+
+/// Longest stretch along a path a text's offset may be (pixels either way).
+pub const MAX_PATH_OFFSET: f32 = 1_000_000.0;
+
+impl TextBlock {
+    /// What kind of text it is: static, dynamic or input.
+    pub fn kind(&self) -> TextKind {
+        self.field.as_ref().map_or(TextKind::Static, |f| f.kind)
+    }
+}
+
+/// Animate's three text types (ADR 0066).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextKind {
+    /// Drawn as laid out; scripts can't reach it.
+    #[default]
+    Static,
+    /// Scripts set and read its text (`field.text`) while the movie plays.
+    Dynamic,
+    /// The viewer types into it while the movie plays; scripts read what was typed.
+    Input,
+}
+
+impl TextKind {
+    pub const ALL: [TextKind; 3] = [TextKind::Static, TextKind::Dynamic, TextKind::Input];
+    pub fn key(self) -> &'static str {
+        match self {
+            TextKind::Static => "static",
+            TextKind::Dynamic => "dynamic",
+            TextKind::Input => "input",
+        }
+    }
+    pub fn from_key(s: &str) -> Option<TextKind> {
+        TextKind::ALL.into_iter().find(|k| k.key() == s.trim().to_ascii_lowercase())
+    }
+}
+
+/// A field's line type, as Animate's Properties name them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineType {
+    /// One line: Enter types nothing, the text scrolls sideways to keep the caret in view.
+    #[default]
+    Single,
+    /// Lines wrap at the field's width.
+    Multiline,
+    /// Lines break only where the text does.
+    MultilineNoWrap,
+    /// One line, drawn as `*` (input fields).
+    Password,
+}
+
+impl LineType {
+    pub const ALL: [LineType; 4] = [LineType::Single, LineType::Multiline, LineType::MultilineNoWrap, LineType::Password];
+    pub fn key(self) -> &'static str {
+        match self {
+            LineType::Single => "single",
+            LineType::Multiline => "multiline",
+            LineType::MultilineNoWrap => "multiline_no_wrap",
+            LineType::Password => "password",
+        }
+    }
+    pub fn from_key(s: &str) -> Option<LineType> {
+        let s = s.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        LineType::ALL.into_iter().find(|k| k.key() == s)
+    }
+    /// More than one line (Enter starts a new one).
+    pub fn multiline(self) -> bool {
+        matches!(self, LineType::Multiline | LineType::MultilineNoWrap)
+    }
+}
+
+/// The inset of text in a field's box, on every side, in pixels (as Animate's fields have).
+pub const FIELD_GUTTER: f32 = 2.0;
+/// Longest text a field holds (characters).
+pub const MAX_FIELD_CHARS: usize = 16_384;
+/// Longest instance or variable name (characters).
+pub const MAX_FIELD_NAME: usize = 256;
+
+/// A dynamic or input text field (ADR 0066): how it is drawn and how the viewer may use it. The
+/// element's name is its instance name; the block's text is what it shows before a script or the
+/// viewer changes it. Its box is the block's `box_width` × `box_height` (fixed, not the text's
+/// size), and its outline is the shown text laid out [`FIELD_GUTTER`] inside the box, so
+/// everything that draws or measures text works on fields unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextField {
+    pub kind: TextKind,
+    #[serde(default)]
+    pub lines: LineType,
+    /// The viewer can select its text (dynamic fields; input fields always can).
+    #[serde(default = "yes")]
+    pub selectable: bool,
+    /// A line around the box, and a fill behind the text.
+    #[serde(default)]
+    pub border: bool,
+    #[serde(default = "black")]
+    pub border_color: Rgba,
+    #[serde(default)]
+    pub background: bool,
+    #[serde(default = "white")]
+    pub background_color: Rgba,
+    /// Most characters the viewer may type (0: no limit).
+    #[serde(default)]
+    pub max_chars: u32,
+    /// The ActionScript 1/2 variable the field shows (kept from Animate documents, not run).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub variable: String,
+}
+
+fn black() -> Rgba {
+    Rgba::BLACK
+}
+fn white() -> Rgba {
+    Rgba::WHITE
+}
+
+impl TextField {
+    /// A single-line field of `kind`.
+    pub fn new(kind: TextKind) -> TextField {
+        TextField { kind, lines: LineType::Single, selectable: true, border: false, border_color: Rgba::BLACK, background: false, background_color: Rgba::WHITE, max_chars: 0, variable: String::new() }
+    }
+
+    /// The width text wraps at in a box `box_width` wide, if its lines wrap.
+    pub fn wrap_width(&self, box_width: f32) -> Option<f32> {
+        (self.lines == LineType::Multiline).then(|| (box_width - 2.0 * FIELD_GUTTER).max(1.0))
+    }
+
+    /// What a field shows for `text`: `*` for each character of a password.
+    pub fn shown(&self, text: &str) -> String {
+        if self.lines == LineType::Password && self.kind == TextKind::Input { text.chars().map(|_| '*').collect() } else { text.to_string() }
+    }
+
+    /// The viewer can focus it: an input field, or a selectable dynamic one.
+    pub fn focusable(&self) -> bool {
+        self.kind == TextKind::Input || (self.kind == TextKind::Dynamic && self.selectable)
+    }
+
+    /// Values in range: names cut to length, at most [`MAX_FIELD_CHARS`] typed.
+    pub fn sanitized(&self) -> TextField {
+        TextField { max_chars: self.max_chars.min(MAX_FIELD_CHARS as u32), variable: self.variable.chars().take(MAX_FIELD_NAME).collect(), ..self.clone() }
+    }
 }
 
 /// An instance on a keyframe.
@@ -502,6 +969,13 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
         }
         ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),
         ElementKind::Camera => Rect::EMPTY,
+        ElementKind::Group { .. } => {
+            let mut r = Rect::EMPTY;
+            for child in el.kind.group_members() {
+                r = r.union(&element_bounds(doc, &child, &xf.mul(&child.transform), depth + 1));
+            }
+            r
+        }
         ElementKind::Symbol { symbol, .. } => {
             let Some(sym) = doc.symbol(*symbol) else { return Rect::EMPTY };
             let mut r = Rect::EMPTY;
@@ -528,9 +1002,56 @@ pub enum TweenKind {
     Shape,
 }
 
+/// The property groups a classic tween may ease separately (ADR 0081), as Animate's custom
+/// ease offers them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EaseGroup {
+    /// Where the object is (and how far along a motion guide).
+    Position,
+    /// Its rotation and skew.
+    Rotation,
+    Scale,
+    /// Its colour effect.
+    Color,
+    Filters,
+}
+
+impl EaseGroup {
+    pub const ALL: [EaseGroup; 5] = [EaseGroup::Position, EaseGroup::Rotation, EaseGroup::Scale, EaseGroup::Color, EaseGroup::Filters];
+
+    /// The name commands use (`position`, `rotation`, `scale`, `color`, `filters`).
+    pub fn key(self) -> &'static str {
+        match self {
+            EaseGroup::Position => "position",
+            EaseGroup::Rotation => "rotation",
+            EaseGroup::Scale => "scale",
+            EaseGroup::Color => "color",
+            EaseGroup::Filters => "filters",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<EaseGroup> {
+        let k = k.trim().to_ascii_lowercase();
+        let k = if k == "colour" { "color" } else { k.as_str() };
+        EaseGroup::ALL.into_iter().find(|g| g.key() == k)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EaseGroup::Position => "Position",
+            EaseGroup::Rotation => "Rotation",
+            EaseGroup::Scale => "Scale",
+            EaseGroup::Color => "Colour",
+            EaseGroup::Filters => "Filters",
+        }
+    }
+}
+
 /// A tween from a keyframe to the next one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tween {
+    /// The ease of everything, and of each property group without its own.
     #[serde(default)]
     pub easing: Easing,
     #[serde(default, skip_serializing_if = "is_classic")]
@@ -538,6 +1059,37 @@ pub struct Tween {
     /// On a guided layer: turn with the motion guide as it bends.
     #[serde(default, skip_serializing_if = "is_false")]
     pub orient: bool,
+    /// Property groups eased their own way (classic tweens; ADR 0081). Empty: one ease for all
+    /// properties.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<(EaseGroup, Easing)>,
+}
+
+impl Tween {
+    /// A tween of `kind` eased by `easing`.
+    pub fn new(easing: Easing, kind: TweenKind) -> Tween {
+        Tween { easing, kind, ..Tween::default() }
+    }
+
+    /// The ease of group `g`: its own, else the tween's.
+    pub fn ease(&self, g: EaseGroup) -> &Easing {
+        self.groups.iter().find(|(x, _)| *x == g).map_or(&self.easing, |(_, e)| e)
+    }
+
+    /// Whether group `g` has its own ease.
+    pub fn has_own(&self, g: EaseGroup) -> bool {
+        self.groups.iter().any(|(x, _)| *x == g)
+    }
+
+    /// Gives group `g` its own ease, or (with `None`) the tween's again. Groups are kept in
+    /// their fixed order, once each.
+    pub fn set_ease(&mut self, g: EaseGroup, e: Option<Easing>) {
+        self.groups.retain(|(x, _)| *x != g);
+        if let Some(e) = e {
+            self.groups.push((g, e));
+        }
+        self.groups.sort_by_key(|(x, _)| EaseGroup::ALL.iter().position(|y| y == x));
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -645,16 +1197,34 @@ pub struct Layer {
     pub visible: bool,
     #[serde(default)]
     pub locked: bool,
+    /// View as Outlines (ADR 0061): the stage draws the layer's artwork as hairlines in
+    /// [`Layer::color`]. Never in the movie or an export.
     #[serde(default)]
     pub outline: bool,
     #[serde(default = "default_layer_color")]
     pub color: Rgba,
+    /// Onion skin draws this layer's frames around the playhead (ADR 0061); off, only its
+    /// playhead frame shows.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub onion: bool,
+    /// Row height on the timeline as a multiple of a normal row (ADR 0061): 1, 2 or 3 (100,
+    /// 200 or 300 %), as Animate's Layer Properties offer. Read through [`Layer::height`].
+    #[serde(default = "one", skip_serializing_if = "is_one", rename = "height")]
+    pub height_rows: u8,
     #[serde(default)]
     pub keyframes: Vec<Arc<Keyframe>>,
     /// Layer depth (ADR 0027), pixels behind the stage (negative: in front): the camera's pans
     /// move a deeper layer less (parallax). Not the nesting depth ([`Timeline::depth`]).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub depth: f32,
+    /// Depth over time (ADR 0082): with keys, the depth at a frame is theirs
+    /// ([`Layer::depth_at`]) and `depth` plays no part. Sorted by frame, one per frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depth_keys: Vec<camera::DepthKey>,
+    /// Attached to the camera (ADR 0082): the camera's moves leave the layer where it is on
+    /// screen (titles, HUDs); its coordinates are the output's.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub attached: bool,
     /// Volume of the sounds on this layer (and in the symbols on it), `0..=1` (ADR 0039).
     #[serde(default = "full", skip_serializing_if = "is_full")]
     pub volume: f32,
@@ -664,7 +1234,58 @@ pub struct Layer {
     /// An armature layer's bones (ADR 0043); `None` on every other kind of layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armature: Option<Arc<Armature>>,
+    /// How a mask layer's artwork reveals what it masks (ADR 0070): its fill area (Animate's
+    /// masks), or its opacity or brightness (soft masks). Ignored on other kinds of layer.
+    #[serde(default, skip_serializing_if = "MaskMode::is_coverage")]
+    pub mask_mode: MaskMode,
 }
+
+/// How a mask layer's artwork reveals the layers it masks (ADR 0070).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskMode {
+    /// Its fills' area, fully opaque: colours, opacity and strokes don't matter (as in Animate).
+    #[default]
+    Coverage,
+    /// Its artwork as drawn (fills, strokes, gradients, bitmaps, opacity): the artwork's
+    /// opacity reveals (Animate users get this with alpha-gradient masks; SVG `mask-type: alpha`).
+    Alpha,
+    /// Its artwork's brightness times its opacity reveals: white shows, black hides (SVG's
+    /// default `mask`). Luminance uses the sRGB coefficients 0.2125, 0.7154, 0.0721.
+    Luminance,
+}
+
+impl MaskMode {
+    pub const ALL: [MaskMode; 3] = [MaskMode::Coverage, MaskMode::Alpha, MaskMode::Luminance];
+    pub fn is_coverage(&self) -> bool {
+        *self == MaskMode::Coverage
+    }
+    /// Whether the artwork's colours and opacity count (not just its area).
+    pub fn is_soft(self) -> bool {
+        self != MaskMode::Coverage
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            MaskMode::Coverage => "coverage",
+            MaskMode::Alpha => "alpha",
+            MaskMode::Luminance => "luminance",
+        }
+    }
+    pub fn from_key(k: &str) -> Option<MaskMode> {
+        MaskMode::ALL.into_iter().find(|m| m.key() == k)
+    }
+    /// How much a premultiplied colour reveals in this mode, `0..=1`.
+    pub fn reveal(self, premul: [f32; 4]) -> f32 {
+        let v = match self {
+            MaskMode::Coverage | MaskMode::Alpha => premul[3],
+            MaskMode::Luminance => LUMA[0] * premul[0] + LUMA[1] * premul[1] + LUMA[2] * premul[2],
+        };
+        if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+    }
+}
+
+/// The luminance coefficients of a luminance mask (SVG's `luminanceToAlpha`, on sRGB values).
+pub const LUMA: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
@@ -675,6 +1296,18 @@ fn full() -> f32 {
 fn is_full(v: &f32) -> bool {
     *v == 1.0
 }
+fn is_true(v: &bool) -> bool {
+    *v
+}
+fn one() -> u8 {
+    1
+}
+fn is_one(v: &u8) -> bool {
+    *v == 1
+}
+
+/// Tallest a layer's timeline row gets, in normal rows (300 %).
+pub const MAX_LAYER_HEIGHT: u8 = 3;
 
 impl PartialEq for Layer {
     fn eq(&self, o: &Layer) -> bool {
@@ -686,9 +1319,14 @@ impl PartialEq for Layer {
             && self.locked == o.locked
             && self.outline == o.outline
             && self.color == o.color
+            && self.onion == o.onion
+            && self.height_rows == o.height_rows
             && self.depth.to_bits() == o.depth.to_bits()
+            && self.depth_keys == o.depth_keys
+            && self.attached == o.attached
             && self.volume.to_bits() == o.volume.to_bits()
             && self.muted == o.muted
+            && self.mask_mode == o.mask_mode
             && match (&self.armature, &o.armature) {
                 (Some(a), Some(b)) => arc_eq(a, b),
                 (a, b) => a.is_none() && b.is_none(),
@@ -715,12 +1353,21 @@ impl Layer {
             locked: false,
             outline: false,
             color: default_layer_color(),
+            onion: true,
+            height_rows: 1,
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
             depth: 0.0,
+            depth_keys: Vec::new(),
+            attached: false,
             volume: 1.0,
             muted: false,
             armature: None,
+            mask_mode: MaskMode::Coverage,
         }
+    }
+    /// The row height in normal rows, `1..=MAX_LAYER_HEIGHT` whatever a file says.
+    pub fn height(&self) -> u8 {
+        self.height_rows.clamp(1, MAX_LAYER_HEIGHT)
     }
     /// The gain this layer gives its sounds: its volume, or silence when muted.
     pub fn sound_gain(&self) -> f32 {
@@ -989,6 +1636,10 @@ pub struct Symbol {
     /// unscaled. `None`: the symbol scales as a whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale_grid: Option<ScaleGrid>,
+    /// The guides as they were when 9-slice scaling was switched off (ADR 0057): switching it on
+    /// again brings them back where they were. Only kept, never drawn or applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_grid_kept: Option<ScaleGrid>,
     pub timeline: Timeline,
 }
 
@@ -1075,11 +1726,15 @@ pub struct Scene {
     pub name: String,
     #[serde(default)]
     pub timeline: Timeline,
+    /// The scene's guides (View › Guides, ADR 0076), in stage pixels. Animate keeps guides per
+    /// scene too; they show on the stage only, never in a picture or an export.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<Guide>,
 }
 
 impl Scene {
     pub fn new(name: impl Into<String>) -> Scene {
-        Scene { name: name.into(), timeline: Timeline::default() }
+        Scene { name: name.into(), timeline: Timeline::default(), guides: Vec::new() }
     }
 }
 
@@ -1110,8 +1765,29 @@ pub struct Document {
     /// (ADR 0013 tier 1); empty when there is none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub document_class: String,
+    /// File › Publish Settings: the formats Publish writes and their options (ADR 0060).
+    #[serde(default, skip_serializing_if = "publish_is_default")]
+    pub publish: Arc<publish::PublishProfile>,
+    /// The Swatches panel's colours and gradients (ADR 0078). A file without them opens with
+    /// the default set, which is written only once changed.
+    #[serde(default = "default_swatches", skip_serializing_if = "swatches_are_default")]
+    pub swatches: Arc<Vec<Swatch>>,
+    /// How the grid and the guides look (ADR 0076).
+    #[serde(default, skip_serializing_if = "aids_is_default")]
+    pub aids: Arc<Aids>,
+    /// Eases the artist saved by name (ADR 0081), offered with the presets.
+    #[serde(default, skip_serializing_if = "eases_is_empty")]
+    pub eases: Arc<Vec<SavedEase>>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
+}
+
+fn default_swatches() -> Arc<Vec<Swatch>> {
+    Arc::new(swatch::default_set())
+}
+
+fn swatches_are_default(v: &Arc<Vec<Swatch>>) -> bool {
+    swatch::is_default_set(v)
 }
 
 /// What a document file may hold: `scenes`, or (files before scenes) a single `timeline`.
@@ -1133,6 +1809,14 @@ struct DocumentFile {
     library_tree: Arc<LibraryTree>,
     #[serde(default)]
     document_class: String,
+    #[serde(default)]
+    publish: Arc<publish::PublishProfile>,
+    #[serde(default = "default_swatches")]
+    swatches: Arc<Vec<Swatch>>,
+    #[serde(default)]
+    aids: Arc<Aids>,
+    #[serde(default)]
+    eases: Arc<Vec<SavedEase>>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -1141,9 +1825,9 @@ impl From<DocumentFile> for Document {
     fn from(f: DocumentFile) -> Document {
         let mut scenes = f.scenes;
         if let Some(tl) = f.timeline {
-            scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
+            scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl, guides: Vec::new() }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, aids: f.aids, swatches: f.swatches, eases: f.eases, next_id: f.next_id }
     }
 }
 
@@ -1155,18 +1839,30 @@ fn library_tree_is_empty(t: &Arc<LibraryTree>) -> bool {
     t.is_empty()
 }
 
+fn eases_is_empty(e: &Arc<Vec<SavedEase>>) -> bool {
+    e.is_empty()
+}
+
+fn aids_is_default(a: &Arc<Aids>) -> bool {
+    a.is_default()
+}
+
+fn publish_is_default(p: &Arc<publish::PublishProfile>) -> bool {
+    p.is_default()
+}
+
 /// What `timeline(i)` returns for a scene that does not exist (never for a sanitized document).
 static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree)
+        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish) && arc_eq(&self.aids, &o.aids) && arc_eq(&self.swatches, &o.swatches) && arc_eq(&self.eases, &o.eases)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), aids: Arc::default(), swatches: default_swatches(), eases: Arc::default(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -1224,9 +1920,15 @@ impl Document {
     pub fn scene_start(&self, i: usize) -> u32 {
         self.scenes.iter().take(i).map(|s| s.timeline.frame_count()).fold(0u32, u32::saturating_add)
     }
-    /// Every timeline: the scenes', then the library symbols'.
+    /// Every timeline: the scenes', then the library symbols', then the groups' inside them (ADR
+    /// 0073), so whatever walks every timeline (Library uses, sounds, paths) sees inside groups.
     pub fn timelines(&self) -> impl Iterator<Item = &Timeline> {
-        self.scenes.iter().map(|s| &s.timeline).chain(self.library.iter().map(|s| &s.timeline))
+        let top: Vec<&Timeline> = self.scenes.iter().map(|s| &s.timeline).chain(self.library.iter().map(|s| &s.timeline)).collect();
+        let mut all = top.clone();
+        for tl in top {
+            group_timelines(tl, 0, &mut all);
+        }
+        all.into_iter()
     }
     /// Repairs a loaded document: ids, sizes and keyframe order.
     pub fn sanitize(&mut self) {
@@ -1238,15 +1940,30 @@ impl Document {
         }
         s.fps = s.fps.clamp(1.0, 240.0);
         s.background = s.background.sanitized();
+        let aids = self.aids.sanitized();
+        if aids != *self.aids {
+            self.aids = Arc::new(aids);
+        }
+        let eases = easing::sanitized_eases(&self.eases);
+        if eases != *self.eases {
+            self.eases = Arc::new(eases);
+        }
         let mut max_id = 0u64;
         let scan = |l: &Layer, max_id: &mut u64| {
             *max_id = (*max_id).max(l.id.0);
             for b in l.armature.iter().flat_map(|a| &a.bones) {
-                *max_id = (*max_id).max(b.id.0);
+                // A shape armature's joint nodes take ids from the same counter (ADR 0071).
+                *max_id = (*max_id).max(b.id.0).max(b.child.0).max(b.parent.0);
             }
             for k in &l.keyframes {
                 for e in &k.elements {
                     *max_id = (*max_id).max(e.id.0);
+                    // Warp pins take ids from the same counter (ADR 0079).
+                    if let ElementKind::Shape(s) = &e.kind {
+                        for p in s.warp.iter().flat_map(|w| &w.pins) {
+                            *max_id = (*max_id).max(p.id.0);
+                        }
+                    }
                 }
             }
         };
@@ -1258,19 +1975,34 @@ impl Document {
             if scene.name.trim().is_empty() || scene.name.len() > 256 {
                 Arc::make_mut(scene).name = format!("Scene {}", i + 1);
             }
+            if scene.guides.len() > MAX_GUIDES || scene.guides.iter().any(|g| !(g.at.is_finite() && g.at.abs() <= GUIDE_REACH)) {
+                aids::sanitize_guides(&mut Arc::make_mut(scene).guides);
+            }
             let tl = &mut Arc::make_mut(scene).timeline;
             for l in &mut tl.layers {
                 Arc::make_mut(l).normalize();
                 sanitize_scripts(l);
                 sanitize_depth(l);
                 sanitize_armature(l);
+                sanitize_warps(l);
                 scan(l, &mut max_id);
+                sanitize_groups(l, 0, &mut max_id);
             }
             tl.repair_masks();
         }
         // Script class names are text nothing runs yet; ones that aren't names are dropped.
         if !self.document_class.is_empty() && !actions::valid_class_name(&self.document_class) {
             self.document_class.clear();
+        }
+        // Swatches that can't be repaired are dropped; at most MAX_SWATCHES are kept.
+        let swatches: Vec<Swatch> = self.swatches.iter().filter_map(Swatch::sanitized).take(MAX_SWATCHES).collect();
+        if swatches != *self.swatches {
+            self.swatches = Arc::new(swatches);
+        }
+        let mut publish = (*self.publish).clone();
+        publish.sanitize();
+        if publish != *self.publish {
+            self.publish = Arc::new(publish);
         }
         for sym in &mut self.library {
             max_id = max_id.max(sym.id.0);
@@ -1280,6 +2012,10 @@ impl Document {
             // 9-slice guides that aren't usable are dropped: the symbol scales as a whole.
             if sym.scale_grid.as_ref().is_some_and(|g| g.check().is_err()) {
                 Arc::make_mut(sym).scale_grid = None;
+            }
+            // Kept guides (ADR 0057) only while 9-slice is off, and only usable ones.
+            if sym.scale_grid_kept.as_ref().is_some_and(|g| sym.scale_grid.is_some() || g.check().is_err()) {
+                Arc::make_mut(sym).scale_grid_kept = None;
             }
             let tl = &mut Arc::make_mut(sym).timeline;
             for l in &mut tl.layers {
@@ -1291,7 +2027,9 @@ impl Document {
                 }
                 sanitize_depth(l);
                 sanitize_armature(l);
+                sanitize_warps(l);
                 scan(l, &mut max_id);
+                sanitize_groups(l, 0, &mut max_id);
             }
             tl.repair_masks();
         }
@@ -1306,11 +2044,114 @@ impl Document {
     }
 }
 
-/// Keeps a loaded layer's depth finite and in range (touching it only if it isn't).
+/// The members' timelines of every group on `tl`'s keyframes, and of the groups inside them, in
+/// order, up to [`MAX_GROUP_DEPTH`] deep.
+fn group_timelines<'a>(tl: &'a Timeline, depth: usize, out: &mut Vec<&'a Timeline>) {
+    if depth >= MAX_GROUP_DEPTH {
+        return;
+    }
+    for e in tl.layers.iter().flat_map(|l| l.keyframes.iter()).flat_map(|k| k.elements.iter()) {
+        if let ElementKind::Group { members } = &e.kind {
+            out.push(members);
+            group_timelines(members, depth + 1, out);
+        }
+    }
+}
+
+/// Repairs the groups on a loaded layer (ADR 0073), however deep: each group's members are one
+/// frame of normal layers (a camera or armature layer inside one becomes a normal layer), every
+/// layer at least one keyframe at frame 0, and groups past [`MAX_GROUP_DEPTH`] are dropped. Ids
+/// inside count towards `max_id`. Touches only what needs it.
+fn sanitize_groups(layer: &mut Arc<Layer>, depth: usize, max_id: &mut u64) {
+    let has_groups = layer.keyframes.iter().any(|k| k.elements.iter().any(|e| matches!(e.kind, ElementKind::Group { .. })));
+    if !has_groups {
+        return;
+    }
+    let l = Arc::make_mut(layer);
+    for k in &mut l.keyframes {
+        if !k.elements.iter().any(|e| matches!(e.kind, ElementKind::Group { .. })) {
+            continue;
+        }
+        let k = Arc::make_mut(k);
+        if depth >= MAX_GROUP_DEPTH {
+            k.elements.retain(|e| !matches!(e.kind, ElementKind::Group { .. }));
+            continue;
+        }
+        for e in &mut k.elements {
+            if !matches!(e.kind, ElementKind::Group { .. }) {
+                continue;
+            }
+            let ElementKind::Group { members } = &mut Arc::make_mut(e).kind else { continue };
+            for gl in &mut members.layers {
+                *max_id = (*max_id).max(gl.id.0);
+                let bad_kind = matches!(gl.kind, LayerKind::Camera | LayerKind::Armature | LayerKind::Folder);
+                let bad_frames = gl.keyframes.len() != 1 || gl.keyframes.first().is_some_and(|k| k.start != 0 || k.duration != 1 || k.tween.is_some() || k.motion.is_some());
+                if bad_kind || bad_frames {
+                    let g = Arc::make_mut(gl);
+                    if bad_kind {
+                        g.kind = LayerKind::Normal;
+                        g.armature = None;
+                    }
+                    if bad_frames {
+                        // The frame a group shows (its first), as its only one.
+                        let mut first = g.keyframes.iter().find(|k| k.start == 0).map_or_else(|| Keyframe::new(0, 1), |k| (**k).clone());
+                        first.duration = 1;
+                        first.tween = None;
+                        first.motion = None;
+                        g.keyframes = vec![Arc::new(first)];
+                    }
+                }
+                for ge in gl.keyframes.iter().flat_map(|k| k.elements.iter()) {
+                    *max_id = (*max_id).max(ge.id.0);
+                }
+                sanitize_groups(gl, depth + 1, max_id);
+            }
+            members.repair_masks();
+        }
+    }
+}
+
+/// Repairs the warps on a loaded layer's shapes (ADR 0079): a warp with nothing usable left
+/// goes (the shape keeps the outline it shows), and hostile pins are dropped. Touches only what
+/// needs it.
+fn sanitize_warps(layer: &mut Arc<Layer>) {
+    let bad = |e: &Element| match &e.kind {
+        ElementKind::Shape(Shape { warp: Some(w), .. }) => {
+            let mut x = (**w).clone();
+            !x.sanitize() || x != **w
+        }
+        _ => false,
+    };
+    if !layer.keyframes.iter().any(|k| k.elements.iter().any(|e| bad(e))) {
+        return;
+    }
+    for k in &mut Arc::make_mut(layer).keyframes {
+        if !k.elements.iter().any(|e| bad(e)) {
+            continue;
+        }
+        for e in &mut Arc::make_mut(k).elements {
+            if !bad(e) {
+                continue;
+            }
+            if let ElementKind::Shape(s) = &mut Arc::make_mut(e).kind
+                && let Some(w) = &s.warp
+            {
+                let mut x = (**w).clone();
+                s.warp = x.sanitize().then(|| Arc::new(x));
+            }
+        }
+    }
+}
+
+/// Keeps a loaded layer's depth and depth keys finite and in range (touching it only if they
+/// aren't).
 fn sanitize_depth(layer: &mut Arc<Layer>) {
     let d = camera::clamp_depth(layer.depth);
     if d.to_bits() != layer.depth.to_bits() {
         Arc::make_mut(layer).depth = d;
+    }
+    if !layer.depth_keys_clean() {
+        Arc::make_mut(layer).sanitize_depth_keys();
     }
 }
 
@@ -1373,6 +2214,10 @@ fn sanitize_scripts(layer: &mut Arc<Layer>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "gradient_tests.rs"]
+mod gradient_tests;
 
 #[cfg(test)]
 #[path = "camera_tests.rs"]

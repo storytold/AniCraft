@@ -75,6 +75,33 @@ pub fn merge_cut(items: &[Item], cutter: &Path) -> Option<Merged> {
     merge_with(items, Some(cutter))
 }
 
+/// The area `paths` cover together (each filled by its own rule), as one path of loops that
+/// don't overlap: even-odd and non-zero fill it alike. Empty when they cover nothing; `None`
+/// when there is too much to merge at once.
+pub fn union(paths: &[(&Path, FillRule)]) -> Option<Path> {
+    let items: Vec<Item> = paths.iter().map(|&(path, fill_rule)| Item { path, fill: Some(0), fill_rule, stroke: None }).collect();
+    let merged = merge(&items)?;
+    Some(join(merged.fills.into_iter().map(|p| p.path)))
+}
+
+/// The part of `subject` (filled by `rule`) inside `region` (filled even-odd, such as a
+/// [`union`]): a boolean intersection, exact to [`SNAP`], as one path of loops that don't
+/// overlap (ADR 0080: the Brush's Paint Selection and Paint Inside). Empty when they don't
+/// overlap; `None` when there is too much to merge at once.
+pub fn intersect(subject: &Path, rule: FillRule, region: &Path) -> Option<Path> {
+    let merged = merge_cut(&[Item { path: subject, fill: Some(0), fill_rule: rule, stroke: None }], region)?;
+    Some(join(merged.fills.into_iter().filter(|p| p.inside).map(|p| p.path)))
+}
+
+/// Pieces' paths, one after another.
+fn join(pieces: impl Iterator<Item = Path>) -> Path {
+    let mut out = Path::new();
+    for p in pieces {
+        out.cmds.extend(p.cmds);
+    }
+    out
+}
+
 /// The item number the cutter's segments carry.
 const CUTTER: usize = usize::MAX;
 

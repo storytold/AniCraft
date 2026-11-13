@@ -77,7 +77,7 @@ fn targets(app: &App, zoom: f32) -> Vec<Target> {
                 let walks = stroke_walks(&sh.path, 0.25 / (zoom.max(1e-3) * scale));
                 Some(Target { id: e.id, m: e.transform, walks, stroke })
             }
-            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera => None,
+            ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => None,
         })
         .take(MAX_TARGETS)
         .collect()
@@ -136,50 +136,56 @@ pub fn drag_start(app: &mut App, press: Pos2, xf: Xf) -> Drag {
     }
     // Undo labels stay English in the history and are translated where they show.
     app.s.begin_gesture(tr_noop!("Width"));
+    // A press on the stroke itself makes a point there once the drag sizes it. It is not
+    // added yet: at the width the stroke already has, a first point leaves it uniform, so the
+    // engine keeps no point for it (#250).
     let (index, grip) = match h.point {
-        Some(p) => p,
-        None => {
-            let Some(v) = app.run("stroke.set_width_point", json!({"id": h.id.0, "t": h.t})) else {
-                app.s.end_gesture();
-                return Drag::None;
-            };
-            let Some(i) = v["index"].as_u64() else {
-                app.s.end_gesture();
-                return Drag::None;
-            };
-            (i as usize, Grip::Side(h.side))
-        }
+        Some((i, g)) => (Some(i), g),
+        None => (None, Grip::Side(h.side)),
     };
-    app.width_sel = Some((h.id, index));
-    let (l, r) = current_point(app, h.id, index).unwrap_or((1.0, 1.0));
-    Drag::Width { id: h.id, sub: h.sub, index, grip, start: (l, r) }
+    app.width_sel = index.map(|i| (h.id, i));
+    let (l, r) = index.and_then(|i| current_point(app, h.id, i)).map_or_else(|| factors_at(app, h.id, h.t), |(l, r, _)| (l, r));
+    Drag::Width { id: h.id, sub: h.sub, index, t: h.t, grip, start: (l, r) }
 }
 
-/// The left and right factors of width point `index` on shape `id`.
-fn current_point(app: &App, id: ElementId, index: usize) -> Option<(f32, f32)> {
+/// The left and right factors of shape `id`'s stroke at `t` (1, 1 when uniform).
+fn factors_at(app: &App, id: ElementId, t: f32) -> (f32, f32) {
+    let el = app.s.visible_elements().into_iter().find(|e| e.id == id);
+    let profile = el.as_ref().and_then(|e| match &e.kind {
+        ElementKind::Shape(sh) => sh.stroke.as_ref().and_then(|st| st.profile.clone()),
+        _ => None,
+    });
+    profile.map_or((1.0, 1.0), |p| p.at(t))
+}
+
+/// The left and right factors and the position of width point `index` on shape `id`.
+fn current_point(app: &App, id: ElementId, index: usize) -> Option<(f32, f32, f32)> {
     let el = app.s.visible_elements().into_iter().find(|e| e.id == id)?;
     let ElementKind::Shape(sh) = &el.kind else { return None };
     let p = *sh.stroke.as_ref()?.profile.as_ref()?.points().get(index)?;
-    Some((p.left, p.right))
+    Some((p.left, p.right, p.t))
 }
 
 /// Pointer at stage point `at` while dragging: resize or slide the grabbed point.
 pub fn drag_to(app: &mut App, d: Drag, at: Vec2, alt: bool, zoom: f32) {
-    let Drag::Width { id, sub, index, grip, start } = d else { return };
+    let Drag::Width { id, sub, index, t: pt_t, grip, start } = d else { return };
     let Some(t) = targets(app, zoom).into_iter().find(|t| t.id == id) else { return };
     let Some(inv) = t.m.inverse() else { return };
     let local = inv.apply(at);
-    let p = match grip {
-        Grip::Along => {
+    let p = match (grip, index) {
+        (Grip::Along, Some(index)) => {
             let Some(w) = t.walks.get(sub) else { return };
             let len = w.length();
             let tt = if len > 0.0 { w.project(local) / len } else { 0.0 };
             json!({"id": id.0, "index": index, "t": tt})
         }
-        Grip::Side(side) => {
-            let pt = t.stroke.profile.as_ref().and_then(|p| p.points().get(index).copied());
-            let Some(pt) = pt else { return };
-            let Some((c, n, _, _)) = t.section(sub, pt.t, (pt.left, pt.right)) else { return };
+        (Grip::Along, None) => return,
+        (Grip::Side(side), _) => {
+            // The point is addressed by where it is, not by its index: sized back to the
+            // stroke's own width it leaves the stroke uniform (no points), and dragging on
+            // brings it back at the same place.
+            let (cl, cr) = t.factors(pt_t);
+            let Some((c, n, _, _)) = t.section(sub, pt_t, (cl, cr)) else { return };
             let hw = t.hw();
             if hw <= 0.0 {
                 return;
@@ -188,16 +194,18 @@ pub fn drag_to(app: &mut App, d: Drag, at: Vec2, alt: bool, zoom: f32) {
             let (l0, r0) = start;
             // Both sides move together (keeping their difference); Alt moves just this one.
             let (l, r) = match (side > 0, alt) {
-                (true, true) => (f, pt.right),
-                (false, true) => (pt.left, f),
+                (true, true) => (f, r0),
+                (false, true) => (l0, f),
                 (true, false) => (f, (r0 + f - l0).max(0.0)),
                 (false, false) => ((l0 + f - r0).max(0.0), f),
             };
-            json!({"id": id.0, "index": index, "left": l, "right": r})
+            json!({"id": id.0, "t": pt_t, "left": l, "right": r})
         }
     };
     // Inside the gesture: one undo step for the whole drag.
-    let _ = app.s.execute("stroke.set_width_point", &p);
+    if let Ok(v) = app.s.execute("stroke.set_width_point", &p) {
+        app.width_sel = v["index"].as_u64().map(|i| (id, i as usize));
+    }
 }
 
 pub fn drag_end(app: &mut App) {
@@ -249,15 +257,17 @@ pub fn upkeep(app: &mut App) {
     }
 }
 
-/// The cursor while hovering: a grab hand over a point, a crosshair on a stroke.
+/// The cursor while hovering: a grab hand over a point, the add cursor on a stroke (a drag
+/// there adds a point, as the Pen's add cursor), and a crosshair elsewhere, so the tool in
+/// hand shows on the stage (#250).
 pub fn cursor(app: &App, at: Option<Pos2>, xf: Xf) -> egui::CursorIcon {
     if matches!(app.drag, Drag::Width { .. }) {
         return egui::CursorIcon::Grabbing;
     }
     match at.and_then(|p| hit(app, p, xf)) {
         Some(Hit { point: Some(_), .. }) => egui::CursorIcon::Grab,
-        Some(_) => egui::CursorIcon::Crosshair,
-        None => egui::CursorIcon::Default,
+        Some(_) => egui::CursorIcon::Copy,
+        None => egui::CursorIcon::Crosshair,
     }
 }
 
@@ -287,7 +297,7 @@ pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, hover: Option<Po
         painter.add(egui::Shape::line(pts, Line::new(1.0, T.selection.gamma_multiply(0.7))));
     }
     let grabbed = match app.drag {
-        Drag::Width { index, .. } => Some(index),
+        Drag::Width { index, .. } => index,
         _ => None,
     };
     if let Some(pr) = &t.stroke.profile {
@@ -304,12 +314,77 @@ pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, hover: Option<Po
             }
         }
     }
-    // Where a drag would add a point: a faint cross-section at the pointer.
-    if let Some(h) = h.filter(|h| h.point.is_none() && h.id == t.id)
-        && let Some((c, _, lh, rh)) = t.section(h.sub, h.t, t.factors(h.t))
+    // Where a drag adds a point: a cross-section at the pointer with a white box on the line
+    // and handles at the stroke's edges (#250: easy to see on any artwork), and the same while
+    // a drag on the stroke is still at its own width (no point kept yet).
+    let pending = match app.drag {
+        Drag::Width { id, sub, index: None, t: at, .. } if id == t.id && app.width_sel.is_none() => Some((sub, at)),
+        _ => h.filter(|h| h.point.is_none() && h.id == t.id).map(|h| (h.sub, h.t)),
+    };
+    if let Some((sub, at)) = pending
+        && let Some((c, _, lh, rh)) = t.section(sub, at, t.factors(at))
     {
-        let faint = Line::new(1.0, T.selection.gamma_multiply(0.6));
-        painter.add(egui::Shape::dashed_line(&[to_px(lh), to_px(rh)], faint, 3.0, 2.0));
-        painter.rect_stroke(Rect::from_center_size(to_px(c), vec2(5.0, 5.0)), 0.0, faint, StrokeKind::Middle);
+        let (c, lh, rh) = (to_px(c), to_px(lh), to_px(rh));
+        painter.add(egui::Shape::dashed_line(&[lh, rh], line, 3.0, 2.0));
+        diamond(painter, lh, 4.0, Color32::WHITE);
+        diamond(painter, rh, 4.0, Color32::WHITE);
+        let r = Rect::from_center_size(c, vec2(8.0, 8.0));
+        painter.rect_filled(r, 0.0, Color32::WHITE);
+        painter.rect_stroke(r, 0.0, Line::new(1.5, T.selection), StrokeKind::Middle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::pos2;
+
+    const XF: Xf = Xf { origin: Pos2::ZERO, zoom: 1.0 };
+
+    fn widths(app: &App) -> Vec<f32> {
+        app.s.visible_elements().iter().filter_map(|e| match &e.kind {
+            ElementKind::Shape(sh) => sh.stroke.as_ref().map(|st| st.profile.as_ref().map_or(1.0, |p| p.at(0.5).0)),
+            _ => None,
+        }).collect()
+    }
+
+    /// #250: a Pencil squiggle in merge drawing, then a drag on it with the Width tool widens it.
+    #[test]
+    fn a_drag_on_a_pencil_stroke_widens_it() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::Document::default());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        app.view.zoom = 1.0;
+        app.s.style.object_drawing = false;
+        app.s.style.stroke_width = 4.0;
+        let points: Vec<[f32; 2]> = (0..=40).map(|i| [100.0 + i as f32 * 5.0, 100.0 + (i as f32 * 0.3).sin() * 10.0]).collect();
+        app.run("draw.freehand", json!({"points": points, "mode": "ink", "tolerance": 1.5})).expect("drawn");
+        app.tool = Tool::Width;
+        let mid = app.s.visible_elements().first().map(|e| e.id).expect("a stroke");
+        let at = app.s.execute("stroke.width_at", &json!({"x": 200, "y": 100.0 + (20.0f32 * 0.3).sin() * 10.0, "slop": 4})).expect("width_at");
+        assert_eq!(at["element"], mid.0, "{at}");
+        let press = pos2(200.0, 100.0 + (20.0f32 * 0.3).sin() * 10.0 - 1.0);
+        let steps = app.s.history_len();
+        let d = drag_start(&mut app, press, XF);
+        assert!(matches!(d, Drag::Width { index: None, .. }), "the press takes the stroke: {d:?}");
+        drag_to(&mut app, d, Vec2::new(press.x, press.y - 8.0), false, 1.0);
+        drag_end(&mut app);
+        assert!(widths(&app).iter().any(|w| *w > 2.0), "the stroke is wider there: {:?}", widths(&app));
+        assert_eq!(app.s.history_len(), steps + 1, "one undo step");
+        assert!(app.width_sel.is_some(), "the new point is selected");
+        // The same point dragged back to the stroke's own width (no point left) and out again,
+        // in one drag: it keeps following the pointer.
+        let y = press.y + 1.0;
+        let w = widths(&app)[0] * 2.0;
+        let d = drag_start(&mut app, pos2(press.x, y - w), XF);
+        assert!(matches!(d, Drag::Width { index: Some(0), grip: Grip::Side(_), .. }), "the handle: {d:?}");
+        let Drag::Width { id, sub, t: at, .. } = d else { unreachable!() };
+        let tg = targets(&app, 1.0).into_iter().find(|t| t.id == id).expect("target");
+        let (_, _, edge, _) = tg.section(sub, at, (1.0, 1.0)).expect("section");
+        drag_to(&mut app, d, tg.m.apply(edge), false, 1.0);
+        assert!(widths(&app).iter().all(|w| (*w - 1.0).abs() < 1e-3), "back to uniform: {:?}", widths(&app));
+        drag_to(&mut app, d, Vec2::new(press.x, y - 12.0), false, 1.0);
+        drag_end(&mut app);
+        assert!(widths(&app).iter().any(|w| *w > 3.0), "wider again: {:?}", widths(&app));
     }
 }

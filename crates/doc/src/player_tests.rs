@@ -33,7 +33,7 @@ fn layer(id: u64, keys: Vec<Arc<Keyframe>>) -> Arc<Layer> {
 }
 
 fn symbol(id: u64, kind: SymbolKind, layers: Vec<Arc<Layer>>) -> Arc<Symbol> {
-    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, scale_grid: None, timeline: Timeline { layers } })
+    Arc::new(Symbol { id: SymbolId(id), name: format!("S{id}"), kind, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers } })
 }
 
 fn doc(root: Vec<Arc<Layer>>, library: Vec<Arc<Symbol>>) -> Document {
@@ -342,6 +342,97 @@ fn entered_keyframes_start_their_sounds_in_clips_and_graphics_with_layer_volumes
     assert_eq!(started(&start(&m, &mut NoScripts)), vec![(1, 1.0), (3, 0.0)]);
 }
 
+// ----- Sounds on button frames (ADR 0057) --------------------------------------------------------
+
+/// [`button_doc`] with a sound on each state frame (ids 10 Up, 11 Over, 12 Down, 13 Hit; Over's
+/// a stream), on a layer at half volume, the button on a layer at half volume too.
+fn sounding_button() -> Document {
+    use crate::SoundSync::{Event, Stream};
+    let mut d = button_doc();
+    let art = |id| vec![rect(id, 0.0, 0.0, 10.0, 10.0)];
+    let mut sounds = (*layer(34, vec![with_sound(kf(0, 1, vec![], vec![], ""), 10, Event), with_sound(kf(1, 1, vec![], vec![], ""), 11, Stream), with_sound(kf(2, 1, vec![], vec![], ""), 12, Event), with_sound(kf(3, 1, vec![], vec![], ""), 13, Event)])).clone();
+    sounds.volume = 0.5;
+    let states = layer(31, vec![kf(0, 1, art(32), vec![], ""), kf(1, 1, art(32), vec![], ""), kf(2, 1, art(32), vec![], ""), kf(3, 1, vec![rect(33, 0.0, 0.0, 100.0, 100.0)], vec![], "")]);
+    d.library = vec![symbol(300, SymbolKind::Button, vec![Arc::new(sounds), states])];
+    Arc::make_mut(&mut d.timeline_mut(0).layers[1]).volume = 0.5;
+    let tone: Vec<f32> = (0..800).map(|i| (i as f32 * 0.1).sin() * 0.5).collect();
+    for id in 10..14 {
+        let data = anicraft_audio::wav::encode(8000, 1, &tone, anicraft_audio::wav::Bits::Float32);
+        d.sounds.push(Arc::new(crate::Sound::from_data(crate::SoundId(id), format!("s{id}.wav"), data).expect("a WAV")));
+    }
+    d
+}
+
+#[test]
+fn a_button_plays_the_sound_of_the_state_it_enters() {
+    let d = sounding_button();
+    let at = |x, y| Vec2::new(x, y);
+    let s = start(&d, &mut NoScripts);
+    assert!(s.sounds.is_empty(), "a button on the stage is silent until the pointer comes");
+    // Over: the Over frame's sound, as an event (a button frame has no span to stream over), at
+    // the volumes of both layers.
+    let s = step(&d, &s.state, &[Event::Move(at(150.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25)]);
+    assert_eq!(s.sounds[0].sound.sync, crate::SoundSync::Event);
+    // Moving about inside it plays nothing more.
+    let s = step(&d, &s.state, &[Event::Move(at(160.0, 150.0))], &mut NoScripts);
+    assert!(s.sounds.is_empty());
+    // Pressed: Down's. Released over it: Hit's (the SWF format's Down → Over sound).
+    let s = input(&d, &s.state, &[Event::Down(at(160.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(12, 0.25)]);
+    let s = input(&d, &s.state, &[Event::Up(at(160.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(13, 0.25)]);
+    // Left: Up's.
+    let s = step(&d, &s.state, &[Event::Leave], &mut NoScripts);
+    assert_eq!(started(&s), vec![(10, 0.25)]);
+    // Arriving and pressing in one event: Over's, then Down's.
+    let s = input(&d, &s.state, &[Event::Down(at(150.0, 150.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25), (12, 0.25)]);
+    // Dragged off while pressed, back on and released off: nothing (no state with a sound).
+    let s = input(&d, &s.state, &[Event::Move(at(400.0, 400.0)), Event::Move(at(150.0, 150.0)), Event::Move(at(400.0, 400.0)), Event::Up(at(400.0, 400.0))], &mut NoScripts);
+    assert!(s.sounds.is_empty(), "{:?}", started(&s));
+}
+
+#[test]
+fn button_sounds_follow_the_frames_a_button_has_and_stay_out_of_the_soundtrack() {
+    // A two-frame button (Up and Over): pressing it shows Over still, and plays nothing.
+    let mut d = sounding_button();
+    let short = Timeline { layers: d.library[0].timeline.layers.iter().map(|l| {
+        let mut l = (**l).clone();
+        l.keyframes.truncate(2);
+        Arc::new(l)
+    }).collect() };
+    Arc::make_mut(&mut d.library[0]).timeline = short;
+    let s = start(&d, &mut NoScripts);
+    // Its Up frame is its hit area (10 × 10 at 100, 100).
+    let s = input(&d, &s.state, &[Event::Move(Vec2::new(105.0, 105.0)), Event::Down(Vec2::new(105.0, 105.0))], &mut NoScripts);
+    assert_eq!(started(&s), vec![(11, 0.25)]);
+    // The mix and every export leave buttons out: they only sound under the pointer.
+    assert!(crate::sound::voices(&sounding_button(), 48_000).is_empty());
+}
+
+#[test]
+fn the_hit_overlay_is_the_area_the_pointer_finds() {
+    let d = button_doc();
+    let s = start(&d, &mut NoScripts);
+    let tint = Rgba::new(1.0, 0.0, 0.0, 1.0);
+    let dl = hit_overlay(&d, &s.state, tint, 0.4);
+    // One area: the Hit frame's 100 × 100 square at (100, 100), tinted, in one group at 40 %.
+    assert_eq!(dl.items.len(), 1);
+    assert_eq!(dl.groups.first().map(|g| g.alpha), Some(0.4));
+    let i = &dl.items[0];
+    assert_eq!((i.color, i.group), (ColorTransform::tint(tint, 1.0), Some(0)));
+    assert_eq!(i.color.apply(Rgba::new(0.1, 0.6, 0.9, 0.8)), Rgba::new(1.0, 0.0, 0.0, 0.8), "every colour becomes the tint, its alpha kept");
+    for p in [Vec2::new(101.0, 101.0), Vec2::new(199.0, 150.0), Vec2::new(50.0, 50.0), Vec2::new(201.0, 150.0)] {
+        assert_eq!(i.path.contains(p, &i.transform, i.fill_rule), hit(&d, &s.state, p).is_some(), "{p:?}");
+    }
+    // A hidden button has no area; a movie without buttons none at all.
+    assert!(hit_overlay(&doc(vec![], vec![]), &PlayerState::default(), tint, 0.4).items.is_empty());
+    assert_eq!(hit_frame(4), 3);
+    assert_eq!(hit_frame(3), 0);
+    assert_eq!(hit_frame(0), 0);
+}
+
 // ----- ActionScript (ADR 0013 tier 2) -----------------------------------------------------------
 
 /// `k` with a kept ActionScript 3.0 script in place of its actions.
@@ -613,4 +704,110 @@ fn scripted_play_is_deterministic() {
     let (a, b) = (play(), play());
     assert!(!a.1.is_empty());
     assert_eq!(a, b);
+}
+
+// ----- text fields (ADR 0066) ---------------------------------------------------------------
+
+/// A host that lays fields out in a 10 px monospace (the fonts live above this crate).
+struct Mono;
+
+impl ScriptHost for Mono {
+    fn run(&mut self, _: &PluginScript, _: &ScriptContext<'_>) -> ScriptRun {
+        ScriptRun::default()
+    }
+    fn lay_out_field(&mut self, block: &TextBlock, shown: &str) -> Option<FieldLook> {
+        let f = block.field.as_ref()?;
+        Some(crate::field::mono_look(shown, 10.0, 10.0, f.wrap_width(block.box_width)))
+    }
+}
+
+fn field(id: u64, name: &str, text: &str, kind: TextKind, x: f32, y: f32) -> Arc<Element> {
+    let block = TextBlock { text: text.into(), font: "Mono".into(), size: 10.0, bold: false, italic: false, color: Rgba::BLACK, align: crate::TextAlign::Left, letter_spacing: 0.0, line_spacing: 0.0, width: None, outline: Arc::new(Path::rect(2.0, 2.0, 8.0, 8.0)), box_width: 104.0, box_height: 14.0, field: Some(TextField { border: true, ..TextField::new(kind) }), on_path: None };
+    Arc::new(Element { id: ElementId(id), name: name.into(), transform: Affine::translate(x, y), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(block)) })
+}
+
+fn field_doc(script: &str) -> Document {
+    let fields = vec![field(5, "score_txt", "0", TextKind::Dynamic, 10.0, 10.0), field(6, "name_txt", "", TextKind::Input, 10.0, 50.0), field(7, "", "", TextKind::Input, 10.0, 90.0)];
+    doc(vec![layer(1, vec![as3(kf(0, 1, fields, vec![], ""), script)])], vec![])
+}
+
+fn text_of(st: &PlayerState, id: u64) -> Option<String> {
+    st.fields.get(&vec![ElementId(id)]).and_then(|f| f.text.clone())
+}
+
+#[test]
+fn scripts_set_and_read_dynamic_text() {
+    let d = field_doc("stop();\nvar n:int = 0;\nscore_txt.text = \"Score: \" + n;\nscore_txt.appendText(\"!\");\ntrace(score_txt.text, score_txt.length, name_txt.text == \"\");\nscore_txt.x = 20;\nghost_txt.text = \"x\";");
+    let s = start(&d, &mut Mono);
+    assert_eq!(text_of(&s.state, 5).as_deref(), Some("Score: 0!"));
+    assert!(s.output.contains(&"Score: 0! 9 true".to_string()), "{:?}", s.output);
+    assert!(s.output.iter().any(|l| l.contains("no instance named “ghost_txt”")), "{:?}", s.output);
+    // Laid out by the host, drawn in place of the authored outline, where the script moved it.
+    let look = s.state.fields.get(&vec![ElementId(5)]).and_then(|f| f.look.clone()).expect("laid out");
+    assert_eq!(look.lines[0].end, 9);
+    let dl = evaluate_player(&d, &s.state);
+    assert!(dl.items.iter().any(|i| Arc::ptr_eq(&i.path, &look.outline) && i.transform.m[4] == 20.0));
+    // Without a host that can lay out, the text is still set and read; it draws only its box.
+    let s2 = start(&d, &mut NoScripts);
+    assert_eq!(text_of(&s2.state, 5).as_deref(), Some("Score: 0!"));
+    // Static text and other instances aren't fields.
+    let d = field_doc("hero.text = \"x\";");
+    assert!(start(&d, &mut Mono).output.iter().any(|l| l.contains("no instance named “hero”")));
+}
+
+#[test]
+fn the_viewer_types_into_input_fields_and_scripts_read_it() {
+    let d = field_doc("stop();\nstage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);\nfunction onKey(e:KeyboardEvent):void {\n  if (e.keyCode == Keyboard.ENTER) { score_txt.text = \"Hello, \" + name_txt.text; }\n}");
+    let mut h = Mono;
+    let s = start(&d, &mut h);
+    // A click in the input field gives it the keyboard; typing goes in, editing keys edit.
+    let mut ev = vec![Event::Down(Vec2::new(20.0, 55.0)), Event::Up(Vec2::new(20.0, 55.0))];
+    ev.extend("Adx".chars().map(Event::Char));
+    ev.extend([Event::KeyDown(8), Event::KeyDown(37), Event::Char('a'), Event::KeyDown(35), Event::Char('!')]);
+    let s = input(&d, &s.state, &ev, &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(6)]));
+    assert_eq!(text_of(&s.state, 6).as_deref(), Some("Aad!"));
+    // Shift+Home selects; typing replaces it; Enter reaches the stage's key listener too.
+    let s = input(&d, &s.state, &[Event::KeyDown(16), Event::KeyDown(36), Event::KeyUp(16), Event::Char('B'), Event::Char('o'), Event::KeyDown(13)], &mut h);
+    assert_eq!(text_of(&s.state, 6).as_deref(), Some("Bo"));
+    assert_eq!(text_of(&s.state, 5).as_deref(), Some("Hello, Bo"));
+    // The focused field draws its caret; a click elsewhere takes the keyboard away.
+    let caret = |st: &PlayerState| evaluate_player(&d, st).items.iter().filter(|i| i.fill.is_some() && i.masks.is_none() && i.path.bounds().width() <= 1.01 && i.path.bounds().height() > 5.0).count();
+    assert_eq!(caret(&s.state), 1);
+    let s = input(&d, &s.state, &[Event::Down(Vec2::new(300.0, 300.0)), Event::Up(Vec2::new(300.0, 300.0)), Event::Char('z')], &mut h);
+    assert_eq!(s.state.focus, None);
+    assert_eq!(text_of(&s.state, 6).as_deref(), Some("Bo"), "no field, no typing");
+    assert_eq!(caret(&s.state), 0);
+    // A dynamic field takes no typing; Tab goes from input field to input field.
+    let s = input(&d, &s.state, &[Event::Down(Vec2::new(20.0, 15.0)), Event::Up(Vec2::new(20.0, 15.0)), Event::Char('q')], &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(5)]), "a selectable dynamic field can be focused");
+    assert_eq!(text_of(&s.state, 5).as_deref(), Some("Hello, Bo"));
+    let s = input(&d, &s.state, &[Event::Down(Vec2::new(20.0, 55.0)), Event::Up(Vec2::new(20.0, 55.0)), Event::KeyDown(9)], &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(7)]));
+    let s = input(&d, &s.state, &[Event::KeyDown(9)], &mut h);
+    assert_eq!(s.state.focus, Some(vec![ElementId(6)]), "Tab wraps round");
+    assert_eq!(s.state.fields.get(&vec![ElementId(6)]).map(|f| f.selection()), Some((0, 2)), "and selects the field's text");
+}
+
+#[test]
+fn fields_draw_their_box_and_the_authored_text_everywhere() {
+    let d = field_doc("");
+    // The authoring frame and the player draw the authored outline, a border, inside a clip.
+    for dl in [evaluate(&d, 0), evaluate_player(&d, &start(&d, &mut NoScripts).state)] {
+        let texts = dl.items.iter().filter(|i| i.path.bounds() == Path::rect(2.0, 2.0, 8.0, 8.0).bounds() && i.masks.is_none()).count();
+        assert_eq!(texts, 3);
+        assert_eq!(dl.items.iter().filter(|i| i.stroke.is_some()).count(), 3, "three borders");
+        assert_eq!(dl.items.iter().filter(|i| i.masks.is_some()).count(), 3, "each box clips its text");
+        assert_eq!(dl.clip_parents.len(), 3);
+    }
+}
+
+#[test]
+fn typing_is_deterministic() {
+    let d = field_doc("stop();");
+    let ev: Vec<Event> = [Event::Down(Vec2::new(30.0, 55.0)), Event::Up(Vec2::new(30.0, 55.0))].into_iter().chain("deterministic".chars().map(Event::Char)).chain([Event::KeyDown(16), Event::KeyDown(37), Event::KeyDown(37), Event::Char('X')]).collect();
+    let a = step(&d, &start(&d, &mut Mono).state, &ev, &mut Mono);
+    let b = step(&d, &start(&d, &mut Mono).state, &ev, &mut Mono);
+    assert_eq!(a, b);
+    assert_eq!(text_of(&a.state, 6).as_deref(), Some("deterministX"));
 }

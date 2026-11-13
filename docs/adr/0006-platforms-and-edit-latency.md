@@ -32,7 +32,7 @@ The policy is one shell with platform decisions isolated in one module, rather t
 |---|---|---|---|
 | Shortcuts | `Ctrl` in the registry = **⌘**; labels use Apple order and glyphs (⇧⌘S), or "Shift+Cmd+S" when the font lacks them (checked at runtime) | Ctrl labels | Ctrl labels |
 | Application menu | **AniCraft** menu: About, Settings… (⌘,), Quit (⌘Q) | File › Exit (Ctrl+Q), Edit › Preferences… (Ctrl+U, as in Animate) | as Windows |
-| Window chrome | Unified title bar: full-size content view, title hidden, menu row inset for the traffic lights | Native frame | Native frame (X11 or Wayland chosen by winit; app id `anicraft` for window rules and docks) |
+| Window chrome | Unified title bar: full-size content view, transparent title bar (an opaque one covers the menu row: #247), title hidden, menu row inset for the traffic lights | Native frame | Native frame (X11 or Wayland chosen by winit; app id `anicraft` for window rules and docks) |
 | File dialogs | Native panels (rfd) | Common dialogs (rfd) | **XDG desktop portal** (rfd). A Preferences switch falls back to a built-in path field on desktops without a portal |
 | GPU backend | wgpu → Metal | wgpu → DX12/Vulkan | wgpu → Vulkan; **automatic retry with OpenGL** (glow) if wgpu cannot start (VMs, old GPUs, missing drivers); `--renderer gl` / `ANICRAFT_RENDERER` to force |
 | Settings folder | ~/Library/Application Support/AniCraft | %APPDATA%\AniCraft | $XDG_CONFIG_HOME/anicraft |

@@ -1,0 +1,59 @@
+/* AniCraft User Guide (ADR 0069). The editor's graphite palette when the system is dark, a
+   light reading page otherwise; Inter for prose and JetBrains Mono for keys, ids and code, as in
+   the app (docs/ui-guidelines.md), with the system's fonts when they aren't installed. */
+:root {
+  --bg: #fbfbfc; --panel: #f1f1f4; --text: #1b1b1f; --muted: #55555e; --line: #d8d8de;
+  --accent: #2e66f0; --code-bg: #ececf1;
+  --prose: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1b1f; --panel: #222227; --text: #eeeef0; --muted: #a8a8b2; --line: #34343c;
+          --accent: #6f97ff; --code-bg: #2a2a31; }
+}
+* { box-sizing: border-box; }
+html { font-size: 16px; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--prose); line-height: 1.6; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skip { position: absolute; left: -999px; }
+.skip:focus { left: 8px; top: 8px; background: var(--panel); padding: 4px 8px; }
+header.top { padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--panel); font-weight: 600; }
+header.top a { color: var(--text); text-decoration: none; }
+header.top .version { color: var(--muted); font-family: var(--mono); font-weight: 400; font-size: 0.85rem; margin-left: 6px; }
+.layout { display: flex; max-width: 1200px; margin: 0 auto; }
+nav.toc { flex: 0 0 260px; padding: 16px 12px; border-right: 1px solid var(--line); font-size: 0.92rem; position: sticky; top: 0; align-self: flex-start; max-height: 100vh; overflow-y: auto; }
+nav.toc ol { margin: 0; padding-left: 1.4em; }
+nav.toc li { margin: 2px 0; }
+nav.toc a { color: var(--text); text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc a[aria-current="page"] { color: var(--accent); font-weight: 600; }
+main { flex: 1; min-width: 0; padding: 8px 40px 40px; max-width: 860px; }
+h1, h2, h3 { line-height: 1.25; }
+h1 { font-size: 2rem; margin-top: 0.8em; }
+h2 { font-size: 1.4rem; margin-top: 1.8em; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+h3 { font-size: 1.12rem; margin-top: 1.4em; }
+code, kbd, pre { font-family: var(--mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 12px 14px; overflow-x: auto; border-radius: 4px; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--panel); }
+img { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; }
+blockquote { margin: 1em 0; padding: 4px 16px; border-left: 3px solid var(--accent); background: var(--panel); }
+nav.pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 3em; padding-top: 12px; border-top: 1px solid var(--line); }
+nav.pager a[rel="next"] { margin-left: auto; text-align: right; }
+footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 20px; border-top: 1px solid var(--line); }
+@media (max-width: 800px) {
+  .layout { display: block; }
+  nav.toc { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+  main { padding: 8px 18px 30px; }
+}
+@media (forced-colors: active) {
+  nav.toc a[aria-current="page"] { text-decoration: underline; }
+}
+@media print {
+  nav.toc, nav.pager, header.top, .skip { display: none; }
+  main { max-width: none; }
+}

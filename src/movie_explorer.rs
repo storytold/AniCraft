@@ -18,18 +18,9 @@ use egui::{Key, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// The tab the Library's dock shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DockTab {
-    #[default]
-    Library,
-    Explorer,
-}
-
 /// What the Movie Explorer shows and holds between frames (view state).
 #[derive(Default)]
 pub struct ExplorerView {
-    pub tab: DockTab,
     pub show: ShowState,
     /// Every scene (off: only the current one).
     pub this_scene: bool,
@@ -87,9 +78,9 @@ fn tree(app: &mut App) -> Arc<Tree> {
     t
 }
 
-/// Window › Movie Explorer: the dock shows it (its band unfolded).
+/// Window › Movie Explorer: the panel comes forward, wherever it is (ADR 0075).
 pub fn open(app: &mut App) {
-    app.explorer.tab = DockTab::Explorer;
+    app.show_panel(crate::dock::Panel::MovieExplorer);
     app.explorer.changed();
 }
 
@@ -98,18 +89,6 @@ pub fn expand_to(app: &mut App, depth: usize) {
     let all = explorer::tree(&app.s.doc, app.s.scene, &Options { all: true, ..app.explorer.options() });
     app.explorer.expanded = Some(all.rows.iter().filter(|r| r.depth < depth && r.children).map(|r| r.key.clone()).collect());
     app.explorer.changed();
-}
-
-/// The tab strip at the top of the dock band: Library, Movie Explorer.
-pub fn tabs(app: &mut App, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        for (tab, label) in [(DockTab::Library, tr!("Library")), (DockTab::Explorer, tr!("Movie Explorer"))] {
-            if ui.selectable_label(app.explorer.tab == tab, label).clicked() {
-                app.explorer.tab = tab;
-            }
-        }
-    });
-    ui.add_space(4.0);
 }
 
 fn kind_name(k: NodeKind) -> &'static str {

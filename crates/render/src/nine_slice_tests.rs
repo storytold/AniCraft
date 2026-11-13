@@ -16,7 +16,7 @@ fn panel(sx: f32, sy: f32, guides: bool) -> Document {
     let mut l = Layer::new(LayerId(3), "art");
     l.keyframes = vec![Arc::new(k)];
     let grid = guides.then_some(ScaleGrid { left: 10.0, right: 90.0, top: 10.0, bottom: 30.0 });
-    d.library.push(Arc::new(Symbol { id: SymbolId(4), name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid: grid, timeline: Timeline { layers: vec![Arc::new(l)] } }));
+    d.library.push(Arc::new(Symbol { id: SymbolId(4), name: "Panel".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: grid, timeline: Timeline { layers: vec![Arc::new(l)] } }));
     let inst = Element {
         id: ElementId(5),
         name: String::new(),

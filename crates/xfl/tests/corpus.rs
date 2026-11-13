@@ -57,16 +57,7 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     ("bitmaps", &[("instances of missing bitmaps", 1), ("missing bitmap files", 1)]),
     ("colour", &[]),
     ("filters", &[("unknown filters", 1)]),
-    (
-        "gradients",
-        &[
-            ("elliptical radial gradients (drawn round)", 1),
-            ("gradient and bitmap strokes (drawn in one colour)", 1),
-            ("linear-RGB gradients (blended in sRGB)", 1),
-            ("radial gradient focal points (drawn centred)", 1),
-            ("repeating and reflecting gradients (drawn padded)", 2),
-        ],
-    ),
+    ("gradients", &[("gradient and bitmap strokes (drawn in one colour)", 1)]),
     ("guides", &[]),
     ("interactive", &[]),
     ("masks", &[]),
@@ -79,19 +70,28 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
         "symbols",
         &[("instances of missing symbols", 1), ("missing library files", 1), ("reverse loop modes (played forward)", 1)],
     ),
-    ("text", &[("dynamic and input text fields (imported as static text)", 2), ("text fields (no fonts on this computer)", 4)]),
+    ("text", &[("text fields (no fonts on this computer)", 4)]),
+    ("textfields", &[("text fields (no fonts on this computer)", 4)]),
     ("tweens", &[("motion tweens (kept as keyframes)", 1), ("tween spins (turned the shortest way)", 1)]),
 ];
 
 /// What each package keeps without running (ADR 0013 tier 1: scripts outside the subset, and
 /// class names); packages not listed keep nothing.
-const KEPT: &[(&str, &[(&str, usize)])] = &[("bitmaps", &[("library folders", 1)]), ("nineslice", &[("library folders", 1)]), ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]), ("symbols", &[("library folders", 1)])];
+const KEPT: &[(&str, &[(&str, usize)])] = &[
+    ("bitmaps", &[("library folders", 1)]),
+    ("nineslice", &[("library folders", 1)]),
+    ("scripts", &[("document class", 1), ("frame scripts in ActionScript 3.0", 1), ("linkage classes", 1)]),
+    ("symbols", &[("library folders", 1)]),
+    ("textfields", &[("text field variables (ActionScript 1.0 and 2.0)", 1)]),
+];
 
 /// The frame scripts each package brings that run (ADR 0013 tier 2: in the subset).
 const RUNS: &[(&str, &[(&str, usize)])] = &[
     ("interactive", &[("frame scripts in ActionScript 3.0", 4)]),
     ("scenes", &[("frame scripts in ActionScript 3.0", 2)]),
     ("scripts", &[("frame scripts in ActionScript 3.0", 2)]),
+    ("text", &[("dynamic text fields", 1), ("input text fields", 1)]),
+    ("textfields", &[("dynamic text fields", 1), ("frame scripts in ActionScript 3.0", 1), ("input text fields", 3)]),
 ];
 
 #[test]
@@ -208,9 +208,24 @@ fn colour_effects_come_across_in_every_style() {
 #[test]
 fn tweens_keep_their_kinds_eases_and_hints() {
     let (doc, _) = import("tweens");
-    let t = |l: usize| doc.timeline(0).layers[l].keyframes[0].tween.expect("a tween");
+    let t = |l: usize| doc.timeline(0).layers[l].keyframes[0].tween.clone().expect("a tween");
     assert_eq!((t(0).kind, t(0).easing), (TweenKind::Classic, Easing::Classic(-100.0)));
     assert_eq!(t(1).easing, Easing::CubicBezier(0.7, 0.0, 0.3, 1.0), "a one-segment custom ease is a cubic Bézier");
+    // Per-property custom eases (ADR 0081): position's of three segments, exactly, overshooting
+    // and settling; scale's of one; the rest linear.
+    use anicraft_doc::EaseGroup;
+    let per = t(5);
+    assert_eq!(per.easing, Easing::Linear);
+    let Easing::Custom(pos) = per.ease(EaseGroup::Position) else { panic!("{per:?}") };
+    let anchors: Vec<(f32, f32)> = pos.points().iter().map(|p| (p.at.x, p.at.y)).collect();
+    assert_eq!(anchors, [(0.0, 0.0), (0.4, 1.3), (0.7, 0.8), (1.0, 1.0)]);
+    assert!((pos.points()[1].h_in.x + 0.15).abs() < 1e-5 && (pos.points()[1].out.x - 0.15).abs() < 1e-5);
+    assert_eq!(per.ease(EaseGroup::Scale), &Easing::CubicBezier(0.8, 0.0, 0.9, 0.5));
+    assert_eq!(per.ease(EaseGroup::Rotation), &Easing::Linear);
+    // At the middle frame the ball is past its end (x 180), still at full size.
+    let el = anicraft_doc::evaluate_layer_elements(&doc.timeline(0).layers[5], 6).unwrap().1[0].clone();
+    let m = el.transform.decompose();
+    assert!(m.tx > 180.0 && (m.sx - (1.0 + 0.5 * Easing::CubicBezier(0.8, 0.0, 0.9, 0.5).apply(0.5))).abs() < 1e-3, "{m:?}");
     assert_eq!((t(3).kind, t(3).easing), (TweenKind::Shape, Easing::Classic(50.0)));
     let hints = &doc.timeline(0).layers[3].keyframes[0].hints;
     assert_eq!(hints.len(), 1);
@@ -251,7 +266,7 @@ fn guides_guide_and_never_draw() {
     let l = &doc.timeline(0).layers;
     assert_eq!((l[0].kind, l[1].kind), (LayerKind::Guide, LayerKind::Guide));
     assert_eq!((l[2].parent, l[3].parent), (Some(l[1].id), Some(l[1].id)), "both riders follow the arc");
-    assert!(l[2].keyframes[0].tween.is_some_and(|t| t.orient));
+    assert!(l[2].keyframes[0].tween.as_ref().is_some_and(|t| t.orient));
     // Half-way the riders are on the arc, well above the straight line between their ends.
     let mid = evaluate(&doc, 6);
     let drawn: Vec<_> = mid.items.iter().filter(|i| !i.guide).collect();
@@ -331,8 +346,17 @@ fn text_fields_become_blocks_with_this_computers_fonts() {
         .collect();
     let want = [("", "Corpus", 28.0, true), ("", "self-authored, line two", 12.0, false), ("", "A fixed-width field wraps its words onto lines.", 11.0, false), ("score", "Score 0042", 18.0, false), ("answer", "type here", 14.0, false)];
     assert_eq!(blocks.iter().map(|(n, t, s, b)| (n.as_str(), t.as_str(), *s, *b)).collect::<Vec<_>>(), want);
-    assert_eq!(report.skipped.get("dynamic and input text fields (imported as static text)"), Some(&2));
+    assert_eq!(report.runs.get("dynamic text fields"), Some(&1), "fields run in Test Movie (ADR 0066)");
     assert!(!report.skipped.contains_key("text fields (no fonts on this computer)"));
+    // The text fields package: fields with their boxes, kinds and names, laid out in the box.
+    let (doc, _) = import_files(&files("textfields"), fonts).unwrap();
+    let fields: Vec<(String, anicraft_doc::TextKind, f32, f32)> = doc.timeline(0).layers[1].keyframes[0]
+        .elements
+        .iter()
+        .filter_map(|e| if let ElementKind::Text(t) = &e.kind { Some((e.name.clone(), t.kind(), t.box_width, t.box_height)) } else { None })
+        .collect();
+    use anicraft_doc::TextKind::{Dynamic, Input};
+    assert_eq!(fields, [("score_txt".into(), Dynamic, 200.0, 28.0), ("name_txt".into(), Input, 200.0, 24.0), ("notes_txt".into(), Input, 140.0, 64.0), ("pw_txt".into(), Input, 120.0, 24.0)]);
 }
 
 /// A small deterministic generator (xorshift), so a failing variant can be found again.
