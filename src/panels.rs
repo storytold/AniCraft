@@ -629,6 +629,22 @@ pub(crate) fn properties(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// The Blending row of a movie clip or button instance.
+fn blend_row(app: &mut App, ui: &mut egui::Ui, current: anicraft_engine::doc::BlendMode, differs: bool) {
+    row_prose(ui, tr!("Blending"), |ui| {
+        egui::ComboBox::from_id_salt("prop_blend").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
+            for mode in anicraft_engine::doc::BlendMode::ALL {
+                if ui.selectable_label(mode == current, crate::i18n::t(mode.label())).clicked() && (mode != current || differs) {
+                    app.run("element.set_blend", json!({"mode": mode.key()}));
+                }
+            }
+        })
+        .response
+        .set_name(tr!("Blending"));
+        mixed(ui, differs);
+    });
+}
+
 /// A symbol type's name, as the Properties panel shows it.
 pub(crate) fn symbol_kind_label(kind: SymbolKind) -> &'static str {
     match kind {
@@ -771,6 +787,21 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
     let many = all.len() > 1;
     // Which rows differ across the selection (ADR 0053): they say "mixed", and a change sets all.
     let m = crate::mixed::of(&app.s.doc, all);
+    // Members of an armature (ADR 0084): their bones place them, so only the look is edited
+    // here, in place on every pose.
+    let tl = app.s.timeline();
+    let layers = app.s.selected_layers();
+    if !layers.is_empty() && layers.iter().all(|l| tl.layer(*l).is_some_and(|l| l.kind == anicraft_engine::doc::LayerKind::Armature)) {
+        colour_effect_rows(app, ui, &e.color, m.color);
+        if let ElementKind::Symbol { symbol, filters, blend, .. } = &e.kind
+            && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
+        {
+            filter_rows(app, ui, filters, m.filters);
+            blend_row(app, ui, *blend, m.blend);
+        }
+        ui.label(text(Type::Caption, tr!("Posed by its bone: drag it with the Selection tool. Colour effect, blending and filters apply on every pose of the armature.")));
+        return;
+    }
     if let ElementKind::Symbol { symbol, events, .. } = &e.kind
         && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
     {
@@ -827,19 +858,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
         if let ElementKind::Symbol { symbol, blend, .. } = &e.kind
             && app.s.doc.symbol(*symbol).is_some_and(|x| x.kind != SymbolKind::Graphic)
         {
-            let current = *blend;
-            row_prose(ui, tr!("Blending"), |ui| {
-                egui::ComboBox::from_id_salt("prop_blend").selected_text(crate::i18n::t(current.label())).show_ui(ui, |ui| {
-                    for mode in anicraft_engine::doc::BlendMode::ALL {
-                        if ui.selectable_label(mode == current, crate::i18n::t(mode.label())).clicked() && (mode != current || m.blend) {
-                            app.run("element.set_blend", json!({"mode": mode.key()}));
-                        }
-                    }
-                })
-                .response
-                .set_name(tr!("Blending"));
-                mixed(ui, m.blend);
-            });
+            blend_row(app, ui, *blend, m.blend);
         }
         if let ElementKind::Symbol { symbol, loop_mode, first_frame, .. } = &e.kind
             && let Some(sym) = app.s.doc.symbol(*symbol).map(|s| (s.kind, s.timeline.frame_count()))
@@ -1738,6 +1757,66 @@ fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId
             }
         });
     }
+    // Joint translation (ADR 0084): the joint may slide along X and Y, within limits.
+    let slide = bone.allow_slide(pose.slide(id));
+    for (axis, limits, now) in [("x", bone.slide_x, slide.x), ("y", bone.slide_y, slide.y)] {
+        let (label, name, tip) = if axis == "x" {
+            (tr!("X translation"), tr!("Joint X translation"), tr!("Lets the joint slide along the x axis of what the bone starts on, so the bone can stretch away from it. Posing slides it only where turning can't reach"))
+        } else {
+            (tr!("Y translation"), tr!("Joint Y translation"), tr!("Lets the joint slide along the y axis of what the bone starts on, so the bone can stretch away from it. Posing slides it only where turning can't reach"))
+        };
+        let mut on = limits.is_some();
+        let free = anicraft_engine::doc::Limits { min: -anicraft_engine::doc::armature::MAX_SLIDE, max: anicraft_engine::doc::armature::MAX_SLIDE };
+        let mut constrain = limits.is_some_and(|l| l != free);
+        row_prose(ui, label, |ui| {
+            if crate::theme::checkbox(ui, &mut on, tr!("Enable")).named(name).on_hover_text(tip).changed() {
+                app.run("bone.set_translation", json!({"bone": id.0, "axis": axis, "enabled": on}));
+            }
+            if on && crate::theme::checkbox(ui, &mut constrain, tr!("Constrain")).on_hover_text(tr!("Limit how far the joint slides, in every pose")).changed() {
+                app.run("bone.set_translation", json!({"bone": id.0, "axis": axis, "constrain": constrain}));
+            }
+        });
+        if let Some(l) = limits {
+            let mut v = now;
+            row(ui, if axis == "x" { tr!("Slide X") } else { tr!("Slide Y") }, |ui| {
+                let r = ui.add(egui::DragValue::new(&mut v).suffix(" px").speed(0.5).range(l.min..=l.max).max_decimals(1)).named(if axis == "x" { tr!("Joint slide X") } else { tr!("Joint slide Y") });
+                if r.on_hover_text(tr!("How far the joint has slid at the playhead, from where it was drawn")).changed() {
+                    live(app, tr_noop!("Pose Bone"), "bone.pose", json!({"bone": id.0, if axis == "x" { "slide_x" } else { "slide_y" }: v}));
+                }
+            });
+            if l != free {
+                row(ui, if axis == "x" { tr!("Limits X") } else { tr!("Limits Y") }, |ui| {
+                    let (mut min, mut max) = (l.min, l.max);
+                    let a = ui.add(egui::DragValue::new(&mut min).prefix("min ").suffix(" px").speed(0.5).range(-anicraft_engine::doc::armature::MAX_SLIDE..=max).max_decimals(0)).named(if axis == "x" { tr!("Joint X translation minimum") } else { tr!("Joint Y translation minimum") });
+                    let b = ui.add(egui::DragValue::new(&mut max).prefix("max ").suffix(" px").speed(0.5).range(min..=anicraft_engine::doc::armature::MAX_SLIDE).max_decimals(0)).named(if axis == "x" { tr!("Joint X translation maximum") } else { tr!("Joint Y translation maximum") });
+                    if a.changed() || b.changed() {
+                        live(app, tr_noop!("Joint Translation"), "bone.set_translation", json!({"bone": id.0, "axis": axis, "min": min, "max": max}));
+                    }
+                });
+            }
+        }
+    }
+    // Spring (ADR 0084): secondary motion as the bones it hangs from move.
+    let sp = bone.spring.unwrap_or(anicraft_engine::doc::armature::Spring { strength: 0.0, damping: 0.0 });
+    let (mut strength, mut damping) = (sp.strength * 100.0, sp.damping * 100.0);
+    row(ui, tr!("Spring"), |ui| {
+        let r = ui.add(egui::DragValue::new(&mut strength).speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Spring strength"));
+        if r.on_hover_text(tr!("How stiff the bone's spring is, 0 to 100: 0 is no spring; a stiffer spring swings faster and lags less")).changed() {
+            live(app, tr_noop!("Bone Spring"), "bone.set_spring", json!({"bone": id.0, "strength": strength}));
+        }
+    });
+    row(ui, tr!("Damping"), |ui| {
+        let r = ui.add(egui::DragValue::new(&mut damping).speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Spring damping"));
+        if r.on_hover_text(tr!("How quickly the spring's swing dies down, 0 to 100: 0 swings on, 100 absorbs it all")).changed() {
+            live(app, tr_noop!("Bone Spring"), "bone.set_spring", json!({"bone": id.0, "damping": damping}));
+        }
+    });
+    let mut springs = layer.armature.as_ref().is_some_and(|a| !a.springs_off);
+    row_prose(ui, tr!("Springs"), |ui| {
+        if crate::theme::checkbox(ui, &mut springs, tr!("Enable")).named(tr!("Enable springs")).on_hover_text(tr!("Turn off to see and pose the armature's keyed poses without the springs' swing; every export plays them on")).changed() {
+            app.run("bone.enable_springs", json!({"layer": layer.id.0, "enabled": springs}));
+        }
+    });
     // A bone inside a shape (ADR 0071): how many of the shape's points it moves.
     let skin = layer.armature.as_ref().and_then(|a| a.skin.as_ref()).map(|k| (k.points.iter().filter(|p| p.weight(id) > 0.0).count(), k.points.len()));
     if let Some((mine, total)) = skin {

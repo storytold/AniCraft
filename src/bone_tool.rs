@@ -15,7 +15,7 @@ use crate::app::{App, Drag, Tool};
 use crate::pathtools::Xf;
 use crate::theme::{T, to_color32};
 use anicraft_engine::doc::armature::{self, BoneAt};
-use anicraft_engine::doc::{BoneId, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, evaluate_layer_elements};
+use anicraft_engine::doc::{BoneId, Element, ElementId, ElementKind, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_shown};
 use anicraft_engine::geom::Vec2;
 use egui::{Color32, Key, Modifiers, Pos2, Stroke, pos2};
 use serde_json::json;
@@ -46,8 +46,10 @@ pub fn shown(app: &App) -> Vec<Shown> {
         .filter(|(i, l)| l.kind == LayerKind::Armature && l.visible && !tl.hidden_by_folder(*i))
         .filter_map(|(_, l)| {
             let arm = l.armature.as_deref()?;
-            let (_, els) = evaluate_layer_elements(l, app.s.frame)?;
-            let pose = armature::pose_at(l, app.s.frame).unwrap_or_default();
+            // As the stage draws the armature: swung by its springs (ADR 0084).
+            let fps = app.s.doc.stage.fps;
+            let (_, els) = evaluate_shown(l, app.s.frame, None, fps)?;
+            let pose = anicraft_engine::doc::spring::sprung_pose(l, app.s.frame, fps).unwrap_or_default();
             Some(Shown { layer: l.id, color: to_color32(l.color), locked: l.locked || tl.locked_by_folder(l.id), bones: armature::bones_at(arm, &els, &pose) })
         })
         .collect()
@@ -126,11 +128,17 @@ fn item_at(app: &App, sp: Vec2, slop: f32, skip: Option<ElementId>, want: impl F
     None
 }
 
-/// Selects bone `bone` on armature layer `layer` (its layer becomes the active one).
+/// Selects bone `bone` on armature layer `layer` (its layer becomes the active one), and the
+/// instance it moves, so Properties shows that instance's colour effect, blending and filters
+/// to edit in place (ADR 0084).
 pub fn select(app: &mut App, layer: LayerId, bone: Option<BoneId>) {
     app.bone_sel = bone;
     if bone.is_some() && app.s.layer != layer {
         app.run("layer.select", json!({"layer": layer.0}));
+    }
+    let child = bone.and_then(|b| app.s.timeline().layer(layer).and_then(|l| l.armature.as_ref()).filter(|a| a.skin.is_none()).and_then(|a| a.bone(b)).map(|b| b.child));
+    if let Some(child) = child {
+        app.run("element.select", json!({"ids": [child.0], "layer": layer.0}));
     }
 }
 
