@@ -18,6 +18,39 @@ const BAND_H: f32 = 32.0;
 const MIN_BODY: f32 = 48.0;
 /// The panel menu button.
 const MENU_W: f32 = 26.0;
+/// The narrowest a side dock gets.
+const MIN_SIDE: f32 = 160.0;
+/// A side dock tab's padding around its name, and the narrowest it shrinks to.
+const TAB_PAD: f32 = 16.0;
+const MIN_TAB: f32 = 44.0;
+const TAB_GAP: f32 = 2.0;
+
+/// The widths of tabs wanting `want` points each in a strip of `room` points (ADR 0083):
+/// their own when they all fit; else the longest shrink to one cap (their names ending in an
+/// ellipsis) so short names stay whole; never narrower than `MIN_TAB` (or their own width),
+/// and when even that doesn't fit the strip scrolls.
+pub fn fit_tabs(want: &[f32], room: f32) -> Vec<f32> {
+    let gaps = TAB_GAP * want.len().saturating_sub(1) as f32;
+    let total: f32 = want.iter().sum::<f32>() + gaps;
+    if total <= room || want.is_empty() {
+        return want.to_vec();
+    }
+    // The cap c with sum(min(w, c)) = room - gaps, found among the sorted widths.
+    let mut sorted: Vec<f32> = want.iter().copied().filter(|w| w.is_finite()).collect();
+    sorted.sort_by(f32::total_cmp);
+    let mut left = (room - gaps).max(0.0);
+    let mut cap = 0.0;
+    for (i, w) in sorted.iter().enumerate() {
+        let n = (sorted.len() - i) as f32;
+        if w * n >= left {
+            cap = left / n;
+            break;
+        }
+        left -= w;
+        cap = *w;
+    }
+    want.iter().map(|w| w.min(cap.max(MIN_TAB))).collect()
+}
 /// How far from an edge of the stage a dragged tab docks on that side, as a part of the stage.
 const EDGE: f32 = 0.22;
 
@@ -174,7 +207,7 @@ pub fn workspace(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         let id = Id::new(("dock_zone", side, app.dock_view.epoch));
-        let (auto, max, min) = if side.stacks() { (dock_w, (room.x * 0.5).max(220.0), 160.0) } else { (dock_h, (room.y * 0.6).max(200.0), 120.0) };
+        let (auto, max, min) = if side.stacks() { (dock_w, (room.x * 0.5).max(220.0), MIN_SIDE) } else { (dock_h, (room.y * 0.6).max(200.0), 120.0) };
         let size = zone.size.unwrap_or(auto).clamp(min, max);
         let panel = match side {
             Side::Left => egui::Panel::left(id),
@@ -320,22 +353,70 @@ fn band_header(ui: &mut egui::Ui, side: Side, g: &Group, rect: Rect, acts: &mut 
     if resp.on_hover_text(if open { tr!("Fold this panel group") } else { tr!("Unfold this panel group") }).clicked() {
         acts.push(Act::Fold(shown));
     }
-    let mut x = rect.left() + 30.0;
-    let right = rect.right() - MENU_W - 4.0;
-    for (i, tab) in g.tabs.iter().enumerate() {
-        let active = i == g.active.min(g.tabs.len() - 1);
-        let label = crate::i18n::t(tab.label());
-        let galley = p.layout_no_wrap(label.to_string(), font(Type::Heading), T.text);
-        let w = (galley.rect.width() + 16.0).min((right - x).max(0.0));
-        if w < 8.0 {
-            break;
+    // The tab strip ends before the menu button: a name never runs under it (ADR 0083). Tabs
+    // too wide for it shrink, their names cut with an ellipsis (the whole name is in the
+    // tooltip); at their narrowest the strip scrolls with the wheel, keeping the shown tab in view.
+    let strip = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top()), pos2(rect.right() - MENU_W - 4.0, rect.bottom()));
+    let active_i = g.active.min(g.tabs.len().saturating_sub(1));
+    let names: Vec<&str> = g.tabs.iter().map(|t| crate::i18n::t(t.label())).collect();
+    let natural: Vec<f32> = names.iter().map(|n| p.layout_no_wrap(n.to_string(), font(Type::Heading), T.text).rect.width() + TAB_PAD).collect();
+    let mut widths = fit_tabs(&natural, strip.width());
+    // Too narrow even for the shrunk tabs: the strip scrolls, and the shown tab keeps as much of
+    // its name as the strip holds.
+    if widths.iter().sum::<f32>() + TAB_GAP * widths.len().saturating_sub(1) as f32 > strip.width()
+        && let (Some(w), Some(n)) = (widths.get_mut(active_i), natural.get(active_i))
+    {
+        *w = n.min(strip.width()).max(*w);
+    }
+    let total = widths.iter().sum::<f32>() + TAB_GAP * widths.len().saturating_sub(1) as f32;
+    let overflow = (total - strip.width()).max(0.0);
+    let key = Id::new(("dock_tab_scroll", shown.id(), g.tabs.first().map_or("", |t| t.id())));
+    let (mut scroll, last_active) = ui.ctx().data(|d| d.get_temp::<(f32, usize)>(key)).unwrap_or((0.0, usize::MAX));
+    if overflow > 0.0 && ui.rect_contains_pointer(strip) {
+        let d = ui.input(|i| i.smooth_scroll_delta);
+        scroll -= if d.x.abs() > d.y.abs() { d.x } else { d.y };
+    }
+    if last_active != active_i {
+        // The shown tab comes into view.
+        let at: f32 = widths.iter().take(active_i).map(|w| w + TAB_GAP).sum();
+        let w = widths.get(active_i).copied().unwrap_or(0.0);
+        scroll = scroll.min(at).max(at + w - strip.width());
+    }
+    scroll = scroll.clamp(0.0, overflow);
+    ui.ctx().data_mut(|d| d.insert_temp(key, (scroll, active_i)));
+    ui.ctx().data_mut(|d| {
+        for t in &g.tabs {
+            d.remove::<(Rect, bool)>(Id::new(("dock_tab_rect", t.id())));
         }
-        let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(w, rect.height() - 6.0));
-        x += w + 2.0;
-        let resp = tab_widget(ui, *tab, r, active, &galley, g.tabs.len() > 1);
-        tab_actions(ui, side, g, *tab, &resp, acts);
-        if active {
+    });
+    let mut x = strip.left() - scroll;
+    let several = g.tabs.len() > 1;
+    for (i, (tab, w)) in g.tabs.iter().zip(&widths).enumerate() {
+        let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(*w, rect.height() - 6.0));
+        x += w + TAB_GAP;
+        let shown_r = r.intersect(strip);
+        if shown_r.width() < 4.0 {
+            continue;
+        }
+        let name = names.get(i).copied().unwrap_or("");
+        let cut = natural.get(i).is_some_and(|n| *n > w + 0.5);
+        let galley = if cut { elided(&p, name, w - TAB_PAD) } else { p.layout_no_wrap(name.to_string(), font(Type::Heading), T.text) };
+        let resp = tab_widget(ui, *tab, r, shown_r, i == active_i, &galley, several);
+        ui.ctx().data_mut(|d| d.insert_temp(Id::new(("dock_tab_rect", tab.id())), (shown_r, cut)));
+        tab_actions(ui, side, g, *tab, &resp, cut, acts);
+        if i == active_i {
             a11y::anchor(ui, Region::Panel(*tab), Rect::from_min_max(rect.min, pos2(rect.right(), ui.max_rect().bottom().max(rect.bottom()))), &resp);
+        }
+    }
+    // More tabs past an edge: the strip fades there.
+    for (edge, more) in [(strip.left(), scroll > 0.5), (strip.right(), scroll < overflow - 0.5)] {
+        if more {
+            let w = 10.0;
+            let fade = if edge == strip.left() { Rect::from_min_size(pos2(edge, rect.top() + 1.0), vec2(w, rect.height() - 2.0)) } else { Rect::from_min_size(pos2(edge - w, rect.top() + 1.0), vec2(w, rect.height() - 2.0)) };
+            p.rect_filled(fade, theme::SQUARE, T.panel_alt.gamma_multiply(0.85));
+            let c = fade.center();
+            let (tip, back) = if edge == strip.left() { (c.x - 2.5, c.x + 2.0) } else { (c.x + 2.5, c.x - 2.0) };
+            p.add(egui::Shape::convex_polygon(vec![pos2(tip, c.y), pos2(back, c.y - 4.0), pos2(back, c.y + 4.0)], T.text_dim, Stroke::NONE));
         }
     }
     let menu = Rect::from_center_size(pos2(rect.right() - MENU_W * 0.5 - 2.0, rect.center().y), vec2(MENU_W - 2.0, 24.0));
@@ -395,18 +476,26 @@ fn tab_tip(p: Panel) -> &'static str {
     }
 }
 
+/// `name` in one line no wider than `width`, cut with an ellipsis.
+fn elided(p: &egui::Painter, name: &str, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), font(Type::Heading), T.text);
+    job.wrap = egui::text::TextWrapping { max_width: width.max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    p.layout_job(job)
+}
+
 /// A side dock's tab: named and selectable for screen readers, dragged to move its panel.
-fn tab_widget(ui: &mut egui::Ui, tab: Panel, r: Rect, active: bool, galley: &std::sync::Arc<egui::Galley>, several: bool) -> egui::Response {
-    let resp = ui.interact(r, Id::new(("dock_tab", tab.id())), Sense::click_and_drag());
+/// `shown` is the part of `r` inside the tab strip (it scrolls).
+fn tab_widget(ui: &mut egui::Ui, tab: Panel, r: Rect, shown: Rect, active: bool, galley: &std::sync::Arc<egui::Galley>, several: bool) -> egui::Response {
+    let resp = ui.interact(shown, Id::new(("dock_tab", tab.id())), Sense::click_and_drag());
     let name = crate::i18n::t(tab.label());
     resp.widget_info(|| egui::WidgetInfo::selected(WidgetType::SelectableLabel, true, active, name));
-    let p = ui.painter();
+    let p = ui.painter().with_clip_rect(shown.intersect(ui.painter().clip_rect()));
     if resp.hovered() && !active {
         p.rect_filled(r, T.rc(), T.hover);
     }
     let colour = if active { theme::color(Type::Heading) } else { T.text_dim };
-    // A tab too long for the room left is cut at its edge, never drawn over the menu.
-    p.with_clip_rect(r.intersect(p.clip_rect())).galley_with_override_text_color(pos2(r.left() + 8.0, r.center().y - galley.rect.height() * 0.5), galley.clone(), colour);
+    // Drawn inside the strip only: never over the menu button.
+    p.galley_with_override_text_color(pos2(r.left() + TAB_PAD * 0.5, r.center().y - galley.rect.height() * 0.5), galley.clone(), colour);
     if active && several {
         p.rect_filled(Rect::from_min_max(pos2(r.left() + 6.0, r.bottom() - 2.0), pos2(r.right() - 6.0, r.bottom())), theme::SQUARE, T.accent);
     }
@@ -417,8 +506,8 @@ fn tab_widget(ui: &mut egui::Ui, tab: Panel, r: Rect, active: bool, galley: &std
 }
 
 /// What a tab's clicks and drags do: show its panel, fold (double-click), its menu (right-click),
-/// move it (drag).
-fn tab_actions(ui: &egui::Ui, side: Side, g: &Group, tab: Panel, resp: &egui::Response, acts: &mut Vec<Act>) {
+/// move it (drag). A `cut` name shows whole in the tooltip.
+fn tab_actions(ui: &egui::Ui, side: Side, g: &Group, tab: Panel, resp: &egui::Response, cut: bool, acts: &mut Vec<Act>) {
     if resp.drag_started() {
         ui.ctx().data_mut(|d| d.insert_temp(Id::new("dock_drag_start"), Some(tab)));
     }
@@ -427,7 +516,8 @@ fn tab_actions(ui: &egui::Ui, side: Side, g: &Group, tab: Panel, resp: &egui::Re
     } else if resp.clicked() {
         acts.push(Act::Show(tab));
     }
-    let resp = resp.clone().on_hover_text(tab_tip(tab));
+    let tip = if cut { format!("{}\n{}", crate::i18n::t(tab.label()), tab_tip(tab)) } else { tab_tip(tab).to_string() };
+    let resp = resp.clone().on_hover_text(tip);
     resp.context_menu(|ui| panel_menu(ui, side, g, tab, acts));
 }
 
@@ -828,6 +918,54 @@ mod tests {
         }
         frame(ctx, app, pointer(to, Some(false)));
         settle(ctx, app);
+    }
+
+    #[test]
+    fn tabs_shrink_to_fit_and_short_names_stay_whole() {
+        // They fit: as they are.
+        assert_eq!(fit_tabs(&[60.0, 80.0], 200.0), vec![60.0, 80.0]);
+        // They don't: the long ones share what's left, the short one keeps its width.
+        let w = fit_tabs(&[60.0, 120.0, 140.0], 250.0);
+        assert_eq!(w[0], 60.0);
+        assert!((w[1] - w[2]).abs() < 1e-3 && (w.iter().sum::<f32>() + 2.0 * TAB_GAP - 250.0).abs() < 1e-3, "{w:?}");
+        // Narrower still: never below the narrowest a tab goes (the strip scrolls then).
+        assert_eq!(fit_tabs(&[60.0, 120.0, 140.0], 20.0), vec![MIN_TAB; 3]);
+        assert_eq!(fit_tabs(&[30.0, 120.0], 20.0), vec![30.0, MIN_TAB]);
+        assert!(fit_tabs(&[], 10.0).is_empty());
+    }
+
+    #[test]
+    fn at_the_narrowest_dock_no_tab_runs_under_the_menu_button() {
+        let tabs = [Panel::Library, Panel::MovieExplorer, Panel::Swatches];
+        let rect = |ctx: &egui::Context, t: Panel| ctx.data(|m| m.get_temp::<(Rect, bool)>(Id::new(("dock_tab_rect", t.id()))));
+        for size in [MIN_SIDE, 200.0, 260.0] {
+            // Three long names in one group, the dock at `size` (egui keeps a panel's size, so
+            // a fresh window for each).
+            let (mut app, ctx) = app();
+            let Some(Place::Docked { side: Side::Right, group, .. }) = app.dock.place(Panel::Library) else { panic!("library docked right") };
+            app.dock.right.groups[group].tabs = tabs.to_vec();
+            app.dock.right.groups[group].active = 1;
+            app.dock.right.size = Some(size);
+            settle(&ctx, &mut app);
+            let Some(d) = app.dock_view.drawn.iter().find(|d| d.first == Panel::Library) else { panic!("drawn") };
+            assert!((d.header.width() - size).abs() <= 2.0, "the dock is {} wide, not {size}", d.header.width());
+            let menu_left = d.header.right() - MENU_W - 4.0;
+            for t in tabs {
+                if let Some((r, _)) = rect(&ctx, t) {
+                    assert!(r.right() <= menu_left + 0.5 && r.left() >= d.header.left() + 29.5, "{size}: {t:?} {r:?} leaves the strip (menu at {menu_left})");
+                }
+            }
+            // The shown tab is always in view, and its name is whole or ends in an ellipsis.
+            assert!(rect(&ctx, Panel::MovieExplorer).is_some(), "{size}");
+            // Wide enough to show them all, shrunk; narrower, the strip scrolls.
+            let all = tabs.iter().all(|t| rect(&ctx, *t).is_some_and(|(r, _)| r.width() >= MIN_TAB - 0.5));
+            let cut = rect(&ctx, Panel::MovieExplorer).is_some_and(|(_, cut)| cut);
+            if size == MIN_SIDE {
+                assert!(!all && cut, "{size}: the strip scrolls");
+            } else if size < 250.0 {
+                assert!(cut, "{size}: Movie Explorer shrinks with an ellipsis");
+            }
+        }
     }
 
     #[test]

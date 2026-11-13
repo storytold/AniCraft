@@ -463,6 +463,13 @@ pub struct App {
     /// (frames into the span), its drag and its list scroll.
     pub me_prop: anicraft_engine::doc::Property,
     pub me_key: Option<u32>,
+    /// The Motion Editor's picked keys (property, offset into the span), across properties,
+    /// and the span they belong to (layer id, first frame) (ADR 0083).
+    pub me_sel: Vec<(anicraft_engine::doc::Property, u32)>,
+    pub me_sel_at: (u64, u32),
+    /// A screenshot shows a Motion Editor drag in time (no pointer then): its readout sits at
+    /// the dragged keys.
+    pub me_shot_drag: bool,
     pub me_drag: Option<motion_editor::MeDrag>,
     pub me_vscroll: f32,
     /// Colour effect styles the Motion Editor lists besides those the tween uses (ADR 0056).
@@ -697,6 +704,9 @@ impl App {
             dock_view: Default::default(),
             me_prop: anicraft_engine::doc::Property::X,
             me_key: None,
+            me_sel: Vec::new(),
+            me_sel_at: (0, 0),
+            me_shot_drag: false,
             me_drag: None,
             me_vscroll: 0.0,
             me_styles: Vec::new(),
@@ -2195,6 +2205,42 @@ impl App {
                 self.me_prop = anicraft_engine::doc::Property::Y;
                 self.me_key = Some(0);
                 self.run("timeline.goto", json!({"frame": 6}));
+            }
+            Some("motionretime") => {
+                // Retiming (ADR 0083): `motion`'s tween with every property's keys on the middle
+                // frame picked on the lane and dragged three frames later, mid-drag.
+                self.open_panel(Some("motion"));
+                let Some((start, mid)) = self.s.active_layer().and_then(|l| l.keyframes.first()).map(|k| (k.start, k.duration / 2)) else { return };
+                let keys: Vec<(anicraft_engine::doc::Property, u32)> = self.s.active_layer().and_then(|l| l.keyframes.first()).and_then(|k| k.motion.as_ref()).map(|m| m.tracks.iter().filter(|t| t.key_at(mid).is_some()).map(|t| (t.property, mid)).collect()).unwrap_or_default();
+                self.me_sel = keys;
+                self.me_sel_at = (self.s.layer.0, start);
+                let by = motion_editor::retime(self, start, 3).unwrap_or(0);
+                self.s.mark_saved();
+                self.me_drag = Some(motion_editor::MeDrag::Key { frame: mid, lo: 0.0, hi: 1.0, axis: motion_editor::Axis::Time, by, lane: true });
+                self.me_shot_drag = true;
+                self.run("timeline.goto", json!({"frame": start + mid + 3}));
+            }
+            Some("motionstretch") => {
+                // A motion span stretched by its end (ADR 0083): `motionspan`'s tween made half
+                // as long again, its keys in proportion, and its end being dragged further.
+                self.open_panel(Some("motionspan"));
+                let Some((lid, start, frames)) = self.s.active_layer().and_then(|l| l.keyframes.first().map(|k| (l.id, k.start, k.duration))) else { return };
+                let longer = frames + frames / 2;
+                self.run("timeline.resize_span", json!({"layer": lid.0, "frame": start, "frames": longer}));
+                self.s.mark_saved();
+                self.frame_sel = Some(timeline::FrameSel { anchor: (lid, start), head: (lid, start + longer - 1) });
+                self.tl_drag = timeline::TlDrag::Span { layer: lid, start, end: start + longer, to: start + longer + 8 };
+            }
+            Some("docktabs") => {
+                // The right dock at its narrowest with three long tab names in one group: they
+                // shrink with an ellipsis and the strip scrolls, never under the menu button.
+                if let Some(crate::dock::Place::Docked { side: crate::dock::Side::Right, group, .. }) = self.dock.place(crate::dock::Panel::Library)
+                    && let Some(g) = self.dock.right.groups.get_mut(group)
+                {
+                    g.tabs = vec![crate::dock::Panel::Library, crate::dock::Panel::MovieExplorer, crate::dock::Panel::Swatches];
+                    g.active = 1;
+                }
+                self.dock.right.size = Some(160.0);
             }
             Some(which @ ("motionpath" | "motionpoints" | "motionedit")) => {
                 // The Star layer's span as a motion tween along a curved, oriented motion path,
