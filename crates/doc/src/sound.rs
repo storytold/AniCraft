@@ -445,7 +445,7 @@ fn sounding_symbols(doc: &Document) -> HashSet<SymbolId> {
             if k.sound.is_some() && set.insert(sym.id) {
                 queue.push(sym.id);
             }
-            for el in &k.elements {
+            for el in crate::expand_groups(&k.elements).iter() {
                 if let ElementKind::Symbol { symbol, .. } = &el.kind {
                     shown_in.entry(*symbol).or_default().push(sym.id);
                 }
@@ -485,7 +485,8 @@ impl<'a> Layout<'a> {
                 if let Some(fs) = &k.sound {
                     self.sound(fs, k, st, gain);
                 }
-                for el in &k.elements {
+                // (A symbol inside a group plays as if it were on the group's layer, ADR 0073.)
+                for el in crate::expand_groups(&k.elements).iter() {
                     if matches!(&el.kind, ElementKind::Symbol { symbol, .. } if self.sounding.contains(symbol)) {
                         self.instance(layer, k, el, st, gain, depth);
                     }

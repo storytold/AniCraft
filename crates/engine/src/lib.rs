@@ -15,6 +15,7 @@ pub mod cmds_drop;
 pub mod cmds_erase;
 mod cmds_file;
 mod cmds_frames;
+mod cmds_group;
 mod cmds_modify;
 mod cmds_motion;
 mod cmds_hints;
@@ -138,6 +139,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(onion::specs());
     v.extend(multi::specs());
     v.extend(cmds_draw::specs());
+    v.extend(cmds_group::specs());
     v.extend(cmds_library::specs());
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
@@ -179,6 +181,11 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
 pub use history::{Snapshot, StateId};
 pub use selection::Selection;
 pub use cmds_layer::LAYER_COLORS;
+
+/// The command namespaces that change a timeline's layers and frames, refused while a group is
+/// open for editing (ADR 0073): a group is one layer and one frame. A name ending in `.` is a
+/// namespace, any other one command.
+const GROUP_REFUSES: &[&str] = &["timeline.", "layer.", "camera.", "bone.", "motion.", "tween.", "frames.", "sound.place", "script.set", "script.clear"];
 
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
 pub const MAX_FRAME: u32 = 100_000;
@@ -267,7 +274,7 @@ impl ToolStyle {
 
 /// An open document plus everything the editor tracks about it.
 /// A display list and the `(state, scene, frame, open symbol)` it was evaluated for.
-type CachedList = (StateId, usize, u32, Option<anicraft_doc::SymbolId>, Arc<DisplayList>);
+type CachedList = (StateId, usize, u32, Option<(editing::Opened, Option<(LayerId, ElementId)>, usize)>, Arc<DisplayList>);
 
 pub struct Session {
     /// The document: a persistent tree, so cloning it (undo, render thread) is cheap.
@@ -508,10 +515,15 @@ impl Session {
         {
             return Err(EngineError::NeedsConfirmation(format!("{} {} (pass \"confirm\": true to proceed)", c.title, c.message)));
         }
+        // A group open for editing is one layer and one frame (ADR 0073).
+        if spec.mutates && self.editing_group() && GROUP_REFUSES.iter().any(|ns| if ns.ends_with('.') { id.starts_with(ns) } else { id == *ns }) {
+            return Err(EngineError::State("a group has one layer and one frame: close it (Edit › Edit Document) to change the timeline, or convert it to a symbol (F8) to animate inside it".into()));
+        }
         self.settle_cut(id, params);
         if !spec.mutates {
             let r = (spec.run)(self, params);
             self.settle_cut(id, params);
+            self.hold_group_frame();
             return r;
         }
         // An edit on a marquee's cut records its step from before the cut (ADR 0041).
@@ -562,6 +574,7 @@ impl Session {
                     }
                 }
                 self.fix_selection();
+                self.hold_group_frame();
                 Ok(v)
             }
             Err(e) => {
@@ -569,6 +582,14 @@ impl Session {
                 self.restore(rollback.unwrap_or(before));
                 Err(e)
             }
+        }
+    }
+
+    /// Inside a group (ADR 0073) the playhead stays on its only frame.
+    fn hold_group_frame(&mut self) {
+        if self.frame != 0 && self.editing_group() {
+            self.frame = 0;
+            self.fix_selection();
         }
     }
 
@@ -770,7 +791,7 @@ impl Session {
 
     /// The current scene evaluated at the playhead, cached per `(state, scene, frame)`.
     pub fn display_list(&self) -> Arc<DisplayList> {
-        let open = self.editing_symbol();
+        let open = self.editing.last().map(|l| (l.open, l.instance, self.editing.len()));
         if let Some((s, sc, f, o, dl)) = &*self.dl_cache.borrow()
             && *s == self.state
             && *sc == self.scene
@@ -779,11 +800,8 @@ impl Session {
         {
             return dl.clone();
         }
-        // An open symbol is edited in its own space (ADR 0045).
-        let dl = Arc::new(match open.and_then(|id| self.doc.symbol(id)) {
-            Some(sym) => anicraft_doc::evaluate_timeline(&self.doc, &sym.timeline, self.frame),
-            None => evaluate_scene(&self.doc, self.scene, self.frame),
-        });
+        // An open symbol (ADR 0045) or group (ADR 0073) is edited in its own space.
+        let dl = Arc::new(if open.is_some() { anicraft_doc::evaluate_timeline(&self.doc, self.timeline(), self.frame) } else { evaluate_scene(&self.doc, self.scene, self.frame) });
         self.dl_cache.replace(Some((self.state, self.scene, self.frame, open, dl.clone())));
         dl
     }
@@ -823,7 +841,7 @@ impl Session {
 
     pub(crate) fn layer_mut(&mut self, id: Option<LayerId>) -> Result<&mut Layer> {
         let id = id.unwrap_or(self.layer);
-        crate::editing::edited_mut(&mut self.doc, self.scene, &self.editing).layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
+        crate::editing::edited_mut(&mut self.doc, self.scene, &self.editing)?.layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
     }
 
     /// The keyframe on the active layer that edits at the playhead should change. Creates a
@@ -854,7 +872,7 @@ impl Session {
         }
         // Through the fields, not `layer_mut`, so `motion_edit` can be set below.
         let (scene, active) = (self.scene, self.layer);
-        let layer = crate::editing::edited_mut(&mut self.doc, scene, &self.editing).layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
+        let layer = crate::editing::edited_mut(&mut self.doc, scene, &self.editing)?.layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
         if layer.locked {
             return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));
         }
@@ -977,6 +995,7 @@ pub fn element_label(doc: &Document, e: &Element) -> String {
             None => "Graphic: missing".to_string(),
         },
         ElementKind::Camera => "Camera".to_string(),
+        ElementKind::Group { .. } => "Group".to_string(),
         // An empty field (an input field waiting for the viewer) is named by its type.
         ElementKind::Text(t) if t.text.trim().is_empty() => match t.kind() {
             anicraft_doc::TextKind::Static => "Static text",
@@ -1055,3 +1074,5 @@ mod timeline_key_tests;
 mod tests_bone_chain;
 #[cfg(test)]
 mod path_text_tests;
+#[cfg(test)]
+mod group_tests;

@@ -284,13 +284,19 @@ pub(crate) fn deletion(s: &Session, entries: &[LibraryEntry]) -> (Vec<LibraryIte
 /// Takes every reference to `gone` off `tl` (instances, bitmap-filled shapes, keyframe sounds),
 /// un-sharing only the layers and keyframes that had one. How many references went.
 fn strip(tl: &mut Timeline, gone: &HashSet<LibraryItem>) -> usize {
+    strip_in(tl, gone, 0)
+}
+
+/// [`strip`], inside groups too (ADR 0073): a group keeps its other members.
+fn strip_in(tl: &mut Timeline, gone: &HashSet<LibraryItem>, depth: usize) -> usize {
     let refers = |e: &anicraft_doc::Element| match &e.kind {
         ElementKind::Symbol { symbol, .. } => gone.contains(&LibraryItem::Symbol(*symbol)),
         ElementKind::Shape(sh) => matches!(&sh.fill, Some(Paint::Bitmap { bitmap, .. }) if gone.contains(&LibraryItem::Bitmap(*bitmap))),
-        ElementKind::Text(_) | ElementKind::Camera => false,
+        ElementKind::Text(_) | ElementKind::Camera | ElementKind::Group { .. } => false,
     };
+    let inside = |e: &anicraft_doc::Element| matches!(&e.kind, ElementKind::Group { members } if depth < anicraft_doc::MAX_GROUP_DEPTH && strip_needed(members, gone));
     let sounds = |k: &anicraft_doc::Keyframe| k.sound.as_ref().is_some_and(|f| gone.contains(&LibraryItem::Sound(f.sound)));
-    let hit = |k: &anicraft_doc::Keyframe| sounds(k) || k.elements.iter().any(|e| refers(e));
+    let hit = |k: &anicraft_doc::Keyframe| sounds(k) || k.elements.iter().any(|e| refers(e) || inside(e));
     let mut n = 0;
     for l in tl.layers.iter_mut().filter(|l| l.keyframes.iter().any(|k| hit(k))) {
         for k in Arc::make_mut(l).keyframes.iter_mut().filter(|k| hit(k)) {
@@ -302,6 +308,11 @@ fn strip(tl: &mut Timeline, gone: &HashSet<LibraryItem>) -> usize {
             let before = k.elements.len();
             k.elements.retain(|e| !refers(e));
             n += before - k.elements.len();
+            for e in k.elements.iter_mut().filter(|e| inside(e)) {
+                if let ElementKind::Group { members } = &mut Arc::make_mut(e).kind {
+                    n += strip_in(members, gone, depth + 1);
+                }
+            }
         }
     }
     n

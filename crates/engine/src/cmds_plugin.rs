@@ -155,6 +155,10 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
                 v["text"] = json!(t.text);
             }
             ElementKind::Camera => v["kind"] = json!("camera"),
+            ElementKind::Group { .. } => {
+                v["kind"] = json!("group");
+                v["members"] = json!(e.kind.group_members().len());
+            }
         }
         out.push(v);
     }

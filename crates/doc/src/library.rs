@@ -323,7 +323,8 @@ impl Document {
     /// symbols). Items used nowhere are left out.
     pub fn library_uses(&self) -> HashMap<LibraryItem, usize> {
         let mut uses: HashMap<LibraryItem, usize> = HashMap::new();
-        for tl in self.timelines() {
+        // (Groups' timelines are walked by `visit_refs` itself.)
+        for tl in self.scenes.iter().map(|s| &s.timeline).chain(self.library.iter().map(|s| &s.timeline)) {
             visit_refs(tl, |item| *uses.entry(item).or_default() += 1);
         }
         uses
@@ -453,8 +454,15 @@ impl Document {
 }
 
 /// Calls `f` once per Library reference on each keyframe of `tl`: symbol instances, bitmap
-/// fills and the keyframe's sound.
+/// fills and the keyframe's sound, inside groups too (ADR 0073).
 pub fn visit_refs(tl: &Timeline, mut f: impl FnMut(LibraryItem)) {
+    visit_refs_in(tl, &mut f, 0);
+}
+
+fn visit_refs_in(tl: &Timeline, f: &mut impl FnMut(LibraryItem), depth: usize) {
+    if depth > crate::MAX_GROUP_DEPTH {
+        return;
+    }
     for l in &tl.layers {
         for k in &l.keyframes {
             for e in &k.elements {
@@ -465,6 +473,7 @@ pub fn visit_refs(tl: &Timeline, mut f: impl FnMut(LibraryItem)) {
                             f(LibraryItem::Bitmap(*bitmap));
                         }
                     }
+                    ElementKind::Group { members } => visit_refs_in(members, f, depth + 1),
                     ElementKind::Text(_) | ElementKind::Camera => {}
                 }
             }

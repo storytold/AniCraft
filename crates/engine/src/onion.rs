@@ -410,10 +410,7 @@ impl Session {
         let mut parts = Vec::new();
         let mut starts: Vec<Vec<(LayerId, u32)>> = Vec::new();
         for e in multi_frames(tl, self.frame, first, last) {
-            let mut dl = match self.editing_symbol().and_then(|id| self.doc.symbol(id)) {
-                Some(sym) => anicraft_doc::evaluate_timeline(&self.doc, &sym.timeline, e.frame),
-                None => anicraft_doc::evaluate_scene(&self.doc, self.scene, e.frame),
-            };
+            let mut dl = if self.editing.is_empty() { anicraft_doc::evaluate_scene(&self.doc, self.scene, e.frame) } else { anicraft_doc::evaluate_timeline(&self.doc, tl, e.frame) };
             keep_layers(&mut dl, &e.layers);
             parts.push(dl);
             starts.push(e.layers.iter().map(|l| (*l, e.frame)).collect());

@@ -37,7 +37,7 @@ pub(crate) enum Scope {
 /// A timeline commands address: a scene's (the one being edited) or a library symbol's.
 fn timeline_mut(s: &mut Session, symbol: Option<SymbolId>, scope: Scope) -> Result<&mut Timeline> {
     match symbol {
-        None => Ok(crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)),
+        None => crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing),
         Some(id) => {
             let sym = s.doc.library.iter_mut().find(|x| x.id == id).ok_or_else(|| EngineError::State(format!("no symbol with id {}", id.0)))?;
             if scope == Scope::Runs && sym.kind != SymbolKind::MovieClip {

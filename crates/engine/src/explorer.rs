@@ -235,11 +235,11 @@ impl<'a> Walk<'a> {
         let s = self.o.show;
         (s.scripts && k.script.is_some())
             || (s.media && k.sound.is_some())
-            || k.elements.iter().any(|e| match &e.kind {
+            || anicraft_doc::expand_groups(&k.elements).iter().any(|e| match &e.kind {
                 ElementKind::Symbol { .. } => s.symbols,
                 ElementKind::Text(_) => s.text,
                 ElementKind::Shape(sh) => s.media && matches!(sh.fill, Some(Paint::Bitmap { .. })),
-                ElementKind::Camera => false,
+                ElementKind::Camera | ElementKind::Group { .. } => false,
             })
             || (s.frames && !k.label.is_empty())
     }
@@ -309,7 +309,7 @@ impl<'a> Walk<'a> {
     /// Whether a keyframe row has children (its label alone makes the row, not children).
     fn keyframe_has(&self, k: &Keyframe) -> bool {
         let s = self.o.show;
-        (s.scripts && k.script.is_some()) || (s.media && k.sound.is_some()) || k.elements.iter().any(|e| self.element_shows(e))
+        (s.scripts && k.script.is_some()) || (s.media && k.sound.is_some()) || anicraft_doc::expand_groups(&k.elements).iter().any(|e| self.element_shows(e))
     }
 
     fn element_shows(&self, e: &anicraft_doc::Element) -> bool {
@@ -318,7 +318,7 @@ impl<'a> Walk<'a> {
             ElementKind::Symbol { .. } => s.symbols,
             ElementKind::Text(_) => s.text,
             ElementKind::Shape(sh) => s.media && matches!(sh.fill, Some(Paint::Bitmap { .. })),
-            ElementKind::Camera => false,
+            ElementKind::Camera | ElementKind::Group { .. } => false,
         }
     }
 
@@ -345,7 +345,8 @@ impl<'a> Walk<'a> {
                 return;
             }
         }
-        for e in &k.elements {
+        // What is inside a group is listed as on its keyframe (ADR 0073).
+        for e in anicraft_doc::expand_groups(&k.elements).iter() {
             if self.full() || !self.element_shows(e) {
                 continue;
             }
@@ -403,7 +404,7 @@ impl<'a> Walk<'a> {
                         return;
                     }
                 }
-                ElementKind::Camera => {}
+                ElementKind::Camera | ElementKind::Group { .. } => {}
             }
         }
     }

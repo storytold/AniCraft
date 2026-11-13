@@ -67,7 +67,7 @@ fn set_onion(s: &mut Session, p: &Value) -> Result<Value> {
     let id = layer_id(s, p)?;
     let solo = opt_bool(p, "solo")?.unwrap_or(false);
     let on = opt_bool(p, "onion")?;
-    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+    let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
     if solo {
         // Animate's Alt-click: this layer alone; again on the only one left on, every layer.
         let alone = tl.layers.iter().filter(|l| onion_able(l)).all(|l| l.onion == (l.id == id));

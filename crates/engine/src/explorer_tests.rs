@@ -65,7 +65,7 @@ fn instances_open_into_their_symbols_layers_however_deep() {
     assert_eq!(deep.go.scene, Some(0));
     let mut s = s;
     let v = s.execute("find.goto", &deep.go.to_json()).unwrap();
-    assert_eq!(s.editing.iter().map(|l| l.symbol).collect::<Vec<_>>(), [outer, inner], "{v}");
+    assert_eq!(s.editing.iter().map(|l| l.symbol().unwrap_or(SymbolId(0))).collect::<Vec<_>>(), [outer, inner], "{v}");
     assert_eq!(s.selection.id_list(), [deep.go.element.unwrap().0]);
     // Under the Library's Outer: its own layers, then Inner inside it.
     let defs: Vec<(usize, String)> = t.rows.iter().skip_while(|r| r.kind != NodeKind::Definitions).map(|r| (r.depth, r.name.clone())).take(8).collect();

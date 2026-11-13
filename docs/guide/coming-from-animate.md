@@ -111,8 +111,9 @@ frame, and **Shift+PageUp** and **Shift+PageDown** for the previous and next sce
 
 * **Ctrl+K** opens AniCraft's command palette, which finds any command by name. Align is always on
   the right, and on **Ctrl+Alt+1** to **6**.
-* **Ctrl+G** and **Ctrl+Shift+G**: AniCraft has no groups yet. Use a graphic symbol (**F8**), or
-  draw with Object Drawing (**J**) to keep shapes apart.
+* **Ctrl+G** and **Ctrl+Shift+G** group and ungroup, as in Animate. A drawing object that
+  mixes colours, such as the result of a Union, is a group in AniCraft: double-click it to edit
+  inside.
 * **Ctrl+F8** (New Symbol): not there yet. Draw something and convert it with **F8**.
 * **Ctrl+J** (Document Settings): it is **Modify › Document Settings**, with no key by default.
 * Panel toggles such as **Ctrl+L** for the Library aren't needed, because the panels are docked.
@@ -188,7 +189,8 @@ ActionScript 1.0 and 2.0, and scripts placed on instances. See [Interactivity](i
 
 Besides the tools and keys above, these are still to come:
 
-* groups, saved workspaces and several open documents at once;
+* saved workspaces and several open documents at once;
+* Envelope and Delete Envelope, and editing a multi-colour drawing object without opening it;
 * motion tweens and bones from Animate documents;
 * spring and joint translation for bones, and armatures mixing symbols and shapes;
 * the Brush's Paint Selection and Paint Inside modes, pressure curves and a brush library;

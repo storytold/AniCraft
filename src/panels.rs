@@ -208,7 +208,8 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
         .set_name(tr!("Scene"));
         // The symbols open for editing (ADR 0045), as in Animate's edit bar: a click on one
         // goes back to it; the last is the one being edited.
-        let open: Vec<String> = app.s.editing.iter().map(|l| app.s.doc.symbol(l.symbol).map_or_else(String::new, |s| s.name.clone())).collect();
+        // A group (ADR 0073) shows as "Group", as Animate's edit bar does.
+        let open: Vec<String> = app.s.editing.iter().map(|l| l.symbol().map_or_else(|| tr!("Group").to_string(), |id| app.s.doc.symbol(id).map_or_else(String::new, |s| s.name.clone()))).collect();
         let mut back: Option<usize> = None;
         for (i, name) in open.iter().enumerate() {
             ui.label(text(Type::Caption, "›"));
@@ -574,6 +575,7 @@ pub(crate) fn element_title(doc: &anicraft_engine::doc::Document, e: &anicraft_e
             None => tr!("Graphic: missing").to_string(),
         },
         ElementKind::Camera => tr!("Camera").to_string(),
+        ElementKind::Group { .. } => tr!("Group").to_string(),
         ElementKind::Text(t) if t.text.trim().is_empty() => text_kind_label(t.kind()).to_string(),
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
