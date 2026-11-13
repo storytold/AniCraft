@@ -121,3 +121,137 @@ fn polystar_merges_like_the_other_shape_tools() {
     assert_eq!(top_at(&s, Vec2::new(5.0, 5.0)), Some(Rgba::hex(0x0000ff)));
     assert!(shapes(&s).iter().all(|(sh, _)| sh.merge));
 }
+
+// ----- Paint Selection and Paint Inside ----------------------------------------------------------
+
+/// Fill area of one colour on the active layer.
+fn area_in(s: &Session, color: u32) -> f64 {
+    shapes(s).iter().filter(|(sh, _)| matches!(sh.fill, Some(Paint::Solid(c)) if c == Rgba::hex(color))).map(|(sh, m)| area_of(&sh.path, m)).sum()
+}
+
+/// A blue square at 0..100 and a green one at 200..300 (raw fills, no lines).
+fn two_squares() -> Session {
+    let mut s = blank(false);
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "stroke": null, "fill": "#0000ff"}));
+    run(&mut s, "draw.rect", json!({"x": 200, "y": 0, "w": 100, "h": 100, "stroke": null, "fill": "#00ff00"}));
+    run(&mut s, "edit.deselect", json!({}));
+    s
+}
+
+fn brush(s: &mut Session, mode: &str, from: [f32; 2], to: [f32; 2]) -> Value {
+    let pts: Vec<[f32; 2]> = (0..=40).map(|i| {
+        let t = i as f32 / 40.0;
+        [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
+    }).collect();
+    run(s, "draw.brush", json!({"points": pts, "size": 20, "smoothing": 0, "mode": mode, "color": "#ff0000"}))
+}
+
+fn blue_id(s: &Session) -> u64 {
+    s.visible_elements().iter().find(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.fill == Some(Paint::Solid(Rgba::hex(0x0000ff))))).map(|e| e.id.0).expect("the blue square")
+}
+
+/// Paint Selection: a stroke across both squares paints only the selected one, exactly over
+/// the 100 × 20 band inside it.
+#[test]
+fn paint_selection_clips_to_the_selected_fills() {
+    let mut s = two_squares();
+    let blue = blue_id(&s);
+    run(&mut s, "element.select", json!({"ids": [blue]}));
+    let v = brush(&mut s, "selection", [-60.0, 50.0], [360.0, 50.0]);
+    assert_eq!(v["merged"], true, "{v}");
+    let red = area_in(&s, 0xff0000);
+    assert!((red - 2000.0).abs() < 2.0, "the band inside the blue square: {red}");
+    assert!((area_in(&s, 0x0000ff) - 8000.0).abs() < 2.0, "the rest of the blue square: {}", area_in(&s, 0x0000ff));
+    assert!((area_in(&s, 0x00ff00) - 10_000.0).abs() < 0.5, "the green square is not selected");
+    assert_eq!(top_at(&s, Vec2::new(250.0, 50.0)), Some(Rgba::hex(0x00ff00)));
+    assert_eq!(top_at(&s, Vec2::new(150.0, 50.0)), None, "nothing between them");
+    assert_eq!(top_at(&s, Vec2::new(50.0, 50.0)), Some(Rgba::hex(0xff0000)));
+    // The selection stays on the blue square's pieces and the paint, for the next stroke.
+    let sel = s.selection.on(s.layer);
+    let els = s.visible_elements();
+    assert!(sel.len() >= 2, "{sel:?}");
+    for id in &sel {
+        let e = els.iter().find(|e| e.id == *id).expect("selected element");
+        let ElementKind::Shape(sh) = &e.kind else { panic!("a shape") };
+        let b = sh.path.bounds().transformed(&e.transform);
+        assert!(b.min.x > -0.5 && b.max.x < 100.5, "inside the blue square: {b:?}");
+    }
+    let v = brush(&mut s, "selection", [-60.0, 20.0], [360.0, 20.0]);
+    assert!(v["elements"].as_array().is_some_and(|a| !a.is_empty()), "a second stroke paints too");
+    assert!((area_in(&s, 0xff0000) - 4000.0).abs() < 4.0, "{}", area_in(&s, 0xff0000));
+}
+
+/// With nothing selected (or a stroke that misses the selection), nothing changes and there is
+/// no undo step.
+#[test]
+fn paint_selection_without_a_selection_changes_nothing() {
+    let mut s = two_squares();
+    let steps = s.history_len();
+    let doc = s.doc.clone();
+    let v = brush(&mut s, "selection", [-60.0, 50.0], [360.0, 50.0]);
+    assert_eq!(v["painted"], false);
+    assert_eq!(s.history_len(), steps);
+    assert!(s.doc == doc);
+    let blue = blue_id(&s);
+    run(&mut s, "element.select", json!({"ids": [blue]}));
+    let v = brush(&mut s, "selection", [150.0, 300.0], [160.0, 400.0]);
+    assert_eq!(v["painted"], false, "{v}");
+    assert_eq!(s.history_len(), steps);
+}
+
+/// Paint Inside: started in the blue square, the stroke stays inside it (a half-round start
+/// cap and a 50 × 20 band) and never reaches the green one.
+#[test]
+fn paint_inside_clips_to_the_fill_it_starts_on() {
+    let mut s = two_squares();
+    brush(&mut s, "inside", [50.0, 50.0], [250.0, 50.0]);
+    let want = 50.0 * 20.0 + std::f64::consts::PI * 100.0 / 2.0;
+    let red = area_in(&s, 0xff0000);
+    assert!((red - want).abs() < want * 0.01, "{red} vs {want}");
+    assert!((area_in(&s, 0x00ff00) - 10_000.0).abs() < 0.5);
+    assert!((area_in(&s, 0x0000ff) + red - 10_000.0).abs() < 2.0, "the paint replaced its part of the blue square");
+}
+
+/// Paint Inside started on empty stage inside a closed outline paints only that empty area,
+/// under the line; started on open stage, only empty areas (as Paint Behind).
+#[test]
+fn paint_inside_empty_areas() {
+    let mut s = blank(false);
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": null, "stroke": "#000000", "stroke_width": 2}));
+    let lines = measure_els(&s.visible_elements()).1;
+    brush(&mut s, "inside", [50.0, 50.0], [250.0, 50.0]);
+    let want = 50.0 * 20.0 + std::f64::consts::PI * 100.0 / 2.0;
+    let red = area_in(&s, 0xff0000);
+    assert!((red - want).abs() < want * 0.01, "{red} vs {want}");
+    assert_eq!(top_at(&s, Vec2::new(200.0, 50.0)), None, "nothing outside the outline");
+    assert!((measure_els(&s.visible_elements()).1 - lines).abs() < 0.5, "the outline is whole");
+
+    let mut t = two_squares();
+    brush(&mut t, "inside", [-100.0, 50.0], [50.0, 50.0]);
+    assert!((area_in(&t, 0x0000ff) - 10_000.0).abs() < 0.5, "the blue square is untouched");
+    assert!(area_in(&t, 0xff0000) > 1000.0, "the empty stage took the paint");
+}
+
+/// A line across the selected fill stays: clipped paint goes under lines.
+#[test]
+fn paint_selection_leaves_lines() {
+    let mut s = two_squares();
+    run(&mut s, "draw.line", json!({"x0": 50, "y0": -20, "x1": 50, "y1": 120, "stroke": "#000000", "stroke_width": 2}));
+    let lines = measure_els(&s.visible_elements()).1;
+    run(&mut s, "edit.select_all", json!({}));
+    brush(&mut s, "selection", [-60.0, 50.0], [360.0, 50.0]);
+    assert!((measure_els(&s.visible_elements()).1 - lines).abs() < 0.5, "the line is whole");
+    // Both squares were selected: the band in each.
+    assert!((area_in(&s, 0xff0000) - 4000.0).abs() < 4.0, "{}", area_in(&s, 0xff0000));
+}
+
+/// As drawing objects, the clipped paint is an object of exactly the clipped outline.
+#[test]
+fn paint_inside_as_a_drawing_object() {
+    let mut s = blank(true);
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "stroke": null, "fill": "#0000ff"}));
+    brush(&mut s, "inside", [50.0, 50.0], [250.0, 50.0]);
+    let want = 50.0 * 20.0 + std::f64::consts::PI * 100.0 / 2.0;
+    assert!((area_in(&s, 0xff0000) - want).abs() < want * 0.01);
+    assert!((area_in(&s, 0x0000ff) - 10_000.0).abs() < 0.5, "objects don't cut each other");
+}
