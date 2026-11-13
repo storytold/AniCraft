@@ -15,6 +15,7 @@ pub enum Tool {
     Select,
     Subselect,
     Transform,
+    GradientTransform,
     Width,
     Bone,
     Bind,
@@ -68,13 +69,14 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 22] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 23] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::GradientTransform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => tr_noop!("Selection"),
             Tool::Subselect => tr_noop!("Subselection"),
             Tool::Transform => tr_noop!("Free Transform"),
+            Tool::GradientTransform => tr_noop!("Gradient Transform"),
             Tool::Width => tr_noop!("Width"),
             Tool::Bone => tr_noop!("Bone"),
             Tool::Bind => tr_noop!("Bind"),
@@ -102,6 +104,7 @@ impl Tool {
             Tool::Select => Some("V"),
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
+            Tool::GradientTransform => Some("F"),
             Tool::Width => Some("U"),
             Tool::Bone => Some("M"),
             Tool::Bind => Some("Shift+M"),
@@ -137,6 +140,7 @@ impl Tool {
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer), or drag inside a shape to draw a bone in it (the shape bends with its bones); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
             Tool::Bind => tr_noop!("Shows the points of shapes with bones: a square follows one bone, a triangle several. Click a bone to see the points it moves (filled). Click a point, or drag a box around points, to make them follow only that bone; Shift shares the bone with the ones they follow, Ctrl takes them from it."),
+            Tool::GradientTransform => tr_noop!("Click a shape with a gradient or bitmap fill to show its handles. Drag the centre to move the fill, the square to change its width, the circle to change its size, the knob to rotate it (Shift: 15° steps) and, on a radial gradient, the triangle to move its focal point. A bitmap fill also has a square for its height and diamonds to skew it. Each drag is one undo step."),
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
             Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
@@ -218,6 +222,9 @@ pub enum Drag {
     /// `sub`; `start` is its left and right width when the drag began.
     /// `index` is the grabbed width point (None: one the drag adds at `t`).
     Width { id: anicraft_engine::doc::ElementId, sub: usize, index: Option<usize>, t: f32, grip: crate::widthtool::Grip, start: (f32, f32) },
+    /// Gradient Transform tool (ADR 0074): dragging `grip` of shape `id`'s fill, whose frame was
+    /// `frame` when the drag began at stage point `press`.
+    Gradient { id: anicraft_engine::doc::ElementId, grip: crate::gradient_tool::Grip, frame: anicraft_engine::geom::Affine, press: egui::Pos2 },
     /// Free transform: `applied` is the transform already sent to the engine this gesture.
     Transform { kind: XfKind, start: egui::Pos2, bounds: [f32; 4], applied: anicraft_engine::geom::Affine },
     /// Dragging shape hint `index` on the side the frame shows (ADR 0023).
@@ -477,15 +484,16 @@ pub struct App {
     pub tl_refocus: bool,
     /// The menu bar from the keyboard: Alt, F10 and the arrows (ADR 0064).
     pub menu_keys: menus::MenuKeys,
-    /// What the system last said about contrast (ADR 0064): `None` until it has, or if it
-    /// can't. Screenshot runs never ask, so they look the same everywhere.
-    pub system_contrast: Option<bool>,
+    /// What the system last said about contrast and light or dark (ADR 0064, ADR 0077): each part
+    /// `None` until it has, or if it can't. Screenshot runs never ask, so they look the same
+    /// everywhere.
+    pub system_look: platform::SystemLook,
     /// Keys to press, a few frames apart (screenshots of keyboard states).
     pub key_script: std::collections::VecDeque<(Key, Modifiers)>,
     key_script_wait: u8,
-    /// The system's contrast setting being read off the UI thread, and when it last was.
-    contrast_probe: Option<std::sync::mpsc::Receiver<Option<bool>>>,
-    contrast_asked: Option<f64>,
+    /// The system's look being read off the UI thread, and when it last was.
+    look_probe: Option<std::sync::mpsc::Receiver<platform::SystemLook>>,
+    look_asked: Option<f64>,
     /// The start screen, while it is up (ADR 0059).
     pub start: Option<crate::start::StartScreen>,
     /// Files dragged over and dropped onto the window (ADR 0059).
@@ -496,8 +504,8 @@ pub struct App {
     pub templates: crate::templates::Templates,
 }
 
-/// How often (seconds) the system's contrast setting is asked again (ADR 0064).
-const SYSTEM_CONTRAST_EVERY: f64 = 4.0;
+/// How often (seconds) the system's contrast and light or dark setting are asked again (ADR 0064).
+const SYSTEM_LOOK_EVERY: f64 = 4.0;
 
 /// How finished this version is, shown next to the version number (docs/release.md). English:
 /// translated where the interface shows it (`--version` prints it as is).
@@ -678,11 +686,11 @@ impl App {
             tl_heard: None,
             tl_refocus: false,
             menu_keys: Default::default(),
-            system_contrast: None,
+            system_look: platform::SystemLook::default(),
             key_script: Default::default(),
             key_script_wait: 0,
-            contrast_probe: None,
-            contrast_asked: None,
+            look_probe: None,
+            look_asked: None,
             start: None,
             drop: Default::default(),
             thumbs: Default::default(),
@@ -787,7 +795,7 @@ impl App {
         crate::i18n::set_language(&self.prefs.language);
         ctx.request_repaint();
         ctx.set_zoom_factor(self.prefs.ui_scale);
-        theme::apply_palette(ctx, self.prefs.palette(self.system_contrast));
+        theme::apply_palette(ctx, self.prefs.palette(self.system_look));
         crate::onion::refresh_colors(self);
         self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
         self.shortcuts = self.keymap.table();
@@ -886,58 +894,58 @@ impl App {
         }
     }
 
-    /// Follows the system's contrast setting (ADR 0064): asks it on a worker now and then (at
+    /// Follows the system's look (ADR 0064, ADR 0077): asks it on a worker now and then (at
     /// start, every few seconds, and when the window comes back to the front), and switches the
     /// palette in the same frame the answer changes, while Preferences says "Follow system".
-    fn follow_system_contrast(&mut self, ctx: &egui::Context) {
+    fn follow_system_look(&mut self, ctx: &egui::Context) {
         if self.shot.is_some() {
             return;
         }
-        if let Some(rx) = &self.contrast_probe {
+        if let Some(rx) = &self.look_probe {
             match rx.try_recv() {
                 Ok(v) => {
-                    self.contrast_probe = None;
-                    self.set_system_contrast(ctx, v);
+                    self.look_probe = None;
+                    self.set_system_look(ctx, v);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => return,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.contrast_probe = None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.look_probe = None,
             }
         }
         let (now, came_back) = ctx.input(|i| (i.time, i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))));
-        let due = self.contrast_asked.is_none_or(|t| now - t >= SYSTEM_CONTRAST_EVERY || came_back);
+        let due = self.look_asked.is_none_or(|t| now - t >= SYSTEM_LOOK_EVERY || came_back);
         if !due {
             return;
         }
-        self.contrast_asked = Some(now);
+        self.look_asked = Some(now);
         let (tx, rx) = std::sync::mpsc::channel();
         #[cfg(not(target_arch = "wasm32"))]
         let started = {
             let ctx2 = ctx.clone();
             std::thread::Builder::new()
-                .name("anicraft-contrast".into())
+                .name("anicraft-look".into())
                 .spawn(move || {
-                    let _ = tx.send(platform::system_high_contrast());
+                    let _ = tx.send(platform::system_look());
                     ctx2.request_repaint();
                 })
                 .is_ok()
         };
         // (No threads in a browser: the media query answers at once.)
         #[cfg(target_arch = "wasm32")]
-        let started = tx.send(platform::system_high_contrast()).is_ok();
+        let started = tx.send(platform::system_look()).is_ok();
         if started {
-            self.contrast_probe = Some(rx);
+            self.look_probe = Some(rx);
         }
         // Ask again later even if nothing else happens.
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(SYSTEM_CONTRAST_EVERY));
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(SYSTEM_LOOK_EVERY));
     }
 
-    /// What the system says about contrast: the palette follows at once, if it follows.
-    pub fn set_system_contrast(&mut self, ctx: &egui::Context, v: Option<bool>) {
-        if v == self.system_contrast {
+    /// What the system says about its look: the palette follows at once, if it follows.
+    pub fn set_system_look(&mut self, ctx: &egui::Context, v: platform::SystemLook) {
+        if v == self.system_look {
             return;
         }
-        let before = self.prefs.palette(self.system_contrast);
-        self.system_contrast = v;
+        let before = self.prefs.palette(self.system_look);
+        self.system_look = v;
         let after = self.prefs.palette(v);
         if after != before {
             theme::apply_palette(ctx, after);
@@ -1389,7 +1397,7 @@ impl App {
                 }
                 let mask = self.run("layer.new", json!({"name": "Soft mask"})).and_then(|v| v["layer"].as_u64());
                 let stops = vec![anicraft_engine::doc::GradientStop { offset: 0.0, color: anicraft_engine::doc::Rgba::WHITE }, anicraft_engine::doc::GradientStop { offset: 1.0, color: anicraft_engine::doc::Rgba::WHITE.with_alpha(0.0) }];
-                let swatch = self.s.style.fill_paint.replace(anicraft_engine::doc::Paint::Radial { center: anicraft_engine::geom::Vec2::new(320.0, 200.0), radius: 190.0, stops });
+                let swatch = self.s.style.fill_paint.replace(anicraft_engine::doc::Paint::radial(anicraft_engine::geom::Vec2::new(320.0, 200.0), 190.0, stops));
                 self.run("draw.ellipse", json!({"x": 130, "y": 10, "w": 380, "h": 380, "stroke": null}));
                 self.s.style.fill_paint = swatch;
                 self.run("layer.toggle_mask", json!({}));
@@ -1946,6 +1954,31 @@ impl App {
                     }
                 }
                 self.tool = Tool::Width;
+            }
+            Some(which @ ("gradient" | "gradientbucket")) => {
+                // The gradient tools (ADR 0074): a reflecting linear gradient turned on a panel,
+                // and an oval with a stretched radial gradient and its focal point off centre,
+                // selected with the Gradient Transform tool (its handles show) while the colour
+                // picker edits its stops.
+                self.perform("file.new", json!({"width": 640, "height": 400}));
+                self.run("draw.rect", json!({"x": 0, "y": 0, "w": 640, "h": 400, "fill": "#14213d", "stroke": null}));
+                self.run("draw.rect", json!({"x": 40, "y": 60, "w": 200, "h": 280, "stroke": null}));
+                self.run("paint.set_fill", json!({"type": "linear", "stops": [{"offset": 0, "color": "#e76f51"}, {"offset": 1, "color": "#f4a261"}], "spread": "reflect"}));
+                self.run("paint.transform_fill", json!({"scale_x": 0.3, "rotate": 30}));
+                self.run("draw.ellipse", json!({"x": 280, "y": 50, "w": 320, "h": 300, "stroke": null}));
+                self.run("paint.set_fill", json!({"type": "radial", "stops": [{"offset": 0, "color": "#ffffff"}, {"offset": 0.45, "color": "#8ecae6"}, {"offset": 1, "color": "#023047"}], "focal": 0.55}));
+                self.run("paint.transform_fill", json!({"scale_x": 1.1, "scale_y": 0.8, "rotate": -35}));
+                self.tool = Tool::GradientTransform;
+                if which == "gradient" {
+                    // The colour picker open on it, in gradient mode: the stop bar, overflow and
+                    // the picked stop's colour.
+                    self.open_fill_swatch = true;
+                }
+                if which == "gradientbucket" {
+                    // The Paint Bucket in hand, nothing selected: the swatch's gradient and Lock Fill.
+                    self.run("edit.deselect", json!({}));
+                    self.tool = Tool::PaintBucket;
+                }
             }
             Some(which @ ("motion" | "motionspan")) => {
                 // The Star layer's span as a motion tween: it moves, turns and fades out, with
@@ -3035,7 +3068,7 @@ impl App {
         }
         self.handle_screenshot(&ctx);
         self.poll_font_scan(&ctx);
-        self.follow_system_contrast(&ctx);
+        self.follow_system_look(&ctx);
         if let Some(p) = platform::picked_file() {
             self.open_picked(p);
         }

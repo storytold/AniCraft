@@ -218,7 +218,7 @@
     if (!p) return null;
     if (p.s) return css(AniCraft.applyEffect(fx, p.s));
     if (p.l || p.r) {
-      const gr = p.l ? g.createLinearGradient(p.l[0], p.l[1], p.l[2], p.l[3]) : g.createRadialGradient(p.r[0], p.r[1], 0, p.r[0], p.r[1], p.r[2]);
+      const gr = p.l ? g.createLinearGradient(p.l[0], p.l[1], p.l[2], p.l[3]) : g.createRadialGradient(p.f ? p.f[0] : p.r[0], p.f ? p.f[1] : p.r[1], 0, p.r[0], p.r[1], p.r[2]);
       for (const s of p.st) gr.addColorStop(s[0], css(AniCraft.applyEffect(fx, [s[1], s[2], s[3], s[4]])));
       return gr;
     }

@@ -117,7 +117,7 @@ fn remember(ctx: &egui::Context, popup: Id, c: [u8; 3]) {
 }
 
 /// A new popup opening adds its first change as a new recent colour.
-fn new_session(ctx: &egui::Context) {
+pub(crate) fn new_session(ctx: &egui::Context) {
     ctx.data_mut(|d| d.get_temp_mut_or_default::<Recent>(recent_id()).from = None);
 }
 
@@ -161,14 +161,25 @@ pub fn popup_for(ui: &egui::Ui, anchor: &Response, popup: Id, c: &mut [u8; 4], a
         new_session(ui.ctx());
     }
     let mut changed = false;
-    egui::Popup::menu(anchor).id(popup).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+    let shown = egui::Popup::menu(anchor).id(popup).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         changed = picker(ui, popup, c, alpha, none);
     });
+    if let Some(r) = shown {
+        name_popup(&r.response, tr!("Colour picker"));
+    }
     changed
 }
 
+/// Names a picker popup for screen readers: a dialog holding the picker's controls.
+pub(crate) fn name_popup(r: &Response, name: &str) {
+    r.ctx.accesskit_node_builder(r.id, |node| {
+        node.set_role(egui::accesskit::Role::Dialog);
+        node.set_label(name);
+    });
+}
+
 /// The picker itself: swatches or mixer, then the colour, its hex and its alpha.
-fn picker(ui: &mut egui::Ui, popup: Id, c: &mut [u8; 4], alpha: bool, none: Option<&mut bool>) -> bool {
+pub(crate) fn picker(ui: &mut egui::Ui, popup: Id, c: &mut [u8; 4], alpha: bool, none: Option<&mut bool>) -> bool {
     let view_id = Id::new("anicraft.colour.view");
     let mut view: View = ui.data(|d| d.get_temp(view_id)).unwrap_or_default();
     let mut changed = false;
@@ -299,7 +310,8 @@ fn swatches(ui: &mut egui::Ui, current: [u8; 3]) -> Option<[u8; 3]> {
         painter.rect_stroke(r.expand(1.0), 0.0, Stroke::new(1.5, T.selection), StrokeKind::Middle);
         resp.clone().on_hover_text(text(Type::Data, to_hex([c[0], c[1], c[2], 255], false)));
     }
-    resp.clone().named(tr!("Colour swatches"));
+    // One control for the whole grid (a click picks the cell under the pointer).
+    crate::a11y::control(ui, &resp, egui::WidgetType::Button, tr!("Colour swatches"), None);
     if resp.clicked() { resp.interact_pointer_pos().and_then(hit).map(|(_, c)| c) } else { None }
 }
 

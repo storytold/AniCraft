@@ -245,13 +245,20 @@ fn fill_index(table: &mut Vec<(Paint, ColorEffect)>, v: (Paint, ColorEffect)) ->
 }
 
 /// Whether two paints look the same (positions within a thousandth of a unit).
-pub(crate) fn same_paint(a: &Paint, b: &Paint) -> bool {
+pub(crate) fn same_paint(x: &Paint, y: &Paint) -> bool {
     const EPS: f32 = 1e-3;
     let near = |p: Vec2, q: Vec2| p.distance(q) <= EPS;
-    match (a, b) {
+    match (x, y) {
         (Paint::Solid(x), Paint::Solid(y)) => x == y,
-        (Paint::Linear { start: s0, end: e0, stops: a }, Paint::Linear { start: s1, end: e1, stops: b }) => near(*s0, *s1) && near(*e0, *e1) && a == b,
-        (Paint::Radial { center: c0, radius: r0, stops: a }, Paint::Radial { center: c1, radius: r1, stops: b }) => near(*c0, *c1) && (r0 - r1).abs() <= EPS && a == b,
+        (Paint::Linear { start: s0, end: e0, stops: a, spread: p0, linear_rgb: l0 }, Paint::Linear { start: s1, end: e1, stops: b, spread: p1, linear_rgb: l1 }) => near(*s0, *s1) && near(*e0, *e1) && a == b && p0 == p1 && l0 == l1,
+        (Paint::Radial { stops: a, spread: p0, linear_rgb: l0, focal: f0, .. }, Paint::Radial { stops: b, spread: p1, linear_rgb: l1, focal: f1, .. }) => {
+            // The same ring: the frames agree (centre, axes and size).
+            let same_frame = match (x.frame(None), y.frame(None)) {
+                (Some(m0), Some(m1)) => m0.m.iter().zip(m1.m).all(|(u, v)| (u - v).abs() <= EPS * u.abs().max(v.abs()).max(1.0)),
+                _ => false,
+            };
+            same_frame && a == b && p0 == p1 && l0 == l1 && (f0 - f1).abs() <= EPS
+        }
         (Paint::Bitmap { bitmap: b0, repeat: r0, matrix: m0 }, Paint::Bitmap { bitmap: b1, repeat: r1, matrix: m1 }) => {
             b0 == b1 && r0 == r1 && m0.m.iter().zip(m1.m).all(|(x, y)| (x - y).abs() <= EPS * x.abs().max(y.abs()).max(1.0))
         }

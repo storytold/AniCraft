@@ -186,13 +186,20 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("the stroke is too small to paint".into()));
     }
     let c = path.bounds().center();
+    let local = path.transformed(&Affine::translate(-c.x, -c.y));
+    // A gradient or bitmap in the fill swatch paints too, locked or fitted (ADR 0074), unless a
+    // colour was given or pressure sets the opacity.
+    let fill = match &s.style.fill_paint {
+        Some(_) if p.get("color").is_none_or(Value::is_null) && color.a >= 1.0 => s.style.fill_paint_for(&Affine::translate(-c.x, -c.y), &local.bounds()),
+        _ => Paint::Solid(color),
+    };
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(path.transformed(&Affine::translate(-c.x, -c.y))), fill: Some(Paint::Solid(color)), stroke: None, fill_rule: FillRule::EvenOdd, merge: !object }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(fill), stroke: None, fill_rule: FillRule::EvenOdd, merge: !object }),
     };
     if s.editable_keyframe()?.elements.len() >= 100_000 {
         return Err(EngineError::State("too many elements on this keyframe".into()));

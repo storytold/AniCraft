@@ -90,7 +90,7 @@ fn fixture() -> Document {
         name: String::new(),
         transform: Affine::translate(20.0, 300.0),
         color: ColorEffect::Tint { color: Rgba::hex(0xff00ff), amount: 0.25 },
-        kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 100.0, 40.0), Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(100.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(0xffffff) }, GradientStop { offset: 1.0, color: Rgba::hex(0x000000) }] }).with_stroke(Rgba::hex(0xffff00), 2.0)),
+        kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 100.0, 40.0), Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), vec![GradientStop { offset: 0.0, color: Rgba::hex(0xffffff) }, GradientStop { offset: 1.0, color: Rgba::hex(0x000000) }])).with_stroke(Rgba::hex(0xffff00), 2.0)),
     });
     let mut mask = Layer::new(LayerId(6), "mask");
     mask.kind = LayerKind::Mask;
@@ -714,7 +714,7 @@ fn button_sounds_start_in_the_page_as_in_the_player() {
 #[test]
 fn hostile_documents_export_without_panicking() {
     let mut doc = Document::default();
-    let bad = Element { id: ElementId(5), name: "x".into(), transform: Affine { m: [f32::NAN, 0.0, 0.0, 1.0, f32::INFINITY, 0.0] }, color: ColorEffect::Advanced(ColorTransform { mul: [f32::NAN, 2.0, -1.0, f32::INFINITY], add: [f32::NAN, 0.0, 0.0, 0.0] }), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, f32::NAN, 1.0), Paint::Radial { center: Vec2::ZERO, radius: -5.0, stops: vec![GradientStop { offset: f32::NAN, color: Rgba::BLACK }] })) };
+    let bad = Element { id: ElementId(5), name: "x".into(), transform: Affine { m: [f32::NAN, 0.0, 0.0, 1.0, f32::INFINITY, 0.0] }, color: ColorEffect::Advanced(ColorTransform { mul: [f32::NAN, 2.0, -1.0, f32::INFINITY], add: [f32::NAN, 0.0, 0.0, 0.0] }), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, f32::NAN, 1.0), Paint::radial(Vec2::ZERO, -5.0, vec![GradientStop { offset: f32::NAN, color: Rgba::BLACK }]))) };
     let fine = Element { id: ElementId(6), transform: Affine::IDENTITY, ..bad.clone() };
     let missing = inst(7, 12345, "ghost", Affine::IDENTITY, vec![]);
     Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap().elements = vec![Arc::new(bad), Arc::new(fine), missing];
@@ -1095,7 +1095,7 @@ fn filter_cases() -> Vec<Vec<anicraft_doc::Filter>> {
 /// small stage, with `filters`.
 fn filtered_doc(filters: &[anicraft_doc::Filter]) -> Document {
     let mut d = Document { stage: anicraft_doc::Stage { width: 64, height: 56, fps: 24.0, background: Rgba::WHITE }, ..Document::default() };
-    let grad = Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(24.0, 18.0), stops: vec![stop(0.0, 0xff3300, 1.0), stop(1.0, 0x3366ff, 0.6)] };
+    let grad = Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(24.0, 18.0), vec![stop(0.0, 0xff3300, 1.0), stop(1.0, 0x3366ff, 0.6)]);
     let mut a = Shape::filled(Path::ellipse(12.0, 10.0, 11.0, 8.5), grad);
     a.stroke = Some(anicraft_doc::Stroke::new(Rgba::hex(0x112233), 1.5));
     let b = Shape::filled(Path::rect(16.3, 4.6, 9.2, 13.7), Paint::Solid(Rgba::hex(0x22aa44).with_alpha(0.5)));
@@ -1200,7 +1200,7 @@ fn soft_masked_doc(mode: anicraft_doc::MaskMode, inside: bool) -> Document {
         Filter::Glow { blur_x: 6.0, blur_y: 6.0, strength: 1.5, quality: 2, color: Rgba::hex(0xffcc00), inner: false, knockout: false },
     ];
     let mut d = filtered_doc(&filters);
-    let ramp = Paint::Linear { start: Vec2::new(10.0, 0.0), end: Vec2::new(54.0, 0.0), stops: vec![stop(0.0, 0xffffff, 1.0), stop(0.5, 0x808080, 0.5), stop(1.0, 0x000000, 0.2)] };
+    let ramp = Paint::linear(Vec2::new(10.0, 0.0), Vec2::new(54.0, 0.0), vec![stop(0.0, 0xffffff, 1.0), stop(0.5, 0x808080, 0.5), stop(1.0, 0x000000, 0.2)]);
     let art = Arc::new(Element { id: ElementId(320), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(10.0, 4.0, 44.0, 48.0), ramp)) });
     let mut mask = Layer::new(LayerId(321), "mask");
     mask.kind = LayerKind::Mask;
@@ -1370,4 +1370,48 @@ fn the_pages_filters_survive_broken_data() {
     let mut js = filters_js();
     let out = js_json(&mut js, "(function () { var b = new Float32Array([0.5, 0, 0, 0.5, 1, 1, 1, 1]); AniCraftFilters.apply(b, 2, 1, [null, 3, {k: 'sparkle'}, {k: 'adjust', m: [1]}, {k: 'blur', x: 'wide', y: NaN, q: -4}, {k: 'shadow'}, {k: 'bevel', st: 'x'}, {k: 'gglow', st: [[0.5]]}], NaN); AniCraftFilters.apply(b, 3, 1, [{k: 'blur', x: 2, y: 2, q: 1}], 1); AniCraftFilters.blendImage(new Uint8ClampedArray(4), new Uint8ClampedArray(8), NaN, 'invert'); return [Array.from(b).every(isFinite), AniCraftFilters.region(new Uint8ClampedArray(16), 2, 2, 5)]; })()");
     assert_eq!(out, json!([true, null]));
+}
+
+#[test]
+fn gradient_options_are_drawn_the_nearest_way_canvas_can() {
+    // ADR 0074: canvas gradients only pad, so reflect and repeat lay the ramp end to end.
+    let two = vec![GradientStop { offset: 0.0, color: Rgba::BLACK }, GradientStop { offset: 1.0, color: Rgba::WHITE }];
+    let (copies, st) = spread_stops(&two, anicraft_doc::Spread::Pad, false, false);
+    assert_eq!((copies, st.len()), (0, 2));
+    let (copies, st) = spread_stops(&two, anicraft_doc::Spread::Repeat, false, false);
+    let n = 2 * copies + 1;
+    assert!(copies > 0 && st.len() == 2 * n && st.len() <= 255);
+    // A linear ramp is the middle copy, forwards.
+    assert_eq!((st[2 * copies].offset, st[2 * copies].color), (copies as f32 / n as f32, Rgba::BLACK));
+    let (_, st) = spread_stops(&two, anicraft_doc::Spread::Reflect, false, false);
+    assert_eq!(st[2 * copies + 2].color, Rgba::WHITE, "the copy after it runs backwards");
+    // A radial one has no inside of its centre: the ramp comes first, then its copies.
+    let (_, out) = spread_stops(&two, anicraft_doc::Spread::Reflect, false, true);
+    assert_eq!((out[0].offset, out[0].color, out[2].color), (0.0, Rgba::BLACK, Rgba::WHITE));
+    // Linear RGB is sampled into stops: the midpoint is the linear-light grey (≈ 0.735).
+    let (_, lin) = spread_stops(&two, anicraft_doc::Spread::Pad, true, false);
+    let mid = lin.iter().find(|s| (s.offset - 0.5).abs() < 1e-6).expect("a stop at the middle");
+    assert!((mid.color.r - 0.735).abs() < 0.01, "{:?}", mid.color);
+    // Through the export: the radial's focal point and the reflected linear's longer span.
+    let mut lin_p = Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), two.clone());
+    if let Paint::Linear { spread, .. } = &mut lin_p {
+        *spread = anicraft_doc::Spread::Reflect;
+    }
+    let mut rad = Paint::radial(Vec2::new(50.0, 50.0), 20.0, two);
+    if let Paint::Radial { focal, .. } = &mut rad {
+        *focal = 0.5;
+    }
+    let mut doc = Document::default();
+    let shape = |id: u64, p: Paint| Arc::new(Element { id: ElementId(id), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(Shape::filled(Path::rect(0.0, 0.0, 100.0, 100.0), p)) });
+    {
+        let k = Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap();
+        k.elements = vec![shape(80, lin_p), shape(81, rad)];
+    }
+    let m = movie(&doc, &HtmlOptions::default());
+    let paints = m.json["paints"].as_array().cloned().unwrap_or_default();
+    let l = paints.iter().find(|p| p.get("l").is_some()).expect("the linear gradient");
+    assert!(l["l"][0].as_f64().unwrap() < -9.0 && l["l"][2].as_f64().unwrap() > 19.0, "{l}");
+    let r = paints.iter().find(|p| p.get("r").is_some()).expect("the radial gradient");
+    assert_eq!(r["f"], json!([60, 50]));
+    assert_eq!(r["r"][2], json!(20));
 }
