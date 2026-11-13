@@ -455,6 +455,11 @@ fn graph(app: &mut App, ed: &mut EaseEditor, ui: &mut egui::Ui, ease: &Easing) {
     let w = ui.available_width().max(320.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, GRAPH_H), Sense::click_and_drag());
     ed.graph = Some(resp.id);
+    // While the graph has focus the arrows move the picked point, not focus.
+    if resp.has_focus() {
+        let filter = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() };
+        ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, filter));
+    }
     a11y::surface(ui, &resp, &tr!("Ease curve, {count} points. [ and ] pick a point, the arrows move it, S makes it smooth or a corner, + adds one, Delete removes it", count = pts.len()));
     let (lo, hi) = match ed.drag {
         Some(Drag::Point { lo, hi, .. } | Drag::Handle { lo, hi, .. }) => (lo, hi),
@@ -648,5 +653,98 @@ pub fn consume_keys(app: &mut App, ctx: &egui::Context) {
         }
     } else if (mv.0 != 0.0 || mv.1 != 0.0) && interior && let Some(q) = q {
         app.run("ease.move_point", with(json!({"index": i, "x": q.at.x + mv.0, "y": q.at.y + mv.1})));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anicraft_engine::Session;
+    use anicraft_engine::doc::sample;
+
+    fn app(ctx: &egui::Context) -> App {
+        App::with_context(ctx, Session::new(sample::demo()), Some(std::path::PathBuf::from("unused.png")))
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            consume_keys(app, ui.ctx());
+            show(app, ui.ctx());
+        });
+        out.textures_delta.clear();
+    }
+
+    fn key(k: Key) -> egui::Event {
+        egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }
+    }
+
+    fn points(app: &App) -> usize {
+        app.ease.as_ref().and_then(|ed| ease_now(app, ed)).map_or(0, |e| e.to_custom().points().len())
+    }
+
+    #[test]
+    fn the_window_draws_and_the_graph_edits_from_the_keyboard() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        app.open_panel(Some("ease"));
+        assert!(app.ease.is_some(), "the demo opens the window on the ball's tween");
+        for _ in 0..3 {
+            frame(&ctx, &mut app, vec![]);
+        }
+        assert!(app.ease.is_some(), "it stays open while drawn");
+        let id = app.ease.as_ref().and_then(|ed| ed.graph).expect("the graph has an id once drawn");
+        ctx.memory_mut(|m| m.request_focus(id));
+        frame(&ctx, &mut app, vec![]);
+        let n = points(&app);
+        assert!(n >= 3);
+        // ] and [ walk the points; + adds one after the picked point; S toggles smooth; arrows
+        // move it; Delete removes it again.
+        frame(&ctx, &mut app, vec![key(Key::CloseBracket)]);
+        frame(&ctx, &mut app, vec![key(Key::OpenBracket)]);
+        let picked = app.ease.as_ref().and_then(|ed| ed.selected);
+        assert!(picked.is_some());
+        frame(&ctx, &mut app, vec![key(Key::Insert)]);
+        assert_eq!(points(&app), n + 1, "a point added");
+        frame(&ctx, &mut app, vec![key(Key::S)]);
+        let at = |app: &App| {
+            let ed = app.ease.as_ref()?;
+            let q = *ease_now(app, ed)?.to_custom().points().get(ed.selected?)?;
+            Some((q.at.x, q.at.y))
+        };
+        let p0 = at(&app).expect("a picked point");
+        frame(&ctx, &mut app, vec![key(Key::ArrowUp)]);
+        frame(&ctx, &mut app, vec![key(Key::ArrowLeft)]);
+        let p1 = at(&app).expect("still picked");
+        assert!(p1.1 > p0.1 && p1.0 < p0.0, "both arrows moved the point (focus stays on the graph): {p0:?} -> {p1:?}");
+        frame(&ctx, &mut app, vec![key(Key::Delete)]);
+        assert_eq!(points(&app), n, "the added point deleted");
+        // Escape closes the window.
+        frame(&ctx, &mut app, vec![key(Key::Escape)]);
+        assert!(app.ease.is_none());
+    }
+
+    #[test]
+    fn the_window_draws_a_group_a_saved_ease_and_closes_when_its_tween_goes() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        app.open_panel(Some("easepreset"));
+        assert!(app.ease.as_ref().is_some_and(|ed| ed.group.is_some()), "the Position group shown");
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![]);
+        // The saved ease by name.
+        app.ease = Some(EaseEditor::new(EaseTarget::Saved("Overshoot".into())));
+        assert!(heading(&app, app.ease.as_ref().unwrap()).contains("Overshoot"));
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![]);
+        assert!(app.ease.is_some());
+        // A saved ease that doesn't exist: the window closes.
+        app.ease = Some(EaseEditor::new(EaseTarget::Saved("No such ease".into())));
+        frame(&ctx, &mut app, vec![]);
+        assert!(app.ease.is_none());
+        // No tween at the playhead: nothing opens and the status says why.
+        app.run("layer.new", json!({}));
+        open_here(&mut app);
+        assert!(app.ease.is_none());
     }
 }
