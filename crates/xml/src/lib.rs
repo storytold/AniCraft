@@ -260,8 +260,9 @@ fn unescape(s: &str) -> String {
             _ => ent
                 .strip_prefix("#x")
                 .or_else(|| ent.strip_prefix("#X"))
+                .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
                 .and_then(|h| u32::from_str_radix(h, 16).ok())
-                .or_else(|| ent.strip_prefix('#').and_then(|d| d.parse::<u32>().ok()))
+                .or_else(|| ent.strip_prefix('#').filter(|d| d.bytes().all(|b| b.is_ascii_digit())).and_then(|d| d.parse::<u32>().ok()))
                 .and_then(char::from_u32),
         };
         match ch {
@@ -305,6 +306,14 @@ pub fn parse_mixed(src: &[u8], mixed: &[&str]) -> Result<Element, XmlError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_references_reject_signs() {
+        assert_eq!(unescape("a&#+65;b"), "a&#+65;b");
+        assert_eq!(unescape("a&#x+41;b"), "a&#x+41;b");
+        assert_eq!(unescape("a&#-65;b"), "a&#-65;b");
+        assert_eq!(unescape("a&#65;&#x41;b"), "aAAb");
+    }
 
     #[test]
     fn elements_attributes_and_entities() {
