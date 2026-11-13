@@ -3,11 +3,14 @@
 ## Unreleased
 
 * **Gradient editor, the Gradient Transform tool and Lock Fill** (M1, ADR 0074; #208, #203).
-  * **Added**: a **Colour** section in Properties for the selected fill, or the fill swatch while
-    a drawing tool is in hand: Solid colour, Linear gradient, Radial gradient or Bitmap fill; a
-    bar of colour stops (click to add, drag to move, drag off to remove; arrow keys and Delete
-    on a focused stop), each stop's colour, opacity, hex and position; overflow (Extend,
-    Reflect, Repeat), Linear RGB and a radial gradient's focal point.
+  * **Added**: gradients in the colour picker. The fill's picker (the Tools panel's Fill square,
+    and every Fill swatch in Properties) starts with the fill's type: None, Solid, Linear,
+    Radial or Bitmap. A gradient shows a bar of colour stops (click to add, drag to move, drag
+    off to remove; arrow keys and Delete on a focused stop), overflow (Extend, Reflect, Repeat),
+    Linear RGB and a radial gradient's focal point, above the same swatches, mixer and hex
+    field, which then set the picked stop's colour and opacity. A gradient's swatch in
+    Properties shows its ramp. One picker, as Animate has one Color panel; the fill's No Colour
+    is its type None.
   * **Added**: the **Gradient Transform** tool (**F**): move, turn, stretch and resize a gradient,
     move a radial gradient's focal point, and scale, turn and skew a bitmap fill. Each drag is
     one undo step.
@@ -18,6 +21,51 @@
   * **Improved**: gradients keep their overflow, Linear RGB, focal point and elliptical shape
     from Animate files and SVG drawings, on the GPU stage and in SVG export (HTML canvas draws
     them as near as canvas can). Radial gradients on skewed shapes are now drawn exactly.
+* **Fixed: start-up, files and display, from user reports** (M8).
+  * Fixed: Flash files that opened in 0.1 no longer opening (#226). One damaged or unreadable
+    part of a `.fla` (a bitmap, a sound, a library symbol) no longer stops the whole file from
+    opening: the rest opens and the report says what was left out. A file double-clicked or
+    opened with **Open With** that can't be opened now says why in the status bar instead of
+    quietly showing the sample, and `anicraft-cli info`, `render` and the export commands open
+    `.fla` and `.xfl` files too.
+  * Fixed: Animate documents opening on a black stage instead of white (#163).
+  * Fixed: AniCraft not opening at all on some laptops with two graphics chips, such as the
+    Surface Book 2 (#207). If a way of drawing the window fails, AniCraft now tries the next one
+    (on Windows: DirectX 12 on the built-in chip, then OpenGL) instead of exiting, and a start that
+    crashed inside a graphics driver tries that way last next time. If nothing works, a message
+    says so. A start-up log in the settings folder (`Logs/anicraft.log`) records what was tried,
+    to attach to a bug report.
+  * New: **Preferences › Stage › Window graphics** chooses how the window is drawn (Automatic,
+    DirectX 12, Vulkan, Metal or OpenGL), for windows that flicker or flash black (#255).
+    `--renderer dx12`, `vulkan` and `metal` now pick that interface; before, they all meant the
+    default.
+  * Fixed: the selection shading on shapes stopping part way down when zoomed in or on a big
+    shape (#204). The dot pattern now covers the whole shape and its outline at any zoom, and
+    costs the same however much of the screen it covers.
+  * The web version's download is now built by `packaging/web/package.sh` and checked in CI; the
+    README no longer suggests releases carry it yet (#210).
+* **Drawing tools and colour fixes from user reports** (M1).
+  * **Fixed**: the Fill and Stroke colour squares in the Tools panel did nothing when clicked.
+    They open the colour picker now, with No Colour, and recolour selected shapes (#246).
+  * **Fixed**: the colour picker had no hex field. Every colour swatch's picker shows the colour
+    as `#rrggbb` and takes one you type (#201).
+  * **Fixed**: the colour picker had no web-safe palette. It opens on Animate's 216 web-safe
+    swatches, with greys and primaries beside them and the colours you mix or type in a row
+    below; **Mixer** has the full picker (#248).
+  * **Fixed**: the Pencil's Properties showed a Fill swatch, though the Pencil only draws lines.
+    The Pencil and the Line tool show only the stroke now (#252).
+  * **Fixed**: a squiggle drawn with Object Drawing on was trapped in its object. **Modify ›
+    Break Apart** (Ctrl+B) now turns a drawing object into merged drawing you can edit (#253).
+  * **Fixed**: the Width tool didn't thicken a line when you dragged on it, the pointer didn't
+    change, and the marker was a tiny dark box. A drag on the line widens it there, the pointer
+    is a crosshair (an add pointer over a line), and the marker is a white box with handles
+    (#250).
+  * **Fixed**: every new line segment came with a scale gizmo whose handles couldn't be dragged,
+    and a box appeared after every brush or pencil stroke. As in Animate, what you draw isn't
+    left selected, and the Selection tool's box no longer shows handles that do nothing (#205,
+    #243).
+  * **Fixed**: Ctrl-dragging a shape's edge made a smooth curve. It adds a corner point where you
+    pressed, with straight sides on a straight edge (#200).
 * **Filters, Subtract and Invert in HTML canvas export** (ADR 0072, M6). Exported web pages now
   show every filter (Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel and Adjust
   Color, with inner, knockout, hide object and Inner/Outer/Full) and the Subtract and Invert blend

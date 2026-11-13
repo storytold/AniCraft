@@ -77,6 +77,12 @@ pub fn open_session(src: Option<&str>) -> Result<Session, String> {
     match src {
         None => Ok(Session::default()),
         Some("--sample") => Ok(Session::new(anicraft_doc::sample::demo())),
+        // An Animate document imports as File › Open does (#226), untitled.
+        Some(p) if anicraft_engine::is_animate(std::path::Path::new(p)) => {
+            let mut s = Session::default();
+            s.execute("file.open", &serde_json::json!({"path": p})).map_err(|e| e.to_string())?;
+            Ok(s)
+        }
         Some(p) => {
             let doc = format::load(std::path::Path::new(p)).map_err(|e| format!("{p}: {e}"))?;
             let mut s = Session::new(doc);
@@ -477,6 +483,17 @@ pub fn serve<R: BufRead, W: Write>(s: &mut Session, input: R, out: &mut W) -> st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #226: `info`, `render` and the other subcommands take an Animate document as File › Open
+    /// does (an import, untitled), not only `.anicraft` files.
+    #[test]
+    fn subcommands_open_animate_documents() {
+        let xfl = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../xfl/tests/corpus/shapes/shapes.xfl");
+        let s = open_session(Some(&xfl.display().to_string())).unwrap();
+        assert!(s.path.is_none() && !s.doc.timeline(0).layers.is_empty());
+        let info = run(&["info".to_string(), xfl.display().to_string()]).unwrap();
+        assert!(info.contains("\"layers\""), "{info}");
+    }
 
     #[test]
     fn serve_round_trip() {

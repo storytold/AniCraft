@@ -375,6 +375,41 @@ fn break_apart_works_on_each_layer() {
     assert_eq!(s.selected_layers(), vec![top, bottom]);
 }
 
+/// #253: a drawing object (Object Drawing) breaks apart into raw shapes that merge with the raw
+/// drawing they touch, so it can be edited as a merged shape again; one undo step brings the
+/// object back.
+#[test]
+fn break_apart_turns_a_drawing_object_into_raw_shapes() {
+    let mut s = Session::default();
+    s.style.object_drawing = false;
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": "#00ff00", "stroke": null}));
+    let raw = s.visible_elements().len();
+    let obj = el_id(&run(&mut s, "draw.rect", json!({"x": 50, "y": 50, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null, "object": true})));
+    let squiggle = el_id(&run(&mut s, "draw.freehand", json!({"points": [[300, 0], [320, 30], [340, 0], [360, 30]], "object": true})));
+    let shapes = |s: &Session| -> Vec<(ElementId, bool)> {
+        s.visible_elements().iter().filter_map(|e| match &e.kind {
+            ElementKind::Shape(sh) => Some((e.id, sh.merge)),
+            _ => None,
+        }).collect()
+    };
+    assert!(shapes(&s).iter().filter(|(id, _)| [obj, squiggle].contains(id)).all(|(_, m)| !m), "drawn as objects");
+    let before = s.doc.clone();
+    let steps = s.history_len();
+    run(&mut s, "element.select", json!({"ids": [obj.0, squiggle.0]}));
+    let v = run(&mut s, "modify.break_apart", json!({}));
+    assert!(v["created"].as_u64().unwrap() >= 2, "{v}");
+    assert!(shapes(&s).iter().all(|(_, m)| *m), "every shape is raw now: {:?}", shapes(&s));
+    assert!(!shapes(&s).iter().any(|(id, _)| *id == obj), "the object merged into the drawing");
+    assert!(s.visible_elements().len() > raw + 1, "the red square cut the green one");
+    assert!(!s.selection.is_empty(), "what came out of it is selected");
+    assert_eq!(s.history_len(), steps + 1);
+    s.undo().unwrap();
+    assert!(s.doc == before, "one undo brings the objects back");
+    // Nothing to break apart: an error, not a no-op step.
+    run(&mut s, "edit.deselect", json!({}));
+    assert!(s.execute("modify.break_apart", &json!({})).is_err());
+}
+
 // ----- the marquee across layers with raw parts (ADR 0041) ------------------------------------
 
 /// Raw squares on two layers: Top's 0..100, Bottom's 200..300 (both 0..100 high).

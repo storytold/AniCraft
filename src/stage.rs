@@ -67,11 +67,13 @@ pub struct Cache {
     pub gpu: crate::gpu_stage::GpuStage,
     /// Who drew the newest visible tiles: the GPU, or the CPU and why (status bar).
     pub drawn_by: Option<(bool, Option<String>)>,
+    /// The selection pattern's texture and the colour it was made in (`selection_pattern`).
+    pattern: Option<(Color32, egui::TextureHandle)>,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None, gpu: Default::default(), drawn_by: None }
+        Cache { tiles: Vec::new(), tick: 0, ms: 0.0, ready: (0, 0), canvas: Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), service: None, shown_state: None, gpu: Default::default(), drawn_by: None, pattern: None }
     }
 }
 
@@ -424,34 +426,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Select | Tool::Transform if multi => crate::onion::drag_start(app, sp, shift, zoom),
                 // On an armature, a drag poses it (ADR 0043).
                 Tool::Select if let Some(d) = crate::bone_tool::select_drag_start(app, xf, press) => d,
-                // Raw shapes (ADR 0041): an unselected corner or end moves, an unselected segment
-                // or fill edge bends; anything else is picked (unless it already is) and moved.
-                Tool::Select => match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
-                    Some((_, Grab::Point { at })) => {
-                        app.s.begin_gesture(tr_noop!("Move Point"));
-                        app.raw_points = serde_json::Value::Null;
-                        app.raw_with.clear();
-                        app.raw_touched.clear();
-                        Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
-                    }
-                    Some((layer, Grab::Segment { id, cmd, t, .. })) => {
-                        if layer != app.s.layer {
-                            app.s.layer = layer;
-                            app.s.selection.clear();
-                        }
-                        app.s.begin_gesture(tr_noop!("Bend"));
-                        app.raw_touched.clear();
-                        Drag::Bend { id, cmd, t, last: sp }
-                    }
-                    Some((layer, Grab::Fill { id } | Grab::Object { id })) => {
-                        if !app.s.selection.contains(layer, id) {
-                            app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
-                        }
-                        app.s.begin_gesture(tr_noop!("Move"));
-                        Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
-                    }
-                    None => Drag::Marquee { start: sp, cur: sp },
-                },
+                Tool::Select => select_press(app, sp, shift, command, zoom),
                 Tool::Transform => {
                     let zone = sel_rect.and_then(|r| xf_zone(r, press));
                     match (zone, sel_bounds) {
@@ -640,15 +615,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.drop_raw();
                 app.s.end_gesture();
             }
-            Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => {
-                // What the drag changed merges again with what it touches, in the same step.
-                if !app.raw_touched.is_empty() {
-                    let ids = std::mem::take(&mut app.raw_touched);
-                    app.run("raw.merge", json!({"ids": ids}));
-                }
-                app.raw_points = serde_json::Value::Null;
-                app.s.end_gesture();
-            }
+            Drag::Bend { .. } | Drag::RawPoint { .. } | Drag::RawHandle { .. } => end_raw_drag(app),
             Drag::Transform { .. } | Drag::SliceGuide { .. } | Drag::Points { .. } | Drag::Hint { .. } | Drag::MotionMove { .. } | Drag::CameraPan { .. } | Drag::CameraRotate { .. } | Drag::BonePose { .. } | Drag::ArmatureMove { .. } => app.s.end_gesture(),
             Drag::Bone { from, head, cur } => crate::bone_tool::drag_end(app, xf, from, head, cur),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
@@ -1042,12 +1009,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
     if app.tool == Tool::Select {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
-        let mut mesh = egui::Mesh::default();
+        let (mut spans, mut dots) = (Vec::new(), egui::Mesh::default());
         let mut budget = MAX_DOTS;
         for item in app.s.display_list().items.iter().filter(|i| app.s.selection.contains(i.layer, i.element) && raw.contains(&(i.layer, i.element))) {
-            selection_dots(&mut mesh, item, &to_px.mul(&item.transform), canvas, &mut budget);
+            selection_pattern(&mut spans, &mut dots, item, &to_px.mul(&item.transform), canvas, &mut budget);
         }
-        painter.add(egui::Shape::mesh(mesh));
+        if !spans.is_empty() {
+            let mut mesh = egui::Mesh::with_texture(pattern_texture(&mut app.stage_cache.pattern, ui.ctx()));
+            pattern_mesh(&mut mesh, &spans);
+            painter.add(egui::Shape::mesh(mesh));
+        }
+        painter.add(egui::Shape::mesh(dots));
     }
     if multi {
         let hover = pointer.filter(|p| canvas.contains(*p) && !panning && !app.modal_open() && app.palette.is_none() && matches!(app.tool, Tool::Select | Tool::Transform)).map(to_stage);
@@ -1075,6 +1047,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, T.selection.gamma_multiply(0.45)), StrokeKind::Middle);
             continue;
         }
+        // A plain box, as Animate's Selection tool shows: handles are Free Transform's (Q),
+        // where they work. Handles drawn here could not be dragged (#205).
         painter.rect_stroke(r, 0.0, sel_stroke, StrokeKind::Middle);
         // Text on a path shows the path it follows (ADR 0070).
         if let anicraft_engine::doc::ElementKind::Text(t) = &e.kind
@@ -1086,11 +1060,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let pts: Vec<Pos2> = pl.points.iter().map(|p| pos2(p.x, p.y)).collect();
                 painter.add(if pl.closed { egui::Shape::closed_line(pts, sel_stroke) } else { egui::Shape::line(pts, sel_stroke) });
             }
-        }
-        for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom(), r.center_top(), r.center_bottom(), r.left_center(), r.right_center()] {
-            let h = Rect::from_center_size(c, vec2(6.0, 6.0));
-            painter.rect_filled(h, 0.0, Color32::WHITE);
-            painter.rect_stroke(h, 0.0, sel_stroke, StrokeKind::Middle);
         }
         // registration point
         let o = to_screen(e.transform.translation());
@@ -1166,6 +1135,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = pointer.filter(|p| canvas.contains(*p))
         && let Some((_, grab)) = app.s.raw_grab(to_v(to_stage(p)), GRAB_EDGE / zoom, GRAB_POINT / zoom)
     {
+        // With Ctrl (⌘) an edge takes a new corner point there: the corner mark (#200).
+        let grab = match grab {
+            Grab::Segment { at, .. } if command => Grab::Point { at },
+            g => g,
+        };
         grab_mark(&painter, p, grab);
     }
 
@@ -1283,6 +1257,70 @@ fn move_raw_point(app: &mut App, c: Pos2, zoom: f32) {
     }
 }
 
+/// A Selection-tool press at `sp` (stage) on raw shapes (ADR 0041): an unselected corner or end
+/// moves, an unselected segment or fill edge bends; anything else is picked (unless it already
+/// is) and moved. With `corner` (Ctrl, ⌘ on macOS), as in Animate, an edge gets a corner point
+/// where it was pressed and the drag pulls that point, so the edge peaks there (#200).
+fn select_press(app: &mut App, sp: Pos2, shift: bool, corner: bool, zoom: f32) -> Drag {
+    let point_drag = |app: &mut App, at: Vec2| {
+        app.raw_points = serde_json::Value::Null;
+        app.raw_with.clear();
+        app.raw_touched.clear();
+        Drag::RawPoint { at: pos2(at.x, at.y), off: pos2(at.x, at.y) - sp }
+    };
+    match app.s.raw_grab(to_v(sp), GRAB_EDGE / zoom, GRAB_POINT / zoom) {
+        Some((_, Grab::Point { at })) => {
+            app.s.begin_gesture(tr_noop!("Move Point"));
+            point_drag(app, at)
+        }
+        Some((layer, Grab::Segment { id, cmd, t, at })) => {
+            if layer != app.s.layer {
+                app.s.layer = layer;
+                app.s.selection.clear();
+            }
+            if corner {
+                // The new point, its corner and its move are one undo step. Where no point can
+                // go (one is there already), the press bends the edge as without Ctrl.
+                app.s.begin_gesture(tr_noop!("Add Corner Point"));
+                if let Ok(v) = app.s.execute("raw.add_point", &json!({"x": at.x, "y": at.y, "slop": GRAB_EDGE / zoom.max(1e-3)})) {
+                    let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).map(|x| x as f32);
+                    if let (Some(x), Some(y)) = (f("x"), f("y")) {
+                        // A curved edge splits into two curves meeting smoothly: drawing the new
+                        // point's handles in makes it a corner, so the sides meet in a peak.
+                        let _ = app.s.execute("raw.convert_points", &json!({"points": [[x, y]], "smooth": false}));
+                        let drag = point_drag(app, Vec2::new(x, y));
+                        touched(app, &v["changed"]);
+                        return drag;
+                    }
+                }
+                app.s.end_gesture();
+            }
+            app.s.begin_gesture(tr_noop!("Bend"));
+            app.raw_touched.clear();
+            Drag::Bend { id, cmd, t, last: sp }
+        }
+        Some((layer, Grab::Fill { id } | Grab::Object { id })) => {
+            if !app.s.selection.contains(layer, id) {
+                app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift}));
+            }
+            app.s.begin_gesture(tr_noop!("Move"));
+            Drag::SnapMove { start: sp, applied: egui::Vec2::ZERO }
+        }
+        None => Drag::Marquee { start: sp, cur: sp },
+    }
+}
+
+/// The end of a drag that bent an edge or moved raw points or handles: what it changed merges
+/// again with what it touches, in the same step.
+fn end_raw_drag(app: &mut App) {
+    if !app.raw_touched.is_empty() {
+        let ids = std::mem::take(&mut app.raw_touched);
+        app.run("raw.merge", json!({"ids": ids}));
+    }
+    app.raw_points = serde_json::Value::Null;
+    app.s.end_gesture();
+}
+
 /// Where a command's result says the drag snapped.
 fn snapped_at(v: &serde_json::Value) -> Option<Vec2> {
     let s = v.get("snapped")?;
@@ -1322,14 +1360,80 @@ fn raw_ids(app: &App) -> std::collections::HashSet<(anicraft_engine::doc::LayerI
     layers.into_iter().flat_map(|l| app.s.elements_on(l).into_iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge)).map(move |e| (l, e.id))).collect()
 }
 
-/// Most selection dots drawn in a frame.
+/// Spacing of the selection pattern's dots (points).
+const GAP: f32 = 3.0;
+/// Most single dots drawn in a frame along hairline strokes (wider strokes and fills are spans).
 const MAX_DOTS: usize = 60_000;
+/// Most pattern spans in a frame: far more than a full-screen drawing needs (a 4K view is ~720
+/// rows), so the pattern never stops part way down a shape; it only bounds a pathological one.
+const MAX_SPANS: usize = 400_000;
+
+/// The selection pattern's tile: two by two dot cells, dark and light in a checker, at four
+/// texels a point so the 1.5-point dots stay crisp. Drawn repeating, on the screen grid.
+fn pattern_image(dark: Color32) -> egui::ColorImage {
+    const PER_PT: usize = 4;
+    let cell = (GAP as usize) * PER_PT;
+    let size = 2 * cell;
+    let (lo, hi) = (cell / 4, cell - cell / 4);
+    let pixels = (0..size * size)
+        .map(|i| {
+            let (x, y) = (i % size, i / size);
+            let inside = (lo..hi).contains(&(x % cell)) && (lo..hi).contains(&(y % cell));
+            match inside {
+                false => Color32::TRANSPARENT,
+                true if (x / cell + y / cell).is_multiple_of(2) => dark,
+                true => Color32::WHITE,
+            }
+        })
+        .collect();
+    egui::ColorImage::new([size, size], pixels)
+}
+
+/// The pattern texture for the theme's selection colour (made again when the theme changes).
+fn pattern_texture(cache: &mut Option<(Color32, egui::TextureHandle)>, ctx: &egui::Context) -> egui::TextureId {
+    let dark = T.selection;
+    if let Some((c, t)) = cache.as_ref()
+        && *c == dark
+    {
+        return t.id();
+    }
+    let t = ctx.load_texture("selection-pattern", pattern_image(dark), egui::TextureOptions::NEAREST_REPEAT);
+    let id = t.id();
+    *cache = Some((dark, t));
+    id
+}
+
+/// Adds the pattern over `spans` to `mesh` (textured with [`pattern_texture`]). The texture
+/// coordinates come from screen positions, so the dots sit on a fixed screen grid and don't
+/// crawl when the view pans; a dot's centre is on a multiple of [`GAP`].
+fn pattern_mesh(mesh: &mut egui::Mesh, spans: &[Rect]) {
+    let tile = 2.0 * GAP;
+    let uv = |p: Pos2| pos2((p.x + GAP * 0.5) / tile, (p.y + GAP * 0.5) / tile);
+    for r in spans {
+        mesh.add_rect_with_uv(*r, Rect::from_min_max(uv(r.min), uv(r.max)), Color32::WHITE);
+    }
+}
 
 /// Animate's selection look for raw shapes: fine dots over the selected fill or stroke, light and
-/// dark in a checker so they show on any colour. They sit on a fixed screen grid, so they don't
-/// crawl when the view pans; `m` maps the item's path to the screen.
-fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
-    const GAP: f32 = 3.0;
+/// dark in a checker so they show on any colour. `m` maps the item's path to the screen. Fills
+/// and strokes wider than the dot spacing become `spans` (one rectangle per row of dots per run
+/// inside them, for the pattern texture), so a shape filling the view costs a few hundred
+/// rectangles however far it is zoomed in (#204: single dots under one budget ran out part way
+/// down a big or zoomed-in shape, and the shading stopped there). Hairline strokes get one row of
+/// dots along them in `mesh`.
+fn selection_pattern(spans: &mut Vec<Rect>, mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayItem, m: &Affine, clip: Rect, budget: &mut usize) {
+    use anicraft_engine::geom::FillRule;
+    if item.fill.is_some() {
+        pattern_spans(&item.path.flatten(m, 0.5), item.fill_rule, clip, spans);
+    }
+    let Some(st) = &item.stroke else { return };
+    let half = (st.reach() * m.mean_scale()).max(0.5);
+    if half >= GAP {
+        // The stroke's own outline (caps, joins and dashes as drawn), filled non-zero.
+        let outline = anicraft_engine::render::stroke::stroke_outline(&item.path, m, st, 0.5);
+        pattern_spans(&outline.flatten(&Affine::IDENTITY, 0.5), FillRule::NonZero, clip, spans);
+        return;
+    }
     let mut dot = |p: Pos2| {
         if clip.contains(p) && *budget > 0 {
             *budget -= 1;
@@ -1338,73 +1442,228 @@ fn selection_dots(mesh: &mut egui::Mesh, item: &anicraft_engine::doc::DisplayIte
         }
         *budget > 0
     };
-    let lines = item.path.flatten(m, 0.5);
-    if item.fill.is_some() {
-        let b = item.path.bounds().transformed(m);
-        let mut y = (b.min.y.max(clip.top()) / GAP).ceil() * GAP;
-        let bottom = b.max.y.min(clip.bottom());
-        let mut xs: Vec<f32> = Vec::new();
-        while y <= bottom {
-            // Where this row crosses the outline; pairs of crossings are inside (even-odd: raw
-            // fills never overlap themselves).
-            xs.clear();
-            for pl in &lines {
-                let n = pl.points.len();
-                for i in 0..n {
-                    let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
-                    if (a.y > y) != (c.y > y) {
-                        xs.push(a.x + (y - a.y) * (c.x - a.x) / (c.y - a.y));
-                    }
-                }
+    // Along the stroke; segments off the screen are skipped.
+    let near = clip.expand(half + GAP);
+    for pl in &item.path.flatten(m, 0.5) {
+        let n = pl.points.len();
+        let segs = if pl.closed { n } else { n.saturating_sub(1) };
+        let mut carry = 0.0;
+        for i in 0..segs {
+            let (Some(&a), Some(&c)) = (pl.points.get(i), pl.points.get((i + 1) % n)) else { continue };
+            let d = c - a;
+            let len = d.length();
+            if len <= 1e-6 {
+                continue;
             }
-            xs.sort_by(f32::total_cmp);
-            for [x0, x1] in xs.as_chunks::<2>().0 {
-                let mut x = (x0.max(clip.left()) / GAP).ceil() * GAP;
-                while x <= x1.min(clip.right()) {
-                    if !dot(pos2(x, y)) {
-                        return;
-                    }
-                    x += GAP;
-                }
+            if !near.intersects(Rect::from_two_pos(pos2(a.x, a.y), pos2(c.x, c.y))) {
+                carry = (carry - len).rem_euclid(GAP);
+                continue;
             }
-            y += GAP;
+            let dir = d * (1.0 / len);
+            let mut t = carry;
+            while t < len {
+                let p = a + dir * t;
+                if !dot(pos2(p.x, p.y)) {
+                    return;
+                }
+                t += GAP;
+            }
+            carry = t - len;
         }
     }
-    if let Some(st) = &item.stroke {
-        // Along the stroke, in rows across its width; segments off the screen are skipped.
-        let half = (st.reach() * m.mean_scale()).max(0.5);
-        let rows = (half / GAP).floor() as i32;
-        let near = clip.expand(half + GAP);
-        for pl in &lines {
-            let n = pl.points.len();
-            let segs = if pl.closed { n } else { n.saturating_sub(1) };
-            let mut carry = 0.0;
-            for i in 0..segs {
-                let (a, c) = (pl.points[i], pl.points[(i + 1) % n]);
-                let d = c - a;
-                let len = d.length();
-                if len <= 1e-6 {
-                    continue;
-                }
-                if !near.intersects(Rect::from_two_pos(pos2(a.x, a.y), pos2(c.x, c.y))) {
-                    carry = (carry - len).rem_euclid(GAP);
-                    continue;
-                }
-                let (dir, normal) = (d * (1.0 / len), d.perp() * (1.0 / len));
-                let mut t = carry;
-                while t < len {
-                    let p = a + dir * t;
-                    for k in -rows..=rows {
-                        let q = p + normal * (k as f32 * GAP);
-                        if !dot(pos2(q.x, q.y)) {
-                            return;
-                        }
+}
+
+/// The runs inside the closed outlines `lines` (screen space, filled by `rule`) along each row
+/// of dots, as rectangles one row of dots tall, clipped to `clip`. Rows are scanned with an
+/// active edge list, so the cost follows the outline's edges and the rows on screen, not the
+/// area covered.
+pub(crate) fn pattern_spans(lines: &[anicraft_engine::geom::Polyline], rule: anicraft_engine::geom::FillRule, clip: Rect, out: &mut Vec<Rect>) {
+    use anicraft_engine::geom::FillRule;
+    // Every non-horizontal edge near the view, as (top, bottom, x at top, dx/dy, winding).
+    let mut edges: Vec<(f32, f32, f32, f32, i32)> = Vec::new();
+    for pl in lines {
+        let n = pl.points.len();
+        if n < 2 {
+            continue;
+        }
+        for i in 0..n {
+            let (Some(&a), Some(&c)) = (pl.points.get(i), pl.points.get((i + 1) % n)) else { continue };
+            if a.y == c.y || !(a.is_finite() && c.is_finite()) {
+                continue;
+            }
+            let (top, bottom, w) = if a.y < c.y { (a, c, 1) } else { (c, a, -1) };
+            if bottom.y < clip.top() - GAP || top.y > clip.bottom() + GAP {
+                continue;
+            }
+            edges.push((top.y, bottom.y, top.x, (bottom.x - top.x) / (bottom.y - top.y), w));
+        }
+    }
+    if edges.is_empty() {
+        return;
+    }
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let last = edges.iter().fold(f32::NEG_INFINITY, |m, e| m.max(e.1)).min(clip.bottom() + GAP * 0.5);
+    let mut y = (edges.first().map_or(0.0, |e| e.0).max(clip.top() - GAP * 0.5) / GAP).ceil() * GAP;
+    let inside = |w: i32| match rule {
+        FillRule::NonZero => w != 0,
+        FillRule::EvenOdd => w % 2 != 0,
+    };
+    let (mut next, mut active, mut xs): (usize, Vec<usize>, Vec<(f32, i32)>) = (0, Vec::new(), Vec::new());
+    while y <= last && out.len() < MAX_SPANS {
+        while edges.get(next).is_some_and(|e| e.0 <= y) {
+            active.push(next);
+            next += 1;
+        }
+        // Half-open in y, so a vertex shared by two edges counts once.
+        active.retain(|&i| edges.get(i).is_some_and(|e| e.1 > y));
+        xs.clear();
+        xs.extend(active.iter().filter_map(|&i| edges.get(i)).map(|e| (e.2 + (y - e.0) * e.3, e.4)));
+        xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (top, bottom) = ((y - GAP * 0.5).max(clip.top()), (y + GAP * 0.5).min(clip.bottom()));
+        let (mut w, mut from) = (0, 0.0);
+        for &(x, d) in &xs {
+            let was = inside(w);
+            w += d;
+            match (was, inside(w)) {
+                (false, true) => from = x,
+                (true, false) => {
+                    let (x0, x1) = (from.max(clip.left()), x.min(clip.right()));
+                    if x1 > x0 && bottom > top {
+                        out.push(Rect::from_min_max(pos2(x0, top), pos2(x1, bottom)));
                     }
-                    t += GAP;
                 }
-                carry = t - len;
+                _ => {}
             }
         }
+        y += GAP;
+    }
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::*;
+    use anicraft_engine::geom::{FillRule, Path};
+
+    fn area(spans: &[Rect]) -> f32 {
+        spans.iter().map(|r| r.area()).sum()
+    }
+
+    /// #204: a shape far bigger than the view (zoomed in) is shaded all the way down, not just its
+    /// top rows, and costs one span per row rather than one quad per dot.
+    #[test]
+    fn a_zoomed_in_shape_is_shaded_to_the_bottom_of_the_view() {
+        let clip = Rect::from_min_max(pos2(0.0, 0.0), pos2(3840.0, 2160.0));
+        let mut spans = Vec::new();
+        let big = Path::rect(-5000.0, -4000.0, 20000.0, 15000.0);
+        pattern_spans(&big.flatten(&Affine::IDENTITY, 0.5), FillRule::NonZero, clip, &mut spans);
+        let bottom = spans.iter().fold(0.0f32, |m, r| m.max(r.max.y));
+        assert_eq!(bottom, clip.bottom(), "the pattern reaches the bottom of the view");
+        assert!((area(&spans) - clip.area()).abs() < 1.0, "the whole view is covered: {} of {}", area(&spans), clip.area());
+        assert_eq!(spans.len(), 721, "one span per row of dots");
+        // The single-dot overlay this replaced stopped after 60 000 dots: 46 rows of 1 280.
+        assert!(clip.area() / (GAP * GAP) > 60_000.0 * 10.0);
+    }
+
+    /// Holes stay unshaded (even-odd and non-zero), and the spans follow the outline.
+    #[test]
+    fn spans_follow_the_fill_rule_and_the_outline() {
+        let clip = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 400.0));
+        let mut ring = Path::rect(0.0, 0.0, 300.0, 300.0);
+        ring.cmds.extend(Path::rect(100.0, 100.0, 100.0, 100.0).cmds);
+        for rule in [FillRule::EvenOdd, FillRule::NonZero] {
+            let mut spans = Vec::new();
+            pattern_spans(&ring.flatten(&Affine::IDENTITY, 0.5), rule, clip, &mut spans);
+            let in_hole = spans.iter().any(|r| r.contains(pos2(150.0, 150.0)));
+            assert_eq!(in_hole, rule == FillRule::NonZero, "{rule:?}: both squares wind the same way");
+            assert!(spans.iter().all(|r| r.min.x >= 0.0 && r.max.x <= 300.0 && r.max.y <= 301.5));
+            assert!(spans.iter().any(|r| r.contains(pos2(50.0, 150.0))));
+        }
+    }
+
+    fn item(path: Path, fill: bool, stroke: Option<f32>) -> anicraft_engine::doc::DisplayItem {
+        use anicraft_engine::doc::{ColorTransform, DisplayItem, ElementId, LayerId, Paint, Rgba, Stroke};
+        DisplayItem {
+            path: std::sync::Arc::new(path),
+            transform: Affine::IDENTITY,
+            fill: fill.then_some(Paint::Solid(Rgba::new(1.0, 0.0, 0.0, 1.0))),
+            stroke: stroke.map(|w| Stroke::new(Rgba::new(0.0, 0.0, 0.0, 1.0), w)),
+            fill_rule: FillRule::NonZero,
+            color: ColorTransform::IDENTITY,
+            layer: LayerId(0),
+            element: ElementId(0),
+            outline: None,
+            clip: None,
+            masks: None,
+            guide: false,
+            group: None,
+            image: None,
+            smooth: true,
+        }
+    }
+
+    /// A wide stroke is shaded over its whole outline (beyond the fill), a hairline gets dots
+    /// along it, and nothing off the view is drawn.
+    #[test]
+    fn strokes_are_shaded_wide_as_spans_and_hairlines_as_dots() {
+        let clip = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 400.0));
+        let square = || Path::rect(100.0, 100.0, 200.0, 200.0);
+        let (mut spans, mut dots, mut budget) = (Vec::new(), egui::Mesh::default(), MAX_DOTS);
+        selection_pattern(&mut spans, &mut dots, &item(square(), false, Some(20.0)), &Affine::IDENTITY, clip, &mut budget);
+        assert!(spans.iter().any(|r| r.min.x < 100.0) && !spans.iter().any(|r| r.contains(pos2(200.0, 200.0))), "the outline only, its outer half included");
+        assert!(dots.vertices.is_empty());
+        let mut spans = Vec::new();
+        selection_pattern(&mut spans, &mut dots, &item(square(), true, Some(0.5)), &Affine::IDENTITY, clip, &mut budget);
+        assert!(spans.iter().any(|r| r.contains(pos2(200.0, 200.0))), "the fill");
+        let n = dots.vertices.len() / 4;
+        assert!((250..=290).contains(&n), "a dot every {GAP} along the 800-long hairline: {n}");
+        // Wholly off the view: nothing.
+        let (mut spans, mut dots) = (Vec::new(), egui::Mesh::default());
+        selection_pattern(&mut spans, &mut dots, &item(Path::rect(900.0, 900.0, 50.0, 50.0), true, Some(0.5)), &Affine::IDENTITY, clip, &mut budget);
+        assert!(spans.is_empty() && dots.vertices.is_empty());
+        // The pattern mesh maps each span to the repeating tile.
+        let mut mesh = egui::Mesh::default();
+        pattern_mesh(&mut mesh, &[Rect::from_min_max(pos2(-1.5, -1.5), pos2(4.5, 1.5))]);
+        assert_eq!(mesh.vertices.first().map(|v| v.uv), Some(pos2(0.0, 0.0)));
+        assert_eq!(mesh.vertices.last().map(|v| v.uv), Some(pos2(1.0, 0.5)));
+    }
+
+    /// The whole window, headless, with a big selected raw shape zoomed in (`--open selectzoom`):
+    /// the pattern is drawn with its texture, made once for the theme's colour.
+    #[test]
+    fn a_selected_raw_shape_draws_its_pattern_in_the_window() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        app.open_panel(Some("selectzoom"));
+        assert!(!app.s.selection.is_empty() && app.view.zoom == 4.0);
+        let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 940.0))), ..Default::default() };
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(input(), |ui| app.frame(ui));
+            out.textures_delta.clear();
+        }
+        let first = app.stage_cache.pattern.as_ref().map(|(c, t)| (*c, t.id()));
+        assert_eq!(first.map(|f| f.0), Some(T.selection));
+        let mut out = ctx.run_ui(input(), |ui| app.frame(ui));
+        out.textures_delta.clear();
+        assert_eq!(app.stage_cache.pattern.as_ref().map(|(c, t)| (*c, t.id())), first, "made once");
+    }
+
+    /// The tile's dots sit on the screen grid in the old checker: dark where the row and column
+    /// numbers add up to an even number.
+    #[test]
+    fn the_pattern_tile_is_a_checker_of_dots() {
+        let img = pattern_image(Color32::BLUE);
+        let size = img.size[0];
+        let at = |pt: (f32, f32)| {
+            // Screen point → texel, as `pattern_mesh` maps it.
+            let u = ((pt.0 + GAP * 0.5) / (2.0 * GAP)).rem_euclid(1.0);
+            let v = ((pt.1 + GAP * 0.5) / (2.0 * GAP)).rem_euclid(1.0);
+            img.pixels[(v * size as f32) as usize * size + (u * size as f32) as usize]
+        };
+        assert_eq!(at((0.0, 0.0)), Color32::BLUE);
+        assert_eq!(at((3.0, 0.0)), Color32::WHITE);
+        assert_eq!(at((3.0, 3.0)), Color32::BLUE);
+        assert_eq!(at((1.4, 0.0)), Color32::TRANSPARENT, "space between dots");
     }
 }
 
@@ -1576,17 +1835,17 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
     }
     match app.tool {
         Tool::Rect => {
-            app.run("draw.rect", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y, "radius": app.rect_radius}));
+            app.draw("draw.rect", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y, "radius": app.rect_radius}));
         }
         Tool::Oval => {
-            app.run("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
+            app.draw("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
         }
         Tool::Star => {
             let r = d.length();
-            app.run("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
+            app.draw("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
         }
         Tool::Line => {
-            app.run("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
+            app.draw("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
         }
         _ => {}
     }
@@ -1629,6 +1888,96 @@ fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32)
             painter.line_segment([a, b], stroke);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod draw_tests {
+    use super::*;
+
+    fn app() -> App {
+        let ctx = egui::Context::default();
+        App::with_context(&ctx, anicraft_engine::Session::new(anicraft_engine::doc::Document::default()), Some(std::path::PathBuf::from("unused.png")))
+    }
+
+    /// #205, #243: a shape or a line drawn with a tool leaves nothing selected (no box around
+    /// the last stroke), in merge drawing and in Object Drawing, and the previous selection
+    /// goes too, as in Animate. Undo still takes the shape away in one step.
+    #[test]
+    fn drawing_tools_leave_nothing_selected() {
+        for object in [false, true] {
+            let mut app = app();
+            app.s.style.object_drawing = object;
+            for tool in [Tool::Line, Tool::Rect, Tool::Oval, Tool::Star] {
+                app.tool = tool;
+                let before = app.s.history_len();
+                create_shape(&mut app, pos2(10.0, 10.0), pos2(80.0, 60.0));
+                assert_eq!(app.s.history_len(), before + 1, "{tool:?} drew");
+                assert!(app.s.selection.is_empty(), "{tool:?}, object {object}: nothing selected");
+            }
+            app.pencil = (0..20).map(|i| Vec2::new(100.0 + i as f32 * 4.0, 100.0 + (i % 3) as f32)).collect();
+            crate::pathtools::commit_pencil(&mut app, crate::pathtools::Xf { origin: Pos2::ZERO, zoom: 1.0 });
+            assert!(app.s.selection.is_empty(), "Pencil, object {object}");
+            let n = app.s.visible_elements().len();
+            app.s.undo().expect("undo");
+            assert!(app.s.visible_elements().len() < n, "one undo takes the stroke away");
+        }
+    }
+
+    /// The area of the raw fill (one on the stage).
+    fn fill_area(app: &App) -> f32 {
+        let fills: Vec<_> = app.s.visible_elements().into_iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge && sh.fill.is_some())).collect();
+        assert_eq!(fills.len(), 1, "one raw fill");
+        let anicraft_engine::doc::ElementKind::Shape(sh) = &fills[0].kind else { return 0.0 };
+        sh.path
+            .flatten(&fills[0].transform, 0.01)
+            .iter()
+            .map(|pl| {
+                let n = pl.points.len();
+                (0..n).filter_map(|i| Some(pl.points.get(i)?.cross(*pl.points.get((i + 1) % n)?))).sum::<f32>() * 0.5
+            })
+            .sum::<f32>()
+            .abs()
+    }
+
+    /// Presses the top edge of a raw 100 × 80 rectangle in its middle, drags it 30 up and lets
+    /// go, as the stage does.
+    fn drag_top_edge(ctrl: bool) -> App {
+        let mut app = app();
+        app.tool = Tool::Select;
+        app.s.style.object_drawing = false;
+        app.run("draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 80, "fill": "#ff0000", "stroke": "#000000"}));
+        app.run("edit.deselect", json!({}));
+        app.drag = select_press(&mut app, pos2(50.0, 0.0), false, ctrl, 1.0);
+        let to = pos2(50.0, -30.0);
+        match app.drag {
+            Drag::RawPoint { .. } => move_raw_point(&mut app, to, 1.0),
+            Drag::Bend { id, cmd, t, last } => {
+                let d = to - last;
+                let v = app.run("path.bend_segment", json!({"id": id.0, "cmd": cmd, "t": t, "x": last.x, "y": last.y, "dx": d.x, "dy": d.y, "merge": false})).expect("bent");
+                touched(&mut app, &v["changed"]);
+            }
+            d => panic!("a press on the edge starts {d:?}"),
+        }
+        end_raw_drag(&mut app);
+        app.drag = Drag::None;
+        app
+    }
+
+    /// #200: Ctrl-drag on an edge makes a corner point with straight sides (Animate); a plain
+    /// drag still bends the edge into a curve. One undo takes either back.
+    #[test]
+    fn ctrl_drag_on_an_edge_makes_a_corner() {
+        let mut app = drag_top_edge(true);
+        // The rectangle and the triangle (0, 0), (50, -30), (100, 0).
+        assert!((fill_area(&app) - 9500.0).abs() < 1.0, "straight sides up to the peak: {}", fill_area(&app));
+        let pts = app.s.execute("raw.points", &json!({"ids": app.s.visible_elements().iter().map(|e| e.id.0).collect::<Vec<_>>()})).expect("points");
+        assert!(pts.to_string().contains("-30"), "a point at the peak: {pts}");
+        app.s.undo().expect("undo");
+        assert!((fill_area(&app) - 8000.0).abs() < 1.0, "one undo: the rectangle again");
+        let bent = drag_top_edge(false);
+        let a = fill_area(&bent);
+        assert!(a > 8000.0 + 100.0 && (a - 9500.0).abs() > 50.0, "a plain drag bends it into a curve: {a}");
     }
 }
 

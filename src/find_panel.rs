@@ -285,11 +285,11 @@ fn query_rows(app: &mut App, ui: &mut egui::Ui) -> bool {
         }
         Kind::Color => {
             row(ui, tr!("Find"), &mut |ui| {
-                ui.color_edit_button_srgb(&mut app.find.color).named(tr!("Colour to find"));
+                crate::colour::button(ui, &mut app.find.color).named(tr!("Colour to find"));
                 ui.label(text(Type::Data, format!("#{:02x}{:02x}{:02x}", app.find.color[0], app.find.color[1], app.find.color[2])));
             });
             row(ui, tr!("Replace with"), &mut |ui| {
-                ui.color_edit_button_srgb(&mut app.find.with_color).named(tr!("Colour to replace with"));
+                crate::colour::button(ui, &mut app.find.with_color).named(tr!("Colour to replace with"));
                 ui.label(text(Type::Data, format!("#{:02x}{:02x}{:02x}", app.find.with_color[0], app.find.with_color[1], app.find.with_color[2])));
             });
         }

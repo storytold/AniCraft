@@ -285,3 +285,56 @@ fn every_package_opens_from_a_fla_with_the_same_golden_frames() {
 {}", failures.len(), failures.join("
 "));
 }
+
+/// #226: each package as a `.fla` opens as the same document through every way in: File › Open,
+/// the command line and a document the system hands over (all `file.open`), Open Recent and the
+/// start screen's list (`file.open_recent`), a drop anywhere on the window (routed to
+/// `file.open`), an upper-case extension, and a file a web browser hands over (`vfs`).
+#[test]
+fn every_entry_point_opens_the_corpus_as_a_fla() {
+    use anicraft_engine::cmds_drop::{DropAction, DropKind, DropTarget, kind_of, route};
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("xfl-corpus-entry-points");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (case, _) in FRAMES {
+        let mut s = Session::default();
+        s.execute("file.open", &json!({"path": corpus().join(case).display().to_string()})).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let bytes = pack::pack(&pack::package(&corpus().join(case)), &pack::VARIANTS[0]);
+        let fla = dir.join(format!("{case}.fla"));
+        std::fs::write(&fla, &bytes).unwrap();
+        let upper = dir.join(format!("{case} COPY.FLA"));
+        std::fs::write(&upper, &bytes).unwrap();
+        let open = |path: &Path| {
+            let mut t = Session::default();
+            t.execute("file.open", &json!({"path": path.display().to_string()})).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            t
+        };
+        for path in [&fla, &upper] {
+            let t = open(path);
+            assert!(t.doc == s.doc, "{}: opens differently from its folder", path.display());
+            assert!(t.path.is_none(), "{case}: imported untitled, so Save never writes over the Animate file");
+        }
+        // Open Recent reopens the Animate file it imported.
+        let mut t = open(&fla);
+        t.execute("file.new", &json!({})).unwrap();
+        t.execute("file.open_recent", &json!({"index": 0, "confirm": true})).unwrap_or_else(|e| panic!("{case}: Open Recent: {e}"));
+        assert!(t.doc == s.doc, "{case}: Open Recent opens it the same");
+        // A drop anywhere opens it.
+        for path in [&fla, &upper] {
+            assert_eq!(kind_of(path), DropKind::Document, "{}", path.display());
+            for target in [DropTarget::Stage, DropTarget::Timeline, DropTarget::Library, DropTarget::Window] {
+                assert_eq!(route(kind_of(path), target), DropAction::Open, "{case} on {target:?}");
+            }
+        }
+        // In a browser the file arrives in memory, on the thread that opens it (ADR 0036).
+        let (name, data, want) = (format!("{case}.fla"), bytes.clone(), s.doc.clone());
+        std::thread::spawn(move || {
+            anicraft_engine::vfs::use_memory();
+            anicraft_engine::vfs::put(Path::new(&name), data).unwrap();
+            let mut w = Session::default();
+            w.execute("file.open", &json!({"path": name})).unwrap_or_else(|e| panic!("{name} in a browser: {e}"));
+            assert!(w.doc == want, "{name}: opens differently in a browser");
+        })
+        .join()
+        .unwrap();
+    }
+}

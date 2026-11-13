@@ -79,11 +79,21 @@ turned radial gradients. XFL import reported all four as approximations.
 
 ### Shell
 
-13. **Colour, a section of Properties**, under the selected shape's rows (the selected fill), or
-    under a fill tool's options (the swatch). Not a separate dock band: the dock has no room
-    for it beside the Library at ordinary window heights, and Properties is where an artist
-    looks for the selection's fill. It has the fill type, overflow, Linear RGB, a stop bar,
-    the picked stop's colour with opacity and hex field, its position, and the focal point.
+13. **One colour picker, as Animate has one Color panel.** The colour picker (`src/colour.rs`:
+    web-safe swatches, the mixer, hex, alpha) is where colours are chosen everywhere. A *fill's*
+    picker (`src/colour_panel.rs`), opened from the Tools panel's Fill square or any Fill swatch
+    in Properties (the selection's, or a tool's swatch), adds the fill's type on top, as
+    Animate's Color Type menu: **None, Solid, Linear, Radial, Bitmap**. Solid shows the colour
+    picker as it is; a gradient shows its stop bar, overflow, Linear RGB and focal point above
+    the same colour picker, which then edits the picked stop's colour and opacity; a bitmap
+    shows its Library image. The fill's No Colour is its type None; the Stroke square's picker
+    keeps No Colour (strokes have no type). A gradient's swatch in Properties shows its ramp.
+    The popup reports what was asked (`FillEdit`) and its caller applies it: solid colours and
+    None exactly as each place did before (the Tools square recolours the selection with
+    `element.set_fill`, a tool's swatch sets the tool style), everything else as
+    `paint.set_fill` (from a tool's options with `selection: false`). An earlier draft of this
+    PR had a separate Colour section in Properties; two places to choose a fill colour is what
+    this decision avoids.
 14. **The stop bar** is keyboard-operable (ADR 0064): the bar is a button that adds a stop in the
     widest gap; each stop is a focusable, named control; arrow keys move it (Shift: 10 %),
     Delete removes it; dragging a stop off the bar removes it, as in Animate.
@@ -98,8 +108,8 @@ turned radial gradients. XFL import reported all four as approximations.
 * Gradients round-trip exactly through `.anicraft`, SVG and XFL; files without the new options
   are unchanged. Radial fills on skewed shapes are now drawn exactly.
 * Scripts can build and place any gradient headless (`paint.set_fill`, `paint.transform_fill`).
-* The hex field is the panel's own (`Rgba::parse_hex`); when the shared colour picker of PR #257
-  lands, the stop swatch can open it instead.
+* The colour picker popups are named dialogs for screen readers, and the swatch grid is a named
+  control (the accessibility audit now covers the solid and gradient pickers).
 
 ## Not in this slice
 

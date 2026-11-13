@@ -169,10 +169,11 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui) {
         for past in [true, false] {
             let name = if past { tr!("Before colour") } else { tr!("After colour") };
             ui.label(text(Type::Body, if past { tr!("Before") } else { tr!("After") }));
-            let mut c = to_color32(if past { o.past } else { o.future });
-            let r = ui.color_edit_button_srgba(&mut c).named(name).on_hover_text(if past { tr!("Colour of the frames before the playhead") } else { tr!("Colour of the frames after the playhead") });
+            let [r0, g0, b0, _] = to_color32(if past { o.past } else { o.future }).to_srgba_unmultiplied();
+            let mut px = [r0, g0, b0];
+            let r = crate::colour::button(ui, &mut px).named(name).on_hover_text(if past { tr!("Colour of the frames before the playhead") } else { tr!("Colour of the frames after the playhead") });
             if r.changed() {
-                let [cr, cg, cb, _] = c.to_srgba_unmultiplied();
+                let [cr, cg, cb] = px;
                 change(app, &ctx, |o, p| {
                     let pick = [cr, cg, cb];
                     if past {

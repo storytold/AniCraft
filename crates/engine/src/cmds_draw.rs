@@ -50,7 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("arrange.send_backward", "Send Backward", "Modify/Arrange", Some("Ctrl+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange_step(s, false))),
         c("arrange.send_to_back", "Send to Back", "Modify/Arrange", Some("Ctrl+Shift+Down"), "{} (within each layer)", true, |s, _| s.each_layer(true, |s| arrange(s, false))),
         c("modify.convert_to_symbol", "Convert to Symbol…", "Modify", Some("F8"), "{name? (default: the next free “Symbol n”; a name the folder holds gets a number), kind?: graphic|movie_clip|button (default: graphic), folder?: Library folder id (default: the top level)} → {symbol, instance, name, layer, folder} (a selection on several layers becomes one symbol with those layers inside; the instance lands on the topmost)", true, convert_to_symbol),
-        c("modify.break_apart", "Break Apart", "Modify", Some("Ctrl+B"), "{}", true, |s, p| s.each_layer(false, |s| break_apart(s, p))),
+        c("modify.break_apart", "Break Apart", "Modify", Some("Ctrl+B"), "{} the selected symbol instances become their contents, text becomes shapes, and drawing objects become raw shapes that merge with the raw shapes they touch", true, |s, p| s.each_layer(false, |s| break_apart(s, p))),
         c("library.place", "Place on Stage", "", None, "{symbol | bitmap | sound: id, x?, y?} or {items: [{symbol | bitmap | sound: id}, ..], x?, y?} → {element, elements, sound?}: symbols and bitmaps centred on x, y (default: the stage centre; inside an open symbol, in its space) in the active layer's keyframe at the playhead, selected; a sound goes onto that keyframe, its span grown to fit (one sound per keyframe). One undo step", true, place),
     ]
 }
@@ -873,7 +873,21 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
     let mut fresh_ids = Vec::new();
     let kf_elements: Vec<Arc<Element>> = s.editable_keyframe()?.elements.clone();
     let mut out = Vec::new();
+    // Drawing objects (Object Drawing) break apart into raw shapes, which then merge with the
+    // raw shapes they touch, as in Animate (#253).
+    let mut objects = Vec::new();
     for e in kf_elements {
+        if let ElementKind::Shape(sh) = &e.kind
+            && !sh.merge
+            && sel.contains(&e.id)
+        {
+            let mut c = (*e).clone();
+            if let ElementKind::Shape(sh) = &mut c.kind {
+                sh.merge = true;
+            }
+            objects.push(c);
+            continue;
+        }
         // Text breaks apart into a shape with the same outlines.
         if let ElementKind::Text(t) = &e.kind
             && sel.contains(&e.id)
@@ -908,10 +922,13 @@ fn break_apart(s: &mut Session, _: &Value) -> Result<Value> {
             }
         }
     }
-    if fresh_ids.is_empty() {
-        return Err(EngineError::State("the selection has no symbol instances or text to break apart".into()));
+    if fresh_ids.is_empty() && objects.is_empty() {
+        return Err(EngineError::State("the selection has no symbol instances, text or drawing objects to break apart".into()));
     }
     s.editable_keyframe()?.elements = out;
+    if !objects.is_empty() {
+        fresh_ids.extend(crate::merge::merge_in(s, objects)?);
+    }
     s.select_only(fresh_ids.iter().copied());
     Ok(json!({"created": fresh_ids.len()}))
 }

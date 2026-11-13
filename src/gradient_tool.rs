@@ -133,7 +133,7 @@ pub fn pick(app: &mut App, at: Pos2, xf: Xf) {
     }
     app.run("element.pick", json!({"x": p.x, "y": p.y}));
     if target(app).is_none() && !app.s.selection.is_empty() {
-        app.status_ok(tr!("That fill is a solid colour. Choose Linear, Radial or Bitmap in the Colour panel to give it a gradient."));
+        app.status_ok(tr!("That fill is a solid colour. Click its Fill swatch and choose Linear, Radial or Bitmap to give it a gradient."));
     }
 }
 

@@ -26,7 +26,7 @@ most of them; they are always there.
 | Output | The Output panel inside Test Movie. |
 | Align | The Align section on the right, and **Modify › Align**. |
 | History | The History section on the right. |
-| Color and Swatches | The Fill and Stroke rows in Properties, and in each drawing tool's options. The **Colour** section of Properties is the Color panel's fill: type, gradient stops, overflow, Linear RGB (no saved swatches yet). |
+| Color and Swatches | Click the Fill or Stroke squares in the Tools panel, or any colour swatch in Properties: web-safe swatches, a mixer and a hex field. The fill's picker also sets its type (None, Solid, Linear, Radial, Bitmap) and a gradient's stops, overflow and Linear RGB, like the Color panel (no saved swatches yet). |
 | Transform and Info | Position, scale and rotation rows in Properties, and the Free Transform tool. |
 | Scene | The scene menu at the top left of the stage, **Insert › Scene** and **Modify › Scene**. |
 | Find and Replace | **Edit › Find and Replace** (**Ctrl+F**). |

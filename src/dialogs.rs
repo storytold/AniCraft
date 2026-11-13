@@ -511,6 +511,26 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                             form_note(ui, LW, text(Type::Caption, s));
                         }
                     }
+                    // How the window itself is drawn (#207, #255): read when AniCraft starts.
+                    let backends = crate::platform::window_backends(crate::platform::OS);
+                    if !backends.is_empty() {
+                        ui.add_space(4.0);
+                        form_row(ui, LW, tr!("Window graphics"), |ui| {
+                            ui.vertical(|ui| {
+                                for &choice in backends {
+                                    let (name, tip) = choice.describe();
+                                    crate::theme::radio_value(ui, &mut p.window_backend, choice, text(Type::Body, crate::i18n::t(name)));
+                                    form_note(ui, toggle_indent, text(Type::Caption, crate::i18n::t(tip)));
+                                    ui.add_space(2.0);
+                                }
+                            });
+                        });
+                        form_note(ui, LW, text(Type::Caption, tr!("A change takes effect the next time AniCraft starts. If a way doesn't work, AniCraft starts with the next one.")));
+                        if let Some(log) = crate::startup::log_path() {
+                            form_note(ui, LW, text(Type::Caption, tr!("If AniCraft has trouble starting, this start-up log says why (attach it to a bug report):")));
+                            form_note(ui, LW, text(Type::Path, log.display().to_string()));
+                        }
+                    }
                 });
 
                 section(ui, "prefs_timeline", Section::Rule, tr!("Timeline"), None, |ui| {

@@ -45,6 +45,12 @@ bottom says which system you are on and where your settings are kept.
 Both settings are also in **View › Stage Rendering**, so you can switch without opening
 Preferences.
 
+* **Window graphics**: how the whole window is drawn. **Automatic** (the default) tries the best
+  way for your computer first and the next one if it doesn't work. If the window flickers or
+  goes black, choose another way: **DirectX 12**, **Vulkan** or **OpenGL** on Windows, **Metal**
+  or **OpenGL** on a Mac, **Vulkan** or **OpenGL** on Linux. A change takes effect the next time
+  AniCraft starts. The note below names the start-up log to attach to a bug report.
+
 ### Timeline, Test Movie, Files and Safety
 
 * **Timeline › Extra start gap** adds room before frame 1, on top of the room the playhead needs.
