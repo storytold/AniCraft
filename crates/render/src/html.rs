@@ -103,6 +103,7 @@ const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
 const NINE_SLICE: &str = "9-slice scaling (scaled as a whole)";
 const OUTSIDE_CALLS: &str = "script calls that reach outside the movie (ignored)";
+const WARPED_BITMAPS: &str = "warped bitmaps (the image shows unbent inside its bent outline; warped shapes come across)";
 const FIELD_FONTS: &str = "text fields (their authored text keeps its outlines; text a script or the viewer changes is drawn with the browser's fonts)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
@@ -595,6 +596,10 @@ impl<'a> Bake<'a> {
         }
         match &el.kind {
             ElementKind::Shape(s) => {
+                // A bent image needs the mesh, which canvas 2D can't draw (ADR 0079).
+                if matches!(s.fill, Some(Paint::Bitmap { .. })) && s.live_warp().is_some_and(|w| !w.at_rest()) {
+                    self.notes.entry(WARPED_BITMAPS).or_default().insert(el.id.0);
+                }
                 let stroke = s.stroke.as_ref().filter(|st| st.width.is_finite() && st.width > 0.0);
                 match stroke.filter(|st| st.profile.is_some()) {
                     // A variable-width stroke is the filled outline the renderer fills (its

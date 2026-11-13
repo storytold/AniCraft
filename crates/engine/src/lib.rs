@@ -8,6 +8,7 @@
 mod anim;
 mod cmds_actions;
 mod cmds_bone;
+mod cmds_warp;
 pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
@@ -135,6 +136,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_layer::specs());
     v.extend(cmds_camera::specs());
     v.extend(cmds_bone::specs());
+    v.extend(cmds_warp::specs());
     v.extend(cmds_motion::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
@@ -1055,6 +1057,8 @@ mod tests_camera;
 mod tests_bone;
 #[cfg(test)]
 mod tests_shape_bone;
+#[cfg(test)]
+mod tests_warp;
 #[cfg(test)]
 mod merge_tests;
 #[cfg(test)]

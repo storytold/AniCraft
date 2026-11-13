@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* **Asset Warp** (M7, ADR 0079; refs #213).
+  * **Added**: the **Asset Warp** tool (**Shift+Q**). Click a shape or a bitmap to pin it (the
+    first pin covers it with a warp mesh), drag a pin to bend the artwork around the others,
+    live, one undo step per drag; Delete removes the picked pin. Bending is rigid moving least
+    squares, so the artwork stays as rigid as it can near the pins.
+  * **Added**: pin poses per keyframe, tweened with classic tweens and their easing; a pin added
+    later lands on every keyframe of the artwork. Properties › Asset Warp sets the mesh's
+    resolution and removes pins or the whole warp (also in Modify › Asset Warp).
+  * **Added**: bitmaps bend in the renderer and on the GPU stage (the same prepared image, so
+    they match exactly) and in every raster export; SVG writes a bent bitmap as an image; HTML
+    and Lottie report it. Warped shapes are bent outlines everywhere.
+  * **Added**: commands `warp.add`, `warp.pin_add`, `warp.pin_move`, `warp.pin_remove`,
+    `warp.remove` and `warp.info`, for scripts, plug-ins, the CLI and MCP.
 * **Swatches panel** (M1, ADR 0078).
   * **Added**: **Window › Swatches**, the document's saved colours and gradients, saved in the
     document (new documents and older files start with a default set). Click a swatch to apply

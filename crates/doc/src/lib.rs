@@ -10,6 +10,7 @@ pub use anicraft_actions as actions;
 pub mod aids;
 pub mod armature;
 pub mod skin;
+pub mod warp;
 mod bitmap;
 mod color_effect;
 pub mod camera;
@@ -484,17 +485,30 @@ pub struct Shape {
     /// Otherwise a drawing object, which keeps to itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub merge: bool,
+    /// Asset Warp (ADR 0079): the mesh and pins that bend the outline (and a bitmap fill). The
+    /// path is the bent outline; the warp keeps the outline as drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp: Option<Arc<warp::Warp>>,
 }
 
 impl PartialEq for Shape {
     fn eq(&self, o: &Shape) -> bool {
-        arc_eq(&self.path, &o.path) && self.fill == o.fill && self.stroke == o.stroke && self.fill_rule == o.fill_rule && self.merge == o.merge
+        arc_eq(&self.path, &o.path)
+            && self.fill == o.fill
+            && self.stroke == o.stroke
+            && self.fill_rule == o.fill_rule
+            && self.merge == o.merge
+            && match (&self.warp, &o.warp) {
+                (Some(a), Some(b)) => arc_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
 impl Shape {
     pub fn filled(path: Path, fill: Paint) -> Shape {
-        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false }
+        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false, warp: None }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
         self.stroke = Some(Stroke::new(color, width));
@@ -1840,6 +1854,12 @@ impl Document {
             for k in &l.keyframes {
                 for e in &k.elements {
                     *max_id = (*max_id).max(e.id.0);
+                    // Warp pins take ids from the same counter (ADR 0079).
+                    if let ElementKind::Shape(s) = &e.kind {
+                        for p in s.warp.iter().flat_map(|w| &w.pins) {
+                            *max_id = (*max_id).max(p.id.0);
+                        }
+                    }
                 }
             }
         };
@@ -1860,6 +1880,7 @@ impl Document {
                 sanitize_scripts(l);
                 sanitize_depth(l);
                 sanitize_armature(l);
+                sanitize_warps(l);
                 scan(l, &mut max_id);
                 sanitize_groups(l, 0, &mut max_id);
             }
@@ -1902,6 +1923,7 @@ impl Document {
                 }
                 sanitize_depth(l);
                 sanitize_armature(l);
+                sanitize_warps(l);
                 scan(l, &mut max_id);
                 sanitize_groups(l, 0, &mut max_id);
             }
@@ -1981,6 +2003,38 @@ fn sanitize_groups(layer: &mut Arc<Layer>, depth: usize, max_id: &mut u64) {
                 sanitize_groups(gl, depth + 1, max_id);
             }
             members.repair_masks();
+        }
+    }
+}
+
+/// Repairs the warps on a loaded layer's shapes (ADR 0079): a warp with nothing usable left
+/// goes (the shape keeps the outline it shows), and hostile pins are dropped. Touches only what
+/// needs it.
+fn sanitize_warps(layer: &mut Arc<Layer>) {
+    let bad = |e: &Element| match &e.kind {
+        ElementKind::Shape(Shape { warp: Some(w), .. }) => {
+            let mut x = (**w).clone();
+            !x.sanitize() || x != **w
+        }
+        _ => false,
+    };
+    if !layer.keyframes.iter().any(|k| k.elements.iter().any(|e| bad(e))) {
+        return;
+    }
+    for k in &mut Arc::make_mut(layer).keyframes {
+        if !k.elements.iter().any(|e| bad(e)) {
+            continue;
+        }
+        for e in &mut Arc::make_mut(k).elements {
+            if !bad(e) {
+                continue;
+            }
+            if let ElementKind::Shape(s) = &mut Arc::make_mut(e).kind
+                && let Some(w) = &s.warp
+            {
+                let mut x = (**w).clone();
+                s.warp = x.sanitize().then(|| Arc::new(x));
+            }
         }
     }
 }

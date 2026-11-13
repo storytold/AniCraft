@@ -44,6 +44,10 @@ pub struct DisplayItem {
     /// Whether `image` is filtered between its pixels (the bitmap's Allow Smoothing, ADR 0050);
     /// off, each pixel is a hard-edged square.
     pub smooth: bool,
+    /// A warped bitmap fill (ADR 0079): the mesh, in the item's local space, that carries the
+    /// image as drawn (`rest`) to where it shows (`shown`); renderers draw the image through
+    /// its triangles. `None` for everything else (a warped shape's path is already bent).
+    pub warp: Option<Arc<crate::warp::WarpMesh>>,
 }
 
 /// Back-to-front list of shapes.
@@ -287,7 +291,14 @@ fn evaluate_tweened<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) 
 fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft_geom::Vec2, anicraft_geom::Vec2)], guide: Option<(&PathWalk, bool)>) -> Option<Element> {
     let kind = match (&a.kind, &b.kind) {
         (ElementKind::Shape(sa), ElementKind::Shape(sb)) => {
-            let path = if Arc::ptr_eq(&sa.path, &sb.path) && hints.is_empty() {
+            // Warped on both keyframes (ADR 0079): the pins tween and bend the outline as drawn.
+            let warp = match (sa.live_warp(), sb.live_warp()) {
+                (Some(wa), Some(wb)) if !morph || hints.is_empty() => wa.lerp(wb, t),
+                _ => None,
+            };
+            let path = if let Some(w) = &warp {
+                w.outline()
+            } else if Arc::ptr_eq(&sa.path, &sb.path) && hints.is_empty() {
                 sa.path.clone()
             } else if morph {
                 anicraft_geom::morph::morph_hinted(&sa.path, &sb.path, hints, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
@@ -302,7 +313,15 @@ fn interpolate(a: &Element, b: &Element, t: f32, morph: bool, hints: &[(anicraft
                 (Some(x), Some(y)) => Some(x.lerp(y, t)),
                 (x, _) => x.clone(),
             };
-            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge })
+            let warp = match warp {
+                Some(mut w) => {
+                    w.shown = crate::warp::fingerprint(&path);
+                    Some(Arc::new(w))
+                }
+                // Not tweening the pins: the shape keeps its warp only while it shows it.
+                None => sa.warp.clone().filter(|w| w.shows(&path)),
+            };
+            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge, warp })
         }
         (ElementKind::Symbol { symbol: s1, .. }, ElementKind::Symbol { symbol: s2, .. }) if s1 == s2 => a.kind.clone(),
         // Text tweens its placement and colour effect; the words stay the first keyframe's.
@@ -516,6 +535,7 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
             // Inside a 9-slice instance, the shape's outline is cut and mapped (bitmap
             // fills scale normally, as in Animate).
             let sliced = cx.slice.filter(|_| !matches!(s.fill, Some(Paint::Bitmap { .. }))).map(|sl| sliced_shape(s, &el.transform, &sl));
+            let is_sliced = sliced.is_some();
             let (path, transform, fill, stroke) = match sliced {
                 Some(x) => x,
                 None => (s.path.clone(), xf, s.fill.clone(), s.stroke.clone()),
@@ -542,6 +562,11 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
                     Some(Paint::Bitmap { bitmap, .. }) => doc.bitmap(*bitmap).is_none_or(|b| b.smoothing),
                     _ => true,
                 },
+                // A bitmap bent by its warp is drawn through the mesh (ADR 0079).
+                warp: match &s.fill {
+                    Some(Paint::Bitmap { .. }) if !is_sliced => s.live_warp().filter(|w| !w.at_rest()).and_then(crate::warp::Warp::mesh).map(Arc::new),
+                    _ => None,
+                },
             });
         }
         ElementKind::Text(t) => {
@@ -561,6 +586,7 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
                 group: cx.group,
                 image: None,
                 smooth: true,
+                warp: None,
             };
             match &t.field {
                 // Mask artwork: a field's text masks; its box and border don't.

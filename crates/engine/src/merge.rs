@@ -197,7 +197,7 @@ fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Opt
             name: String::new(),
             transform: Affine::translate(c.x, c.y),
             color,
-            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill: fill.map(|f| f.transformed(&Affine::translate(-c.x, -c.y))), stroke, fill_rule: Default::default(), merge: true }),
+            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill: fill.map(|f| f.transformed(&Affine::translate(-c.x, -c.y))), stroke, fill_rule: Default::default(), merge: true, warp: None }),
         }));
     }
     Some(Remerged { out, picked, inside, from })

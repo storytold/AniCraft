@@ -226,7 +226,7 @@ fn object(doc: &mut anicraft_doc::Document, path: &Path, fill: Option<anicraft_d
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color,
-        kind: ElementKind::Shape(Shape { path: Arc::new(path.transformed(&to_local)), fill: fill.map(|f| f.transformed(&to_local)), stroke, fill_rule: FillRule::NonZero, merge: false }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(path.transformed(&to_local)), fill: fill.map(|f| f.transformed(&to_local)), stroke, fill_rule: FillRule::NonZero, merge: false, warp: None }),
     }
 }
 
