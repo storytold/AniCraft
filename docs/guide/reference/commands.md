@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 305 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 308 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -82,7 +82,7 @@ This page is generated from the command registry, so it always matches the versi
 - **Paste in Place** `edit.paste_in_place` · **Ctrl+Shift+V** (macOS **⇧⌘V**) · changes the document
   Parameters: `{} (layers as edit.paste)`
 - **Edit Symbols** `symbol.edit` · **Ctrl+E** (macOS **⌘E**)
-  Parameters: ``{id?: instance element id, symbol?: library symbol id} opens a symbol's timeline for editing: the instance `id` (default: the selected instance) in place, or a Library symbol at the stage's centre. Every command then works inside it. With nothing to open while a symbol is open, goes back to the document (Animate's Ctrl+E)``
+  Parameters: ``{id?: instance element id, symbol?: library symbol id} opens a symbol's timeline for editing: the instance `id` (default: the selected instance) in place, or a Library symbol at the stage's centre. A group (ADR 0073) or a drawing object (ADR 0080) opens in place the same way: inside, its raw shapes merge only with each other, and a drawing object closes as one object again (a group of its pieces when an edit left several). Every command then works inside it. With nothing to open while a symbol is open, goes back to the document (Animate's Ctrl+E)``
 - **Edit Document** `symbol.exit`
   Parameters: `{all?: bool} closes the open symbol (default: one level; all: back to the scene), selecting the instance it was opened from`
 - **Find and Replace** `find.search` · **Ctrl+F** (macOS **⌘F**)
@@ -150,6 +150,8 @@ This page is generated from the command registry, so it always matches the versi
 
 - **Document Settings** `doc.set_stage` · changes the document
   Parameters: `{width?, height?, fps?, background?: "#rrggbb"}`
+- **Envelope** `modify.envelope` · Modify › Transform
+  Parameters: `{} opens an envelope around the selected shapes and drawing objects on the active layer (ADR 0080): a mesh of 4 × 4 Bézier control points over their bounds, at rest → {points: [[x, y] × 16] (row by row from the top-left), bounds: [x, y, w, h], shapes}. Then modify.envelope_move bends them. Symbols, text, groups and bitmaps can't be bent: break them apart first`
 - **Delete Layer** `layer.delete` · Modify › Timeline · changes the document
   Parameters: `{layer? (a folder goes with its contents)}`
 - **Move Layer Up** `layer.move_up` · Modify › Timeline · changes the document
@@ -271,6 +273,10 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{folder, name, category?, confirm}: removes a user template and its picture (cannot be undone)`
 - **List Templates** `file.templates`
   Parameters: `{folder? (the user templates folder)} → {builtin: [{id, name, category, description, width, height, fps, frames}], user: [{name, category, path, thumbnail}]}`
+- **Envelope** `modify.envelope_move` · changes the document
+  Parameters: `{points: [[x, y] × 16] (the whole mesh) | index: 0..15, x, y (one control point; a corner or side handle moves the inner points with it, as a Coons patch), tolerance? (stage units, default 0.05)} bends the open envelope's shapes from where they were when it opened → {points, shapes}. One undo step`
+- **Close Envelope** `modify.envelope_close` · changes the document
+  Parameters: `{} closes the open envelope: bent raw shapes merge with the drawing they now touch (as after a move). Nothing to close is no error → {closed}`
 - **Publish Settings** `publish.settings_set` · changes the document
   Parameters: `{profile? (a whole profile, as publish.settings_get returns it), format? (html | gif | apng | webp | video | lottie | sprite_sheet | png_sequence | png | svg | audio), enabled?, output? (relative to the document's folder; {name} is the document's name), and that format's options: title, sound, fit (html); from, to, scale, loop (gif); from, to, scale, loop (true, false or how many times it plays; 0: forever), background (apng, webp); from, to, scale, audio (video); from, to, background (lottie); from, to, scale, columns, padding, background (sprite_sheet); from, to, scale (png_sequence); frame, scale (png); frame (svg); from, to, rate, bits (audio). from/to/frame are movie frames, null for the movie's ends}`
 - **Open Recent** `file.open_recent`
@@ -412,7 +418,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Oval** `draw.ellipse` · changes the document
   Parameters: `{x, y, w, h, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}`
 - **PolyStar** `draw.star` · changes the document
-  Parameters: `{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, cap?, join?, style?, dash?, object?}`
+  Parameters: `{cx, cy, outer (the corners' radius), shape?: star|polygon (default star; the PolyStar Tool Settings, ADR 0080), sides? (or points; 3..64, default 5), point_size? (0..1, default 0.5: how deep a star's points are, 1 is the polygon through its tips), inner? (an exact inner radius instead of point_size), fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash? (the line style), object?}`
 - **Line** `draw.line` · changes the document
   Parameters: `{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (the line style, as stroke.set_style; default: the tool's), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}`
 - **Object Drawing** `draw.object_drawing` · **J**
@@ -528,7 +534,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Movie Explorer** `explorer.tree`
   Parameters: `{scope?: document (default) | scene, show?: {text?, symbols?, scripts?, media?, frames? (layers and keyframes)} (each default true), definitions?: bool (the Library's symbols; default true), expanded?: [row keys] (default: the top rows), all?: bool (everything open), filter?: text (rows whose names hold it, and the rows above them), offset?, limit? (default 1000, at most 10000)} → {rows: [{key, depth, kind, type?, name, extra, frame?, children, open, go: find.goto params}], total, truncated}`
 - **Brush Stroke** `draw.brush` · changes the document
-  Parameters: `{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}`
+  Parameters: `{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind|selection|inside (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas, Paint Selection only inside the selected fills, Paint Inside only inside the fill the stroke starts on or the empty area closed off around it; ADR 0080), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}`
 - **Brush Presets** `brush.preset_list`
   Parameters: `{} the built-in brushes and yours, with their settings`
 - **Save Brush** `brush.preset_save`

@@ -212,6 +212,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let (canvas, bars) = crate::rulers::layout(app, ui.max_rect());
     let now = ui.input(|i| i.time);
     crate::camera_tool::on_tool_change(app);
+    crate::shape_envelope::settle(app);
     crate::camera_tool::tick(app, ui.ctx(), now);
     app.stage_cache.canvas = canvas;
     let resp = ui.allocate_rect(canvas, Sense::click_and_drag());
@@ -368,6 +369,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             _ if pen_hot.is_some() => CursorIcon::Copy,
             Tool::Width => crate::widthtool::cursor(app, pointer, xf),
             Tool::GradientTransform => crate::gradient_tool::cursor(app, pointer, xf),
+            Tool::Transform if matches!(app.drag, Drag::Envelope { .. }) => CursorIcon::Grabbing,
+            Tool::Transform if app.drag == Drag::None && pointer.is_some_and(|p| crate::shape_envelope::over_handle(app, xf, p)) => CursorIcon::Grab,
             Tool::Transform => {
                 let zone = match app.drag {
                     Drag::Transform { kind, .. } | Drag::MultiTransform { kind, .. } => Some(kind),
@@ -430,6 +433,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             match tool {
                 // Edit Multiple Frames (ADR 0047): artwork on every keyframe between the markers;
                 // Free Transform's handles transform it all about one pivot (ADR 0051).
+                // An open envelope's handles (ADR 0080).
+                Tool::Transform if !multi && let Some(d) = crate::shape_envelope::drag_start(app, xf, press) => d,
                 Tool::Transform if multi && let (Some(kind), Some(bounds)) = (sel_rect.and_then(|r| xf_zone(r, press)), sel_bounds) => {
                     app.s.begin_gesture(tr_noop!("Free Transform"));
                     Drag::MultiTransform { kind, start: sp, bounds, applied: Affine::IDENTITY }
@@ -624,6 +629,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let d = *d;
                 crate::gradient_tool::drag_to(app, d, to_v(c), shift);
             }
+            (d @ Drag::Envelope { .. }, Some(c)) => {
+                let d = *d;
+                crate::shape_envelope::drag_to(app, d, to_v(c));
+            }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
             (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf, now),
             (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf, now),
@@ -645,6 +654,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Guide { index, .. } => crate::rulers::drag_end(app, index, geo, ui.input(|i| i.pointer.latest_pos())),
             Drag::Width { .. } => crate::widthtool::drag_end(app),
             Drag::Gradient { .. } => crate::gradient_tool::drag_end(app),
+            Drag::Envelope { .. } => crate::shape_envelope::drag_end(app),
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
@@ -768,8 +778,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let slop = 3.0 / zoom.max(1e-3);
         if !open_text_at(app, sp, slop) {
             match app.s.hit_test(to_v(sp), slop) {
-                // A symbol instance (ADR 0045) or a group (ADR 0073) opens for editing in place.
-                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && matches!(e.kind, anicraft_engine::doc::ElementKind::Symbol { .. } | anicraft_engine::doc::ElementKind::Group { .. })) => {
+                // A symbol instance (ADR 0045), a group (ADR 0073) or a drawing object (ADR 0080)
+                // opens for editing in place.
+                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && anicraft_engine::editing::opens(e)) => {
                     app.run("symbol.edit", json!({"id": id.0}));
                 }
                 // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and
@@ -1052,6 +1063,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
     let transforming = app.tool == Tool::Transform;
+    // An open envelope (ADR 0080) shows its mesh instead of boxes.
+    let enveloped = crate::shape_envelope::shown(app).is_some();
     // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
     if app.tool == Tool::Select {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
@@ -1088,6 +1101,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if app.tool == Tool::Select && raw.contains(&(layer, id)) {
             continue; // dots above
         }
+        if transforming && enveloped {
+            continue;
+        }
         if transforming {
             // Free transform shows one box for the whole selection (below); members get a hint.
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, T.selection.gamma_multiply(0.45)), StrokeKind::Middle);
@@ -1113,7 +1129,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Free transform box: recomputed every frame so it follows the artwork while you drag.
     let xf_box = if multi { crate::onion::selection_bounds(app) } else { bounds_arr(app.s.selection_bounds()) };
-    if transforming && let Some(b) = xf_box {
+    if transforming && !enveloped && let Some(b) = xf_box {
         let r = Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))).expand(1.0);
         painter.rect_stroke(r, 0.0, Stroke::new(1.5, T.selection), StrokeKind::Middle);
         for (h, _, _) in handles(r) {
@@ -1130,6 +1146,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::pathtools::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::gradient_tool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
+    crate::shape_envelope::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
     crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     // After this frame's edits, so a drag on the path shows where it is now.
@@ -1941,8 +1958,11 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
             app.draw("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
         }
         Tool::Star => {
-            let r = d.length();
-            app.draw("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
+            let mut p = app.polystar.params();
+            p["cx"] = json!(start.x);
+            p["cy"] = json!(start.y);
+            p["outer"] = json!(d.length());
+            app.draw("draw.star", p);
         }
         Tool::Line => {
             app.draw("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
@@ -1973,15 +1993,9 @@ fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32)
             painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
         }
         Tool::Star => {
-            let rr = (b - a).length();
-            let n = app.star_points.clamp(3, 64) as usize;
-            let pts: Vec<Pos2> = (0..n * 2)
-                .map(|i| {
-                    let r = if i % 2 == 0 { rr } else { rr * 0.45 };
-                    let t = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / n as f32;
-                    a + vec2(r * t.cos(), r * t.sin())
-                })
-                .collect();
+            // The same corners the command draws (ADR 0080).
+            let o = app.polystar;
+            let pts: Vec<Pos2> = anicraft_engine::geom::polystar_corners(a.x, a.y, (b - a).length(), o.sides.clamp(3, 32), o.star, o.point_size).into_iter().map(|v| Pos2::new(v.x, v.y)).collect();
             painter.add(egui::Shape::closed_line(pts, stroke));
         }
         Tool::Line => {

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+* **Drawing parity leftovers** (ADR 0080, M1).
+  * **PolyStar options**: Shape (**Polygon** or **Star**), **Sides**/**Points** (3 to 32) and
+    **Point size** (0 to 1; at 1 a star is the polygon through its tips) in the tool's options.
+    It merges or draws objects like the other shape tools.
+  * **Paint Selection** and **Paint Inside** brush modes: the paint is clipped exactly to the
+    selected fills, or to the fill (or the empty area closed off) where the stroke starts, and
+    never covers lines. Paint Selection keeps the selection for the next stroke.
+  * **Double-click a drawing object** (or Ctrl+E) to edit it in place, as groups and symbols
+    open: inside, its raw shapes merge only with each other. It closes as one drawing object
+    again; opening and closing it without an edit changes nothing.
+  * **Modify › Transform › Envelope**: corner and tangent handles bend the selected shapes and
+    drawing objects through a Bézier patch, one undo step per drag. Like Animate, the bend is
+    baked into the shapes, so there is no Delete Envelope.
+  * Headless: `shape`, `sides`, `point_size` on `draw.star`; `selection` and `inside` modes on
+    `draw.brush`; drawing objects on `symbol.edit`; `modify.envelope`,
+    `modify.envelope_move`, `modify.envelope_close`.
+
 * **Asset Warp** (M7, ADR 0079; refs #213).
   * **Added**: the **Asset Warp** tool (**Shift+Q**). Click a shape or a bitmap to pin it (the
     first pin covers it with a warp mesh), drag a pin to bend the artwork around the others,

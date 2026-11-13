@@ -196,7 +196,7 @@ fn bad_params_are_errors() {
         json!({"points": [[0, 0]], "size": 0}),
         json!({"points": [[0, 0]], "size": 1e9}),
         json!({"points": [[0, 0]], "shape": "star"}),
-        json!({"points": [[0, 0]], "mode": "inside"}),
+        json!({"points": [[0, 0]], "mode": "outside"}),
         json!({"points": [[0, 0]], "roundness": 1}),
         json!({"points": [[0, 0]], "smoothing": 101}),
         json!({"points": [[0, 0], [1e7, 0]]}),
