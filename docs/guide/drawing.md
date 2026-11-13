@@ -337,9 +337,42 @@ every filter or blend mode, and their reports say when one is left out (see
 To resize a rounded button or panel without stretching its corners, use **9-slice scaling**
 on its symbol (see [Symbols and the Library](symbols-and-library.md#9-slice-scaling)).
 
+## Rulers, grid and guides
+
+* **View › Rulers** (**Ctrl+Alt+Shift+R**) shows rulers along the top and left of the stage,
+  in pixels from the stage's top-left corner. They follow zoom and pan and mark where the
+  pointer is.
+* **Guides**: drag from the top ruler for a horizontal guide, or from the left ruler for a
+  vertical one. With the Selection tool, drag a guide to move it, or drag it back onto a ruler
+  to delete it. Each scene keeps its own guides, saved with the document.
+  * **View › Guides**: **Show Guides** (**Ctrl+;**), **Lock Guides** (**Ctrl+Alt+;**), **Snap to
+    Guides** (**Ctrl+Shift+;**), **Edit Guides** (**Ctrl+Alt+Shift+G**), **Add Guide** and
+    **Clear Guides**.
+  * **Edit Guides** sets the colour and snap accuracy. It also lists the scene's guides by
+    position, so you can type a new position, delete one, or add one without a mouse.
+* **Grid**: **View › Grid › Show Grid** (**Ctrl+'**), **Snap to Grid** (**Ctrl+Shift+'**) and
+  **Edit Grid** (**Ctrl+Alt+G**). Edit Grid sets the spacing across and down, the colour, the
+  snap accuracy (up to **Always snap**) and **Show over objects**. Without that option the grid
+  shows under your artwork.
+* **View › Snapping** has **Snap to Objects**, **Snap to Grid**, **Snap to Guides** and **Snap
+  to Pixels**.
+
+When several things are near, a point snaps in this order:
+
+1. a corner or end of other artwork;
+2. a guide;
+3. a line or fill edge;
+4. the grid;
+5. a whole pixel.
+
+Guides and the grid snap across and down separately, so a point can sit where a guide crosses a
+grid line. Every drawing tool's points snap, and so do the Selection tool's moves (by the
+corner or centre nearest the pointer) and Free Transform's handles. Hold **Shift** to constrain
+without snapping. Rulers, the grid and guides never show in Test Movie or in exports.
+
 ## Not there yet
 
-Not in AniCraft yet: rulers, a grid and guides; Envelope and **Delete Envelope**; a gradient editor, the
+Not in AniCraft yet: Envelope and **Delete Envelope**; a gradient editor, the
 Gradient Transform tool and a Swatches panel (saved custom swatches); entering a drawing object
 with a double-click; PolyStar's Polygon option; the Paint Selection and Paint Inside
 brush modes, brush libraries and tilt; erasing inside symbols; and Animate's ragged, stipple
