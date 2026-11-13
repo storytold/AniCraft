@@ -709,6 +709,25 @@ fn panic_hunt_every_command() {
     }
     assert_eq!((tail, sb1, sb2), (3, 100, 103), "the hostile params name these");
     shaped.set_frame(4);
+    // Asset Warp (ADR 0079): a warped rectangle and bitmap, a pin moved at frame 8 inside a
+    // tween, the playhead mid-tween, the rectangle selected.
+    let (mut warped, wr, wb) = crate::tests_warp::warped();
+    let pin = |s: &mut Session, el: u64, x: f32, y: f32| s.execute("warp.pin_add", &json!({"element": el, "x": x, "y": y})).unwrap()["pin"].as_u64().unwrap();
+    let (wp1, wp2) = (pin(&mut warped, wr, 110.0, 140.0), pin(&mut warped, wr, 290.0, 140.0));
+    let wp3 = pin(&mut warped, wb, 290.0, 230.0);
+    for (id, p) in [("timeline.goto", json!({"frame": 8})), ("timeline.insert_keyframe", json!({})), ("timeline.goto", json!({"frame": 0})), ("timeline.create_tween", json!({})), ("warp.pin_move", json!({"element": wr, "pin": wp2, "x": 300, "y": 220, "frame": 8}))] {
+        warped.execute(id, &p).unwrap();
+    }
+    warped.selection = crate::Selection::only(warped.layer, [anicraft_doc::ElementId(wr)]);
+    warped.set_frame(4);
+    hostile.extend([
+        json!({"element": wr, "pin": wp2, "x": 1e30, "y": -1e30, "dx": 1e7, "dy": -1e7, "frame": 99_999, "resolution": 0}),
+        json!({"element": wr, "pin": wp1, "x": 200, "y": 140, "dx": f64::NAN, "resolution": 48}),
+        json!({"element": wb, "pin": wp3, "x": 0, "y": 0, "dx": -1e6, "dy": 1e6, "resolution": u64::MAX}),
+        json!({"element": wb, "pin": u64::MAX, "x": 290, "y": 231, "frame": 4, "resolution": 2}),
+        json!({"element": u64::MAX, "pin": "a", "x": "b", "y": [1], "resolution": -3}),
+        json!({"element": wr, "x": 299.9, "y": 179.9, "pin": wp1, "dx": 0.0001}),
+    ]);
     // Raw drawings and an object on two layers, selected on both through a marquee's cut that
     // is still provisional (ADR 0041, 0044).
     let mut layered = Session::default();
@@ -825,7 +844,7 @@ fn panic_hunt_every_command() {
     let inner = grouped.visible_elements().into_iter().find(|e| matches!(e.kind, anicraft_doc::ElementKind::Group { .. })).map(|e| e.id.0).unwrap();
     grouped.execute("symbol.edit", &json!({"id": inner})).unwrap();
     assert_eq!(grouped.editing.len(), 2, "the fuzz starts inside a group inside a group");
-    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, layered, in_symbol, keyed, library, button, grouped] {
+    for start in [Session::default(), Session::new(sample::demo()), Session::new(with_sound), on_path, raw, rig, shaped, warped, layered, in_symbol, keyed, library, button, grouped] {
         let mut s = start;
         for spec in commands().iter().filter(|c| !skip(c.id)) {
             for p in &hostile {
