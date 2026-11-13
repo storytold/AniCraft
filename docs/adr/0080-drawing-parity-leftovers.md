@@ -134,6 +134,9 @@ tests, so it is the next PR, not a corner of this one.
   union and intersection areas; the patch's identity, affine and tolerance properties. The
   `panic_hunt_every_command` fuzz covers the new commands and params.
 * Saving while a drawing object is open saves it as a group of its pieces; it opens as a group.
+* Warped artwork (Asset Warp, ADR 0079) neither opens in place nor takes an envelope: its warp
+  keeps the outline as drawn on every keyframe of its layer, and either edit would fight it.
+  The message says to edit its pins or remove the warp first.
 
 ## Not yet
 

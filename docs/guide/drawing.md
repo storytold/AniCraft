@@ -341,7 +341,8 @@ side's handles move with it) and **circles** bend a side. Each drag is one undo 
 undo puts the mesh back where it was too. The envelope ends when you select something else or
 pick another tool; bent merged drawing then joins what it lies on. The bend is part of the
 shapes from then on, as in Animate, so there is nothing to delete (Animate's Delete Envelope
-isn't needed). Symbols, text, groups and bitmaps can't be bent: break them apart first.
+isn't needed). Symbols, text, groups and bitmaps can't be bent: break them apart first. Artwork with an Asset
+Warp mesh can't either: remove its warp first.
 
 ## Copying, arranging and aligning
 

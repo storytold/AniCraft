@@ -533,3 +533,17 @@ fn parity_timings() {
     }
     eprintln!("envelope move, a 32-point star and an oval: {:.2} ms", median(times));
 }
+
+/// Warped artwork (ADR 0079) neither opens in place nor takes an envelope: its warp keeps the
+/// outline as drawn on every keyframe.
+#[test]
+fn warped_objects_refuse_envelope_and_editing() {
+    let mut s = blank(true);
+    let v = run(&mut s, "draw.rect", json!({"x": 10, "y": 20, "w": 100, "h": 50, "stroke": null, "fill": "#ff8800"}));
+    let id = v["element"].as_u64().expect("the object");
+    run(&mut s, "warp.add", json!({"element": id}));
+    run(&mut s, "element.select", json!({"ids": [id]}));
+    assert!(s.execute("modify.envelope", &json!({})).is_err());
+    assert!(s.execute("symbol.edit", &json!({"id": id})).is_err());
+    assert!(s.editing.is_empty());
+}

@@ -505,7 +505,9 @@ fn without(mut tl: Timeline, which: Option<(LayerId, ElementId)>) -> Timeline {
 pub fn opens(e: &Element) -> bool {
     match &e.kind {
         ElementKind::Symbol { .. } | ElementKind::Group { .. } => true,
-        ElementKind::Shape(sh) => !sh.merge,
+        // A warped shape (ADR 0079) keeps its outline as drawn under its mesh: it is edited
+        // through its pins, not opened.
+        ElementKind::Shape(sh) => !sh.merge && sh.warp.is_none(),
         _ => false,
     }
 }
@@ -560,6 +562,9 @@ pub(crate) fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(editing_json(s));
     }
     // A drawing object opens the same way (ADR 0080), as a group of its one raw shape.
+    if matches!(&el.kind, ElementKind::Shape(sh) if !sh.merge && sh.warp.is_some()) {
+        return Err(EngineError::State("that drawing object is warped (Asset Warp): edit it with its pins, or remove its warp to edit its outline".into()));
+    }
     if matches!(&el.kind, ElementKind::Shape(sh) if !sh.merge) {
         if crate::cmds_group::open_groups(s) + 1 > anicraft_doc::MAX_GROUP_DEPTH {
             return Err(EngineError::State(format!("groups nest at most {} deep", anicraft_doc::MAX_GROUP_DEPTH)));

@@ -131,6 +131,11 @@ fn open(s: &mut Session, _: &Value) -> Result<Value> {
     if !picked.iter().all(|e| bendable(e)) {
         return Err(EngineError::State("an envelope bends shapes and drawing objects only: break symbols, text, groups and bitmaps apart first (Modify › Break Apart)".into()));
     }
+    // A warp (ADR 0079) bends the outline as drawn on every keyframe of its layer: baking an
+    // envelope into one of them would fight it.
+    if picked.iter().any(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.warp.is_some())) {
+        return Err(EngineError::State("an envelope can't bend warped artwork (Asset Warp): remove its warp first (Modify › Asset Warp › Remove Warp)".into()));
+    }
     if picked.len() > MAX_SHAPES {
         return Err(EngineError::State(format!("an envelope bends at most {MAX_SHAPES} shapes at once")));
     }
