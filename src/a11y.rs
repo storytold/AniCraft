@@ -435,6 +435,12 @@ mod tests {
             a.open_panel(Some("motionedit"));
             a.me_styles = vec![anicraft_engine::doc::ColorStyle::Tint, anicraft_engine::doc::ColorStyle::Advanced, anicraft_engine::doc::ColorStyle::Brightness];
         }));
+        found.extend(check("light", |a, ctx| {
+            let mut p = a.prefs.clone();
+            p.theme = crate::theme::Palette::Light;
+            p.theme_follows_system = Some(false);
+            a.set_prefs(ctx, p);
+        }));
         found.extend(check("high contrast at 200%", |a, ctx| {
             let mut p = a.prefs.clone();
             p.theme = crate::theme::Palette::HighContrast;
@@ -696,19 +702,57 @@ mod tests {
 
     #[test]
     fn the_palette_follows_the_system_contrast_setting_in_the_same_frame() {
+        use crate::platform::SystemLook;
+        use crate::theme::Palette;
+        let look = |high_contrast, dark| SystemLook { high_contrast, dark };
         let (_, mut app, ctx) = tree(|_, _| {});
-        app.set_system_contrast(&ctx, Some(true));
+        app.set_system_look(&ctx, look(Some(true), Some(true)));
         let followed = crate::theme::palette();
-        app.set_system_contrast(&ctx, Some(false));
+        app.set_system_look(&ctx, look(Some(false), Some(true)));
         let back = crate::theme::palette();
+        // The system switches its apps to light: the default look stays dark (#266)...
+        app.set_system_look(&ctx, look(Some(false), Some(false)));
+        let default_on_light = crate::theme::palette();
+        // ...and with Follow system chosen, so does the interface (ADR 0077), egui's own style
+        // with it.
+        let mut p = app.prefs.clone();
+        p.theme_follows_system = Some(true);
+        app.set_prefs(&ctx, p);
+        app.set_system_look(&ctx, look(Some(false), Some(false)));
+        let light = (crate::theme::palette(), ctx.global_style().visuals.panel_fill, ctx.global_style().visuals.dark_mode);
+        assert_eq!(default_on_light, Palette::Graphite);
         // Chosen by hand: the system's setting no longer changes it.
         let mut p = app.prefs.clone();
         p.theme_follows_system = Some(false);
         app.set_prefs(&ctx, p);
-        app.set_system_contrast(&ctx, Some(true));
+        app.set_system_look(&ctx, look(Some(true), Some(false)));
         let manual = crate::theme::palette();
-        crate::theme::apply_palette(&egui::Context::default(), crate::theme::Palette::Graphite);
-        assert_eq!((followed, back, manual), (crate::theme::Palette::HighContrast, crate::theme::Palette::Graphite, crate::theme::Palette::Graphite));
+        crate::theme::apply_palette(&egui::Context::default(), Palette::Graphite);
+        assert_eq!((followed, back, manual), (Palette::HighContrast, Palette::Graphite, Palette::Graphite));
+        assert_eq!(light, (Palette::Light, crate::theme::LIGHT.panel, false));
+    }
+
+    #[test]
+    fn choosing_a_theme_in_preferences_restyles_everything_in_the_same_frame() {
+        use crate::theme::{LIGHT, Palette, T};
+        let (_, mut app, ctx) = tree(|_, _| {});
+        for palette in [Palette::Light, Palette::HighContrast, Palette::Graphite] {
+            let mut p = app.prefs.clone();
+            p.theme = palette;
+            p.theme_follows_system = Some(false);
+            app.set_prefs(&ctx, p);
+            let tokens = palette.tokens();
+            // Tokens read from here on, egui's widgets, and both of egui's styles.
+            for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                let v = ctx.style_of(theme).visuals.clone();
+                assert_eq!((v.panel_fill, v.window_fill, v.widgets.inactive.bg_fill, v.override_text_color), (tokens.panel, tokens.panel_alt, tokens.header, Some(tokens.text)), "{palette:?} in egui's {theme:?} style");
+            }
+            assert_eq!((crate::theme::palette(), T.panel, ctx.theme() == egui::Theme::Dark), (palette, tokens.panel, tokens.dark));
+        }
+        // The light look's controls carry their hairline; Graphite's stay flat.
+        app.set_prefs(&ctx, crate::prefs::Prefs { theme: Palette::Light, theme_follows_system: Some(false), ..app.prefs.clone() });
+        assert_eq!(ctx.global_style().visuals.widgets.inactive.bg_stroke.color, LIGHT.border);
+        crate::theme::apply_palette(&egui::Context::default(), Palette::Graphite);
     }
 
     #[test]
