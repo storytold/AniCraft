@@ -58,6 +58,7 @@ pub mod render_service;
 pub mod selection;
 pub mod snap;
 pub mod params;
+pub mod plugin_export;
 pub mod player;
 pub mod publish;
 pub mod vfs;
@@ -131,6 +132,7 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(plugin_export::specs());
     v.extend(cmds_envelope::specs());
     v.extend(publish::specs());
     v.extend(cmds_recent::specs());
@@ -1108,6 +1110,8 @@ mod motion_path_tests;
 mod motion_pin_tests;
 #[cfg(test)]
 mod plugin_tests;
+#[cfg(test)]
+mod plugin_kinds_tests;
 #[cfg(test)]
 mod tests_sound;
 #[cfg(test)]

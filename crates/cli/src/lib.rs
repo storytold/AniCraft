@@ -21,6 +21,13 @@ USAGE:
   anicraft-cli apng|webp <file|--sample> --out <anim.png|anim.webp> [--from A] [--to B] [--scale S]
                          [--loop forever|N] [--background yes] [--overwrite yes]
                                          full colour with real transparency (WebP: lossless)
+  anicraft-cli export <file|--sample> --format <id> --out <path> [--from A] [--to B] [--frame N]
+                      [--options '<json>'] [--overwrite yes]
+                                         any export format: the built-in ones (gif, apng, webp,
+                                         lottie, html, video, svg, png, png-sequence, sprite-sheet)
+                                         and exporter plug-ins (by id, with --plugins); --options
+                                         are the plug-in's options, or a built-in's extra params
+  anicraft-cli formats                   lists every export format, plug-ins included (JSON)
   anicraft-cli commands
   anicraft-cli run <file|--sample> <script.json> [--save <out.anicraft>]
   anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]
@@ -193,6 +200,12 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             }
             exec(&mut s, &format!("file.export_{cmd}"), &p).map(|v| v.to_string())
         }
+        "formats" => {
+            let mut s = session(&a, None)?;
+            let v = exec(&mut s, "file.export_formats", &json!({}))?;
+            serde_json::to_string_pretty(&v["formats"]).map_err(|e| e.to_string())
+        }
+        "export" => export(&a, src),
         "new" => {
             let mut s = Session::default();
             let out = a.flag("out").ok_or("new needs --out <file.anicraft>")?;
@@ -255,6 +268,50 @@ pub fn run(argv: &[String]) -> Result<String, String> {
         }
         other => Err(format!("unknown subcommand '{other}'\n\n{USAGE}")),
     }
+}
+
+/// `export --format <id>`: a built-in format through its own command, or an exporter plug-in
+/// through `file.export_plugin` (ADR 0088).
+fn export(a: &Args, src: Option<&str>) -> Result<String, String> {
+    let mut s = session(a, Some(src.ok_or("export needs a file or --sample")?))?;
+    let id = a.flag("format").ok_or("export needs --format <id> (anicraft-cli formats lists them)")?;
+    let out = a.flag("out").ok_or("export needs --out <path>")?;
+    let list = exec(&mut s, "file.export_formats", &json!({}))?;
+    let formats = list["formats"].as_array().cloned().unwrap_or_default();
+    let Some(f) = formats.iter().find(|f| f["id"] == id) else {
+        let ids: Vec<&str> = formats.iter().filter_map(|f| f["id"].as_str()).collect();
+        return Err(format!("no export format '{id}' (formats: {}; exporter plug-ins load with --plugins <folder>)", ids.join(", ")));
+    };
+    let (cmd, target, plugin) = (f["command"].as_str().unwrap_or(""), f["target"].as_str().unwrap_or("path"), f["plugin"] == true);
+    let mut p = json!({ target: out });
+    let options: Option<Value> = a.flag("options").map(|t| serde_json::from_str(t).map_err(|e| format!("--options is not JSON: {e}"))).transpose()?;
+    if plugin {
+        p["format"] = json!(id);
+        if let Some(o) = options {
+            p["options"] = o;
+        }
+    } else if let Some(Value::Object(o)) = options {
+        for (k, v) in o {
+            p[k] = v;
+        }
+    } else if options.is_some() {
+        return Err("--options must be a JSON object".into());
+    }
+    if matches!(id, "png" | "svg") {
+        if let Some(f) = one_based(a, "frame")? {
+            p["frame"] = json!(f);
+        }
+    } else {
+        for k in ["from", "to"] {
+            if let Some(f) = one_based(a, k)? {
+                p[k] = json!(f);
+            }
+        }
+    }
+    if a.flag("overwrite").is_some_and(|v| v == "yes" || v == "true") {
+        p["confirm"] = json!(true);
+    }
+    exec(&mut s, cmd, &p).map(|v| v.to_string())
 }
 
 fn avg_ms(n: u32, mut f: impl FnMut(u32)) -> f64 {
@@ -596,6 +653,50 @@ mod tests {
         // A folder that doesn't exist yet is the plug-ins folder, with nothing in it.
         assert_eq!(s.plugins.folder(), Some(dir.as_path()));
         assert!(s.plugins.is_empty());
+    }
+
+    #[test]
+    fn export_any_format_built_in_or_plugin() {
+        let dir = std::env::temp_dir().join(format!("anicraft-cli-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+        let argv = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+        // A built-in format by id.
+        let svg = dir.join("f.svg");
+        run(&argv(&["export", "--sample", "--format", "svg", "--frame", "3", "--out", svg.to_str().unwrap()])).unwrap();
+        assert!(std::fs::read_to_string(&svg).unwrap().contains("<svg"));
+        // An exporter plug-in that writes "frames:" and the count it was handed.
+        let m = r#"{"id":"org.test.count","name":"Count","kind":"exporter","format":{"name":"Count","extension":"txt"}}"#;
+        let req = r#"{"op":"movie"}"#;
+        let wat = format!(
+            r#"(module (import "anicraft" "call" (func $call (param i32 i32) (result i32))) (import "anicraft" "response" (func $response (param i32 i32) (result i32)))
+              (memory (export "memory") 4) (data (i32.const 1024) "{}") (data (i32.const 4096) "{}")
+              (func (export "ac_abi_version") (result i32) i32.const 1)
+              (func (export "ac_manifest") (result i64) (i64.or (i64.shl (i64.const {}) (i64.const 32)) (i64.const 1024)))
+              (func (export "ac_alloc") (param i32) (result i32) i32.const 60000)
+              (func (export "ac_export") (param i32 i32) (result i64) (local $n i32)
+                (local.set $n (call $response (i32.const 100000) (call $call (i32.const 4096) (i32.const {}))))
+                (i64.or (i64.shl (i64.extend_i32_u (local.get $n)) (i64.const 32)) (i64.const 100000))))"#,
+            m.replace('"', "\\22"),
+            req.replace('"', "\\22"),
+            m.len(),
+            req.len()
+        );
+        std::fs::write(dir.join("plugins").join("count.wasm"), wat::parse_str(&wat).unwrap()).unwrap();
+        let plugins = dir.join("plugins");
+        let listed = run(&argv(&["formats", "--plugins", plugins.to_str().unwrap()])).unwrap();
+        assert!(listed.contains("org.test.count") && listed.contains("\"gif\""));
+        let out = dir.join("movie.txt");
+        let v = run(&argv(&["export", "--sample", "--format", "org.test.count", "--from", "2", "--to", "5", "--out", out.to_str().unwrap(), "--plugins", plugins.to_str().unwrap()])).unwrap();
+        assert!(v.contains("\"frames\":4"), "{v}");
+        let movie: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!((movie["result"]["from"].as_u64(), movie["result"]["frames"].as_u64()), (Some(1), Some(4)));
+        // Replacing it needs --overwrite yes; unknown formats name the known ones.
+        assert!(run(&argv(&["export", "--sample", "--format", "org.test.count", "--out", out.to_str().unwrap(), "--plugins", plugins.to_str().unwrap()])).is_err());
+        run(&argv(&["export", "--sample", "--format", "org.test.count", "--out", out.to_str().unwrap(), "--plugins", plugins.to_str().unwrap(), "--overwrite", "yes"])).unwrap();
+        let err = run(&argv(&["export", "--sample", "--format", "org.test.count", "--out", out.to_str().unwrap()])).unwrap_err();
+        assert!(err.contains("lottie") && err.contains("--plugins"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

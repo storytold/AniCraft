@@ -270,6 +270,7 @@ dependencies = [
  "anicraft-guide",
  "anicraft-render",
  "serde_json",
+ "wat",
 ]
 
 [[package]]
