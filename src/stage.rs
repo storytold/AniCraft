@@ -963,7 +963,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     }
-    painter.rect_stroke(stage_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    painter.rect_stroke(stage_rect, 0.0, Stroke::new(1.0, T.stage_edge), StrokeKind::Outside);
 
     // ---- overlays -------------------------------------------------------------------------
     // The camera frame (or, previewing, the Camera tool's handle) comes first, under the

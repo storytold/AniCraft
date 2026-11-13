@@ -422,10 +422,13 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                             let was = if p.follows_system() { None } else { Some(p.theme) };
                             let mut choice = was;
                             crate::theme::radio_value(ui, &mut choice, None, text(Type::Body, tr!("Follow system")));
-                            let says = match app.system_contrast {
-                                Some(true) => tr!("High contrast while the system asks for more contrast (it does now), graphite otherwise."),
-                                Some(false) => tr!("High contrast while the system asks for more contrast (it doesn't now), graphite otherwise."),
-                                None => tr!("High contrast while the system asks for more contrast, graphite otherwise. This system doesn't say, so it is graphite."),
+                            // What following would show now, and why (ADR 0064, ADR 0077).
+                            let look = app.system_look;
+                            let says = match (look.high_contrast, look.dark) {
+                                (Some(true), _) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. It does now, so it is high contrast."),
+                                (_, Some(false)) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. Your system is light now."),
+                                (_, Some(true)) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. Your system is dark now."),
+                                (_, None) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. This system doesn't say whether it is light, so it is dark."),
                             };
                             form_note(ui, toggle_indent, text(Type::Caption, says));
                             ui.add_space(2.0);
