@@ -384,3 +384,5 @@ mod architecture_tests;
 mod packaging_tests;
 #[cfg(test)]
 mod rulers_tests;
+#[cfg(test)]
+mod retime_ui_tests;

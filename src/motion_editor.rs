@@ -3,9 +3,13 @@
 //! It shares the timeline's dock (a tab beside it, as in Animate) and follows the active layer
 //! and the playhead. Left: the properties, with their value at the playhead (drag to key it)
 //! and a diamond that adds or removes a key there. Right: the selected property's curve over
-//! the span. Drag a key up or down to change its value, drag the two handles of the selected
-//! segment to shape its ease (a cubic Bézier), click to move the playhead, double-click to add
-//! a key. Every drag is one undo step (a session gesture); every change is a command.
+//! the span. Drag a key up or down to change its value, or sideways to move it in time (ADR
+//! 0083: it snaps to frames and stops at its neighbours; Shift-click picks keys of several
+//! properties, and the lane under the ruler picks every property's keys on a frame), drag the
+//! two handles of the selected segment to shape its ease (a cubic Bézier), click to move the
+//! playhead, double-click to add a key. With the curve focused, Left and Right move the picked
+//! keys a frame (Shift: ten). Every drag is one undo step (a session gesture); every change is
+//! a command.
 //!
 //! On X and Y, the keys of frames pinned to a motion path point (ADR 0049) are drawn in the
 //! motion colour: they are the point's place and its timing, so dragging one moves the point on
@@ -22,18 +26,34 @@ use serde_json::json;
 const LIST_W: f32 = 252.0;
 const ROW_H: f32 = TARGET;
 const RULER_H: f32 = 24.0;
+/// The lane under the ruler with every property's keys.
+const LANE_H: f32 = 16.0;
 const FOOTER_H: f32 = 38.0;
 /// Room inside the graph around the curve, in points.
 const PAD: f32 = 18.0;
 /// Pointer distance that grabs a key or a handle.
 const GRAB: f32 = 8.0;
+/// How far a key drag goes before it picks its direction (time or value).
+const AXIS_SLOP: f32 = 4.0;
+
+/// Which way a key drag goes, decided by its first few points of travel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    Undecided,
+    /// Sideways: the picked keys move in time.
+    Time,
+    /// Up or down: the grabbed key's value.
+    Value,
+}
 
 /// An in-progress drag in the graph. The value range is frozen so the curve doesn't rescale
 /// under the pointer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MeDrag {
-    /// A key's value (`frame` is the key's offset in the span).
-    Key { frame: u32, lo: f32, hi: f32 },
+    /// A key grabbed at `frame` (its offset in the span when the drag began): sideways it
+    /// moves the picked keys in time (`by` frames so far), up or down it changes this key's
+    /// value. `lane`: grabbed on the all-properties lane, which only moves keys in time.
+    Key { frame: u32, lo: f32, hi: f32, axis: Axis, by: i64, lane: bool },
     /// Handle 1 or 2 of the segment starting at the key at `frame`.
     Handle { frame: u32, which: u8, lo: f32, hi: f32 },
     /// Scrubbing the playhead.
@@ -124,10 +144,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         return;
     };
     let offset = app.s.frame.saturating_sub(start);
+    // The picked keys belong to this span: another span or layer starts afresh, and keys that
+    // went (removed, or undone) leave the pick.
+    let here = (app.s.layer.0, start);
+    if app.me_sel_at != here {
+        app.me_sel.clear();
+        app.me_sel_at = here;
+    }
+    app.me_sel.retain(|(p, f)| m.track(*p).is_some_and(|t| t.key_at(*f).is_some()));
     let list = Rect::from_min_max(body.left_top(), pos2(body.left() + LIST_W, body.bottom() - FOOTER_H));
     let graph_full = Rect::from_min_max(pos2(list.right(), body.top()), pos2(body.right(), body.bottom() - FOOTER_H));
     let ruler = Rect::from_min_max(graph_full.left_top(), pos2(graph_full.right(), graph_full.top() + RULER_H));
-    let graph = Rect::from_min_max(pos2(graph_full.left(), ruler.bottom()), graph_full.right_bottom());
+    let lane = Rect::from_min_max(pos2(graph_full.left(), ruler.bottom()), pos2(graph_full.right(), ruler.bottom() + LANE_H));
+    let graph = Rect::from_min_max(pos2(graph_full.left(), lane.bottom()), graph_full.right_bottom());
 
     // ---- property list ---------------------------------------------------------------------
     painter.rect_filled(Rect::from_min_max(list.left_top(), pos2(list.right(), list.top() + RULER_H)), 0.0, T.panel_alt);
@@ -190,6 +219,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.s.begin_gesture(tr_noop!("Property keyframe"));
             app.run("motion.set_key", json!({"property": p.key(), "frame": app.s.frame, "value": v}));
         }
+        if r.drag_stopped() {
+            app.s.end_gesture();
+        }
         // Key toggle: a filled diamond where this property has a key at the playhead.
         let keyed = track.is_some_and(|t| t.key_at(offset).is_some());
         let toggle = Rect::from_center_size(pos2(row.right() - 20.0, row.center().y), vec2(24.0, 24.0));
@@ -221,7 +253,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let track = m.track(p);
     let label = crate::i18n::t(p.label());
     let (lo, hi) = match app.me_drag {
-        Some(MeDrag::Key { lo, hi, .. } | MeDrag::Handle { lo, hi, .. }) => (lo, hi),
+        Some(MeDrag::Key { lo, hi, lane: false, .. } | MeDrag::Handle { lo, hi, .. }) => (lo, hi),
         _ => value_range(track, base.get(p), frames, p),
     };
     let last = frames.saturating_sub(1).max(1) as f32;
@@ -304,9 +336,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             gp.circle_stroke(h, 4.5, Stroke::new(1.0, T.ink));
         }
     }
+    // Every property's keys, a diamond per frame: filled in the accent when all are picked.
+    gp.rect_filled(lane, 0.0, T.panel);
+    gp.line_segment([lane.left_bottom(), lane.right_bottom()], Stroke::new(1.0, T.separator));
+    gp.text(pos2(lane.left() + 4.0, lane.center().y), Align2::LEFT_CENTER, tr!("All"), font(Type::DataSmall), T.text_faint);
+    let lane_frames: Vec<u32> = m.key_frames().into_iter().filter(|f| *f < frames).collect();
+    let all_at = |f: u32| -> Vec<(Property, u32)> { m.tracks.iter().filter(|t| t.key_at(f).is_some()).map(|t| (t.property, f)).collect() };
+    for &f in &lane_frames {
+        let all_picked = all_at(f).iter().all(|k| app.me_sel.contains(k));
+        let some = all_at(f).iter().any(|k| app.me_sel.contains(k));
+        let fill = if all_picked { T.accent } else if some { T.accent_dim } else { T.text_dim };
+        diamond(&gp, pos2(x_of(f as f32), lane.center().y), 4.5, fill, Stroke::new(1.0, T.ink));
+    }
     for &(f, v, _) in &keys {
         let c = pos2(x_of(f as f32), y_of(v));
-        let picked = sel_key == Some(f);
+        let picked = sel_key == Some(f) || app.me_sel.contains(&(p, f));
         if pin_at(p, f).is_some() {
             // A path point's place: the motion colour, ringed like the stage's pinned points.
             diamond(&gp, c, if picked { 7.5 } else { 6.5 }, if picked { T.accent } else { T.tween_motion }, Stroke::new(1.5, T.ink));
@@ -320,10 +364,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- graph interaction -------------------------------------------------------------------
     // Pointer work; the keyboard route to the same values is the property list and its fields.
-    let gr = ui.interact(graph_full, ui.id().with("me_graph"), a11y::pointer_only());
-    a11y::surface(ui, &gr, &tr!("{property} curve", property = crate::i18n::t(app.me_prop.label())));
+    // Focusable: with the curve focused, Left and Right move the picked keys (ADR 0083).
+    let gr = ui.interact(graph_full, ui.id().with("me_graph"), Sense::click_and_drag());
+    // Where frames and values are drawn, for tests that point at keys.
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("me_geometry"), (inner, lane, last, lo, hi)));
+    a11y::surface(ui, &gr, &tr!("{property} curve: Left and Right move the picked keys a frame", property = crate::i18n::t(app.me_prop.label())));
+    keyboard(app, ui, &gr, start);
     let hover = gr.hover_pos();
-    let near_key = |pt: Pos2| keys.iter().find(|k| pos2(x_of(k.0 as f32), y_of(k.1)).distance(pt) <= GRAB).map(|k| k.0);
+    let near_key = |pt: Pos2| keys.iter().find(|k| pt.y > lane.bottom() && pos2(x_of(k.0 as f32), y_of(k.1)).distance(pt) <= GRAB).map(|k| k.0);
+    let near_lane = |pt: Pos2| lane.expand2(vec2(0.0, 2.0)).contains(pt).then(|| lane_frames.iter().copied().find(|f| (x_of(*f as f32) - pt.x).abs() <= GRAB)).flatten();
+    let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
     let near_handle = |pt: Pos2| handles.and_then(|h| [(1u8, h[1]), (2u8, h[2])].into_iter().find(|(_, q)| q.distance(pt) <= GRAB).map(|(w, _)| w));
     if app.me_drag.is_none()
         && let Some(h) = hover
@@ -331,7 +381,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if near_handle(h).is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         } else if near_key(h).is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+        } else if near_lane(h).is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
     }
     let to_frame = |x: f32| start + f_of(x).round() as u32;
@@ -339,16 +391,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(pt) = ui.input(|i| i.pointer.press_origin())
     {
         app.playing = false;
-        app.me_drag = Some(match (near_handle(pt), sel_key, near_key(pt)) {
-            (Some(which), Some(frame), _) => {
+        gr.request_focus();
+        app.me_drag = Some(match (near_handle(pt), sel_key, near_key(pt), near_lane(pt)) {
+            (Some(which), Some(frame), _, _) => {
                 app.s.begin_gesture(tr_noop!("Property ease"));
                 MeDrag::Handle { frame, which, lo, hi }
             }
-            (_, _, Some(frame)) => {
+            (_, _, Some(frame), _) => {
+                // A key outside the pick: it becomes the pick (or joins it, with Shift).
+                if !app.me_sel.contains(&(p, frame)) {
+                    if !add {
+                        app.me_sel.clear();
+                    }
+                    app.me_sel.push((p, frame));
+                }
                 app.me_key = Some(frame);
                 app.s.begin_gesture(tr_noop!("Property keyframe"));
                 app.run("timeline.goto", json!({"frame": start + frame}));
-                MeDrag::Key { frame, lo, hi }
+                MeDrag::Key { frame, lo, hi, axis: Axis::Undecided, by: 0, lane: false }
+            }
+            (_, _, _, Some(frame)) => {
+                pick_frame(app, all_at(frame), add);
+                app.s.begin_gesture(tr_noop!("Move property keyframes"));
+                app.run("timeline.goto", json!({"frame": start + frame}));
+                MeDrag::Key { frame, lo, hi, axis: Axis::Time, by: 0, lane: true }
             }
             _ => MeDrag::Scrub,
         });
@@ -357,10 +423,39 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(pt) = gr.interact_pointer_pos()
     {
         match app.me_drag {
-            Some(MeDrag::Key { frame, .. }) => {
-                let r = p.range();
-                let v = v_of(pt.y).clamp(*r.start(), *r.end());
-                app.run("motion.set_key", json!({"property": p.key(), "frame": start + frame, "value": v}));
+            Some(MeDrag::Key { frame, lo, hi, axis, by, lane }) => {
+                let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pt);
+                let d = pt - origin;
+                let axis = match axis {
+                    Axis::Undecided if d.length() < AXIS_SLOP => Axis::Undecided,
+                    Axis::Undecided if d.x.abs() > d.y.abs() => Axis::Time,
+                    Axis::Undecided => Axis::Value,
+                    a => a,
+                };
+                let mut by = by;
+                match axis {
+                    Axis::Time => {
+                        // Snapped to frames; the engine stops the keys at their neighbours.
+                        let want = f_of(pt.x).round() as i64 - i64::from(frame);
+                        if want != by
+                            && let Some(moved) = retime(app, start, want - by)
+                        {
+                            by += moved;
+                            let now = u32::try_from(i64::from(frame) + by).unwrap_or(frame);
+                            if !lane {
+                                app.me_key = Some(now);
+                            }
+                            app.run("timeline.goto", json!({"frame": start + now}));
+                        }
+                    }
+                    Axis::Value if !lane => {
+                        let r = p.range();
+                        let v = v_of(pt.y).clamp(*r.start(), *r.end());
+                        app.run("motion.set_key", json!({"property": p.key(), "frame": start + frame, "value": v}));
+                    }
+                    _ => {}
+                }
+                app.me_drag = Some(MeDrag::Key { frame, lo, hi, axis, by, lane });
             }
             Some(MeDrag::Handle { frame, which, .. }) => {
                 if let Some(t) = track
@@ -388,20 +483,54 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             None => {}
         }
     }
+    // Mid-drag in time: how far the keys have gone, at the pointer.
+    let shot_at = |f: u32, by: i64| app.me_shot_drag.then(|| pos2(x_of((i64::from(f) + by) as f32), lane.bottom() + 26.0));
+    if let Some(MeDrag::Key { frame, by, axis: Axis::Time, .. }) = app.me_drag
+        && let Some(pt) = gr.interact_pointer_pos().or_else(|| shot_at(frame, by))
+    {
+        let n = app.me_sel.len();
+        let label = trn!("{n} key · {by} frames → frame {frame}", "{n} keys · {by} frames → frame {frame}", n, by = format!("{by:+}"), frame = i64::from(start + frame) + by + 1);
+        readout(&painter, pt + vec2(14.0, -22.0), label);
+    }
     if gr.drag_stopped() {
+        if let Some(MeDrag::Key { by, axis: Axis::Time, .. }) = app.me_drag
+            && by != 0
+        {
+            let n = app.me_sel.len();
+            app.status_ok(trn!("Moved {n} property keyframe by {by} frames — {undo} to undo", "Moved {n} property keyframes by {by} frames — {undo} to undo", n, by = format!("{by:+}"), undo = app.undo_key()));
+        }
+        if matches!(app.me_drag, Some(MeDrag::Key { .. } | MeDrag::Handle { .. })) {
+            app.s.end_gesture();
+        }
         app.me_drag = None;
     }
     if gr.clicked()
         && let Some(pt) = gr.interact_pointer_pos()
     {
         app.playing = false;
-        match near_key(pt) {
-            Some(f) => {
+        gr.request_focus();
+        match (near_key(pt), near_lane(pt)) {
+            (Some(f), _) => {
+                // Shift- (or Ctrl-) click adds a key to the pick, or takes it out.
+                match app.me_sel.iter().position(|k| *k == (p, f)) {
+                    Some(i) if add => {
+                        app.me_sel.remove(i);
+                    }
+                    None if add => app.me_sel.push((p, f)),
+                    _ => app.me_sel = vec![(p, f)],
+                }
                 app.me_key = Some(f);
                 app.run("timeline.goto", json!({"frame": start + f}));
             }
-            None => {
+            (None, Some(f)) => {
+                pick_frame(app, all_at(f), add);
+                app.run("timeline.goto", json!({"frame": start + f}));
+            }
+            (None, None) => {
                 app.me_key = None;
+                if !add {
+                    app.me_sel.clear();
+                }
                 app.run("timeline.goto", json!({"frame": to_frame(pt.x)}));
             }
         }
@@ -418,12 +547,87 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.me_key = Some(f - start);
         }
     }
-    match hover.and_then(near_key).and_then(|f| pin_at(p, f)) {
-        Some(q) => gr.on_hover_text_at_pointer(tr!("Frame {frame} · point {anchor} of the motion path: drag to move the point", frame = start + q.frame + 1, anchor = q.anchor)),
-        None => gr.on_hover_text_at_pointer(tr!("Drag a key up or down to change it, or a handle to shape the ease. Double-click to add a key.")),
-    };
+    if app.me_drag.is_none() {
+        match (hover.and_then(near_key).and_then(|f| pin_at(p, f)), hover.and_then(near_lane)) {
+            (Some(q), _) => gr.on_hover_text_at_pointer(tr!("Frame {frame} · point {anchor} of the motion path: drag to move the point", frame = start + q.frame + 1, anchor = q.anchor)),
+            (None, Some(f)) => gr.on_hover_text_at_pointer(tr!("Every property's keys at frame {frame}: click to pick them, drag to move them in time", frame = start + f + 1)),
+            (None, None) => gr.on_hover_text_at_pointer(tr!("Drag a key sideways to move it in time, or up or down to change it; drag a handle to shape the ease. Shift-click picks more keys, Left and Right move them a frame. Double-click to add a key.")),
+        };
+    }
 
     footer(app, ui, body, track, sel_key, start, &rows);
+}
+
+/// Picks `keys` (every property's keys on one frame): instead of the pick, or added to it.
+fn pick_frame(app: &mut App, keys: Vec<(Property, u32)>, add: bool) {
+    if !add {
+        app.me_sel.clear();
+    }
+    for k in keys {
+        if !app.me_sel.contains(&k) {
+            app.me_sel.push(k);
+        }
+    }
+}
+
+/// Moves the picked keys `by` frames (`motion.move_keys`, which stops them at their
+/// neighbours); the pick follows them. How far they went, `None` when nothing moved.
+pub fn retime(app: &mut App, start: u32, by: i64) -> Option<i64> {
+    if app.me_sel.is_empty() || by == 0 {
+        return None;
+    }
+    let keys: Vec<serde_json::Value> = app.me_sel.iter().map(|(q, f)| json!({"property": q.key(), "frame": start + f})).collect();
+    let v = app.run("motion.move_keys", json!({"keys": keys, "by": by, "frame": start}))?;
+    let moved = v["by"].as_i64().unwrap_or(0);
+    if let Some(list) = v["keys"].as_array() {
+        app.me_sel = list.iter().filter_map(|k| Some((Property::from_key(k["property"].as_str()?)?, u32::try_from(k["frame"].as_u64()?).ok()?.checked_sub(start)?))).collect();
+    }
+    (moved != 0).then_some(moved)
+}
+
+/// The focused curve's keys: Left and Right move the picked keys a frame (Shift: ten), one
+/// undo step a press; the arrows stay with the curve instead of moving focus.
+fn keyboard(app: &mut App, ui: &egui::Ui, gr: &egui::Response, start: u32) {
+    if !gr.has_focus() {
+        return;
+    }
+    // A press elsewhere takes the keyboard back.
+    if ui.input(|i| i.pointer.any_pressed()) && !gr.hovered() {
+        gr.surrender_focus();
+        return;
+    }
+    a11y::focus_ring(ui, gr);
+    ui.memory_mut(|m| m.set_focus_lock_filter(gr.id, egui::EventFilter { horizontal_arrows: true, ..Default::default() }));
+    if app.me_sel.is_empty() {
+        return;
+    }
+    let by = ui.input_mut(|i| {
+        let mut by = 0i64;
+        // Shift first: a plain arrow's match would take Shift+arrow too.
+        for (m, k, d) in [(egui::Modifiers::SHIFT, egui::Key::ArrowLeft, -10), (egui::Modifiers::SHIFT, egui::Key::ArrowRight, 10), (egui::Modifiers::NONE, egui::Key::ArrowLeft, -1), (egui::Modifiers::NONE, egui::Key::ArrowRight, 1)] {
+            while i.consume_key(m, k) {
+                by += d;
+            }
+        }
+        by
+    });
+    if by != 0 && retime(app, start, by).is_some() {
+        if let Some(f) = app.me_sel.iter().find(|k| k.0 == app.me_prop).map(|k| k.1) {
+            app.me_key = Some(f);
+        }
+        let n = app.me_sel.len();
+        app.status_ok(trn!("Moved {n} property keyframe — {undo} to undo", "Moved {n} property keyframes — {undo} to undo", n, undo = app.undo_key()));
+    }
+}
+
+/// A small readout box at `at` (a drag's distance), as the timeline's span drag shows.
+fn readout(painter: &egui::Painter, at: Pos2, label: String) {
+    let galley = painter.layout_no_wrap(label, font(Type::DataSmall), T.text);
+    let (w, h) = (galley.rect.width(), galley.rect.height());
+    let bg = Rect::from_min_size(at, vec2(w + 8.0, h + 4.0));
+    painter.rect_filled(bg, T.rc(), T.chrome);
+    painter.rect_stroke(bg, T.rc(), Stroke::new(1.0, T.border), egui::StrokeKind::Inside);
+    painter.galley(bg.min + vec2(4.0, 2.0), galley, T.text);
 }
 
 /// Whether `q` is a pin between the ends (which can be let go).

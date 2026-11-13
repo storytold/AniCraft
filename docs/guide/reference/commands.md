@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 328 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 333 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -168,6 +168,10 @@ This page is generated from the command registry, so it always matches the versi
   Parameters: `{element? (a shape or bitmap; default the one selected), resolution? (cells along the longer side, 2…48; default 12)} → {element, created, resolution, columns, rows}. Covers the artwork with a warp mesh on every keyframe of its layer that holds it (it becomes a drawing object); on artwork that has one, changes the mesh's resolution`
 - **Remove Warp** `warp.remove` · Modify › Asset Warp · changes the document
   Parameters: `{element?} takes the warp mesh and its pins off the artwork on every keyframe of its layer: it shows as drawn again`
+- **Split Motion** `motion.split` · Modify › Timeline · changes the document
+  Parameters: `{layer?, frame?}: the motion tween becomes two at the frame, each moving as before → {first, second}`
+- **Join Motion** `motion.join` · Modify › Timeline · changes the document
+  Parameters: `{layer?, frame?, to? (the last frame of the spans to join; default: the span after the one at the frame)}: adjacent motion tweens of one object become one, keeping every frame as it was → {start, frames, joined}`
 - **Add Shape Hint** `tween.add_hint` · Modify › Shape · **Ctrl+Shift+H** (macOS **⇧⌘H**) · changes the document
   Parameters: `{layer?, frame? (in the shape tween, or the keyframe it ends on)} → the new hint's letter; it starts at the shapes' centre, unplaced`
 - **Remove All Hints** `tween.clear_hints` · Modify › Shape · changes the document
@@ -299,6 +303,8 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{dir, session? (default headless-<process id>)}`
 - **Move Keyframes** `timeline.move_keyframes` · changes the document
   Parameters: `{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}`
+- **Move Spans** `timeline.move_spans` · changes the document
+  Parameters: `{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up), copy?: true (Alt-drag: the frames stay where they were too)}: the spans starting in from..=to move whole, keeping their lengths and tweens (as dragging a tween span in Animate), replacing what they land on; the frames they leave are empty`
 - **Set Tween Easing** `timeline.set_easing` · changes the document
   Parameters: `{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}`
 - **Orient to Path** `timeline.set_orient` · changes the document
@@ -399,6 +405,10 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{anchor? (default: a new anchor where the object is), frame? (the frame to pin it to, between the first and last position keys), layer?}: the object passes the anchor exactly on that frame → {anchor, frame, pins}`
 - **Unpin Motion Path Point** `motion.unpin_point` · changes the document
   Parameters: `{anchor? | frame?, layer?}: the anchor shapes the path only again; the X/Y keys of its frame go → {anchor, frame, pins}`
+- **Move Property Keyframes** `motion.move_keys` · changes the document
+  Parameters: `{keys: [{property, frame}, ..] (frames as motion.info lists them), by (frames; negative = earlier), layer?, frame? (in the span; default: the first key's)}: values and eases travel with their keys; no key moves outside the span or onto or past a key of its property that isn't moving (the move stops there); a pinned path point's X and Y keys move together → {by, keys}`
+- **Span Length** `timeline.resize_span` · changes the document
+  Parameters: `{frames (the new length), layer?, frame?, scale_keys?: false (keep a motion tween's keys where they are; default: they stretch in proportion, as dragging the span's end in Animate)}: later frames move with the end, as with F5 / Shift+F5 → {start, frames, scaled}`
 - **Ease** `ease.info`
   Parameters: `{target: layer?, frame?, group? | property? | saved?} → the ease (as easing params take it), its label, and its curve as points (exact unless the preset is fitted)`
 - **Set Ease** `ease.set` · changes the document

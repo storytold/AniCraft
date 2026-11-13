@@ -21,6 +21,7 @@ mod cmds_frames;
 mod cmds_group;
 mod cmds_modify;
 mod cmds_motion;
+mod cmds_retime;
 mod cmds_hints;
 mod cmds_layer;
 pub mod cmds_library;
@@ -141,6 +142,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_bone::specs());
     v.extend(cmds_warp::specs());
     v.extend(cmds_motion::specs());
+    v.extend(cmds_retime::specs());
     v.extend(cmds_ease::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
@@ -1094,6 +1096,8 @@ mod tests;
 
 #[cfg(test)]
 mod motion_tests;
+#[cfg(test)]
+mod retime_tests;
 #[cfg(test)]
 mod ease_tests;
 #[cfg(test)]
