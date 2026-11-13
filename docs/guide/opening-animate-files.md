@@ -49,7 +49,8 @@ AniCraft doesn't save back to `.fla` or XFL.
 | Symbols | Graphics, movie clips and buttons with their own timelines, nested to any depth; Library folders; loop mode and first frame; 9-slice guides |
 | Instances | Position and transform, instance names, colour effects in every style (Brightness, Tint, Advanced, Alpha), blend modes, all seven filters |
 | Bitmaps | Library bitmaps, placed bitmaps and bitmap fills, with Allow Smoothing, when the image is stored as PNG or JPEG |
-| Sounds | Sounds stored as WAV, Ogg Vorbis or MP3, on the keyframes that use them, button states included |
+| Sounds | Sounds stored as WAV, Ogg Vorbis or MP3, in their Library folders, with waveforms on the timeline; on the keyframes that use them (button states included) with their sync (Event, Start, Stop, Stream), repeat or loop, and effect: Left or Right Channel, the fades, or a custom envelope |
+| Videos | A video in the Screen Video format comes in as a still of its first frame, placed where the video was and sized to it; every other video is named in the report with its format and length (AniCraft doesn't play video) |
 | Text | Static text as editable text with its font, size, colour, bold and italic, alignment, spacing, width and wrapping; dynamic and input text as fields, with their names, boxes, borders and line types |
 | Scripts | Frame scripts in scenes and symbols, kept exactly as written, with symbol linkage classes and the document class |
 
@@ -77,7 +78,12 @@ The status bar's report says how many scripts run and how many are only kept. Se
 
 After opening, the status bar sums up the import: "Imported everything in the file", or
 "Imported." followed by what runs, what is kept, what isn't supported yet (with a count for
-each) and any fonts that are missing.
+each) and any fonts that are missing. Point at the status bar to read the whole report.
+
+Sounds and videos that don't come across are **named**, with the reason, for example
+"2 sounds in formats AniCraft can't decode (theme.aif: AIFF; voice.wav: WAV in IMA ADPCM)" or
+"1 videos AniCraft can't play (intro.flv: FLV, On2 VP6, 4.5 s)". The first few are shown, then
+how many more.
 
 ### Drawn the nearest way AniCraft can
 
@@ -96,11 +102,16 @@ These come across, but look a little different from Animate, and the report coun
 
 * **Motion tweens** come across as keyframes, without their property curves or motion path.
 * **Bitmaps and sounds stored only in Animate's own internal format.** Animate keeps some media
-  in an undocumented form; those are listed instead of guessed at. Media kept as PNG, JPEG,
-  WAV, Ogg or MP3 comes across.
-* Sound effects and envelopes (the sounds play without them) and sound in and out points (the
-  sounds play whole).
-* Videos, frame comments, filters on text, and linkage classes on bitmaps and sounds.
+  in an undocumented form; those are listed, by name for sounds, instead of guessed at. Media
+  kept as PNG, JPEG, WAV, Ogg or MP3 comes across.
+* Sounds in formats AniCraft doesn't decode (AIFF, compressed WAV such as ADPCM, FLAC, AAC);
+  convert them to WAV, Ogg or MP3 and import them again (**File › Import › Import to
+  Library**).
+* Sound in and out points (the sounds play whole), and sound effect names AniCraft doesn't know
+  (played without an effect).
+* **Video playback.** Videos other than Screen Video (Sorenson H.263, On2 VP6, H.264, linked
+  MPEG-4 files) are named in the report, not shown; their instances are left out.
+* Frame comments, filters on text, and linkage classes on bitmaps and sounds.
 * Camera layers and bone armatures don't come across as a camera or an armature.
 * Anything AniCraft doesn't recognise at all is counted as "other elements".
 
@@ -119,7 +130,10 @@ computers without the font.
 * A `.fla` saved by **Flash CS4 or earlier** uses an older format AniCraft can't read. AniCraft
   says so: open it in Animate and save it again, then open that copy.
 * A renamed `.fla` still opens; AniCraft recognises it by what is inside.
-* Archives made by different zip tools open, large ones included.
+* Archives made by different zip tools open, large ones included: a zipped XFL folder (the
+  document inside one top folder, with or without the `__MACOSX` folder macOS adds), and a
+  self-extracting archive renamed to `.fla`. A zip holding several documents in their own
+  folders says which ones it holds: unzip it and open the one you want.
 * A **damaged or suspicious** file fails with one sentence that names the problem, and never
   crashes AniCraft. Nothing from it is ever unpacked onto your disk.
 * When only **part** of a file is damaged (one bitmap, one sound or one library symbol), the rest

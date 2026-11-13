@@ -1199,6 +1199,16 @@ impl App {
                 self.scan_system_fonts();
             }
             Some("confirm") => self.request("layer.delete", json!({})),
+            Some("libraryfolders") => {
+                // The document as it opened, every Library folder open and its first sound
+                // selected (an imported file's sounds, ADR 0086).
+                let folders: Vec<_> = self.s.doc.library_tree.folders.iter().map(|f| f.id).collect();
+                self.library.expanded.extend(folders);
+                if let Some(sound) = self.s.doc.sounds.first().map(|s| s.id) {
+                    self.library_sel = Some(LibraryItem::Sound(sound));
+                    self.library.sel = vec![anicraft_engine::doc::LibraryEntry::Item(LibraryItem::Sound(sound))];
+                }
+            }
             Some(which @ ("library" | "librarymenu")) => {
                 // Library folders with an item inside, a copy, the item previewed (ADR 0050).
                 let ball = self.s.doc.library.first().map(|s| s.id);

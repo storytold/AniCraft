@@ -5,7 +5,9 @@
 //! with ZIP64 sizes, local headers, data descriptors, "stored" and "deflate" entries (inflated
 //! by `miniz_oxide`), UTF-8 names (flag bit 11 or the Info-ZIP Unicode path field) and CP437
 //! names. Encryption, other compression methods and split archives are refused with a clear
-//! error.
+//! error. An archive with data before it (a self-extracting stub) is read too: its end record
+//! is found within the bounded search at the end, and offsets that count from the zip data
+//! are moved by the stub's length (ADR 0086).
 //!
 //! The archive is treated as hostile. Every offset and size is checked against the bytes it
 //! comes from; entries may not overlap each other or the central directory; a name that would
@@ -240,10 +242,13 @@ fn find_end(data: &[u8]) -> Result<(u64, u64, u64, usize), ZipError> {
     // ZIP64: a locator just before the end record points at the ZIP64 end record.
     let locator = eocd.checked_sub(20).filter(|&l| u32_at(data, l) == Some(LOCATOR64)).ok_or(ZipError::Damaged("the ZIP64 end record is missing"))?;
     let missing = ZipError::Damaged("the ZIP64 end record is missing");
-    let at = u64_at(data, locator + 8).and_then(|a| usize::try_from(a).ok()).filter(|&a| a < locator).ok_or(missing.clone())?;
-    if u32_at(data, at) != Some(END64) {
-        return Err(missing);
-    }
+    let stated = u64_at(data, locator + 8).and_then(|a| usize::try_from(a).ok()).filter(|&a| a < locator).ok_or(missing.clone())?;
+    // A self-extracting archive's stub moves every offset: the ZIP64 end record (with no
+    // extensible data, as writers make it) then sits just before its locator instead.
+    let at = match stated {
+        a if u32_at(data, a) == Some(END64) => a,
+        _ => locator.checked_sub(56).filter(|&a| a > stated && u32_at(data, a) == Some(END64)).ok_or(missing)?,
+    };
     let cut = ZipError::Damaged("the ZIP64 end record is cut short");
     let (disk, dir_disk) = (u32_at(data, at + 16).ok_or(cut.clone())?, u32_at(data, at + 20).ok_or(cut.clone())?);
     let (on_disk, count) = (u64_at(data, at + 24).ok_or(cut.clone())?, u64_at(data, at + 32).ok_or(cut.clone())?);
@@ -253,11 +258,30 @@ fn find_end(data: &[u8]) -> Result<(u64, u64, u64, usize), ZipError> {
     Ok((count, u64_at(data, at + 40).ok_or(cut.clone())?, u64_at(data, at + 48).ok_or(cut)?, at))
 }
 
+/// Where the central directory really starts, and how far every offset the archive gives is
+/// moved: `0` for a plain archive, the stub's length for a self-extracting one whose offsets
+/// count from the zip data rather than from the file's start (a stub, a program or another
+/// file, put before the archive without fixing its offsets). The directory must end where the
+/// end record begins for the stated offsets to be corrected, and a central header must be
+/// there: nothing else is guessed.
+fn locate_directory(data: &[u8], count: u64, size: u64, stated: u64, limit: usize) -> Option<(usize, usize)> {
+    let stated = usize::try_from(stated).ok()?;
+    if count == 0 || u32_at(data, stated) == Some(CENTRAL) {
+        return Some((stated, 0));
+    }
+    let actual = limit.checked_sub(usize::try_from(size).ok()?)?;
+    if actual > stated && u32_at(data, actual) == Some(CENTRAL) {
+        return Some((actual, actual - stated));
+    }
+    // Neither: the checks that follow name what is wrong.
+    Some((stated, 0))
+}
+
 impl<'a> Archive<'a> {
     pub fn open(data: &'a [u8]) -> Result<Archive<'a>, ZipError> {
         let (count, dir_size, dir_at, dir_limit) = find_end(data)?;
         let past = ZipError::Damaged("the central directory is outside the archive");
-        let dir_at = usize::try_from(dir_at).map_err(|_| past.clone())?;
+        let (dir_at, shift) = locate_directory(data, count, dir_size, dir_at, dir_limit).ok_or(past.clone())?;
         let dir_end = usize::try_from(dir_size).ok().and_then(|s| dir_at.checked_add(s)).filter(|&e| e <= dir_limit).ok_or(past.clone())?;
         let dir = data.get(dir_at..dir_end).ok_or(past)?;
         if count > MAX_ENTRIES as u64 {
@@ -304,7 +328,7 @@ impl<'a> Archive<'a> {
                 }
             }
             let outside = || ZipError::DamagedEntry(shown(), "is outside the archive");
-            let offset = usize::try_from(offset).map_err(|_| outside())?;
+            let offset = usize::try_from(offset).ok().and_then(|o| o.checked_add(shift)).ok_or_else(outside)?;
             let comp = usize::try_from(comp).map_err(|_| outside())?;
             // An entry's size is checked when it is read: one too large to read may sit unused.
             let size = usize::try_from(size).unwrap_or(usize::MAX);

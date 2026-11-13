@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: video (ADR 0086). LIBRARY/Clips/screen.flv is original: one 64x48
+     Screen Video key frame in four coloured quarters, in 32-pixel blocks, made by a script;
+     bin/M 4 2.dat is an FLV whose video is On2 VP6 (only its header is real). A Screen Video
+     instance scaled by its frame size and moved, an instance of the VP6 video, and a video
+     whose file is missing. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="12" backgroundColor="#FFFFFF">
+  <folders>
+    <DOMFolderItem name="Clips" itemID="00000000-0000-0000-0000-000000000201"/>
+  </folders>
+  <media>
+    <DOMVideoItem name="Clips/screen.flv" itemID="00000000-0000-0000-0000-000000000202" sourceExternalFilepath="./LIBRARY/Clips/screen.flv" videoDataHRef="M 3 1.dat" videoType="screen share" fps="12" width="64" height="48" length="2"/>
+    <DOMVideoItem name="intro.flv" itemID="00000000-0000-0000-0000-000000000203" videoDataHRef="M 4 2.dat" videoType="on2 vp6 media" fps="25" width="320" height="180" length="4.5"/>
+    <DOMVideoItem name="gone.mp4" itemID="00000000-0000-0000-0000-000000000204" href="gone.mp4" fps="24" frameCount="24"/>
+  </media>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Video" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="24" keyMode="9728">
+              <elements>
+                <DOMVideoInstance libraryItemName="Clips/screen.flv" frameRight="1920" frameBottom="1440">
+                  <matrix><Matrix tx="20" ty="20"/></matrix>
+                </DOMVideoInstance>
+                <DOMVideoInstance libraryItemName="intro.flv" frameRight="6400" frameBottom="3600">
+                  <matrix><Matrix tx="0" ty="0"/></matrix>
+                </DOMVideoInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Frame" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="24" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="140" y="20" objectWidth="160" objectHeight="72">
+                  <fill><SolidColor color="#264653"/></fill>
+                </DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>
