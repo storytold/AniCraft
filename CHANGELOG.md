@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+* **A light theme** (ADR 0077, M8). Fixes #227.
+  * **Preferences › Appearance › Theme** offers **Light** beside **Dark (Graphite)** and **High
+    contrast**: light grey panels, near-black text, hairline-edged buttons and fields, soft
+    shadows, and the timeline's mint, violet, amber and sky blocks in deeper tones made for a light
+    background. Applied as you click, no restart.
+  * **Follow system** (the default) now follows your system's light or dark mode as well as its
+    contrast setting: Windows' app mode, macOS' Appearance, the Linux desktop's colour scheme and
+    the browser's `prefers-color-scheme`. The window's title bar follows too.
+  * `anicraft --theme light` (also `dark`, `high-contrast`) previews a theme for one run.
+  * Every palette is checked by the contrast test (WCAG AA text, 3:1 controls and focus).
+
 * **Dockable panels and workspaces** (M8, ADR 0075, fixes #249).
   * Drag any panel's tab to dock it on any side of the stage (the timeline above the stage, for
     example), stack it with other panels as a tab, or float it in a window of its own (inside

@@ -20,9 +20,17 @@ bottom says which system you are on and where your settings are kept.
 
 * **Language**: the language of menus, panels and dialogs. See
   [Interface languages](#interface-languages) below.
-* **Theme**: **Follow system** (the default), **Graphite** or **High contrast**. Follow system
-  uses Graphite, and switches to High contrast while your computer asks for more contrast. The
-  note under it says what your system is asking for right now.
+* **Theme**: **Follow system** (the default), **Dark (Graphite)**, **Light** or **High
+  contrast**. Follow system is light or dark as your computer's apps are, and switches to High
+  contrast while your computer asks for more contrast; it changes within a few seconds of your
+  system, without a restart. The note under it says what your system is set to right now. A theme
+  you pick by hand stays whatever the system says, and every theme applies as soon as you click it.
+  * **Dark (Graphite)**: graphite panels, with colour where it means something.
+  * **Light**: light grey panels and near-black text, for bright rooms and for eyes that find dark
+    interfaces hard to read. Timeline blocks keep their colours (mint artwork, violet classic
+    tweens, amber shape tweens, sky-blue motion tweens) in deeper tones that stand out on light
+    grey.
+  * **High contrast**: see [High contrast](#high-contrast) below.
 * **Interface font** and **Data font**: the bundled typefaces, or any font installed on your
   computer. The data font shows numbers, timecode, rulers and shortcuts, so only monospaced
   families are listed for it. The **Preview** row shows both.
@@ -220,19 +228,18 @@ turn on:
 
 The **High contrast** theme is white text on black, with yellow for focus, selection and the
 active tool, and an outline on every button and field. Text reaches at least 7:1 contrast. Your
-artwork on the stage keeps its own colours. Choose **Graphite** or **High contrast** by hand to
-keep that look whatever the system says.
+artwork on the stage keeps its own colours. Choose **Dark (Graphite)**, **Light** or **High
+contrast** by hand to keep that look whatever the system says.
 
 ### Larger interface
 
 Set **Preferences › Appearance › Interface scale** up to 200 %. The stage refits, the tools column
 scrolls, and the timeline header scrolls sideways (**Shift** and the mouse wheel). To try a look
 for one session without saving it, start AniCraft from a terminal with
-`anicraft --theme high-contrast --scale 200`.
+`anicraft --theme high-contrast --scale 200` (or `--theme light`, `--theme dark`).
 
 ### Not there yet
 
-* AniCraft has one dark palette; it doesn't follow your system's light or dark setting.
 * The Motion Editor's graph needs a pointer. Its values and eases can be edited in the property
   list beside it.
 * Adding a point in Edit Envelope takes a click; existing points can be edited from the keyboard.

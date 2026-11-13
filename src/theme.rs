@@ -1,7 +1,8 @@
 //! Design tokens. Every colour, radius and target size in the shell comes from here
 //! (docs/ui-guidelines.md).
 //!
-//! The look (ADR 0008): graphite neutrals, geometric controls, borders only where they separate
+//! Three palettes share these roles: Graphite (dark, the default), Light (ADR 0077) and high
+//! contrast (ADR 0022). The look (ADR 0008): graphite neutrals, geometric controls, borders only where they separate
 //! layout regions, flat buttons, and vibrant colour spent where it carries meaning (timeline
 //! blocks, playhead, selection). Corners follow the role of a shape, not one global value:
 //! structure is square, controls are softened slightly, floating surfaces are rounder.
@@ -93,6 +94,20 @@ pub struct Tokens {
     /// Buttons and fields carry a visible `control_edge` (WCAG 1.4.11: a control's boundary at
     /// 3:1). Off in the graphite look, where fills and hover carry it; on in high contrast.
     pub control_outline: bool,
+    /// A light-on-dark palette (Graphite, high contrast) or dark-on-light (Light, ADR 0077): which
+    /// of egui's base looks the widgets start from (text cursor, scroll bars, resize grips).
+    pub dark: bool,
+    /// Buttons and fields carry a hairline in `border` at rest: the light look, where a flat grey
+    /// on a light panel would read as a printed box rather than a control.
+    pub control_hairline: bool,
+    /// Timeline: the tint on every fifth frame column (a whisper of light on dark, of shade on
+    /// light).
+    pub cell_tint: Color32,
+    /// The line around the stage, where it meets the pasteboard.
+    pub stage_edge: Color32,
+    /// Opacity of the shadow under windows and under menus and tooltips (black).
+    pub window_shadow: u8,
+    pub popup_shadow: u8,
     /// Corner radii by role (see `Shape` below).
     pub radius_control: u8,
     pub radius_menu: u8,
@@ -160,6 +175,12 @@ pub const GRAPHITE: Tokens = Tokens {
     kind_movie_clip: Color32::from_rgb(0x5a, 0x8f, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xb5, 0x3d),
     control_outline: false,
+    dark: true,
+    control_hairline: false,
+    cell_tint: Color32::from_rgba_premultiplied(6, 6, 6, 6),
+    stage_edge: Color32::from_black_alpha(160),
+    window_shadow: 150,
+    popup_shadow: 130,
     radius_control: 3,
     radius_menu: 6,
     radius_window: 10,
@@ -218,6 +239,76 @@ pub const HIGH_CONTRAST: Tokens = Tokens {
     kind_movie_clip: Color32::from_rgb(0x85, 0xad, 0xff),
     kind_button: Color32::from_rgb(0xff, 0xc8, 0x5c),
     control_outline: true,
+    dark: true,
+    control_hairline: false,
+    cell_tint: Color32::from_rgba_premultiplied(6, 6, 6, 6),
+    stage_edge: Color32::from_black_alpha(160),
+    window_shadow: 150,
+    popup_shadow: 130,
+    radius_control: 3,
+    radius_menu: 6,
+    radius_window: 10,
+};
+
+/// The light look (ADR 0077): designed for daylight, not the dark one inverted. Cool paper greys
+/// a step apart (the frame darkest, raised surfaces lightest, fields white), near-black ink for
+/// text, hairlines on controls, soft shadows. Colour still goes where it means something, but in
+/// deeper mid-tones: the timeline's mint, violet, amber and sky blocks sit at 3:1 against the
+/// panels and keep dark marks at 4.5:1, the same rules Graphite meets.
+pub const LIGHT: Tokens = Tokens {
+    chrome: Color32::from_rgb(0xe1, 0xe1, 0xe6),
+    panel: Color32::from_rgb(0xf0, 0xf0, 0xf3),
+    panel_alt: Color32::from_rgb(0xf8, 0xf8, 0xfa),
+    header: Color32::from_rgb(0xe3, 0xe3, 0xe8),
+    hover: Color32::from_rgb(0xd5, 0xd5, 0xdc),
+    active: Color32::from_rgb(0xd0, 0xdc, 0xfa),
+    on_active: Color32::from_rgb(0x0b, 0x1f, 0x5c),
+    icon: Color32::from_rgb(0x4c, 0x4c, 0x56),
+    icon_hot: Color32::from_rgb(0x10, 0x10, 0x14),
+    field: Color32::from_rgb(0xff, 0xff, 0xff),
+    border: Color32::from_rgb(0xc9, 0xc9, 0xd1),
+    control_edge: Color32::from_rgb(0x7a, 0x7a, 0x85),
+    separator: Color32::from_rgb(0xdf, 0xdf, 0xe5),
+    text: Color32::from_rgb(0x17, 0x17, 0x1b),
+    text_dim: Color32::from_rgb(0x44, 0x44, 0x4d),
+    text_faint: Color32::from_rgb(0x5c, 0x5c, 0x66),
+    accent: Color32::from_rgb(0x24, 0x57, 0xe0),
+    accent_dim: Color32::from_rgb(0xd3, 0xdf, 0xfb),
+    accent_text: Color32::from_rgb(0x1d, 0x4c, 0xcc),
+    on_fill: Color32::WHITE,
+    ink: Color32::from_rgb(0x10, 0x10, 0x14),
+    pasteboard: Color32::from_rgb(0xd2, 0xd2, 0xd9),
+    stage_shadow: Color32::from_black_alpha(34),
+    span: Color32::from_rgb(0x15, 0x95, 0x7d),
+    span_empty: Color32::from_rgb(0xdb, 0xdb, 0xe2),
+    row_active: Color32::from_rgb(0xe2, 0xe8, 0xf7),
+    tween: Color32::from_rgb(0x8f, 0x6c, 0xf5),
+    tween_shape: Color32::from_rgb(0xb9, 0x7a, 0x12),
+    tween_motion: Color32::from_rgb(0x2e, 0x8f, 0xcf),
+    waveform: Color32::from_rgb(0x1a, 0x5c, 0xa8),
+    tween_line: Color32::from_rgb(0x10, 0x10, 0x14),
+    playhead: Color32::from_rgb(0xe8, 0x46, 0x3a),
+    selection: Color32::from_rgb(0x24, 0x57, 0xe0),
+    danger: Color32::from_rgb(0xc4, 0x2e, 0x26),
+    error: Color32::from_rgb(0xb8, 0x26, 0x1c),
+    ok: Color32::from_rgb(0x12, 0x6e, 0x3e),
+    hint_unplaced: Color32::from_rgb(0xf0, 0x55, 0x82),
+    hint_start: Color32::from_rgb(0xf2, 0xa5, 0x1f),
+    hint_end: Color32::from_rgb(0x2f, 0xc8, 0x8c),
+    onion_past: Color32::from_rgb(0x2f, 0x6c, 0xe6),
+    onion_future: Color32::from_rgb(0x1f, 0x9a, 0x50),
+    slice_guide: Color32::from_rgb(0xc4, 0x2f, 0xb0),
+    hit_area: Color32::from_rgb(0x13, 0xb0, 0x7a),
+    kind_graphic: Color32::from_rgb(0x12, 0x8a, 0x74),
+    kind_movie_clip: Color32::from_rgb(0x2f, 0x62, 0xd8),
+    kind_button: Color32::from_rgb(0xb0, 0x6c, 0x08),
+    control_outline: false,
+    dark: false,
+    control_hairline: true,
+    cell_tint: Color32::from_black_alpha(9),
+    stage_edge: Color32::from_black_alpha(70),
+    window_shadow: 46,
+    popup_shadow: 40,
     radius_control: 3,
     radius_menu: 6,
     radius_window: 10,
@@ -226,14 +317,19 @@ pub const HIGH_CONTRAST: Tokens = Tokens {
 /// Which palette the interface uses (Preferences › Appearance › Theme).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Palette {
+    /// Dark (Graphite), the default look. (Saved under its old name, so older files still open.)
     #[default]
     Graphite,
     HighContrast,
+    /// Light (ADR 0077).
+    Light,
 }
 
 impl Palette {
-    pub const ALL: [(Palette, &'static str, &'static str); 2] = [
-        (Palette::Graphite, tr_noop!("Graphite"), tr_noop!("The standard dark look: graphite panels, colour where it means something.")),
+    /// The palettes Preferences offers, in the order it lists them: name and a one-line note.
+    pub const ALL: [(Palette, &'static str, &'static str); 3] = [
+        (Palette::Graphite, tr_noop!("Dark (Graphite)"), tr_noop!("The standard dark look: graphite panels, colour where it means something.")),
+        (Palette::Light, tr_noop!("Light"), tr_noop!("Light grey panels and dark text, for bright rooms and eyes that find dark interfaces hard.")),
         (Palette::HighContrast, tr_noop!("High contrast"), tr_noop!("White text on black, a yellow focus and selection colour, outlined controls.")),
     ];
 
@@ -241,16 +337,48 @@ impl Palette {
         match self {
             Palette::Graphite => &GRAPHITE,
             Palette::HighContrast => &HIGH_CONTRAST,
+            Palette::Light => &LIGHT,
+        }
+    }
+
+    fn index(self) -> u8 {
+        match self {
+            Palette::Graphite => 0,
+            Palette::HighContrast => 1,
+            Palette::Light => 2,
         }
     }
 }
 
 /// The palette in use. Process-wide view state, like the interface scale: one window, one look.
+#[cfg(not(test))]
 static ACTIVE: AtomicU8 = AtomicU8::new(0);
 
+// Tests run side by side on threads of one process, each with its own app: each keeps its own
+// palette, so switching themes in one never shows in another.
+#[cfg(test)]
+thread_local! {
+    static ACTIVE: AtomicU8 = const { AtomicU8::new(0) };
+}
+
+fn active() -> u8 {
+    #[cfg(not(test))]
+    return ACTIVE.load(Ordering::Relaxed);
+    #[cfg(test)]
+    return ACTIVE.with(|a| a.load(Ordering::Relaxed));
+}
+
+fn set_active(i: u8) {
+    #[cfg(not(test))]
+    ACTIVE.store(i, Ordering::Relaxed);
+    #[cfg(test)]
+    ACTIVE.with(|a| a.store(i, Ordering::Relaxed));
+}
+
 pub fn palette() -> Palette {
-    match ACTIVE.load(Ordering::Relaxed) {
+    match active() {
         1 => Palette::HighContrast,
+        2 => Palette::Light,
         _ => Palette::Graphite,
     }
 }
@@ -295,15 +423,9 @@ pub fn apply(ctx: &egui::Context) {
 
 /// Switches the palette and restyles every widget with it (Preferences › Theme), live.
 pub fn apply_palette(ctx: &egui::Context, palette: Palette) {
-    ACTIVE.store(
-        match palette {
-            Palette::Graphite => 0,
-            Palette::HighContrast => 1,
-        },
-        Ordering::Relaxed,
-    );
+    set_active(palette.index());
     let t = *palette.tokens();
-    let mut v = Visuals::dark();
+    let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
     v.panel_fill = t.panel;
     v.window_fill = t.panel_alt;
     v.extreme_bg_color = t.field;
@@ -314,8 +436,8 @@ pub fn apply_palette(ctx: &egui::Context, palette: Palette) {
     v.selection.stroke = Stroke::new(2.0, t.accent);
     v.hyperlink_color = t.accent_text;
     v.window_stroke = Stroke::new(1.0, t.border);
-    v.window_shadow = depth(10, 28, 150);
-    v.popup_shadow = depth(4, 12, 130);
+    v.window_shadow = depth(10, 28, t.window_shadow);
+    v.popup_shadow = depth(4, 12, t.popup_shadow);
     v.window_corner_radius = CornerRadius::same(t.radius_window);
     v.menu_corner_radius = CornerRadius::same(t.radius_menu);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
@@ -327,10 +449,17 @@ pub fn apply_palette(ctx: &egui::Context, palette: Palette) {
     // Separators and group frames: the layout lines.
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.border);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, t.text_dim);
-    // Buttons are flat fills at rest; no border on every button.
+    // Buttons are flat fills at rest; no border on every button (a hairline in the light look).
+    let rest = if t.control_outline {
+        Stroke::new(1.0, t.control_edge)
+    } else if t.control_hairline {
+        Stroke::new(1.0, t.border)
+    } else {
+        Stroke::NONE
+    };
     v.widgets.inactive.weak_bg_fill = t.header;
     v.widgets.inactive.bg_fill = t.header;
-    v.widgets.inactive.bg_stroke = if t.control_outline { Stroke::new(1.0, t.control_edge) } else { Stroke::NONE };
+    v.widgets.inactive.bg_stroke = rest;
     v.widgets.inactive.fg_stroke = Stroke::new(1.5, t.text);
     v.widgets.hovered.weak_bg_fill = t.hover;
     v.widgets.hovered.bg_fill = t.hover;
@@ -343,8 +472,11 @@ pub fn apply_palette(ctx: &egui::Context, palette: Palette) {
     v.widgets.active.fg_stroke = Stroke::new(1.5, t.text);
     v.widgets.open.weak_bg_fill = t.hover;
     v.widgets.open.bg_fill = t.hover;
-    v.widgets.open.bg_stroke = if t.control_outline { Stroke::new(1.0, t.control_edge) } else { Stroke::NONE };
-    // Same dark look whatever the OS theme is.
+    v.widgets.open.bg_stroke = rest;
+    // egui keeps a dark and a light style and picks one by the OS theme; both are ours, so the
+    // palette chosen here is the one drawn (Follow system is decided in `Prefs::palette`). Naming
+    // its theme keeps the window's title bar (Windows, macOS) dark or light with it.
+    ctx.set_theme(if t.dark { egui::Theme::Dark } else { egui::Theme::Light });
     ctx.all_styles_mut(|s| {
         s.visuals = v.clone();
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);

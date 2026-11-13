@@ -2,6 +2,7 @@
 
 * Status: accepted (2026-10-29), revised the same day (see "Revision 1")
 * Extends: ADR 0005 (typography and fonts), `docs/ui-guidelines.md`
+* Extended by: ADR 0077 (a light palette over the same roles and rules)
 
 ## Context
 

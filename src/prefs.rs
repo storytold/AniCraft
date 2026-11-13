@@ -76,6 +76,10 @@ impl WindowBackend {
     }
 }
 
+fn lenient_palette<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::theme::Palette, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
+}
+
 fn lenient_backend<'de, D: serde::Deserializer<'de>>(d: D) -> Result<WindowBackend, D::Error> {
     Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
 }
@@ -96,11 +100,13 @@ pub struct Prefs {
     pub language: String,
     pub ui_font: FontChoice,
     pub data_font: FontChoice,
-    /// Graphite or high contrast (ADR 0022), when chosen by hand.
+    /// Dark (Graphite), Light (ADR 0077) or high contrast (ADR 0022), when chosen by hand. A
+    /// palette this build doesn't know (a newer build's) reads as Graphite, keeping the rest.
+    #[serde(deserialize_with = "lenient_palette")]
     pub theme: crate::theme::Palette,
-    /// Follow the system's contrast setting (ADR 0064): high contrast while the system asks for
-    /// more contrast, graphite otherwise. `None` (files from before): it follows, unless the
-    /// file chose high contrast.
+    /// Follow the system (ADR 0064, ADR 0077): high contrast while the system asks for more
+    /// contrast, otherwise light or dark as its apps are. `None` (files from before): it follows,
+    /// unless the file chose another palette than Graphite.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme_follows_system: Option<bool>,
     /// Interface scale (1.0 = 100%).
@@ -254,18 +260,25 @@ pub const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
 pub const GAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
 
 impl Prefs {
-    /// Whether the theme follows the system's contrast setting ("Follow system", the default).
+    /// Whether the theme follows the system ("Follow system", the default): its contrast setting
+    /// (ADR 0064) and its light or dark mode (ADR 0077). A file that names a palette other than
+    /// the default without saying whether it follows chose that palette.
     pub fn follows_system(&self) -> bool {
-        self.theme_follows_system.unwrap_or(self.theme != crate::theme::Palette::HighContrast)
+        self.theme_follows_system.unwrap_or(self.theme == crate::theme::Palette::Graphite)
     }
 
-    /// The palette to draw with, given what the system says about contrast (`None`: it
-    /// doesn't say, or hasn't yet).
-    pub fn palette(&self, system_high_contrast: Option<bool>) -> crate::theme::Palette {
-        match (self.follows_system(), system_high_contrast) {
-            (true, Some(true)) => crate::theme::Palette::HighContrast,
-            (true, _) => crate::theme::Palette::Graphite,
-            (false, _) => self.theme,
+    /// The palette to draw with, given what the system says (each part `None` where it doesn't
+    /// say, or hasn't yet). More contrast wins over light or dark; a system that says nothing gets
+    /// Graphite.
+    pub fn palette(&self, system: crate::platform::SystemLook) -> crate::theme::Palette {
+        use crate::theme::Palette;
+        if !self.follows_system() {
+            return self.theme;
+        }
+        match (system.high_contrast, system.dark) {
+            (Some(true), _) => Palette::HighContrast,
+            (_, Some(false)) => Palette::Light,
+            _ => Palette::Graphite,
         }
     }
 
@@ -361,21 +374,36 @@ mod tests {
 
     #[test]
     fn the_theme_follows_the_system_unless_one_was_chosen() {
+        use crate::platform::SystemLook;
         use crate::theme::Palette;
+        let look = |high_contrast, dark| SystemLook { high_contrast, dark };
         // New installs, and files from before ADR 0064 that kept the default, follow the system.
         for p in [Prefs::default(), Prefs::from_json(r#"{"theme": "Graphite"}"#)] {
             assert!(p.follows_system());
-            assert_eq!(p.palette(Some(true)), Palette::HighContrast);
-            assert_eq!(p.palette(Some(false)), Palette::Graphite);
-            assert_eq!(p.palette(None), Palette::Graphite, "a system that doesn't say: graphite");
+            assert_eq!(p.palette(look(Some(true), None)), Palette::HighContrast);
+            assert_eq!(p.palette(look(Some(true), Some(false))), Palette::HighContrast, "more contrast wins over light");
+            assert_eq!(p.palette(look(Some(false), None)), Palette::Graphite);
+            assert_eq!(p.palette(look(Some(false), Some(false))), Palette::Light, "a light system: light (ADR 0077)");
+            assert_eq!(p.palette(look(None, Some(true))), Palette::Graphite);
+            assert_eq!(p.palette(SystemLook::default()), Palette::Graphite, "a system that doesn't say: graphite");
         }
         // A file that chose high contrast keeps it whatever the system says.
         let hc = Prefs::from_json(r#"{"theme": "HighContrast"}"#);
         assert!(!hc.follows_system());
-        assert_eq!(hc.palette(Some(false)), Palette::HighContrast);
+        assert_eq!(hc.palette(look(Some(false), Some(true))), Palette::HighContrast);
+        // Light chosen by hand stays light on a dark system, through a round trip.
+        let light = Prefs { theme: Palette::Light, theme_follows_system: Some(false), ..Prefs::default() };
+        let json = serde_json::to_string(&light).unwrap_or_default();
+        assert!(json.contains(r#""theme": "Light""#) || json.contains(r#""theme":"Light""#), "{json}");
+        let back = Prefs::from_json(&json);
+        assert_eq!((back.theme, back.palette(look(Some(false), Some(true)))), (Palette::Light, Palette::Light));
+        assert_eq!(Prefs::from_json(r#"{"theme": "Light"}"#).palette(look(None, Some(true))), Palette::Light, "named without the flag: chosen");
+        // A palette this build doesn't know (a newer file) falls back to the defaults, not a crash.
+        let newer = Prefs::from_json(r#"{"theme": "Sepia", "ui_scale": 1.5}"#);
+        assert_eq!((newer.theme, newer.ui_scale), (Palette::Graphite, 1.5), "the other preferences stay");
         // Graphite chosen by hand stays graphite; the choice survives a round trip.
         let manual = Prefs { theme_follows_system: Some(false), ..Prefs::default() };
-        assert_eq!(manual.palette(Some(true)), Palette::Graphite);
+        assert_eq!(manual.palette(look(Some(true), Some(false))), Palette::Graphite);
         let back = Prefs::from_json(&serde_json::to_string(&manual).unwrap_or_default());
         assert_eq!(back.theme_follows_system, Some(false));
         assert!(!serde_json::to_string(&Prefs::default()).unwrap_or_default().contains("theme_follows_system"), "nothing new written until chosen");
