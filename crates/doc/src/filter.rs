@@ -401,6 +401,60 @@ impl Filter {
     }
 }
 
+/// The classic tween between two filter lists (ADR 0081): when both have the same kinds in the
+/// same order, each filter's numbers and colours travel (switches such as Inner and Knockout,
+/// and the quality, stay the first keyframe's; ramps travel stop by stop when they have as
+/// many stops). `None` when the lists are equal or don't pair up: the first list holds.
+pub fn lerp_filters(a: &[Filter], b: &[Filter], t: f32) -> Option<Vec<Filter>> {
+    if a == b || a.len() != b.len() {
+        return None;
+    }
+    a.iter().zip(b).map(|(x, y)| x.lerp(y, t)).collect()
+}
+
+fn ramp_lerp(a: &[GradientStop], b: &[GradientStop], t: f32) -> Vec<GradientStop> {
+    if a.len() != b.len() {
+        return a.to_vec();
+    }
+    a.iter().zip(b).map(|(x, y)| GradientStop { offset: anicraft_geom::lerp(x.offset, y.offset, t), color: x.color.lerp(y.color, t) }).collect()
+}
+
+impl Filter {
+    /// This filter part way to `o` (see [`lerp_filters`]); `None` when `o` is another kind.
+    pub fn lerp(&self, o: &Filter, t: f32) -> Option<Filter> {
+        use anicraft_geom::lerp as l;
+        Some(match (self, o) {
+            (Filter::Blur { blur_x, blur_y, quality }, Filter::Blur { blur_x: bx, blur_y: by, .. }) => Filter::Blur { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), quality: *quality },
+            (Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner, knockout, hide_object }, Filter::DropShadow { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, color: c, .. }) => {
+                Filter::DropShadow { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, angle: l(*angle, *an, t), distance: l(*distance, *d, t), color: color.lerp(*c, t), inner: *inner, knockout: *knockout, hide_object: *hide_object }
+            }
+            (Filter::Glow { blur_x, blur_y, strength, quality, color, inner, knockout }, Filter::Glow { blur_x: bx, blur_y: by, strength: s, color: c, .. }) => {
+                Filter::Glow { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, color: color.lerp(*c, t), inner: *inner, knockout: *knockout }
+            }
+            (Filter::Bevel { blur_x, blur_y, strength, quality, angle, distance, shadow_color, highlight_color, side, knockout }, Filter::Bevel { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, shadow_color: sc, highlight_color: hc, .. }) => Filter::Bevel {
+                blur_x: l(*blur_x, *bx, t),
+                blur_y: l(*blur_y, *by, t),
+                strength: l(*strength, *s, t),
+                quality: *quality,
+                angle: l(*angle, *an, t),
+                distance: l(*distance, *d, t),
+                shadow_color: shadow_color.lerp(*sc, t),
+                highlight_color: highlight_color.lerp(*hc, t),
+                side: *side,
+                knockout: *knockout,
+            },
+            (Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout }, Filter::GradientGlow { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, stops: st, .. }) => {
+                Filter::GradientGlow { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, angle: l(*angle, *an, t), distance: l(*distance, *d, t), stops: ramp_lerp(stops, st, t), side: *side, knockout: *knockout }
+            }
+            (Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout }, Filter::GradientBevel { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, stops: st, .. }) => {
+                Filter::GradientBevel { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, angle: l(*angle, *an, t), distance: l(*distance, *d, t), stops: ramp_lerp(stops, st, t), side: *side, knockout: *knockout }
+            }
+            (Filter::AdjustColor { brightness, contrast, saturation, hue }, Filter::AdjustColor { brightness: b, contrast: c, saturation: s, hue: h }) => Filter::AdjustColor { brightness: l(*brightness, *b, t), contrast: l(*contrast, *c, t), saturation: l(*saturation, *s, t), hue: l(*hue, *h, t) },
+            _ => return None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

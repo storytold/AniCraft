@@ -491,6 +491,8 @@ pub struct App {
     pub test_movie: Option<crate::test_movie::TestMovie>,
     /// Edit Envelope: a keyframe sound's volume per channel, in its own window (ADR 0039).
     pub envelope: Option<crate::envelope::EnvelopeEditor>,
+    /// The Custom Ease window (ADR 0081), when open.
+    pub ease: Option<crate::ease_editor::EaseEditor>,
     pub show_shortcuts: bool,
     /// The window close was intercepted because of unsaved changes.
     pub close_dialog: bool,
@@ -713,6 +715,7 @@ impl App {
             actions: crate::actions_panel::State::default(),
             test_movie: None,
             envelope: None,
+            ease: None,
             show_shortcuts: false,
             close_dialog: false,
             allow_close: false,
@@ -1984,6 +1987,32 @@ impl App {
                     self.run("timeline.goto", json!({"frame": 14}));
                 }
             }
+            Some(which @ ("ease" | "easepreset")) => {
+                // The demo's ball: its classic tween eased by a custom curve of three segments
+                // that overshoots and settles (saved as "Overshoot"), the Custom Ease window open
+                // on it with a point picked; or Elastic Out on its own Position group.
+                let ball = self.s.timeline().layers.iter().find(|l| l.keyframes.first().is_some_and(|k| k.tween.is_some() && k.motion.is_none())).map(|l| l.id.0);
+                if let Some(id) = ball {
+                    self.run("layer.select", json!({"layer": id}));
+                    self.run("timeline.goto", json!({"frame": 4}));
+                    let start = self.s.active_layer().and_then(|l| l.keyframe_at(4)).map_or(0, |k| k.start);
+                    let curve = json!([[0, 0], [0.12, 0.6], [0.22, 1.25], [0.38, 1.25], [0.5, 1.25], [0.55, 0.85], [0.66, 0.85], [0.76, 0.85], [0.86, 1.0], [1, 1]]);
+                    self.run("timeline.set_easing", json!({"frame": start, "easing": {"custom": curve}}));
+                    self.run("ease.save", json!({"frame": start, "name": "Overshoot"}));
+                    if which == "easepreset" {
+                        self.run("ease.separate", json!({"separate": true, "frame": start}));
+                        self.run("timeline.set_easing", json!({"frame": start, "group": "position", "easing": "ElasticOut"}));
+                    }
+                    self.s.mark_saved();
+                    crate::ease_editor::open_here(self);
+                    if let Some(ed) = self.ease.as_mut()
+                        && which == "easepreset"
+                    {
+                        ed.group = Some(anicraft_engine::doc::EaseGroup::Position);
+                    }
+                    crate::ease_editor::select(self, if which == "ease" { 1 } else { 3 });
+                }
+            }
             Some("envelope") => {
                 // The beat with a custom envelope (in from the left, out to the right), its
                 // envelope editor open on a selected point, the layer at 80 %.
@@ -2904,6 +2933,7 @@ impl App {
             crate::warp_tool::consume_keys(self, ctx);
         }
         crate::library::consume_keys(self, ctx);
+        crate::ease_editor::consume_keys(self, ctx);
         let mut fire: Vec<&'static str> = Vec::new();
         let mut tool = None;
         let mut play = false;
@@ -3384,6 +3414,7 @@ impl App {
         crate::publish_panel::show(self, &ctx);
         crate::test_movie::show(self, &ctx);
         crate::envelope::show(self, &ctx);
+        crate::ease_editor::show(self, &ctx);
 
         // Never lose work on close: intercept it while there are unsaved changes.
         if self.allow_close {

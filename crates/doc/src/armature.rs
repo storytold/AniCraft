@@ -545,7 +545,7 @@ pub fn pose_at(layer: &Layer, frame: u32) -> Option<Pose> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf: &Keyframe = layer.keyframes.get(idx)?;
     let here = kf.pose.allowed(arm);
-    let (Some(tween), None) = (kf.tween, &kf.motion) else { return Some(here) };
+    let (Some(tween), None) = (&kf.tween, &kf.motion) else { return Some(here) };
     let Some(next) = layer.keyframes.get(idx + 1) else { return Some(here) };
     if next.start != kf.end() || frame == kf.start {
         return Some(here);

@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::icons::{self, Icon};
 use crate::menus;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, to_color32, with_type};
-use anicraft_engine::doc::{Easing, Layer, LayerId, LayerKind, TweenKind};
+use anicraft_engine::doc::{Layer, LayerId, LayerKind, TweenKind};
 use crate::a11y::{self, Named};
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, WidgetType, pos2, vec2};
 use serde_json::json;
@@ -784,7 +784,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let fill = if motion.is_some() {
                 T.tween_motion
             } else if tweened {
-                if k.tween.is_some_and(|t| t.kind == TweenKind::Shape) { T.tween_shape } else { T.tween }
+                if k.tween.as_ref().is_some_and(|t| t.kind == TweenKind::Shape) { T.tween_shape } else { T.tween }
             } else if empty {
                 T.span_empty
             } else {
@@ -1059,20 +1059,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 menus::cmd_item(app, ui, "timeline.remove_tween");
                 return;
             }
-            let tween = here.and_then(|k| k.tween);
+            let tween = here.and_then(|k| k.tween.clone());
             match tween {
                 Some(t) => {
                     menus::cmd_item(app, ui, "timeline.create_motion_tween");
                     menus::cmd_item(app, ui, if t.kind == TweenKind::Shape { "timeline.create_tween" } else { "timeline.create_shape_tween" });
                     menus::cmd_item(app, ui, "timeline.remove_tween");
-                    ui.menu_button(tr!("Ease"), |ui| {
-                        for (name, e) in Easing::PRESETS {
-                            if ui.selectable_label(t.easing == e, crate::i18n::t(name)).clicked() {
-                                app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
-                                ui.close();
-                            }
-                        }
-                    });
+                    ui.separator();
+                    // Eases (ADR 0081): the window, and an ease carried from one tween to another.
+                    if ui.button(tr!("Edit Ease…")).clicked() {
+                        crate::ease_editor::open_here(app);
+                        ui.close();
+                    }
+                    menus::cmd_item(app, ui, "ease.copy");
+                    if app.s.ease_clipboard.is_some() {
+                        menus::cmd_item(app, ui, "ease.paste");
+                    }
                 }
                 None => {
                     menus::cmd_item(app, ui, "timeline.create_motion_tween");
@@ -1322,7 +1324,7 @@ pub fn span_text(k: &anicraft_engine::doc::Keyframe, next_adjacent: bool) -> Str
     let mut parts: Vec<String> = vec![if k.elements.is_empty() { tr!("blank keyframe").to_string() } else { tr!("keyframe").to_string() }];
     if k.motion.is_some() {
         parts.push(tr!("motion tween").to_string());
-    } else if let Some(t) = k.tween {
+    } else if let Some(t) = &k.tween {
         parts.push(match (t.kind, next_adjacent) {
             (_, false) => tr!("broken tween").to_string(),
             (TweenKind::Shape, true) => tr!("shape tween").to_string(),
@@ -1460,27 +1462,6 @@ pub fn button_states(app: &App) -> Option<[&'static str; 4]> {
     (open.kind == anicraft_engine::doc::SymbolKind::Button).then(|| [trc!("button state", "Up"), trc!("button state", "Over"), trc!("button state", "Down"), trc!("button state", "Hit")])
 }
 
-pub fn easing_label(e: &Easing) -> String {
-    match e {
-        Easing::Classic(s) => tr!("Classic {strength}", strength = format!("{s:+.0}")),
-        other => crate::i18n::t_dyn(&other.label()).into_owned(),
-    }
-}
-
-pub fn easing_param(e: Easing) -> serde_json::Value {
-    match e {
-        Easing::Linear => json!("Linear"),
-        Easing::QuadIn => json!("QuadIn"),
-        Easing::QuadOut => json!("QuadOut"),
-        Easing::QuadInOut => json!("QuadInOut"),
-        Easing::CubicIn => json!("CubicIn"),
-        Easing::CubicOut => json!("CubicOut"),
-        Easing::CubicInOut => json!("CubicInOut"),
-        Easing::Classic(s) => json!({"classic": s}),
-        Easing::CubicBezier(a, b, c, d) => json!({"bezier": [a, b, c, d]}),
-    }
-}
-
 /// The timeline header, left to right: transport, readouts, frame and tween buttons.
 /// The frame rate as the header shows it: whole rates without decimals ("24 fps"), others
 /// with as many as they need ("29.97 fps", "12.5 fps").
@@ -1518,7 +1499,7 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
-    let in_tween = here.and_then(|k| k.tween);
+    let in_tween = here.and_then(|k| k.tween.clone());
     let in_motion = here.is_some_and(|k| k.motion.is_some());
     if in_motion {
         egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text(tr!("Motion tween")).show_ui(ui, |ui| {
@@ -1538,15 +1519,13 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
     }
     match in_tween.filter(|_| !in_motion) {
         Some(tw) => {
-            egui::ComboBox::from_id_salt("tl_ease").width(112.0).selected_text(easing_label(&tw.easing)).show_ui(ui, |ui| {
-                for (name, e) in Easing::PRESETS {
-                    if ui.selectable_label(tw.easing == e, crate::i18n::t(name)).clicked() {
-                        app.run("timeline.set_easing", json!({"easing": easing_param(e)}));
-                    }
+            match crate::ease_editor::picker(app, ui, "tl_ease", &tw.easing, 112.0, tr!("Easing")) {
+                Some(crate::ease_editor::Picked::Ease(e)) => {
+                    app.run("timeline.set_easing", json!({"easing": e}));
                 }
-            })
-            .response
-            .set_name(tr!("Easing"));
+                Some(crate::ease_editor::Picked::Edit) => crate::ease_editor::open_here(app),
+                None => {}
+            }
             // The tween's kind: classic ⇄ shape (keeping the easing), or none.
             let shape = tw.kind == TweenKind::Shape;
             egui::ComboBox::from_id_salt("tl_kind").width(104.0).selected_text(if shape { tr!("Shape tween") } else { tr!("Classic tween") }).show_ui(ui, |ui| {

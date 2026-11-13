@@ -123,6 +123,9 @@ fn all_keys() -> BTreeSet<Key> {
     add(&doc::Easing::Linear.label());
     doc::Property::ALL.iter().for_each(|p| add(p.label()));
     doc::ColorStyle::ALL.iter().for_each(|s| add(s.label()));
+    doc::EaseFamily::ALL.iter().for_each(|f| add(f.label()));
+    doc::EaseDir::ALL.iter().for_each(|d| add(d.label()));
+    doc::EaseGroup::ALL.iter().for_each(|g| add(g.label()));
     doc::ProfilePreset::ALL.iter().for_each(|p| add(p.label()));
     doc::Cap::ALL.iter().for_each(|c| add(c.label()));
     doc::Join::ALL.iter().for_each(|j| add(j.label()));

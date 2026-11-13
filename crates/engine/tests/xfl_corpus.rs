@@ -99,6 +99,10 @@ const PROBES: &[(&str, u32, f32, f32, u32)] = &[
     ("colour", 12, 280.0, 152.0, 0xAAD8D2),
     ("tweens", 0, 20.0, 25.0, 0xF4A261),
     ("tweens", 12, 300.0, 25.0, 0xF4A261),
+    // Per-property custom eases (ADR 0081): halfway, position's three-segment curve has carried
+    // the ball past its end (x 180) to about 214; at the end it is there, half as big again.
+    ("tweens", 6, 214.0, 145.0, 0xF4A261),
+    ("tweens", 12, 180.0, 145.0, 0xF4A261),
     // Masked stripes: inside the spot, and outside it.
     ("masks", 0, 60.0, 22.0, 0x264653),
     ("masks", 0, 60.0, 27.0, 0xFFFFFF),

@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 314 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 328 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -130,9 +130,9 @@ This page is generated from the command registry, so it always matches the versi
 - **Create Motion Tween** `timeline.create_motion_tween` · changes the document
   Parameters: `{layer?, frame?} (several objects on the key become one graphic symbol; a one-frame span grows to a second)`
 - **Create Classic Tween** `timeline.create_tween` · changes the document
-  Parameters: `{layer?, frame?, easing?}`
+  Parameters: `{layer?, frame?, easing? (as timeline.set_easing takes it)}`
 - **Create Shape Tween** `timeline.create_shape_tween` · changes the document
-  Parameters: `{layer?, frame?, easing?}`
+  Parameters: `{layer?, frame?, easing? (as timeline.set_easing takes it)}`
 - **Remove Tween** `timeline.remove_tween` · changes the document
   Parameters: `{layer?, frame?} (a motion tween leaves its object as it is on the first frame)`
 - **New Layer** `layer.new` · Insert › Timeline · changes the document
@@ -300,7 +300,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Move Keyframes** `timeline.move_keyframes` · changes the document
   Parameters: `{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}`
 - **Set Tween Easing** `timeline.set_easing` · changes the document
-  Parameters: `{easing, layer?, frame?}`
+  Parameters: `{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}`
 - **Orient to Path** `timeline.set_orient` · changes the document
   Parameters: `{orient: bool, layer?, frame?}`
 - **Frame Label** `timeline.set_label` · changes the document
@@ -378,7 +378,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Remove Property Keyframe** `motion.remove_key` · changes the document
   Parameters: `{property? (default: every property), frame?, layer?}`
 - **Property Ease** `motion.set_ease` · changes the document
-  Parameters: `{easing, property? (default: every property), frame? (inside the segment), layer?}`
+  Parameters: `{easing (as timeline.set_easing takes it, saved eases too), property? (default: every property), frame? (inside the segment), layer?}`
 - **Motion Tween** `motion.info`
   Parameters: `{layer?, frame?} → the span's properties, keys, eases and values at the frame, its motion path, its anchors pinned to frames (pins) and where the object is`
 - **Edit Motion Path** `motion.set_path` · changes the document
@@ -399,6 +399,34 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{anchor? (default: a new anchor where the object is), frame? (the frame to pin it to, between the first and last position keys), layer?}: the object passes the anchor exactly on that frame → {anchor, frame, pins}`
 - **Unpin Motion Path Point** `motion.unpin_point` · changes the document
   Parameters: `{anchor? | frame?, layer?}: the anchor shapes the path only again; the X/Y keys of its frame go → {anchor, frame, pins}`
+- **Ease** `ease.info`
+  Parameters: `{target: layer?, frame?, group? | property? | saved?} → the ease (as easing params take it), its label, and its curve as points (exact unless the preset is fitted)`
+- **Set Ease** `ease.set` · changes the document
+  Parameters: `{easing: a preset name | {classic: n} | {bezier: [..]} | {custom: ..} | {saved: name}, layer?, frame?, group? | property? | saved?}`
+- **Add Ease Point** `ease.add_point` · changes the document
+  Parameters: `{t: time 0..1 on the curve (its shape stays), layer?, frame?, group? | property? | saved?} → {index}`
+- **Move Ease Point** `ease.move_point` · changes the document
+  Parameters: `{index, x (time, kept between its neighbours), y (value, may overshoot), layer?, frame?, group? | property? | saved?} (the ends stay at (0, 0) and (1, 1))`
+- **Move Ease Handle** `ease.move_handle` · changes the document
+  Parameters: `{index, handle: in|out, x, y (absolute; x stays between the point and its neighbour), layer?, frame?, group? | property? | saved?} (a smooth point's other handle turns with it)`
+- **Delete Ease Point** `ease.delete_point` · changes the document
+  Parameters: `{index (not an end), layer?, frame?, group? | property? | saved?}`
+- **Convert Ease Point** `ease.convert_point` · changes the document
+  Parameters: `{index, smooth: bool (handles in line) or corner (handles on the point), layer?, frame?, group? | property? | saved?}`
+- **Ease Properties Separately** `ease.separate` · changes the document
+  Parameters: `{separate: bool, layer?, frame?}: a classic tween with one ease per property group (each starting from the tween's), or one ease for all (the groups' own go)`
+- **Save Ease** `ease.save` · changes the document
+  Parameters: `{name, easing? (default: the target's ease), replace?: bool, layer?, frame?, group? | property?} → saved in the document, offered with the presets`
+- **Delete Saved Ease** `ease.delete` · changes the document
+  Parameters: `{name} (tweens using it keep their curves)`
+- **Rename Saved Ease** `ease.rename` · changes the document
+  Parameters: `{name, to}`
+- **Eases** `ease.list`
+  Parameters: `{} → the presets (name, label, family, direction) and the eases saved in the document`
+- **Copy Ease** `ease.copy`
+  Parameters: `{layer?, frame?, group? | property? | saved?}: the ease, for ease.paste`
+- **Paste Ease** `ease.paste` · changes the document
+  Parameters: `{layer?, frame?, group? | property? | saved?}: the copied ease onto this target`
 - **Move Shape Hint** `tween.move_hint` · changes the document
   Parameters: `{hint: a..z, x, y, side?: start|end (default: the side the frame shows), layer?, frame?} (snaps to the nearest shape edge on that keyframe)`
 - **Remove Shape Hint** `tween.remove_hint` · changes the document
