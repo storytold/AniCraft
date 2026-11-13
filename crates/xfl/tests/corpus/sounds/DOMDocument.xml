@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: sounds (ADR 0057, ADR 0086). The sound files are original:
+     LIBRARY/Sounds/beep.wav (a quarter second of 880 Hz, 16-bit mono at 11025 Hz, made by a
+     script), LIBRARY/Sounds/tone.mp3 (the audio crate's test tone), LIBRARY/theme.aif (an AIFF
+     header) and LIBRARY/voice.wav (a WAV in IMA ADPCM), and bin/M 3 1.dat (bytes in none of
+     the formats AniCraft reads, standing in for Animate's own sound data). A streamed, looping
+     soundtrack; event, start and stop sounds with every kind of effect (presets by name, a
+     custom envelope, an unknown name); repeats; in and out points; a frame whose sound is in a
+     format AniCraft can't decode, and a sound whose file is missing. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F4F1EA">
+  <folders>
+    <DOMFolderItem name="Sounds" itemID="00000000-0000-0000-0000-000000000101"/>
+  </folders>
+  <media>
+    <DOMSoundItem name="Sounds/beep.wav" itemID="00000000-0000-0000-0000-000000000102" sourceExternalFilepath="./LIBRARY/Sounds/beep.wav" href="Sounds/beep.wav" soundDataHRef="M 1 1.dat" format="11kHz 16bit Mono" sampleCount="2756"/>
+    <DOMSoundItem name="Sounds/tone.mp3" itemID="00000000-0000-0000-0000-000000000103" sourceExternalFilepath="./LIBRARY/Sounds/tone.mp3" href="Sounds/tone.mp3" soundDataHRef="M 2 2.dat" format="22kHz 16bit Mono" exportFormat="1" exportBits="7"/>
+    <DOMSoundItem name="theme.aif" itemID="00000000-0000-0000-0000-000000000104" href="theme.aif" format="44kHz 16bit Mono"/>
+    <DOMSoundItem name="voice.wav" itemID="00000000-0000-0000-0000-000000000105" href="voice.wav" format="8kHz 4bit Mono"/>
+    <DOMSoundItem name="Sounds/loop" itemID="00000000-0000-0000-0000-000000000106" soundDataHRef="M 3 1.dat" format="22kHz 16bit Stereo"/>
+    <DOMSoundItem name="lost.wav" itemID="00000000-0000-0000-0000-000000000107" href="lost.wav" soundDataHRef="M 9 9.dat"/>
+  </media>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Music" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" duration="24" keyMode="9728" soundName="Sounds/tone.mp3" soundSync="stream" soundLoopMode="loop"/>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Effects" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" duration="4" keyMode="9728" soundName="Sounds/beep.wav" soundEffect="left channel"/>
+            <DOMFrame index="4" duration="4" keyMode="9728" soundName="Sounds/beep.wav" soundEffect="fade right to left"/>
+            <DOMFrame index="8" duration="4" keyMode="9728" soundName="Sounds/beep.wav" soundEffect="custom">
+              <SoundEnvelope>
+                <SoundEnvelopePoint mark44="0" level0="32768" level1="0"/>
+                <SoundEnvelopePoint mark44="11025" level0="8192" level1="32768"/>
+              </SoundEnvelope>
+            </DOMFrame>
+            <DOMFrame index="12" duration="4" keyMode="9728" soundName="Sounds/beep.wav" soundSync="start" soundLoopMode="repeat" soundLoop="2" soundEffect="fade out"/>
+            <DOMFrame index="16" duration="2" keyMode="9728" soundName="Sounds/beep.wav" soundEffect="wobble"/>
+            <DOMFrame index="18" duration="2" keyMode="9728" soundName="Sounds/beep.wav" soundSync="stop"/>
+            <DOMFrame index="20" duration="2" keyMode="9728" soundName="Sounds/beep.wav" inPoint44="441" outPoint44="8820"/>
+            <DOMFrame index="22" duration="2" keyMode="9728" soundName="voice.wav"/>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Art" color="#9933CC">
+          <frames>
+            <DOMFrame index="0" duration="24" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="20" y="40" objectWidth="280" objectHeight="100">
+                  <fill><SolidColor color="#2A9D8F"/></fill>
+                </DOMRectangleObject>
+                <DOMOvalObject x="140" y="70" objectWidth="40" objectHeight="40">
+                  <fill><SolidColor color="#E9C46A"/></fill>
+                </DOMOvalObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

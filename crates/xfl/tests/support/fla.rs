@@ -31,6 +31,24 @@ pub enum Names {
     UnicodeExtra,
 }
 
+/// Data before the archive, as a self-extracting archive has its program (ADR 0086).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Stub {
+    None,
+    /// A stub put in front without fixing the offsets: they count from the zip data.
+    Shifted,
+    /// A stub with the offsets fixed to count from the file's start (`zip -A`).
+    Adjusted,
+}
+
+/// The stand-in program before a self-extracting variant: an `MZ` header and bytes with no
+/// zip signature in them.
+pub fn stub_bytes() -> Vec<u8> {
+    let mut out = b"MZ\x90\x00 this stands in for a self-extracting program ".to_vec();
+    out.extend((0..3000u32).map(|i| b"abcdefghijklmno"[(i * 7 % 15) as usize]));
+    out
+}
+
 /// One way of packing a package.
 #[derive(Clone, Copy, Debug)]
 pub struct Variant {
@@ -47,9 +65,15 @@ pub struct Variant {
     pub descriptors: bool,
     /// ZIP64 sizes on every entry and a ZIP64 end record.
     pub zip64: bool,
+    /// Every entry inside one top folder (`<top>/DOMDocument.xml`), as zipping an XFL
+    /// folder makes it (ADR 0086).
+    pub top: Option<&'static str>,
+    /// A `__MACOSX/` folder of resource forks beside the top folder, as macOS's Compress adds.
+    pub macosx: bool,
+    pub stub: Stub,
 }
 
-const BASE: Variant = Variant { name: "", compression: Compression::Deflate, folders: false, mimetype: false, backslashes: false, names: Names::Utf8Flag, descriptors: false, zip64: false };
+const BASE: Variant = Variant { name: "", compression: Compression::Deflate, folders: false, mimetype: false, backslashes: false, names: Names::Utf8Flag, descriptors: false, zip64: false, top: None, macosx: false, stub: Stub::None };
 
 /// Every variant each corpus package is checked in.
 pub const VARIANTS: &[Variant] = &[
@@ -61,7 +85,24 @@ pub const VARIANTS: &[Variant] = &[
     Variant { name: "Unicode path fields", names: Names::UnicodeExtra, ..BASE },
     Variant { name: "data descriptors", descriptors: true, compression: Compression::Mixed, ..BASE },
     Variant { name: "ZIP64", zip64: true, compression: Compression::Mixed, ..BASE },
-    Variant { name: "everything at once", compression: Compression::Mixed, folders: true, mimetype: true, backslashes: true, names: Names::Cp437, descriptors: true, zip64: true },
+    Variant { name: "inside a top folder", top: Some("Walk Cycle"), folders: true, ..BASE },
+    Variant { name: "inside a top folder, with __MACOSX beside it", top: Some("walk"), macosx: true, compression: Compression::Mixed, ..BASE },
+    Variant { name: "self-extracting, offsets from the zip data", stub: Stub::Shifted, mimetype: true, ..BASE },
+    Variant { name: "self-extracting, offsets from the file's start", stub: Stub::Adjusted, mimetype: true, ..BASE },
+    Variant { name: "self-extracting ZIP64, offsets from the zip data", stub: Stub::Shifted, zip64: true, ..BASE },
+    Variant {
+        name: "everything at once",
+        compression: Compression::Mixed,
+        folders: true,
+        mimetype: true,
+        backslashes: true,
+        names: Names::Cp437,
+        descriptors: true,
+        zip64: true,
+        top: Some("Ünïcödé walk"),
+        macosx: true,
+        stub: Stub::Shifted,
+    },
 ];
 
 /// One entry as written. Fields a hostile test may change are public.
@@ -125,6 +166,12 @@ fn le64(out: &mut Vec<u8>, v: u64) {
 
 /// Writes `entries` as a zip archive, with a ZIP64 end record if `zip64_end`.
 pub fn write(entries: &[Raw], zip64_end: bool) -> Vec<u8> {
+    write_at(entries, zip64_end, 0)
+}
+
+/// Writes `entries` as a zip archive whose offsets count from `base` bytes before it (the
+/// length of a stub that will be put in front, for offsets fixed to the file's start).
+pub fn write_at(entries: &[Raw], zip64_end: bool, base: u64) -> Vec<u8> {
     let mut out = Vec::new();
     let mut central = Vec::new();
     let mut offsets = Vec::new();
@@ -142,7 +189,7 @@ pub fn write(entries: &[Raw], zip64_end: bool) -> Vec<u8> {
         let comp = data.len() as u64;
         let flags = e.flags | if e.descriptor { 8 } else { 0 } | if e.utf8 { 0x800 } else { 0 };
         let version: u16 = if e.zip64 { 45 } else { 20 };
-        let offset = out.len() as u64;
+        let offset = base + out.len() as u64;
         offsets.push(offset);
         // The local header.
         le32(&mut out, 0x0403_4b50);
@@ -216,11 +263,11 @@ pub fn write(entries: &[Raw], zip64_end: bool) -> Vec<u8> {
         central.extend_from_slice(&e.name);
         central.extend_from_slice(&extra);
     }
-    let dir_at = out.len() as u64;
+    let dir_at = base + out.len() as u64;
     out.extend_from_slice(&central);
     let n = entries.len() as u64;
     if zip64_end {
-        let record = out.len() as u64;
+        let record = base + out.len() as u64;
         le32(&mut out, 0x0606_4b50);
         le64(&mut out, 44);
         le16(&mut out, 45);
@@ -251,7 +298,12 @@ pub fn write(entries: &[Raw], zip64_end: bool) -> Vec<u8> {
 pub fn entries(files: &BTreeMap<String, Vec<u8>>, v: &Variant) -> Vec<Raw> {
     let mut out = Vec::new();
     let named = |path: &str, body: &[u8], deflate: bool| {
-        let shown = if v.backslashes { path.replace('/', "\\") } else { path.to_string() };
+        let path = match v.top {
+            Some(top) if path.is_empty() => format!("{top}/"),
+            Some(top) if !path.starts_with("__MACOSX/") => format!("{top}/{path}"),
+            _ => path.to_string(),
+        };
+        let shown = if v.backslashes { path.replace('/', "\\") } else { path };
         let mut r = Raw::new(&shown, body, deflate);
         r.descriptor = v.descriptors;
         r.zip64 = v.zip64;
@@ -279,6 +331,17 @@ pub fn entries(files: &BTreeMap<String, Vec<u8>>, v: &Variant) -> Vec<Raw> {
         out.push(named("mimetype", b"application/vnd.adobe.xfl", false));
     }
     let mut made = std::collections::BTreeSet::new();
+    let mut files = files.clone();
+    if v.macosx {
+        // AppleDouble files for the document and its folder, as macOS's Compress writes them.
+        let top = v.top.unwrap_or("walk");
+        files.insert(format!("__MACOSX/{top}/._DOMDocument.xml"), b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ".to_vec());
+        files.insert(format!("__MACOSX/._{top}"), b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ".to_vec());
+    }
+    if let Some(top) = v.top.filter(|_| v.folders) {
+        made.insert(format!("{top}/"));
+        out.push(named("", b"", false));
+    }
     for (i, (path, body)) in files.iter().enumerate() {
         if v.folders {
             let parts: Vec<&str> = path.split('/').collect();
@@ -302,7 +365,11 @@ pub fn entries(files: &BTreeMap<String, Vec<u8>>, v: &Variant) -> Vec<Raw> {
 
 /// `files` packed as a `.fla` in variant `v`.
 pub fn pack(files: &BTreeMap<String, Vec<u8>>, v: &Variant) -> Vec<u8> {
-    write(&entries(files, v), v.zip64)
+    let stub = if v.stub == Stub::None { Vec::new() } else { stub_bytes() };
+    let base = if v.stub == Stub::Adjusted { stub.len() as u64 } else { 0 };
+    let mut out = stub;
+    out.extend_from_slice(&write_at(&entries(files, v), v.zip64, base));
+    out
 }
 
 /// A package folder's files by their path inside it, leaving out its `golden/` renders.

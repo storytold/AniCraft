@@ -183,14 +183,16 @@ fn survive(fla: &[u8], fonts: &Fonts, what: &str, errors: &mut BTreeMap<String, 
     }
 }
 
-/// Offsets of every central record in `z` (found through the end record, or its ZIP64 form).
-fn central_records(z: &[u8]) -> Vec<usize> {
+/// Offsets of every central record in `z` (found through the end record, or its ZIP64 form),
+/// whose offsets count from `shift` bytes into it (a self-extracting stub's length).
+fn central_records(z: &[u8], shift: usize) -> Vec<usize> {
     let end = z.len() - 22;
     let mut at = u32::from_le_bytes(z[end + 16..end + 20].try_into().unwrap()) as usize;
     if at == u32::MAX as usize {
-        let record = u64::from_le_bytes(z[end - 12..end - 4].try_into().unwrap()) as usize;
+        let record = u64::from_le_bytes(z[end - 12..end - 4].try_into().unwrap()) as usize + shift;
         at = u64::from_le_bytes(z[record + 48..record + 56].try_into().unwrap()) as usize;
     }
+    at += shift;
     let mut out = Vec::new();
     let mut i = at;
     while z.get(i..i + 4) == Some(&[0x50, 0x4b, 1, 2]) {
@@ -215,10 +217,14 @@ fn hostile_fla_archives_never_panic_and_fail_readably() {
     let mut variants = 0;
     for case in cases() {
         let files = pack::package(&corpus().join(&case));
-        for v in [&pack::VARIANTS[0], &pack::VARIANTS[7]] {
+        // As Animate writes it, ZIP64, and the new layouts (ADR 0086): a top folder, and a
+        // self-extracting stub whose offsets count from the zip data.
+        let fuzzed = ["as Animate writes it (mimetype first, deflated)", "ZIP64", "inside a top folder, with __MACOSX beside it", "self-extracting, offsets from the zip data", "self-extracting ZIP64, offsets from the zip data"];
+        for v in pack::VARIANTS.iter().filter(|v| fuzzed.contains(&v.name)) {
             let z = pack::pack(&files, v);
             let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ (case.len() as u64) << 20 ^ z.len() as u64);
-            let records = central_records(&z);
+            let shift = if v.stub == pack::Stub::Shifted { pack::stub_bytes().len() } else { 0 };
+            let records = central_records(&z, shift);
             assert!(records.len() >= files.len(), "{case}");
             // Header fields at edge values: (offset in the central record, width).
             const FIELDS: &[(usize, usize)] = &[(8, 2), (10, 2), (16, 4), (20, 4), (24, 4), (28, 2), (30, 2), (32, 2), (34, 2), (42, 4)];
@@ -232,7 +238,7 @@ fn hostile_fla_archives_never_panic_and_fail_readably() {
                     }
                 }
                 // The local header's lengths too.
-                let local = u32::from_le_bytes(z[rec + 42..rec + 46].try_into().unwrap()) as usize;
+                let local = u32::from_le_bytes(z[rec + 42..rec + 46].try_into().unwrap()) as usize + shift;
                 for (off, value) in [(26usize, 0xffffu16), (28, 0xffff), (28, 0), (18, 0xffff), (22, 0)] {
                     let mut t = z.clone();
                     if let Some(f) = t.get_mut(local + off..local + off + 2) {

@@ -25,6 +25,7 @@ use anicraft_doc::{
     Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, CustomEase, EaseGroup, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript, Spread, MAX_FOCAL,
 };
+use anicraft_doc::sound::{EnvelopePoint, SoundEffect, clean_points};
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -66,11 +67,28 @@ pub struct Report {
     pub missing_fonts: BTreeSet<String>,
     /// The family that text was laid out in instead.
     pub fallback_font: Option<String>,
+    /// The items behind some kinds of `skipped`, by name ("intro.flv, On2 VP6, 4.0 s"), so an
+    /// artist can tell which sound or video didn't come across (ADR 0086). At most
+    /// [`MAX_NAMED`] per kind; the count in `skipped` is always whole.
+    pub names: BTreeMap<String, Vec<String>>,
 }
+
+/// Most names kept per kind of skipped item.
+pub const MAX_NAMED: usize = 64;
+/// Most names the summary line shows per kind.
+const SHOWN_NAMES: usize = 3;
 
 impl Report {
     pub(crate) fn skip(&mut self, what: &str) {
         *self.skipped.entry(what.to_string()).or_default() += 1;
+    }
+    /// Counts `what` and keeps the item's `name` for the report.
+    pub(crate) fn skip_named(&mut self, what: &str, name: String) {
+        self.skip(what);
+        let names = self.names.entry(what.to_string()).or_default();
+        if names.len() < MAX_NAMED {
+            names.push(name);
+        }
     }
     pub(crate) fn keep(&mut self, what: &str) {
         *self.kept.entry(what.to_string()).or_default() += 1;
@@ -94,7 +112,20 @@ impl Report {
             return format!("Imported everything in the file.{kept}");
         }
         let mut out = format!("Imported.{kept}");
-        let mut parts: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        let mut parts: Vec<String> = self
+            .skipped
+            .iter()
+            .map(|(k, n)| match self.names.get(k).filter(|v| !v.is_empty()) {
+                Some(names) => {
+                    let mut shown: Vec<&str> = names.iter().take(SHOWN_NAMES).map(String::as_str).collect();
+                    let more = n.saturating_sub(shown.len());
+                    let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+                    shown.truncate(SHOWN_NAMES);
+                    format!("{n} {k} ({}{more})", shown.join("; "))
+                }
+                None => format!("{n} {k}"),
+            })
+            .collect();
         parts.extend(self.notes.iter().cloned());
         if !parts.is_empty() {
             out.push_str(&format!(" Not yet supported: {}.", parts.join(", ")));
@@ -116,6 +147,70 @@ const MAX_LAYERS: usize = 5_000;
 const MAX_FRAME: u32 = 100_000;
 const MAX_BITMAPS: usize = 10_000;
 const MAX_SOUNDS: usize = 10_000;
+const MAX_VIDEOS: usize = 10_000;
+
+/// Names the format of sound data that didn't decode, and why when it is a kind AniCraft reads:
+/// "AIFF", "WAV in IMA ADPCM", "Animate's own sound data".
+fn sound_format(data: &[u8], from_bin: bool, err: &anicraft_doc::audio::AudioError) -> String {
+    use anicraft_doc::audio::{AudioError, Format};
+    if data.starts_with(b"OggS") && data.windows(8).any(|w| w == b"OpusHead") {
+        return "Ogg Opus".into();
+    }
+    if let Some(f) = Format::sniff(data) {
+        let kind = match f {
+            Format::Wav => "WAV",
+            Format::Vorbis => "Ogg",
+            Format::Mp3 => "MP3",
+        };
+        return match err {
+            AudioError::Unsupported(_) if let Some(codec) = wav_codec(data).filter(|c| !matches!(c, 1 | 3 | 0xFFFE)) => {
+                let name = match codec {
+                    0x0002 => "Microsoft ADPCM".to_string(),
+                    0x0006 => "A-law".to_string(),
+                    0x0007 => "µ-law".to_string(),
+                    0x0011 => "IMA ADPCM".to_string(),
+                    0x0031 => "GSM 6.10".to_string(),
+                    0x0055 => "MP3".to_string(),
+                    c => format!("codec 0x{c:04X}"),
+                };
+                format!("WAV in {name}")
+            }
+            AudioError::Unsupported(what) => format!("{kind} with {what}"),
+            AudioError::TooLong => format!("{kind} longer than AniCraft plays"),
+            AudioError::Empty => format!("{kind} holding no audio"),
+            _ => format!("a damaged {kind} file"),
+        };
+    }
+    let name = if data.starts_with(b"FORM") && matches!(data.get(8..12), Some(b"AIFF" | b"AIFC")) {
+        "AIFF"
+    } else if data.starts_with(b"fLaC") {
+        "FLAC"
+    } else if data.get(4..8) == Some(b"ftyp") {
+        "AAC or MPEG-4 audio"
+    } else if data.starts_with(b".snd") {
+        "Sun AU"
+    } else if from_bin {
+        "Animate's own sound data"
+    } else {
+        "an unknown format"
+    };
+    name.into()
+}
+
+/// The codec of a WAV file's `fmt ` chunk (1 PCM, 3 float, 0x11 IMA ADPCM, …), looked for in
+/// its first chunks.
+fn wav_codec(data: &[u8]) -> Option<u16> {
+    let mut at = 12usize;
+    for _ in 0..64 {
+        let id = data.get(at..at + 4)?;
+        let size = u32::from_le_bytes(data.get(at + 4..at + 8)?.try_into().ok()?) as usize;
+        if id == b"fmt " {
+            return Some(u16::from_le_bytes(data.get(at + 8..at + 10)?.try_into().ok()?));
+        }
+        at = at.checked_add(8)?.checked_add(size)?.checked_add(size & 1)?;
+    }
+    None
+}
 
 /// Bitmap fill matrices scale image pixels by twips (1/20 px): `a = 20` is one pixel per pixel.
 const TWIPS: f32 = 20.0;
@@ -134,6 +229,9 @@ struct Builder<'a> {
     bitmaps: HashMap<String, BitmapId>,
     /// Library item name → sound id, for the sounds whose file is in the package (ADR 0057).
     sounds: HashMap<String, anicraft_doc::SoundId>,
+    /// Library item name -> the still of its first frame, for every video item (`None` when the
+    /// video could not be read; ADR 0086).
+    videos: HashMap<String, Option<BitmapId>>,
     report: Report,
     /// The fonts text is laid out with; the computer's, found on the first text field.
     fonts: Option<&'a Fonts>,
@@ -327,6 +425,23 @@ impl<'a> Builder<'a> {
         out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)), ColorEffect::default()));
     }
 
+    /// A video instance (ADR 0086): its video's first frame, as a bitmap rectangle sized to the
+    /// instance's frame (`frameRight` and `frameBottom`, in twips) when the video came across
+    /// as a still; otherwise counted, the video itself being named in the report.
+    fn video_instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
+        let still = el.attr("libraryItemName").and_then(|n| self.videos.get(n)).copied();
+        let found = still.flatten().and_then(|id| self.doc.bitmap(id).map(|b| (id, b.width as f32, b.height as f32)));
+        let Some((bitmap, w, h)) = found else {
+            self.report.skip(if still.is_some() { "instances of videos AniCraft can't play" } else { "instances of missing videos" });
+            return;
+        };
+        let size = |k: &str, natural: f32| el.f32(k).map(|t| t / TWIPS).filter(|v| v.is_finite() && *v > 0.0 && *v <= 100_000.0).unwrap_or(natural);
+        let (fw, fh) = (size("frameRight", w), size("frameBottom", h));
+        let fit = Affine::scale(fw / w, fh / h);
+        let shape = Shape { path: Arc::new(Path::rect(0.0, 0.0, w, h)), fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }), stroke: None, fill_rule: FillRule::NonZero, merge: false, warp: None };
+        out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)).mul(&fit), ColorEffect::default()));
+    }
+
     /// An instance's filters, by Animate's element names; switched-off filters are left out,
     /// and unknown ones reported.
     fn filters(&mut self, el: &X) -> Vec<Filter> {
@@ -497,7 +612,7 @@ impl<'a> Builder<'a> {
                 "DOMRectangleObject" | "DOMOvalObject" => self.primitive(el, parent, out),
                 "DOMBitmapInstance" => self.bitmap_instance(el, parent, out),
                 "DOMStaticText" | "DOMDynamicText" | "DOMInputText" => self.text_field(el, parent, out),
-                "DOMVideoInstance" => self.report.skip("videos"),
+                "DOMVideoInstance" => self.video_instance(el, parent, out),
                 _ => self.report.skip("other elements"),
             }
         }
@@ -799,24 +914,27 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    /// Reads the document's sound library items (ADR 0057). Like a bitmap, each one's sound is
-    /// looked for as the original file in `LIBRARY/` and then as its data file in `bin/`, and is
-    /// used when it is a WAV, Ogg Vorbis or MP3 file. Animate's own encoding of the data file is
-    /// not public, so those sounds are reported instead (ADR 0039).
+    /// Reads the document's sound library items (ADR 0057, ADR 0086). Like a bitmap, each one's
+    /// sound is looked for as the original file in `LIBRARY/` and then as its data file in
+    /// `bin/`, and is used when it is a WAV, Ogg Vorbis or MP3 file the decoders read. Animate's
+    /// own encoding of the data file is not public, so those sounds are reported by name, as is
+    /// every other sound that doesn't come across, with its format and why (ADR 0039).
     fn register_sounds(&mut self, root: &X) -> Result<(), XflError> {
         for item in root.list("media").iter().filter(|i| i.name == "DOMSoundItem").take(MAX_SOUNDS) {
             let Some(name) = item.attr("name").filter(|n| !self.sounds.contains_key(*n)) else { continue };
             let mut candidates = Vec::new();
             if let Some(href) = item.attr("href") {
-                candidates.push(format!("LIBRARY/{href}"));
+                candidates.push((format!("LIBRARY/{href}"), false));
             }
             if let Some(data) = item.attr("soundDataHRef") {
-                candidates.push(format!("bin/{data}"));
+                candidates.push((format!("bin/{data}"), true));
             }
             let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(256).collect();
-            let (mut found_data, mut unreadable) = (false, false);
+            let shown: String = name.chars().take(256).collect();
+            // Why the first file found didn't decode, and whether one couldn't be read at all.
+            let (mut why, mut unreadable) = (None, false);
             let mut sound = None;
-            for path in candidates {
+            for (path, from_bin) in candidates {
                 let bytes = match (self.read)(&path) {
                     Ok(Some(bytes)) => bytes,
                     Ok(None) => continue,
@@ -827,29 +945,114 @@ impl<'a> Builder<'a> {
                         continue;
                     }
                 };
-                found_data = true;
-                if let Ok(s) = anicraft_doc::Sound::from_data(anicraft_doc::SoundId(0), short.clone(), bytes) {
-                    sound = Some(s);
-                    break;
+                // Named from the first bytes, before the data moves into the sound.
+                let head: Vec<u8> = bytes.iter().take(4096).copied().collect();
+                match anicraft_doc::Sound::from_data(anicraft_doc::SoundId(0), short.clone(), bytes) {
+                    Ok(s) => {
+                        sound = Some(s);
+                        break;
+                    }
+                    Err(e) => {
+                        why.get_or_insert_with(|| sound_format(&head, from_bin, &e));
+                    }
                 }
             }
-            match sound {
-                Some(mut s) => {
+            match (sound, why) {
+                (Some(mut s), _) => {
                     s.id = anicraft_doc::SoundId(self.doc.alloc_id());
                     self.place_in_folder(name, anicraft_doc::LibraryItem::Sound(s.id));
                     self.sounds.insert(name.to_string(), s.id);
                     self.doc.sounds.push(Arc::new(s));
                 }
-                None if found_data => self.report.skip("sounds stored in Animate's own format"),
-                None if unreadable => self.report.skip("sounds whose files couldn't be read"),
-                None => self.report.skip("missing sound files"),
+                (None, Some(why)) => self.report.skip_named("sounds in formats AniCraft can't decode", format!("{shown}: {why}")),
+                (None, None) if unreadable => self.report.skip_named("sounds whose files couldn't be read", shown),
+                (None, None) => self.report.skip_named("missing sound files", shown),
             }
         }
         Ok(())
     }
 
+    /// Reads the document's video items (`DOMVideoItem`, ADR 0086). AniCraft has no video
+    /// playback: a video whose data is an FLV file in the Screen Video codec comes across as a
+    /// bitmap of its first frame (in the Library beside where the video was, named
+    /// "<video> (first frame)"), which its instances show; every video is named in the report
+    /// with its format and length, so nothing is dropped unseen. The data is looked for as the
+    /// original file (`href`, or `sourceExternalFilepath` inside the package) in `LIBRARY/`, then
+    /// as its data file in `bin/` (`videoDataHRef`).
+    fn register_videos(&mut self, root: &X) {
+        for item in root.list("media").iter().filter(|i| i.name == "DOMVideoItem").take(MAX_VIDEOS) {
+            let Some(name) = item.attr("name").filter(|n| !self.videos.contains_key(*n)) else { continue };
+            let mut candidates = Vec::new();
+            if let Some(href) = item.attr("href") {
+                candidates.push(format!("LIBRARY/{href}"));
+            }
+            if let Some(src) = item.attr("sourceExternalFilepath").and_then(|p| p.strip_prefix("./")) {
+                candidates.push(src.replace('\\', "/"));
+            }
+            if let Some(data) = item.attr("videoDataHRef") {
+                candidates.push(format!("bin/{data}"));
+            }
+            let shown: String = name.chars().take(256).collect();
+            let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(240).collect();
+            let (mut still, mut format, mut unreadable) = (None, None, false);
+            for path in candidates {
+                let bytes = match (self.read)(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => continue,
+                    Err(_) => {
+                        unreadable = true;
+                        continue;
+                    }
+                };
+                match crate::video::read(&bytes) {
+                    crate::video::Video::Frame { width, height, rgba } => {
+                        still = Bitmap::from_rgba(BitmapId(0), format!("{short} (first frame)"), width, height, rgba);
+                        if still.is_some() {
+                            break;
+                        }
+                    }
+                    crate::video::Video::Unreadable(f) => {
+                        format.get_or_insert(f);
+                    }
+                }
+            }
+            // Its length as the item gives it (seconds), else from its frames and rate.
+            let seconds = item.f32("length").filter(|s| s.is_finite() && *s >= 0.0).or_else(|| {
+                let (frames, fps) = (item.f32("frameCount")?, item.f32("fps")?);
+                (frames.is_finite() && fps.is_finite() && fps > 0.0).then(|| frames.max(0.0) / fps)
+            });
+            let length = seconds.map(|s| format!(", {:.1} s", s.min(1.0e7))).unwrap_or_default();
+            let id = match still {
+                Some(mut b) => {
+                    b.id = BitmapId(self.doc.alloc_id());
+                    let id = b.id;
+                    let folder = name.rsplit_once('/').map(|(f, _)| f);
+                    let path = match folder {
+                        Some(f) => format!("{f}/{}", b.name),
+                        None => b.name.clone(),
+                    };
+                    self.place_in_folder(&path, anicraft_doc::LibraryItem::Bitmap(id));
+                    self.doc.bitmaps.push(Arc::new(b));
+                    self.report.skip_named("videos (first frame kept as a still)", format!("{shown}: Screen Video{length}"));
+                    Some(id)
+                }
+                None => {
+                    let why = match (format, unreadable) {
+                        (Some(f), _) => f,
+                        (None, true) => "its file couldn't be read".into(),
+                        (None, false) => "its file is missing".into(),
+                    };
+                    self.report.skip_named("videos AniCraft can't play", format!("{shown}: {why}{length}"));
+                    None
+                }
+            };
+            self.videos.insert(name.to_string(), id);
+        }
+    }
+
     /// The sound on a frame (`soundName`, the library item), with its sync (`soundSync`: event,
-    /// start, stop or stream) and repeats (`soundLoopMode` loop or repeat, `soundLoop` times).
+    /// start, stop or stream), repeats (`soundLoopMode` loop or repeat, `soundLoop` times) and
+    /// effect (`soundEffect`, and the volume points of a custom one in `SoundEnvelope`).
     /// Buttons' frames included: they play as the pointer changes the button's state.
     fn frame_sound(&mut self, f: &X, name: &str) -> Option<FrameSound> {
         let Some(id) = self.sounds.get(name).copied() else {
@@ -865,13 +1068,49 @@ impl<'a> Builder<'a> {
         };
         fs.looping = f.attr("soundLoopMode").map(str::trim) == Some("loop");
         fs.repeat = f.u32("soundLoop").unwrap_or(1).clamp(1, anicraft_doc::sound::MAX_REPEAT);
-        if f.attr("soundEffect").is_some_and(|e| !matches!(e.trim(), "" | "none")) || f.child("SoundEnvelope").is_some() {
-            self.report.skip("sound effects and envelopes (played without)");
-        }
+        fs.effect = self.sound_effect(f);
         if f.attr("inPoint44").is_some() || f.attr("outPoint44").is_some() {
             self.report.skip("sound in and out points (played whole)");
         }
         Some(fs)
+    }
+
+    /// A frame sound's effect: a preset by its name in the Effect menu (`soundEffect`), or the
+    /// volume points of its envelope (`SoundEnvelope`; each `SoundEnvelopePoint` a time in
+    /// samples at 44.1 kHz, `mark44`, and a level per channel, `level0` left and `level1` right,
+    /// `0..=32768`, as the SWF format's `SOUNDENVELOPE` keeps them).
+    fn sound_effect(&mut self, f: &X) -> SoundEffect {
+        let key: String = f.attr("soundEffect").unwrap_or("").chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect();
+        let preset = match key.as_str() {
+            "" | "none" => Some(SoundEffect::None),
+            "left" | "leftchannel" => Some(SoundEffect::LeftChannel),
+            "right" | "rightchannel" => Some(SoundEffect::RightChannel),
+            "fadelefttoright" => Some(SoundEffect::FadeLeftToRight),
+            "faderighttoleft" => Some(SoundEffect::FadeRightToLeft),
+            "fadein" => Some(SoundEffect::FadeIn),
+            "fadeout" => Some(SoundEffect::FadeOut),
+            _ => None,
+        };
+        let points: Vec<EnvelopePoint> = f
+            .child("SoundEnvelope")
+            .map(|e| e.children.iter().filter(|p| p.name == "SoundEnvelopePoint").take(anicraft_doc::sound::MAX_ENVELOPE_POINTS).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| {
+                let level = |k: &str| p.f32(k).map_or(1.0, |v| v / 32_768.0);
+                EnvelopePoint::new(f64::from(p.f32("mark44").unwrap_or(0.0)) / 44_100.0, level("level0"), level("level1"))
+            })
+            .collect();
+        match preset {
+            // An envelope without a preset name (or named "custom") plays as its points.
+            Some(SoundEffect::None) | None if !points.is_empty() => SoundEffect::Custom(clean_points(&points)),
+            Some(p) => p,
+            None if key == "custom" => SoundEffect::None,
+            None => {
+                self.report.skip("unknown sound effects (played without)");
+                SoundEffect::None
+            }
+        }
     }
 
     /// Allocates ids for every symbol the document lists, parsing their files.
@@ -1031,7 +1270,7 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     if root.name != "DOMDocument" {
         return Err(XflError::NotXfl(format!("the root element is <{}>", root.name)));
     }
-    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), language: Language::ActionScript3, bitmaps: HashMap::new(), sounds: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
+    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), language: Language::ActionScript3, bitmaps: HashMap::new(), sounds: HashMap::new(), videos: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
     b.publish_settings()?;
     // Only symbols keep a script class yet.
     for _ in root.list("media").iter().filter(|m| m.attr("linkageClassName").is_some_and(|c| !c.trim().is_empty())) {
@@ -1049,6 +1288,7 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     b.register_folders(&root);
     b.register_bitmaps(&root)?;
     b.register_sounds(&root)?;
+    b.register_videos(&root);
     b.register_symbols(&root)?;
     b.build_symbols();
     // Every DOMTimeline is a scene, in order.
@@ -1094,8 +1334,30 @@ fn fla_from(data: &[u8], fonts: Option<&Fonts>) -> Result<(Document, Report), Xf
         return Err(XflError::NotXfl("this .fla was saved by Flash CS4 or earlier, in a format AniCraft can't read: open it in Animate and save it again".into()));
     }
     let archive = crate::zip::Archive::open(data)?;
-    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(p)?) };
+    let root = package_root(&archive)?;
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(&format!("{root}{p}"))?) };
     import_from(&read, fonts)
+}
+
+/// Where the package sits in an archive (ADR 0086): at its root, as Animate saves a `.fla`, or
+/// inside one top folder (`walk/DOMDocument.xml`), as zipping an XFL folder makes it. The
+/// `__MACOSX` folder some zip tools add beside it is ignored. An archive holding several
+/// documents in top folders is refused with their names rather than one picked.
+fn package_root(archive: &crate::zip::Archive<'_>) -> Result<String, XflError> {
+    if archive.names().any(|n| n == "DOMDocument.xml") {
+        return Ok(String::new());
+    }
+    let mut tops: Vec<&str> = archive.names().filter_map(|n| n.strip_suffix("/DOMDocument.xml")).filter(|top| !top.contains('/') && *top != "__MACOSX").collect();
+    tops.sort_unstable();
+    match tops.as_slice() {
+        [] => Ok(String::new()),
+        [top] => Ok(format!("{top}/")),
+        many => {
+            let names: Vec<String> = many.iter().take(5).map(|t| t.chars().take(80).collect()).collect();
+            let more = if many.len() > 5 { format!(" and {} more", many.len() - 5) } else { String::new() };
+            Err(XflError::NotXfl(format!("the archive holds {} Animate documents ({}{more}): unzip it and open one of them", many.len(), names.join(", "))))
+        }
+    }
 }
 
 /// Whether the file at `path` starts as a zip archive or an old binary `.fla` does.
