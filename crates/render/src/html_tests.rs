@@ -408,8 +408,7 @@ fn the_camera_and_layer_depth_come_across_and_buttons_answer_through_them() {
     far.center = Vec2::new(260.0, 150.0);
     far.zoom = 1.5;
     far.rotation = 0.2;
-    far.tint = Rgba::hex(0x3366ff);
-    far.tint_amount = 0.3;
+    far.color = anicraft_doc::ColorEffect::Tint { color: Rgba::hex(0x3366ff), amount: 0.3 };
     let rest = anicraft_doc::Camera::rest(&stage).to_element(ElementId(7001));
     let near = far.to_element(ElementId(7001));
     let mut cam = Layer::new(LayerId(70), "Camera");
@@ -424,7 +423,7 @@ fn the_camera_and_layer_depth_come_across_and_buttons_answer_through_them() {
     assert!(m.json["contents"].as_array().unwrap().iter().any(|c| c["cc"].is_array()), "the camera's tint is baked");
     assert!(first["f"].as_array().unwrap().len() > 15, "the camera moves every frame");
     // Where the knob is on screen once the camera has arrived.
-    let knob = far.view(&stage, 0.0).apply(Vec2::new(100.0, 100.0));
+    let knob = far.stage_view(&stage).apply(Vec2::new(100.0, 100.0));
     let mut script: Vec<(Vec<Event>, Vec<Event>)> = vec![(vec![], vec![]); 22];
     script.push((vec![Event::Move(knob), Event::Down(knob)], vec![Event::Up(knob)]));
     script.extend(vec![(vec![], vec![]); 6]);

@@ -1,6 +1,6 @@
 //! Evaluation through the camera layer (ADR 0027).
 
-use crate::camera::{Camera, FOCAL, MAX_DEPTH};
+use crate::camera::{Camera, DepthKey, FOCAL, MAX_DEPTH};
 use crate::{ColorEffect, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, MotionTween, Paint, Property, Rgba, Shape, Symbol, SymbolId, SymbolKind, Timeline, Tween, evaluate, evaluate_scene};
 use anicraft_geom::{Affine, Path, Vec2};
 use std::sync::Arc;
@@ -64,7 +64,7 @@ fn a_camera_zoom_doubles_sizes_about_its_centre_and_editing_keeps_stage_space() 
 #[test]
 fn camera_rotation_and_tint_apply_to_the_whole_view() {
     let mut d = one_square();
-    let cam = Camera { rotation: std::f32::consts::FRAC_PI_2, tint: Rgba::hex(0xff0000), tint_amount: 0.5, ..Camera::rest(&d.stage) };
+    let cam = Camera { rotation: std::f32::consts::FRAC_PI_2, color: ColorEffect::Tint { color: Rgba::hex(0xff0000), amount: 0.5 }, ..Camera::rest(&d.stage) };
     with_camera(&mut d, &[(0, 20, cam, false)]);
     let i = &evaluate(&d, 0).items[0];
     // Stage point (105, 50) is right of the centre; the camera turned clockwise, so it shows
@@ -170,4 +170,114 @@ fn a_keyframe_without_a_camera_is_the_camera_at_rest() {
     cl.keyframe_mut(0).unwrap().elements.clear();
     assert!(d.timeline(0).camera_at(0, &d.stage).is_none());
     assert_eq!(evaluate(&d, 0).items[0].transform, Affine::translate(95.0, 0.0));
+}
+
+/// Each item's x translation by element id.
+fn xs(dl: &crate::DisplayList, id: u64) -> f32 {
+    dl.items.iter().find(|i| i.element == ElementId(id)).map_or(f32::NAN, |i| i.transform.translation().x)
+}
+
+#[test]
+fn layers_at_depth_zero_are_bit_exact_through_any_camera() {
+    // The same scene with and without a deep layer elsewhere: the stage-plane layer's item is
+    // identical, bit for bit, to what the camera's stage view gives it.
+    let mut d = one_square();
+    let cam = Camera { center: Vec2::new(123.4, 56.7), zoom: 1.7, rotation: 0.3, ..Camera::rest(&d.stage) };
+    with_camera(&mut d, &[(0, 20, cam, false)]);
+    let before = evaluate(&d, 0).items[0].transform;
+    let want = cam.stage_view(&d.stage).mul(&Affine::translate(95.0, 0.0));
+    assert!(before.m.iter().zip(want.m).all(|(a, b)| (a - b).abs() < 1e-3), "the stage view: {before:?}");
+    let mut back = art_layer(50, square(11, 0.0));
+    back.depth = 400.0;
+    d.timeline_mut(0).layers.push(Arc::new(back));
+    let after = evaluate(&d, 0);
+    let it = after.items.iter().find(|i| i.element == ElementId(10)).unwrap();
+    assert_eq!(it.transform.m, before.m);
+}
+
+#[test]
+fn a_pan_moves_layers_by_their_parallax_and_attached_layers_stay() {
+    let mut d = one_square();
+    let mut mid = art_layer(40, square(11, 95.0));
+    mid.depth = 250.0;
+    let mut far = art_layer(50, square(12, 95.0));
+    far.depth = 3000.0;
+    let mut hud = art_layer(60, square(13, 95.0));
+    hud.attached = true;
+    hud.depth = 900.0;
+    d.timeline_mut(0).layers.extend([Arc::new(mid), Arc::new(far)]);
+    d.timeline_mut(0).layers.insert(0, Arc::new(hud));
+    let cam = Camera { center: Vec2::new(150.0, 50.0), ..Camera::rest(&d.stage) };
+    with_camera(&mut d, &[(0, 20, cam, false)]);
+    let dl = evaluate(&d, 0);
+    // A pan of 50 px moves a layer at depth d by 50 · F / (F + d).
+    for (id, depth) in [(10, 0.0), (11, 250.0), (12, 3000.0)] {
+        let moved = 95.0 - xs(&dl, id);
+        let want = 50.0 * FOCAL / (FOCAL + depth);
+        assert!((moved - want).abs() < 1e-3, "{id}: moved {moved}, want {want}");
+    }
+    assert_eq!(xs(&dl, 13), 95.0, "the attached layer stays where it is on screen");
+    // While editing, every layer is in stage space.
+    let edit = evaluate_scene(&d, 0, 0);
+    assert!([10, 11, 12, 13].iter().all(|&id| xs(&edit, id) == 95.0));
+}
+
+#[test]
+fn deeper_layers_draw_first_ties_in_timeline_order() {
+    let mut d = one_square();
+    // Top to bottom: 10 (depth 0), 11 (depth 500), 12 (depth 0), 13 (depth 500).
+    let deep = |id, el| {
+        let mut l = art_layer(id, el);
+        l.depth = 500.0;
+        Arc::new(l)
+    };
+    d.timeline_mut(0).layers.extend([deep(40, square(11, 0.0)), Arc::new(art_layer(50, square(12, 0.0))), deep(60, square(13, 0.0))]);
+    let ids = |dl: &crate::DisplayList| dl.items.iter().map(|i| i.element.0).collect::<Vec<_>>();
+    assert_eq!(ids(&evaluate_scene(&d, 0, 0)), [13, 11, 12, 10], "the deep pair first, each pair bottom-up");
+    assert_eq!(ids(&evaluate(&d, 0)), [13, 11, 12, 10], "the movie stacks as the stage does");
+    // All at depth 0: the timeline order, as always.
+    for l in &mut d.timeline_mut(0).layers {
+        Arc::make_mut(l).depth = 0.0;
+    }
+    assert_eq!(ids(&evaluate_scene(&d, 0, 0)), [13, 12, 11, 10]);
+}
+
+#[test]
+fn a_depth_tween_is_halfway_at_its_midpoint() {
+    let mut d = one_square();
+    let l = Arc::make_mut(&mut d.timeline_mut(0).layers[0]);
+    l.depth_keys = vec![DepthKey { frame: 0, depth: 0.0 }, DepthKey { frame: 10, depth: 2000.0 }];
+    let cam = Camera { center: Vec2::new(140.0, 50.0), ..Camera::rest(&d.stage) };
+    with_camera(&mut d, &[(0, 20, cam, false)]);
+    assert_eq!(d.timeline(0).layers[1].depth_at(5), 1000.0);
+    // At frame 5 the layer is 1,000 px back: the 40 px pan moves it 20.
+    assert!((xs(&evaluate(&d, 5), 10) - 75.0).abs() < 1e-3);
+    assert!((xs(&evaluate(&d, 0), 10) - 55.0).abs() < 1e-3);
+    // Keys and attachment round-trip; older files read without them, and they are left out
+    // when unused.
+    let mut l = Layer::new(LayerId(5), "x");
+    let plain = serde_json::to_string(&l).unwrap();
+    assert!(!plain.contains("depth_keys") && !plain.contains("attached"));
+    l.depth_keys = vec![DepthKey { frame: 3, depth: 120.5 }];
+    l.attached = true;
+    let back: Layer = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+    assert_eq!(back, l);
+    let old: Layer = serde_json::from_str(r#"{"id":5,"name":"x","depth":40}"#).unwrap();
+    assert!(old.depth_keys.is_empty() && !old.attached && old.depth_at(9) == 40.0);
+    // Hostile keys on load are sorted and clamped.
+    let mut d2 = Document::default();
+    Arc::make_mut(&mut d2.timeline_mut(0).layers[0]).depth_keys = vec![DepthKey { frame: 9, depth: f32::NAN }, DepthKey { frame: 2, depth: 1e20 }];
+    d2.sanitize();
+    assert_eq!(d2.timeline(0).layers[0].depth_keys, vec![DepthKey { frame: 2, depth: MAX_DEPTH }, DepthKey { frame: 9, depth: 0.0 }]);
+}
+
+#[test]
+fn a_camera_brightness_colours_the_whole_view() {
+    let mut d = one_square();
+    let cam = Camera { color: ColorEffect::Brightness(-0.5), ..Camera::rest(&d.stage) };
+    with_camera(&mut d, &[(0, 20, cam, false)]);
+    assert!(d.timeline(0).camera_at(0, &d.stage).is_some(), "a colour alone is a camera that does something");
+    let i = &evaluate(&d, 0).items[0];
+    assert_eq!(i.transform, Affine::translate(95.0, 0.0), "nothing moved");
+    assert_eq!(i.color, crate::ColorTransform::brightness(-0.5));
 }

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+* **Camera, second slice: layer depth, attaching layers and colour** (ADR 0082, M7).
+  * **Layer depth in perspective**: through the camera, a pinhole with a fixed focal length
+    (1,000 px), a deeper layer moves less when the camera pans and grows less when it zooms;
+    deeper layers draw behind nearer ones (ties in timeline order). The camera at rest shows
+    every layer as drawn, and depth 0 is bit-for-bit what it was. A layer the camera has passed
+    isn't drawn.
+  * **Depth over time**: key a layer's depth on any frame; it tweens linearly between keys.
+  * **Window › Layer Depth**: the layers by depth, nearest first, each with a track to drag
+    nearer or farther, its value, a key diamond and Attach.
+  * **Attach Layer to Camera**: a camera toggle on each layer's timeline row; an attached layer
+    stays where it is on screen while the camera moves (titles, HUDs).
+  * **Camera colour effects**: Brightness, Tint and Advanced (no alpha), in Properties and
+    `camera.set`, tweened, in every export.
+  * **Editing while previewing**: with View › Preview Through Camera the Selection tool picks
+    and moves artwork where the movie shows it, mapped back through the camera and the layer's
+    depth.
+  * Every export (PNG, sequences, GIF, video, SVG, Lottie, HTML canvas), Test Movie and the GPU
+    stage see the same picture. Headless: `layer.set_depth {key, frame}`,
+    `layer.remove_depth_key`, `layer.set_attached`, `layer.depths`, `element.pick {view:
+    camera}`; `camera.info` reports `color_effect`.
+  * Changed: depth now also scales under the camera's zoom (it was pan-only); files with a
+    depth and a zoomed camera look different.
+
 * **Drawing parity leftovers** (ADR 0080, M1).
   * **PolyStar options**: Shape (**Polygon** or **Star**), **Sides**/**Points** (3 to 32) and
     **Point size** (0 to 1; at 1 a star is the polygon through its tips) in the tool's options.

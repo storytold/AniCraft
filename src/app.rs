@@ -192,6 +192,10 @@ pub struct StageView {
 pub enum Drag {
     None,
     Move { last: egui::Pos2 },
+    /// Selection tool on the camera preview (ADR 0082): moving the selection with the pointer,
+    /// which was at picture point `last`; each move maps back through the camera and the
+    /// active layer's depth.
+    CameraMove { last: anicraft_engine::geom::Vec2 },
     /// Selection tool: moving the selection, snapping as it goes (ADR 0041): from stage point
     /// `start`, `applied` moved so far.
     SnapMove { start: egui::Pos2, applied: egui::Vec2 },
@@ -2030,6 +2034,28 @@ impl App {
                 self.tool = Tool::Camera;
                 self.last_tool = Tool::Camera;
                 self.camera_preview = which == "cameraview";
+            }
+            Some(which @ ("layerdepth" | "layerdepthview")) => {
+                // A parallax scene mid-pan (ADR 0082): the camera pans right and pushes in over
+                // the first second; the sky is far back, the sun and hills between, the star
+                // attached to the camera like a title; the Layer Depth panel open, frame 12.
+                self.run("camera.add", json!({}));
+                self.run("timeline.insert_keyframe", json!({"frame": 23}));
+                self.run("camera.set", json!({"frame": 23, "dx": 100, "zoom": 125}));
+                self.run("timeline.create_tween", json!({"frame": 0}));
+                let id = |app: &App, name: &str| app.s.doc.timeline(0).layers.iter().find(|l| l.name.eq_ignore_ascii_case(name)).map(|l| l.id.0);
+                for (name, depth) in [("sky", 900), ("sun", 450), ("hills", 200)] {
+                    if let Some(l) = id(self, name) {
+                        self.run("layer.set_depth", json!({"layer": l, "depth": depth}));
+                    }
+                }
+                if let Some(l) = id(self, "star") {
+                    self.run("layer.set_attached", json!({"layer": l, "attached": true}));
+                }
+                self.run("timeline.goto", json!({"frame": 12}));
+                self.tool = Tool::Select;
+                self.camera_preview = which == "layerdepthview";
+                self.show_panel(crate::dock::Panel::LayerDepth);
             }
             Some("bones") => {
                 // A three-limb arm on an armature (ADR 0043): bent by IK at frame 1, the elbow

@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 308 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 311 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -330,11 +330,17 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Get Layer Properties** `layer.properties`
   Parameters: `{layer?} the layer's name, type, mask type (mask layers), colour, outline, height (percent), visible, locked and onion`
 - **Camera** `camera.set` · changes the document
-  Parameters: `{x?, y? (camera centre, stage px), dx?, dy? (pan by), zoom? (%, 5–2000), zoom_by? (factor), rotation? (°), rotate_by? (°), tint? (#rrggbb), tint_amount? (%), reset?: bool, frame?}`
+  Parameters: `{x?, y? (camera centre, stage px), dx?, dy? (pan by), zoom? (%, 5–2000), zoom_by? (factor), rotation? (°), rotate_by? (°), reset?: bool, frame?, and the colour effect as element.set_color_effect takes it: style?: none|brightness|tint|advanced, brightness? (%), tint? (#rrggbb), tint_amount? (%), red_multiplier? … blue_offset? (the camera has no opacity: no alpha values)}`
 - **Camera Info** `camera.info`
   Parameters: `{frame?} → the camera at the frame (x, y, zoom %, rotation °, tint) and its frame on the stage`
 - **Layer Depth** `layer.set_depth` · changes the document
-  Parameters: `{depth (px behind the stage, −500…10000; deeper layers move less when the camera pans), layer?}`
+  Parameters: ``{depth (px behind the stage, −500…10000; through the camera a deeper layer moves and scales less, and draws behind nearer ones), layer?, key?: bool (default: whether the layer's depth is keyed), frame? (default: the playhead)} with `key` sets a depth key at the frame (the first key away from frame 0 also keys frame 0 with the depth it had), so the depth tweens linearly between keys; `key: false` makes the depth one value again (ADR 0082)``
+- **Remove Depth Key** `layer.remove_depth_key` · changes the document
+  Parameters: `{layer?, frame? (default: the playhead)} removes the layer's depth key at the frame; removing the last one leaves the depth it had there`
+- **Attach Layer to Camera** `layer.set_attached` · changes the document
+  Parameters: `{attached?: bool (default: toggles), layer?} an attached layer stays where it is on screen while the camera moves (titles, HUDs); its depth plays no part (ADR 0082)`
+- **Layer Depths** `layer.depths`
+  Parameters: `{frame?} → {camera: bool, layers: [{layer, name, depth, keyed, key_here, attached}]} the layers that can have a depth, nearest first (ties in timeline order), at the frame`
 - **Add Bone** `bone.add` · changes the document
   Parameters: ``{from (instance id: the bone starts on it), to (instance id: the bone moves it), head?: [x, y] (the joint on a root instance, stage px, default its registration point; from an instance that hangs from a bone the joint is always that bone's end, so chains stay joined), tail?: [x, y] (default `to`'s registration point), name?} → {bone, layer}. Both instances go to an armature layer (made for the first bone)``
 - **Add Bone in Shape** `bone.add_in_shape` · changes the document
@@ -426,7 +432,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Select Elements** `element.select`
   Parameters: ``{ids: [..], add?: bool, toggle?: bool, layer?} selects elements on any visible, unlocked layer at the playhead (ids are unique; `layer` looks only there); `toggle` takes each one that is selected out of the selection and adds the others (Shift+Space on a stage element); the active layer becomes the first one's unless it has some of them``
 - **Select at Point** `element.pick`
-  Parameters: ``{x, y, add?: bool} the topmost element there on a visible, unlocked layer; `add` (Shift) adds it to the selection, or lets go of it, on any layer``
+  Parameters: ``{x, y, add?: bool, view?: stage|camera} the topmost element there on a visible, unlocked layer; `add` (Shift) adds it to the selection, or lets go of it, on any layer; with `view: camera` the point is on the movie's picture as the camera shows it (each layer through its depth)``
 - **Move** `element.translate` · changes the document
   Parameters: ``{dx, dy, snap?, from?: [x, y]} moves the selection, on every layer; with `snap` (a distance) one of its corners or ends, or its box's corners or centre (the nearest to `from`), then snaps within that distance by the snap engine's priority (ADR 0076): a point, guide, line or fill edge of the rest, the grid, a whole pixel``
 - **Transform** `element.set_transform` · changes the document
@@ -438,7 +444,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Alpha** `element.set_alpha` · changes the document
   Parameters: `{alpha: 0..1} sets the alpha multiplier and keeps the rest of the colour effect (None becomes Alpha; Brightness and Tint become Advanced below 1)`
 - **Colour Effect** `element.set_color_effect` · changes the document
-  Parameters: `{style?: none|brightness|tint|advanced|alpha (default: the style the values belong to, else each element's own), alpha? (%, 0..100), brightness? (%, -100..100), tint? (#rrggbb), tint_amount? (%, 0..100), red_multiplier?, green_multiplier?, blue_multiplier?, alpha_multiplier? (%, -100..100), red_offset?, green_offset?, blue_offset?, alpha_offset? (-255..255)} on every selected element (ADR 0056); values not given keep each element's own. A new style starts from the look it can keep: Advanced is exactly the effect before, Alpha keeps the opacity, Brightness and Tint start at 0 %. The camera's effect is a tint`
+  Parameters: `{style?: none|brightness|tint|advanced|alpha (default: the style the values belong to, else each element's own), alpha? (%, 0..100), brightness? (%, -100..100), tint? (#rrggbb), tint_amount? (%, 0..100), red_multiplier?, green_multiplier?, blue_multiplier?, alpha_multiplier? (%, -100..100), red_offset?, green_offset?, blue_offset?, alpha_offset? (-255..255)} on every selected element (ADR 0056); values not given keep each element's own. A new style starts from the look it can keep: Advanced is exactly the effect before, Alpha keeps the opacity, Brightness and Tint start at 0 %. The camera has no opacity (no Alpha style, alpha multiplier or offset)`
 - **Blending** `element.set_blend` · changes the document
   Parameters: `{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances`
 - **Filters** `element.set_filters` · changes the document

@@ -296,8 +296,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let to_screen = |p: Vec2| pos2(origin.x + p.x * zoom, origin.y + p.y * zoom);
     let to_stage = |p: Pos2| pos2((p.x - origin.x) / zoom, (p.y - origin.y) / zoom);
     let painter = ui.painter_at(canvas);
-    // View > Preview Through Camera: the stage shows the movie's picture (ADR 0027). Artwork
-    // tools pause meanwhile (what they'd edit is in stage space, not where it shows).
+    // View > Preview Through Camera: the stage shows the movie's picture (ADR 0027). The
+    // Selection tool picks and moves artwork there, the pointer mapped back through the camera
+    // and each layer's depth (ADR 0082); the other artwork tools pause (what they'd edit is in
+    // stage space, not where it shows).
     let preview = crate::camera_tool::previewing(app);
     let cam_geo = crate::camera_tool::Geo { origin: st_origin, zoom: st_zoom, stage_rect, preview };
     // Library items dragged onto the stage land at the pointer (ADR 0053).
@@ -311,12 +313,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
     app.cursor_stage = pointer.filter(|p| canvas.contains(*p)).map(to_stage);
     let panning = app.tool == Tool::Hand || space || resp.dragged_by(egui::PointerButton::Middle);
-    let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom);
+    let paused = preview && !panning && !matches!(app.tool, Tool::Camera | Tool::Hand | Tool::Zoom | Tool::Select);
+    // The Selection tool on the movie's picture: points there are the picture's (ADR 0082).
+    let through = preview && !panning && app.tool == Tool::Select;
     // A drag from a ruler makes a guide (ADR 0076).
     crate::rulers::input(app, ui, &bars, geo, preview);
     let guide_hot = if app.drag == Drag::None && !panning && !preview { pointer.and_then(|p| crate::rulers::guide_at(app, geo, p)) } else { None };
     if paused && (resp.drag_started() || resp.clicked()) {
-        app.status_ok(tr!("Previewing through the camera: artwork edits are paused. Turn off View › Preview Through Camera to edit."));
+        app.status_ok(tr!("Previewing through the camera: the Selection tool picks and moves artwork here; other tools wait. Turn off View › Preview Through Camera to draw."));
     }
     // Selection box in screen space (free transform handles live on it).
     // Edit Multiple Frames takes the Selection and Free Transform tools' input (ADR 0047); Free
@@ -415,6 +419,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::Pan
         } else if paused {
             Drag::None
+        } else if through {
+            crate::camera_tool::select_press(app, to_v(sp), shift)
         } else if let Some(i) = crate::rulers::guide_at(app, geo, press) {
             // The Selection tool on a guide moves it; onto a ruler, deletes it (ADR 0076).
             crate::rulers::drag_start(app, i)
@@ -521,6 +527,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         match (&mut app.drag, cur) {
             (Drag::Pan, _) => app.view.pan += resp.drag_delta(),
+            (Drag::CameraMove { last }, Some(c)) => {
+                let mut l = *last;
+                crate::camera_tool::move_to(app, &mut l, to_v(c));
+                app.drag = Drag::CameraMove { last: l };
+            }
             (Drag::Move { last }, Some(c)) => {
                 let d = c - *last;
                 if d.length_sq() > 0.0 {
@@ -644,7 +655,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if resp.drag_stopped() {
         match app.drag {
-            Drag::Move { .. } | Drag::SnapMove { .. } => {
+            Drag::Move { .. } | Drag::SnapMove { .. } | Drag::CameraMove { .. } => {
                 app.drop_raw();
                 app.s.end_gesture();
             }
@@ -686,6 +697,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos() {
             let sp = to_stage(p);
             match app.tool {
+                // Previewing: pick what the movie shows there (ADR 0082).
+                Tool::Select if through => {
+                    app.bone_sel = None;
+                    app.run("element.pick", json!({"x": sp.x, "y": sp.y, "add": shift, "view": "camera"}));
+                }
                 _ if !panning && let Some(text) = app.path_pick.take() => {
                     app.s.selection = anicraft_engine::Selection::only(app.s.layer, [text]);
                     if app.run("text.attach_path", json!({"x": sp.x, "y": sp.y})).is_some() {
@@ -1051,6 +1067,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let raw = raw_ids(app);
     if app.tool == Tool::Select && app.drag == Drag::None
         && !multi
+        && !preview
         && app.palette.is_none()
         && !app.modal_open()
         && let Some(sp) = app.cursor_stage
@@ -1066,7 +1083,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // An open envelope (ADR 0080) shows its mesh instead of boxes.
     let enveloped = crate::shape_envelope::shown(app).is_some();
     // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
-    if app.tool == Tool::Select {
+    if app.tool == Tool::Select && !preview {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
         let (mut spans, mut dots) = (Vec::new(), egui::Mesh::default());
         let mut budget = MAX_DOTS;
@@ -1090,6 +1107,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let id = e.id;
         let b = app.s.element_bounds_on(layer, id);
         if b.is_empty() {
+            continue;
+        }
+        // Previewing: the box where the movie shows it, through the camera and the layer's
+        // depth (ADR 0082).
+        if preview {
+            let v = app.s.camera_view(layer).unwrap_or(Affine::IDENTITY);
+            let q = [b.min, Vec2::new(b.max.x, b.min.y), b.max, Vec2::new(b.min.x, b.max.y)].map(|p| to_screen(v.apply(p)));
+            painter.add(egui::Shape::closed_line(q.to_vec(), sel_stroke));
             continue;
         }
         let r = Rect::from_min_max(to_screen(b.min), to_screen(b.max)).expand(1.0);

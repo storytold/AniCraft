@@ -42,7 +42,7 @@ pub use motion::{MotionTween, OnPath, PROPERTIES, Pin, PinError, Property, Prope
 pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, SoundId, SoundSync};
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
-pub use camera::Camera;
+pub use camera::{Camera, DepthKey};
 pub use swatch::{MAX_SWATCHES, Swatch, SwatchPaint};
 pub use aids::{Aids, GUIDE_REACH, Grid, Guide, GuideAxis, MAX_GUIDES};
 pub use nine_slice::symbol_box;
@@ -1138,6 +1138,14 @@ pub struct Layer {
     /// move a deeper layer less (parallax). Not the nesting depth ([`Timeline::depth`]).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub depth: f32,
+    /// Depth over time (ADR 0082): with keys, the depth at a frame is theirs
+    /// ([`Layer::depth_at`]) and `depth` plays no part. Sorted by frame, one per frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depth_keys: Vec<camera::DepthKey>,
+    /// Attached to the camera (ADR 0082): the camera's moves leave the layer where it is on
+    /// screen (titles, HUDs); its coordinates are the output's.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub attached: bool,
     /// Volume of the sounds on this layer (and in the symbols on it), `0..=1` (ADR 0039).
     #[serde(default = "full", skip_serializing_if = "is_full")]
     pub volume: f32,
@@ -1235,6 +1243,8 @@ impl PartialEq for Layer {
             && self.onion == o.onion
             && self.height_rows == o.height_rows
             && self.depth.to_bits() == o.depth.to_bits()
+            && self.depth_keys == o.depth_keys
+            && self.attached == o.attached
             && self.volume.to_bits() == o.volume.to_bits()
             && self.muted == o.muted
             && self.mask_mode == o.mask_mode
@@ -1268,6 +1278,8 @@ impl Layer {
             height_rows: 1,
             keyframes: vec![Arc::new(Keyframe::new(0, 1))],
             depth: 0.0,
+            depth_keys: Vec::new(),
+            attached: false,
             volume: 1.0,
             muted: false,
             armature: None,
@@ -2039,11 +2051,15 @@ fn sanitize_warps(layer: &mut Arc<Layer>) {
     }
 }
 
-/// Keeps a loaded layer's depth finite and in range (touching it only if it isn't).
+/// Keeps a loaded layer's depth and depth keys finite and in range (touching it only if they
+/// aren't).
 fn sanitize_depth(layer: &mut Arc<Layer>) {
     let d = camera::clamp_depth(layer.depth);
     if d.to_bits() != layer.depth.to_bits() {
         Arc::make_mut(layer).depth = d;
+    }
+    if !layer.depth_keys_clean() {
+        Arc::make_mut(layer).sanitize_depth_keys();
     }
 }
 
