@@ -28,6 +28,9 @@ use anicraft_geom::{Affine, Decomposed, Path, PathCmd, Vec2};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+mod retime;
+pub use retime::KeyRef;
+
 /// Most keys one track keeps (files and commands alike).
 pub const MAX_KEYS: usize = 10_000;
 
