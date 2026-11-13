@@ -2200,7 +2200,8 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
 /// of sides (or points) and, for a star, its point size.
 fn polystar_props(app: &mut App, ui: &mut egui::Ui) {
     let o = &mut app.polystar;
-    row_prose(ui, tr!("Style"), |ui| {
+    // "Shape", not Animate's "Style": the line style's row above is Style.
+    row_prose(ui, tr!("Shape"), |ui| {
         ui.selectable_value(&mut o.star, false, tr!("Polygon")).on_hover_text(tr!("Draws a regular polygon."));
         ui.selectable_value(&mut o.star, true, tr!("Star")).on_hover_text(tr!("Draws a star."));
     });

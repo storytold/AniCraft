@@ -117,7 +117,7 @@ pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, pointer: Option<
     let Some((_, mesh)) = shown(app) else { return };
     let at = |i: usize| xf.to_screen(mesh.get(i).copied().unwrap_or(Vec2::ZERO));
     let line = Stroke::new(1.5, T.selection);
-    let thin = Stroke::new(1.0, T.selection.gamma_multiply(0.7));
+    let thin = Stroke::new(1.0, T.selection);
     // The sides, clockwise: top, right, bottom, left.
     for side in [[0, 1, 2, 3], [3, 7, 11, 15], [15, 14, 13, 12], [12, 8, 4, 0]] {
         let [a, b, c, d] = side.map(at);

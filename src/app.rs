@@ -149,7 +149,7 @@ impl Tool {
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
             Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
-            Tool::Star => tr_noop!("Drag from the centre to draw a star or a polygon (Style in the options)."),
+            Tool::Star => tr_noop!("Drag from the centre to draw a star or a polygon (Shape in the options)."),
             Tool::Line => tr_noop!("Drag to draw a line. Shift snaps to 45°."),
             Tool::PaintBucket => tr_noop!("Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings."),
             Tool::InkBottle => tr_noop!("Click a shape to give it the current stroke colour and width."),
@@ -1852,6 +1852,70 @@ impl App {
                 if which == "brushing" {
                     self.brush_samples = (0..=40).map(|i| (anicraft_engine::geom::Vec2::new(150.0 + i as f32 * 9.0, 610.0 - (i as f32 * 0.16).sin() * 30.0), Some(0.3 + i as f32 / 60.0))).collect();
                     self.drag = Drag::Brush;
+                }
+            }
+            Some(which @ ("polystar" | "paintinside" | "drawingedit" | "shapeenvelope")) => {
+                // Drawing parity (ADR 0080) on a new layer: polygons and stars of several sides
+                // and point sizes; brush strokes clipped by Paint Inside and Paint Selection; a
+                // drawing object open in place with a line merged across it; an envelope bending
+                // a drawing object.
+                self.run("layer.new", json!({"name": "Parity"}));
+                self.run("draw.object_drawing", json!({"on": which != "paintinside"}));
+                let ink = json!({"stroke": "#1b2a4a", "stroke_width": 3});
+                let with = |mut p: Value| {
+                    for (k, v) in ink.as_object().into_iter().flatten() {
+                        p[k] = v.clone();
+                    }
+                    p
+                };
+                match which {
+                    "polystar" => {
+                        for (k, (shape, sides, size, fill)) in [("polygon", 3, 0.5, "#e8553b"), ("polygon", 6, 0.5, "#f2c14e"), ("star", 5, 0.5, "#3d8bfd"), ("star", 8, 0.2, "#7cc576"), ("star", 12, 0.8, "#d6336c")].into_iter().enumerate() {
+                            self.run("draw.star", with(json!({"cx": 170 + k as i32 * 190, "cy": 300, "outer": 80, "shape": shape, "sides": sides, "point_size": size, "fill": fill})));
+                        }
+                        self.run("edit.deselect", json!({}));
+                        self.tool = Tool::Star;
+                        self.polystar = PolyStarOptions { star: true, sides: 8, point_size: 0.2 };
+                    }
+                    "paintinside" => {
+                        self.run("draw.rect", with(json!({"x": 120, "y": 160, "w": 360, "h": 300, "fill": "#f2c14e"})));
+                        self.run("draw.ellipse", with(json!({"x": 600, "y": 160, "w": 360, "h": 300, "fill": "#3d8bfd"})));
+                        self.run("edit.deselect", json!({}));
+                        let wave = |y: f32| -> Vec<[f32; 2]> { (0..=80).map(|i| [60.0 + i as f32 * 12.0, y + (i as f32 * 0.25).sin() * 30.0]).collect() };
+                        // Started in the yellow rectangle: it paints only there.
+                        self.run("draw.brush", json!({"points": wave(250.0).into_iter().skip(10).collect::<Vec<_>>(), "size": 36, "mode": "inside", "color": "#e8553b"}));
+                        // The blue oval selected: Paint Selection keeps to it.
+                        if let Some(oval) = self.s.visible_elements().iter().find(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.fill == Some(anicraft_engine::doc::Paint::Solid(anicraft_engine::doc::Rgba::hex(0x3d8bfd))))).map(|e| e.id.0) {
+                            self.run("element.select", json!({"ids": [oval]}));
+                            self.run("draw.brush", json!({"points": wave(380.0), "size": 30, "mode": "selection", "color": "#7cc576"}));
+                        }
+                        self.run("edit.deselect", json!({}));
+                        self.tool = Tool::Brush;
+                        self.brush.mode = anicraft_engine::cmds_brush::PaintMode::Inside;
+                    }
+                    "drawingedit" => {
+                        self.run("draw.rect", with(json!({"x": 140, "y": 180, "w": 300, "h": 220, "radius": 24, "fill": "#e8553b"})));
+                        let v = self.run("draw.ellipse", with(json!({"x": 520, "y": 170, "w": 320, "h": 240, "fill": "#f2c14e"})));
+                        if let Some(id) = v.and_then(|v| v["element"].as_u64()) {
+                            self.run("symbol.edit", json!({"id": id}));
+                            // Inside, in the object's own space: a line across merges with it alone.
+                            self.run("draw.line", json!({"x0": -200, "y0": -40, "x1": 200, "y1": 60, "stroke": "#1b2a4a", "stroke_width": 3, "object": false}));
+                            self.run("edit.deselect", json!({}));
+                        }
+                        self.tool = Tool::Select;
+                    }
+                    _ => {
+                        self.run("draw.star", with(json!({"cx": 300, "cy": 320, "outer": 120, "shape": "star", "sides": 5, "point_size": 0.5, "fill": "#3d8bfd"})));
+                        self.run("draw.rect", with(json!({"x": 560, "y": 200, "w": 360, "h": 220, "fill": "#e8553b"})));
+                        crate::shape_envelope::open(self);
+                        if let Some((_, _, mesh)) = self.s.envelope() {
+                            let mut m = crate::shape_envelope::moved(&mesh, 1, anicraft_engine::geom::Vec2::new(0.0, -80.0));
+                            m = crate::shape_envelope::moved(&m, 13, anicraft_engine::geom::Vec2::new(30.0, 60.0));
+                            m = crate::shape_envelope::moved(&m, 3, anicraft_engine::geom::Vec2::new(40.0, -20.0));
+                            let points: Vec<[f32; 2]> = m.iter().map(|p| [p.x, p.y]).collect();
+                            self.run("modify.envelope_move", json!({"points": points}));
+                        }
+                    }
                 }
             }
             Some(which @ ("eraser" | "erasing")) => {

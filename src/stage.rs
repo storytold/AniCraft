@@ -1063,6 +1063,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
     let transforming = app.tool == Tool::Transform;
+    // An open envelope (ADR 0080) shows its mesh instead of boxes.
+    let enveloped = crate::shape_envelope::shown(app).is_some();
     // Selected raw shapes (ADR 0031) show Animate's dot pattern over themselves, with no box.
     if app.tool == Tool::Select {
         let to_px = Affine::translate(origin.x, origin.y).mul(&Affine::scale(zoom, zoom));
@@ -1099,6 +1101,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if app.tool == Tool::Select && raw.contains(&(layer, id)) {
             continue; // dots above
         }
+        if transforming && enveloped {
+            continue;
+        }
         if transforming {
             // Free transform shows one box for the whole selection (below); members get a hint.
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, T.selection.gamma_multiply(0.45)), StrokeKind::Middle);
@@ -1124,7 +1129,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Free transform box: recomputed every frame so it follows the artwork while you drag.
     let xf_box = if multi { crate::onion::selection_bounds(app) } else { bounds_arr(app.s.selection_bounds()) };
-    let enveloped = crate::shape_envelope::shown(app).is_some();
     if transforming && !enveloped && let Some(b) = xf_box {
         let r = Rect::from_min_max(to_screen(Vec2::new(b[0], b[1])), to_screen(Vec2::new(b[2], b[3]))).expand(1.0);
         painter.rect_stroke(r, 0.0, Stroke::new(1.5, T.selection), StrokeKind::Middle);
