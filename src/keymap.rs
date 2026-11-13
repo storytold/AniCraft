@@ -132,6 +132,8 @@ fn key_name(k: Key) -> &'static str {
         Key::Equals => "=",
         Key::OpenBracket => "[",
         Key::CloseBracket => "]",
+        Key::Semicolon => ";",
+        Key::Quote => "'",
         other => other.name(),
     }
 }

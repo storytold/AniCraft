@@ -155,12 +155,14 @@ Stage**. The artwork is still there; click again to see it.
 
 ### Rulers, grids and guides
 
-AniCraft doesn't have rulers, a grid or draggable guides yet. Until then:
+**View › Rulers** (**Ctrl+Alt+Shift+R**) puts rulers along the top and left of the stage, in
+pixels from its top-left corner. Drag from a ruler to make a guide. **View › Grid** shows a
+grid and **View › Guides** shows, locks and edits guides; all of them snap. See
+[Drawing](drawing.md#rulers-grid-and-guides).
 
 * The status bar shows the pointer's position on the stage (**x** and **y**, in pixels).
 * **Properties** shows and sets the exact position and size of what's selected.
 * The **Align** panel lines things up with each other or with the stage.
-* **Snap to Objects** snaps points to other artwork.
 * Templates put their layout guides on a guide layer, which you can draw on yourself:
   anything on a guide layer shows while you work but never exports (see
   [Timeline](timeline.md)).

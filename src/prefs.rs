@@ -161,6 +161,9 @@ pub struct Prefs {
     /// panels, and your own saved ones.
     #[serde(deserialize_with = "crate::dock::lenient_workspaces")]
     pub workspaces: crate::dock::Workspaces,
+    /// Whether the rulers, grid and guides show and snap (ADR 0076), kept from session to
+    /// session; where the guides are and how they look is the document's.
+    pub aids: anicraft_engine::ViewAids,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -225,6 +228,7 @@ impl Default for Prefs {
             test_movie_window: true,
             test_movie_pos: None,
             workspaces: crate::dock::Workspaces::default(),
+            aids: Default::default(),
         }
     }
 }

@@ -258,6 +258,9 @@ pub enum Drag {
     WarpPin { element: anicraft_engine::doc::ElementId, pin: anicraft_engine::doc::warp::PinId },
     /// Moving one of the open symbol's 9-slice guides (ADR 0055).
     SliceGuide { guide: crate::scale_grid::Guide },
+    /// Selection tool: moving the scene's guide `index` (ADR 0076); `off`: the pointer is over a
+    /// ruler or off the stage, where letting go deletes it.
+    Guide { index: usize, off: bool },
     Pan,
 }
 
@@ -377,6 +380,10 @@ pub struct App {
     pub raw_ends: Vec<anicraft_engine::geom::Vec2>,
     /// Where what is being dragged snapped this frame (stage space): the snap ring.
     pub snap_ring: Option<anicraft_engine::geom::Vec2>,
+    /// A guide being dragged out of a ruler (ADR 0076).
+    pub new_guide: Option<crate::rulers::NewGuide>,
+    /// Edit Grid and Edit Guides, while open.
+    pub aids_dialogs: crate::aids_dialog::AidsDialogs,
     pub pencil_mode: pathtools::PencilMode,
     /// Brush tool options, the samples of the stroke in progress (stage space, pen pressure
     /// when there is one) and the pen's last pressure (ADR 0033).
@@ -571,6 +578,8 @@ impl App {
         // Open Recent is the session's list, kept in the preferences (ADR 0059).
         session.recent = prefs.recent.clone();
         session.brushes = prefs.brushes.clone();
+        // Whether rulers, grid and guides show and snap carries over between sessions (ADR 0076).
+        session.aids = prefs.aids;
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
         session.style.object_drawing = false;
         let mut app = App {
@@ -623,6 +632,8 @@ impl App {
             raw_anchors: Vec::new(),
             raw_ends: Vec::new(),
             snap_ring: None,
+            new_guide: None,
+            aids_dialogs: Default::default(),
             pencil_mode: pathtools::PencilMode::default(),
             brush: crate::brushtool::BrushOptions::default(),
             paint_brush: crate::brushtool::BrushOptions::paint_brush(),
@@ -1621,6 +1632,27 @@ impl App {
                 self.drag = Drag::Shape { start: egui::pos2(240.0, 400.0), cur: egui::pos2(560.0, 140.0) };
                 self.snap_ring = Some(anicraft_engine::geom::Vec2::new(560.0, 140.0));
             }
+            Some("rulers") | Some("editguides") | Some("editgrid") => {
+                // Rulers, grid and guides (ADR 0076): a rectangle being drawn from one guide
+                // crossing to a grid crossing, the snap ring on its corner; `editguides` and
+                // `editgrid`: their dialogs.
+                self.run("view.rulers", json!({"on": true}));
+                self.run("view.grid_set", json!({"spacing": 40, "show": true, "snap": true, "over_objects": true}));
+                for (axis, at) in [("vertical", 320), ("vertical", 960), ("horizontal", 160), ("horizontal", 560)] {
+                    self.run("view.guide_add", json!({"axis": axis, "at": at}));
+                }
+                self.run("layer.new", json!({}));
+                self.run("draw.rect", json!({"x": 320, "y": 160, "w": 240, "h": 160, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 3, "object": true}));
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Rect;
+                self.drag = Drag::Shape { start: egui::pos2(960.0, 160.0), cur: egui::pos2(1120.0, 400.0) };
+                self.snap_ring = Some(anicraft_engine::geom::Vec2::new(1120.0, 400.0));
+                match which {
+                    Some("editguides") => crate::aids_dialog::open_guides(self, true),
+                    Some("editgrid") => crate::aids_dialog::open_grid(self),
+                    _ => {}
+                }
+            }
             Some("symboledit") => {
                 // A symbol open for editing in place (ADR 0045): a raw drawing inside it, merged
                 // with a line drawn across it there, its connected points showing under the
@@ -2395,6 +2427,23 @@ impl App {
             crate::layer_props::open(self, None);
             return;
         }
+        // View › Grid › Edit Grid and View › Guides › Edit Guides, Add Guide (ADR 0076): their
+        // dialogs (headless, the commands take the settings).
+        if id == "view.grid_set" {
+            crate::aids_dialog::open_grid(self);
+            return;
+        }
+        if matches!(id, "view.guides_set" | "view.guide_add") {
+            crate::aids_dialog::open_guides(self, id == "view.guide_add");
+            return;
+        }
+        if id == "view.guides_clear" && !self.s.guides().is_empty() {
+            let n = self.s.guides().len();
+            if self.run(id, json!({})).is_some() {
+                self.status_ok(trn!("Cleared {n} guide. {undo} to undo.", "Cleared {n} guides. {undo} to undo.", n, undo = self.undo_key()));
+            }
+            return;
+        }
         if id == "modify.convert_to_symbol" {
             // Name, type and Library folder (ADR 0053).
             crate::convert_symbol::open(self);
@@ -3142,6 +3191,7 @@ impl App {
         crate::drop::frame(self, &ctx);
         self.prompt_window(&ctx);
         crate::convert_symbol::window(self, &ctx);
+        crate::aids_dialog::window(self, &ctx);
         crate::templates::save_window(self, &ctx);
         crate::layer_props::window(self, &ctx);
         self.about_window(&ctx);
@@ -3182,6 +3232,7 @@ impl App {
         // Open Recent changed (an open, a save, a pin): into the preferences.
         crate::recent::sync(self);
         crate::brush_panel::sync(self);
+        crate::rulers::sync(self);
         // A browser asks before leaving a page with unsaved work (its close guard).
         platform::set_unsaved(self.s.is_dirty());
 

@@ -37,6 +37,7 @@ mod cmds_scene;
 pub mod cmds_sound;
 pub mod cmds_text;
 mod cmds_timeline;
+mod cmds_view;
 mod cmds_width;
 mod cmds_stroke;
 pub mod confirm;
@@ -51,6 +52,7 @@ pub mod onion;
 pub mod recovery;
 pub mod render_service;
 pub mod selection;
+pub mod snap;
 pub mod params;
 pub mod player;
 pub mod publish;
@@ -141,6 +143,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(onion::specs());
     v.extend(multi::specs());
     v.extend(cmds_draw::specs());
+    v.extend(cmds_view::specs());
     v.extend(cmds_group::specs());
     v.extend(cmds_library::specs());
     v.extend(merge::specs());
@@ -182,6 +185,7 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
 
 pub use history::{Snapshot, StateId};
 pub use selection::Selection;
+pub use snap::{Accuracy, SnapTo, ViewAids};
 pub use cmds_layer::LAYER_COLORS;
 
 /// The command namespaces that change a timeline's layers and frames, refused while a group is
@@ -274,10 +278,6 @@ impl ToolStyle {
     pub fn new_stroke(&self, color: anicraft_doc::Rgba, width: f32) -> anicraft_doc::Stroke {
         anicraft_doc::Stroke::new(color, width).with_profile(self.profile()).with_style(self.line.clone())
     }
-    /// The snapping radius a command asked for (`snap`), or none when Snap to Objects is off.
-    pub fn snap_radius(&self, asked: f32) -> f32 {
-        if self.snap_objects { asked } else { 0.0 }
-    }
     /// Sets the profile to a preset (dropping a picked custom one).
     pub fn set_profile(&mut self, p: anicraft_doc::ProfilePreset) {
         self.stroke_profile = p;
@@ -310,6 +310,9 @@ pub struct Session {
     saved_state: Option<StateId>,
     pub path: Option<PathBuf>,
     pub style: ToolStyle,
+    /// Whether the rulers, grid and guides show and snap (ADR 0076): the editor's, not the
+    /// document's.
+    pub aids: ViewAids,
     /// The style new text gets (the last one used).
     pub text_style: cmds_text::TextStyle,
     history: History,
@@ -405,6 +408,7 @@ impl Session {
             saved_state: Some(state),
             path: None,
             style: ToolStyle::default(),
+            aids: ViewAids::default(),
             text_style: cmds_text::TextStyle::default(),
             history: History::default(),
             gesture: None,
@@ -1089,6 +1093,8 @@ mod timeline_drop_tests;
 mod timeline_key_tests;
 #[cfg(test)]
 mod tests_bone_chain;
+#[cfg(test)]
+mod view_tests;
 #[cfg(test)]
 mod path_text_tests;
 #[cfg(test)]

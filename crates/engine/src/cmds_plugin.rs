@@ -49,6 +49,10 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
             "brush" => Err("plug-ins can't change your brushes or read and write brush sets"),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
             "control" => Err("plug-ins can't play the movie"),
+            // A scene's guides are the document's (ADR 0076); whether rulers, grid and guides
+            // show and snap is how you work.
+            "view" if matches!(id, "view.aids" | "view.guide_add" | "view.guide_move" | "view.guide_delete" | "view.guides_clear") => Ok(()),
+            "view" => Err("plug-ins can't change how your stage shows and snaps"),
             ns if DOCUMENT.contains(&ns) => Ok(()),
             _ => Err("plug-ins can't call this command"),
         },
