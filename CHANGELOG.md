@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+* **Swatches panel** (M1, ADR 0078).
+  * **Added**: **Window › Swatches**, the document's saved colours and gradients, saved in the
+    document (new documents and older files start with a default set). Click a swatch to apply
+    it to the selection and the tool colour, to the stroke or the fill, whichever is active
+    (the Tools panel's and Colour panel's squares choose, or the panel's own toggle); gradients
+    go to the fill. Add the current colour or gradient, Duplicate, Delete, drag to reorder
+    (Alt+arrows from the keyboard), names on hover, Clear and Load Default Swatches. Every
+    change is one undo step.
+  * **Added**: Import and Export Swatches as a small JSON swatch file, and import of GIMP `.gpl`
+    palettes. Adobe's `.aco`, `.ase` and `.clr` are proprietary and not read.
+  * **Added**: the colour picker shows the document's swatches, and the fill picker its gradient
+    swatches.
+  * **Added**: commands `swatch.list`, `swatch.add`, `swatch.remove`, `swatch.move`,
+    `swatch.duplicate`, `swatch.rename`, `swatch.apply`, `swatch.clear`, `swatch.reset`,
+    `swatch.import` and `swatch.export`, for scripts, the CLI and MCP (plug-ins may edit swatches
+    but not read or write swatch files).
+  * **Fixed**: the timeline's layer footer cut **Delete** to "Del…" at the default window size
+    since docking. Its buttons are now icon buttons (New Layer, Delete, New Folder, Up, Down),
+    named for screen readers, that fit at any size and in any language.
+
 * **Gradient editor, the Gradient Transform tool and Lock Fill** (M1, ADR 0074; #208, #203).
   * **Added**: gradients in the colour picker. The fill's picker (the Tools panel's Fill square,
     and every Fill swatch in Properties) starts with the fill's type: None, Solid, Linear,

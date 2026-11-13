@@ -182,7 +182,34 @@ one). The hex field shows the colour as `#rrggbb` and takes one you type. A fill
 starts with the fill's type: **None** (no fill), **Solid**, **Linear**, **Radial** or
 **Bitmap** (see [Gradients and bitmap fills](#gradients-and-bitmap-fills)); the stroke's picker
 has **No colour** instead. In the Tools panel's picker, with shapes selected, the colour you
-pick goes onto them too.
+pick goes onto them too. Below the recent colours, the picker shows the document's own
+swatches, and a fill's picker shows its gradient swatches under the fill type.
+
+### Swatches
+
+**Window › Swatches** keeps the colours and gradients you use in this document, as Animate's
+Swatches panel does. They are saved with the document; a new document starts with greys, the
+primaries and a few gradients.
+
+* **Click a swatch** to apply it: to the selected shapes, and to the colour new drawing uses.
+  It sets the **Stroke** or the **Fill**, whichever is active: click the Stroke or Fill square in
+  the Tools panel or the Colour panel, or choose with **Swatches set the Stroke / Fill** at the
+  top of the panel. A gradient always goes to the fill.
+* **+** adds the active colour (the selected shape's fill or line, else the tool's), after the
+  picked swatch. A gradient fill is added as a gradient swatch.
+* **Drag** a swatch to move it. **Right-click** for Apply to Fill, Apply to Stroke, Duplicate,
+  Delete, and its **Name**, which shows when you hover over it (otherwise its hex shows).
+* The buttons under the swatches duplicate and delete the picked one. The **…** menu imports
+  swatches, exports them, loads the default set and clears the panel (Clear keeps black and
+  white). Every change can be undone.
+* From the keyboard, **Tab** to a swatch: **Enter** applies it, **Delete** removes it and
+  **Alt+Left/Right** moves it.
+
+**Export Swatches** saves them as a small swatch file (`.json`) to import into other documents.
+**Import Swatches** reads that file or a **GIMP palette** (`.gpl`, which Inkscape, Krita and
+many palette sites also use); the swatches are added after yours. Adobe's `.aco`, `.ase` and
+`.clr` swatch files are Adobe's own formats and don't open in AniCraft: export the palette
+as GIMP `.gpl` from a tool that has it.
 
 To recolour existing artwork, select it and change **Fill** and **Stroke** in Properties.
 For transparency, use the colour effect's **Alpha** (see
@@ -380,7 +407,7 @@ on its symbol (see [Symbols and the Library](symbols-and-library.md#9-slice-scal
 ## Not there yet
 
 Not in AniCraft yet: rulers, a grid and guides; Envelope and **Delete Envelope**; gradient and bitmap
-strokes, and a Swatches panel (saved custom colours and gradients); entering a drawing object
+strokes; swatch folders, bitmap swatches and the swatches inside Animate files; entering a drawing object
 with a double-click; PolyStar's Polygon option; the Paint Selection and Paint Inside
 brush modes, brush libraries and tilt; erasing inside symbols; and Animate's ragged, stipple
 and hatched line styles (drawn solid when you open an Animate file).
