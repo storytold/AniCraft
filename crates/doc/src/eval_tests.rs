@@ -256,14 +256,65 @@ fn symbols_that_branch_into_themselves_stay_bounded() {
     let tl = Timeline { layers: vec![Arc::new(layer)] };
     d.library.push(Arc::new(Symbol { id: sid, name: "fork".into(), kind: SymbolKind::Graphic, timeline: tl }));
     push(layer0(&mut d), 0, inst(60));
-    let mut budget = EvaluationBudget::new(100);
+    let mut budget = EvaluationBudget::new(1000);
     let n = evaluate_with_budget(&d, 0, &mut budget).items.len();
-    assert_eq!(n, 15);
+    assert_eq!(n, 162, "the budget reaches recursive children before truncating");
     assert!(budget.truncated());
     // Selection bounds walk the same tree.
-    let mut budget = EvaluationBudget::new(100);
+    let mut budget = EvaluationBudget::new(1000);
     assert!(!d.timeline.layers[0].keyframes[0].elements[0].bounds_with_budget(&d, &mut budget).is_empty());
     assert!(budget.truncated());
+}
+
+#[test]
+fn unused_tween_endpoints_do_not_consume_work() {
+    let mut doc = tween_doc(Easing::Linear);
+    for id in 100..200 { push(layer0(&mut doc), 1, shape_el(id, 0.0)); }
+    let mut budget = EvaluationBudget::new(10);
+    assert_eq!(evaluate_with_budget(&doc, 0, &mut budget).items.len(), 1);
+    assert!(!budget.truncated());
+    // A non-adjacent successor also disables interpolation.
+    layer0(&mut doc).keyframe_mut(1).unwrap().start = 20;
+    let mut budget = EvaluationBudget::new(10);
+    assert_eq!(evaluate_with_budget(&doc, 5, &mut budget).items.len(), 1);
+    assert!(!budget.truncated());
+    layer0(&mut doc).keyframes.pop();
+    let mut budget = EvaluationBudget::new(10);
+    assert_eq!(evaluate_with_budget(&doc, 5, &mut budget).items.len(), 1);
+    assert!(!budget.truncated());
+}
+
+#[test]
+fn gradient_copies_and_tweens_consume_work_before_allocating() {
+    use anicraft_geom::Vec2;
+    let stops = vec![crate::GradientStop { offset: 0.0, color: Rgba::BLACK }; 100];
+    for paint in [Paint::Linear { start: Vec2::ZERO, end: Vec2::new(1.0, 0.0), stops: stops.clone() },
+        Paint::Radial { center: Vec2::ZERO, radius: 1.0, stops }] {
+        let mut doc = tween_doc(Easing::Linear);
+        for key in 0..2 {
+            let el = Arc::make_mut(&mut layer0(&mut doc).keyframe_mut(key).unwrap().elements[0]);
+            if let ElementKind::Shape(s) = &mut el.kind { s.fill = Some(paint.clone()); }
+        }
+        let mut budget = EvaluationBudget::new(20);
+        assert!(evaluate_with_budget(&doc, 0, &mut budget).items.is_empty());
+        assert!(budget.truncated());
+        let mut budget = EvaluationBudget::new(110);
+        assert_eq!(evaluate_with_budget(&doc, 0, &mut budget).items.len(), 1);
+        assert!(!budget.truncated());
+        // Both matching gradients and fallback clones must be charged before interpolation.
+        for fallback in [false, true] {
+            if fallback {
+                let el = Arc::make_mut(&mut layer0(&mut doc).keyframe_mut(1).unwrap().elements[0]);
+                if let ElementKind::Shape(s) = &mut el.kind { s.fill = Some(Paint::Solid(Rgba::BLACK)); }
+            }
+            let mut budget = EvaluationBudget::new(20);
+            assert!(evaluate_with_budget(&doc, 5, &mut budget).items.is_empty());
+            assert!(budget.truncated());
+            let mut budget = EvaluationBudget::new(400);
+            assert_eq!(evaluate_with_budget(&doc, 5, &mut budget).items.len(), 1);
+            assert!(!budget.truncated());
+        }
+    }
 }
 
 #[test]

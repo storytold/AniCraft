@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 /// Symbols nested deeper than this are not drawn (guards cyclic libraries).
 pub const MAX_SYMBOL_DEPTH: usize = 32;
-/// Work units (elements, layers, lookups and path commands) visited per evaluation, at most. The depth cap alone
+/// Work units (elements, layers, lookups, path commands and copied fill/name data) per evaluation, at most. The depth cap alone
 /// still lets a symbol holding two instances of itself expand 2^32 times (a hostile file hangs
 /// and exhausts memory).
 pub const MAX_EVAL_ELEMENTS: usize = 1_000_000;
@@ -44,6 +44,14 @@ impl EvaluationBudget {
             self.truncated = true;
             false
         }
+    }
+
+    fn shape(&mut self, shape: &Shape) -> bool {
+        let stops = match &shape.fill {
+            Some(Paint::Linear { stops, .. } | Paint::Radial { stops, .. }) => stops.len(),
+            _ => 0,
+        };
+        self.charge(shape.path.cmds.len()) && self.charge(stops)
     }
 
     pub(crate) fn symbol<'a>(&mut self, doc: &'a Document, id: crate::SymbolId) -> Option<&'a crate::Symbol> {
@@ -224,18 +232,21 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, budget: &m
             (None, LayerKind::Mask) => (cx.clip, clip_of(layer.id)),
             (None, _) => (layer.parent.and_then(clip_of).or(cx.clip), None),
         };
-        // Charge both tween endpoints before interpolation can allocate or scan their paths.
+        // Charge both tween endpoints only when interpolation will allocate or scan their data.
         if let Some(index) = layer.keyframe_index_at(frame)
             && let Some(kf) = layer.keyframes.get(index)
             && kf.tween.is_some()
+            && let Some(next) = layer.keyframes.get(index + 1)
+            && next.start == kf.end()
+            && frame != kf.start
         {
             for keyframe in layer.keyframes.iter().skip(index).take(2) {
                 for el in &keyframe.elements {
-                    if !budget.charge(1) {
+                    if !budget.charge(1) || !budget.charge(el.name.len()) {
                         return;
                     }
                     if let ElementKind::Shape(s) = &el.kind
-                        && !budget.charge(s.path.cmds.len())
+                        && !budget.shape(s)
                     {
                         return;
                     }
@@ -255,7 +266,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, budget: &m
             let color = cx.color.concat(&el.color);
             match &el.kind {
                 ElementKind::Shape(s) => {
-                    if !budget.charge(s.path.cmds.len()) {
+                    if !budget.shape(s) {
                         return;
                     }
                     out.items.push(DisplayItem {
