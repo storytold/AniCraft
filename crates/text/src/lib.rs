@@ -406,8 +406,73 @@ impl Fonts {
             style: if style.italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
         };
         let id = self.db.query(&q).ok_or(TextError::NoFonts)?;
-        let laid = self.db.with_face_data(id, |data, index| lay_out(data, index, text, style, glyphs)).flatten().ok_or(TextError::NoFonts)?;
+        // The chosen face is read in place (memory-mapped); only fallback faces the text needs are
+        // copied, so text in one script costs what it did before fallbacks.
+        let laid = self
+            .db
+            .with_face_data(id, |data, index| {
+                // Characters the face doesn't have (Arabic in Inter, say) come from the first
+                // fallback family that has them; everything else stays in the chosen face.
+                let mut missing: Vec<char> = text.chars().filter(|c| needs_glyph(*c)).collect();
+                missing.sort_unstable();
+                missing.dedup();
+                keep_lacking(&mut missing, data, index);
+                let mut fallbacks: Vec<(Vec<u8>, u32)> = Vec::new();
+                for fallback in FALLBACK_FAMILIES {
+                    if missing.is_empty() || fallbacks.len() + 1 >= MAX_FACES {
+                        break;
+                    }
+                    let Some(fid) = self.db.query(&fontdb::Query { families: &[fontdb::Family::Name(fallback)], ..q }).filter(|f| *f != id) else { continue };
+                    let helps = |d: &[u8], i: u32| {
+                        let before = missing.len();
+                        keep_lacking(&mut missing, d, i);
+                        (missing.len() < before).then(|| (d.to_vec(), i))
+                    };
+                    if let Some(face) = self.db.with_face_data(fid, helps).flatten() {
+                        fallbacks.push(face);
+                    }
+                }
+                let faces: Vec<(&[u8], u32)> = std::iter::once((data, index)).chain(fallbacks.iter().map(|(d, i)| (d.as_slice(), *i))).collect();
+                lay_out(&faces, text, style, glyphs)
+            })
+            .flatten()
+            .ok_or(TextError::NoFonts)?;
         Ok(Layout { family, ..laid })
+    }
+}
+
+/// Families tried, in order, for characters the chosen face doesn't have: faces with wide
+/// coverage that come with Windows, macOS and common Linux desktops, then Noto's script families.
+pub const FALLBACK_FAMILIES: &[&str] = &[
+    "Segoe UI",
+    "Arial",
+    "Tahoma",
+    "Geeza Pro",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+    "Noto Sans",
+    "Noto Sans Arabic",
+    "Noto Naskh Arabic",
+    "Noto Sans Hebrew",
+];
+
+/// Most faces one text block draws with (the chosen face and its fallbacks).
+const MAX_FACES: usize = 6;
+
+/// A character that is drawn (not a space, a line break or another control).
+fn needs_glyph(c: char) -> bool {
+    // Invisible format characters (ZWNJ, ZWJ, direction marks and embeddings, variation
+    // selectors, the BOM) draw as nothing, and fonts often don't map them.
+    let invisible = unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::BN
+        || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}');
+    !c.is_control() && !c.is_whitespace() && !invisible
+}
+
+/// Drops from `chars` those the face in `data` has (its charmap read once).
+fn keep_lacking(chars: &mut Vec<char>, data: &[u8], index: u32) {
+    if let Ok(font) = skrifa::FontRef::from_index(data, index) {
+        let charmap = font.charmap();
+        chars.retain(|c| charmap.map(*c).is_none());
     }
 }
 
@@ -449,8 +514,44 @@ pub fn sanitize(style: &Style) -> Style {
     }
 }
 
-/// One shaped glyph: id, where its pen position starts, its offsets and advance (pixels).
+/// The face drawing each byte of a paragraph, given how many faces there are and which has which
+/// character: the chosen one (0) where it has the character, else the first fallback that does.
+/// Spaces and marks stay with what comes before them, so a letter and its harakat are shaped
+/// together; a mark its letter's face lacks takes the whole cluster (the letter and every mark
+/// after it) to a face that has all of them, if there is one, and otherwise draws from a face
+/// that has the mark, leaving the letter and the earlier marks where they were.
+fn choose_faces(para: &str, faces: usize, has: impl Fn(usize, char) -> bool) -> Vec<usize> {
+    let mut face_of = vec![0usize; para.len()];
+    let mut current = 0;
+    let mut base = 0; // the byte offset of the last letter
+    for (i, c) in para.char_indices() {
+        let joins = !needs_glyph(c) || matches!(unicode_bidi::bidi_class(c), unicode_bidi::BidiClass::NSM | unicode_bidi::BidiClass::BN);
+        if !joins {
+            current = (0..faces).find(|f| has(*f, c)).unwrap_or(0);
+            base = i;
+        } else if needs_glyph(c) && !has(current, c) {
+            let mark = unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM;
+            let cluster = para.get(base..i + c.len_utf8()).unwrap_or_default();
+            if let Some(all) = (0..faces).find(|f| mark && cluster.chars().filter(|ch| needs_glyph(*ch)).all(|ch| has(*f, ch))) {
+                current = all;
+                if let Some(bytes) = face_of.get_mut(base..i) {
+                    bytes.fill(all);
+                }
+            } else if let Some(f) = (0..faces).find(|f| has(*f, c)) {
+                current = f;
+            }
+        }
+        if let Some(bytes) = face_of.get_mut(i..i + c.len_utf8()) {
+            bytes.fill(current);
+        }
+    }
+    face_of
+}
+
+/// One shaped glyph: the face it comes from, its id, the byte it starts at in its paragraph, its
+/// offsets and advance (pixels).
 struct Glyph {
+    face: usize,
     id: skrifa::GlyphId,
     cluster: usize,
     x_offset: f32,
@@ -458,22 +559,28 @@ struct Glyph {
     advance: f32,
 }
 
-fn lay_out(data: &[u8], index: u32, text: &str, style: &Style, want_glyphs: bool) -> Option<Layout> {
+/// Lays `text` out with `faces`: the chosen face first (its metrics set the lines), then the
+/// fallbacks for characters it doesn't have; with each glyph on its own too if `want_glyphs`.
+fn lay_out(faces: &[(&[u8], u32)], text: &str, style: &Style, want_glyphs: bool) -> Option<Layout> {
     let style = sanitize(style);
-    let font = skrifa::FontRef::from_index(data, index).ok()?;
+    let fonts: Vec<skrifa::FontRef> = faces.iter().filter_map(|(data, index)| skrifa::FontRef::from_index(data, *index).ok()).collect();
     let size = skrifa::instance::Size::new(style.size);
-    let metrics = font.metrics(size, skrifa::instance::LocationRef::default());
-    let upem = f32::from(metrics.units_per_em.max(1));
-    let scale = style.size / upem;
+    let metrics = fonts.first()?.metrics(size, skrifa::instance::LocationRef::default());
     let ascent = metrics.ascent;
     let line_height = (metrics.ascent - metrics.descent + metrics.leading).max(style.size * 0.5) + style.line_spacing;
-    let shaper_data = harfrust::ShaperData::new(&font);
-    let shaper = shaper_data.shaper(&font).build();
-    let glyphs = font.outline_glyphs();
-    let charmap = font.charmap();
-    let missing = text.chars().filter(|c| !c.is_control() && !c.is_whitespace() && charmap.map(*c).is_none()).count();
+    let shaper_data: Vec<harfrust::ShaperData> = fonts.iter().map(harfrust::ShaperData::new).collect();
+    let shapers: Vec<harfrust::Shaper> = fonts.iter().zip(&shaper_data).map(|(f, d)| d.shaper(f).build()).collect();
+    let scales: Vec<f32> = fonts.iter().map(|f| style.size / f32::from(f.metrics(size, skrifa::instance::LocationRef::default()).units_per_em.max(1))).collect();
+    let outlines: Vec<_> = fonts.iter().map(|f| f.outline_glyphs()).collect();
+    let charmaps: Vec<_> = fonts.iter().map(|f| f.charmap()).collect();
+    let has = |face: usize, c: char| charmaps.get(face).is_some_and(|m| m.map(c).is_some());
+    let missing = text.chars().filter(|c| needs_glyph(*c) && !(0..fonts.len()).any(|f| has(f, *c))).count();
 
-    // Lines: paragraphs at line breaks, each wrapped at spaces to the width if there is one.
+    // Lines: paragraphs at line breaks, each wrapped at spaces to the width if there is one. Text
+    // that mixes directions follows the Unicode bidi algorithm (UAX #9): a paragraph's lines are
+    // found in reading order, then each line's runs are shaped in their own direction and placed
+    // in visual order, so a number or a Latin word inside Arabic reads the right way round, and a
+    // wrapped Arabic paragraph starts on the first line.
     let mut lines: Vec<(f32, Vec<(Glyph, f32)>)> = Vec::new();
     // Per line: the character index its paragraph starts at, the paragraph's length in
     // characters, and the byte → character map of the paragraph (shared by its lines).
@@ -494,60 +601,63 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style, want_glyphs: bool
         }
         let to_char = Arc::new(to_char);
         let lines_before = lines.len();
-        let mut buffer = harfrust::UnicodeBuffer::new();
-        buffer.push_str(para);
-        buffer.guess_segment_properties();
-        let shaped = shaper.shape(buffer, harfrust::ShapeOptions::new());
-        let run: Vec<Glyph> = shaped
-            .glyph_infos()
-            .iter()
-            .zip(shaped.glyph_positions())
-            .map(|(info, pos)| Glyph {
-                id: skrifa::GlyphId::new(info.glyph_id),
-                cluster: info.cluster as usize,
-                x_offset: pos.x_offset as f32 * scale,
-                y_offset: pos.y_offset as f32 * scale,
-                advance: pos.x_advance as f32 * scale + style.letter_spacing,
-            })
-            .collect();
-        let is_space = |g: &Glyph| para.get(g.cluster..).and_then(|s| s.chars().next()).is_some_and(char::is_whitespace);
-        let mut line: Vec<(Glyph, f32)> = Vec::new();
-        let mut x = 0.0f32;
-        // Where the current line could break: after its last space.
-        let mut break_at: Option<usize> = None;
-        for g in run {
-            let space = is_space(&g);
-            if let Some(w) = style.width
-                && !space
-                && x + g.advance > w
-                && !line.is_empty()
-            {
-                // Wrap: at the last space if there is one (dropping trailing spaces), else here.
-                let rest = match break_at {
-                    Some(b) => line.split_off(b),
-                    None => Vec::new(),
-                };
-                while line.last().is_some_and(|(g, _)| is_space(g)) {
-                    line.pop();
+        let bidi = unicode_bidi::ParagraphBidiInfo::new(para, None);
+        let face_of = choose_faces(para, fonts.len(), has);
+        // A run shaped in one direction, split where the face changes; glyphs in visual order.
+        let shape_run = |run: std::ops::Range<usize>, rtl: bool| {
+            let mut parts: Vec<Vec<Glyph>> = Vec::new();
+            let mut start = run.start;
+            while start < run.end {
+                let face = face_of.get(start).copied().unwrap_or(0);
+                let end = (start..run.end).find(|i| face_of.get(*i).copied().unwrap_or(0) != face).unwrap_or(run.end);
+                if let (Some(s), Some(shaper)) = (para.get(start..end), shapers.get(face)) {
+                    parts.push(shape(shaper, face, s, start, rtl, scales.get(face).copied().unwrap_or(1.0), style.letter_spacing));
                 }
-                let width = line.last().map_or(0.0, |(g, gx)| gx + g.advance);
-                lines.push((width, std::mem::take(&mut line)));
-                let shift = rest.first().map_or(0.0, |(_, gx)| *gx);
-                line = rest.into_iter().map(|(g, gx)| (g, gx - shift)).collect();
-                x = line.last().map_or(0.0, |(g, gx)| gx + g.advance);
-                break_at = None;
+                start = end;
             }
-            line.push((g, x));
-            x += line.last().map_or(0.0, |(g, _)| g.advance);
-            if space {
-                break_at = Some(line.len());
+            if rtl {
+                parts.reverse();
             }
+            parts.into_iter().flatten().collect::<Vec<_>>()
+        };
+        // Each cluster's advance on its first byte, run by run (`None` inside a cluster, where a
+        // line can't break). Only wrapping reads it, so a block without a width skips this pass
+        // (it would shape every paragraph twice).
+        let mut advance: Vec<Option<f32>> = vec![None; para.len()];
+        let mut start = if style.width.is_some() { 0 } else { para.len() };
+        while start < para.len() {
+            let level = bidi.levels.get(start).copied();
+            let end = (start..para.len()).find(|i| bidi.levels.get(*i).copied() != level).unwrap_or(para.len());
+            for g in shape_run(start..end, level.is_some_and(|l| l.is_rtl())) {
+                if let Some(a) = advance.get_mut(g.cluster) {
+                    *a.get_or_insert(0.0) += g.advance;
+                }
+            }
+            start = end;
         }
-        while line.last().is_some_and(|(g, _)| is_space(g)) {
-            line.pop();
+        for range in break_lines(para, &advance, style.width) {
+            let mut line: Vec<(Glyph, f32)> = Vec::new();
+            let mut x = 0.0f32;
+            if !bidi.has_rtl() {
+                // All left to right: nothing to reorder (visual_runs copies the paragraph's levels per line).
+                for g in shape_run(range, false) {
+                    let a = g.advance;
+                    line.push((g, x));
+                    x += a;
+                }
+            } else if !range.is_empty() {
+                let (levels, runs) = bidi.visual_runs(range);
+                for run in runs {
+                    let rtl = levels.get(run.start).is_some_and(|l| l.is_rtl());
+                    for g in shape_run(run, rtl) {
+                        let a = g.advance;
+                        line.push((g, x));
+                        x += a;
+                    }
+                }
+            }
+            lines.push((x, line));
         }
-        let width = line.last().map_or(0.0, |(g, gx)| gx + g.advance);
-        lines.push((width, line));
         for _ in lines_before..lines.len() {
             spans.push((para_start, n, to_char.clone()));
         }
@@ -566,7 +676,7 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style, want_glyphs: bool
         let baseline = ascent + row as f32 * line_height;
         let span = spans.get(row);
         for (g, gx) in line {
-            let Some(glyph) = glyphs.get(g.id) else { continue };
+            let Some(glyph) = outlines.get(g.face).and_then(|o| o.get(g.id)) else { continue };
             if want_glyphs {
                 let settings = skrifa::outline::DrawSettings::unhinted(size, skrifa::instance::LocationRef::default());
                 let mut own = Path::new();
@@ -631,6 +741,60 @@ fn caret_lines(lines: &[(f32, Vec<(Glyph, f32)>)], spans: &[(u32, u32, Arc<Vec<u
         }
     }
     out
+}
+
+/// Shapes `text` (which starts at byte `at` of its paragraph) with one face in one direction.
+/// Glyphs come back in visual order (left to right), clusters counted from the paragraph's start.
+fn shape(shaper: &harfrust::Shaper<'_>, face: usize, text: &str, at: usize, rtl: bool, scale: f32, letter_spacing: f32) -> Vec<Glyph> {
+    let mut buffer = harfrust::UnicodeBuffer::new();
+    buffer.push_str(text);
+    buffer.set_direction(if rtl { harfrust::Direction::RightToLeft } else { harfrust::Direction::LeftToRight });
+    buffer.guess_segment_properties();
+    let shaped = shaper.shape(buffer, harfrust::ShapeOptions::new());
+    shaped
+        .glyph_infos()
+        .iter()
+        .zip(shaped.glyph_positions())
+        .map(|(info, pos)| Glyph {
+            face,
+            id: skrifa::GlyphId::new(info.glyph_id),
+            cluster: at + info.cluster as usize,
+            x_offset: pos.x_offset as f32 * scale,
+            y_offset: pos.y_offset as f32 * scale,
+            advance: pos.x_advance as f32 * scale + letter_spacing,
+        })
+        .collect()
+}
+
+/// A paragraph's lines as byte ranges in reading order, given each cluster's advance on its first
+/// byte (`None` inside a cluster): wrapped after the last space before `width` is passed (or
+/// between the clusters of a word wider than the line, never inside one), with the spaces at a
+/// line's end left out.
+fn break_lines(para: &str, advance: &[Option<f32>], width: Option<f32>) -> Vec<std::ops::Range<usize>> {
+    let trimmed = |start: usize, end: usize| start..para.get(start..end).map_or(start, |s| start + s.trim_end().len());
+    let mut lines = Vec::new();
+    let (mut start, mut x, mut break_at) = (0usize, 0.0f32, None::<usize>);
+    for (i, c) in para.char_indices() {
+        let Some(a) = advance.get(i).copied().flatten() else { continue };
+        let space = c.is_whitespace();
+        if let Some(w) = width
+            && !space
+            && x + a > w
+            && i > start
+        {
+            let end = break_at.unwrap_or(i);
+            lines.push(trimmed(start, end));
+            start = end;
+            x = advance.get(start..i).map_or(0.0, |s| s.iter().flatten().sum());
+            break_at = None;
+        }
+        x += a;
+        if space {
+            break_at = Some(i + c.len_utf8());
+        }
+    }
+    lines.push(trimmed(start, para.len()));
+    lines
 }
 
 /// Draws glyph outlines (font space, y up) into a path (pixels, y down) at a pen position.
@@ -723,6 +887,90 @@ mod tests {
         assert!(boxed(Align::Left).max.x < 20.0);
         assert!((140.0..160.0).contains(&boxed(Align::Center).center().x), "{:?}", boxed(Align::Center));
         assert!(boxed(Align::Right).min.x > 280.0);
+    }
+
+    #[test]
+    fn a_mark_takes_its_whole_cluster_to_a_face_with_all_of_it() {
+        let covers = |sets: &'static [&'static str]| move |f: usize, c: char| sets.get(f).is_some_and(|s| s.contains(c));
+        // Face 1 has the letter and the second mark but not the first; face 2 has all three.
+        assert_eq!(choose_faces("e\u{0301}\u{0323}", 3, covers(&["e\u{0301}", "e\u{0323}", "e\u{0301}\u{0323}"])), vec![2; 5]);
+        // No face has all three: the letter and its first mark stay together, and the second
+        // mark comes from a face that has it.
+        assert_eq!(choose_faces("q\u{0301}\u{0323}", 2, covers(&["q\u{0323}", "q\u{0301}"])), vec![1, 1, 1, 0, 0]);
+        // An invisible joiner the face doesn't map doesn't move the run to another face.
+        assert_eq!(choose_faces("ب\u{200D}ب", 2, covers(&["ب", "\u{200D}"])), vec![0; 7]);
+    }
+
+    #[test]
+    fn mixed_directions_read_the_right_way_round() {
+        // Lines are found in reading order: after the last space that fits, or within a word.
+        assert_eq!(break_lines("ab cd ef", &[Some(1.0); 8], Some(5.0)), vec![0..5, 6..8]);
+        assert_eq!(break_lines("abcdefgh", &[Some(1.0); 8], Some(3.0)), vec![0..3, 3..6, 6..8]);
+        // Never inside a cluster, even one wider than the line: a combining mark stays with its
+        // letter, and a ligature stays whole.
+        assert_eq!(break_lines("a\u{0301}b", &[Some(10.0), None, None, Some(10.0)], Some(5.0)), vec![0..3, 3..4]);
+        assert_eq!(break_lines("ffix", &[Some(30.0), None, None, Some(10.0)], Some(10.0)), vec![0..3, 3..4]);
+        let Some(fonts) = fonts() else { return };
+        let lay = |t: &str, width| fonts.layout(t, &Style { width, ..style(40.0) }).unwrap();
+        let arabic = lay("مرحبا 2026", None);
+        if arabic.missing > 0 {
+            eprintln!("{} has no Arabic letters: right-to-left layout test skipped", arabic.family);
+            return;
+        }
+        // A number inside Arabic keeps its digits in order, at the line's left end ...
+        assert!(arabic.outline.cmds.starts_with(&lay("2026", None).outline.cmds));
+        // ... and a wrapped Arabic paragraph starts with its first word, on the first line.
+        let first = lay("بيت", None);
+        let wrapped = lay("بيت جديد", Some(first.width + 1.0));
+        assert!(wrapped.height > first.height * 1.8, "two lines: {}", wrapped.height);
+        assert!(wrapped.outline.cmds.starts_with(&first.outline.cmds));
+    }
+
+    #[test]
+    fn letters_the_font_lacks_come_from_a_fallback_face() {
+        let Some(fonts) = fonts() else { return };
+        let has = |family: &str, c: char| {
+            let q = fontdb::Query { families: &[fontdb::Family::Name(family)], ..fontdb::Query::default() };
+            fonts.db.query(&q).and_then(|id| fonts.db.with_face_data(id, |d, i| skrifa::FontRef::from_index(d, i).is_ok_and(|f| f.charmap().map(c).is_some()))).unwrap_or(false)
+        };
+        // A family with Latin letters and no Arabic ones, and a fallback that has Arabic.
+        let Some(latin) = fonts.families().iter().find(|f| has(f, 'a') && !has(f, 'ب')) else {
+            eprintln!("no family with Latin letters and no Arabic ones here: fallback test skipped");
+            return;
+        };
+        let Some(fallback) = FALLBACK_FAMILIES.iter().find(|f| has(f, 'ب')) else {
+            eprintln!("no fallback family with Arabic letters here: fallback test skipped");
+            return;
+        };
+        let lay = |t: &str| fonts.layout(t, &Style { family: latin.clone(), ..style(40.0) }).unwrap();
+        let arabic = lay("بيت");
+        assert_eq!((arabic.missing, arabic.family.as_str()), (0, latin.as_str()), "the block keeps its family");
+        // The letters are the fallback face's (as wide as in that family), not the chosen face's boxes.
+        let direct = fonts.layout("بيت", &Style { family: fallback.to_string(), ..style(40.0) }).unwrap();
+        assert!((arabic.width - direct.width).abs() < 0.01, "{} vs {} in {fallback}", arabic.width, direct.width);
+        // The Latin letters are still drawn in the chosen face, the Arabic ones after them.
+        let mixed = lay("ab بيت");
+        assert!(mixed.outline.cmds.starts_with(&lay("ab").outline.cmds));
+        assert!(mixed.outline.cmds.len() > lay("ab").outline.cmds.len());
+        // A character no font has is counted, so the command can say so.
+        assert_eq!(lay("a\u{10FFFD}").missing, 1);
+        // Invisible format characters aren't boxes, so they aren't missing either.
+        assert_eq!(lay("a\u{200C}b\u{200D}\u{200F}\u{FE0F}").missing, 0);
+        // A combining mark the chosen face lacks takes its letter along to a face with both, so
+        // the two are shaped together (the mark attaches) instead of in two faces.
+        let mark = '\u{0301}';
+        if let (Some(latin), Some(both)) = (
+            fonts.families().iter().find(|f| has(f, 'e') && !has(f, mark)),
+            FALLBACK_FAMILIES.iter().find(|f| has(f, mark)).filter(|f| has(f, 'e')),
+        ) {
+            let lay_in = |family: &str| fonts.layout("e\u{0301}", &Style { family: family.to_string(), ..style(40.0) }).unwrap();
+            let (mixed, direct) = (lay_in(latin), lay_in(both));
+            assert_eq!(mixed.missing, 0);
+            assert!((mixed.width - direct.width).abs() < 0.01, "{} vs {} in {both}", mixed.width, direct.width);
+            assert_eq!(mixed.outline.cmds.len(), direct.outline.cmds.len());
+        } else {
+            eprintln!("no family with e and without U+0301 here: combining mark check skipped");
+        }
     }
 
     #[test]
