@@ -23,12 +23,13 @@ pub fn floating(app: &mut App, ctx: &egui::Context) {
     let floats = app.dock.floating.clone();
     let layout = app.dock.clone();
     app.dock_view.desk.retain(|id, _| floats.iter().any(|f| f.id == *id));
-    let host = crate::platform::movie_host(ctx.embed_viewports(), true);
+    let own = crate::dock_ui::own_windows(app, ctx);
     let mut acts = Vec::new();
     for f in &floats {
-        match host {
-            crate::platform::MovieHost::Window => own_window(app, ctx, f, &layout, &mut acts),
-            crate::platform::MovieHost::Inside(_) => inside(app, ctx, f, &layout, &mut acts),
+        if own {
+            own_window(app, ctx, f, &layout, &mut acts);
+        } else {
+            inside(app, ctx, f, &layout, &mut acts);
         }
     }
     apply(app, acts);
@@ -115,7 +116,6 @@ fn inside(app: &mut App, ctx: &egui::Context, f: &Float, layout: &Layout, acts: 
     let at = f.at.map_or_else(|| ctx.content_rect().center() - size * 0.5, |a| pos2(a[0], a[1]));
     w = if app.dock_view.placed.insert(f.id) { w.current_pos(at) } else { w.default_pos(at) };
     let shown = w.show(ctx, |ui| {
-        ui.set_min_size(size - vec2(16.0, 40.0));
         float_body(app, ui, f, layout, true, acts)
     });
     a11y::name_title_bar(&shown, title);

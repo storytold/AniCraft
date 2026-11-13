@@ -172,8 +172,10 @@ fn marker(p: &egui::Painter, at: Rect, k: NodeKind, c: egui::Color32) {
 pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     // The search, and the Show menu: kinds of rows, which scenes, the Library's symbols.
     ui.horizontal(|ui| {
-        let menu_w = 72.0;
-        let search = ui.add(egui::TextEdit::singleline(&mut app.explorer.filter).hint_text(tr!("Search")).desired_width((ui.available_width() - menu_w).max(80.0)));
+        // The search takes what the Show button (as wide as its translation) leaves.
+        let menu_w_id = ui.id().with("explorer_show_w");
+        let menu_w = ui.data(|d| d.get_temp::<f32>(menu_w_id)).unwrap_or(72.0) + ui.spacing().item_spacing.x;
+        let search = ui.add(egui::TextEdit::singleline(&mut app.explorer.filter).hint_text(tr!("Search")).desired_width((ui.available_width() - menu_w).max(crate::theme::MIN_FIELD)));
         search.set_name(tr!("Search the Movie Explorer"));
         if search.changed() {
             app.explorer.changed();
@@ -203,6 +205,11 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
                 app.explorer.changed();
             }
         });
+        let w = menu.response.rect.width();
+        if ui.data(|d| d.get_temp::<f32>(menu_w_id)) != Some(w) {
+            ui.data_mut(|d| d.insert_temp(menu_w_id, w));
+            ui.ctx().request_discard("the Show button's width changed"); // i18n-exempt: a debug reason, never shown
+        }
         menu.response.on_hover_text(tr!("What the Movie Explorer shows")).set_name(tr!("Show in the Movie Explorer"));
     });
     ui.add_space(4.0);

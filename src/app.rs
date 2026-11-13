@@ -1160,6 +1160,33 @@ impl App {
                 self.dock.top.size = Some(300.0);
                 self.dock_changed();
             }
+            // Dockable panels, second slice (ADR 0087): the right dock collapsed to icons with
+            // Properties open over the stage; Colour and Swatches as two tabs of one floating
+            // window (inside the editor, so the screenshot shows it); Properties at the
+            // narrowest a side dock goes, with a shape selected.
+            Some("dockicons") => {
+                self.dock.right.collapsed = true;
+                self.dock_view.flyout = Some(crate::dock::Panel::Properties);
+                self.dock_changed();
+            }
+            Some("floattabs") => {
+                use crate::dock::{Panel as P, Target};
+                self.dock_view.inside = true;
+                self.dock.move_to(P::Colour, Target::Float(Some([760.0, 240.0])));
+                self.dock.move_to(P::Swatches, Target::Stack(P::Colour));
+                self.dock_changed();
+            }
+            Some("docknarrow") => {
+                self.dock.right.size = Some(crate::dock_ui::MIN_SIDE);
+                self.dock_view.epoch += 1;
+                self.run("layer.select", json!({"index": 0}));
+                self.run("edit.select_all", json!({}));
+                self.dock_changed();
+            }
+            Some("workspaces") => {
+                self.save_workspace("Inking"); // i18n-exempt: a sample workspace name the user typed
+                crate::workspaces_window::open(self);
+            }
             Some("animator") => self.switch_workspace("animator"),
             Some("designer") => self.switch_workspace("designer"),
             Some("explorer") => {

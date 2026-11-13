@@ -11,6 +11,9 @@ use serde_json::json;
 use std::sync::Arc;
 
 const LAYER_W: f32 = 252.0;
+/// The narrowest the layer column goes, and the least room kept for frames beside it.
+const MIN_LAYER_W: f32 = 150.0;
+const MIN_FRAMES_W: f32 = 40.0;
 /// Rows are click targets (≥ `theme::TARGET`).
 const ROW_H: f32 = TARGET;
 const RULER_H: f32 = 24.0;
@@ -354,7 +357,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let painter = ui.painter_at(body);
     painter.rect_filled(body, 0.0, T.panel);
 
-    let grid = Rect::from_min_max(pos2(body.left() + LAYER_W, body.top()), body.right_bottom());
+    // In a narrow dock (ADR 0087) the layer column gives up width to keep a strip of frames;
+    // the layers' toggles stay whole and their names are cut short.
+    let layer_w = LAYER_W.min(body.width() - MIN_FRAMES_W).max(MIN_LAYER_W);
+    let grid = Rect::from_min_max(pos2(body.left() + layer_w, body.top()), body.right_bottom());
     let frames_total = app.s.frame_count();
     app.tl_cell_w = app.tl_cell_w.clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
     // Ctrl+wheel (or pinch) over the frames zooms about the pointer: the frame under it stays put.

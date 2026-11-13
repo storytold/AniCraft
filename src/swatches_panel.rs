@@ -42,7 +42,7 @@ impl ColourTarget {
 
 /// The Stroke / Fill choice, as two toggles.
 pub fn target_toggle(app: &mut App, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(tr!("Swatches set the"));
         for (t, label, tip) in [(ColourTarget::Stroke, tr!("Stroke"), tr!("Swatch clicks set the stroke colour (gradients still go to the fill)")), (ColourTarget::Fill, tr!("Fill"), tr!("Swatch clicks set the fill: a colour or a gradient"))] {
             if ui.selectable_label(app.colour_target == t, label).on_hover_text(tip).clicked() {
@@ -172,7 +172,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     app.swatch_sel = app.swatch_sel.filter(|i| *i < n);
     grid(app, ui);
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let sel = app.swatch_sel;
         let add_tip = match app.colour_target {
@@ -381,7 +381,7 @@ fn name_field(app: &mut App, ui: &mut egui::Ui, i: usize, current: &str) {
     let mut s: String = ui.data(|d| d.get_temp(buf_id)).unwrap_or_else(|| current.to_string());
     ui.horizontal(|ui| {
         ui.label(tr!("Name"));
-        let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(140.0).char_limit(anicraft_engine::doc::swatch::MAX_SWATCH_NAME).hint_text(tr!("no name"))).named(tr!("Swatch name"));
+        let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(crate::theme::fit(ui, 140.0)).char_limit(anicraft_engine::doc::swatch::MAX_SWATCH_NAME).hint_text(tr!("no name"))).named(tr!("Swatch name"));
         if r.lost_focus() {
             if s.trim() != current {
                 app.run("swatch.rename", json!({"index": i, "name": s}));

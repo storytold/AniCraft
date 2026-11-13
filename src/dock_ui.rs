@@ -97,6 +97,14 @@ pub struct DockView {
     pub(crate) from_window: Option<egui::ViewportId>,
     /// The editor window's top-left corner on the desktop (points).
     origin: Option<Pos2>,
+    /// Floating panels inside the editor this run, whatever the platform could do (screenshots
+    /// of a floating window, which only capture the editor's own window).
+    pub inside: bool,
+}
+
+/// Floating panels go in windows of their own (else inside the editor, ADR 0062's fallback).
+pub(crate) fn own_windows(app: &App, ctx: &egui::Context) -> bool {
+    !app.dock_view.inside && matches!(crate::platform::movie_host(ctx.embed_viewports(), true), crate::platform::MovieHost::Window)
 }
 
 /// What a drop target is.
@@ -380,7 +388,7 @@ pub fn workspace(app: &mut App, ui: &mut egui::Ui) {
     drag_and_drop(app, &ctx, &mut acts);
     apply(app, acts);
     // Ctrl+F6: the stage, each panel as docked (and floating inside the editor), the tools.
-    let inside = !matches!(crate::platform::movie_host(ctx.embed_viewports(), true), crate::platform::MovieHost::Window);
+    let inside = !own_windows(app, &ctx);
     let mut order = vec![Region::Stage];
     order.extend(app.dock.order().into_iter().filter(|p| inside || !app.dock.is_floating(*p)).map(region));
     a11y::set_order(&ctx, order);
@@ -874,23 +882,42 @@ pub(crate) fn panel_menu(ui: &mut egui::Ui, at: Where, p: Panel, layout: &Layout
 
 /// The shown panel's contents, wherever it is.
 pub fn panel_body(app: &mut App, ui: &mut egui::Ui, p: Panel) {
+    // A vertical scroll area grows to its widest row and remembers it; held to the panel's
+    // width, a row that can't fit can't widen every other one (ADR 0087).
+    let width = ui.available_width();
     let pad = |x: i8, y: i8| egui::Frame::NONE.inner_margin(egui::Margin::symmetric(x, y));
     let scroll = |salt: &'static str| egui::ScrollArea::vertical().id_salt(salt).auto_shrink([false, false]);
+    let held = |ui: &mut egui::Ui| ui.set_max_width(width);
     match p {
         Panel::Properties => {
-            scroll("props").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::panels::properties(app, ui)));
+            scroll("props").show(ui, |ui| {
+                held(ui);
+                pad(12, 8).show(ui, |ui| crate::panels::properties(app, ui))
+            });
         }
         Panel::Align => {
-            scroll("align").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::panels::align_panel(app, ui)));
+            scroll("align").show(ui, |ui| {
+                held(ui);
+                pad(12, 8).show(ui, |ui| crate::panels::align_panel(app, ui))
+            });
         }
         Panel::Colour => {
-            scroll("colour").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::panels::colour_panel(app, ui)));
+            scroll("colour").show(ui, |ui| {
+                held(ui);
+                pad(12, 8).show(ui, |ui| crate::panels::colour_panel(app, ui))
+            });
         }
         Panel::Swatches => {
-            scroll("swatches").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::swatches_panel::panel(app, ui)));
+            scroll("swatches").show(ui, |ui| {
+                held(ui);
+                pad(12, 8).show(ui, |ui| crate::swatches_panel::panel(app, ui))
+            });
         }
         Panel::Library => {
-            scroll("library_dock").show(ui, |ui| pad(12, 10).show(ui, |ui| crate::panels::library(app, ui)));
+            scroll("library_dock").show(ui, |ui| {
+                held(ui);
+                pad(12, 10).show(ui, |ui| crate::panels::library(app, ui))
+            });
         }
         Panel::MovieExplorer => {
             pad(12, 4).show(ui, |ui| crate::movie_explorer::panel(app, ui));
@@ -899,12 +926,18 @@ pub fn panel_body(app: &mut App, ui: &mut egui::Ui, p: Panel) {
             pad(12, 8).show(ui, |ui| crate::panels::history(app, ui));
         }
         Panel::LayerDepth => {
-            scroll("layer_depth").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::layer_depth::panel(app, ui)));
+            scroll("layer_depth").show(ui, |ui| {
+                held(ui);
+                pad(12, 8).show(ui, |ui| crate::layer_depth::panel(app, ui))
+            });
         }
         Panel::Timeline => crate::timeline::show(app, ui),
         Panel::MotionEditor => crate::motion_editor::show(app, ui),
         Panel::Actions => {
-            scroll("actions").show(ui, |ui| pad(10, 8).show(ui, |ui| crate::actions_panel::panel(app, ui)));
+            scroll("actions").show(ui, |ui| {
+                held(ui);
+                pad(10, 8).show(ui, |ui| crate::actions_panel::panel(app, ui))
+            });
         }
         Panel::Output => {
             pad(10, 8).show(ui, |ui| crate::test_movie::output_panel(app, ui));
@@ -1167,7 +1200,7 @@ fn drag_and_drop(app: &mut App, ctx: &egui::Context, acts: &mut Vec<Act>) {
         let target = match target {
             // A window of its own goes where the pointer is on the desktop.
             Target::Float(Some([x, y])) => {
-                let own = matches!(crate::platform::movie_host(ctx.embed_viewports(), true), crate::platform::MovieHost::Window);
+                let own = own_windows(app, ctx);
                 let o = app.dock_view.origin();
                 Target::Float(Some(if own { [x + o.x, y + o.y] } else { [x, y] }))
             }
@@ -1660,5 +1693,21 @@ mod tests {
         click(&ctx, &mut app, expand);
         assert!(!app.dock.right.collapsed && app.dock_view.flyout.is_none());
         assert_eq!(app.dock.right.groups, built_in("essentials").expect("built in").right.groups);
+    }
+
+    #[test]
+    fn a_floating_window_keeps_its_size_from_frame_to_frame() {
+        // Its size is kept as the arrangement changes; fed back as its contents' least size
+        // it grew a little every frame.
+        let (mut app, ctx) = app();
+        app.dock.move_to(Panel::Colour, Target::Float(Some([760.0, 240.0])));
+        app.dock.move_to(Panel::Swatches, Target::Stack(Panel::Colour));
+        settle(&ctx, &mut app);
+        let before = app.dock.floating[0].size;
+        for _ in 0..10 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        assert_eq!(app.dock.floating[0].size, before);
+        assert_eq!(before, Panel::Colour.float_size());
     }
 }

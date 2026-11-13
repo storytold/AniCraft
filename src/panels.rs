@@ -499,7 +499,7 @@ pub(crate) fn colour_panel(app: &mut App, ui: &mut egui::Ui) {
         ui.label(text(Type::Data, hex(fill)).color(T.text_dim));
     });
     let mut undo = tr_noop!("Colour");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button(tr!("Swap")).on_hover_text(tr!("Swap the stroke and fill colours")).clicked() {
             (stroke, fill) = (fill, stroke);
             (stroke_changed, fill_changed, undo) = (true, true, tr_noop!("Swap Colours"));
@@ -553,7 +553,8 @@ pub(crate) fn align_panel(app: &mut App, ui: &mut egui::Ui) {
             app.run(id, if app.align_to_stage { json!({"to_stage": true}) } else { json!({}) });
         }
     };
-    ui.horizontal(|ui| {
+    // Rows wrap in a narrow dock (ADR 0087): the vertical alignments go under the horizontal.
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (icon, id) in [(Icon::AlignLeft, "align.left"), (Icon::AlignHCenter, "align.hcenter"), (Icon::AlignRight, "align.right")] {
             button(app, ui, icon, id);
@@ -563,7 +564,7 @@ pub(crate) fn align_panel(app: &mut App, ui: &mut egui::Ui) {
             button(app, ui, icon, id);
         }
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         button(app, ui, Icon::DistributeH, "align.distribute_h");
         button(app, ui, Icon::DistributeV, "align.distribute_v");
@@ -909,7 +910,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             ui.add_space(4.0);
             // How the instance plays: the symbol's type, and a graphic's looping.
             row_prose(ui, tr!("Type"), |ui| {
-                egui::ComboBox::from_id_salt("prop_symkind").width(150.0).selected_text(symbol_kind_label(kind)).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("prop_symkind").width(crate::theme::fit(ui, 150.0)).selected_text(symbol_kind_label(kind)).show_ui(ui, |ui| {
                     for (k, id, tip) in [
                         (SymbolKind::Graphic, "graphic", tr!("Keeps step with the timeline it is on (looping options below)")),
                         (SymbolKind::MovieClip, "movie_clip", tr!("Plays its own timeline on a loop, from when it appears")),
@@ -972,7 +973,7 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
                 let names = [(LoopMode::Loop, "loop", tr!("Loop")), (LoopMode::PlayOnce, "play_once", tr!("Play once")), (LoopMode::SingleFrame, "single_frame", tr!("Single frame"))];
                 let current = names.iter().find(|(mode, _, _)| mode == loop_mode).map_or(tr!("Loop"), |(_, _, l)| l);
                 row_prose(ui, tr!("Looping"), |ui| {
-                    egui::ComboBox::from_id_salt("prop_loop").width(150.0).selected_text(current).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("prop_loop").width(crate::theme::fit(ui, 150.0)).selected_text(current).show_ui(ui, |ui| {
                         for (mode, id, l) in names {
                             if ui.selectable_label(mode == *loop_mode, l).clicked() && (mode != *loop_mode || m.looping) {
                                 app.run("element.set_loop", json!({"loop": id}));
@@ -1186,7 +1187,7 @@ fn text_field_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
     let Some(f) = &t.field else { return };
     let mut name = e.name.clone();
     row_prose(ui, tr!("Instance"), |ui| {
-        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0).hint_text(tr!("instance name"))).named(tr!("Instance name"));
+        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(crate::theme::fit(ui, 150.0)).hint_text(tr!("instance name"))).named(tr!("Instance name"));
         if r.on_hover_text(tr!("The name scripts use for the field, as in score_txt.text = \"10\" (letters, digits and _)")).changed() {
             live(app, tr_noop!("Instance name"), "instance.set_name", json!({"element": e.id.0, "name": name}));
         }
@@ -1252,7 +1253,7 @@ fn text_field_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
 fn instance_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Element, events: &[anicraft_engine::doc::EventHandler]) {
     let mut name = e.name.clone();
     row_prose(ui, tr!("Instance"), |ui| {
-        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0).hint_text(tr!("instance name"))).named(tr!("Instance name"));
+        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(crate::theme::fit(ui, 150.0)).hint_text(tr!("instance name"))).named(tr!("Instance name"));
         if r.on_hover_text(tr!("The name actions use to address it (letters, digits and _)")).changed() {
             live(app, tr_noop!("Instance name"), "instance.set_name", json!({"element": e.id.0, "name": name}));
         }
@@ -1943,7 +1944,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                 }
                 let mut label = k.label.clone();
                 row_prose(ui, tr!("Label"), |ui| {
-                    if ui.add(egui::TextEdit::singleline(&mut label).desired_width(150.0)).named(tr!("Frame label")).changed() {
+                    if ui.add(egui::TextEdit::singleline(&mut label).desired_width(crate::theme::fit(ui, 150.0))).named(tr!("Frame label")).changed() {
                         live(app, tr_noop!("Frame label"), "timeline.set_label", json!({"label": label}));
                     }
                 });
@@ -2071,7 +2072,7 @@ fn frame_props(app: &mut App, ui: &mut egui::Ui, layer: &anicraft_engine::doc::L
                         }
                         let shape = t.kind == anicraft_engine::doc::TweenKind::Shape;
                         row_prose(ui, tr!("Kind"), |ui| {
-                            egui::ComboBox::from_id_salt("prop_kind").width(150.0).selected_text(if shape { tr!("Shape") } else { tr!("Classic") }).show_ui(ui, |ui| {
+                            egui::ComboBox::from_id_salt("prop_kind").width(crate::theme::fit(ui, 150.0)).selected_text(if shape { tr!("Shape") } else { tr!("Classic") }).show_ui(ui, |ui| {
                                 if ui.selectable_label(!shape, tr!("Classic")).clicked() && shape {
                                     app.run("timeline.create_tween", json!({}));
                                 }
@@ -2139,7 +2140,7 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
     }
     let name = current.as_ref().and_then(|f| app.s.doc.sound(f.sound)).map_or_else(|| tr!("None").to_string(), |x| x.name.clone());
     row_prose(ui, tr!("Sound"), |ui| {
-        egui::ComboBox::from_id_salt("prop_sound").width(150.0).selected_text(name).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("prop_sound").width(crate::theme::fit(ui, 150.0)).selected_text(name).show_ui(ui, |ui| {
             if ui.selectable_label(current.is_none(), tr!("None")).clicked() && current.is_some() {
                 app.run("sound.remove", json!({}));
             }
@@ -2154,7 +2155,7 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
     });
     let Some(f) = current else { return };
     row_prose(ui, tr!("Sync"), |ui| {
-        egui::ComboBox::from_id_salt("prop_sync").width(150.0).selected_text(crate::i18n::t(f.sync.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("prop_sync").width(crate::theme::fit(ui, 150.0)).selected_text(crate::i18n::t(f.sync.label())).show_ui(ui, |ui| {
             for m in SoundSync::ALL {
                 if ui.selectable_label(f.sync == m, crate::i18n::t(m.label())).on_hover_text(crate::i18n::t(m.hint())).clicked() {
                     app.run("sound.set", json!({"sync": m.key()}));
@@ -2168,7 +2169,7 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
         return;
     }
     row_prose(ui, tr!("Repeat"), |ui| {
-        egui::ComboBox::from_id_salt("prop_repeat").width(90.0).selected_text(if f.looping { tr!("Loop") } else { tr!("Repeat") }).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("prop_repeat").width(crate::theme::fit(ui, 90.0)).selected_text(if f.looping { tr!("Loop") } else { tr!("Repeat") }).show_ui(ui, |ui| {
             if ui.selectable_label(!f.looping, tr!("Repeat")).clicked() && f.looping {
                 app.run("sound.set", json!({"loop": false}));
             }
@@ -2188,7 +2189,7 @@ fn sound_rows(app: &mut App, ui: &mut egui::Ui, current: Option<anicraft_engine:
     });
     // The effect, as Animate's Effect menu, with the envelope editor beside it (ADR 0039).
     row_prose(ui, tr!("Effect"), |ui| {
-        egui::ComboBox::from_id_salt("prop_effect").width(150.0).selected_text(crate::i18n::t(f.effect.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("prop_effect").width(crate::theme::fit(ui, 150.0)).selected_text(crate::i18n::t(f.effect.label())).show_ui(ui, |ui| {
             for e in SoundEffect::PRESETS {
                 if ui.selectable_label(f.effect == e, crate::i18n::t(e.label())).on_hover_text(crate::i18n::t(e.hint())).clicked() && f.effect != e {
                     app.run("sound.set", json!({"effect": e.key()}));
@@ -2321,7 +2322,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }),
         Tool::Star => polystar_props(app, ui),
         Tool::PaintBucket => row_prose(ui, tr!("Gap size"), |ui| {
-            egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(crate::i18n::t(app.bucket_gap.label())).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("bucket_gap").width(crate::theme::fit(ui, 170.0)).selected_text(crate::i18n::t(app.bucket_gap.label())).show_ui(ui, |ui| {
                 for g in crate::app::GapSize::ALL {
                     ui.selectable_value(&mut app.bucket_gap, g, crate::i18n::t(g.label()));
                 }
@@ -2384,7 +2385,7 @@ fn eraser_props(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         row_prose(ui, tr!("Mode"), |ui| {
-            egui::ComboBox::from_id_salt("erase_mode").width(170.0).selected_text(crate::i18n::t(o.mode.label())).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("erase_mode").width(crate::theme::fit(ui, 170.0)).selected_text(crate::i18n::t(o.mode.label())).show_ui(ui, |ui| {
                 for m in EraseMode::ALL {
                     ui.selectable_value(&mut o.mode, m, crate::i18n::t(m.label())).on_hover_text(crate::i18n::t(m.hint()));
                 }
@@ -2438,7 +2439,7 @@ fn brush_props(app: &mut App, ui: &mut egui::Ui) {
         ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Brush smoothing")).on_hover_text(tr!("How much the stroke is smoothed: 0 follows the hand closely"));
     });
     row_prose(ui, tr!("Mode"), |ui| {
-        egui::ComboBox::from_id_salt("brush_mode").width(170.0).selected_text(crate::i18n::t(b.mode.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("brush_mode").width(crate::theme::fit(ui, 170.0)).selected_text(crate::i18n::t(b.mode.label())).show_ui(ui, |ui| {
             for m in PaintMode::ALL {
                 ui.selectable_value(&mut b.mode, m, crate::i18n::t(m.label())).on_hover_text(crate::i18n::t(m.hint()));
             }
@@ -2492,7 +2493,7 @@ fn profile_picker(ui: &mut egui::Ui, which: ProfileRow, current: Option<&anicraf
     row_prose(ui, tr!("Width"), |ui| {
         profile_preview(ui, current, vec2(44.0, 12.0), T.text_dim, None);
         let menu = ui.id().with(which);
-        egui::ComboBox::from_id_salt(menu).width(150.0).selected_text(label).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt(menu).width(crate::theme::fit(ui, 150.0)).selected_text(label).show_ui(ui, |ui| {
             for pr in ProfilePreset::ALL {
                 let on = preset == Some(pr);
                 let r = ui.horizontal(|ui| {
@@ -2555,7 +2556,7 @@ fn line_style_rows(ui: &mut egui::Ui, which: ProfileRow, st: &anicraft_engine::d
     let kind = st.dash_kind();
     row_prose(ui, tr!("Style"), |ui| {
         line_preview(ui, kind, vec2(44.0, 12.0), T.text_dim);
-        egui::ComboBox::from_id_salt((which, "line_style")).width(110.0).selected_text(crate::i18n::t(kind.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt((which, "line_style")).width(crate::theme::fit(ui, 110.0)).selected_text(crate::i18n::t(kind.label())).show_ui(ui, |ui| {
             for k in DashKind::ALL {
                 let on = k == kind;
                 let r = ui.horizontal(|ui| {
@@ -2605,7 +2606,7 @@ fn line_style_rows(ui: &mut egui::Ui, which: ProfileRow, st: &anicraft_engine::d
         None => {}
     }
     row_prose(ui, tr!("Cap"), |ui| {
-        egui::ComboBox::from_id_salt((which, "line_cap")).width(110.0).selected_text(crate::i18n::t(st.cap.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt((which, "line_cap")).width(crate::theme::fit(ui, 110.0)).selected_text(crate::i18n::t(st.cap.label())).show_ui(ui, |ui| {
             for c in Cap::ALL {
                 if ui.selectable_label(c == st.cap, crate::i18n::t(c.label())).clicked() && c != st.cap {
                     edit = Some(LineEdit { label: tr_noop!("Stroke cap"), params: json!({"cap": c.key()}), drag: false });
@@ -2620,7 +2621,7 @@ fn line_style_rows(ui: &mut egui::Ui, which: ProfileRow, st: &anicraft_engine::d
         }
     });
     row_prose(ui, tr!("Join"), |ui| {
-        egui::ComboBox::from_id_salt((which, "line_join")).width(110.0).selected_text(crate::i18n::t(st.join.label())).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt((which, "line_join")).width(crate::theme::fit(ui, 110.0)).selected_text(crate::i18n::t(st.join.label())).show_ui(ui, |ui| {
             for j in Join::ALL {
                 if ui.selectable_label(j == st.join, crate::i18n::t(j.label())).clicked() && j != st.join {
                     edit = Some(LineEdit { label: tr_noop!("Stroke join"), params: json!({"join": j.key()}), drag: false });
