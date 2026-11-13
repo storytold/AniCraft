@@ -192,8 +192,8 @@ pub fn matrices(arm: &Armature, pose: &Pose) -> HashMap<BoneId, Affine> {
     let mut out = HashMap::with_capacity(arm.bones.len());
     for b in &arm.bones {
         let Some(wp) = node.get(&b.parent).copied() else { continue };
-        let a = b.allow(pose.angle(b.id));
-        let wc = if a == 0.0 { wp.mul(&b.rest) } else { crate::armature::turn_about(wp.apply(b.head), a).mul(&wp.mul(&b.rest)) };
+        let (a, s) = (b.allow(pose.angle(b.id)), b.allow_slide(pose.slide(b.id)));
+        let wc = if a == 0.0 && s == anicraft_geom::Vec2::ZERO { wp.mul(&b.rest) } else { crate::armature::joint(b, &wp, a, s).1 };
         if wc.is_finite() {
             node.insert(b.child, wc);
             out.insert(b.id, wc);

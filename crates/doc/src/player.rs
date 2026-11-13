@@ -18,7 +18,7 @@ use crate::actions::as3::ir::{Base, Function, ListenEvent, Place, Prop, Value};
 use crate::actions::as3::run::{self, Stop, World};
 use crate::actions::as3::{Compiled, Decls, Problem};
 use crate::actions::{Action, ButtonEvent, EventHandler, FrameRef, FrameScript, PluginScript, Property, Seg, Target};
-use crate::eval::{Play, evaluate_guided, evaluate_symbol, guide_walk};
+use crate::eval::{Play, evaluate_shown, evaluate_symbol, guide_walk};
 use crate::field::{Changed, Edit, Editor, FieldLook, FieldState, chars, fit, scroll_to_caret};
 use crate::sound::Started;
 use crate::{BlendMode, ColorTransform, DisplayList, Document, Element, ElementId, ElementKind, FIELD_GUTTER, Group, LayerKind, MAX_SYMBOL_DEPTH, Rgba, SoundSync, SymbolId, SymbolKind, TextBlock, TextField, TextKind, Timeline};
@@ -573,7 +573,7 @@ fn walk(doc: &Document, st: &PlayerState, tl: &Timeline, frame: u32, parent: usi
         let gain = parent_gain * layer.sound_gain();
         let hit = hittable && layer.kind != LayerKind::Mask;
         let path_walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
-        let Some((kf_start, els)) = evaluate_guided(layer, frame, path_walk.as_ref()) else { continue };
+        let Some((kf_start, els)) = evaluate_shown(layer, frame, path_walk.as_ref(), doc.stage.fps) else { continue };
         let layer_xf = match camera {
             Some(c) => match c.layer_view(&doc.stage, layer, frame) {
                 Some(v) => v,

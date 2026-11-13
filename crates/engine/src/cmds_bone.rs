@@ -205,7 +205,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(singular());
     }
     let id = BoneId(s.doc.alloc_id());
-    let bone = Bone { id, name, parent: from, child: to, head: inv_f.apply(head), tail: inv_t.apply(tail), rest, limits: None, pinned: false };
+    let bone = Bone { name, ..Bone::new(id, from, to, inv_f.apply(head), inv_t.apply(tail), rest) };
     take_off(s, t.layer, to)?;
     let lid = match fa {
         Some(_) => {
@@ -223,7 +223,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         None => {
             // The first bone: both instances move to a new armature layer above them.
             take_off(s, f.layer, from)?;
-            let arm = Armature { bones: vec![bone], skin: None };
+            let arm = Armature { bones: vec![bone], ..Default::default() };
             armature_layer(s, f.layer, f.index.min(t.index), vec![f.el.clone(), t.el.clone()], arm)?
         }
     };
@@ -555,7 +555,7 @@ fn add_in_shape(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let id = BoneId(s.doc.alloc_id());
     let child = ElementId(s.doc.alloc_id());
-    let bone = Bone { id, name, parent: from, child, head: h, tail: t, rest: Affine::IDENTITY, limits: None, pinned: false };
+    let bone = Bone { name, ..Bone::new(id, from, child, h, t, Affine::IDENTITY) };
     let (lid, created) = match existing {
         Some((lid, arm)) => {
             let mut arm = (*arm).clone();
@@ -572,7 +572,7 @@ fn add_in_shape(s: &mut Session, p: &Value) -> Result<Value> {
             if let ElementKind::Shape(x) = &mut el.kind {
                 x.merge = false;
             }
-            let mut arm = Armature { bones: vec![bone], skin: Some(Skin::new(found.el.id, shp.path.clone())) };
+            let mut arm = Armature { bones: vec![bone], skin: Some(Skin::new(found.el.id, shp.path.clone())), ..Default::default() };
             skin::rebind(&mut arm);
             take_off(s, found.layer, found.el.id)?;
             (armature_layer(s, found.layer, found.index, vec![Arc::new(el)], arm)?, true)

@@ -250,7 +250,20 @@ pub fn evaluate_guided<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk
     Some((start, Cow::Owned(els)))
 }
 
-fn evaluate_tweened<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
+/// [`evaluate_guided`] as the movie shows the layer at `fps` frames a second: an armature's
+/// springs (ADR 0084) swing its bones by the motion up to the frame. This is what every
+/// renderer, export, the player and the stage draw; commands edit the keyed pose
+/// ([`evaluate_guided`]). The same as [`evaluate_guided`] without springs.
+pub fn evaluate_shown<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>, fps: f32) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
+    let Some(arm) = layer.armature.as_deref().filter(|a| layer.kind == crate::LayerKind::Armature && a.has_springs()) else { return evaluate_guided(layer, frame, guide) };
+    let (start, els) = evaluate_tweened(layer, frame, guide)?;
+    let pose = crate::spring::sprung_pose(layer, frame, fps).unwrap_or_default();
+    let mut els = els.into_owned();
+    crate::armature::apply(arm, &mut els, &pose);
+    Some((start, Cow::Owned(els)))
+}
+
+pub(crate) fn evaluate_tweened<'a>(layer: &'a Layer, frame: u32, guide: Option<&PathWalk>) -> Option<(u32, Cow<'a, [Arc<Element>]>)> {
     let idx = layer.keyframe_index_at(frame)?;
     let kf = layer.keyframes.get(idx)?;
     // A motion tween: its target follows the property curves (and its motion path, ADR 0030);
@@ -488,7 +501,7 @@ fn eval_timeline(doc: &Document, tl: &Timeline, frame: u32, cx: &Ctx, out: &mut 
         let guide = cx.guide || is_guide;
         // A layer guided by a guide layer: its tweens follow the guide's first path.
         let walk = layer.parent.and_then(|p| tl.layer(p)).filter(|g| g.kind == LayerKind::Guide).and_then(|g| guide_walk(g, frame));
-        let Some((kf_start, elements)) = evaluate_guided(layer, frame, walk.as_ref()) else { continue };
+        let Some((kf_start, elements)) = evaluate_shown(layer, frame, walk.as_ref(), doc.stage.fps) else { continue };
         let layer_outline = cx.outline.or(if layer.outline && cx.stage { Some(layer.color) } else { None });
         // Through a camera, each layer is placed by the camera and its own depth (an attached
         // layer stays put); a layer the camera has passed isn't drawn.
