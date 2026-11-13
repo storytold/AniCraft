@@ -150,6 +150,10 @@ pub struct Prefs {
     /// Where the Test Movie window was last, in points (its top-left corner); `None` until it
     /// has been opened where the system says where windows are.
     pub test_movie_pos: Option<[f32; 2]>,
+    /// Window › Workspace (ADR 0075): the workspace in use, each one's arrangement of the
+    /// panels, and your own saved ones.
+    #[serde(deserialize_with = "crate::dock::lenient_workspaces")]
+    pub workspaces: crate::dock::Workspaces,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -213,6 +217,7 @@ impl Default for Prefs {
             brushes: Default::default(),
             test_movie_window: true,
             test_movie_pos: None,
+            workspaces: crate::dock::Workspaces::default(),
         }
     }
 }

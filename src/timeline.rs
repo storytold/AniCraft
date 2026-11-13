@@ -1,6 +1,6 @@
 //! Timeline panel: transport, layer list and a virtualised frame grid.
 
-use crate::app::{App, BottomTab};
+use crate::app::App;
 use crate::icons::{self, Icon};
 use crate::menus;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, to_color32, with_type};
@@ -264,20 +264,17 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// The timeline header's tools, beside the dock's tabs (ADR 0075): transport, readouts, frame
+/// and tween buttons, `width` wide at most. What doesn't fit scrolls sideways (Shift+wheel) in
+/// a small window or at a large interface scale, instead of being cut off.
+pub fn header_tools(app: &mut App, ui: &mut egui::Ui, width: f32) {
+    let out = egui::ScrollArea::horizontal().id_salt("tl_header").max_width(width.max(40.0)).show(ui, |ui| ui.horizontal(|ui| header(app, ui)));
+    app.tl_header_spill = out.content_size.x - out.inner_rect.width();
+}
+
+/// The timeline panel's body: layers and frames (its header is in the dock's tab row).
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let dock = ui.max_rect();
-    // ---- header ---------------------------------------------------------------------------
-    egui::Frame::NONE.fill(T.panel_alt).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            // The whole width is the header's (frame zoom and Frame View sit in the bottom bar,
-            // as in Animate). What doesn't fit scrolls sideways (Shift+wheel) in a small window
-            // or at a large interface scale, instead of being cut off.
-            let w = ui.available_width();
-            let out = egui::ScrollArea::horizontal().id_salt("tl_header").max_width(w).show(ui, |ui| ui.horizontal(|ui| header(app, ui, dock)));
-            app.tl_header_spill = out.content_size.x - out.inner_rect.width();
-        });
-    });
-
     // A frame selection lives while the playhead is inside it and its layers exist.
     if let Some(sel) = app.frame_sel {
         let (f0, f1) = sel.frames();
@@ -285,11 +282,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if gone || app.playing || (app.tl_drag == TlDrag::None && !(f0..=f1).contains(&app.s.frame)) {
             app.frame_sel = None;
         }
-    }
-
-    if app.bottom == BottomTab::MotionEditor {
-        crate::motion_editor::show(app, ui);
-        return;
     }
 
     // ---- body -----------------------------------------------------------------------------
@@ -897,7 +889,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             && let Some(p) = cr.interact_pointer_pos()
             && layer.keyframe_at(frame_at(p.x)).is_some_and(|k| k.motion.is_some())
         {
-            app.bottom = BottomTab::MotionEditor;
+            app.show_panel(crate::dock::Panel::MotionEditor);
         }
         // The right edge of a span is a handle: drag it to make the span longer or shorter
         // (later frames move with it, as with F5 / Shift+F5).
@@ -1046,7 +1038,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let here = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame));
             if here.is_some_and(|k| k.motion.is_some()) {
                 if ui.button(tr!("Motion Editor")).clicked() {
-                    app.bottom = BottomTab::MotionEditor;
+                    app.show_panel(crate::dock::Panel::MotionEditor);
                     ui.close();
                 }
                 menus::cmd_item(app, ui, "timeline.create_tween");
@@ -1463,7 +1455,7 @@ pub fn easing_param(e: Easing) -> serde_json::Value {
     }
 }
 
-/// The timeline header, left to right: tabs, transport, readouts, frame and tween buttons.
+/// The timeline header, left to right: transport, readouts, frame and tween buttons.
 /// The frame rate as the header shows it: whole rates without decimals ("24 fps"), others
 /// with as many as they need ("29.97 fps", "12.5 fps").
 fn fps_label(fps: f32) -> String {
@@ -1472,19 +1464,7 @@ fn fps_label(fps: f32) -> String {
     format!("{s} fps")
 }
 
-fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
-    // Two tabs share the dock: the timeline and the Motion Editor.
-    for (tab, name, tip) in [(BottomTab::Timeline, tr!("Timeline"), tr!("Layers and frames")), (BottomTab::MotionEditor, tr!("Motion Editor"), tr!("Property curves of the motion tween at the playhead (double-click a motion span)"))] {
-        let r = ui.selectable_label(app.bottom == tab, text(Type::Heading, name));
-        // With the Motion Editor up, Ctrl+F6 lands on its tab (the layer rows are hidden).
-        if tab == BottomTab::MotionEditor && app.bottom == tab {
-            a11y::anchor(ui, a11y::Region::Timeline, dock, &r);
-        }
-        if r.on_hover_text(tip).clicked() {
-            app.bottom = tab;
-        }
-    }
-    ui.add_space(4.0);
+fn header(app: &mut App, ui: &mut egui::Ui) {
     transport(app, ui);
     ui.add_space(4.0);
     let fps = app.s.doc.stage.fps;
@@ -1517,7 +1497,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, dock: Rect) {
     if in_motion {
         egui::ComboBox::from_id_salt("tl_kind").width(120.0).selected_text(tr!("Motion tween")).show_ui(ui, |ui| {
             if ui.selectable_label(false, tr!("Motion Editor")).on_hover_text(tr!("Edit the property curves")).clicked() {
-                app.bottom = BottomTab::MotionEditor;
+                app.show_panel(crate::dock::Panel::MotionEditor);
             }
             ui.separator();
             if ui.selectable_label(false, tr!("Classic tween")).on_hover_text(tr!("Tween to the next keyframe instead")).clicked() {

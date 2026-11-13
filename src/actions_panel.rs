@@ -49,23 +49,10 @@ enum Holds {
     Script,
 }
 
-/// Opens the panel on a tab.
+/// Opens the panel on a tab (it floats, or wherever it was docked: ADR 0075).
 pub fn open(app: &mut App, tab: Tab) {
-    app.show_actions = true;
+    app.show_panel(crate::dock::Panel::Actions);
     app.actions.tab = tab;
-}
-
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    if !app.show_actions {
-        return;
-    }
-    let mut open = app.show_actions;
-    let at = ctx.content_rect().right_top() + egui::vec2(-760.0, 96.0);
-    let shown = egui::Window::new(tr!("Actions")).id(egui::Id::new("actions_panel")).open(&mut open).default_pos(at).default_width(420.0).resizable(true).collapsible(false).show(ctx, |ui| {
-        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).auto_shrink([false, true]).show(ui, |ui| panel(app, ui));
-    });
-    crate::a11y::name_title_bar(&shown, tr!("Actions"));
-    app.show_actions = open;
 }
 
 /// The selected movie clip or button instance on the active layer, if exactly one is selected.
@@ -77,7 +64,8 @@ fn selected_instance(app: &App) -> Option<(Element, SymbolKind)> {
     (kind != SymbolKind::Graphic).then(|| ((**e).clone(), kind))
 }
 
-fn panel(app: &mut App, ui: &mut egui::Ui) {
+/// The panel's contents, wherever it is.
+pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     let inst = selected_instance(app);
     ui.horizontal(|ui| {
         if ui.selectable_label(app.actions.tab == Tab::Frame, tr!("Frame")).on_hover_text(tr!("What runs when the playhead enters a keyframe")).clicked() {

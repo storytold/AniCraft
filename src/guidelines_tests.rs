@@ -1,6 +1,6 @@
 //! Enforces docs/ui-guidelines.md: typography and colour come from `theme`, never raw values.
 
-const SOURCES: [(&str, &str); 28] = [
+const SOURCES: [(&str, &str); 30] = [
     ("colour.rs", include_str!("colour.rs")),
     ("drop.rs", include_str!("drop.rs")),
     ("recent.rs", include_str!("recent.rs")),
@@ -27,6 +27,8 @@ const SOURCES: [(&str, &str); 28] = [
     ("bone_tool.rs", include_str!("bone_tool.rs")),
     ("find_panel.rs", include_str!("find_panel.rs")),
     ("movie_explorer.rs", include_str!("movie_explorer.rs")),
+    ("dock.rs", include_str!("dock.rs")),
+    ("dock_ui.rs", include_str!("dock_ui.rs")),
     ("publish_panel.rs", include_str!("publish_panel.rs")),
     ("main.rs", ""),
 ];
