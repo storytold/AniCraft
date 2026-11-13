@@ -7,6 +7,7 @@
 pub use anicraft_audio as audio;
 pub use anicraft_actions as actions;
 
+pub mod aids;
 pub mod armature;
 pub mod skin;
 mod bitmap;
@@ -40,6 +41,7 @@ pub use sound::{EnvelopePoint, FrameSound, Sound, SoundEffect, SoundFormat, Soun
 pub use width::{MAX_WIDTH_FACTOR, MAX_WIDTH_POINTS, ProfilePreset, WidthPoint, WidthProfile};
 pub use stroke_style::{Cap, Dash, DashKind, Join, StrokeStyle};
 pub use camera::Camera;
+pub use aids::{Aids, GUIDE_REACH, Grid, Guide, GuideAxis, MAX_GUIDES};
 pub use nine_slice::symbol_box;
 pub use armature::{Armature, Bone, BoneId, JointAngle, Limits, Pose};
 pub use eval::{DisplayItem, DisplayList, Group, MAX_SYMBOL_DEPTH, evaluate, evaluate_guided, evaluate_layer_elements, evaluate_player, evaluate_scene, evaluate_scene_camera, evaluate_timeline, evaluate_timeline_at, guide_walk, instance_start};
@@ -1402,11 +1404,15 @@ pub struct Scene {
     pub name: String,
     #[serde(default)]
     pub timeline: Timeline,
+    /// The scene's guides (View › Guides, ADR 0076), in stage pixels. Animate keeps guides per
+    /// scene too; they show on the stage only, never in a picture or an export.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<Guide>,
 }
 
 impl Scene {
     pub fn new(name: impl Into<String>) -> Scene {
-        Scene { name: name.into(), timeline: Timeline::default() }
+        Scene { name: name.into(), timeline: Timeline::default(), guides: Vec::new() }
     }
 }
 
@@ -1440,6 +1446,9 @@ pub struct Document {
     /// File › Publish Settings: the formats Publish writes and their options (ADR 0060).
     #[serde(default, skip_serializing_if = "publish_is_default")]
     pub publish: Arc<publish::PublishProfile>,
+    /// How the grid and the guides look (ADR 0076).
+    #[serde(default, skip_serializing_if = "aids_is_default")]
+    pub aids: Arc<Aids>,
     /// Next free id for layers, elements and symbols.
     pub next_id: u64,
 }
@@ -1465,6 +1474,8 @@ struct DocumentFile {
     document_class: String,
     #[serde(default)]
     publish: Arc<publish::PublishProfile>,
+    #[serde(default)]
+    aids: Arc<Aids>,
     #[serde(default = "first_id")]
     next_id: u64,
 }
@@ -1473,9 +1484,9 @@ impl From<DocumentFile> for Document {
     fn from(f: DocumentFile) -> Document {
         let mut scenes = f.scenes;
         if let Some(tl) = f.timeline {
-            scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl }));
+            scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl, guides: Vec::new() }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, aids: f.aids, next_id: f.next_id }
     }
 }
 
@@ -1487,6 +1498,10 @@ fn library_tree_is_empty(t: &Arc<LibraryTree>) -> bool {
     t.is_empty()
 }
 
+fn aids_is_default(a: &Arc<Aids>) -> bool {
+    a.is_default()
+}
+
 fn publish_is_default(p: &Arc<publish::PublishProfile>) -> bool {
     p.is_default()
 }
@@ -1496,13 +1511,13 @@ static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish)
+        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish) && arc_eq(&self.aids, &o.aids)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), aids: Arc::default(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -1580,6 +1595,10 @@ impl Document {
         }
         s.fps = s.fps.clamp(1.0, 240.0);
         s.background = s.background.sanitized();
+        let aids = self.aids.sanitized();
+        if aids != *self.aids {
+            self.aids = Arc::new(aids);
+        }
         let mut max_id = 0u64;
         let scan = |l: &Layer, max_id: &mut u64| {
             *max_id = (*max_id).max(l.id.0);
@@ -1600,6 +1619,9 @@ impl Document {
         for (i, scene) in self.scenes.iter_mut().enumerate() {
             if scene.name.trim().is_empty() || scene.name.len() > 256 {
                 Arc::make_mut(scene).name = format!("Scene {}", i + 1);
+            }
+            if scene.guides.len() > MAX_GUIDES || scene.guides.iter().any(|g| !(g.at.is_finite() && g.at.abs() <= GUIDE_REACH)) {
+                aids::sanitize_guides(&mut Arc::make_mut(scene).guides);
             }
             let tl = &mut Arc::make_mut(scene).timeline;
             for l in &mut tl.layers {

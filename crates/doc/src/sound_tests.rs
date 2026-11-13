@@ -347,7 +347,7 @@ fn start_skips_a_playing_sound_and_stop_cuts_it() {
 fn scenes_play_in_order_guides_are_silent_and_missing_sounds_are_skipped() {
     let mut d = doc_with(&[(0, 3, with(SoundSync::Event, 1, false))], vec![ramp_sound(7, 100)]);
     let first = d.scenes[0].clone();
-    d.scenes.insert(0, Arc::new(Scene { name: "Intro".into(), timeline: first.timeline.clone() }));
+    d.scenes.insert(0, Arc::new(Scene { name: "Intro".into(), timeline: first.timeline.clone(), guides: Vec::new() }));
     assert_eq!(spans(&voices(&d, 8000)), vec![(VoiceKind::Event, 0, 100), (VoiceKind::Event, 3000, 3100)]);
     Arc::make_mut(&mut d.timeline_mut(0).layers[0]).kind = LayerKind::Guide;
     assert_eq!(voices(&d, 8000).len(), 1, "guide layers are not exported, so not heard");
