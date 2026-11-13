@@ -13,7 +13,7 @@ pub mod text;
 pub use anicraft_xml as xml;
 /// XFL/FLA ZIP package reader, shared with other consumers through `craft-xfl`.
 pub mod zip {
-    pub use craft_xfl::{Archive, MAX_DEPTH, MAX_ENTRIES, MAX_ENTRY, MAX_RATIO, MAX_TOTAL, ZipError};
+    pub use craft_xfl::{Archive, MAX_DEPTH, MAX_ENTRIES, MAX_ENTRY, MAX_RATIO, MAX_TOTAL, ZipError, crc32};
 
     #[cfg(test)]
     pub(crate) use crate::pack;
