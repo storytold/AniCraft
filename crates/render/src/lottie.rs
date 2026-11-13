@@ -14,7 +14,9 @@
 //! Soft masks (ADR 0070) become track mattes (alpha, or luma for luminance masks): a matte layer
 //! with the mask's artwork as drawn, just above each layer it shows through.
 //!
-//! Not carried across (counted in the report): bitmap fills; nested masks keep only the
+//! Warped shapes (ADR 0079) are their bent outlines like any other.
+//!
+//! Not carried across (counted in the report): bitmap fills (warped or not); nested masks keep only the
 //! innermost mask; a symbol fading as one group is faded shape by shape; stretched radial
 //! gradients become circles; and draw-order changes that one fixed layer order can't show.
 

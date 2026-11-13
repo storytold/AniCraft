@@ -127,3 +127,16 @@ fn the_gpu_stage_gets_the_same_prepared_fill() {
     assert_eq!(scene.fills.len(), 1);
     assert!(matches!(&scene.fills[0].shader, paint::Shader::Bitmap { smooth: false, repeat: false, .. }));
 }
+
+#[test]
+fn svg_bakes_a_warped_bitmap_as_the_image_drawn() {
+    let s = warped(vec![pin(1, (2.0, 8.0), (2.0, 8.0)), pin(2, (30.0, 8.0), (36.0, 18.0))], 8);
+    let dl = DisplayList { items: vec![item(&s, Affine::translate(5.0, 5.0), true)], ..Default::default() };
+    let stage = anicraft_doc::Stage { width: 64, height: 48, ..Default::default() };
+    let svg = crate::svg::to_svg(&dl, &stage);
+    assert!(svg.contains("<image x=") && svg.contains("data:image/png;base64,"), "{svg}");
+    assert!(!svg.contains("<pattern"), "the unbent pattern isn't written");
+    // Unwarped, the same bitmap is a pattern fill as before.
+    let flat = DisplayList { items: vec![item(&bitmap_shape(), Affine::IDENTITY, true)], ..Default::default() };
+    assert!(crate::svg::to_svg(&flat, &stage).contains("<pattern"));
+}
