@@ -12,6 +12,7 @@ pub mod hairline;
 pub mod html;
 pub mod lottie;
 pub mod svg;
+pub mod warp;
 
 use anicraft_doc::{BlendMode, ColorTransform, DisplayItem, DisplayList, Document, MaskMode, Paint, Rgba, evaluate};
 use anicraft_geom::{Affine, FillRule, Rect, Vec2};
@@ -876,7 +877,19 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect, soft: bool) -> Vec
     });
     if let Some(fill) = &item.fill {
         let polys: Vec<Vec<Vec2>> = lines.into_iter().map(|l| l.points).collect();
-        push(polys, item.fill_rule, Shader::new(fill, &m, &item.color, item.image.as_ref()).smoothed(item.smooth));
+        let shader = match (&item.warp, fill, &item.image) {
+            // A warped bitmap (ADR 0079): the image drawn through its mesh, prepared once over
+            // the fill's pixels and shown one image pixel per surface pixel.
+            (Some(mesh), Paint::Bitmap { repeat, matrix, .. }, Some(px)) => {
+                let prepared = pixel_bounds(&polys, surface).and_then(|b| Some((warp::texture(mesh, &m, matrix, *repeat, px, item.smooth, b)?, b)));
+                match prepared {
+                    Some((tex, b)) => Shader::Bitmap { inv: Affine::translate(-(b.x0 as f32), -(b.y0 as f32)), pixels: tex, repeat: false, fx: item.color, smooth: false },
+                    None => Shader::Solid([0.0; 4]),
+                }
+            }
+            _ => Shader::new(fill, &m, &item.color, item.image.as_ref()).smoothed(item.smooth),
+        };
+        push(polys, item.fill_rule, shader);
     }
     if let Some((polys, shader)) = stroke {
         push(polys, FillRule::NonZero, shader);
@@ -965,6 +978,7 @@ mod tests {
             group: None,
             image: None,
             smooth: true,
+            warp: None,
         }
     }
 
@@ -1497,3 +1511,7 @@ mod tests {
         assert!((q[2] - 1.0).abs() < 1e-3, "outside the group unchanged: {q:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "warp_tests.rs"]
+mod warp_tests;

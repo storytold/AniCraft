@@ -171,7 +171,7 @@ impl Shader {
 /// A sample at bitmap position `q` (pixel (i, j) covers [i, i+1) × [j, j+1)), bilinear when
 /// `smooth`, else the pixel `q` is in, with the colour effect applied and premultiplied.
 /// Outside a non-repeating bitmap: transparent.
-fn sample(px: &Pixels, q: Vec2, repeat: bool, smooth: bool, fx: &ColorTransform) -> Premul {
+pub(crate) fn sample(px: &Pixels, q: Vec2, repeat: bool, smooth: bool, fx: &ColorTransform) -> Premul {
     let (w, h) = (px.width as f32, px.height as f32);
     if !(q.x.is_finite() && q.y.is_finite()) || w < 1.0 || h < 1.0 {
         return [0.0; 4];
