@@ -514,6 +514,40 @@ pub fn sanitize(style: &Style) -> Style {
     }
 }
 
+/// The face drawing each byte of a paragraph, given how many faces there are and which has which
+/// character: the chosen one (0) where it has the character, else the first fallback that does.
+/// Spaces and marks stay with what comes before them, so a letter and its harakat are shaped
+/// together; a mark its letter's face lacks takes the whole cluster (the letter and every mark
+/// after it) to a face that has all of them, if there is one, and otherwise draws from a face
+/// that has the mark, leaving the letter and the earlier marks where they were.
+fn choose_faces(para: &str, faces: usize, has: impl Fn(usize, char) -> bool) -> Vec<usize> {
+    let mut face_of = vec![0usize; para.len()];
+    let mut current = 0;
+    let mut base = 0; // the byte offset of the last letter
+    for (i, c) in para.char_indices() {
+        let joins = !needs_glyph(c) || matches!(unicode_bidi::bidi_class(c), unicode_bidi::BidiClass::NSM | unicode_bidi::BidiClass::BN);
+        if !joins {
+            current = (0..faces).find(|f| has(*f, c)).unwrap_or(0);
+            base = i;
+        } else if needs_glyph(c) && !has(current, c) {
+            let mark = unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM;
+            let cluster = para.get(base..i + c.len_utf8()).unwrap_or_default();
+            if let Some(all) = (0..faces).find(|f| mark && cluster.chars().filter(|ch| needs_glyph(*ch)).all(|ch| has(*f, ch))) {
+                current = all;
+                if let Some(bytes) = face_of.get_mut(base..i) {
+                    bytes.fill(all);
+                }
+            } else if let Some(f) = (0..faces).find(|f| has(*f, c)) {
+                current = f;
+            }
+        }
+        if let Some(bytes) = face_of.get_mut(i..i + c.len_utf8()) {
+            bytes.fill(current);
+        }
+    }
+    face_of
+}
+
 /// One shaped glyph: the face it comes from, its id, the byte it starts at in its paragraph, its
 /// offsets and advance (pixels).
 struct Glyph {
@@ -568,33 +602,7 @@ fn lay_out(faces: &[(&[u8], u32)], text: &str, style: &Style, want_glyphs: bool)
         let to_char = Arc::new(to_char);
         let lines_before = lines.len();
         let bidi = unicode_bidi::ParagraphBidiInfo::new(para, None);
-        // The face drawing each byte: the chosen one where it has the character, else the first
-        // fallback that does. Spaces and marks stay with what comes before them, so a letter and
-        // its harakat are shaped together; a mark its letter's face lacks takes the letter to a
-        // face that has both, if there is one.
-        let mut face_of = vec![0usize; para.len()];
-        let mut current = 0;
-        let mut base = (0, '\0'); // the last letter: its byte offset and character
-        for (i, c) in para.char_indices() {
-            let joins = !needs_glyph(c) || matches!(unicode_bidi::bidi_class(c), unicode_bidi::BidiClass::NSM | unicode_bidi::BidiClass::BN);
-            if !joins {
-                current = (0..fonts.len()).find(|f| has(*f, c)).unwrap_or(0);
-                base = (i, c);
-            } else if !has(current, c) {
-                let mark = unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM;
-                if let Some(both) = (0..fonts.len()).find(|f| mark && has(*f, base.1) && has(*f, c)) {
-                    current = both;
-                    if let Some(bytes) = face_of.get_mut(base.0..i) {
-                        bytes.fill(both);
-                    }
-                } else if let Some(f) = (0..fonts.len()).find(|f| has(*f, c)) {
-                    current = f;
-                }
-            }
-            if let Some(bytes) = face_of.get_mut(i..i + c.len_utf8()) {
-                bytes.fill(current);
-            }
-        }
+        let face_of = choose_faces(para, fonts.len(), has);
         // A run shaped in one direction, split where the face changes; glyphs in visual order.
         let shape_run = |run: std::ops::Range<usize>, rtl: bool| {
             let mut parts: Vec<Vec<Glyph>> = Vec::new();
@@ -879,6 +887,18 @@ mod tests {
         assert!(boxed(Align::Left).max.x < 20.0);
         assert!((140.0..160.0).contains(&boxed(Align::Center).center().x), "{:?}", boxed(Align::Center));
         assert!(boxed(Align::Right).min.x > 280.0);
+    }
+
+    #[test]
+    fn a_mark_takes_its_whole_cluster_to_a_face_with_all_of_it() {
+        let covers = |sets: &'static [&'static str]| move |f: usize, c: char| sets.get(f).is_some_and(|s| s.contains(c));
+        // Face 1 has the letter and the second mark but not the first; face 2 has all three.
+        assert_eq!(choose_faces("e\u{0301}\u{0323}", 3, covers(&["e\u{0301}", "e\u{0323}", "e\u{0301}\u{0323}"])), vec![2; 5]);
+        // No face has all three: the letter and its first mark stay together, and the second
+        // mark comes from a face that has it.
+        assert_eq!(choose_faces("q\u{0301}\u{0323}", 2, covers(&["q\u{0323}", "q\u{0301}"])), vec![1, 1, 1, 0, 0]);
+        // An invisible joiner the face doesn't map doesn't move the run to another face.
+        assert_eq!(choose_faces("ب\u{200D}ب", 2, covers(&["ب", "\u{200D}"])), vec![0; 7]);
     }
 
     #[test]
