@@ -378,7 +378,7 @@ fn set_fill(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"ok": true}))
 }
 
-fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn set_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     let remove = p.get("color").is_some_and(Value::is_null);
     let color = opt_color(p, "color")?;
     let width = opt_f32(p, "width")?;

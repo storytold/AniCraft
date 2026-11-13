@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 288 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 299 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -549,6 +549,28 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{element?: id (default: the selected shapes with a gradient or bitmap fill), frame?: [a, b, c, d, e, f] (the fill's frame in the space being edited: the box -1..1 onto a linear gradient's span, a radial gradient's ring or one copy of a bitmap), or changes made in this order: scale_x?, scale_y?, scale? (along the frame's own axes), skew_x?, skew_y? (degrees, along its axes), rotate? (degrees, about its centre), move?: [dx, dy], center?: [x, y]; focal?: -0.98..0.98 (radial)} moves, turns, scales or skews where a gradient or bitmap fill lies, as the Gradient Transform tool (F) does → {changed, frames: [[a, b, c, d, e, f], ..]}`
 - **Lock Fill** `paint.lock_fill`
   Parameters: `{on?: bool (default: toggle)} Lock Fill: a gradient or bitmap from the fill swatch is poured where it lies on the stage, running on across shapes; off, each shape gets it fitted to its bounds → {on}`
+- **Swatches** `swatch.list`
+  Parameters: `{} the document's swatches, in the Swatches panel's order → {swatches: [{index, name, type, color | stops, ..}], count}`
+- **Add Swatch** `swatch.add` · changes the document
+  Parameters: `{from?: fill|stroke (default fill: the fill swatch's colour or gradient; stroke: the stroke colour), or the swatch itself: type?: solid|linear|radial, color? ("#rrggbb" | "#rrggbbaa", solid), stops?: [{offset: 0..1, color}, ..] (2 to 15), spread?: extend|reflect|repeat, linear_rgb?: bool, focal?: -0.98..0.98 (radial); name?, at? (index; default: the end)} → {index, count}`
+- **Delete Swatch** `swatch.remove` · changes the document
+  Parameters: `{index} → {count}`
+- **Move Swatch** `swatch.move` · changes the document
+  Parameters: ``{from, to} (indices: the swatch at `from` ends up at `to`) → {index}``
+- **Duplicate Swatch** `swatch.duplicate` · changes the document
+  Parameters: `{index} puts a copy right after it → {index, count}`
+- **Rename Swatch** `swatch.rename` · changes the document
+  Parameters: `{index, name} (empty: no name, the hex shows on hover)`
+- **Apply Swatch** `swatch.apply` · changes the document
+  Parameters: ``{index, target?: fill|stroke (default fill), selection?: bool (default true)} sets the fill swatch (as paint.set_fill: a gradient is fitted to each shape) or the stroke colour, and unless `selection` is false the selected shapes' fills or strokes. A gradient swatch can't be a stroke (strokes are one colour) → {target, changed}``
+- **Clear Swatches** `swatch.clear` · changes the document
+  Parameters: `{} removes every swatch but black and white (Animate's Clear Colors; undoable)`
+- **Default Swatches** `swatch.reset` · changes the document
+  Parameters: `{} replaces the swatches with a new document's set (undoable)`
+- **Import Swatches** `swatch.import` · changes the document
+  Parameters: `{path: a swatch file (.json, from swatch.export) or a GIMP palette (.gpl), replace?: bool (default false: added at the end)} → {imported, count}`
+- **Export Swatches** `swatch.export`
+  Parameters: `{path} writes the document's swatches to a swatch file (JSON) → {written, swatches}`
 - **New Text** `text.create` · changes the document
   Parameters: `{text (may be empty for an input field), type?: static|dynamic|input, x?, y? (top-left; default: centred), font?, size?, bold?, italic?, color?, align?, letter_spacing?, line_spacing?, width?}`
 - **Edit Text** `text.edit` · changes the document

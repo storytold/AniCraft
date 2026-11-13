@@ -558,6 +558,11 @@ fn panic_hunt_every_command() {
         json!({"points": [[0, 0], [10, 0]], "preset": "nope", "curve": "wobbly", "spacing": 1, "jitter": -1, "name": "", "from": "missing", "names": [1, 2]}),
         json!({"points": [[f64::MAX, 0]], "curve": [[f64::NAN, 2]], "pressure_size": "yes", "pressure_opacity": 1, "as_stroke": "no", "name": "Chalk", "to": "Pencil"}),
         json!({"points": (0..2000).map(|i| json!([f64::from(i), f64::from(i % 7) * 3.0, f64::from(i % 3) * 0.5])).collect::<Vec<_>>(), "preset": "ink_pen", "as_stroke": true, "name": "a".repeat(5000)}),
+        // Swatches (ADR 0078): junk kinds, indices and paints, both targets, a missing file.
+        json!({"index": 0, "from": 18, "to": 0, "target": "stroke", "name": "a".repeat(5000)}),
+        json!({"index": 12, "target": "stroke", "selection": false, "type": "radial", "stops": [{"offset": 0, "color": "#000000"}, {"offset": 1, "color": "#ffffff"}], "focal": 0.98, "at": 0}),
+        json!({"index": u64::MAX, "from": "nowhere", "target": 3, "type": "conic", "stops": [{"offset": 2, "color": "#00"}], "spread": "wrap", "path": "no/such/palette.gpl"}),
+        json!({"color": "#ff000000", "name": "\u{0}\n", "at": u64::MAX, "replace": true, "path": ""}),
         // Stroke styles (ADR 0046): junk, extremes and patterns that would be very fine.
         json!({"cap": "none", "join": "miter", "miter": 100, "dash": [0, 1e-30], "dash_offset": -1e4, "style": "dashed"}),
         json!({"cap": 7, "join": "mitre", "miter": f64::NAN, "dash": vec![1e4; 16], "dot_spacing": 0, "style": "dotted"}),

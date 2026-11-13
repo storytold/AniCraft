@@ -27,11 +27,12 @@ pub enum Panel {
     MotionEditor,
     Actions,
     Output,
+    Swatches,
 }
 
 impl Panel {
     /// In the Window menu's order.
-    pub const ALL: [Panel; 10] = [Panel::Actions, Panel::Align, Panel::Colour, Panel::History, Panel::Library, Panel::MotionEditor, Panel::MovieExplorer, Panel::Output, Panel::Properties, Panel::Timeline];
+    pub const ALL: [Panel; 11] = [Panel::Actions, Panel::Align, Panel::Colour, Panel::History, Panel::Library, Panel::MotionEditor, Panel::MovieExplorer, Panel::Output, Panel::Properties, Panel::Swatches, Panel::Timeline];
 
     /// Its machine name, in the preferences (English, never translated).
     pub fn id(self) -> &'static str {
@@ -46,6 +47,7 @@ impl Panel {
             Panel::MotionEditor => "motion_editor",
             Panel::Actions => "actions",
             Panel::Output => "output",
+            Panel::Swatches => "swatches",
         }
     }
 
@@ -66,6 +68,7 @@ impl Panel {
             Panel::MotionEditor => tr_noop!("Motion Editor"),
             Panel::Actions => tr_noop!("Actions"),
             Panel::Output => tr_noop!("Output"),
+            Panel::Swatches => tr_noop!("Swatches"),
         }
     }
 
@@ -76,6 +79,7 @@ impl Panel {
             Panel::Actions => [460.0, 520.0],
             Panel::Output => [520.0, 300.0],
             Panel::Align => [300.0, 140.0],
+            Panel::Swatches => [300.0, 300.0],
             _ => [320.0, 460.0],
         }
     }
@@ -447,6 +451,8 @@ fn default_home(p: Panel) -> Home {
     let (side, near) = match p {
         Panel::Properties => (Side::Right, Some(Panel::Align)),
         Panel::Align | Panel::Colour => (Side::Right, Some(Panel::Align)),
+        // Beside the Colour panel when it is open, as Animate tabs them together.
+        Panel::Swatches => (Side::Right, Some(Panel::Colour)),
         Panel::Library | Panel::MovieExplorer => (Side::Right, Some(Panel::Library)),
         Panel::History => (Side::Right, None),
         Panel::Timeline | Panel::MotionEditor | Panel::Output => (Side::Bottom, Some(Panel::Timeline)),
@@ -482,9 +488,9 @@ pub fn built_in(key: &str) -> Option<Layout> {
             bottom: zone(vec![Group::of(&[Panel::Timeline, Panel::MotionEditor], 3.0), Group::of(&[Panel::Output, Panel::History], 1.0)], Some(440.0)),
             ..Layout::default()
         },
-        // Drawing first: a wide Properties with Colour and Align, a short timeline.
+        // Drawing first: a wide Properties with Colour, Swatches and Align, a short timeline.
         "designer" => Layout {
-            right: zone(vec![Group::of(&[Panel::Properties], 6.0), Group::of(&[Panel::Colour, Panel::Align], 2.4), Group::of(&[Panel::Library, Panel::MovieExplorer, Panel::History], 3.6)], Some(400.0)),
+            right: zone(vec![Group::of(&[Panel::Properties], 6.0), Group::of(&[Panel::Colour, Panel::Swatches, Panel::Align], 2.6), Group::of(&[Panel::Library, Panel::MovieExplorer, Panel::History], 3.6)], Some(400.0)),
             bottom: zone(vec![Group::of(&[Panel::Timeline, Panel::MotionEditor], 1.0)], Some(200.0)),
             ..Layout::default()
         },

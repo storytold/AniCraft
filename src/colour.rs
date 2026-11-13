@@ -20,6 +20,8 @@ const COLS: usize = 18;
 const ROWS: usize = 12;
 /// Most colours kept in the recent row.
 const RECENT: usize = COLS + 1;
+/// Most rows of document swatches the picker shows (the Swatches panel has them all).
+const DOC_ROWS: usize = 3;
 
 /// The channel steps of the web-safe cube.
 const STEPS: [u8; 6] = [0x00, 0x33, 0x66, 0x99, 0xcc, 0xff];
@@ -267,13 +269,29 @@ fn hex_field(ui: &mut egui::Ui, popup: Id, c: &[u8; 4], alpha: bool) -> Option<[
     out
 }
 
-/// The palette grid (side column, a gap, the web-safe cube) and the recent row under it.
-/// Returns the colour clicked.
+/// The document's solid swatches (ADR 0078), as the picker's last rows show them: colour and
+/// name.
+fn document_colours(ctx: &egui::Context) -> Vec<([u8; 3], String)> {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    crate::swatches_panel::for_pickers(ctx)
+        .iter()
+        .filter_map(|s| match &s.paint {
+            anicraft_engine::doc::SwatchPaint::Solid { color } => Some(([b(color.r), b(color.g), b(color.b)], s.name.clone())),
+            _ => None,
+        })
+        .take((COLS + 1) * DOC_ROWS)
+        .collect()
+}
+
+/// The palette grid (side column, a gap, the web-safe cube), the recent row under it, and the
+/// document's swatches under that. Returns the colour clicked.
 fn swatches(ui: &mut egui::Ui, current: [u8; 3]) -> Option<[u8; 3]> {
     let recent: Vec<[u8; 3]> = ui.data(|d| d.get_temp::<Recent>(recent_id())).map(|r| r.colours).unwrap_or_default();
+    let doc = document_colours(ui.ctx());
+    let doc_rows = doc.len().div_ceil(COLS + 1);
     let gap = CELL * 0.5;
     let width = CELL * (COLS + 1) as f32 + gap;
-    let height = CELL * (ROWS + 1) as f32 + gap;
+    let height = CELL * (ROWS + 1) as f32 + gap + if doc_rows > 0 { gap + CELL * (doc_rows + 1) as f32 } else { 0.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     let painter = ui.painter_at(rect.expand(2.0));
     let o = rect.min;
@@ -292,11 +310,20 @@ fn swatches(ui: &mut egui::Ui, current: [u8; 3]) -> Option<[u8; 3]> {
     for (i, c) in recent.iter().enumerate().take(RECENT) {
         cells.push((Rect::from_min_size(pos2(o.x + CELL * i as f32 + if i > 0 { gap } else { 0.0 }, ry), vec2(CELL, CELL)), *c));
     }
+    // The document's swatches under their caption, a row at a time (names show on hover).
+    let dy = ry + CELL + gap + CELL;
+    let first_doc = cells.len();
+    for (i, (c, _)) in doc.iter().enumerate() {
+        cells.push((Rect::from_min_size(pos2(o.x + CELL * (i % (COLS + 1)) as f32, dy + CELL * (i / (COLS + 1)) as f32), vec2(CELL, CELL)), *c));
+    }
     // The palette's own grid lines are the gaps between cells, in the panel's border colour.
     let grid = Rect::from_min_size(o, vec2(width, CELL * ROWS as f32));
     painter.rect_filled(grid, 0.0, T.border);
     for (r, c) in &cells {
         painter.rect_filled(r.shrink(0.5), 0.0, c32([c[0], c[1], c[2], 255]));
+    }
+    if !doc.is_empty() {
+        painter.text(pos2(o.x, dy - CELL * 0.5), egui::Align2::LEFT_CENTER, tr!("Document swatches (Window › Swatches)"), crate::theme::font(Type::Caption), T.text_faint);
     }
     if recent.is_empty() {
         painter.text(pos2(o.x, ry + CELL * 0.5), egui::Align2::LEFT_CENTER, tr!("Colours you mix or type show here"), crate::theme::font(Type::Caption), T.text_faint);
@@ -305,13 +332,20 @@ fn swatches(ui: &mut egui::Ui, current: [u8; 3]) -> Option<[u8; 3]> {
     if let Some((r, _)) = cells.iter().find(|(_, c)| *c == current) {
         painter.rect_stroke(r.expand(1.0), 0.0, Stroke::new(1.5, T.on_active), StrokeKind::Middle);
     }
-    let hovered = resp.hover_pos().and_then(hit);
-    if let Some((r, c)) = hovered {
+    let hovered = resp.hover_pos().and_then(|p| cells.iter().position(|(r, _)| r.contains(p)));
+    if let Some((r, c)) = hovered.and_then(|i| cells.get(i)).copied() {
         painter.rect_stroke(r.expand(1.0), 0.0, Stroke::new(1.5, T.selection), StrokeKind::Middle);
-        resp.clone().on_hover_text(text(Type::Data, to_hex([c[0], c[1], c[2], 255], false)));
+        let hex = to_hex([c[0], c[1], c[2], 255], false);
+        let name = hovered.and_then(|i| i.checked_sub(first_doc)).and_then(|i| doc.get(i)).map(|d| d.1.as_str()).filter(|n| !n.is_empty());
+        let tip = match name {
+            Some(n) => tr!("{name} ({hex}), a document swatch", name = n, hex = hex.as_str()),
+            None if hovered.is_some_and(|i| i >= first_doc) => tr!("{hex}, a document swatch", hex = hex.as_str()),
+            None => hex,
+        };
+        resp.clone().on_hover_text(text(Type::Data, tip));
     }
     // One control for the whole grid (a click picks the cell under the pointer).
-    crate::a11y::control(ui, &resp, egui::WidgetType::Button, tr!("Colour swatches"), None);
+    crate::a11y::control(ui, &resp, egui::WidgetType::Button, if doc.is_empty() { tr!("Colour swatches") } else { tr!("Colour swatches and the document's swatches") }, None);
     if resp.clicked() { resp.interact_pointer_pos().and_then(hit).map(|(_, c)| c) } else { None }
 }
 

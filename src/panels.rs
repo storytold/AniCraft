@@ -133,6 +133,10 @@ fn tool_swatches(app: &mut App, ui: &mut egui::Ui) {
         let name = if fill { tr!("Fill colour") } else { tr!("Stroke colour") };
         a11y::control(ui, &resp, WidgetType::ColorButton, name, None);
         let resp = resp.on_hover_text(if fill { tr!("Fill colour: click to pick the colour shapes are filled with") } else { tr!("Stroke colour: click to pick the colour of lines and outlines") });
+        // As in Animate, the square clicked last is the one swatches set (ADR 0078).
+        if resp.clicked() {
+            app.colour_target = if fill { crate::swatches_panel::ColourTarget::Fill } else { crate::swatches_panel::ColourTarget::Stroke };
+        }
         let st = &app.s.style;
         let (colour, mut none) = if fill { (st.fill, !st.use_fill) } else { (st.stroke, !st.use_stroke) };
         let mut c = rgba(colour);
@@ -425,12 +429,21 @@ pub(crate) fn colour_panel(app: &mut App, ui: &mut egui::Ui) {
     let to_rgba = |c: [u8; 3]| Rgba::new(f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0, 1.0);
     let (mut stroke, mut fill) = (rgb(st.stroke), rgb(st.fill));
     let (mut stroke_changed, mut fill_changed) = (false, false);
+    let mut target = app.colour_target;
     row(ui, tr!("Stroke"), |ui| {
-        stroke_changed = crate::colour::button(ui, &mut stroke).named(tr!("Stroke colour")).changed();
+        let r = crate::colour::button(ui, &mut stroke).named(tr!("Stroke colour"));
+        if r.clicked() {
+            target = crate::swatches_panel::ColourTarget::Stroke;
+        }
+        stroke_changed = r.changed();
         ui.label(text(Type::Data, hex(stroke)).color(T.text_dim));
     });
     row(ui, tr!("Fill"), |ui| {
-        fill_changed = crate::colour::button(ui, &mut fill).named(tr!("Fill colour")).changed();
+        let r = crate::colour::button(ui, &mut fill).named(tr!("Fill colour"));
+        if r.clicked() {
+            target = crate::swatches_panel::ColourTarget::Fill;
+        }
+        fill_changed = r.changed();
         ui.label(text(Type::Data, hex(fill)).color(T.text_dim));
     });
     let mut undo = tr_noop!("Colour");
@@ -444,6 +457,8 @@ pub(crate) fn colour_panel(app: &mut App, ui: &mut egui::Ui) {
             (stroke_changed, fill_changed, undo) = (true, true, tr_noop!("Black and White"));
         }
     });
+    app.colour_target = target;
+    crate::swatches_panel::target_toggle(app, ui);
     if !(stroke_changed || fill_changed) {
         ui.label(text(Type::Caption, if app.s.selection.is_empty() { tr!("New shapes and text use these colours.") } else { tr!("Changes apply to the selection and to new drawing.") }));
         return;

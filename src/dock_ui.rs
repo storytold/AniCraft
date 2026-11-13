@@ -493,6 +493,9 @@ pub fn panel_body(app: &mut App, ui: &mut egui::Ui, p: Panel) {
         Panel::Colour => {
             scroll("colour").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::panels::colour_panel(app, ui)));
         }
+        Panel::Swatches => {
+            scroll("swatches").show(ui, |ui| pad(12, 8).show(ui, |ui| crate::swatches_panel::panel(app, ui)));
+        }
         Panel::Library => {
             scroll("library_dock").show(ui, |ui| pad(12, 10).show(ui, |ui| crate::panels::library(app, ui)));
         }
