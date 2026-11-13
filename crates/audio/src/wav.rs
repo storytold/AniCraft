@@ -59,11 +59,17 @@ fn read_fmt(c: &[u8]) -> Option<Fmt> {
 /// Ids of the non-audio chunks that commonly follow the `data` chunk.
 const TRAILING_IDS: [&[u8; 4]; 12] = [b"LIST", b"fact", b"id3 ", b"ID3 ", b"cue ", b"JUNK", b"PEAK", b"bext", b"smpl", b"iXML", b"inst", b"PAD "];
 
-/// Whether a known chunk header (a listed id and a size field) starts at `at`. The size is not
-/// checked against the file: a damaged or truncated chunk is still a chunk.
+/// Whether a consistent known chunk header starts at `at`. Policy for a `data` chunk of size 0:
+/// PCM bytes can spell any id, so a header counts as chunk evidence only when it is complete
+/// (id plus size field), the id is listed, and the size fits within the rest of the file. A
+/// truncated header or a size that overruns the file is treated as audio, so the rest of the
+/// file is decoded rather than discarded.
 fn chunk_follows(d: &[u8], at: usize) -> bool {
-    match (d.get(at..at + 4), u32_at(d, at + 4)) {
-        (Some(id), Some(_)) => TRAILING_IDS.iter().any(|k| k.as_slice() == id),
+    match (d.get(at..at.saturating_add(4)), u32_at(d, at.saturating_add(4))) {
+        (Some(id), Some(size)) => {
+            let rest = d.len().saturating_sub(at + 8);
+            TRAILING_IDS.iter().any(|k| k.as_slice() == id) && size as usize <= rest
+        }
         _ => false,
     }
 }
@@ -198,10 +204,28 @@ mod tests {
         let mut w = encode(8000, 1, &[], Bits::Int16);
         w.extend_from_slice(b"LIST\x08\0\0\0INFOabcd");
         assert_eq!(decode(&w), Err(AudioError::Empty));
-        // A following chunk whose size overruns the file is still a chunk.
+    }
+
+    #[test]
+    fn size_zero_data_chunk_with_impossible_or_truncated_header_is_audio() {
+        // The size overruns the file: not a chunk header.
         let mut w = encode(8000, 1, &[], Bits::Int16);
         w.extend_from_slice(b"LIST\x00\x10\0\0INFOabcd");
-        assert_eq!(decode(&w), Err(AudioError::Empty));
+        assert_eq!(decode(&w).unwrap().samples.len(), 8);
+        // A listed id without a complete size field.
+        let mut w = encode(8000, 1, &[], Bits::Int16);
+        w.extend_from_slice(b"LIST\x00\x00");
+        assert_eq!(decode(&w).unwrap().samples.len(), 3);
+    }
+
+    #[test]
+    fn size_zero_data_chunk_starting_with_a_listed_id_is_still_audio() {
+        let mut w = encode(8000, 1, &[], Bits::Int16);
+        w.extend_from_slice(b"LISTabcd");
+        w.extend_from_slice(&[0x00, 0x40, 0x00, 0xC0]);
+        let pcm = decode(&w).unwrap();
+        assert_eq!(pcm.samples.len(), 6);
+        assert_eq!(&pcm.samples[4..], &[0.5, -0.5]);
     }
 
     #[test]
