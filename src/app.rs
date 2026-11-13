@@ -270,6 +270,7 @@ pub struct Prompt {
     pub cmd: &'static str,
     pub key: &'static str,
     pub text: String,
+    pub focus: bool,
 }
 
 pub struct Status {
@@ -2396,7 +2397,7 @@ impl App {
                 }
                 return;
             }
-            self.prompt = Some(Prompt { title, cmd: id, key, text });
+            self.prompt = Some(Prompt { title, cmd: id, key, text, focus: true });
             return;
         }
         // F5, F6 and F7 work as in Animate: at the playhead with no frame selection, F5 extends
@@ -2780,7 +2781,10 @@ impl App {
         egui::Window::new(title).id(egui::Id::new(("prompt", p.title))).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0]).show(ctx, |ui| {
             ui.set_min_width(360.0);
             let r = ui.add(egui::TextEdit::singleline(&mut p.text).desired_width(f32::INFINITY)).named(title);
-            r.request_focus();
+            if p.focus {
+                r.request_focus();
+                p.focus = false;
+            }
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 submit = true;
             }
@@ -3159,5 +3163,26 @@ mod shrink_tests {
         assert_eq!(two.pixels[0], Color32::from_gray(30));
         // Never enlarged.
         assert_eq!(shrink(&img, 10).size, [4, 2]);
+    }
+}
+
+#[cfg(test)]
+mod prompt_enter_tests {
+    use super::*;
+
+    #[test]
+    fn enter_confirms_layer_rename() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+        app.prompt = Some(Prompt { title: "Rename layer", cmd: "layer.rename", key: "name", text: "Renamed".into(), focus: true });
+        let input = |events| egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), events, ..Default::default() };
+        for _ in 0..3 {
+            ctx.run_ui(input(vec![]), |_| app.prompt_window(&ctx)).textures_delta.clear();
+        }
+        let enter = egui::Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        ctx.run_ui(input(vec![enter]), |_| app.prompt_window(&ctx)).textures_delta.clear();
+        assert!(app.prompt.is_none(), "Enter closes the rename prompt");
+        assert_eq!(app.s.active_layer().unwrap().name, "Renamed");
     }
 }
