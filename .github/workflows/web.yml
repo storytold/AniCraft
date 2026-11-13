@@ -21,39 +21,23 @@ concurrency:
 jobs:
   wasm:
     name: Web build (wasm32)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      CARGO_TERM_COLOR: always
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Rust with the wasm32 target
-        run: |
-          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
-          rustup default stable
-
-      - name: Every crate builds for wasm32
-        run: cargo build --workspace --target wasm32-unknown-unknown --locked
-
-      - name: wasm-bindgen CLI at the version Cargo.lock pins
-        run: |
-          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
-          cargo install wasm-bindgen-cli --version "$version" --locked
-
-      - name: The engine inside WebAssembly (Node)
-        env:
-          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
-        run: cargo test -p anicraft-engine --target wasm32-unknown-unknown --test wasm --locked
-
-      # The release download too (#210): what the release workflow's web job runs.
-      - name: The web editor bundle and its release zip
-        run: |
-          packaging/web/package.sh
-          ls -l web dist/release
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      timeout-minutes: 60
+      # As before: no craft-fonts, apt packages or nextest; the gate adds the wasm32 target.
+      craft-fonts-ref: ""
+      tools: ""
+      # Its own cache, apart from ci.yml's gate.
+      cache-version: v1-web
+      command: |
+        # Every crate builds for wasm32.
+        cargo build --workspace --target wasm32-unknown-unknown --locked
+        # wasm-bindgen CLI at the version Cargo.lock pins.
+        version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+        cargo install wasm-bindgen-cli --version "$version" --locked
+        # The engine inside WebAssembly (Node).
+        CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner           cargo test -p anicraft-engine --target wasm32-unknown-unknown --test wasm --locked
+        # The web editor bundle and its release zip (#210): what the release workflow's web job runs.
+        packaging/web/package.sh
+        ls -l web dist/release

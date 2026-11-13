@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 325 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 333 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -168,6 +168,10 @@ This page is generated from the command registry, so it always matches the versi
   Parameters: `{element? (a shape or bitmap; default the one selected), resolution? (cells along the longer side, 2…48; default 12)} → {element, created, resolution, columns, rows}. Covers the artwork with a warp mesh on every keyframe of its layer that holds it (it becomes a drawing object); on artwork that has one, changes the mesh's resolution`
 - **Remove Warp** `warp.remove` · Modify › Asset Warp · changes the document
   Parameters: `{element?} takes the warp mesh and its pins off the artwork on every keyframe of its layer: it shows as drawn again`
+- **Split Motion** `motion.split` · Modify › Timeline · changes the document
+  Parameters: `{layer?, frame?}: the motion tween becomes two at the frame, each moving as before → {first, second}`
+- **Join Motion** `motion.join` · Modify › Timeline · changes the document
+  Parameters: `{layer?, frame?, to? (the last frame of the spans to join; default: the span after the one at the frame)}: adjacent motion tweens of one object become one, keeping every frame as it was → {start, frames, joined}`
 - **Add Shape Hint** `tween.add_hint` · Modify › Shape · **Ctrl+Shift+H** (macOS **⇧⌘H**) · changes the document
   Parameters: `{layer?, frame? (in the shape tween, or the keyframe it ends on)} → the new hint's letter; it starts at the shapes' centre, unplaced`
 - **Remove All Hints** `tween.clear_hints` · Modify › Shape · changes the document
@@ -299,6 +303,8 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{dir, session? (default headless-<process id>)}`
 - **Move Keyframes** `timeline.move_keyframes` · changes the document
   Parameters: `{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}`
+- **Move Spans** `timeline.move_spans` · changes the document
+  Parameters: `{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up), copy?: true (Alt-drag: the frames stay where they were too)}: the spans starting in from..=to move whole, keeping their lengths and tweens (as dragging a tween span in Animate), replacing what they land on; the frames they leave are empty`
 - **Set Tween Easing** `timeline.set_easing` · changes the document
   Parameters: `{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}`
 - **Orient to Path** `timeline.set_orient` · changes the document
@@ -351,14 +357,20 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{bone} removes it and the bones below it; the instances they moved go to a layer of their own as they look at the playhead (with the last bone, the whole armature does); asks first when the armature has more than one pose`
 - **Joint Limits** `bone.set_limits` · changes the document
   Parameters: `{bone, constrain?: bool (false: turns freely), min?, max? (°, −360…360, from where it was drawn)} limits how far the joint turns, in every pose`
+- **Joint Translation** `bone.set_translation` · changes the document
+  Parameters: `{bone, axis: "x" | "y" (along the axes of what the bone starts on, as it is turned), enabled?: bool (false: the joint doesn't slide that way), constrain?: bool (false: slides freely), min?, max? (px, ±10,000, from where it was drawn)} lets the joint slide, in every pose; posing (bone.solve, the Selection tool) slides it only where turning can't reach`
+- **Bone Spring** `bone.set_spring` · changes the document
+  Parameters: `{bone, strength? (0–100: 0 is no spring; stiffer swings faster and lags less), damping? (0–100: how quickly the swing dies down; 100 absorbs it all)} secondary motion: the bone lags behind and swings past its pose as the bones it hangs from move, then settles. Evaluated, never stored: the keyed poses don't change`
+- **Enable Springs** `bone.enable_springs` · changes the document
+  Parameters: `{enabled: bool, layer? (the armature layer) | bone?} turns the armature's springs on or off (off: it plays its keyed poses exactly, as while posing)`
 - **Pin Bone** `bone.pin` · changes the document
   Parameters: `{bone, pinned: bool} a pinned bone (and the bones it hangs from) stays put while dragging bones below it`
 - **Pose Bone** `bone.pose` · changes the document
-  Parameters: `{bone?, angle? (°, the joint angle: 0 as drawn), rotate_by? (°), dx?, dy? (moves the whole armature), layer? (the armature layer, when no bone is given), frame?} keys the pose at the frame`
+  Parameters: `{bone?, angle? (°, the joint angle: 0 as drawn), rotate_by? (°), slide_x?, slide_y? (px: how far the joint slides, within its translation limits), dx?, dy? (moves the whole armature), layer? (the armature layer, when no bone is given), frame?} keys the pose at the frame`
 - **Drag Bone** `bone.solve` · changes the document
   Parameters: `{bone, x, y (stage px: where the bone's end goes), local?: [x, y] (the point dragged, in the bone's instance's space; default its end), frame?} → {reached, error (px), chain}; inverse kinematics turns the bone and the bones above it (limits respected, pinned bones kept)`
 - **Armatures** `bone.info`
-  Parameters: `{frame?, layer?, points?: bool} → every armature on the scene at the frame: its bones with joint and end (stage px), joint angle and limits (°), pinned; a shape armature's shape, how many points each bone moves, and with points the shape's points (stage px) and the bones each follows`
+  Parameters: `{frame?, layer?, points?: bool} → every armature on the scene at the frame: its bones with joint and end (stage px, as keyed), joint angle and limits (°), slide and translation limits (px), spring (0–100) and its swing at the frame (°, what the spring adds to the angle), pinned; whether springs are on; a shape armature's shape, how many points each bone moves, and with points the shape's points (stage px) and the bones each follows`
 - **Add Warp Pin** `warp.pin_add` · changes the document
   Parameters: `{element?, x, y (stage px, on the artwork)} → {element, pin, created}. Pins the artwork there (adding the mesh first if it has none), on every keyframe that bends the same mesh; nothing moves`
 - **Move Warp Pin** `warp.pin_move` · changes the document
@@ -393,6 +405,10 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{anchor? (default: a new anchor where the object is), frame? (the frame to pin it to, between the first and last position keys), layer?}: the object passes the anchor exactly on that frame → {anchor, frame, pins}`
 - **Unpin Motion Path Point** `motion.unpin_point` · changes the document
   Parameters: `{anchor? | frame?, layer?}: the anchor shapes the path only again; the X/Y keys of its frame go → {anchor, frame, pins}`
+- **Move Property Keyframes** `motion.move_keys` · changes the document
+  Parameters: `{keys: [{property, frame}, ..] (frames as motion.info lists them), by (frames; negative = earlier), layer?, frame? (in the span; default: the first key's)}: values and eases travel with their keys; no key moves outside the span or onto or past a key of its property that isn't moving (the move stops there); a pinned path point's X and Y keys move together → {by, keys}`
+- **Span Length** `timeline.resize_span` · changes the document
+  Parameters: `{frames (the new length), layer?, frame?, scale_keys?: false (keep a motion tween's keys where they are; default: they stretch in proportion, as dragging the span's end in Animate)}: later frames move with the end, as with F5 / Shift+F5 → {start, frames, scaled}`
 - **Ease** `ease.info`
   Parameters: `{target: layer?, frame?, group? | property? | saved?} → the ease (as easing params take it), its label, and its curve as points (exact unless the preset is fitted)`
 - **Set Ease** `ease.set` · changes the document

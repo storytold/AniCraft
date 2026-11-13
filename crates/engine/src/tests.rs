@@ -628,6 +628,11 @@ fn panic_hunt_every_command() {
         json!({"from": 10, "to": 12, "head": [0, 0], "tail": [1e30, 0], "name": "x".repeat(300)}),
         json!({"from": 12, "to": 10, "head": [5], "tail": "x", "bone": u64::MAX}),
         json!({"from": 11, "to": 13, "head": [-1e6, 1e6], "layer": 101}),
+        // Springs and joint translation (ADR 0084): hostile strengths, damping and limits.
+        json!({"bone": 102, "axis": "x", "enabled": true, "constrain": true, "min": 1e30, "max": -1e30, "strength": 1e30, "damping": -1e30, "slide_x": 1e30, "slide_y": f64::NAN}),
+        json!({"bone": 102, "axis": "y", "enabled": "yes", "constrain": false, "min": -10_000, "max": 10_000, "strength": 100, "damping": 0, "slide_y": -10_000, "x": 1e5, "y": -1e5}),
+        json!({"bone": 100, "axis": 7, "min": 0, "max": 0, "strength": 0.000_001, "damping": 99.999_99, "slide_x": 0.5, "enabled": false}),
+        json!({"bone": u64::MAX, "axis": "x", "strength": f64::MAX, "damping": f64::MIN, "enabled": true, "layer": 101}),
         // Shape armatures (ADR 0071): the shaped session's tail is 3, its bones 100 and 103.
         json!({"shape": 3, "head": [1e30, 0], "tail": [-1e30, 0], "parent": 103, "points": [0, 1, u64::MAX], "mode": "add"}),
         json!({"shape": 3, "head": [150, 150], "tail": [150, 150], "bone": 103, "points": (0..30).collect::<Vec<_>>(), "mode": "remove"}),
@@ -697,6 +702,10 @@ fn panic_hunt_every_command() {
     // An armature: two bones, posed at two frames with a limit and a pin (ADR 0043).
     let (mut rig, b1, b2) = crate::tests_bone::rigged();
     for (id, p) in [("bone.pose", json!({"bone": b1, "angle": 30, "frame": 8})), ("bone.set_limits", json!({"bone": b2, "min": -30, "max": 30})), ("bone.pin", json!({"bone": b1, "pinned": true}))] {
+        rig.execute(id, &p).unwrap();
+    }
+    // A bouncy, sliding elbow (ADR 0084), the root moving under it.
+    for (id, p) in [("bone.set_spring", json!({"bone": b2, "strength": 100, "damping": 0})), ("bone.set_translation", json!({"bone": b2, "axis": "x", "min": -40, "max": 40})), ("bone.pose", json!({"dx": 0, "dy": 90, "frame": 12}))] {
         rig.execute(id, &p).unwrap();
     }
     assert_eq!((b1, b2), (100, 102), "the hostile params name these bones");

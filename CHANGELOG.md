@@ -12,6 +12,37 @@
   * A **zipped XFL folder** (one top folder, `__MACOSX` ignored) and a **self-extracting
     archive** renamed to `.fla` open like any `.fla`.
   * The corpus gains `sounds` and `video` packages and six archive layouts.
+* **Motion Editor and timeline retiming** (ADR 0083, M2).
+  * **Moving keys in time** in the Motion Editor: drag a key sideways. It snaps to frames and
+    stops next to its neighbours, and the value and ease go with it. Shift-click picks keys
+    across properties, the new **All** lane picks every property's keys on a frame, and with
+    the curve focused Left and Right (Shift: ten frames) move the picked keys. One undo step
+    per drag.
+  * **Stretching tweens**: dragging a span's end stretches a motion tween's property keys in
+    proportion, as in Animate (Shift keeps them in place). Classic and shape tween spans
+    stretch too.
+  * **Moving and copying tween spans**: a click picks a whole motion tween span, and dragging
+    it (or a selection of whole tween spans) moves it at its length. **Alt-drag** copies it.
+  * **Split Motion** and **Join Motion** in the span's context menu and in Modify ›
+    Timeline. Splitting and then joining gives the original tween back.
+  * **Dock tabs** never run under a panel's menu button: they shrink with an ellipsis (the
+    full name is in the tooltip), and at the narrowest the strip scrolls.
+  * Headless: `motion.move_keys`, `timeline.resize_span`, `timeline.move_spans`,
+    `motion.split`, `motion.join`.
+* **Bones, second slice: springs, joint translation and editing members** (ADR 0084, M7).
+  * **Joint translation**: Properties › Bone › X/Y translation lets a joint slide along the
+    axes of what the bone starts on, freely or within limits (pixels). Slides are part of each
+    pose and tween with it; the Selection tool's IK turns joints first and slides them only to
+    reach where turning can't.
+  * **Springs**: per-bone Spring (strength) and Damping, 0 to 100. A sprung bone lags behind
+    and swings past its pose as the bones it hangs from move, then settles, chaining down a
+    tail. Evaluated as a pure function of the motion up to the frame (no stored state, bounded
+    replay of at most six seconds), so seeking equals playing bit for bit, and the stage, Test
+    Movie and every export show it. Springs: Enable turns an armature's springs off for posing.
+  * **Members edited in place**: picking a bone selects the instance it moves; its colour
+    effect, blending and filters change on every pose, one undo step, the armature intact.
+  * Headless: `bone.set_translation`, `bone.set_spring`, `bone.enable_springs`, `slide_x` /
+    `slide_y` on `bone.pose`; `bone.info` reports slides, springs and each bone's swing.
 * **Ease presets, custom eases and saved eases** (ADR 0081, M7).
   * One ease menu in the timeline header, Properties › Frame and the Motion Editor: No Ease,
     **Classic Ease** with a strength, and **Quad, Cubic, Quart, Quint, Sine, Back, Circ, Bounce

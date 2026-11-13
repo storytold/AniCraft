@@ -21,6 +21,7 @@ mod cmds_frames;
 mod cmds_group;
 mod cmds_modify;
 mod cmds_motion;
+mod cmds_retime;
 mod cmds_hints;
 mod cmds_layer;
 pub mod cmds_library;
@@ -141,6 +142,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_bone::specs());
     v.extend(cmds_warp::specs());
     v.extend(cmds_motion::specs());
+    v.extend(cmds_retime::specs());
     v.extend(cmds_ease::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
@@ -964,6 +966,29 @@ impl Session {
         Ok(kf.elements_mut_where(|id| sel.contains(&id)))
     }
 
+    /// [`Session::selected_elements_mut`] for the properties an instance keeps however it is
+    /// placed (colour effect, blending, filters). On an armature layer (ADR 0084) the selected
+    /// members are edited in place on every pose of the armature, so the property holds as the
+    /// armature moves and the bones and poses are untouched; elsewhere, as any edit.
+    pub(crate) fn selected_props_mut(&mut self) -> Result<Vec<&mut Element>> {
+        let on_armature = self.timeline().layer(self.layer).is_some_and(|l| l.kind == LayerKind::Armature);
+        if !on_armature {
+            return self.selected_elements_mut();
+        }
+        let sel: std::collections::HashSet<ElementId> = self.selection.on(self.layer).into_iter().collect();
+        if sel.is_empty() {
+            return Err(EngineError::State("nothing is selected".into()));
+        }
+        if self.timeline().locked_by_folder(self.layer) {
+            return Err(EngineError::State("the armature layer is in a locked folder".into()));
+        }
+        let layer = self.layer_mut(None)?;
+        if layer.locked {
+            return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));
+        }
+        Ok(layer.keyframes.iter_mut().flat_map(|k| Arc::make_mut(k).elements_mut_where(|id| sel.contains(&id))).collect())
+    }
+
     /// JSON summary used by `doc.info` and the CLI.
     pub fn info(&self) -> Value {
         let layers: Vec<Value> = self
@@ -1072,6 +1097,8 @@ mod tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod retime_tests;
+#[cfg(test)]
 mod ease_tests;
 #[cfg(test)]
 mod color_tests;
@@ -1093,6 +1120,8 @@ mod tests_script;
 mod tests_camera;
 #[cfg(test)]
 mod tests_bone;
+#[cfg(test)]
+mod tests_bone_spring;
 #[cfg(test)]
 mod tests_shape_bone;
 #[cfg(test)]

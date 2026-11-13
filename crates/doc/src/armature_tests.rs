@@ -19,14 +19,14 @@ fn instance(id: ElementId, x: f32, y: f32) -> Arc<Element> {
 
 fn bone(id: BoneId, parent: ElementId, child: ElementId) -> Bone {
     // Every segment is 100 px long from its registration point; bones join end to start.
-    Bone { id, name: String::new(), parent, child, head: Vec2::new(100.0, 0.0), tail: Vec2::new(100.0, 0.0), rest: Affine::translate(100.0, 0.0), limits: None, pinned: false }
+    Bone::new(id, parent, child, Vec2::new(100.0, 0.0), Vec2::new(100.0, 0.0), Affine::translate(100.0, 0.0))
 }
 
 /// A three-segment chain lying along y = 100: the root from x = 100, the arm from 200 (its
 /// joint), the hand from 300; the hand's end at 400. The arm and hand reach 200 px from the
 /// shoulder joint at (200, 100).
 fn chain() -> (Armature, Vec<Arc<Element>>) {
-    let arm = Armature { bones: vec![bone(B1, ROOT, ARM), bone(B2, ARM, HAND)], skin: None };
+    let arm = Armature { bones: vec![bone(B1, ROOT, ARM), bone(B2, ARM, HAND)], ..Default::default() };
     (arm, vec![instance(ROOT, 100.0, 100.0), instance(ARM, 200.0, 100.0), instance(HAND, 300.0, 100.0)])
 }
 
@@ -208,7 +208,7 @@ fn sanitize_repairs_hostile_armatures() {
     assert_eq!(arm.bone(BoneId(35)).unwrap().limits, None);
     assert_eq!(arm.bone(BoneId(36)).unwrap().limits, Some(Limits { min: -1.0, max: 1.0 }));
     assert!(!arm.sanitize(), "sanitizing twice changes nothing");
-    let mut p = Pose(vec![JointAngle { bone: B1, angle: f32::NAN }, JointAngle { bone: B1, angle: 1.0 }, JointAngle { bone: B2, angle: 1e30 }]);
+    let mut p = Pose(vec![JointAngle::new(B1, f32::NAN), JointAngle::new(B1, 1.0), JointAngle::new(B2, 1e30)]);
     assert!(p.sanitize());
     assert_eq!(p.0.len(), 2);
     assert_eq!((p.angle(B1), p.angle(B2)), (0.0, MAX_ANGLE));
@@ -242,7 +242,7 @@ fn long_chains_and_collinear_targets_converge() {
             bones.push(Bone { id: BoneId(5000 + i as u64), ..bone(BoneId(0), p, c) });
             els.push(instance(c, 100.0 * (i + 1) as f32, 0.0));
         }
-        let arm = Armature { bones, skin: None };
+        let arm = Armature { bones, ..Default::default() };
         let last = BoneId(5000 + n as u64 - 1);
         let reach = 100.0 * n as f32;
         for k in 0..12 {
@@ -253,4 +253,82 @@ fn long_chains_and_collinear_targets_converge() {
             assert!(s.error <= 0.5, "{n} bones to {target:?}: {} px off", s.error);
         }
     }
+}
+
+// Joint translation (ADR 0084).
+
+#[test]
+fn a_sliding_joint_moves_what_hangs_from_it_along_its_parents_axes() {
+    let (mut arm, els) = chain();
+    arm.bone_mut(B2).unwrap().slide_x = Some(Limits { min: -50.0, max: 50.0 });
+    let mut pose = Pose::default();
+    pose.set_slide(B2, Vec2::new(30.0, 99.0));
+    // Only x slides (y isn't enabled), along the arm's x axis: right, at rest.
+    assert_eq!(pose.allowed(&arm).slide(B2), Vec2::new(30.0, 0.0));
+    assert!(close(hand_end(&arm, &els, &pose), Vec2::new(430.0, 100.0), 1e-3));
+    // With the shoulder turned a quarter, the arm's x axis points down: so does the slide.
+    pose.set(B1, FRAC_PI_2);
+    assert!(close(hand_end(&arm, &els, &pose), Vec2::new(200.0, 330.0), 1e-3), "{:?}", hand_end(&arm, &els, &pose));
+    // The joint is drawn where it slid to.
+    let posed: Vec<Arc<Element>> = {
+        let w = place(&arm, &els, &pose);
+        els.iter().map(|e| Arc::new(Element { transform: w[&e.id], ..(**e).clone() })).collect()
+    };
+    let at = bones_at(&arm, &posed, &pose.allowed(&arm));
+    assert!(close(at[1].head, Vec2::new(200.0, 230.0), 1e-3), "{:?}", at[1]);
+    // The limits hold, whatever a file says.
+    pose.set_slide(B2, Vec2::new(1e9, 0.0));
+    assert_eq!(pose.allowed(&arm).slide(B2).x, 50.0);
+    // No slide: exactly the bits of turning alone.
+    let (plain, _) = chain();
+    let p = Pose(vec![JointAngle::new(B1, 0.3), JointAngle::new(B2, -0.2)]);
+    assert_eq!(place(&arm, &els, &p), place(&plain, &els, &p));
+}
+
+#[test]
+fn ik_slides_a_joint_only_where_turning_cant_reach_and_within_its_limits() {
+    let (mut arm, els) = chain();
+    arm.bone_mut(B2).unwrap().slide_x = Some(Limits { min: 0.0, max: 80.0 });
+    // Within reach: the same solve as without sliding (no slide at all).
+    let (plain, _) = chain();
+    let t = Vec2::new(300.0, 180.0);
+    let (a, b) = (solve(&arm, &els, &Pose::default(), B2, Vec2::new(100.0, 0.0), t).unwrap(), solve(&plain, &els, &Pose::default(), B2, Vec2::new(100.0, 0.0), t).unwrap());
+    assert_eq!(a.pose.slide(B2), Vec2::ZERO);
+    assert_eq!(a.pose.angle(B1).to_bits(), b.pose.angle(B1).to_bits());
+    // Out of reach: the elbow slides out to get there.
+    let far = Vec2::new(250.0, 330.0);
+    let s = solve(&arm, &els, &Pose::default(), B2, Vec2::new(100.0, 0.0), far).unwrap();
+    assert!(s.error <= 0.5, "{} px off, slide {:?}", s.error, s.pose.slide(B2));
+    assert!(s.pose.slide(B2).x > 0.0 && s.pose.slide(B2).x <= 80.0);
+    // Farther than the slide allows: it stops at its limit, stretched toward the target.
+    let s = solve(&arm, &els, &Pose::default(), B2, Vec2::new(100.0, 0.0), Vec2::new(900.0, 100.0)).unwrap();
+    assert_eq!(s.pose.slide(B2).x, 80.0);
+    assert!((s.error - (900.0 - 480.0)).abs() < 0.05, "{}", s.error);
+    // A piston: a joint that doesn't turn but slides along y.
+    let (mut arm, els) = chain();
+    let b = arm.bone_mut(B2).unwrap();
+    b.limits = Some(Limits { min: 0.0, max: 0.0 });
+    b.slide_y = Some(Limits { min: -40.0, max: 40.0 });
+    arm.bone_mut(B1).unwrap().limits = Some(Limits { min: 0.0, max: 0.0 });
+    let s = solve(&arm, &els, &Pose::default(), B2, Vec2::new(100.0, 0.0), Vec2::new(400.0, 125.0)).unwrap();
+    assert!((s.pose.slide(B2).y - 25.0).abs() < 0.01 && s.pose.angle(B2) == 0.0, "{:?}", s.pose);
+}
+
+#[test]
+fn sanitize_repairs_hostile_slides() {
+    let (mut arm, _) = chain();
+    let b = arm.bone_mut(B2).unwrap();
+    b.slide_x = Some(Limits { min: f32::NAN, max: 3.0 });
+    b.slide_y = Some(Limits { min: 1e12, max: -1e12 });
+    b.spring = Some(Spring { strength: f32::INFINITY, damping: 0.5 });
+    assert!(arm.sanitize());
+    let b = arm.bone(B2).unwrap();
+    assert_eq!((b.slide_x, b.slide_y, b.spring), (None, Some(Limits { min: -MAX_SLIDE, max: MAX_SLIDE }), None));
+    let mut p = Pose(vec![JointAngle { bone: B2, angle: 0.0, x: f32::NAN, y: -1e20 }]);
+    assert!(p.sanitize());
+    assert_eq!(p.slide(B2), Vec2::new(0.0, -MAX_SLIDE));
+    // Older poses (no slides) still read; slides of 0 are not written.
+    let old: Pose = serde_json::from_str(r#"[{"bone":20,"angle":0.5}]"#).unwrap();
+    assert_eq!(old.slide(B1), Vec2::ZERO);
+    assert_eq!(serde_json::to_string(&old).unwrap(), r#"[{"bone":20,"angle":0.5}]"#);
 }
