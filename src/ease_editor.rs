@@ -157,9 +157,9 @@ pub enum Picked {
 }
 
 /// The ease menu (see the module docs), showing `current`; `name` is its accessible name.
-pub fn picker(app: &App, ui: &mut egui::Ui, salt: &str, current: &Easing, width: f32, name: &str) -> Option<Picked> {
+pub fn picker(app: &App, ui: &mut egui::Ui, menu: &str, current: &Easing, width: f32, name: &str) -> Option<Picked> {
     let mut out = None;
-    let r = egui::ComboBox::from_id_salt(salt).width(width).height(560.0).selected_text(label(&app.s.doc, current)).show_ui(ui, |ui| {
+    let r = egui::ComboBox::from_id_salt(menu).width(width).height(560.0).selected_text(label(&app.s.doc, current)).show_ui(ui, |ui| {
         ui.set_min_width(4.0 * THUMB.x + 80.0);
         if ui.selectable_label(*current == Easing::Linear, tr!("No Ease")).clicked() {
             out = Some(Picked::Ease(json!("Linear")));
