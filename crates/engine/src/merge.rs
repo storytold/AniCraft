@@ -197,7 +197,7 @@ fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Opt
             name: String::new(),
             transform: Affine::translate(c.x, c.y),
             color,
-            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill: fill.map(|f| f.transformed(&Affine::translate(-c.x, -c.y))), stroke, fill_rule: Default::default(), merge: true }),
+            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill: fill.map(|f| f.transformed(&Affine::translate(-c.x, -c.y))), stroke, fill_rule: Default::default(), merge: true, warp: None }),
         }));
     }
     Some(Remerged { out, picked, inside, from })
@@ -279,6 +279,11 @@ fn index_of<T: PartialEq>(table: &mut Vec<T>, v: T) -> u32 {
 /// `draw.drop`: the selected raw shapes go back into the drawing, on top (Animate merges a moved
 /// shape when it is let go).
 fn drop(s: &mut Session, _: &Value) -> Result<Value> {
+    drop_selected(s)
+}
+
+/// [`drop`] on the active layer (also when an envelope closes, ADR 0080).
+pub(crate) fn drop_selected(s: &mut Session) -> Result<Value> {
     let sel = s.selection.on(s.layer);
     let kf = s.editable_keyframe()?;
     let mut moving = Vec::new();

@@ -34,6 +34,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Camera => Icon::Camera,
         Tool::Bone => Icon::Bone,
         Tool::Bind => Icon::Bind,
+        Tool::Warp => Icon::Warp,
         Tool::Hand => Icon::Hand,
         Tool::Zoom => Icon::Zoom,
     }
@@ -248,8 +249,18 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
         .set_name(tr!("Scene"));
         // The symbols open for editing (ADR 0045), as in Animate's edit bar: a click on one
         // goes back to it; the last is the one being edited.
-        // A group (ADR 0073) shows as "Group", as Animate's edit bar does.
-        let open: Vec<String> = app.s.editing.iter().map(|l| l.symbol().map_or_else(|| tr!("Group").to_string(), |id| app.s.doc.symbol(id).map_or_else(String::new, |s| s.name.clone()))).collect();
+        // A group (ADR 0073) shows as "Group" and a drawing object (ADR 0080) as "Drawing
+        // Object", as Animate's edit bar does.
+        let open: Vec<String> = app
+            .s
+            .editing
+            .iter()
+            .map(|l| match l.symbol() {
+                Some(id) => app.s.doc.symbol(id).map_or_else(String::new, |s| s.name.clone()),
+                None if l.open == anicraft_engine::editing::Opened::Drawing => tr!("Drawing Object").to_string(),
+                None => tr!("Group").to_string(),
+            })
+            .collect();
         let mut back: Option<usize> = None;
         for (i, name) in open.iter().enumerate() {
             ui.label(text(Type::Caption, "›"));
@@ -585,6 +596,14 @@ pub(crate) fn properties(app: &mut App, ui: &mut egui::Ui) {
             let title = if name.is_empty() { tr!("Bone").to_string() } else { tr!("Bone: {name}", name = name) };
             section(ui, "prop_bone", Section::Rule, &title, None, |ui| bone_props(app, ui, id));
         }
+    }
+    // ---- Asset Warp (ADR 0079): the warped artwork picked with the tool, or selected ----
+    let warp_target = app.warp_pin.map(|(e, _)| e).or_else(|| match sel.as_slice() {
+        [e] if matches!(&e.kind, ElementKind::Shape(sh) if sh.live_warp().is_some()) => Some(e.id),
+        _ => None,
+    });
+    if app.tool == Tool::Warp || warp_target.is_some() {
+        section(ui, "prop_warp", Section::Rule, tr!("Asset Warp"), None, |ui| warp_props(app, ui, warp_target));
     }
     if let Some(e) = sel.first() {
         // One count per template: the layers' phrase is its own plural, with its preposition, so
@@ -1641,6 +1660,54 @@ fn camera_props(app: &mut App, ui: &mut egui::Ui) {
 
 /// The selected bone: its joint angle at the playhead (editing it keys the pose), the joint's
 /// limits, the pin, and removal.
+/// A warped shape or bitmap (ADR 0079): its mesh's resolution, its pins, and taking the warp
+/// off. Without one, how to start.
+fn warp_props(app: &mut App, ui: &mut egui::Ui, target: Option<anicraft_engine::doc::ElementId>) {
+    let frame = app.s.frame;
+    let warp = target.and_then(|id| {
+        app.s.timeline().layers.iter().find_map(|l| {
+            let (_, els) = anicraft_engine::doc::evaluate_layer_elements(l, frame)?;
+            els.iter().find(|e| e.id == id).and_then(|e| match &e.kind {
+                ElementKind::Shape(sh) => sh.live_warp().cloned(),
+                _ => None,
+            })
+        })
+    });
+    let (Some(id), Some(warp)) = (target, warp) else {
+        ui.label(text(Type::Caption, tr!("Click a shape or a bitmap with the Asset Warp tool to pin it; drag a pin to bend it around the others.")));
+        return;
+    };
+    let mut res = warp.resolution;
+    let (cols, rows) = warp.grid().map_or((0, 0), |g| (g.nx, g.ny));
+    row(ui, tr!("Mesh"), |ui| {
+        let r = ui
+            .add(egui::DragValue::new(&mut res).range(anicraft_engine::doc::warp::MIN_RESOLUTION..=anicraft_engine::doc::warp::MAX_RESOLUTION).speed(0.1))
+            .named(tr!("Mesh resolution"))
+            .on_hover_text(tr!("Cells along the artwork's longer side: more bends more smoothly, fewer is faster"));
+        if r.changed() {
+            live(app, tr_noop!("Warp Mesh Resolution"), "warp.add", json!({"element": id.0, "resolution": res}));
+        }
+        ui.label(text(Type::Data, format!("{cols} × {rows}")));
+    });
+    let pins = warp.pins.len();
+    row(ui, tr!("Pins"), |ui| {
+        ui.label(text(Type::Data, pins.to_string()));
+    });
+    ui.horizontal_wrapped(|ui| {
+        if let Some((el, pin)) = app.warp_pin.filter(|(el, _)| *el == id)
+            && ui.button(tr!("Remove Pin")).named(tr!("Remove warp pin")).on_hover_text(tr!("Removes the picked pin from every keyframe (Delete)")).clicked()
+        {
+            app.run("warp.pin_remove", json!({"element": el.0, "pin": pin.0}));
+            app.warp_pin = None;
+        }
+        if ui.button(tr!("Remove Warp")).named(tr!("Remove warp")).on_hover_text(tr!("Takes the mesh and its pins off the artwork on every keyframe: it shows as drawn again")).clicked() {
+            app.run("warp.remove", json!({"element": id.0}));
+            app.warp_pin = None;
+        }
+    });
+    ui.label(text(Type::Caption, tr!("Drag pins with the Asset Warp tool to bend the artwork; a pin moved at another frame keys it, and pins tween.")));
+}
+
 fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId) {
     let tl = app.s.timeline();
     let Some((layer, bone)) = tl.layers.iter().find_map(|l| l.armature.as_ref().and_then(|a| a.bone(id)).map(|b| (l.clone(), b.clone()))) else { return };
@@ -2117,9 +2184,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         Tool::Rect => row(ui, tr!("Corners"), |ui| {
             ui.add(egui::DragValue::new(&mut app.rect_radius).suffix(" px").range(0.0..=500.0)).set_name(tr!("Corner radius"));
         }),
-        Tool::Star => row(ui, tr!("Points"), |ui| {
-            ui.add(egui::DragValue::new(&mut app.star_points).range(3..=32)).set_name(tr!("Star points"));
-        }),
+        Tool::Star => polystar_props(app, ui),
         Tool::PaintBucket => row_prose(ui, tr!("Gap size"), |ui| {
             egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(crate::i18n::t(app.bucket_gap.label())).show_ui(ui, |ui| {
                 for g in crate::app::GapSize::ALL {
@@ -2137,6 +2202,27 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }),
         Tool::Brush | Tool::PaintBrush => brush_props(app, ui),
         _ => {}
+    }
+}
+
+/// PolyStar's Tool Settings (ADR 0080), inline as the other tools' options: the style, the number
+/// of sides (or points) and, for a star, its point size.
+fn polystar_props(app: &mut App, ui: &mut egui::Ui) {
+    let o = &mut app.polystar;
+    // "Shape", not Animate's "Style": the line style's row above is Style.
+    row_prose(ui, tr!("Shape"), |ui| {
+        ui.selectable_value(&mut o.star, false, tr!("Polygon")).on_hover_text(tr!("Draws a regular polygon."));
+        ui.selectable_value(&mut o.star, true, tr!("Star")).on_hover_text(tr!("Draws a star."));
+    });
+    row(ui, if o.star { tr!("Points") } else { tr!("Sides") }, |ui| {
+        ui.add(egui::DragValue::new(&mut o.sides).range(3..=32)).set_name(if o.star { tr!("Number of points") } else { tr!("Number of sides") });
+    });
+    if o.star {
+        row(ui, tr!("Point size"), |ui| {
+            ui.add(egui::DragValue::new(&mut o.point_size).range(0.0..=1.0).speed(0.01).fixed_decimals(2))
+                .on_hover_text(tr!("How deep the points are: near 0 they are thin spikes, at 1 the star is the polygon through its tips."))
+                .set_name(tr!("Star point size"));
+        });
     }
 }
 

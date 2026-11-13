@@ -25,6 +25,36 @@
   * Changed: depth now also scales under the camera's zoom (it was pan-only); files with a
     depth and a zoomed camera look different.
 
+* **Drawing parity leftovers** (ADR 0080, M1).
+  * **PolyStar options**: Shape (**Polygon** or **Star**), **Sides**/**Points** (3 to 32) and
+    **Point size** (0 to 1; at 1 a star is the polygon through its tips) in the tool's options.
+    It merges or draws objects like the other shape tools.
+  * **Paint Selection** and **Paint Inside** brush modes: the paint is clipped exactly to the
+    selected fills, or to the fill (or the empty area closed off) where the stroke starts, and
+    never covers lines. Paint Selection keeps the selection for the next stroke.
+  * **Double-click a drawing object** (or Ctrl+E) to edit it in place, as groups and symbols
+    open: inside, its raw shapes merge only with each other. It closes as one drawing object
+    again; opening and closing it without an edit changes nothing.
+  * **Modify › Transform › Envelope**: corner and tangent handles bend the selected shapes and
+    drawing objects through a Bézier patch, one undo step per drag. Like Animate, the bend is
+    baked into the shapes, so there is no Delete Envelope.
+  * Headless: `shape`, `sides`, `point_size` on `draw.star`; `selection` and `inside` modes on
+    `draw.brush`; drawing objects on `symbol.edit`; `modify.envelope`,
+    `modify.envelope_move`, `modify.envelope_close`.
+
+* **Asset Warp** (M7, ADR 0079; refs #213).
+  * **Added**: the **Asset Warp** tool (**Shift+Q**). Click a shape or a bitmap to pin it (the
+    first pin covers it with a warp mesh), drag a pin to bend the artwork around the others,
+    live, one undo step per drag; Delete removes the picked pin. Bending is rigid moving least
+    squares, so the artwork stays as rigid as it can near the pins.
+  * **Added**: pin poses per keyframe, tweened with classic tweens and their easing; a pin added
+    later lands on every keyframe of the artwork. Properties › Asset Warp sets the mesh's
+    resolution and removes pins or the whole warp (also in Modify › Asset Warp).
+  * **Added**: bitmaps bend in the renderer and on the GPU stage (the same prepared image, so
+    they match exactly) and in every raster export; SVG writes a bent bitmap as an image; HTML
+    and Lottie report it. Warped shapes are bent outlines everywhere.
+  * **Added**: commands `warp.add`, `warp.pin_add`, `warp.pin_move`, `warp.pin_remove`,
+    `warp.remove` and `warp.info`, for scripts, plug-ins, the CLI and MCP.
 * **Swatches panel** (M1, ADR 0078).
   * **Added**: **Window › Swatches**, the document's saved colours and gradients, saved in the
     document (new documents and older files start with a default set). Click a swatch to apply

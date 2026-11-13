@@ -8,8 +8,9 @@ use crate::merge::{self, Order};
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
 use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, MAX_WIDTH_POINTS, Paint, Rgba, Shape, Stroke, WidthPoint, WidthProfile};
+use anicraft_geom::planar;
 use anicraft_geom::brush::{MAX_SAMPLES, Sample, Tip, TipShape, centre_stroke, outline_shaped};
-use anicraft_geom::{Affine, FillRule, PathCmd, Vec2};
+use anicraft_geom::{Affine, FillRule, Path, PathCmd, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c(
             "draw.brush",
             "Brush Stroke",
-            "{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
+            "{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind|selection|inside (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas, Paint Selection only inside the selected fills, Paint Inside only inside the fill the stroke starts on or the empty area closed off around it; ADR 0080), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
             true,
             draw_brush as crate::RunFn,
         ),
@@ -42,16 +43,22 @@ pub enum PaintMode {
     Normal,
     Fills,
     Behind,
+    /// Only inside the selected fills (ADR 0080).
+    Selection,
+    /// Only inside the fill the stroke starts on (ADR 0080).
+    Inside,
 }
 
 impl PaintMode {
-    pub const ALL: [PaintMode; 3] = [PaintMode::Normal, PaintMode::Fills, PaintMode::Behind];
+    pub const ALL: [PaintMode; 5] = [PaintMode::Normal, PaintMode::Fills, PaintMode::Behind, PaintMode::Selection, PaintMode::Inside];
 
     pub fn key(self) -> &'static str {
         match self {
             PaintMode::Normal => "normal",
             PaintMode::Fills => "fills",
             PaintMode::Behind => "behind",
+            PaintMode::Selection => "selection",
+            PaintMode::Inside => "inside",
         }
     }
     pub fn label(self) -> &'static str {
@@ -59,6 +66,8 @@ impl PaintMode {
             PaintMode::Normal => "Paint Normal",
             PaintMode::Fills => "Paint Fills",
             PaintMode::Behind => "Paint Behind",
+            PaintMode::Selection => "Paint Selection",
+            PaintMode::Inside => "Paint Inside",
         }
     }
     pub fn hint(self) -> &'static str {
@@ -66,18 +75,64 @@ impl PaintMode {
             PaintMode::Normal => "Paints over lines and fills on the layer.",
             PaintMode::Fills => "Paints over fills and empty areas, leaving lines alone.",
             PaintMode::Behind => "Paints only empty areas, behind the lines and fills on the layer.",
+            PaintMode::Selection => "Paints only inside the selected fills, leaving lines alone.",
+            PaintMode::Inside => "Paints only inside the fill where the stroke starts, leaving lines alone. Started on empty stage, it paints only the empty area there.",
         }
     }
     fn order(self) -> Order {
         match self {
             PaintMode::Normal => Order::Top,
-            PaintMode::Fills => Order::UnderLines,
+            // Clipped paint never covers a line either (ADR 0080).
+            PaintMode::Fills | PaintMode::Selection | PaintMode::Inside => Order::UnderLines,
             PaintMode::Behind => Order::Behind,
         }
     }
     pub fn from_key(k: &str) -> Option<PaintMode> {
         PaintMode::ALL.into_iter().find(|m| m.key() == k)
     }
+}
+
+/// Where Paint Selection and Paint Inside may paint (ADR 0080).
+enum Region {
+    /// Inside this outline (keyframe space, even-odd).
+    Clip(Path),
+    /// Only empty areas: Paint Inside started on open, empty stage (as Paint Behind).
+    Empty,
+    /// Nowhere, and why.
+    Nowhere(&'static str),
+}
+
+const TOO_MUCH: &str = "there is too much artwork there to paint inside at once; paint a smaller area";
+
+/// The region a clipped paint mode paints in: the union of the selected shapes' fills on the
+/// active layer (Paint Selection), or the topmost fill under `start` there, else the empty area
+/// the lines and fills close off around it (Paint Inside). Merged paint lies under drawing
+/// objects, so off Object Drawing only raw fills count (an object is edited inside it).
+fn paint_region(s: &mut Session, mode: PaintMode, start: Vec2, object: bool) -> Result<Region> {
+    let els = s.editable_keyframe()?.elements.clone();
+    let filled = |e: &Element| match &e.kind {
+        ElementKind::Shape(sh) if sh.fill.is_some() && (object || sh.merge) => Some((sh.path.transformed(&e.transform), sh.fill_rule)),
+        _ => None,
+    };
+    let too_much = || EngineError::State(TOO_MUCH.into());
+    if mode == PaintMode::Selection {
+        let here = s.layer;
+        let picked: Vec<(Path, FillRule)> = els.iter().filter(|e| s.selection.contains(here, e.id)).filter_map(|e| filled(e)).collect();
+        if picked.is_empty() {
+            return Ok(Region::Nowhere(if s.selection.on(here).is_empty() { "select the fills to paint inside first" } else { "the selection has no fills to paint inside" }));
+        }
+        let refs: Vec<(&Path, FillRule)> = picked.iter().map(|(p, r)| (p, *r)).collect();
+        return Ok(Region::Clip(planar::union(&refs).ok_or_else(too_much)?));
+    }
+    let on = els.iter().rev().find_map(|e| filled(e).filter(|(p, r)| p.contains(start, &Affine::IDENTITY, *r)));
+    if let Some((path, rule)) = on {
+        // The fill's own rule, as even-odd loops.
+        return Ok(Region::Clip(planar::union(&[(&path, rule)]).ok_or_else(too_much)?));
+    }
+    Ok(match merge::enclosed_area(&els, start) {
+        Some(area) => Region::Clip(area),
+        None => Region::Empty,
+    })
 }
 
 pub(crate) fn samples(p: &Value) -> Result<Vec<Sample>> {
@@ -166,7 +221,7 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
     let as_stroke = opt_bool(p, "as_stroke")?.unwrap_or(false);
     let unit = ranged(p, "unit", 0.001..=1000.0, 1.0)?;
     let mode_key = opt_str(p, "mode")?.unwrap_or("normal");
-    let mode = PaintMode::from_key(mode_key).ok_or_else(|| EngineError::Param(format!("unknown paint mode '{mode_key}' (normal, fills or behind)")))?;
+    let mode = PaintMode::from_key(mode_key).ok_or_else(|| EngineError::Param(format!("unknown paint mode '{mode_key}' (normal, fills, behind, selection or inside)")))?;
     let color = opt_color(p, "color")?.unwrap_or(if as_stroke { s.style.stroke } else { s.style.fill });
     let color = Rgba { a: color.a * pressure_opacity(&b, &pts), ..color };
     let object = object_param(s, p)?;
@@ -181,9 +236,45 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
     if as_stroke {
         return paint_stroke(s, &pts, &b, smoothing, tol, color, object);
     }
-    let path = outline_shaped(&pts, &tip, &b.shaping(), smoothing, tol);
+    let start = pts.first().map_or(Vec2::ZERO, |x| x.at);
+    let mut path = outline_shaped(&pts, &tip, &b.shaping(), smoothing, tol);
     if !path.cmds.iter().any(|c| matches!(c, PathCmd::CubicTo(..) | PathCmd::LineTo(..))) {
         return Err(EngineError::Param("the stroke is too small to paint".into()));
+    }
+    // Paint Selection and Paint Inside (ADR 0080): the outline clipped to the region, then
+    // merged as usual. Nothing changes when nothing is painted (no keyframe made, no step).
+    let mut order = mode.order();
+    // Paint Selection keeps the selection: the region, to select again after the merge.
+    let mut kept_region: Option<Path> = None;
+    if matches!(mode, PaintMode::Selection | PaintMode::Inside) {
+        let before = s.doc.clone();
+        let region = paint_region(s, mode, start, object);
+        let clipped = match region {
+            Ok(Region::Clip(r)) => {
+                let c = planar::intersect(&path, FillRule::EvenOdd, &r).ok_or_else(|| EngineError::State(TOO_MUCH.into()));
+                kept_region = (mode == PaintMode::Selection).then_some(r);
+                Some(c)
+            }
+            Ok(Region::Empty) => None,
+            Ok(Region::Nowhere(why)) => {
+                s.doc = before;
+                return Ok(json!({"painted": false, "mode": mode.key(), "elements": [], "reason": why}));
+            }
+            Err(e) => Some(Err(e)),
+        };
+        match clipped {
+            None => order = Order::Behind,
+            Some(Err(e)) => {
+                s.doc = before;
+                return Err(e);
+            }
+            Some(Ok(p)) if !p.cmds.iter().any(|c| matches!(c, PathCmd::CubicTo(..) | PathCmd::LineTo(..))) => {
+                s.doc = before;
+                let why = if mode == PaintMode::Selection { "the stroke doesn't reach the selected fills" } else { "nothing to paint there" };
+                return Ok(json!({"painted": false, "mode": mode.key(), "elements": [], "reason": why}));
+            }
+            Some(Ok(p)) => path = p,
+        }
     }
     let c = path.bounds().center();
     let local = path.transformed(&Affine::translate(-c.x, -c.y));
@@ -199,25 +290,51 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(fill), stroke: None, fill_rule: FillRule::EvenOdd, merge: !object }),
+        kind: ElementKind::Shape(Shape { path: Arc::new(local), fill: Some(fill), stroke: None, fill_rule: FillRule::EvenOdd, merge: !object, warp: None }),
     };
     if s.editable_keyframe()?.elements.len() >= 100_000 {
         return Err(EngineError::State("too many elements on this keyframe".into()));
     }
     if object {
         let kf = s.editable_keyframe()?;
-        match mode {
+        match order {
             // Behind everything on the layer.
-            PaintMode::Behind => kf.elements.insert(0, Arc::new(el)),
-            PaintMode::Normal | PaintMode::Fills => kf.elements.push(Arc::new(el)),
+            Order::Behind => kf.elements.insert(0, Arc::new(el)),
+            Order::Top | Order::UnderLines => kf.elements.push(Arc::new(el)),
         }
-        s.select_only([id]);
+        // Paint Selection: the selected objects stay selected, for the next stroke.
+        if kept_region.is_none() {
+            s.select_only([id]);
+        }
         return Ok(json!({"element": id.0, "elements": [id.0], "mode": mode.key(), "merged": false}));
     }
-    let merged = merge::merge_in_order(s, vec![el], mode.order())?;
-    s.select_only(merged);
-    let ids: Vec<u64> = s.selection.id_list();
+    let merged = merge::merge_in_order(s, vec![el], order)?;
+    let ids: Vec<u64> = merged.iter().map(|e| e.0).collect();
+    match &kept_region {
+        // Paint Selection: what lies in the region (the selected fills' pieces and the paint)
+        // stays selected, for the next stroke.
+        Some(region) => {
+            let inside = pieces_in(s, region);
+            s.select_only(inside);
+        }
+        None => s.select_only(merged),
+    }
     Ok(json!({"element": ids.first(), "elements": ids, "mode": mode.key(), "merged": true}))
+}
+
+/// The raw fills on the active keyframe that cover part of `region` (keyframe space, even-odd).
+fn pieces_in(s: &mut Session, region: &Path) -> Vec<ElementId> {
+    let Ok(kf) = s.editable_keyframe() else { return Vec::new() };
+    let bounds = region.bounds();
+    kf.elements
+        .iter()
+        .filter(|e| matches!(&e.kind, ElementKind::Shape(sh) if sh.merge && sh.fill.is_some() && !sh.path.bounds().transformed(&e.transform).intersect(&bounds).is_empty()))
+        .filter(|e| match &e.kind {
+            ElementKind::Shape(sh) => planar::intersect(&sh.path.transformed(&e.transform), sh.fill_rule, region).is_some_and(|p| !p.is_empty()),
+            _ => false,
+        })
+        .map(|e| e.id)
+        .collect()
 }
 
 /// Width points a Paint Brush stroke's profile is simplified from (evenly along its length).

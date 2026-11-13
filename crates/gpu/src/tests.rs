@@ -32,6 +32,7 @@ fn item(path: Path, fill: Paint) -> DisplayItem {
         group: None,
         image: None,
         smooth: true,
+        warp: None,
     }
 }
 
@@ -946,6 +947,16 @@ fn bitmap_scenes() -> Vec<(&'static str, DisplayList, View)> {
     let mut hard_tiled = bitmap_item(Path::ellipse(50.0, 40.0, 45.0, 35.0), &c, true, Affine::scale(4.0, 3.0));
     hard_tiled.smooth = false;
     out.push(("bitmaps without smoothing", list(vec![hard_tiled, hard]), view(100, 80, white)));
+    // Warped (ADR 0079): bent by three pins, folded a little, faded; the oracle's prepared image.
+    use anicraft_doc::warp::{Pin, PinId, Warp};
+    let pin = |id: u64, rest: (f32, f32), at: (f32, f32)| Pin { id: PinId(id), rest: Vec2::new(rest.0, rest.1), at: Vec2::new(at.0, at.1) };
+    let mut warp = Warp::new(Arc::new(Path::rect(0.0, 0.0, 40.0, 30.0)), 8);
+    warp.pins = vec![pin(1, (2.0, 15.0), (6.0, 20.0)), pin(2, (20.0, 15.0), (24.0, 14.0)), pin(3, (38.0, 15.0), (52.0, 40.0))];
+    let mut bent = bitmap_item(warp.outline().as_ref().clone(), &c, false, Affine::IDENTITY);
+    bent.warp = warp.mesh().map(Arc::new);
+    bent.transform = Affine::scale(1.4, 1.4);
+    bent.color = ColorTransform::alpha(0.8);
+    out.push(("warped bitmap", list(vec![bent]), view(90, 72, white)));
     out
 }
 
@@ -1100,7 +1111,7 @@ fn filtered_sample() -> anicraft_doc::Document {
             }
         }
     }
-    let shape = anicraft_doc::Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), merge: false, fill: Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(77), repeat: true, matrix: Affine::scale(5.0, 5.0) }), stroke: None, fill_rule: FillRule::NonZero };
+    let shape = anicraft_doc::Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), merge: false, fill: Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(77), repeat: true, matrix: Affine::scale(5.0, 5.0) }), stroke: None, fill_rule: FillRule::NonZero, warp: None };
     let sky = anicraft_doc::Element { id: ElementId(9_100), name: "sky".into(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) };
     let frames = doc.frame_count();
     let mut k = anicraft_doc::Keyframe::new(0, frames);

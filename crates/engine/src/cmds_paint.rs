@@ -139,7 +139,7 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
         name: String::new(),
         transform: Affine::translate(c.x, c.y),
         color: ColorEffect::default(),
-        kind: ElementKind::Shape(Shape { fill: Some(given.unwrap_or_else(|| s.style.fill_paint_for(&Affine::translate(-c.x, -c.y), &local.bounds()))), path: Arc::new(local), stroke: None, fill_rule: FillRule::EvenOdd, merge: !object }),
+        kind: ElementKind::Shape(Shape { fill: Some(given.unwrap_or_else(|| s.style.fill_paint_for(&Affine::translate(-c.x, -c.y), &local.bounds()))), path: Arc::new(local), stroke: None, fill_rule: FillRule::EvenOdd, merge: !object, warp: None }),
     };
     if !object {
         // Raw: behind the drawing, so it takes only what is empty and joins the fills of its

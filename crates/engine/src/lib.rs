@@ -8,9 +8,11 @@
 mod anim;
 mod cmds_actions;
 mod cmds_bone;
+mod cmds_warp;
 pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
+pub mod cmds_envelope;
 pub mod cmds_drop;
 pub mod cmds_erase;
 mod cmds_file;
@@ -127,6 +129,7 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(cmds_envelope::specs());
     v.extend(publish::specs());
     v.extend(cmds_recent::specs());
     v.extend(cmds_drop::specs());
@@ -135,6 +138,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_layer::specs());
     v.extend(cmds_camera::specs());
     v.extend(cmds_bone::specs());
+    v.extend(cmds_warp::specs());
     v.extend(cmds_motion::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
@@ -356,6 +360,8 @@ pub struct Session {
     /// The user's own brush presets (ADR 0068). Like recent files they belong to the session
     /// and survive New and Open; the desktop app keeps them in its preferences.
     pub brushes: brush_library::BrushLibrary,
+    /// The open envelope (ADR 0080): view state over the shapes it bends, like a gesture.
+    pub(crate) envelope: Option<cmds_envelope::Envelope>,
 }
 
 /// Each piece of a marquee's cut, with the shape it was cut from.
@@ -427,6 +433,7 @@ impl Session {
             published: std::collections::BTreeSet::new(),
             recent: cmds_recent::RecentFiles::default(),
             brushes: brush_library::BrushLibrary::default(),
+            envelope: None,
         }
     }
 
@@ -1082,6 +1089,8 @@ mod tests_bone;
 #[cfg(test)]
 mod tests_shape_bone;
 #[cfg(test)]
+mod tests_warp;
+#[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
 mod raw_tests;
@@ -1125,3 +1134,5 @@ mod path_text_tests;
 mod group_tests;
 #[cfg(test)]
 mod swatch_tests;
+#[cfg(test)]
+mod parity_tests;

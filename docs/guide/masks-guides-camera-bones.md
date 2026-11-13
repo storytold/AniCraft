@@ -1,7 +1,7 @@
 # Masks, guides, camera and bones
 
 Some layers do a special job. This chapter covers mask layers, guide layers and motion guides,
-the camera layer, and bones for posing a character.
+the camera layer, bones for posing a character, and Asset Warp for bending artwork with pins.
 
 A note on keys: AniCraft uses **Ctrl** on Windows and Linux and **⌘** (Command) on macOS, and
 **Alt** is **⌥** (Option) on macOS. So **Ctrl+Z** is **⌘Z** on a Mac.
@@ -250,6 +250,43 @@ by hand.
 Not there yet: symbols and shapes in one armature, reshaping a shape after it has bones,
 springs, joints that slide, armatures that scripts pose while the movie plays, and armatures
 from Animate files.
+
+## Asset Warp
+
+Asset Warp bends a shape or a bitmap with pins, without bones: a flag in the wind, a squashed
+ball, a character's sleeve, a photo curled at one corner.
+
+1. Pick the **Asset Warp** tool (**Shift+Q**, next to Free Transform).
+2. Click the artwork to pin it there. The first pin covers it with a **warp mesh**, a fine grid
+   that shows faintly while the tool is in hand. Add a few more pins: where the artwork should
+   hold still, and where you want to pull it.
+3. Drag a pin. The artwork bends around the other pins as you drag, keeping its parts as
+   rigid as it can (no shearing or squashing near the pins). With only one pin, the whole thing
+   moves. Dragging artwork where there is no pin adds one there and drags it. Each drag is one
+   undo step.
+
+Click a pin to pick it (it turns blue), then press **Delete** to remove it, or **Esc** to let
+it go. Pins don't move anything when you add them, and the artwork with all its pins where you
+placed them looks exactly as you drew it.
+
+**Animating a warp.** Pins live on keyframes, like a pose. Make a keyframe (**F6**), move the
+pins there, and add a classic tween between the keyframes: the pins tween with the span's
+easing and the artwork bends smoothly between the two shapes. Moving a pin in the middle of a
+tween adds a keyframe there. A pin you add later appears on every keyframe of the artwork.
+
+**Properties › Asset Warp** shows the mesh's **resolution** (cells along the artwork's longer
+side: more cells bend more smoothly, fewer are faster), how many pins it has, **Remove Pin**
+and **Remove Warp** (the artwork goes back to how you drew it, on every keyframe). The same
+commands are in **Modify › Asset Warp**.
+
+The warped artwork becomes a drawing object, so shapes you draw later don't cut into it. If you
+reshape it with another tool afterwards, the warp starts again from the new shape, with its
+pins where they are. A gradient fill keeps its place while the outline bends; a bitmap bends
+with the mesh. Every export shows the bent artwork. SVG writes a bent bitmap as an image, and
+HTML and Lottie can't bend a bitmap yet (the export report says so).
+
+Not there yet: warping symbols and text, tying pins to bones, and warped artwork from Animate
+files.
 
 ## Next steps
 
