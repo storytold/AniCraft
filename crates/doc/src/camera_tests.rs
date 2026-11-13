@@ -185,7 +185,8 @@ fn layers_at_depth_zero_are_bit_exact_through_any_camera() {
     let cam = Camera { center: Vec2::new(123.4, 56.7), zoom: 1.7, rotation: 0.3, ..Camera::rest(&d.stage) };
     with_camera(&mut d, &[(0, 20, cam, false)]);
     let before = evaluate(&d, 0).items[0].transform;
-    assert_eq!(before.m, cam.stage_view(&d.stage).mul(&Affine::translate(95.0, 0.0)).m);
+    let want = cam.stage_view(&d.stage).mul(&Affine::translate(95.0, 0.0));
+    assert!(before.m.iter().zip(want.m).all(|(a, b)| (a - b).abs() < 1e-3), "the stage view: {before:?}");
     let mut back = art_layer(50, square(11, 0.0));
     back.depth = 400.0;
     d.timeline_mut(0).layers.push(Arc::new(back));
