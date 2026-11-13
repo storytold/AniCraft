@@ -15,6 +15,8 @@ pub enum Tool {
     Select,
     Subselect,
     Transform,
+    /// Asset Warp (ADR 0079): pins on shapes and bitmaps that bend them.
+    Warp,
     GradientTransform,
     Width,
     Bone,
@@ -69,13 +71,14 @@ impl GapSize {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 23] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::GradientTransform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
+    pub const ALL: [Tool; 24] = [Tool::Select, Tool::Subselect, Tool::Transform, Tool::Warp, Tool::GradientTransform, Tool::Width, Tool::Bone, Tool::Bind, Tool::Pen, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::Rect, Tool::Oval, Tool::Star, Tool::Line, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Camera, Tool::Hand, Tool::Zoom];
 
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => tr_noop!("Selection"),
             Tool::Subselect => tr_noop!("Subselection"),
             Tool::Transform => tr_noop!("Free Transform"),
+            Tool::Warp => tr_noop!("Asset Warp"),
             Tool::GradientTransform => tr_noop!("Gradient Transform"),
             Tool::Width => tr_noop!("Width"),
             Tool::Bone => tr_noop!("Bone"),
@@ -104,6 +107,7 @@ impl Tool {
             Tool::Select => Some("V"),
             Tool::Subselect => Some("A"),
             Tool::Transform => Some("Q"),
+            Tool::Warp => Some("Shift+Q"),
             Tool::GradientTransform => Some("F"),
             Tool::Width => Some("U"),
             Tool::Bone => Some("M"),
@@ -140,6 +144,7 @@ impl Tool {
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer), or drag inside a shape to draw a bone in it (the shape bends with its bones); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
             Tool::Bind => tr_noop!("Shows the points of shapes with bones: a square follows one bone, a triangle several. Click a bone to see the points it moves (filled). Click a point, or drag a box around points, to make them follow only that bone; Shift shares the bone with the ones they follow, Ctrl takes them from it."),
+            Tool::Warp => tr_noop!("Click a shape or a bitmap to pin it (the first pin covers it with a warp mesh). Drag a pin to bend the artwork around the other pins; with one pin it moves. Click a pin and press Delete to remove it. A pin moved at another frame keys it, and pins tween."),
             Tool::GradientTransform => tr_noop!("Click a shape with a gradient or bitmap fill to show its handles. Drag the centre to move the fill, the square to change its width, the circle to change its size, the knob to rotate it (Shift: 15° steps) and, on a radial gradient, the triangle to move its focal point. A bitmap fill also has a square for its height and diamonds to skew it. Each drag is one undo step."),
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
@@ -249,6 +254,8 @@ pub enum Drag {
     BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
     /// Moving a whole armature by its root, from stage point `last` last frame.
     ArmatureMove { layer: anicraft_engine::doc::LayerId, last: egui::Pos2 },
+    /// Asset Warp (ADR 0079): pin `pin` of `element` follows the pointer.
+    WarpPin { element: anicraft_engine::doc::ElementId, pin: anicraft_engine::doc::warp::PinId },
     /// Moving one of the open symbol's 9-slice guides (ADR 0055).
     SliceGuide { guide: crate::scale_grid::Guide },
     Pan,
@@ -395,6 +402,8 @@ pub struct App {
     pub open_fill_swatch: bool,
     /// The bone picked on the stage (ADR 0043; view state).
     pub bone_sel: Option<anicraft_engine::doc::BoneId>,
+    /// The warp pin picked with the Warp tool, and the artwork it is on (ADR 0079; view state).
+    pub warp_pin: Option<(anicraft_engine::doc::ElementId, anicraft_engine::doc::warp::PinId)>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
     pub motion_anchors: Vec<usize>,
     /// The motion path as it was when the drag on it began.
@@ -628,6 +637,7 @@ impl App {
             width_sel: None,
             open_fill_swatch: false,
             bone_sel: None,
+            warp_pin: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
             frame_sel: None,
@@ -1198,6 +1208,49 @@ impl App {
                     }
                 }
                 self.run("element.select", json!({"ids": ids}));
+            }
+            Some("warp") => {
+                // Asset Warp (ADR 0079): a checkered bitmap and a striped banner, each pinned at
+                // three points and bent at frame 1, bent the other way at frame 24 (a classic
+                // tween between), with the tool in hand and the bitmap's right pin picked.
+                self.run("layer.new", json!({"name": "Warp"}));
+                let dir = std::env::temp_dir().join("anicraft-shot-warp");
+                let _ = std::fs::create_dir_all(&dir);
+                let (w, h) = (240u32, 150u32);
+                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+                for y in 0..h {
+                    for x in 0..w {
+                        let on = ((x / 30) + (y / 30)) % 2 == 0;
+                        let t = x as f32 / w as f32;
+                        let c = if on { [(60.0 + 180.0 * t) as u8, 90, (230.0 - 150.0 * t) as u8, 255] } else { [250, 244, 230, 255] };
+                        rgba.extend_from_slice(&c);
+                    }
+                }
+                let path = dir.join("checker.png");
+                let bitmap = anicraft_engine::render::encode_png(w, h, &rgba).ok().filter(|png| std::fs::write(&path, png).is_ok()).and_then(|_| self.run("file.import_to_library", json!({"path": path.display().to_string(), "name": "checker.png"}))).and_then(|v| v["bitmap"].as_u64());
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                let img = bitmap.map_or(0, |b| id(self.run("library.place", json!({"bitmap": b, "x": 380, "y": 330})), "element"));
+                let banner = id(self.run("draw.rect", json!({"x": 700, "y": 270, "w": 320, "h": 120, "fill": "#e8833a", "stroke": "#4a2c14", "stroke_width": 3, "object": true})), "element");
+                self.run("timeline.insert_frame", json!({"frame": 23}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                let mut pins = Vec::new();
+                for (el, x0, x1, y) in [(img, 270.0, 490.0, 330.0), (banner, 712.0, 1008.0, 330.0)] {
+                    let mid = (x0 + x1) * 0.5;
+                    let p = [x0, mid, x1].map(|x| id(self.run("warp.pin_add", json!({"element": el, "x": x, "y": y})), "pin"));
+                    pins.push((el, p, x1, y));
+                }
+                self.run("timeline.goto", json!({"frame": 23}));
+                self.run("timeline.insert_keyframe", json!({}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.run("timeline.create_tween", json!({}));
+                for &(el, p, x1, y) in &pins {
+                    self.run("warp.pin_move", json!({"element": el, "pin": p[1], "dx": 0, "dy": -30, "frame": 0}));
+                    self.run("warp.pin_move", json!({"element": el, "pin": p[2], "x": x1 - 20.0, "y": y + 80.0, "frame": 0}));
+                    self.run("warp.pin_move", json!({"element": el, "pin": p[2], "x": x1 - 10.0, "y": y - 70.0, "frame": 23}));
+                }
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.warp_pin = pins.first().map(|&(el, p, _, _)| (anicraft_engine::doc::ElementId(el), anicraft_engine::doc::warp::PinId(p[2])));
+                self.tool = Tool::Warp;
             }
             Some(which @ ("onion" | "onionmenu")) => {
                 // Onion skin ±5 on a frame with frames before and after it, the markers on the
@@ -2624,6 +2677,7 @@ impl App {
             pathtools::consume_keys(self, ctx);
             crate::widthtool::consume_keys(self, ctx);
             crate::bone_tool::consume_keys(self, ctx);
+            crate::warp_tool::consume_keys(self, ctx);
         }
         crate::library::consume_keys(self, ctx);
         let mut fire: Vec<&'static str> = Vec::new();
@@ -3049,6 +3103,7 @@ impl App {
         crate::motion_path::upkeep(self);
         crate::widthtool::upkeep(self);
         crate::bone_tool::upkeep(self);
+        crate::warp_tool::upkeep(self);
         // An open button shows its hit area over its other states, in the theme's colour (ADR 0057).
         self.s.hit_area = Some(theme::hit_area());
         self.tick_playback(&ctx);

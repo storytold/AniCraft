@@ -34,6 +34,7 @@ mod find_panel;
 mod publish_panel;
 mod erasertool;
 mod bind_tool;
+mod warp_tool;
 mod bone_tool;
 mod camera_tool;
 mod convert_symbol;

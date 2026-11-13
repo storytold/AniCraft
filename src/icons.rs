@@ -70,6 +70,7 @@ pub enum Icon {
     Magnet,
     Bone,
     Bind,
+    Warp,
     EditMultiple,
     Layer,
     InsertFrame,
@@ -80,7 +81,8 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 62] = [
+    pub const ALL: [Icon; 63] = [
+        Icon::Warp,
         Icon::ClipStage,
         Icon::InsertFrame,
         Icon::InsertKeyframe,
@@ -225,6 +227,8 @@ impl Icon {
             Icon::Bone => ("anicraft-bone", false),
             // A bone whose end is tied to two points (AniCraft original, on Lucide's grid): Bind.
             Icon::Bind => ("anicraft-bind", false),
+            // A mesh bent around a pin (AniCraft original, on Lucide's grid): Asset Warp.
+            Icon::Warp => ("anicraft-warp", false),
             // Frames stacked one behind the other, all edited at once (AniCraft original, on
             // Lucide's grid): Edit Multiple Frames.
             Icon::EditMultiple => ("anicraft-edit-multiple", false),
@@ -302,6 +306,7 @@ static FILES: &[(&str, &str)] = &[
     ("anicraft-camera", include_str!("../assets/icons/anicraft-camera.svg")),
     ("anicraft-bone", include_str!("../assets/icons/anicraft-bone.svg")),
     ("anicraft-bind", include_str!("../assets/icons/anicraft-bind.svg")),
+    ("anicraft-warp", include_str!("../assets/icons/anicraft-warp.svg")),
     ("anicraft-edit-multiple", include_str!("../assets/icons/anicraft-edit-multiple.svg")),
     ("folder", include_str!("../assets/icons/folder.svg")),
     ("folder-open", include_str!("../assets/icons/folder-open.svg")),
