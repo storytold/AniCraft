@@ -959,6 +959,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.galley(bg.min + vec2(3.0, 2.0), galley, T.text);
         }
         let cr = ui.interact(cells, ui.id().with(("cells", layer.id.0)), a11y::pointer_only());
+        if is_active {
+            // Where the active row's frames are drawn, for tests that point at them.
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("tl_geometry"), (cells, grid.left() + pad, cell_w, scroll)));
+        }
         a11y::control(ui, &cr, WidgetType::Button, &tr!("Frames of {name}", name = layer.name), None);
         if is_active {
             // Its keyframes and spans, one by one, for screen readers (ADR 0064).

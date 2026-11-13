@@ -363,6 +363,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // Pointer work; the keyboard route to the same values is the property list and its fields.
     // Focusable: with the curve focused, Left and Right move the picked keys (ADR 0083).
     let gr = ui.interact(graph_full, ui.id().with("me_graph"), Sense::click_and_drag());
+    // Where frames and values are drawn, for tests that point at keys.
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("me_geometry"), (inner, lane, last, lo, hi)));
     a11y::surface(ui, &gr, &tr!("{property} curve: Left and Right move the picked keys a frame", property = crate::i18n::t(app.me_prop.label())));
     keyboard(app, ui, &gr, start);
     let hover = gr.hover_pos();
@@ -598,7 +600,8 @@ fn keyboard(app: &mut App, ui: &egui::Ui, gr: &egui::Response, start: u32) {
     }
     let by = ui.input_mut(|i| {
         let mut by = 0i64;
-        for (m, k, d) in [(egui::Modifiers::NONE, egui::Key::ArrowLeft, -1), (egui::Modifiers::NONE, egui::Key::ArrowRight, 1), (egui::Modifiers::SHIFT, egui::Key::ArrowLeft, -10), (egui::Modifiers::SHIFT, egui::Key::ArrowRight, 10)] {
+        // Shift first: a plain arrow's match would take Shift+arrow too.
+        for (m, k, d) in [(egui::Modifiers::SHIFT, egui::Key::ArrowLeft, -10), (egui::Modifiers::SHIFT, egui::Key::ArrowRight, 10), (egui::Modifiers::NONE, egui::Key::ArrowLeft, -1), (egui::Modifiers::NONE, egui::Key::ArrowRight, 1)] {
             while i.consume_key(m, k) {
                 by += d;
             }
