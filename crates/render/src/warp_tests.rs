@@ -140,3 +140,19 @@ fn svg_bakes_a_warped_bitmap_as_the_image_drawn() {
     let flat = DisplayList { items: vec![item(&bitmap_shape(), Affine::IDENTITY, true)], ..Default::default() };
     assert!(crate::svg::to_svg(&flat, &stage).contains("<pattern"));
 }
+
+#[test]
+#[ignore = "a measurement: cargo test -p anicraft-render warp_measured -- --ignored --nocapture"]
+fn warp_measured() {
+    // The 32 × 16 image bent by three pins and drawn 30× (960 × 480 px), on a 1,000 × 700 view.
+    let s = warped(vec![pin(1, (2.0, 8.0), (2.0, 8.0)), pin(2, (16.0, 8.0), (16.0, 6.0)), pin(3, (30.0, 8.0), (31.0, 14.0))], 48);
+    let one = |w: bool| {
+        let shape = if w { s.clone() } else { bitmap_shape() };
+        let t = std::time::Instant::now();
+        for _ in 0..10 {
+            draw(vec![item(&shape, Affine::scale(30.0, 30.0), true)], 1000, 700);
+        }
+        t.elapsed().as_secs_f64() * 100.0
+    };
+    eprintln!("warp: 960×480 px bitmap, 48-cell mesh: {:.2} ms warped, {:.2} ms flat", one(true), one(false));
+}

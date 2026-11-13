@@ -23,4 +23,3 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
-| 0079 | m7/asset-warp | Asset Warp: warp meshes, pins and the Warp tool |
