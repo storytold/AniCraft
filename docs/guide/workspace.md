@@ -18,7 +18,7 @@ every panel (see [Arranging panels and workspaces](#arranging-panels-and-workspa
 |---|---|---|
 | Menu bar | top | Every command, grouped as in Animate: File, Edit, View, Insert, Modify, Commands, Control, Window, Help. On macOS there's also the AniCraft menu, with About, Settings… and Quit. |
 | Edit bar | above the stage | The scene menu, the path to the symbol you're editing, the active layer, the stage size, an **Onion skin** switch, the **Clip content outside the stage** button and the zoom menu. |
-| Tools | left | The drawing and editing tools, the **Snap to Objects** magnet, and the current fill and stroke colours. |
+| Tools | left | The drawing and editing tools, the **Snap to Objects** magnet, and the current fill and stroke colours. Drag the dotted grip at the top to move them. |
 | Stage | middle | Your artwork. The stage rectangle is what the movie shows. You can draw on the grey area around it too. |
 | Timeline and Motion Editor | bottom | Layers, frames and playback. The **Motion Editor** tab beside it shows a motion tween's property curves. |
 | Properties | right, top | Settings for the current tool, then for what's selected, the document and the current frame. |
@@ -42,11 +42,12 @@ Some things open in windows of their own, which stay open while you work:
 
 ## Arranging panels and workspaces
 
-Every panel can go anywhere: Properties, Align, Colour, Library, Movie Explorer, History,
-Timeline, Motion Editor, Actions and Output.
+Every panel can go anywhere: Tools, Properties, Align, Colour, Swatches, Library, Movie
+Explorer, History, Layer Depth, Timeline, Motion Editor, Actions and Output.
 
 * **Move a panel** by dragging its tab. While you drag, a blue area shows where it will go:
-  * onto another group's header: it joins that group as a tab;
+  * onto another group's header, or onto a floating window: it joins that group or window as
+    a tab;
   * onto the top or bottom half of a group (left or right half below and above the stage): a
     group of its own just there;
   * near an edge of the stage: a dock on that side. This is how you put the **timeline above
@@ -55,19 +56,39 @@ Timeline, Motion Editor, Actions and Output.
 
   Press **Esc** while dragging to leave everything as it was.
 * **Use the panel menu** (the ☰ button at the right of each group's header, or right-click a
-  tab) to dock a panel on any side, float it, fold its group, close it or close the whole tab
-  group, without dragging.
-* **Floating panels** have their own window on the desktop, which you can put on another
-  screen. **Dock** in that window puts the panel back where it came from. Your shortcuts with
-  Ctrl or Alt (Undo, Save, Test Movie…) still work there. Where a system can't open another
-  window (the web version), a floating panel floats inside the AniCraft window instead.
+  tab) to do the same without dragging: dock a panel on any side, float it, **Stack With**
+  another group or floating window, fold its group, collapse its dock to icons, close it or
+  close the whole tab group. The menu works from the keyboard too: **Tab** to the ☰ button and
+  press **Enter**.
+* **Move the tools** by dragging the dotted grip at the top of the tools bar (or click it for
+  its menu). Near an edge of the stage they become a slim bar on that side, above or below
+  the stage as a row; dropped on a group they become a tab there, laid out in as many columns
+  as fit; anywhere else they float.
+* **Floating windows** have their own window on the desktop, which you can put on another
+  screen. They can hold **several panels as tabs**: drag a tab onto a floating window, or use
+  **Stack With**. Drag a tab out of the window to move just that panel; drag the window's
+  dotted grip (or, inside the AniCraft window, its title bar) to move **the whole window back
+  into a dock**, with the same blue drop areas. **Dock** puts its panels back where they came
+  from. Your shortcuts with Ctrl or Alt (Undo, Save, Test Movie…) still work there. Where a
+  system can't open another window (the web version), a floating window floats inside the
+  AniCraft window instead.
+* **Collapse a dock to icons** with the » button on its first group's header (or **Collapse
+  the Dock to Icons** in the panel menu). The dock shrinks to a strip of panel icons, so the
+  stage gets the room; hold the pointer over an icon for the panel's name. Click an icon to
+  open its panel over the stage; **Esc** or a click anywhere else closes it again. The button
+  at the top of the strip expands the dock as it was. **Window** opens a collapsed panel the
+  same way.
 * **Close a panel** from its menu, or from its floating window. **Window** lists every panel,
-  ticked while it's in front; choose one to bring it forward (it reopens where it was), or
+  ticked while it's on screen; choose one to bring it forward (it reopens where it was), or
   choose a ticked one to close it.
+
+Panels work at any width. When a dock is narrow, a setting whose value doesn't fit beside its
+name goes under it, and lists and fields get narrower, so nothing is cut off at the edge.
 
 **Ctrl+F6** moves the keyboard from panel to panel in the order they are docked (the stage,
 the docks above, below and to the right and left of it, floating panels inside the window,
-then the tools). Panels in a window of their own have their own keyboard.
+then the tools). In a dock collapsed to icons it lands on the first icon, or on the panel open
+over the stage. Panels in a window of their own have their own keyboard.
 
 ### Workspaces
 
@@ -81,8 +102,10 @@ A workspace is a named arrangement of the panels. **Window › Workspace** has t
 
 Each workspace remembers how you changed it, until you choose **Window › Workspace › Reset**.
 **Save Workspace…** keeps the current arrangement under a name of your own; it's listed with
-the others, and Reset brings it back as you saved it. Your workspaces and where every panel is
-are kept in your preferences, so AniCraft opens the way you left it.
+the others, and Reset brings it back as you saved it. **Manage Workspaces…** lists them all:
+rename or delete your own (delete asks with a second click, as it can't be undone), and reset
+any that changed. The built-in ones can be reset but not renamed or deleted. Your workspaces
+and where every panel is are kept in your preferences, so AniCraft opens the way you left it.
 
 ### Properties
 

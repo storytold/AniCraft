@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+* **Dockable panels, second slice** (ADR 0087, M8).
+  * **The tools move like any panel**: drag the grip at the top of the tools (or use its
+    menu) to put them in a slim bar on any side, as a tab in a dock (laid out in as many
+    columns as fit), or floating. Older preferences keep them on the left.
+  * **Floating windows hold several tabs**: drop a tab on a floating window, or use the panel
+    menu's **Stack With**. **Drag a floating window back into a dock** by its grip (or its
+    title bar inside the editor), with the same drop targets as a tab; **Dock** puts each
+    panel back where it came from.
+  * **Docks collapse to icons**: the » button (or the panel menu) shrinks a dock to a strip
+    of panel icons, names as tooltips; a click opens the panel over the stage, Esc or a click
+    outside closes it. Ctrl+F6 and the Window menu reach panels there.
+  * **Manage Workspaces…**: rename and delete your own workspaces (delete asks with a second
+    click); built-in ones can be reset but not deleted.
+  * **Panels fit narrow docks**: at the narrowest side dock (now 200 pt) form rows put their
+    value under the label and fields shrink, so nothing runs off the edge (Properties' "Snap
+    to objects", the stage size, the Align buttons and "To stage" did); a test checks every
+    panel at that width in English and the pseudo-locale. Long section titles end in "…".
+  * Fixed: clicking a tab above or below the stage could start a drag instead of showing it.
+
 * **Motion Editor and timeline retiming** (ADR 0083, M2).
   * **Moving keys in time** in the Motion Editor: drag a key sideways. It snaps to frames and
     stops next to its neighbours, and the value and ease go with it. Shift-click picks keys
@@ -19,6 +38,7 @@
     full name is in the tooltip), and at the narrowest the strip scrolls.
   * Headless: `motion.move_keys`, `timeline.resize_span`, `timeline.move_spans`,
     `motion.split`, `motion.join`.
+
 * **Bones, second slice: springs, joint translation and editing members** (ADR 0084, M7).
   * **Joint translation**: Properties › Bone › X/Y translation lets a joint slide along the
     axes of what the bone starts on, freely or within limits (pixels). Slides are part of each

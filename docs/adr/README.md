@@ -23,4 +23,3 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
-| 0087 | m8/docking-2 | Dockable panels, second slice |
