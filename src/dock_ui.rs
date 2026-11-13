@@ -936,15 +936,15 @@ mod tests {
 
     #[test]
     fn at_the_narrowest_dock_no_tab_runs_under_the_menu_button() {
-        let tabs = [Panel::Library, Panel::MovieExplorer, Panel::Swatches];
+        let tabs = [Panel::Library, Panel::MovieExplorer, Panel::LayerDepth];
         let rect = |ctx: &egui::Context, t: Panel| ctx.data(|m| m.get_temp::<(Rect, bool)>(Id::new(("dock_tab_rect", t.id()))));
-        for size in [MIN_SIDE, 200.0, 260.0] {
+        for size in [MIN_SIDE, 200.0, 260.0, 292.0] {
             // Three long names in one group, the dock at `size` (egui keeps a panel's size, so
             // a fresh window for each).
             let (mut app, ctx) = app();
             let Some(Place::Docked { side: Side::Right, group, .. }) = app.dock.place(Panel::Library) else { panic!("library docked right") };
             app.dock.right.groups[group].tabs = tabs.to_vec();
-            app.dock.right.groups[group].active = 1;
+            app.dock.right.groups[group].active = 2;
             app.dock.right.size = Some(size);
             settle(&ctx, &mut app);
             let Some(d) = app.dock_view.drawn.iter().find(|d| d.first == Panel::Library) else { panic!("drawn") };
@@ -956,14 +956,14 @@ mod tests {
                 }
             }
             // The shown tab is always in view, and its name is whole or ends in an ellipsis.
-            assert!(rect(&ctx, Panel::MovieExplorer).is_some(), "{size}");
+            assert!(rect(&ctx, Panel::LayerDepth).is_some(), "{size}");
             // Wide enough to show them all, shrunk; narrower, the strip scrolls.
             let all = tabs.iter().all(|t| rect(&ctx, *t).is_some_and(|(r, _)| r.width() >= MIN_TAB - 0.5));
-            let cut = rect(&ctx, Panel::MovieExplorer).is_some_and(|(_, cut)| cut);
+            let cut = tabs.iter().any(|t| rect(&ctx, *t).is_some_and(|(_, cut)| cut));
             if size == MIN_SIDE {
                 assert!(!all && cut, "{size}: the strip scrolls");
             } else if size < 250.0 {
-                assert!(cut, "{size}: Movie Explorer shrinks with an ellipsis");
+                assert!(cut, "{size}: the long names shrink with an ellipsis");
             }
         }
     }

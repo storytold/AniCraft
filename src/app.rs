@@ -2237,8 +2237,8 @@ impl App {
                 if let Some(crate::dock::Place::Docked { side: crate::dock::Side::Right, group, .. }) = self.dock.place(crate::dock::Panel::Library)
                     && let Some(g) = self.dock.right.groups.get_mut(group)
                 {
-                    g.tabs = vec![crate::dock::Panel::Library, crate::dock::Panel::MovieExplorer, crate::dock::Panel::Swatches];
-                    g.active = 1;
+                    g.tabs = vec![crate::dock::Panel::Library, crate::dock::Panel::MovieExplorer, crate::dock::Panel::LayerDepth];
+                    g.active = 2;
                 }
                 self.dock.right.size = Some(160.0);
             }
