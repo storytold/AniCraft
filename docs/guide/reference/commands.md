@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 333 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 335 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -277,6 +277,10 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{folder, name, category?, confirm}: removes a user template and its picture (cannot be undone)`
 - **List Templates** `file.templates`
   Parameters: `{folder? (the user templates folder)} → {builtin: [{id, name, category, description, width, height, fps, frames}], user: [{name, category, path, thumbnail}]}`
+- **Export with Plug-in…** `file.export_plugin`
+  Parameters: `{format: an exporter plug-in's id (see file.export_formats), path, from?, to? (movie frames: every scene in order), options?: {…} (the plug-in's; missing ones take their defaults), confirm?}`
+- **Export Formats** `file.export_formats`
+  Parameters: `{} → every export format: the built-in ones (with their command) and the exporter plug-ins (with their extension and options)`
 - **Envelope** `modify.envelope_move` · changes the document
   Parameters: `{points: [[x, y] × 16] (the whole mesh) | index: 0..15, x, y (one control point; a corner or side handle moves the inner points with it, as a Coons patch), tolerance? (stage units, default 0.05)} bends the open envelope's shapes from where they were when it opened → {points, shapes}. One undo step`
 - **Close Envelope** `modify.envelope_close` · changes the document
@@ -306,7 +310,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Move Spans** `timeline.move_spans` · changes the document
   Parameters: `{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up), copy?: true (Alt-drag: the frames stay where they were too)}: the spans starting in from..=to move whole, keeping their lengths and tweens (as dragging a tween span in Animate), replacing what they land on; the frames they leave are empty`
 - **Set Tween Easing** `timeline.set_easing` · changes the document
-  Parameters: `{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}`
+  Parameters: `{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name} | {plugin: id, ease: id} (an ease plug-in's; the tween keeps its sampled curve), group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}`
 - **Orient to Path** `timeline.set_orient` · changes the document
   Parameters: `{orient: bool, layer?, frame?}`
 - **Frame Label** `timeline.set_label` · changes the document
@@ -412,7 +416,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Ease** `ease.info`
   Parameters: `{target: layer?, frame?, group? | property? | saved?} → the ease (as easing params take it), its label, and its curve as points (exact unless the preset is fitted)`
 - **Set Ease** `ease.set` · changes the document
-  Parameters: `{easing: a preset name | {classic: n} | {bezier: [..]} | {custom: ..} | {saved: name}, layer?, frame?, group? | property? | saved?}`
+  Parameters: `{easing: a preset name | {classic: n} | {bezier: [..]} | {custom: ..} | {saved: name} | {plugin: id, ease: id} (the tween keeps the sampled curve) | {sampled: ..}, layer?, frame?, group? | property? | saved?}`
 - **Add Ease Point** `ease.add_point` · changes the document
   Parameters: `{t: time 0..1 on the curve (its shape stays), layer?, frame?, group? | property? | saved?} → {index}`
 - **Move Ease Point** `ease.move_point` · changes the document
@@ -432,7 +436,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Rename Saved Ease** `ease.rename` · changes the document
   Parameters: `{name, to}`
 - **Eases** `ease.list`
-  Parameters: `{} → the presets (name, label, family, direction) and the eases saved in the document`
+  Parameters: `{} → the presets (name, label, family, direction), the eases saved in the document, and the installed ease plug-ins' eases ({plugin, ease} as easing params take them)`
 - **Copy Ease** `ease.copy`
   Parameters: `{layer?, frame?, group? | property? | saved?}: the ease, for ease.paste`
 - **Paste Ease** `ease.paste` · changes the document
