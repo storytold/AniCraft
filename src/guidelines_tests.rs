@@ -1,6 +1,10 @@
 //! Enforces docs/ui-guidelines.md: typography and colour come from `theme`, never raw values.
 
-const SOURCES: [(&str, &str); 20] = [
+const SOURCES: [(&str, &str); 30] = [
+    ("colour.rs", include_str!("colour.rs")),
+    ("drop.rs", include_str!("drop.rs")),
+    ("recent.rs", include_str!("recent.rs")),
+    ("start.rs", include_str!("start.rs")),
     ("actions_panel.rs", include_str!("actions_panel.rs")),
     ("test_movie.rs", include_str!("test_movie.rs")),
     ("autosave.rs", include_str!("autosave.rs")),
@@ -15,11 +19,17 @@ const SOURCES: [(&str, &str); 20] = [
     ("menus.rs", include_str!("menus.rs")),
     ("panels.rs", include_str!("panels.rs")),
     ("stage.rs", include_str!("stage.rs")),
+    ("stage_a11y.rs", include_str!("stage_a11y.rs")),
     ("timeline.rs", include_str!("timeline.rs")),
     ("widthtool.rs", include_str!("widthtool.rs")),
     ("motion_editor.rs", include_str!("motion_editor.rs")),
     ("shape_hints.rs", include_str!("shape_hints.rs")),
     ("bone_tool.rs", include_str!("bone_tool.rs")),
+    ("find_panel.rs", include_str!("find_panel.rs")),
+    ("movie_explorer.rs", include_str!("movie_explorer.rs")),
+    ("dock.rs", include_str!("dock.rs")),
+    ("dock_ui.rs", include_str!("dock_ui.rs")),
+    ("publish_panel.rs", include_str!("publish_panel.rs")),
     ("main.rs", ""),
 ];
 
@@ -122,6 +132,16 @@ fn palette_failures(name: &str, t: &crate::theme::Tokens) -> Vec<String> {
     need("active tool block on panel", t.active, t.panel, if t.control_outline { 3.0 } else { 1.0 });
     // Stage selection is drawn over artwork, usually on a white stage.
     need("selection on a white stage", t.selection, egui::Color32::WHITE, 3.0);
+    // Marks drawn across the timeline grid while dragging frames (the drop outline, a span's new
+    // end) are in `text`: they must show on the cells and on the active row.
+    need("text (drag marks) on row_active", t.text, t.row_active, 4.5);
+    if !t.dark {
+        // Light: the white stage stands off the pasteboard by its edge line, and the pasteboard
+        // is a step darker than the panels so the work area reads as one region.
+        need("text on pasteboard", t.text, t.pasteboard, 7.0);
+        need("pasteboard against a white stage", t.pasteboard, egui::Color32::WHITE, 1.4);
+        need("selection on panel", t.selection, t.panel, 3.0);
+    }
     if t.control_outline {
         // High contrast: every region border and control outline is a visible line.
         need("border on panel", t.border, t.panel, 3.0);
@@ -133,8 +153,9 @@ fn palette_failures(name: &str, t: &crate::theme::Tokens) -> Vec<String> {
 
 #[test]
 fn palette_meets_contrast_and_target_minimums() {
-    use crate::theme::{GRAPHITE, HIGH_CONTRAST, Palette, TARGET, TOOL_BUTTON};
+    use crate::theme::{GRAPHITE, HIGH_CONTRAST, LIGHT, Palette, TARGET, TOOL_BUTTON};
     let mut found = palette_failures("Graphite", &GRAPHITE);
+    found.extend(palette_failures("Light", &LIGHT));
     found.extend(palette_failures("High contrast", &HIGH_CONTRAST));
     assert!(found.is_empty(), "contrast below WCAG AA:\n{}", found.join("\n"));
     // High contrast is stricter than AA: every text step reads at 7:1 (AAA) on its surfaces.
@@ -144,8 +165,21 @@ fn palette_meets_contrast_and_target_minimums() {
             assert!(contrast(fg, bg) >= 7.0, "high contrast text below 7:1: {:.2}", contrast(fg, bg));
         }
     }
-    // Every palette the preferences offer is checked.
-    assert!(Palette::ALL.iter().all(|(p, _, _)| matches!(p, Palette::Graphite | Palette::HighContrast)));
+    // Light is designed for light, not the dark look inverted (ADR 0077): dark text on light
+    // surfaces, fields the lightest of them, the frame (chrome) darker than the panels, and egui
+    // told it is a light look. Graphite and high contrast are the other way round.
+    for (name, t) in [("Graphite", GRAPHITE), ("High contrast", HIGH_CONTRAST), ("Light", LIGHT)] {
+        let lum = |c: egui::Color32| contrast(c, egui::Color32::BLACK);
+        assert_eq!(t.dark, lum(t.text) > lum(t.panel), "{name}: `dark` says which way text goes");
+    }
+    let lum = |c: egui::Color32| contrast(c, egui::Color32::BLACK);
+    assert!(lum(LIGHT.field) >= lum(LIGHT.panel_alt) && lum(LIGHT.panel_alt) > lum(LIGHT.panel) && lum(LIGHT.panel) > lum(LIGHT.chrome), "light surfaces step down from fields to the frame");
+    const { assert!(LIGHT.control_hairline && !GRAPHITE.control_hairline, "light controls carry a hairline") };
+    // Every palette the preferences offer is checked, once each.
+    assert!(Palette::ALL.iter().all(|(p, _, _)| matches!(p, Palette::Graphite | Palette::HighContrast | Palette::Light)));
+    for p in [Palette::Graphite, Palette::Light, Palette::HighContrast] {
+        assert_eq!(Palette::ALL.iter().filter(|(q, _, _)| *q == p).count(), 1, "{p:?} offered once");
+    }
     // Click targets (WCAG 2.5.8 asks for at least 24 × 24).
     const { assert!(TARGET >= 24.0 && TOOL_BUTTON >= TARGET) };
 }

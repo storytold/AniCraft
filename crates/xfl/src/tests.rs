@@ -32,7 +32,7 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
             </DOMFrame>
           </frames>
         </DOMLayer>
-        <DOMLayer name="Ground" locked="true">
+        <DOMLayer name="Ground" locked="true" heightMultiplier="2">
           <frames>
             <DOMFrame index="0" duration="15">
               <elements>
@@ -90,6 +90,7 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(ball.keyframes[0].label, "start");
     assert!(matches!(ball.keyframes[0].tween.map(|t| t.easing), Some(anicraft_doc::Easing::Classic(e)) if e == -50.0));
     assert!(doc.timeline(0).layers[1].locked);
+    assert_eq!((doc.timeline(0).layers[0].height(), doc.timeline(0).layers[1].height()), (1, 2), "Layer Properties height");
     assert_eq!(doc.timeline(0).layers[2].kind, LayerKind::Guide);
     assert_eq!(doc.timeline(0).frame_count(), 15);
     assert_eq!(doc.frame_count(), 16, "the movie: scene 1, then the one-frame scene 2");
@@ -169,7 +170,7 @@ fn symbols_instances_and_the_tween_between_them() {
     assert_eq!((stops[1].offset, stops[1].color.a), (0.5, 0.0));
     assert_eq!((*symbol, *loop_mode, *first_frame), (sym.id, LoopMode::PlayOnce, 2));
     assert_eq!(inst.transform.m, [2.0, 0.0, 0.0, 2.0, 100.0, 50.0]);
-    assert_eq!(inst.color.alpha, 0.5);
+    assert_eq!(inst.color, anicraft_doc::ColorEffect::Alpha(0.5));
     // Half-way through the tween (eased), the ball is between its two positions.
     let dl = evaluate(&doc, 5);
     let ball = dl.items.iter().find(|i| matches!(i.fill, Some(Paint::Solid(c)) if c == Rgba::hex(0xff0000))).expect("the ball renders");
@@ -446,13 +447,14 @@ trace(n);]]></script></Actionscript><elements><DOMSymbolInstance libraryItemName
     files.insert("PublishSettings.xml", "<flash_profiles><unclosed>");
     let (d, report) = import(&files).unwrap();
     assert!(d.document_class.is_empty() && !report.kept.contains_key("document class"));
-    assert!(report.kept.contains_key("frame scripts in ActionScript 3.0"));
+    // Read as ActionScript 3.0, its variable and `?:` are in the subset now (ADR 0052).
+    assert!(report.runs.contains_key("frame scripts in ActionScript 3.0"));
 }
 
 #[test]
-fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
+fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_groups() {
     // Animate's raw shapes (merge drawing) are loose `DOMShape`s; a drawing object says so, and
-    // a group is an object whatever it holds (ADR 0042).
+    // a group is a group (ADR 0073) whose shapes merge only with each other.
     let square = |attrs: &str, x: u32| {
         format!(
             r##"<DOMShape {attrs}><fills><FillStyle index="1"><SolidColor color="#FF0000"/></FillStyle></fills><strokes><StrokeStyle index="1"><SolidStroke weight="2"><fill><SolidColor/></fill></SolidStroke></StrokeStyle></strokes>
@@ -469,9 +471,14 @@ fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
     );
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, _) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
-    let merge: Vec<bool> = d.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
-    // Each square is a fill and a stroke.
-    assert_eq!(merge, [true, true, false, false, false, false]);
+    let els = &d.timeline(0).layers[0].keyframes[0].elements;
+    let merge: Vec<bool> = els.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    // Each square is a fill and a stroke; the third is in a group (ADR 0073), raw inside it.
+    assert_eq!(merge, [true, true, false, false, false]);
+    let group = els.last().unwrap();
+    assert!(matches!(group.kind, ElementKind::Group { .. }));
+    let inside: Vec<bool> = group.kind.group_members().iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    assert_eq!(inside, [true, true]);
 }
 
 #[test]
@@ -500,4 +507,78 @@ fn stroke_caps_joints_dashes_and_dots_come_across() {
         assert_eq!(st.style.dash, None);
         assert_eq!(report.skipped.get("ragged, stipple and hatched strokes (drawn solid)"), Some(&1));
     }
+}
+
+/// A button whose Over and Down frames hold sounds (ADR 0057), a sound on the main timeline, and
+/// sounds the package doesn't hold in a form anyone can read.
+const SOUND_DOC: &str = r##"<DOMDocument width="200" height="100">
+  <media>
+    <DOMSoundItem name="Sounds/click.wav" href="Sounds/click.wav" soundDataHRef="M 1 1.dat"/>
+    <DOMSoundItem name="private.mp3" href="private.mp3" soundDataHRef="M 2 2.dat"/>
+    <DOMSoundItem name="gone.wav" href="gone.wav"/>
+  </media>
+  <symbols><Include href="Push.xml"/></symbols>
+  <timelines><DOMTimeline name="Scene 1"><layers>
+    <DOMLayer name="Music"><frames><DOMFrame index="0" duration="4" soundName="Sounds/click.wav" soundSync="start" soundLoopMode="repeat" soundLoop="3"/></frames></DOMLayer>
+    <DOMLayer name="Buttons"><frames><DOMFrame index="0" duration="4"><elements><DOMSymbolInstance libraryItemName="Push"/></elements></DOMFrame></frames></DOMLayer>
+  </layers></DOMTimeline></timelines>
+</DOMDocument>"##;
+
+const PUSH: &str = r##"<DOMSymbolItem name="Push" symbolType="button"><timeline><DOMTimeline name="Push"><layers>
+  <DOMLayer name="Sounds"><frames>
+    <DOMFrame index="0"/>
+    <DOMFrame index="1" soundName="Sounds/click.wav"/>
+    <DOMFrame index="2" soundName="Sounds/click.wav" soundSync="stream" soundEffect="fade in"/>
+    <DOMFrame index="3" soundName="private.mp3"/>
+  </frames></DOMLayer>
+  <DOMLayer name="Art"><frames><DOMFrame index="0" duration="4"><elements><DOMRectangleObject x="0" y="0" objectWidth="40" objectHeight="20"><fill><SolidColor color="#3366CC"/></fill></DOMRectangleObject></elements></DOMFrame></frames></DOMLayer>
+</layers></DOMTimeline></timeline></DOMSymbolItem>"##;
+
+#[test]
+fn sounds_in_the_package_come_across_on_frames_and_buttons_states() {
+    let wav = anicraft_doc::audio::wav::encode(8000, 1, &[0.25; 800], anicraft_doc::audio::wav::Bits::Int16);
+    let files: HashMap<String, Vec<u8>> = HashMap::from([
+        ("DOMDocument.xml".to_string(), SOUND_DOC.as_bytes().to_vec()),
+        ("LIBRARY/Push.xml".to_string(), PUSH.as_bytes().to_vec()),
+        // An XFL folder keeps the original file in LIBRARY/.
+        ("LIBRARY/Sounds/click.wav".to_string(), wav),
+        // Animate's own encoding is not public: reported, not guessed.
+        ("bin/M 2 2.dat".to_string(), vec![1, 2, 3, 4, 5, 6, 7, 8]),
+    ]);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+    let (doc, report) = import_with(&read).unwrap();
+    assert_eq!(doc.sounds.iter().map(|s| (s.name.as_str(), s.rate, s.frames)).collect::<Vec<_>>(), [("click.wav", 8000, 800)]);
+    let click = doc.sounds[0].id;
+    let path = doc.entry_path(anicraft_doc::LibraryEntry::Item(anicraft_doc::LibraryItem::Sound(click)));
+    assert_eq!(path, "Sounds/click.wav", "in its Library folder");
+    // The main timeline's: Start, three times.
+    let music = doc.timeline(0).layers[0].keyframes[0].sound.clone().unwrap();
+    assert_eq!((music.sound, music.sync, music.repeat, music.looping), (click, anicraft_doc::SoundSync::Start, 3, false));
+    // The button's Over and Down frames keep theirs; the Hit frame's sound isn't readable.
+    let push = doc.library.iter().find(|s| s.name == "Push").unwrap();
+    let on = |f: u32| push.timeline.layers[0].keyframes.iter().find(|k| k.start == f).and_then(|k| k.sound.clone());
+    assert_eq!(on(1).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Event)));
+    assert_eq!(on(2).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Stream)));
+    assert_eq!(on(3), None);
+    assert_eq!(report.skipped.get("sounds stored in Animate's own format"), Some(&1));
+    assert_eq!(report.skipped.get("missing sound files"), Some(&1));
+    assert_eq!(report.skipped.get("frame sounds whose sound isn't in the package"), Some(&1));
+    assert_eq!(report.skipped.get("sound effects and envelopes (played without)"), Some(&1));
+    // In the player, going over the button starts its Over sound.
+    use anicraft_doc::player::{Event, NoScripts, input, start};
+    let s = start(&doc, &mut NoScripts);
+    let s = input(&doc, &s.state, &[Event::Move(anicraft_geom::Vec2::new(10.0, 10.0))], &mut NoScripts);
+    assert_eq!(s.sounds.iter().map(|x| x.sound.sound).collect::<Vec<_>>(), [click]);
+}
+
+/// #163: Animate leaves the default stage colour (white) out of `DOMDocument.xml`, so a file
+/// without `backgroundColor` has a white stage, not a black one.
+#[test]
+fn a_document_without_a_background_colour_has_a_white_stage() {
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
+        Ok((p == "DOMDocument.xml").then(|| br#"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" frameRate="12"><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#.to_vec()))
+    };
+    let (doc, _) = import_with(&read).unwrap();
+    assert_eq!(doc.stage.background, Rgba::WHITE);
+    assert_eq!((doc.stage.width, doc.stage.height), (550, 400), "Animate's default size, also left out");
 }

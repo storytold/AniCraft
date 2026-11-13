@@ -26,7 +26,7 @@
 //! skewed gradient transforms (approximated).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use anicraft_doc::{Cap, Dash, ElementKind, GradientStop, Join, Paint, Rgba, Shape, Stroke, StrokeStyle};
+use anicraft_doc::{Cap, Dash, ElementKind, GradientStop, Join, Paint, Rgba, Shape, Spread, Stroke, StrokeStyle, MAX_FOCAL};
 use anicraft_geom::svg::parse_path_data;
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
@@ -114,6 +114,9 @@ pub struct ImportedMask {
     /// The clip path's or mask's `id`, if it had one.
     pub name: String,
     pub elements: Vec<ImportedElement>,
+    /// How the mask layer reveals (ADR 0070): coverage for clip paths and opaque masks, else
+    /// the `mask`'s `mask-type` (luminance by default, or alpha), its artwork as drawn.
+    pub mode: anicraft_doc::MaskMode,
 }
 
 /// Artwork drawn together on one layer, bottom first; masked by `mask` when there is one.
@@ -851,7 +854,7 @@ impl<'a> Builder<'a> {
                 if fill.is_none() && stroke.is_none() {
                     return;
                 }
-                let shape = Shape { path: Arc::new(path), fill, stroke, fill_rule: style.fill_rule, merge: false };
+                let shape = Shape { path: Arc::new(path), fill, stroke, fill_rule: style.fill_rule, merge: false, warp: None };
                 self.items.push(Item { el: ImportedElement { name: name_of(el), transform: *m, alpha, kind: ElementKind::Shape(shape) }, clips: Vec::new() });
             }
         }
@@ -1005,11 +1008,9 @@ impl<'a> Builder<'a> {
                 None => if user { default * reference } else { default },
             }
         };
-        if matches!(attr("spreadMethod"), Some("reflect" | "repeat")) {
-            self.report.skip("reflected or repeated gradients (padded)");
-        }
-        let [a, b, c, d, _, _] = g.m;
-        let similar = (a - d).abs() < 1e-3 * (a.abs() + d.abs() + 1e-6) && (b + c).abs() < 1e-3 * (b.abs() + c.abs() + 1e-6);
+        // What shows past the ends and how the stops mix carry over (ADR 0074).
+        let spread = attr("spreadMethod").and_then(|s| Spread::from_key(s.trim())).unwrap_or_default();
+        let linear_rgb = attr("color-interpolation").is_some_and(|s| s.trim() == "linearRGB");
         let diag = ((vw * vw + vh * vh) / 2.0).sqrt();
         Some(match local(&first.name) {
             "linearGradient" => {
@@ -1020,18 +1021,21 @@ impl<'a> Builder<'a> {
                 if dir.dot(band).abs() > 1e-3 * dir.length() * band.length() {
                     self.report.skip("stretched or skewed gradients (approximated)");
                 }
-                Paint::Linear { start: g.apply(p0), end: g.apply(p1), stops }
+                Paint::Linear { start: g.apply(p0), end: g.apply(p1), stops, spread, linear_rgb }
             }
             _ => {
-                if !similar {
-                    self.report.skip("stretched or skewed gradients (approximated)");
-                }
+                // Exact: the ring is carried by the gradient transform (any ellipse), turned so
+                // its own x axis runs through the focal point.
                 let (cx, cy) = (coord("cx", 0.5, vw), coord("cy", 0.5, vh));
                 let (fx, fy) = (coord("fx", cx, vw), coord("fy", cy, vh));
-                if (fx - cx).abs() > 1e-4 || (fy - cy).abs() > 1e-4 {
-                    self.report.skip("off-centre radial gradients (centred)");
+                let r = coord("r", 0.5, diag);
+                if !(r.is_finite() && r > 0.0) {
+                    return stops.last().map(|s| Paint::Solid(s.color));
                 }
-                Paint::Radial { center: g.apply(Vec2::new(cx, cy)), radius: coord("r", 0.5, diag) * g.mean_scale(), stops }
+                let off = Vec2::new(fx - cx, fy - cy);
+                let (focal, turn) = if off.length() > 1e-6 * r { ((off.length() / r).min(MAX_FOCAL), off.y.atan2(off.x)) } else { (0.0, 0.0) };
+                let frame = g.mul(&Affine::translate(cx, cy)).mul(&Affine::rotate(turn)).mul(&Affine::scale(r, r));
+                Paint::Radial { center: Vec2::ZERO, radius: 1.0, stops, spread, linear_rgb, focal, matrix: Affine::IDENTITY }.with_frame(&frame, None)
             }
         })
     }

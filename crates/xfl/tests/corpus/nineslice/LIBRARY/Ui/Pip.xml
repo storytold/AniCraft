@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A yellow dot, 8 px across, centred on its registration point. Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Ui/Pip" itemID="00000000-0000-0000-0000-000000000903" symbolType="graphic">
+  <timeline>
+    <DOMTimeline name="Pip">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMOvalObject x="-4" y="-4" objectWidth="8" objectHeight="8">
+                  <fill><SolidColor color="#E9C46A"/></fill>
+                </DOMOvalObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

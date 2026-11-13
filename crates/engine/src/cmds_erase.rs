@@ -247,7 +247,7 @@ fn faucet(s: &mut Session, p: &Value) -> Result<Value> {
             let near = sh.path.bounds().transformed(&e.transform).inflate(hw + slop).contains(at);
             near && ((sh.fill.is_some() && sh.path.contains(at, &e.transform, sh.fill_rule)) || (sh.stroke.is_some() && sh.path.distance_to_edge(at, &e.transform) <= hw + slop))
         }
-        ElementKind::Symbol { .. } | ElementKind::Text(_) => s.element_bounds(e.id).contains(at),
+        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Group { .. } => s.element_bounds(e.id).contains(at),
         ElementKind::Camera => false,
     });
     let Some(hit) = hit else {
@@ -283,7 +283,7 @@ fn erase_all(s: &mut Session, _: &Value) -> Result<Value> {
     let (scene, frame) = (s.scene, s.frame);
     let mut erased = 0;
     for (id, _) in &layers {
-        let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).layer_mut(*id) else { continue };
+        let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).ok().and_then(|tl| tl.layer_mut(*id)) else { continue };
         let Some(i) = layer.keyframe_index_at(frame) else { continue };
         let Some(kf) = layer.keyframe_mut(i) else { continue };
         erased += kf.elements.len();

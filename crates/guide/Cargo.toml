@@ -1,0 +1,15 @@
+[package]
+name = "anicraft-guide"
+description = "AniCraft L0: the user guide (docs/guide) as a static HTML book, with its link checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+# CommonMark with GFM tables (MIT; ADR 0069). Default features off: no command-line binary.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+[lints]
+workspace = true

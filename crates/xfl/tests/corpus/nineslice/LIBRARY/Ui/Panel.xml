@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A 100 × 40 panel with corners of radius 10 and a 2 px outline, its top-left corner on the
+     registration point, guides 10 in from every edge, and a small graphic in its middle.
+     Self-authored. -->
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Ui/Panel" itemID="00000000-0000-0000-0000-000000000902" scaleGridLeft="10" scaleGridRight="90" scaleGridTop="10" scaleGridBottom="30">
+  <timeline>
+    <DOMTimeline name="Panel">
+      <layers>
+        <DOMLayer name="Pip" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ui/Pip" symbolType="graphic" loop="loop">
+                  <matrix><Matrix tx="50" ty="20"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Body" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMRectangleObject x="0" y="0" objectWidth="100" objectHeight="40" topLeftRadius="10">
+                  <fill><SolidColor color="#2A9D8F"/></fill>
+                  <stroke><SolidStroke weight="2"><fill><SolidColor color="#264653"/></fill></SolidStroke></stroke>
+                </DOMRectangleObject>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

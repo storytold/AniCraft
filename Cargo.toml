@@ -6,13 +6,13 @@ default-members = [".", "crates/*"]
 [workspace.package]
 # 0.1.0 is the early alpha (release stage in src/app.rs, RELEASE_STAGE); see CHANGELOG.md
 # and docs/release.md.
-version = "0.1.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 # An application, not a library: not published to crates.io.
 publish = false
 repository = "https://github.com/storytold/AniCraft"
-rust-version = "1.90"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anicraft-geom = { path = "crates/geom" }
@@ -26,9 +26,12 @@ anicraft-text = { path = "crates/text" }
 anicraft-plugins = { path = "crates/plugins" }
 anicraft-audio = { path = "crates/audio" }
 anicraft-gpu = { path = "crates/gpu" }
+anicraft-guide = { path = "crates/guide" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
+# The WGSL front end wgpu already builds, for checking the shaders in tests.
+naga = { version = "30", features = ["wgsl-in"] }
 pollster = "1"
 bytemuck = "1"
 anicraft-actions = { path = "crates/actions" }
@@ -40,6 +43,8 @@ png = "0.17"
 # JPEG decoding for imported images (already in the tree; MIT OR Apache-2.0 OR Zlib).
 zune-jpeg = { version = "0.5", default-features = false }
 gif = "0.14"
+# Lossless WebP frames for animated WebP export (pure Rust, MIT OR Apache-2.0; ADR 0063).
+image-webp = "0.2"
 # wgpu is the primary renderer; glow (OpenGL) is the fallback for GPUs/VMs where wgpu fails.
 # Default features off: we skip `links` (opening web links pulls in url/idna/ICU Unicode
 # tables we don't use) and the web-only screen-reader shim. Same set as PhotoCraft, plus glow.
@@ -54,6 +59,9 @@ egui = "0.36"
 # `Instant` and `SystemTime` that work in the browser too (std's panic on wasm32-unknown-unknown);
 # on other targets a re-export of std::time (MIT OR Apache-2.0; already in the tree via winit).
 web-time = "1"
+# Find and Replace's pattern matching (ADR 0058): linear time, with size limits on what a
+# pattern compiles to (MIT OR Apache-2.0). Unicode case folding and word boundaries only.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -102,10 +110,27 @@ web-time.workspace = true
 sys-locale = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe.workspace = true
+# The user guide, bundled for Help › User Guide (ADR 0069). The web build serves it as pages instead.
+anicraft-guide.workspace = true
+craft-update = { git = "https://github.com/storytold/craft-libs", rev = "6ac2a6a34ae83fc0f0bfb25a569ba6388b72266a" }
+
+eframe = { workspace = true, features = ["links"] }
 rfd.workspace = true
 # Sound output (Apache-2.0): WASAPI on Windows, CoreAudio on macOS, ALSA on Linux and the BSDs.
 cpal = { version = "0.18", optional = true }
+
+# macOS hands a double-clicked document to the app as an Apple Event, which winit 0.30 doesn't
+# deliver (ADR 0062). This small crate (MIT OR Apache-2.0, ~170 lines, read in full) registers the
+# open-documents and quit handlers with AppKit and hands us plain paths, so our code stays free of
+# `unsafe`. Pinned exactly: it is young, and a new version is read again before it comes in. Its
+# objc2 / objc2-app-kit / objc2-foundation are the versions wgpu already brings on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+fmv-macos-events = "=0.1.0"
+
+# The system's high-contrast setting (ADR 0064): one registry value. MIT, already in the tree
+# through craft-update.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 # The web build (ADR 0036, docs/web.md). The window draws with WebGL2 (glow): every current
 # browser has it, the stage is drawn on the CPU there, and leaving wgpu out keeps the download
@@ -118,7 +143,7 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 # In the browser the page's language (navigator.languages) is the system's.
 sys-locale = { version = "0.3", features = ["js"] }
-web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "Navigator", "Storage", "Url", "Window", "console"] }
+web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "DomRect", "DragEvent", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "MediaQueryList", "Navigator", "Storage", "Url", "Window", "console"] }
 
 [build-dependencies]
 # Embeds the app icon in anicraft.exe on Windows (build.rs); does nothing on other targets.

@@ -18,10 +18,14 @@ USAGE:
   anicraft-cli render <file|--sample> --out <frame.png> [--frame N] [--scale S]
   anicraft-cli render-seq <file|--sample> --out-dir <dir> [--from A] [--to B] [--scale S]
   anicraft-cli gif <file|--sample> --out <anim.gif> [--from A] [--to B] [--scale S] [--overwrite yes]
+  anicraft-cli apng|webp <file|--sample> --out <anim.png|anim.webp> [--from A] [--to B] [--scale S]
+                         [--loop forever|N] [--background yes] [--overwrite yes]
+                                         full colour with real transparency (WebP: lossless)
   anicraft-cli commands
   anicraft-cli run <file|--sample> <script.json> [--save <out.anicraft>]
   anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]
   anicraft-cli new --out <file.anicraft> [--width W] [--height H] [--fps F]
+  anicraft-cli guide --out <folder>      writes the user guide as HTML pages (open index.html)
   anicraft-cli bench [--layers N] [--shapes N] [--frames N]   performance probe (use --release)
   anicraft-cli bench --check yes         the default scenario against the budgets in
                                          docs/performance.md; fails when one is missed
@@ -73,6 +77,12 @@ pub fn open_session(src: Option<&str>) -> Result<Session, String> {
     match src {
         None => Ok(Session::default()),
         Some("--sample") => Ok(Session::new(anicraft_doc::sample::demo())),
+        // An Animate document imports as File › Open does (#226), untitled.
+        Some(p) if anicraft_engine::is_animate(std::path::Path::new(p)) => {
+            let mut s = Session::default();
+            s.execute("file.open", &serde_json::json!({"path": p})).map_err(|e| e.to_string())?;
+            Ok(s)
+        }
         Some(p) => {
             let doc = format::load(std::path::Path::new(p)).map_err(|e| format!("{p}: {e}"))?;
             let mut s = Session::new(doc);
@@ -120,6 +130,12 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             let list: Vec<Value> = commands().iter().map(|c| c.to_json()).collect();
             serde_json::to_string_pretty(&list).map_err(|e| e.to_string())
         }
+        // The user guide as the static HTML book Help › User Guide opens (ADR 0069).
+        "guide" => {
+            let out = a.flag("out").ok_or("guide needs --out <folder>")?;
+            let n = anicraft_guide::write_site(std::path::Path::new(out)).map_err(|e| format!("{out}: {e}"))?;
+            Ok(format!("wrote {n} files of the user guide to {out}; open {out}/index.html"))
+        }
         "info" => {
             let s = session(&a, Some(src.ok_or("info needs a file or --sample")?))?;
             serde_json::to_string_pretty(&s.info()).map_err(|e| e.to_string())
@@ -148,9 +164,11 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             }
             exec(&mut s, "file.export_png_sequence", &p).map(|v| v.to_string())
         }
-        "gif" => {
-            let mut s = session(&a, Some(src.ok_or("gif needs a file or --sample")?))?;
-            let out = a.flag("out").ok_or("gif needs --out <anim.gif>")?;
+        "gif" | "apng" | "webp" => {
+            let mut s = session(&a, Some(src.ok_or(format!("{cmd} needs a file or --sample"))?))?;
+            let cmd = cmd.as_str();
+            let ext = if cmd == "apng" { "png" } else { cmd };
+            let out = a.flag("out").ok_or(format!("{cmd} needs --out <anim.{ext}>"))?;
             let mut p = json!({"path": out});
             if let Some(f) = one_based(&a, "from")? {
                 p["from"] = json!(f);
@@ -164,7 +182,16 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             if a.flag("overwrite").is_some_and(|v| v == "yes" || v == "true") {
                 p["confirm"] = json!(true);
             }
-            exec(&mut s, "file.export_gif", &p).map(|v| v.to_string())
+            if cmd != "gif" {
+                match a.flag("loop") {
+                    None | Some("forever") => {}
+                    Some(n) => p["loop"] = json!(n.parse::<u32>().map_err(|_| format!("--loop is forever or how many times it plays, not '{n}'"))?),
+                }
+                if a.flag("background").is_some_and(|v| v == "yes" || v == "true") {
+                    p["background"] = json!(true);
+                }
+            }
+            exec(&mut s, &format!("file.export_{cmd}"), &p).map(|v| v.to_string())
         }
         "new" => {
             let mut s = Session::default();
@@ -457,6 +484,17 @@ pub fn serve<R: BufRead, W: Write>(s: &mut Session, input: R, out: &mut W) -> st
 mod tests {
     use super::*;
 
+    /// #226: `info`, `render` and the other subcommands take an Animate document as File › Open
+    /// does (an import, untitled), not only `.anicraft` files.
+    #[test]
+    fn subcommands_open_animate_documents() {
+        let xfl = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../xfl/tests/corpus/shapes/shapes.xfl");
+        let s = open_session(Some(&xfl.display().to_string())).unwrap();
+        assert!(s.path.is_none() && !s.doc.timeline(0).layers.is_empty());
+        let info = run(&["info".to_string(), xfl.display().to_string()]).unwrap();
+        assert!(info.contains("\"layers\""), "{info}");
+    }
+
     #[test]
     fn serve_round_trip() {
         let mut s = Session::default();
@@ -566,5 +604,6 @@ mod tests {
         assert!(run(&["bogus".into()]).is_err());
         assert!(run(&["info".into()]).is_err());
         assert!(run(&["commands".into()]).unwrap().contains("timeline.insert_keyframe"));
+        assert!(run(&["guide".into()]).is_err());
     }
 }

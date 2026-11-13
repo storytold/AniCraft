@@ -1,116 +1,71 @@
-//! Lowering: the syntax tree to the action IR. It accepts only what it can say exactly in the
-//! IR and reports everything else where it is, so a script either runs whole or not at all.
+//! Lowering: the syntax tree to the script IR ([`super::ir`]). It accepts what the IR can say
+//! exactly and reports everything else where it is, so a script either compiles whole or
+//! doesn't run at all. Names resolve here: a function's own variables become numbered slots,
+//! the timeline's variables and functions are named (those another frame declares are listed
+//! as [`Free`] names, which the timeline must have for the script to run), and instances become
+//! name paths from a base.
 
-use super::parse::{E, Expr, Func, S, Stmt};
-use super::{Compiled, Listener, MAX_INLINE_DEPTH, MAX_LISTENERS, MAX_PROBLEMS, Pos, Problem, ScriptOp};
-use crate::{Action, ButtonEvent, FrameRef, MAX_ACTIONS, MAX_FRAME, MAX_LABEL_CHARS, MAX_TRACE_CHARS, Property, Target, valid_instance_name};
-use std::collections::BTreeMap;
+use super::ir::{self, Base, BinOp, Expr as X, FuncRef, Function, LValue, ListenEvent, MathFn, Method, Param as IrParam, Place, Prop, S as IS, Stmt as IStmt, Ty, UnOp, Value};
+use super::parse::{E, Expr, Func, S, Stmt, VarDecl};
+use super::{Compiled, Free, MAX_LISTENERS, MAX_PROBLEMS, Pos, Problem};
+use crate::{MAX_FRAME, MAX_LABEL_CHARS, Target, valid_instance_name};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The timeline methods a script may call (on this timeline or on a named instance).
-const METHODS: [&str; 8] = ["stop", "play", "gotoAndPlay", "gotoAndStop", "nextFrame", "prevFrame", "nextScene", "prevScene"];
 /// Names a script's own function can't take: they would hide the timeline's methods.
-const BUILTINS: [&str; 11] = ["stop", "play", "gotoAndPlay", "gotoAndStop", "nextFrame", "prevFrame", "nextScene", "prevScene", "trace", "addEventListener", "removeEventListener"];
+const BUILTINS: [&str; 12] = ["stop", "play", "gotoAndPlay", "gotoAndStop", "nextFrame", "prevFrame", "nextScene", "prevScene", "trace", "addEventListener", "removeEventListener", "getChildByName"];
 /// Calls that would reach outside the movie: ignored, and noted.
 const OUTSIDE: [&str; 4] = ["navigateToURL", "sendToURL", "fscommand", "fsCommand"];
 /// Type casts that leave an instance path as it is (`MovieClip(parent)`).
 const CASTS: [&str; 7] = ["MovieClip", "Object", "Sprite", "DisplayObject", "DisplayObjectContainer", "InteractiveObject", "SimpleButton"];
+/// Names that are classes, not values.
+const CLASSES: [&str; 6] = ["Math", "Keyboard", "MouseEvent", "Event", "KeyboardEvent", "ExternalInterface"];
+/// Names that are always the path words.
+const PATH_WORDS: [&str; 3] = ["root", "parent", "stage"];
 
-/// A constant value, as ActionScript computes it.
-#[derive(Clone, Debug, PartialEq)]
-enum Val {
-    Num(f64),
-    Str(String),
-    Bool(bool),
-    Null,
-    Undefined,
-}
-
-impl Val {
-    fn number(&self) -> f64 {
-        match self {
-            Val::Num(n) => *n,
-            Val::Bool(b) => f64::from(u8::from(*b)),
-            Val::Null => 0.0,
-            Val::Undefined => f64::NAN,
-            Val::Str(s) => {
-                // ECMA-262 §9.3.1: a decimal number with optional sign and exponent (Rust would
-                // also read "inf" and "nan").
-                let t = s.trim();
-                match t.trim_start_matches(['+', '-']) {
-                    "" if t.is_empty() => 0.0,
-                    "Infinity" => if t.starts_with('-') { f64::NEG_INFINITY } else { f64::INFINITY },
-                    u if u.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-')) => t.parse().unwrap_or(f64::NAN),
-                    _ => f64::NAN,
-                }
-            }
-        }
-    }
-
-    fn text(&self) -> String {
-        match self {
-            Val::Num(n) => number_text(*n),
-            Val::Str(s) => s.clone(),
-            Val::Bool(b) => b.to_string(),
-            Val::Null => "null".into(),
-            Val::Undefined => "undefined".into(),
-        }
+/// A type annotation as a script variable's type, or why it can't be one. `…Event` types are
+/// events (`Ok(None)`).
+fn var_type(ty: &Option<(String, Pos)>) -> Result<Option<Ty>, (Pos, String)> {
+    match ty {
+        None => Ok(Some(Ty::Any)),
+        Some((t, _)) if t.ends_with("Event") => Ok(None),
+        Some((t, p)) => Ty::from_name(t).map(Some).ok_or_else(|| (*p, format!("variables of type `{t}` aren't supported yet (Number, int, uint, Boolean, String and untyped ones are)"))),
     }
 }
 
-/// A number as ActionScript writes it (`Number.toString()`, ECMA-262 §9.8.1): integers without
-/// a point, exponents outside 1e-6 … 1e21.
-pub(super) fn number_text(n: f64) -> String {
-    if n.is_nan() {
-        return "NaN".into();
-    }
-    if n.is_infinite() {
-        return if n > 0.0 { "Infinity".into() } else { "-Infinity".into() };
-    }
-    if n == 0.0 {
-        return "0".into();
-    }
-    let a = n.abs();
-    if (1e-6..1e21).contains(&a) {
-        return format!("{n}");
-    }
-    let s = format!("{n:e}");
-    match s.split_once('e') {
-        Some((m, e)) if !e.starts_with('-') => format!("{m}e+{e}"),
-        _ => s,
-    }
-}
-
-/// Where lowering is.
-#[derive(Clone, Default)]
-struct Cx {
-    /// Inside a listener's function: its event parameter and the instance it listens on (what
-    /// `e.currentTarget` is).
-    event: Option<(String, Vec<String>)>,
-    /// Inside a listener (or a function it calls): listeners can't be added there yet.
-    in_listener: bool,
-    /// Inside a function body (functions can't be declared there).
+/// What lowering a function's (or the script's top level's) code knows.
+struct Unit {
+    /// The function's own variables: slot and type.
+    locals: BTreeMap<String, (u16, Ty)>,
+    types: Vec<Ty>,
+    /// Its parameters that are the event.
+    events: BTreeSet<String>,
     in_function: bool,
-    /// The parameters of the function being lowered (they can't be read).
-    params: Vec<String>,
-    /// The script's functions being lowered, innermost last (to refuse recursion).
-    stack: Vec<String>,
+    /// Loops it is inside (for `break` and `continue`).
+    loops: usize,
+    /// Functions written in place inside it.
+    inner: Vec<Arc<Function>>,
+}
+
+impl Unit {
+    fn top() -> Unit {
+        Unit { locals: BTreeMap::new(), types: Vec::new(), events: BTreeSet::new(), in_function: false, loops: 0, inner: Vec::new() }
+    }
 }
 
 struct Lower<'a> {
     funcs: BTreeMap<&'a str, &'a Func>,
+    /// The script's top-level variables (the timeline's).
+    vars: BTreeMap<String, Ty>,
     problems: Vec<Problem>,
     notes: Vec<Problem>,
+    free: Vec<Free>,
     listeners: usize,
-    /// Statements lowered so far, counting each inlined copy (calls can fan out).
-    work: usize,
+    /// Functions being lowered (inline listeners nest).
+    depth: usize,
 }
 
-/// Most statements lowered for one script, inlined copies included.
-const MAX_WORK: usize = 100_000;
-
-/// Whether the statement list ended in a `return`.
-type Returned = bool;
+type O<T> = Option<T>;
 
 impl<'a> Lower<'a> {
     fn problem(&mut self, pos: Pos, msg: impl Into<String>) {
@@ -125,449 +80,934 @@ impl<'a> Lower<'a> {
         }
     }
 
-    fn stmts(&mut self, list: &'a [Stmt], cx: &Cx, out: &mut Vec<ScriptOp>) -> Returned {
-        for s in list {
-            if self.stmt(s, cx, out) {
-                return true;
-            }
+    fn free(&mut self, name: &str, pos: Pos, call: bool) {
+        if !self.free.iter().any(|f| f.name == name && f.call == call) && self.free.len() < 1024 {
+            self.free.push(Free { name: name.to_string(), line: pos.line, column: pos.column, call });
         }
-        false
     }
 
-    fn stmt(&mut self, s: &'a Stmt, cx: &Cx, out: &mut Vec<ScriptOp>) -> Returned {
-        self.work += 1;
-        if self.work > MAX_WORK {
-            if self.work == MAX_WORK + 1 {
-                self.problem(s.pos, format!("the script's functions call each other into more than {MAX_WORK} statements"));
-            }
-            return true;
+    // ----- statements ----------------------------------------------------------------------
+
+    fn stmts(&mut self, list: &'a [Stmt], u: &mut Unit, out: &mut Vec<IStmt>) {
+        for s in list {
+            self.stmt(s, u, out);
         }
+    }
+
+    fn body(&mut self, list: &'a [Stmt], u: &mut Unit) -> Vec<IStmt> {
+        let mut out = Vec::new();
+        self.stmts(list, u, &mut out);
+        out
+    }
+
+    fn stmt(&mut self, s: &'a Stmt, u: &mut Unit, out: &mut Vec<IStmt>) {
+        let l = s.pos.line;
+        let push = |out: &mut Vec<IStmt>, s: IS| out.push(IStmt { l, s });
         match &s.kind {
             S::Empty | S::Import => {}
             // Declared functions run where they are called or listened for.
             S::Function(_) => {
-                if cx.in_function {
+                if u.in_function {
                     self.problem(s.pos, "functions declared inside functions aren't supported yet");
                 }
             }
-            S::Block(b) => return self.stmts(b, cx, out),
-            S::Var(w) => self.problem(s.pos, format!("variables (`{w}`) aren't supported yet")),
-            S::If(..) => self.problem(s.pos, "`if` statements aren't supported yet"),
+            S::Block(b) => self.stmts(b, u, out),
+            S::Var(_, list) => self.var_stmt(list, u, out, l),
+            S::If(c, a, b) => {
+                let Some(c) = self.expr(c, u) else { return };
+                let a = self.body(a, u);
+                let b = self.body(b, u);
+                push(out, IS::If { c, a, b });
+            }
+            S::For(init, c, next, body) => {
+                if let Some(init) = init {
+                    self.stmt(init, u, out);
+                }
+                let c = c.as_ref().and_then(|c| self.expr(c, u));
+                let next = next.as_ref().and_then(|n| self.expr(n, u));
+                u.loops += 1;
+                let body = self.body(body, u);
+                u.loops -= 1;
+                push(out, IS::Loop { c, body, next, first: true });
+            }
+            S::While(c, body) | S::DoWhile(body, c) => {
+                let first = matches!(s.kind, S::While(..));
+                let c = self.expr(c, u);
+                u.loops += 1;
+                let body = self.body(body, u);
+                u.loops -= 1;
+                push(out, IS::Loop { c, body, next: None, first });
+            }
+            S::Break | S::Continue => {
+                if u.loops == 0 {
+                    let w = if matches!(s.kind, S::Break) { "break" } else { "continue" };
+                    return self.problem(s.pos, format!("`{w}` is only for loops here"));
+                }
+                push(out, if matches!(s.kind, S::Break) { IS::Break } else { IS::Continue });
+            }
             S::Other(w, _) => {
                 let what = match *w {
-                    "for" | "while" | "do" => format!("`{w}` loops aren't supported yet"),
+                    "for each" | "for in" => format!("`{w}` loops aren't supported yet (`for`, `while` and `do` are)"),
+                    "labelled break" => "labels on `break` and `continue` aren't supported".to_string(),
                     _ => format!("`{w}` statements aren't supported yet"),
                 };
                 self.problem(s.pos, what);
             }
-            S::Return(None) => return true,
-            S::Return(Some(e)) => {
-                if self.constant(e, cx).is_err() {
-                    self.problem(e.pos, "returning a value isn't supported");
-                }
-                return true;
+            S::Return(e) => {
+                let v = match e {
+                    Some(e) => match self.expr(e, u) {
+                        Some(v) => Some(v),
+                        None => return,
+                    },
+                    None => None,
+                };
+                push(out, IS::Return { v });
             }
-            S::Expr(e) => self.expr_stmt(e, cx, out),
+            S::Expr(e) => self.expr_stmt(e, u, out, l),
         }
-        false
     }
 
-    fn expr_stmt(&mut self, e: &'a Expr, cx: &Cx, out: &mut Vec<ScriptOp>) {
+    fn var_stmt(&mut self, list: &'a [VarDecl], u: &mut Unit, out: &mut Vec<IStmt>, l: u32) {
+        for d in list {
+            let Some(init) = &d.init else { continue };
+            let to = if u.in_function {
+                match u.locals.get(&d.name) {
+                    Some((i, _)) => LValue::Local { i: *i },
+                    None => continue,
+                }
+            } else {
+                LValue::Var { n: d.name.clone() }
+            };
+            let Some(v) = self.expr(init, u) else { continue };
+            out.push(IStmt { l, s: IS::Do { x: X::Set { to, op: None, v: Box::new(v) } } });
+        }
+    }
+
+    fn expr_stmt(&mut self, e: &'a Expr, u: &mut Unit, out: &mut Vec<IStmt>, l: u32) {
         match &e.kind {
-            E::Call(callee, args) => self.call(e.pos, callee, args, cx, out),
-            E::Assign("=", lhs, rhs) => self.assign(e.pos, lhs, rhs, cx, out),
-            E::Assign(op, _, _) => self.problem(e.pos, format!("`{op}` reads a value first; only `=` with a value is supported")),
+            E::Call(callee, args) => {
+                if let Some(s) = self.call_stmt(e.pos, callee, args, u) {
+                    out.push(IStmt { l, s });
+                }
+            }
             E::Comma(list) => {
                 for x in list {
-                    self.expr_stmt(x, cx, out);
+                    self.expr_stmt(x, u, out, l);
                 }
             }
             // A literal alone does nothing (`"use strict"`).
             E::Num(_) | E::Str(_) | E::Bool(_) | E::Null => {}
-            E::Unary("++" | "--", _) | E::Postfix(..) => self.problem(e.pos, "`++` and `--` read a value first and aren't supported"),
-            _ => self.problem(e.pos, "only calls (such as `stop()`) and settings (such as `hero_mc.x = 10`) run as statements"),
+            E::Assign(_, lhs, _) if matches!(&lhs.kind, E::Member(_, p) if p == "buttonMode" || p == "useHandCursor") => {
+                let E::Member(_, p) = &lhs.kind else { return };
+                self.note(e.pos, format!("`{p}` is ignored: the pointer is a hand over everything clickable here"));
+            }
+            _ => {
+                if let Some(x) = self.expr(e, u) {
+                    out.push(IStmt { l, s: IS::Do { x } });
+                }
+            }
         }
     }
 
-    fn call(&mut self, pos: Pos, callee: &'a Expr, args: &'a [Expr], cx: &Cx, out: &mut Vec<ScriptOp>) {
+    /// A call as a statement: timeline methods, `trace`, listeners, and any call with a value.
+    fn call_stmt(&mut self, pos: Pos, callee: &'a Expr, args: &'a [Expr], u: &mut Unit) -> O<IS> {
         match &callee.kind {
-            E::Name(n) => {
+            E::Name(n) if !u.locals.contains_key(n) => {
                 let n = n.as_str();
-                if let Some(f) = self.funcs.get(n).copied() {
-                    return self.inline(pos, f, args, cx, out);
+                if self.funcs.contains_key(n) {
+                    return self.call_expr(pos, callee, args, u).map(|x| IS::Do { x });
                 }
                 match n {
-                    "trace" => self.trace(pos, args, cx, out),
-                    "addEventListener" => self.listen(pos, Vec::new(), args, cx, out),
-                    n if METHODS.contains(&n) => self.method(pos, Vec::new(), n, args, cx, out),
-                    n if OUTSIDE.contains(&n) => self.note(pos, format!("`{n}` is ignored: a movie here can't open web pages or reach outside itself")),
-                    "removeEventListener" => self.problem(pos, "removing listeners isn't supported yet"),
-                    n if CASTS.contains(&n) => self.problem(pos, format!("`{n}(…)` alone does nothing; call a method on it, as in `{n}(parent).play()`")),
-                    n => self.problem(pos, format!("`{n}` isn't declared in this frame script (functions from other frames, and the rest of the language, aren't supported yet)")),
+                    "trace" => {
+                        let args = self.args(args, u)?;
+                        Some(IS::Trace { args })
+                    }
+                    "addEventListener" | "removeEventListener" => self.listen(pos, Place::this(), args, n == "addEventListener", u),
+                    n if Method::from_name(n).is_some() => self.method(pos, Place::this(), n, args, u),
+                    n if OUTSIDE.contains(&n) => {
+                        self.note(pos, format!("`{n}` is ignored: a movie here can't open web pages or reach outside itself"));
+                        None
+                    }
+                    n if CASTS.contains(&n) => {
+                        self.problem(pos, format!("`{n}(…)` alone does nothing; call a method on it, as in `{n}(parent).play()`"));
+                        None
+                    }
+                    _ => self.call_expr(pos, callee, args, u).map(|x| IS::Do { x }),
                 }
             }
             E::Member(obj, m) => {
                 let m = m.as_str();
                 if OUTSIDE.contains(&m) || (matches!(&obj.kind, E::Name(o) if o == "ExternalInterface") && matches!(m, "call" | "addCallback")) {
-                    return self.note(pos, format!("`{m}` is ignored: a movie here can't open web pages or reach outside itself"));
+                    self.note(pos, format!("`{m}` is ignored: a movie here can't open web pages or reach outside itself"));
+                    return None;
                 }
-                let known = METHODS.contains(&m) || m == "addEventListener";
-                if !known {
-                    let msg = if m == "removeEventListener" { "removing listeners isn't supported yet".to_string() } else { format!("calling `{m}` isn't supported (timeline methods such as `play()` and `gotoAndStop()`, and `addEventListener`, are)") };
-                    return self.problem(pos, msg);
+                if matches!(&obj.kind, E::Name(o) if o == "Math") {
+                    return self.call_expr(pos, callee, args, u).map(|x| IS::Do { x });
                 }
-                let Some(t) = self.target(obj, cx) else { return };
-                if m == "addEventListener" { self.listen(pos, t, args, cx, out) } else { self.method(pos, t, m, args, cx, out) }
+                // `field.appendText(v)` is `field.text += v` (ADR 0066).
+                if m == "appendText" {
+                    let [arg] = args else {
+                        self.problem(pos, "`appendText` takes one argument, the text to add");
+                        return None;
+                    };
+                    let (at, v) = (self.field_place(obj, u), self.expr(arg, u));
+                    return Some(IS::Do { x: X::Set { to: LValue::Text { at: at? }, op: Some(BinOp::Add), v: Box::new(v?) } });
+                }
+                if Method::from_name(m).is_none() && m != "addEventListener" && m != "removeEventListener" {
+                    self.problem(pos, format!("calling `{m}` isn't supported (timeline methods such as `play()` and `gotoAndStop()`, `addEventListener` and `removeEventListener` are)"));
+                    return None;
+                }
+                let at = self.place(obj, u)?;
+                match m {
+                    "addEventListener" | "removeEventListener" => self.listen(pos, at, args, m == "addEventListener", u),
+                    _ => self.method(pos, at, m, args, u),
+                }
             }
-            _ => self.problem(pos, "only named functions and methods can be called"),
+            _ => self.call_expr(pos, callee, args, u).map(|x| IS::Do { x }),
         }
     }
 
-    /// A call to one of the script's own functions: its body runs in place.
-    fn inline(&mut self, pos: Pos, f: &'a Func, args: &'a [Expr], cx: &Cx, out: &mut Vec<ScriptOp>) {
-        let name = f.name.clone().unwrap_or_default();
-        if cx.stack.contains(&name) {
-            return self.problem(pos, format!("`{name}` calls itself; recursion isn't supported"));
-        }
-        if cx.stack.len() >= MAX_INLINE_DEPTH {
-            return self.problem(pos, format!("functions call each other more than {MAX_INLINE_DEPTH} deep"));
-        }
-        // Arguments are passed but never read (a parameter read is reported in the body).
+    fn args(&mut self, args: &'a [Expr], u: &mut Unit) -> O<Vec<X>> {
+        let mut out = Vec::with_capacity(args.len());
+        let mut ok = true;
         for a in args {
-            let passes_event = matches!((&a.kind, &cx.event), (E::Name(n), Some((e, _))) if n == e);
-            if !passes_event && self.constant(a, cx).is_err() {
-                self.problem(a.pos, "arguments are values or the event; computing them isn't supported");
+            match self.expr(a, u) {
+                Some(x) => out.push(x),
+                None => ok = false,
             }
         }
-        if args.len() < f.params.iter().filter(|p| !p.default && !p.rest).count() {
-            return self.problem(pos, format!("`{name}` needs more arguments than this call passes"));
-        }
-        let mut inner = Cx { event: None, in_listener: cx.in_listener, in_function: true, params: f.params.iter().map(|p| p.name.clone()).collect(), stack: cx.stack.clone() };
-        inner.stack.push(name);
-        self.stmts(&f.body, &inner, out);
+        ok.then_some(out)
     }
 
-    fn trace(&mut self, pos: Pos, args: &'a [Expr], cx: &Cx, out: &mut Vec<ScriptOp>) {
-        let mut parts = Vec::new();
-        for a in args {
-            match self.constant(a, cx) {
-                Ok(v) => parts.push(v.text()),
-                Err(p) => return self.problems.push(p),
-            }
+    /// A timeline method on the instance at `at`.
+    fn method(&mut self, pos: Pos, at: Place, m: &str, args: &'a [Expr], u: &mut Unit) -> O<IS> {
+        let method = Method::from_name(m)?;
+        let takes = matches!(method, Method::GotoAndPlay | Method::GotoAndStop);
+        if !takes && !args.is_empty() {
+            self.problem(pos, format!("`{m}()` takes no arguments"));
+            return None;
         }
-        let message = parts.join(" ");
-        if message.chars().count() > MAX_TRACE_CHARS {
-            return self.problem(pos, format!("a trace message is at most {MAX_TRACE_CHARS} characters"));
+        if matches!(method, Method::NextScene | Method::PrevScene) && (!at.path.is_this() || !at.base.is_this()) {
+            // Scenes belong to the main timeline; on this timeline the player checks that it is
+            // the main one (a movie clip has no other scenes).
+            self.problem(pos, format!("call `{m}()` in the main timeline's own script: scenes belong to the main timeline"));
+            return None;
         }
-        out.push(ScriptOp::Action(Action::Trace { message }));
-    }
-
-    /// A timeline method on the instance at `path`.
-    fn method(&mut self, pos: Pos, path: Vec<String>, m: &str, args: &'a [Expr], cx: &Cx, out: &mut Vec<ScriptOp>) {
-        let Some(target) = self.path(pos, &path) else { return };
-        let none = |l: &mut Self| {
-            if args.is_empty() {
-                true
-            } else {
-                l.problem(pos, format!("`{m}()` takes no arguments"));
-                false
-            }
-        };
-        let action = match m {
-            "stop" if none(self) => Action::Stop { target },
-            "play" if none(self) => Action::Play { target },
-            "nextFrame" if none(self) => Action::NextFrame { target },
-            "prevFrame" if none(self) => Action::PrevFrame { target },
-            "nextScene" | "prevScene" => {
-                if !none(self) {
-                    return;
+        if takes && (args.is_empty() || args.len() > 2) {
+            self.problem(pos, format!("`{m}` takes a frame, and optionally a scene"));
+            return None;
+        }
+        // Frames and scenes written out are checked now; computed ones when they run.
+        if let Some(f) = args.first() {
+            match &f.kind {
+                E::Num(n) if !(n.fract() == 0.0 && (1.0..=f64::from(MAX_FRAME) + 1.0).contains(n)) => {
+                    self.problem(f.pos, format!("a frame number is a whole number from 1 to {}", u64::from(MAX_FRAME) + 1));
+                    return None;
                 }
-                // Scenes belong to the main timeline; on this timeline the player checks that
-                // it is the main one (a movie clip has no other scenes).
-                if !target.is_this() {
-                    return self.problem(pos, format!("call `{m}()` in the main timeline's own script: scenes belong to the main timeline"));
+                E::Str(s) if !label_ok(s) => {
+                    self.problem(f.pos, format!("a frame label is 1 to {MAX_LABEL_CHARS} printable characters"));
+                    return None;
                 }
-                if m == "nextScene" { Action::NextScene } else { Action::PrevScene }
+                E::Bool(_) | E::Null => {
+                    self.problem(f.pos, "the frame is a number or a label");
+                    return None;
+                }
+                _ => {}
             }
-            "gotoAndPlay" | "gotoAndStop" => {
-                let (Some(f), true) = (args.first(), args.len() <= 2) else {
-                    return self.problem(pos, format!("`{m}` takes a frame, and optionally a scene"));
-                };
-                let frame = match self.constant(f, cx) {
-                    Ok(Val::Num(n)) if n.fract() == 0.0 && (1.0..=f64::from(MAX_FRAME) + 1.0).contains(&n) => FrameRef::Number(n as u32 - 1),
-                    Ok(Val::Num(_)) => return self.problem(f.pos, format!("a frame number is a whole number from 1 to {}", u64::from(MAX_FRAME) + 1)),
-                    Ok(Val::Str(s)) if label_ok(&s) => FrameRef::Label(s),
-                    Ok(Val::Str(_)) => return self.problem(f.pos, format!("a frame label is 1 to {MAX_LABEL_CHARS} printable characters")),
-                    Ok(_) => return self.problem(f.pos, "the frame is a number or a label"),
-                    Err(p) => return self.problems.push(p),
-                };
-                let scene = match args.get(1).map(|s| (s.pos, self.constant(s, cx))) {
-                    None | Some((_, Ok(Val::Null | Val::Undefined))) => None,
-                    Some((_, Ok(Val::Str(s)))) if label_ok(&s) => Some(s),
-                    Some((p, Ok(_))) => return self.problem(p, "the scene is its name, as a string"),
-                    Some((_, Err(p))) => return self.problems.push(p),
-                };
-                if m == "gotoAndPlay" { Action::GotoAndPlay { target, frame, scene } } else { Action::GotoAndStop { target, frame, scene } }
-            }
-            _ => return,
-        };
-        out.push(ScriptOp::Action(action));
-    }
-
-    /// `target.addEventListener(event, function)`.
-    fn listen(&mut self, pos: Pos, path: Vec<String>, args: &'a [Expr], cx: &Cx, out: &mut Vec<ScriptOp>) {
-        if cx.in_listener {
-            return self.problem(pos, "adding a listener from inside a listener isn't supported yet");
         }
-        let Some(target) = self.path(pos, &path) else { return };
-        let (Some(ev), Some(handler), true) = (args.first(), args.get(1), args.len() <= 5) else {
-            return self.problem(pos, "`addEventListener` takes an event and a function");
-        };
-        let Some(event) = self.event(ev) else { return };
-        if let Some(c) = args.get(2)
-            && !matches!(self.constant(c, cx), Ok(Val::Bool(false) | Val::Null | Val::Undefined))
+        if let Some(s) = args.get(1)
+            && (matches!(&s.kind, E::Num(_) | E::Bool(_)) || matches!(&s.kind, E::Str(t) if !label_ok(t)))
         {
-            return self.problem(c.pos, "capture-phase listeners (`useCapture`) aren't supported");
+            self.problem(s.pos, "the scene is its name, as a string");
+            return None;
+        }
+        let args = self.args(args, u)?;
+        Some(IS::Act { at, m: method, args })
+    }
+
+    /// `at.addEventListener(event, function)` (or `removeEventListener`).
+    fn listen(&mut self, pos: Pos, at: Place, args: &'a [Expr], add: bool, u: &mut Unit) -> O<IS> {
+        let verb = if add { "addEventListener" } else { "removeEventListener" };
+        let (Some(ev), Some(handler), true) = (args.first(), args.get(1), args.len() <= if add { 5 } else { 3 }) else {
+            self.problem(pos, format!("`{verb}` takes an event and a function"));
+            return None;
+        };
+        let event = self.event(ev)?;
+        if let Some(c) = args.get(2)
+            && !matches!(c.kind, E::Bool(false) | E::Null)
+        {
+            self.problem(c.pos, "capture-phase listeners (`useCapture`) aren't supported");
+            return None;
         }
         for extra in args.iter().skip(3) {
-            if self.constant(extra, cx).is_err() {
-                return self.problem(extra.pos, "listener priority and weak references are values");
+            if !matches!(extra.kind, E::Num(_) | E::Bool(_) | E::Null) {
+                self.problem(extra.pos, "listener priority and weak references are values");
+                return None;
             }
         }
-        let (f, function) = match &handler.kind {
-            E::Name(n) => match self.funcs.get(n.as_str()).copied() {
-                Some(f) => (f, n.clone()),
-                None => return self.problem(handler.pos, format!("`{n}` isn't a function declared in this frame script")),
-            },
-            E::Function(f) => (&**f, format!("function at line {}", f.pos.line)),
-            _ => return self.problem(handler.pos, "the listener is a function declared in this frame script, or written in place"),
+        if event.is_key() && at.base != Base::Stage {
+            self.note(pos, "keys go to the stage here: listen with `stage.addEventListener(KeyboardEvent.KEY_DOWN, …)`; this listener is ignored");
+            return None;
+        }
+        if at.base == Base::Stage && event.mouse().is_some() {
+            self.problem(pos, "mouse listeners on the stage aren't supported yet (on buttons and movie clips they are)");
+            return None;
+        }
+        let f = match &handler.kind {
+            E::Name(n) if !u.locals.contains_key(n) => {
+                match self.funcs.get(n.as_str()).copied() {
+                    Some(f) => {
+                        if !takes_event(f) {
+                            self.problem(f.pos, "a listener function takes the event as its one parameter: `function f(e:MouseEvent):void`");
+                            return None;
+                        }
+                    }
+                    None if CLASSES.contains(&n.as_str()) || BUILTINS.contains(&n.as_str()) => {
+                        self.problem(handler.pos, format!("`{n}` isn't a function declared in a frame script"));
+                        return None;
+                    }
+                    None => self.free(n, handler.pos, true),
+                }
+                FuncRef::Named(n.clone())
+            }
+            E::Function(f) if add => {
+                if !takes_event(f) {
+                    self.problem(f.pos, "a listener function takes the event as its one parameter: `function f(e:MouseEvent):void`");
+                    return None;
+                }
+                let name = format!("function at line {}, column {}", f.pos.line, f.pos.column);
+                let func = self.function(f, name)?;
+                if u.inner.len() >= usize::from(u16::MAX) {
+                    return None;
+                }
+                u.inner.push(func);
+                FuncRef::Inline((u.inner.len() - 1) as u16)
+            }
+            E::Function(_) => {
+                self.problem(handler.pos, "a function written in place can't be removed; give it a name and listen with that");
+                return None;
+            }
+            _ => {
+                self.problem(handler.pos, "the listener is a function declared in a frame script, or written in place");
+                return None;
+            }
         };
-        // The event is passed to the function: it takes exactly one argument.
-        let required = f.params.iter().filter(|p| !p.default && !p.rest).count();
-        let Some(first) = f.params.first().filter(|_| required <= 1) else {
-            return self.problem(f.pos, "a listener function takes the event as its one parameter: `function f(e:MouseEvent):void`");
-        };
-        if cx.stack.contains(&function) {
-            return self.problem(pos, format!("`{function}` adds itself as a listener; recursion isn't supported"));
+        if add {
+            if self.listeners >= MAX_LISTENERS {
+                self.problem(pos, format!("a frame script adds at most {MAX_LISTENERS} listeners"));
+                return None;
+            }
+            self.listeners += 1;
         }
-        if self.listeners >= MAX_LISTENERS {
-            return self.problem(pos, format!("a frame script adds at most {MAX_LISTENERS} listeners"));
-        }
-        self.listeners += 1;
-        let mut inner = Cx { event: Some((first.name.clone(), path)), in_listener: true, in_function: true, params: f.params.iter().map(|p| p.name.clone()).collect(), stack: cx.stack.clone() };
-        inner.stack.push(function.clone());
-        let mut body = Vec::new();
-        self.stmts(&f.body, &inner, &mut body);
-        let actions: Vec<Action> = body
-            .into_iter()
-            .filter_map(|op| match op {
-                ScriptOp::Action(a) => Some(a),
-                ScriptOp::Listen(_) => None,
-            })
-            .collect();
-        if actions.len() > MAX_ACTIONS {
-            return self.problem(f.pos, format!("a listener runs at most {MAX_ACTIONS} actions"));
-        }
-        out.push(ScriptOp::Listen(Listener { target, event, function, actions: Arc::new(actions) }));
+        Some(IS::Listen { at, ev: event, f, add })
     }
 
-    /// The mouse event an `addEventListener` names.
-    fn event(&mut self, e: &Expr) -> Option<ButtonEvent> {
-        let (pos, name, constant) = match &e.kind {
-            E::Member(o, k) if matches!(&o.kind, E::Name(c) if c == "MouseEvent" || c == "Event" || c.ends_with("Event")) => {
+    /// The event an `addEventListener` names.
+    fn event(&mut self, e: &Expr) -> O<ListenEvent> {
+        let (name, key) = match &e.kind {
+            E::Member(o, k) if matches!(&o.kind, E::Name(c) if c.ends_with("Event")) => {
                 let class = if let E::Name(c) = &o.kind { c.as_str() } else { "" };
-                (e.pos, format!("{class}.{k}"), if class == "MouseEvent" { k.as_str() } else { "" })
+                let ev = match (class, k.as_str()) {
+                    ("MouseEvent", "CLICK") => Some(ListenEvent::Click),
+                    ("MouseEvent", "MOUSE_DOWN") => Some(ListenEvent::Press),
+                    ("MouseEvent", "MOUSE_UP") => Some(ListenEvent::Release),
+                    ("MouseEvent", "ROLL_OVER" | "MOUSE_OVER") => Some(ListenEvent::Over),
+                    ("MouseEvent", "ROLL_OUT" | "MOUSE_OUT") => Some(ListenEvent::Out),
+                    ("Event", "ENTER_FRAME") => Some(ListenEvent::EnterFrame),
+                    ("KeyboardEvent", "KEY_DOWN") => Some(ListenEvent::KeyDown),
+                    ("KeyboardEvent", "KEY_UP") => Some(ListenEvent::KeyUp),
+                    _ => None,
+                };
+                (format!("{class}.{k}"), ev)
             }
-            E::Str(s) => (e.pos, format!("\"{s}\""), match s.as_str() {
-                "click" => "CLICK",
-                "mouseDown" => "MOUSE_DOWN",
-                "mouseUp" => "MOUSE_UP",
-                "rollOver" => "ROLL_OVER",
-                "rollOut" => "ROLL_OUT",
-                "mouseOver" => "MOUSE_OVER",
-                "mouseOut" => "MOUSE_OUT",
-                _ => "",
-            }),
+            E::Str(s) => (
+                format!("\"{s}\""),
+                match s.as_str() {
+                    "click" => Some(ListenEvent::Click),
+                    "mouseDown" => Some(ListenEvent::Press),
+                    "mouseUp" => Some(ListenEvent::Release),
+                    "rollOver" | "mouseOver" => Some(ListenEvent::Over),
+                    "rollOut" | "mouseOut" => Some(ListenEvent::Out),
+                    "enterFrame" => Some(ListenEvent::EnterFrame),
+                    "keyDown" => Some(ListenEvent::KeyDown),
+                    "keyUp" => Some(ListenEvent::KeyUp),
+                    _ => None,
+                },
+            ),
             _ => {
                 self.problem(e.pos, "the event is a constant such as `MouseEvent.CLICK`");
                 return None;
             }
         };
-        let ev = match constant {
-            "CLICK" => ButtonEvent::Click,
-            "MOUSE_DOWN" => ButtonEvent::Press,
-            "MOUSE_UP" => ButtonEvent::Release,
-            "ROLL_OVER" | "MOUSE_OVER" => ButtonEvent::Over,
-            "ROLL_OUT" | "MOUSE_OUT" => ButtonEvent::Out,
-            _ => {
-                self.problem(pos, format!("listening for {name} isn't supported yet (mouse CLICK, MOUSE_DOWN, MOUSE_UP, ROLL_OVER and ROLL_OUT are)"));
-                return None;
-            }
-        };
-        Some(ev)
-    }
-
-    /// `x = value` on this timeline or `path.x = value`.
-    fn assign(&mut self, pos: Pos, lhs: &'a Expr, rhs: &'a Expr, cx: &Cx, out: &mut Vec<ScriptOp>) {
-        let (obj, prop) = match &lhs.kind {
-            E::Member(o, p) => (Some(&**o), p.as_str()),
-            E::Name(n) => (None, n.as_str()),
-            _ => return self.problem(pos, "only instance properties can be set"),
-        };
-        let property = match prop {
-            "x" => Property::X,
-            "y" => Property::Y,
-            "alpha" => Property::Alpha,
-            "visible" => Property::Visible,
-            "rotation" => Property::Rotation,
-            "scaleX" => Property::ScaleX,
-            "scaleY" => Property::ScaleY,
-            "buttonMode" | "useHandCursor" => return self.note(pos, format!("`{prop}` is ignored: the pointer is a hand over everything clickable here")),
-            p if obj.is_none() => return self.problem(pos, format!("setting `{p}` isn't supported: variables don't run yet")),
-            p => return self.problem(pos, format!("setting `{p}` isn't supported yet (x, y, alpha, visible, rotation, scaleX and scaleY are)")),
-        };
-        let path = match obj {
-            Some(o) => match self.target(o, cx) {
-                Some(t) => t,
-                None => return,
-            },
-            None => Vec::new(),
-        };
-        let Some(target) = self.path(pos, &path) else { return };
-        let value = match self.constant(rhs, cx) {
-            Ok(v @ (Val::Num(_) | Val::Bool(_))) => v.number(),
-            Ok(_) => return self.problem(rhs.pos, format!("`{prop}` is set to a number{}", if property == Property::Visible { " or true or false" } else { "" })),
-            Err(p) => return self.problems.push(p),
-        };
-        if !value.is_finite() {
-            return self.problem(rhs.pos, "the value must be a finite number");
+        if key.is_none() {
+            self.problem(e.pos, format!("listening for {name} isn't supported yet (mouse CLICK, MOUSE_DOWN, MOUSE_UP, ROLL_OVER and ROLL_OUT, Event.ENTER_FRAME and KeyboardEvent.KEY_DOWN and KEY_UP are)"));
         }
-        out.push(ScriptOp::Action(Action::SetProperty { target, property, value }));
+        key
     }
 
-    /// An instance path as names (`root`, `parent` and instance names), relative to the
-    /// script's timeline; `None` after reporting why it isn't one.
-    fn target(&mut self, e: &Expr, cx: &Cx) -> Option<Vec<String>> {
-        let mut path = match &e.kind {
-            E::This => Vec::new(),
-            E::Name(n) if n == "root" || n == "parent" => vec![n.clone()],
-            E::Name(n) if n == "stage" => {
-                self.problem(e.pos, "the stage isn't supported as a target");
+    // ----- functions -----------------------------------------------------------------------
+
+    /// A function's IR: parameters, its own variables (hoisted, as ActionScript does) and body.
+    fn function(&mut self, f: &'a Func, name: String) -> O<Arc<Function>> {
+        if self.depth >= 8 {
+            self.problem(f.pos, "listeners written in place nest more than 8 deep");
+            return None;
+        }
+        let before = self.problems.len();
+        let mut u = Unit { in_function: true, ..Unit::top() };
+        let mut params = Vec::new();
+        for (i, p) in f.params.iter().enumerate() {
+            if p.rest {
+                self.problem(p.pos, "rest parameters (`...args`) aren't supported");
+                continue;
+            }
+            let (t, ev) = match var_type(&p.ty) {
+                Ok(Some(t)) => (t, false),
+                Ok(None) => (Ty::Any, true),
+                Err((pos, m)) => {
+                    self.problem(pos, m.replace("variables of type", "parameters of type"));
+                    continue;
+                }
+            };
+            // An untyped first parameter can be the event, too (`function f(e)`).
+            if ev || (i == 0 && p.ty.is_none()) {
+                u.events.insert(p.name.clone());
+            }
+            let d = match &p.default {
+                None => None,
+                Some(e) => match literal(e) {
+                    Some(v) => Some(t.coerce(v)),
+                    None => {
+                        self.problem(e.pos, "a parameter's default is a value written out (a number, a string, true, false or null)");
+                        continue;
+                    }
+                },
+            };
+            if u.locals.insert(p.name.clone(), (u.types.len() as u16, t)).is_some() {
+                self.problem(p.pos, format!("the parameter `{}` is named twice", p.name));
+            }
+            u.types.push(t);
+            params.push(IrParam { t, d, ev });
+        }
+        // Every `var` in the body is the function's (hoisted).
+        let mut decls = Vec::new();
+        collect_vars(&f.body, &mut decls);
+        for d in decls {
+            let t = match var_type(&d.ty) {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    self.problem(d.pos, "variables can't hold events; read `e.keyCode`, `e.target` or `e.currentTarget` from the parameter");
+                    continue;
+                }
+                Err((pos, m)) => {
+                    self.problem(pos, m);
+                    continue;
+                }
+            };
+            match u.locals.get(&d.name) {
+                Some((_, old)) if *old != t && d.ty.is_some() => self.problem(d.pos, format!("`{}` is declared again with another type", d.name)),
+                Some(_) => {}
+                None => {
+                    if u.types.len() >= 1024 {
+                        self.problem(d.pos, "a function has at most 1024 variables");
+                        continue;
+                    }
+                    u.locals.insert(d.name.clone(), (u.types.len() as u16, t));
+                    u.types.push(t);
+                }
+            }
+        }
+        let ret = match &f.ret {
+            None => Some(Ty::Any),
+            Some((t, _)) if t == "void" => None,
+            Some((t, p)) => match Ty::from_name(t) {
+                Some(t) => Some(t),
+                None => {
+                    self.problem(*p, format!("functions returning `{t}` aren't supported yet (Number, int, uint, Boolean, String, void and untyped ones are)"));
+                    None
+                }
+            },
+        };
+        self.depth += 1;
+        let body = self.body(&f.body, &mut u);
+        self.depth -= 1;
+        if self.problems.len() > before {
+            return None;
+        }
+        Some(Arc::new(Function { name, line: f.pos.line, params, locals: u.types, ret, body, inner: u.inner }))
+    }
+
+    // ----- names and places ----------------------------------------------------------------
+
+    /// An instance a script names, from the timeline or the event; `None` after reporting why
+    /// it isn't one.
+    fn place(&mut self, e: &Expr, u: &Unit) -> O<Place> {
+        let mut at = match &e.kind {
+            E::This => Place::this(),
+            E::Name(n) if u.locals.contains_key(n) && !u.events.contains(n) => {
+                self.problem(e.pos, format!("`{n}` is a variable, not an instance"));
                 return None;
             }
-            E::Name(n) if cx.event.as_ref().is_some_and(|(p, _)| p == n) => {
+            E::Name(n) if u.events.contains(n) => {
                 self.problem(e.pos, format!("the event `{n}` isn't an instance; `{n}.currentTarget` is the one listened to"));
                 return None;
             }
-            E::Name(n) if cx.params.contains(n) => {
-                self.problem(e.pos, format!("reading the parameter `{n}` isn't supported"));
+            E::Name(n) if n == "stage" => Place { base: Base::Stage, path: Target::this() },
+            E::Name(n) if n == "root" || n == "parent" => Place::named(n.clone()),
+            E::Name(n) if self.vars.contains_key(n) => {
+                self.problem(e.pos, format!("`{n}` is a variable, not an instance"));
                 return None;
             }
-            E::Name(n) => vec![n.clone()],
-            E::Member(o, m) if m == "currentTarget" && matches!((&o.kind, &cx.event), (E::Name(n), Some((p, _))) if n == p) => cx.event.as_ref().map(|(_, t)| t.clone()).unwrap_or_default(),
-            E::Member(o, m) if m == "target" && matches!((&o.kind, &cx.event), (E::Name(n), Some((p, _))) if n == p) => {
-                self.problem(e.pos, "`target` can be a part inside the instance; use `currentTarget`, the instance listened to");
+            E::Name(n) if CLASSES.contains(&n.as_str()) => {
+                self.problem(e.pos, format!("`{n}` is a class, not an instance"));
                 return None;
             }
+            E::Name(n) => Place::named(n.clone()),
+            E::Member(o, m) if (m == "currentTarget" || m == "target") && matches!(&o.kind, E::Name(n) if u.events.contains(n)) => Place { base: if m == "target" { Base::Target } else { Base::Current }, path: Target::this() },
             E::Member(o, m) => {
-                let mut p = self.target(o, cx)?;
-                p.push(m.clone());
+                let mut p = self.place(o, u)?;
+                if p.base == Base::Stage {
+                    self.problem(e.pos, format!("`stage.{m}` isn't supported"));
+                    return None;
+                }
+                let path = if p.path.is_this() { m.clone() } else { format!("{}.{m}", p.path.0.trim()) };
+                p.path = Target::new(path);
                 p
             }
-            E::Call(f, args) if matches!(&f.kind, E::Name(c) if CASTS.contains(&c.as_str())) && args.len() == 1 => return args.first().and_then(|a| self.target(a, cx)),
-            E::Binary("as", x, _) => return self.target(x, cx),
+            E::Call(f, args) if matches!(&f.kind, E::Name(c) if CASTS.contains(&c.as_str())) && args.len() == 1 => return args.first().and_then(|a| self.place(a, u)),
+            E::Binary("as", x, _) => return self.place(x, u),
             _ => {
                 self.problem(e.pos, "this isn't an instance (a name path such as `hero_mc.arm_mc`, `parent` or `root`)");
                 return None;
             }
         };
         // Every instance's `root` is the main timeline.
-        if let Some(i) = path.iter().rposition(|s| s == "root") {
-            path.drain(..i);
+        let segs: Vec<String> = at.path.0.trim().split('.').filter(|s| !s.is_empty()).map(str::to_string).collect();
+        if let Some(i) = segs.iter().rposition(|s| s == "root") {
+            at = Place { base: Base::This, path: Target::new(segs.get(i..).unwrap_or_default().join(".")) };
         }
-        Some(path)
-    }
-
-    /// The IR target for a path, checked.
-    fn path(&mut self, pos: Pos, path: &[String]) -> Option<Target> {
-        for s in path {
-            if !matches!(s.as_str(), "root" | "parent") && !valid_instance_name(s) {
-                self.problem(pos, format!("`{s}` isn't an instance name AniCraft can address (1-64 letters, digits, `_` or `$`)"));
+        for s in at.path.0.split('.').filter(|s| !s.is_empty()) {
+            if !matches!(s, "root" | "parent" | "this") && !valid_instance_name(s) {
+                self.problem(e.pos, format!("`{s}` isn't an instance name AniCraft can address (1-64 letters, digits, `_` or `$`)"));
                 return None;
             }
         }
-        let t = Target::new(path.join("."));
-        match t.segments() {
-            Ok(_) => Some(t),
-            Err(e) => {
-                self.problem(pos, e);
+        if let Err(m) = at.path.segments() {
+            self.problem(e.pos, m);
+            return None;
+        }
+        Some(at)
+    }
+
+    /// The text field a script names (`score_txt`, `panel.name_txt`): an instance, not the
+    /// stage or a timeline (`this` is one only if it is a field, which a frame script's isn't).
+    fn field_place(&mut self, e: &Expr, u: &Unit) -> O<Place> {
+        let at = self.place(e, u)?;
+        if at.base == Base::Stage || (at.base == Base::This && at.path.is_this()) {
+            self.problem(e.pos, "this isn't a text field; name the field by its instance name, as in `score_txt.text`");
+            return None;
+        }
+        Some(at)
+    }
+
+    /// Whether an expression names an instance rather than a value (for `==` between instances).
+    fn is_instance(&self, e: &Expr, u: &Unit) -> bool {
+        match &e.kind {
+            E::This => true,
+            E::Name(n) => n == "stage" || n == "root" || n == "parent",
+            E::Member(o, m) => (m == "currentTarget" || m == "target") && matches!(&o.kind, E::Name(n) if u.events.contains(n)),
+            E::Call(f, args) => matches!(&f.kind, E::Name(c) if CASTS.contains(&c.as_str())) && args.len() == 1,
+            E::Binary("as", ..) => true,
+            _ => false,
+        }
+    }
+
+    /// Where an assignment writes.
+    fn lvalue(&mut self, e: &'a Expr, u: &mut Unit) -> O<LValue> {
+        match &e.kind {
+            E::Name(n) => {
+                if let Some((i, _)) = u.locals.get(n) {
+                    return Some(LValue::Local { i: *i });
+                }
+                if self.vars.contains_key(n) {
+                    return Some(LValue::Var { n: n.clone() });
+                }
+                if let Some(p) = Prop::from_name(n) {
+                    return match p.settable() {
+                        Some(p) => Some(LValue::Prop { at: Place::this(), p }),
+                        None => {
+                            self.problem(e.pos, format!("`{n}` can only be read"));
+                            None
+                        }
+                    };
+                }
+                if self.funcs.contains_key(n.as_str()) || PATH_WORDS.contains(&n.as_str()) || CLASSES.contains(&n.as_str()) || BUILTINS.contains(&n.as_str()) || matches!(n.as_str(), "undefined" | "NaN" | "Infinity") {
+                    self.problem(e.pos, format!("`{n}` can't be assigned to"));
+                    return None;
+                }
+                self.free(n, e.pos, false);
+                Some(LValue::Var { n: n.clone() })
+            }
+            E::Member(o, m) if m == "text" => Some(LValue::Text { at: self.field_place(o, u)? }),
+            E::Member(o, m) => {
+                let Some(p) = Prop::from_member(m) else {
+                    self.problem(e.pos, format!("setting `{m}` isn't supported yet (x, y, alpha, visible, rotation, scaleX, scaleY and a text field's text are)"));
+                    return None;
+                };
+                let Some(p) = p.settable() else {
+                    self.problem(e.pos, format!("`{m}` can only be read"));
+                    return None;
+                };
+                let at = self.place(o, u)?;
+                if at.base == Base::Stage {
+                    self.problem(e.pos, "the stage's properties can't be set here");
+                    return None;
+                }
+                Some(LValue::Prop { at, p })
+            }
+            _ => {
+                self.problem(e.pos, "only variables and instance properties can be assigned to");
                 None
             }
         }
     }
 
-    /// A value computed from literals (`"Score: " + 10`, `-5`, `0.5`).
-    fn constant(&self, e: &Expr, cx: &Cx) -> Result<Val, Problem> {
-        Ok(match &e.kind {
-            E::Num(n) => Val::Num(*n),
-            E::Str(s) => Val::Str(s.clone()),
-            E::Bool(b) => Val::Bool(*b),
-            E::Null => Val::Null,
-            E::Name(n) if n == "undefined" => Val::Undefined,
-            E::Name(n) if n == "NaN" => Val::Num(f64::NAN),
-            E::Name(n) if n == "Infinity" => Val::Num(f64::INFINITY),
-            E::Unary("-", x) => Val::Num(-self.constant(x, cx)?.number()),
-            E::Unary("+", x) => Val::Num(self.constant(x, cx)?.number()),
-            E::Unary("!", x) => Val::Bool(!truthy(&self.constant(x, cx)?)),
-            E::Binary(op @ ("+" | "-" | "*" | "/" | "%"), a, b) => {
-                let (a, b) = (self.constant(a, cx)?, self.constant(b, cx)?);
-                match *op {
-                    "+" if matches!(a, Val::Str(_)) || matches!(b, Val::Str(_)) => {
-                        let s = a.text() + &b.text();
-                        if s.len() > MAX_TRACE_CHARS * 4 {
-                            return Err(Problem::at(e.pos, "this text is too long"));
+    // ----- expressions ---------------------------------------------------------------------
+
+    fn expr(&mut self, e: &'a Expr, u: &mut Unit) -> O<X> {
+        Some(match &e.kind {
+            E::Num(n) => X::lit(Value::Num(*n)),
+            E::Str(s) => {
+                if ir::text_len(s) > super::run::MAX_TEXT {
+                    self.problem(e.pos, "this text is too long");
+                    return None;
+                }
+                X::lit(Value::str(s))
+            }
+            E::Bool(b) => X::lit(Value::Bool(*b)),
+            E::Null => X::lit(Value::Null),
+            E::Name(n) => return self.name(e.pos, n, u),
+            E::Member(o, m) => return self.member(e, o, m, u),
+            E::Unary(op, x) => match *op {
+                "-" | "+" | "!" => {
+                    let x = self.expr(x, u)?;
+                    let op = match *op {
+                        "-" => UnOp::Neg,
+                        "+" => UnOp::Plus,
+                        _ => UnOp::Not,
+                    };
+                    X::Un { op, x: Box::new(x) }
+                }
+                "++" | "--" => X::Step { to: self.lvalue(x, u)?, d: if *op == "++" { 1 } else { -1 }, post: false },
+                other => {
+                    self.problem(e.pos, format!("`{other}` isn't supported yet"));
+                    return None;
+                }
+            },
+            E::Postfix(op, x) => X::Step { to: self.lvalue(x, u)?, d: if *op == "++" { 1 } else { -1 }, post: true },
+            E::Binary(op, a, b) => match *op {
+                "&&" | "||" => {
+                    let (a, b) = (self.expr(a, u), self.expr(b, u));
+                    let (a, b) = (Box::new(a?), Box::new(b?));
+                    if *op == "&&" { X::And { a, b } } else { X::Or { a, b } }
+                }
+                "==" | "!=" | "===" | "!==" if self.is_instance(a, u) || self.is_instance(b, u) => {
+                    let (pa, pb) = (self.place(a, u), self.place(b, u));
+                    X::Same { a: pa?, b: pb?, ne: op.starts_with('!') }
+                }
+                op => {
+                    let Some(bop) = BinOp::from_token(op) else {
+                        let what = match op {
+                            "as" | "is" | "instanceof" | "in" => format!("`{op}` isn't supported here"),
+                            _ => format!("the `{op}` operator isn't supported yet"),
+                        };
+                        self.problem(e.pos, what);
+                        return None;
+                    };
+                    let (a, b) = (self.expr(a, u), self.expr(b, u));
+                    X::Bin { op: bop, a: Box::new(a?), b: Box::new(b?) }
+                }
+            },
+            E::Assign(op, lhs, rhs) => {
+                let op = match *op {
+                    "=" => None,
+                    o => match BinOp::from_token(o.trim_end_matches('=')) {
+                        Some(b @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)) => Some(b),
+                        _ => {
+                            self.problem(e.pos, format!("`{o}` isn't supported yet (`=`, `+=`, `-=`, `*=`, `/=` and `%=` are)"));
+                            return None;
                         }
-                        Val::Str(s)
-                    }
-                    "+" => Val::Num(a.number() + b.number()),
-                    "-" => Val::Num(a.number() - b.number()),
-                    "*" => Val::Num(a.number() * b.number()),
-                    "/" => Val::Num(a.number() / b.number()),
-                    _ => Val::Num(a.number() % b.number()),
-                }
-            }
-            E::Name(n) => {
-                let msg = if cx.event.as_ref().is_some_and(|(p, _)| p == n) { format!("reading the event `{n}` isn't supported") } else { format!("reading `{n}` isn't supported: only values written out (numbers, strings, true, false) and `+` of them are") };
-                return Err(Problem::at(e.pos, msg));
-            }
-            E::Member(..) => {
-                let mut root = e;
-                while let E::Member(o, _) = &root.kind {
-                    root = o;
-                }
-                let msg = match &root.kind {
-                    E::Name(n) if cx.event.as_ref().is_some_and(|(p, _)| p == n) => format!("reading the event `{n}` isn't supported"),
-                    _ => "reading properties isn't supported: only values written out (numbers, strings, true, false) and `+` of them are".into(),
+                    },
                 };
-                return Err(Problem::at(e.pos, msg));
+                let (to, v) = (self.lvalue(lhs, u), self.expr(rhs, u));
+                X::Set { to: to?, op, v: Box::new(v?) }
             }
-            _ => return Err(Problem::at(e.pos, "only values written out (numbers, strings, true, false) and `+` of them are supported here")),
+            E::Cond(c, a, b) => {
+                let (c, a, b) = (self.expr(c, u), self.expr(a, u), self.expr(b, u));
+                X::Cond { c: Box::new(c?), a: Box::new(a?), b: Box::new(b?) }
+            }
+            E::Call(callee, args) => return self.call_expr(e.pos, callee, args, u),
+            E::Comma(_) => {
+                self.problem(e.pos, "`,` between expressions isn't supported here");
+                return None;
+            }
+            E::Function(_) => {
+                self.problem(e.pos, "a function written in place is only supported as a listener");
+                return None;
+            }
+            E::This => {
+                self.problem(e.pos, "`this` is the timeline; read a property of it, as in `this.currentFrame`");
+                return None;
+            }
+            E::Array(_) => {
+                self.problem(e.pos, "arrays aren't supported yet");
+                return None;
+            }
+            E::Object(_) => {
+                self.problem(e.pos, "objects (`{…}`) aren't supported yet");
+                return None;
+            }
+            E::New(..) => {
+                self.problem(e.pos, "`new` isn't supported yet");
+                return None;
+            }
+            E::Index(..) => {
+                self.problem(e.pos, "`[…]` access isn't supported yet");
+                return None;
+            }
         })
+    }
+
+    /// A bare name as a value.
+    fn name(&mut self, pos: Pos, n: &str, u: &mut Unit) -> O<X> {
+        if let Some((i, _)) = u.locals.get(n) {
+            return Some(X::Local { i: *i });
+        }
+        if self.vars.contains_key(n) {
+            return Some(X::Var { n: n.to_string() });
+        }
+        match n {
+            "undefined" => return Some(X::lit(Value::Undefined)),
+            "NaN" => return Some(X::lit(Value::Num(f64::NAN))),
+            "Infinity" => return Some(X::lit(Value::Num(f64::INFINITY))),
+            _ => {}
+        }
+        if let Some(p) = Prop::from_name(n) {
+            return Some(X::Get { at: Place::this(), p });
+        }
+        if self.funcs.contains_key(n) || BUILTINS.contains(&n) {
+            self.problem(pos, format!("`{n}` is a function; call it, as in `{n}()`"));
+            return None;
+        }
+        if PATH_WORDS.contains(&n) || CLASSES.contains(&n) || CASTS.contains(&n) {
+            self.problem(pos, format!("`{n}` isn't a value; read one of its properties"));
+            return None;
+        }
+        self.free(n, pos, false);
+        Some(X::Var { n: n.to_string() })
+    }
+
+    /// `o.m` as a value: constants, the event's key code, or a property of an instance.
+    fn member(&mut self, e: &'a Expr, o: &'a Expr, m: &str, u: &mut Unit) -> O<X> {
+        if let E::Name(c) = &o.kind
+            && (!u.locals.contains_key(c) || u.events.contains(c))
+            && !self.vars.contains_key(c)
+        {
+            match c.as_str() {
+                "Math" => {
+                    return match m {
+                        "PI" => Some(X::lit(Value::Num(std::f64::consts::PI))),
+                        "E" => Some(X::lit(Value::Num(std::f64::consts::E))),
+                        _ => {
+                            self.problem(e.pos, format!("`Math.{m}` isn't supported yet (min, max, abs, floor, ceil, round, random and PI are)"));
+                            None
+                        }
+                    };
+                }
+                "Keyboard" => {
+                    return match ir::key_code(m) {
+                        Some(k) => Some(X::lit(Value::Num(f64::from(k)))),
+                        None => {
+                            self.problem(e.pos, format!("`Keyboard.{m}` isn't a key AniCraft knows"));
+                            None
+                        }
+                    };
+                }
+                ev if u.events.contains(ev) => {
+                    return match m {
+                        "keyCode" => Some(X::Key),
+                        "currentTarget" | "target" => {
+                            self.problem(e.pos, format!("`{ev}.{m}` is an instance; read one of its properties, as in `{ev}.{m}.name`"));
+                            None
+                        }
+                        _ => {
+                            self.problem(e.pos, format!("reading the event's `{m}` isn't supported yet (keyCode, target and currentTarget are)"));
+                            None
+                        }
+                    };
+                }
+                _ => {}
+            }
+        }
+        if let E::Name(n) = &o.kind
+            && n == "stage"
+            && !matches!(m, "mouseX" | "mouseY")
+        {
+            self.problem(e.pos, format!("`stage.{m}` isn't supported yet"));
+            return None;
+        }
+        if let E::Name(n) = &o.kind
+            && ((u.locals.contains_key(n) && !u.events.contains(n)) || self.vars.contains_key(n))
+        {
+            self.problem(e.pos, format!("reading `{m}` of a value isn't supported yet"));
+            return None;
+        }
+        let Some(p) = Prop::from_member(m) else {
+            self.problem(e.pos, format!("reading `{m}` isn't supported yet (x, y, alpha, visible, rotation, scaleX, scaleY, currentFrame, totalFrames, currentLabel, mouseX, mouseY, name, and a text field's text and length are)"));
+            return None;
+        };
+        let at = if matches!(p, Prop::Text | Prop::Length) { self.field_place(o, u)? } else { self.place(o, u)? };
+        if at.base == Base::Stage && !matches!(p, Prop::MouseX | Prop::MouseY) {
+            self.problem(e.pos, format!("`stage.{m}` isn't supported yet"));
+            return None;
+        }
+        Some(X::Get { at, p })
+    }
+
+    /// A call with a value: the timeline's functions, `Math`, and casts.
+    fn call_expr(&mut self, pos: Pos, callee: &'a Expr, args: &'a [Expr], u: &mut Unit) -> O<X> {
+        match &callee.kind {
+            E::Member(o, m) if matches!(&o.kind, E::Name(c) if c == "Math") => {
+                let Some(f) = MathFn::from_name(m) else {
+                    self.problem(pos, format!("`Math.{m}` isn't supported yet (min, max, abs, floor, ceil, round and random are)"));
+                    return None;
+                };
+                if let Some(n) = f.arity()
+                    && n != args.len()
+                {
+                    self.problem(pos, format!("`Math.{m}` takes {n} argument{}", if n == 1 { "" } else { "s" }));
+                    return None;
+                }
+                let args = self.args(args, u)?;
+                Some(X::Math { f, args })
+            }
+            E::Name(n) if !u.locals.contains_key(n) => {
+                let n = n.as_str();
+                let cast = match n {
+                    "int" => Some(Ty::Int),
+                    "uint" => Some(Ty::Uint),
+                    "Number" => Some(Ty::Number),
+                    "String" => Some(Ty::String),
+                    "Boolean" => Some(Ty::Boolean),
+                    _ => None,
+                };
+                if let Some(t) = cast {
+                    let [a] = args else {
+                        self.problem(pos, format!("`{n}(…)` takes one value"));
+                        return None;
+                    };
+                    let x = self.expr(a, u)?;
+                    // `String(x)` of null is "null"; as a variable type it stays null.
+                    return Some(match t {
+                        Ty::String => X::Bin { op: BinOp::Add, a: Box::new(X::lit(Value::str(""))), b: Box::new(x) },
+                        t => X::Cast { t, x: Box::new(x) },
+                    });
+                }
+                if Method::from_name(n).is_some() || matches!(n, "trace" | "addEventListener" | "removeEventListener") {
+                    self.problem(pos, format!("`{n}()` gives no value; call it as a statement"));
+                    return None;
+                }
+                if OUTSIDE.contains(&n) || CASTS.contains(&n) || CLASSES.contains(&n) || n == "getChildByName" {
+                    self.problem(pos, format!("`{n}(…)` isn't supported here"));
+                    return None;
+                }
+                let local = self.funcs.get(n).copied();
+                if local.is_none() {
+                    self.free(n, callee.pos, true);
+                }
+                if let Some(f) = local {
+                    let required = f.params.iter().filter(|p| p.default.is_none() && !p.rest).count();
+                    if args.len() < required || args.len() > f.params.len() {
+                        self.problem(pos, format!("`{n}` takes {}{} argument{}, not {}", required, if required == f.params.len() { String::new() } else { format!(" to {}", f.params.len()) }, if f.params.len() == 1 { "" } else { "s" }, args.len()));
+                        return None;
+                    }
+                }
+                let mut out = Vec::with_capacity(args.len());
+                let mut ok = true;
+                for a in args {
+                    // The event a listener handles passes on to the function's event parameter.
+                    if let E::Name(x) = &a.kind
+                        && u.events.contains(x)
+                    {
+                        out.push(X::Event);
+                        continue;
+                    }
+                    match self.expr(a, u) {
+                        Some(x) => out.push(x),
+                        None => ok = false,
+                    }
+                }
+                ok.then_some(X::Call { f: n.to_string(), args: out })
+            }
+            E::Member(_, m) => {
+                self.problem(pos, format!("calling `{m}` here isn't supported"));
+                None
+            }
+            _ => {
+                self.problem(pos, "only named functions and methods can be called");
+                None
+            }
+        }
     }
 }
 
-fn truthy(v: &Val) -> bool {
-    match v {
-        Val::Num(n) => *n != 0.0 && !n.is_nan(),
-        Val::Str(s) => !s.is_empty(),
-        Val::Bool(b) => *b,
-        Val::Null | Val::Undefined => false,
-    }
+/// Whether a declared function can be a listener: the event is its one required parameter.
+fn takes_event(f: &Func) -> bool {
+    let required = f.params.iter().filter(|p| p.default.is_none() && !p.rest).count();
+    required <= 1 && !f.params.is_empty()
+}
+
+/// A value written out (for parameter defaults).
+fn literal(e: &Expr) -> O<Value> {
+    Some(match &e.kind {
+        E::Num(n) => Value::Num(*n),
+        E::Str(s) => Value::str(s),
+        E::Bool(b) => Value::Bool(*b),
+        E::Null => Value::Null,
+        E::Name(n) if n == "undefined" => Value::Undefined,
+        E::Name(n) if n == "NaN" => Value::Num(f64::NAN),
+        E::Unary("-", x) => match &x.kind {
+            E::Num(n) => Value::Num(-n),
+            _ => return None,
+        },
+        _ => return None,
+    })
 }
 
 fn label_ok(s: &str) -> bool {
     let n = s.chars().count();
     (1..=MAX_LABEL_CHARS).contains(&n) && !s.chars().any(char::is_control) && s.chars().any(|c| !c.is_whitespace())
+}
+
+/// Every `var` in a list of statements, into blocks and loops but not into functions.
+fn collect_vars<'a>(list: &'a [Stmt], out: &mut Vec<&'a VarDecl>) {
+    for s in list {
+        match &s.kind {
+            S::Var(_, l) => out.extend(l.iter()),
+            S::Block(b) | S::While(_, b) | S::DoWhile(b, _) | S::Other(_, b) => collect_vars(b, out),
+            S::If(_, a, b) => {
+                collect_vars(a, out);
+                collect_vars(b, out);
+            }
+            S::For(init, _, _, b) => {
+                if let Some(i) = init {
+                    collect_vars(std::slice::from_ref(&**i), out);
+                }
+                collect_vars(b, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The statements' top-level function declarations (also those in plain blocks, which
@@ -577,7 +1017,7 @@ fn declare<'a>(list: &'a [Stmt], funcs: &mut BTreeMap<&'a str, &'a Func>, proble
         match &s.kind {
             S::Function(f) => {
                 let Some(n) = f.name.as_deref() else { continue };
-                if BUILTINS.contains(&n) || CASTS.contains(&n) {
+                if BUILTINS.contains(&n) || CASTS.contains(&n) || CLASSES.contains(&n) || Prop::from_name(n).is_some() || matches!(n, "int" | "uint" | "Number" | "String" | "Boolean") {
                     problems.push(Problem::at(s.pos, format!("a function named `{n}` would hide ActionScript's own `{n}`")));
                 } else if funcs.insert(n, f).is_some() {
                     problems.push(Problem::at(s.pos, format!("`{n}` is declared twice")));
@@ -589,21 +1029,70 @@ fn declare<'a>(list: &'a [Stmt], funcs: &mut BTreeMap<&'a str, &'a Func>, proble
     }
 }
 
+/// Counts statements (for "runs, N steps").
+fn count(list: &[IStmt]) -> usize {
+    list.iter()
+        .map(|s| {
+            1 + match &s.s {
+                IS::If { a, b, .. } => count(a) + count(b),
+                IS::Loop { body, .. } => count(body),
+                _ => 0,
+            }
+        })
+        .sum()
+}
+
 pub(super) fn lower(prog: &[Stmt]) -> Result<Compiled, Vec<Problem>> {
     let mut funcs = BTreeMap::new();
     let mut problems = Vec::new();
     declare(prog, &mut funcs, &mut problems);
-    let mut l = Lower { funcs, problems, notes: Vec::new(), listeners: 0, work: 0 };
-    let mut ops = Vec::new();
-    l.stmts(prog, &Cx::default(), &mut ops);
-    if ops.len() > MAX_ACTIONS {
-        l.problems.push(Problem::whole(format!("a frame script runs at most {MAX_ACTIONS} steps")));
+    // The script's top-level `var`s are the timeline's variables.
+    let mut decls = Vec::new();
+    collect_vars(prog, &mut decls);
+    let mut vars = BTreeMap::new();
+    for d in decls {
+        let t = match var_type(&d.ty) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                problems.push(Problem::at(d.pos, "variables can't hold events"));
+                continue;
+            }
+            Err((p, m)) => {
+                problems.push(Problem::at(p, m));
+                continue;
+            }
+        };
+        if Prop::from_name(&d.name).is_some() || PATH_WORDS.contains(&d.name.as_str()) || funcs.contains_key(d.name.as_str()) || BUILTINS.contains(&d.name.as_str()) {
+            problems.push(Problem::at(d.pos, format!("`{}` is already a name of the timeline; choose another name for the variable", d.name)));
+            continue;
+        }
+        match vars.get(&d.name) {
+            Some(old) if *old != t && d.ty.is_some() => problems.push(Problem::at(d.pos, format!("`{}` is declared again with another type", d.name))),
+            Some(_) => {}
+            None => {
+                vars.insert(d.name.clone(), t);
+            }
+        }
     }
+    let mut l = Lower { funcs, vars, problems, notes: Vec::new(), free: Vec::new(), listeners: 0, depth: 0 };
+    let mut functions = Vec::new();
+    let names: Vec<(&str, &Func)> = l.funcs.iter().map(|(n, f)| (*n, *f)).collect();
+    for (n, f) in names {
+        if let Some(func) = l.function(f, n.to_string()) {
+            functions.push(func);
+        }
+    }
+    let mut top = Unit::top();
+    let body = l.body(prog, &mut top);
     let tidy = |mut v: Vec<Problem>| {
         v.sort();
         v.dedup();
         v.truncate(MAX_PROBLEMS);
         v
     };
-    if l.problems.is_empty() { Ok(Compiled { ops, notes: tidy(l.notes) }) } else { Err(tidy(l.problems)) }
+    if !l.problems.is_empty() {
+        return Err(tidy(l.problems));
+    }
+    let steps = count(&body) + functions.iter().map(|f| count(&f.body)).sum::<usize>();
+    Ok(Compiled { body, inner: top.inner, functions, vars: l.vars.into_iter().collect(), free: l.free, notes: tidy(l.notes), steps })
 }

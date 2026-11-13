@@ -203,6 +203,36 @@ const MAX_SEGMENTS_PER_CURVE: usize = 1024;
 /// Bézier circle constant.
 const KAPPA: f32 = 0.552_284_8;
 
+/// Most corners a PolyStar has on each side of its outline (sides or points).
+pub const POLYSTAR_MAX_SIDES: u32 = 256;
+
+/// The inner radius of a star of `points` points for a point size from 0 to 1 (ADR 0080): at 1
+/// the inner corners lie on the edges of the polygon through the tips (the star is that polygon),
+/// at 0 they meet in the centre (needle points), and in between the depth is proportional. Out
+/// of range or not a number, the point size is clamped (or 0.5).
+pub fn star_inner_radius(outer: f32, points: u32, point_size: f32) -> f32 {
+    let n = points.clamp(3, POLYSTAR_MAX_SIDES) as f32;
+    let size = if point_size.is_finite() { point_size.clamp(0.0, 1.0) } else { 0.5 };
+    outer * size * (std::f32::consts::PI / n).cos()
+}
+
+/// The corners of [`Path::polystar`], in order (clockwise on screen, y down), the first straight
+/// up: `sides` of them for a polygon, `2 × sides` (tip, inner, tip, …) for a star. `sides` is
+/// clamped to 3..=[`POLYSTAR_MAX_SIDES`].
+pub fn polystar_corners(cx: f32, cy: f32, radius: f32, sides: u32, star: bool, point_size: f32) -> Vec<Vec2> {
+    let n = sides.clamp(3, POLYSTAR_MAX_SIDES) as usize;
+    let inner = star_inner_radius(radius, sides, point_size);
+    let steps = if star { n * 2 } else { n };
+    (0..steps)
+        .map(|i| {
+            let r = if star && i % 2 == 1 { inner } else { radius };
+            // f64 so the corners of a big polygon stay where they belong.
+            let a = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::TAU / steps as f64;
+            Vec2::new(cx + r * a.cos() as f32, cy + r * a.sin() as f32)
+        })
+        .collect()
+}
+
 impl Path {
     pub fn new() -> Self {
         Self::default()
@@ -271,6 +301,22 @@ impl Path {
             .cubic_to(Vec2::new(cx - rx, cy - ky), Vec2::new(cx - kx, cy - ry), Vec2::new(cx, cy - ry))
             .cubic_to(Vec2::new(cx + kx, cy - ry), Vec2::new(cx + rx, cy - ky), Vec2::new(cx + rx, cy))
             .close();
+        p
+    }
+
+    /// The PolyStar tool's outline (ADR 0080): a regular polygon of `sides` corners, or a star of
+    /// `sides` points whose inner corners are at [`star_inner_radius`] for `point_size`, centred
+    /// at `(cx, cy)` with the first corner straight up.
+    pub fn polystar(cx: f32, cy: f32, radius: f32, sides: u32, star: bool, point_size: f32) -> Path {
+        let mut p = Path::new();
+        for (i, v) in polystar_corners(cx, cy, radius, sides, star, point_size).into_iter().enumerate() {
+            if i == 0 {
+                p.move_to(v);
+            } else {
+                p.line_to(v);
+            }
+        }
+        p.close();
         p
     }
 
@@ -498,6 +544,71 @@ pub fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shoelace area of a polygon.
+    fn poly_area(pts: &[Vec2]) -> f64 {
+        let n = pts.len();
+        (0..n).map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            f64::from(a.x) * f64::from(b.y) - f64::from(b.x) * f64::from(a.y)
+        }).sum::<f64>() * 0.5
+    }
+
+    /// ADR 0080: a regular polygon's corners are on its circle, its first straight up, and its
+    /// area is n/2 · r² · sin(2π/n).
+    #[test]
+    fn polystar_polygon_is_regular() {
+        for n in [3u32, 4, 5, 6, 8, 12, 32] {
+            let r = 50.0;
+            let pts = polystar_corners(10.0, -20.0, r, n, false, 0.3);
+            assert_eq!(pts.len(), n as usize);
+            assert!((pts[0].x - 10.0).abs() < 1e-4 && (pts[0].y - (-20.0 - r)).abs() < 1e-4, "first corner straight up: {:?}", pts[0]);
+            for p in &pts {
+                assert!(((*p - Vec2::new(10.0, -20.0)).length() - r).abs() < 1e-3);
+            }
+            let want = f64::from(n) / 2.0 * f64::from(r * r) * (std::f64::consts::TAU / f64::from(n)).sin();
+            let got = poly_area(&pts);
+            assert!((got.abs() - want).abs() < want * 1e-5, "n {n}: {got} vs {want}");
+            // Clockwise on screen (y down): positive shoelace area.
+            assert!(got > 0.0);
+            // The path is the same polygon.
+            let path = Path::polystar(10.0, -20.0, r, n, false, 0.3);
+            assert_eq!(path.cmds.len(), n as usize + 1);
+        }
+    }
+
+    /// ADR 0080: a star's inner corners are at r · size · cos(π/n): at 1 they lie on the
+    /// polygon's edges (the star covers exactly the polygon), at 0 in the centre, and its area
+    /// is n · r · r_in · sin(π/n).
+    #[test]
+    fn polystar_star_point_size() {
+        let r = 80.0f32;
+        for n in [3u32, 5, 7, 32] {
+            let half = std::f64::consts::PI / f64::from(n);
+            for size in [0.0f32, 0.25, 0.5, 1.0] {
+                let pts = polystar_corners(0.0, 0.0, r, n, true, size);
+                assert_eq!(pts.len(), 2 * n as usize);
+                let inner = f64::from(r) * f64::from(size) * half.cos();
+                assert!((f64::from(star_inner_radius(r, n, size)) - inner).abs() < 1e-3);
+                for (i, p) in pts.iter().enumerate() {
+                    let want = if i % 2 == 0 { f64::from(r) } else { inner };
+                    assert!((f64::from(p.length()) - want).abs() < 1e-3, "n {n} size {size} corner {i}");
+                }
+                let want = f64::from(n) * f64::from(r) * inner * half.sin();
+                assert!((poly_area(&pts) - want).abs() <= want * 1e-4 + 1e-3, "n {n} size {size}");
+            }
+            // Point size 1: the area of the polygon through the tips.
+            let full = poly_area(&polystar_corners(0.0, 0.0, r, n, true, 1.0));
+            let poly = poly_area(&polystar_corners(0.0, 0.0, r, n, false, 1.0));
+            assert!((full - poly).abs() < poly * 1e-5);
+        }
+        // Out of range and not a number: clamped, or the default.
+        assert_eq!(star_inner_radius(10.0, 5, 3.0), star_inner_radius(10.0, 5, 1.0));
+        assert_eq!(star_inner_radius(10.0, 5, -1.0), 0.0);
+        assert_eq!(star_inner_radius(10.0, 5, f32::NAN), star_inner_radius(10.0, 5, 0.5));
+        assert_eq!(polystar_corners(0.0, 0.0, 1.0, 0, false, 0.5).len(), 3);
+        assert_eq!(polystar_corners(0.0, 0.0, 1.0, u32::MAX, false, 0.5).len(), POLYSTAR_MAX_SIDES as usize);
+    }
 
     #[test]
     fn flatten_rect_is_closed_polygon() {

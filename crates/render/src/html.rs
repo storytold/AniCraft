@@ -13,15 +13,24 @@
 //! clips have their own playheads, buttons their pointer states). Identical paths, paints and
 //! frames are stored once, so a still keyframe over many frames costs one entry.
 //!
-//! What doesn't carry across is counted in the report: filters, Subtract and Invert blending,
-//! tints on bitmaps, plug-in frame scripts (they need the plug-in host) and kept scripts
-//! outside the ActionScript subset. Scripts in the subset (ADR 0013 tier 2) come across as the
-//! same actions and listeners the Rust player runs.
+//! Filters and the Subtract and Invert blend modes run in the page as the renderer runs them
+//! (`html/filters.js`, ADR 0072). What doesn't carry across is counted in the report: 9-slice
+//! scaling (instances scale as a whole), plug-in frame scripts (they need the plug-in host) and kept scripts
+//! outside the ActionScript subset. Scripts in the subset (ADR 0013 tiers 2 and 2.5) come
+//! across as the same script IR the Rust player runs (as JSON), with each timeline's functions
+//! and variable types, and `player.js` evaluates it the same way.
+//!
+//! Dynamic and input text fields (ADR 0066) are instances the player names, like movie clips.
+//! Their authored text is its outline, as everywhere; text a script or the viewer changes is
+//! drawn by the page with the browser's fonts, and the viewer types into an input field through
+//! a real `<input>` or `<textarea>` over the canvas (so editing, selection, IME and screen
+//! readers are the browser's own).
 
 use crate::stroke::stroke_outline;
-use anicraft_doc::actions::as3::ScriptOp;
+use anicraft_doc::actions::as3::Decls;
 use anicraft_doc::actions::{Action, FrameRef, Seg, Target};
-use anicraft_doc::{BlendMode, ColorEffect, Document, Element, ElementKind, FrameScript, Layer, LayerKind, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
+use anicraft_doc::player::TimelineRef;
+use anicraft_doc::{ColorTransform, Document, Element, ElementKind, FIELD_GUTTER, FrameScript, Join, Layer, LayerKind, MAX_FIELD_CHARS, MaskMode, Paint, Rgba, SoundFormat, SoundSync, SymbolId, SymbolKind, TextAlign, Timeline, base64_encode, evaluate_guided, guide_walk, instance_start};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -31,8 +40,10 @@ use std::sync::Arc;
 pub const PLAYER_JS: &str = include_str!("html/player.js");
 /// The page: canvas drawing, timing, pointer and sound.
 pub const CANVAS_JS: &str = include_str!("html/canvas.js");
+/// Filters and the blend modes canvas 2D lacks, per pixel (ADR 0072).
+pub const FILTERS_JS: &str = include_str!("html/filters.js");
 /// Version of the embedded data (`"v"`), raised when the player must change to read it.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// Largest page written.
 pub const MAX_HTML_BYTES: usize = 512 << 20;
 
@@ -88,13 +99,12 @@ pub struct HtmlExport {
 }
 
 /// Notes for the report.
-const FILTERS: &str = "filters (not exported; drawn without them)";
-const BLENDS: &str = "Subtract and Invert blending (drawn normally)";
-const BITMAP_TINT: &str = "tints on bitmap fills (drawn untinted)";
 const PLUGIN_SCRIPTS: &str = "plug-in frame scripts (not exported; they need the plug-in host)";
-const BUTTON_SOUNDS: &str = "sounds on button frames (not played yet)";
 const KEPT_SCRIPTS: &str = "kept frame scripts outside the ActionScript subset (not run; kept in the document only)";
+const NINE_SLICE: &str = "9-slice scaling (scaled as a whole)";
 const OUTSIDE_CALLS: &str = "script calls that reach outside the movie (ignored)";
+const WARPED_BITMAPS: &str = "warped bitmaps (the image shows unbent inside its bent outline; warped shapes come across)";
+const FIELD_FONTS: &str = "text fields (their authored text keeps its outlines; text a script or the viewer changes is drawn with the browser's fonts)";
 
 /// A number rounded to `1/scale`, written as an integer when it is one.
 fn num(v: f32, scale: f64) -> Value {
@@ -126,9 +136,122 @@ fn coord(v: f32) -> Value {
     num(v, 1000.0)
 }
 
+/// An `f32` exactly (the page reads it back with `Math.fround`), as an integer when it is one.
+fn exact(v: f32) -> Value {
+    if !v.is_finite() {
+        json!(0)
+    } else if v.fract() == 0.0 && v.abs() < 1e9 {
+        json!(v as i64)
+    } else {
+        json!(f64::from(v))
+    }
+}
+
+fn exact_color(c: Rgba) -> Value {
+    let c = c.sanitized();
+    json!([exact(c.r), exact(c.g), exact(c.b), exact(c.a)])
+}
+
+/// A filter for the page's `filters.js` (ADR 0072), sanitized, with the oracle's values exactly:
+/// `k` the kind (`blur`, `shadow` for Drop Shadow and Glow, `bevel` for Bevel and Gradient
+/// Bevel, `gglow`, `adjust`), `x`, `y` blur, `q` quality, `s` strength, `d` distance
+/// (stage pixels; the page scales them by its view, as the renderer does), colours as straight
+/// `[r, g, b, a]`, ramps as `[offset, r, g, b, a]` stops, Adjust Color as its 4 × 5 matrix.
+/// The angle comes as the renderer's own `[cos, sin]` (`u`), so the page multiplies the same
+/// numbers and its whole-pixel offsets round as the renderer's do, at halves too.
+fn filter_json(f: &anicraft_doc::Filter) -> Value {
+    use anicraft_doc::{Filter, FilterSide, GradientStop};
+    let unit = |angle: f32| {
+        let a = angle.to_radians();
+        json!([exact(a.cos()), exact(a.sin())])
+    };
+    let side = |s: FilterSide| match s {
+        FilterSide::Inner => "inner",
+        FilterSide::Outer => "outer",
+        FilterSide::Full => "full",
+    };
+    let ramp = |stops: &[GradientStop]| Value::Array(stops.iter().map(|s| json!([exact(s.offset), exact(s.color.r), exact(s.color.g), exact(s.color.b), exact(s.color.a)])).collect());
+    match f.sanitized() {
+        Filter::Blur { blur_x, blur_y, quality } => json!({"k": "blur", "x": exact(blur_x), "y": exact(blur_y), "q": quality}),
+        Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner, knockout, hide_object } => json!({
+            "k": "shadow", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "c": exact_color(color), "in": inner, "ko": knockout || (hide_object && inner), "ho": hide_object,
+        }),
+        Filter::Glow { blur_x, blur_y, strength, quality, color, inner, knockout } => json!({
+            "k": "shadow", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": [1, 0], "d": 0,
+            "c": exact_color(color), "in": inner, "ko": knockout, "ho": false,
+        }),
+        Filter::Bevel { blur_x, blur_y, strength, quality, angle, distance, shadow_color, highlight_color, side: sd, knockout } => json!({
+            "k": "bevel", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "hc": exact_color(highlight_color), "sc": exact_color(shadow_color), "side": side(sd), "ko": knockout,
+        }),
+        Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, stops, side: sd, knockout } => json!({
+            "k": "bevel", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "st": ramp(&stops), "side": side(sd), "ko": knockout,
+        }),
+        Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, side: sd, knockout } => json!({
+            "k": "gglow", "x": exact(blur_x), "y": exact(blur_y), "s": exact(strength), "q": quality, "u": unit(angle), "d": exact(distance),
+            "st": ramp(&stops), "side": side(sd), "ko": knockout,
+        }),
+        Filter::AdjustColor { brightness, contrast, saturation, hue } => {
+            let m = crate::filters::color_matrix(brightness, contrast, saturation, hue);
+            json!({"k": "adjust", "m": m.iter().flatten().map(|v| exact(*v)).collect::<Vec<_>>()})
+        }
+    }
+}
+
 fn color(c: Rgba) -> Vec<Value> {
     let c = c.sanitized();
     [c.r, c.g, c.b, c.a].into_iter().map(|v| num(v, 10_000.0)).collect()
+}
+
+/// A gradient's stops for a canvas, which only pads: with `Reflect` or `Repeat`, how many
+/// copies of the ramp lie each side of it, and the stops of them all laid end to end (the
+/// ramp is `2·copies + 1` times as long; `outward`, for a radial ramp, which has no inside of
+/// its centre: the ramp first, then all the copies). Linear-light mixing is sampled into stops.
+fn spread_stops(s: &[anicraft_doc::GradientStop], spread: anicraft_doc::Spread, linear_rgb: bool, outward: bool) -> (usize, Vec<anicraft_doc::GradientStop>) {
+    use anicraft_doc::{GradientStop, Spread};
+    let mut base: Vec<GradientStop> = s.iter().filter(|g| g.offset.is_finite()).copied().collect();
+    base.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+    if linear_rgb && base.len() >= 2 {
+        // Sixteen samples per span, mixed in linear light as the renderer's ramp is.
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let enc = |c: f32| if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.max(0.0).powf(1.0 / 2.4) - 0.055 };
+        let mut out = Vec::new();
+        for w in base.windows(2) {
+            if let [a, b] = w {
+                let (ca, cb) = (a.color.sanitized(), b.color.sanitized());
+                for k in 0..16 {
+                    let t = k as f32 / 16.0;
+                    let m = |x: f32, y: f32| enc(lin(x) + (lin(y) - lin(x)) * t);
+                    out.push(GradientStop { offset: a.offset + (b.offset - a.offset) * t, color: Rgba::new(m(ca.r, cb.r), m(ca.g, cb.g), m(ca.b, cb.b), ca.a + (cb.a - ca.a) * t) });
+                }
+            }
+        }
+        if let Some(l) = base.last() {
+            out.push(*l);
+        }
+        base = out;
+    }
+    if spread == Spread::Pad || base.is_empty() {
+        return (0, base);
+    }
+    // Enough copies to cover a shape many times the ramp's length, within a bounded size.
+    let copies = (240 / base.len()).saturating_sub(1) / 2;
+    let copies = copies.clamp(0, 8);
+    let n = 2 * copies + 1;
+    let mut out = Vec::with_capacity(n * base.len());
+    for k in 0..n {
+        // Copy `k` runs forward unless it reflects (every other copy, counting from the ramp
+        // itself: copy 0 outward, else the middle one).
+        let from_ramp = if outward { k } else { k + copies };
+        let backwards = spread == Spread::Reflect && from_ramp % 2 == 1;
+        let ramp: Vec<GradientStop> = if backwards { base.iter().rev().map(|g| GradientStop { offset: 1.0 - g.offset, color: g.color }).collect() } else { base.clone() };
+        for g in ramp {
+            out.push(GradientStop { offset: (k as f32 + g.offset.clamp(0.0, 1.0)) / n as f32, color: g.color });
+        }
+    }
+    (copies, out)
 }
 
 /// `[a, b, c, d, e, f]`, the linear part finer than the offset; `None` for the identity.
@@ -140,15 +263,14 @@ fn matrix(m: &Affine) -> Option<Value> {
     Some(json!([num(a, 1e5), num(b, 1e5), num(c, 1e5), num(d, 1e5), coord(e), coord(f)]))
 }
 
-/// `[alpha, tint r, g, b, tint amount]`; `None` for no effect.
-fn effect(fx: &ColorEffect) -> Option<Value> {
-    if *fx == ColorEffect::default() {
+/// A colour transform (ADR 0056): `[red, green, blue, alpha multipliers, red, green, blue,
+/// alpha offsets]`; `None` for no effect.
+fn effect(fx: &ColorTransform) -> Option<Value> {
+    let fx = fx.sanitized();
+    if fx.is_identity() {
         return None;
     }
-    let t = fx.tint.sanitized();
-    let a = if fx.alpha.is_finite() { fx.alpha } else { 1.0 };
-    let k = if fx.tint_amount.is_finite() { fx.tint_amount } else { 0.0 };
-    Some(json!([num(a, 1e4), num(t.r, 1e4), num(t.g, 1e4), num(t.b, 1e4), num(k, 1e4)]))
+    Some(Value::Array(fx.mul.iter().chain(fx.add.iter()).map(|v| num(*v, 1e4)).collect()))
 }
 
 /// SVG path data (what `Path2D` reads), three decimals; empty when a point isn't finite.
@@ -257,27 +379,6 @@ fn actions(list: &[Action]) -> Value {
     Value::Array(list.iter().map(action).collect())
 }
 
-/// A compiled script's steps (ADR 0013 tier 2): actions, and `listen` steps with the target,
-/// the event `ev`, the function `k` and the actions `h` it runs.
-fn script_ops(ops: &[ScriptOp]) -> Value {
-    Value::Array(
-        ops.iter()
-            .map(|op| match op {
-                ScriptOp::Action(a) => action(a),
-                ScriptOp::Listen(l) => {
-                    let mut o = Map::new();
-                    o.insert("op".into(), json!("listen"));
-                    target(&mut o, &l.target);
-                    o.insert("ev".into(), json!(l.event.key()));
-                    o.insert("k".into(), json!(l.function));
-                    o.insert("h".into(), actions(&l.actions));
-                    o.insert("d".into(), json!(format!("Listen for {} ({})", l.event.key(), l.target)));
-                    Value::Object(o)
-                }
-            })
-            .collect(),
-    )
-}
 
 /// Whether timeline layer `index` takes part in playback (what the player walks and draws):
 /// shown, not a folder or guide, not in a hidden folder.
@@ -328,7 +429,7 @@ impl<'a> Bake<'a> {
         i
     }
 
-    fn paint(&mut self, p: &Paint, el: &Element) -> usize {
+    fn paint(&mut self, p: &Paint) -> usize {
         let stops = |s: &[anicraft_doc::GradientStop]| -> Vec<Value> {
             s.iter()
                 .map(|g| {
@@ -341,13 +442,32 @@ impl<'a> Bake<'a> {
         };
         let v = match p {
             Paint::Solid(c) => json!({"s": color(*c)}),
-            Paint::Linear { start, end, stops: s } => json!({"l": [coord(start.x), coord(start.y), coord(end.x), coord(end.y)], "st": stops(s)}),
-            Paint::Radial { center, radius, stops: s } => json!({"r": [coord(center.x), coord(center.y), coord(radius.max(0.0))], "st": stops(s)}),
+            Paint::Linear { start, end, stops: s, spread, linear_rgb } => {
+                // Canvas gradients only pad: a reflecting or repeating one is drawn as its ramp
+                // laid end to end, far enough to cover any shape it is on (ADR 0074).
+                let (copies, s) = spread_stops(s, *spread, *linear_rgb, false);
+                let d = *end - *start;
+                let (a, b) = (*start - d * copies as f32, *end + d * copies as f32);
+                json!({"l": [coord(a.x), coord(a.y), coord(b.x), coord(b.y)], "st": stops(&s)})
+            }
+            Paint::Radial { center, radius, stops: s, spread, linear_rgb, focal, matrix: own } => {
+                // The ring as canvas draws it: a circle round the centre (an ellipse drawn
+                // with its mean radius), the focal point on its own x axis.
+                let (copies, s) = spread_stops(s, *spread, *linear_rgb, true);
+                let c = own.apply(*center);
+                let r = radius.max(0.0) * own.mean_scale();
+                let axis = own.apply_vector(anicraft_geom::Vec2::new(1.0, 0.0));
+                let axis = if axis.length() > 1e-9 { axis * (1.0 / axis.length()) } else { anicraft_geom::Vec2::new(1.0, 0.0) };
+                let f = c + axis * (focal.clamp(-anicraft_doc::MAX_FOCAL, anicraft_doc::MAX_FOCAL) * r);
+                let big = r * (1 + 2 * copies) as f32;
+                let mut o = json!({"r": [coord(c.x), coord(c.y), coord(big)], "st": stops(&s)});
+                if *focal != 0.0 && focal.is_finite() {
+                    o["f"] = json!([coord(f.x), coord(f.y)]);
+                }
+                o
+            }
             Paint::Bitmap { bitmap, repeat, matrix: m } => match self.doc.bitmap(*bitmap) {
                 Some(b) => {
-                    if el.color.tint_amount > 0.0 {
-                        self.notes.entry(BITMAP_TINT).or_default().insert(el.id.0);
-                    }
                     let n = self.images.len();
                     let i = *self.image_ix.entry(b.id.0).or_insert(n);
                     if i == n {
@@ -378,11 +498,11 @@ impl<'a> Bake<'a> {
     /// A shape item: `p` path, `f` paint, `s` stroke `[r, g, b, a, width]`, `k` its style when
     /// not round and solid (`c` cap, `j` join, `ml` miter limit, `d` dash lengths and `o` their
     /// offset, in local units like the width), `eo` even-odd, `m` transform, `c` colour effect.
-    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorEffect, fill: Option<(&Paint, &Element)>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
+    fn shape(&mut self, path: &Arc<Path>, m: &Affine, fx: &ColorTransform, fill: Option<&Paint>, stroke: Option<&anicraft_doc::Stroke>, rule: FillRule) -> Value {
         let mut o = Map::new();
         o.insert("p".into(), json!(self.path(path)));
-        if let Some((p, el)) = fill {
-            o.insert("f".into(), json!(self.paint(p, el)));
+        if let Some(p) = fill {
+            o.insert("f".into(), json!(self.paint(p)));
         }
         if let Some(st) = stroke {
             let mut s = color(st.color);
@@ -404,6 +524,71 @@ impl<'a> Bake<'a> {
         Value::Object(o)
     }
 
+    /// A dynamic or input text field (ADR 0066): `tf` holds what the player and the page need,
+    /// `id`, `n` (its instance name), `m` and `c` as on a symbol instance. In `tf`: `k` its kind
+    /// (`dynamic` or `input`), `ln` its line type, `w` × `h` its box, `sel` selectable, `mx` the
+    /// most characters the viewer may type (when limited), `t` the authored text and `p` its
+    /// outline (drawn like any path until the text changes), the paints `f` (text), `kp` (the
+    /// box as a clip) and `bg` (background, when on), `bd` the border `[r, g, b, a, 1]` and `bk`
+    /// its style (when on), the paths `r` (the box) and `cr` (the caret, as the player draws it
+    /// before a layout), and `font` what the page draws changed text with: `family`, `size`,
+    /// `bold`, `italic`, `align`, `ls` letter and `lsp` line spacing.
+    fn field(&mut self, el: &Element, t: &anicraft_doc::TextBlock, f: &anicraft_doc::TextField) -> Value {
+        // The browser lays out text a script or the viewer changed with its own fonts.
+        self.notes.entry(FIELD_FONTS).or_default().insert(el.id.0);
+        // As the evaluator draws a field (eval.rs `field_items`).
+        let (w, h) = (t.box_width.max(0.0), t.box_height.max(0.0));
+        let rect = Arc::new(Path::rect(0.0, 0.0, w, h));
+        let caret = Arc::new(Path::rect(FIELD_GUTTER - 0.5, FIELD_GUTTER, 1.0, t.size * 1.2));
+        let align = match t.align {
+            TextAlign::Left => "left",
+            TextAlign::Center => "center",
+            TextAlign::Right => "right",
+        };
+        let size = if t.size.is_finite() && t.size > 0.0 { t.size } else { 12.0 };
+        let mut o = json!({
+            "k": f.kind.key(),
+            "ln": f.lines.key(),
+            "w": coord(w),
+            "h": coord(h),
+            "sel": f.selectable,
+            "t": t.text,
+            "p": self.path(&t.outline),
+            "r": self.path(&rect),
+            "cr": self.path(&caret),
+            "f": self.paint(&Paint::Solid(t.color)),
+            "kp": self.paint(&Paint::Solid(Rgba::BLACK)),
+            "font": {"family": t.font, "size": num(size, 1e3), "bold": t.bold, "italic": t.italic, "align": align, "ls": num(t.letter_spacing, 1e3), "lsp": num(t.line_spacing, 1e3)},
+        });
+        if f.max_chars > 0 {
+            o["mx"] = json!(f.max_chars.min(MAX_FIELD_CHARS as u32));
+        }
+        if f.background {
+            o["bg"] = json!(self.paint(&Paint::Solid(f.background_color)));
+        }
+        if f.border {
+            let mut s = anicraft_doc::Stroke::new(f.border_color, 1.0);
+            s.style.join = Join::Miter;
+            let mut bd = color(s.color);
+            bd.push(num(s.width, 1e3));
+            o["bd"] = Value::Array(bd);
+            o["bk"] = line_style(&s);
+        }
+        let mut item = Map::new();
+        item.insert("tf".into(), o);
+        item.insert("id".into(), json!(el.id.0));
+        if !el.name.is_empty() {
+            item.insert("n".into(), json!(el.name));
+        }
+        if let Some(m) = matrix(&el.transform) {
+            item.insert("m".into(), m);
+        }
+        if let Some(c) = effect(&el.color.transform()) {
+            item.insert("c".into(), c);
+        }
+        Value::Object(item)
+    }
+
     /// The items of one element on `layer` at frame `f` (its keyframe starts at `start`).
     fn element(&mut self, el: &Element, layer: &Layer, f: u32, start: u32, out: &mut Vec<Value>) {
         if !el.transform.is_finite() {
@@ -411,32 +596,53 @@ impl<'a> Bake<'a> {
         }
         match &el.kind {
             ElementKind::Shape(s) => {
+                // A bent image needs the mesh, which canvas 2D can't draw (ADR 0079).
+                if matches!(s.fill, Some(Paint::Bitmap { .. })) && s.live_warp().is_some_and(|w| !w.at_rest()) {
+                    self.notes.entry(WARPED_BITMAPS).or_default().insert(el.id.0);
+                }
                 let stroke = s.stroke.as_ref().filter(|st| st.width.is_finite() && st.width > 0.0);
                 match stroke.filter(|st| st.profile.is_some()) {
                     // A variable-width stroke is the filled outline the renderer fills (its
                     // caps, joins and dashes included).
                     Some(st) => {
                         if let Some(p) = &s.fill {
-                            out.push(self.shape(&s.path, &el.transform, &el.color, Some((p, el)), None, s.fill_rule));
+                            out.push(self.shape(&s.path, &el.transform, &el.color.transform(), Some(p), None, s.fill_rule));
                         }
                         let outline = stroke_outline(&s.path, &el.transform, st, crate::TOLERANCE);
                         if !outline.is_empty() {
                             let fill = Paint::Solid(st.color);
-                            out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color, Some((&fill, el)), None, FillRule::NonZero));
+                            out.push(self.shape(&Arc::new(outline), &Affine::IDENTITY, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
                         }
                     }
-                    None => out.push(self.shape(&s.path, &el.transform, &el.color, s.fill.as_ref().map(|p| (p, el)), stroke, s.fill_rule)),
+                    None => out.push(self.shape(&s.path, &el.transform, &el.color.transform(), s.fill.as_ref(), stroke, s.fill_rule)),
                 }
             }
             // The camera is the view, not artwork (ADR 0027): it is baked into the layers.
             ElementKind::Camera => {}
-            ElementKind::Text(t) => {
-                let fill = Paint::Solid(t.color);
-                out.push(self.shape(&t.outline, &el.transform, &el.color, Some((&fill, el)), None, FillRule::NonZero));
+            // A group's members, placed and coloured by it, as if they stood on its layer (ADR
+            // 0073). (A translucent group's members fade one by one here.)
+            ElementKind::Group { .. } => {
+                for m in anicraft_doc::expand_groups(std::slice::from_ref(&Arc::new(el.clone()))).iter() {
+                    self.element(m, layer, f, start, out);
+                }
             }
+            ElementKind::Text(t) => match &t.field {
+                Some(f) => {
+                    let item = self.field(el, t, f);
+                    out.push(item);
+                }
+                None => {
+                    let fill = Paint::Solid(t.color);
+                    out.push(self.shape(&t.outline, &el.transform, &el.color.transform(), Some(&fill), None, FillRule::NonZero));
+                }
+            },
             ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, events } => {
                 let (Some(&y), Some(sym)) = (self.symbols.get(symbol), self.doc.symbol(*symbol)) else { return };
                 let len = sym.timeline.frame_count();
+                // The page's player places symbols itself and doesn't slice them yet (ADR 0055).
+                if anicraft_doc::nine_slice::slices(self.doc, sym, &el.transform) {
+                    self.notes.entry(NINE_SLICE).or_default().insert(el.id.0);
+                }
                 let mut o = Map::new();
                 o.insert("y".into(), json!(y));
                 o.insert("id".into(), json!(el.id.0));
@@ -446,7 +652,7 @@ impl<'a> Bake<'a> {
                 if let Some(m) = matrix(&el.transform) {
                     o.insert("m".into(), m);
                 }
-                if let Some(c) = effect(&el.color) {
+                if let Some(c) = effect(&el.color.transform()) {
                     o.insert("c".into(), c);
                 }
                 match sym.kind {
@@ -467,13 +673,12 @@ impl<'a> Bake<'a> {
                 }
                 if !blend.is_normal() {
                     o.insert("bl".into(), json!(blend.key()));
-                    if matches!(blend, BlendMode::Subtract | BlendMode::Invert) {
-                        self.notes.entry(BLENDS).or_default().insert(el.id.0);
-                    }
                 }
+                // Filters run in the page as the renderer runs them (ADR 0072): `fx` the list,
+                // `fm` how far they reach together (stage pixels).
                 if !filters.is_empty() {
-                    o.insert("fx".into(), json!(1));
-                    self.notes.entry(FILTERS).or_default().insert(el.id.0);
+                    o.insert("fx".into(), Value::Array(filters.iter().map(filter_json).collect()));
+                    o.insert("fm".into(), exact(filters.iter().map(anicraft_doc::Filter::margin).sum::<f32>()));
                 }
                 if !events.is_empty() {
                     o.insert("ev".into(), Value::Array(events.iter().map(|h| json!([h.event.key(), actions(&h.actions)])).collect()));
@@ -505,7 +710,9 @@ impl<'a> Bake<'a> {
     /// `nm`, labels `lb`, and per frame the scripts `a` and sounds `snd` of keyframes starting
     /// there (top layer first). A scene's frames seen through its camera (ADR 0027) carry the
     /// camera's tint (`cc`) and each layer its view (`v`: the camera and the layer's depth).
-    fn timeline(&mut self, tl: &Timeline, scene: bool) -> Value {
+    /// `decls`: the declarations its frame scripts share (ADR 0052), for timelines that
+    /// run scripts; their functions go out as `fn` and their variables' types as `vt`.
+    fn timeline(&mut self, tl: &Timeline, scene: bool, decls: Option<&Decls>) -> Value {
         let n = tl.frame_count();
         // One clip slot per visible mask layer, top first (as the evaluator numbers them).
         let slots: HashMap<u64, usize> = tl.layers.iter().filter(|l| l.kind == LayerKind::Mask && l.visible).enumerate().map(|(i, l)| (l.id.0, i)).collect();
@@ -529,6 +736,16 @@ impl<'a> Bake<'a> {
                 }
                 if layer.kind == LayerKind::Mask {
                     entry.insert("mk".into(), json!(slots.get(&layer.id.0).copied().unwrap_or(0)));
+                    // A soft mask (ADR 0070): 1 alpha, 2 luminance.
+                    match layer.mask_mode {
+                        MaskMode::Coverage => {}
+                        MaskMode::Alpha => {
+                            entry.insert("mm".into(), json!(1));
+                        }
+                        MaskMode::Luminance => {
+                            entry.insert("mm".into(), json!(2));
+                        }
+                    }
                 } else if let Some(&slot) = layer.parent.and_then(|p| slots.get(&p.0)) {
                     entry.insert("c".into(), json!(slot));
                 }
@@ -574,14 +791,19 @@ impl<'a> Bake<'a> {
                     // kept (ADR 0013).
                     Some(FrameScript::Source(src)) => {
                         let key = u64::from(f) << 20 ^ tl.layers.get(index).map_or(0, |l| l.id.0);
-                        match src.compiled() {
-                            Ok(c) => {
-                                a.push(json!({"as": script_ops(&c.ops)}));
+                        match (src.compiled(), decls) {
+                            // It runs where its names from other frames are all there.
+                            (Ok(c), Some(d)) if d.problems(c).is_empty() => {
+                                let mut o = json!({"b": c.body});
+                                if !c.inner.is_empty() {
+                                    o["i"] = json!(c.inner);
+                                }
+                                a.push(json!({"as": o}));
                                 if !c.notes.is_empty() {
                                     self.notes.entry(OUTSIDE_CALLS).or_default().insert(key);
                                 }
                             }
-                            Err(_) => {
+                            _ => {
                                 self.notes.entry(KEPT_SCRIPTS).or_default().insert(key);
                             }
                         }
@@ -643,6 +865,14 @@ impl<'a> Bake<'a> {
         if !sounds.is_empty() {
             o["snd"] = Value::Object(sounds);
         }
+        if let Some(d) = decls {
+            if !d.functions.is_empty() {
+                o["fn"] = json!(d.functions);
+            }
+            if !d.vars.is_empty() {
+                o["vt"] = json!(d.vars);
+            }
+        }
         o
     }
 }
@@ -653,7 +883,7 @@ fn used_symbols(doc: &Document) -> Vec<SymbolId> {
     let mut order = Vec::new();
     let mut queue: VecDeque<&Timeline> = doc.scenes.iter().map(|s| &s.timeline).collect();
     while let Some(tl) = queue.pop_front() {
-        for el in tl.layers.iter().flat_map(|l| l.keyframes.iter()).flat_map(|k| k.elements.iter()) {
+        for el in tl.layers.iter().flat_map(|l| l.keyframes.iter()).flat_map(|k| anicraft_doc::expand_groups(&k.elements).into_owned()) {
             if let ElementKind::Symbol { symbol, .. } = &el.kind
                 && let Some(sym) = doc.symbol(*symbol)
                 && seen.insert(*symbol)
@@ -692,18 +922,18 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
     let scenes = doc.scenes.len();
     let mut timelines = Vec::with_capacity(scenes + used.len());
     let mut frames = 0usize;
+    // The main timeline's scripts share one set of declarations over every scene.
+    let root = anicraft_doc::player::decls(doc, TimelineRef::Root);
     for s in &doc.scenes {
         frames += s.timeline.frame_count() as usize;
-        timelines.push(b.timeline(&s.timeline, true));
+        timelines.push(b.timeline(&s.timeline, true, Some(&root)));
     }
     let mut symbols = Vec::with_capacity(used.len());
     for (i, id) in used.iter().enumerate() {
         let Some(sym) = doc.symbol(*id) else { continue };
         frames += sym.timeline.frame_count() as usize;
-        timelines.push(b.timeline(&sym.timeline, false));
-        if b.sound && sym.kind == SymbolKind::Button && sym.timeline.layers.iter().any(|l| l.has_sounds()) {
-            b.notes.entry(BUTTON_SOUNDS).or_default().insert(sym.id.0);
-        }
+        let decls = (sym.kind == SymbolKind::MovieClip).then(|| anicraft_doc::player::decls(doc, TimelineRef::Symbol(*id)));
+        timelines.push(b.timeline(&sym.timeline, false, decls.as_ref()));
         let kind = match sym.kind {
             SymbolKind::Graphic => "graphic",
             SymbolKind::MovieClip => "movieclip",
@@ -735,7 +965,7 @@ pub fn movie(doc: &Document, opts: &HtmlOptions) -> Movie {
         images: json["images"].as_array().map_or(0, Vec::len),
         sounds: json["sounds"].as_array().map_or(0, Vec::len),
         data_bytes: 0,
-        code_bytes: PLAYER_JS.len() + CANVAS_JS.len(),
+        code_bytes: PLAYER_JS.len() + FILTERS_JS.len() + CANVAS_JS.len(),
     };
     let report = b.notes.into_iter().map(|(k, v)| (k.to_string(), v.len())).collect();
     Movie { json, paths: b.paths, report, stats }
@@ -768,7 +998,7 @@ pub fn to_html(doc: &Document, opts: &HtmlOptions) -> Result<HtmlExport, String>
     let title = escape_html(&opts.title);
     let bg = doc.stage.background.to_hex();
     let (w, h) = (doc.stage.width.max(1), doc.stage.height.max(1));
-    let mut html = String::with_capacity(data.len() + PLAYER_JS.len() + CANVAS_JS.len() + 1024);
+    let mut html = String::with_capacity(data.len() + PLAYER_JS.len() + FILTERS_JS.len() + CANVAS_JS.len() + 1024);
     html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     html.push_str(&format!("<meta name=\"generator\" content=\"AniCraft {}\">\n<title>{title}</title>\n", env!("CARGO_PKG_VERSION")));
     html.push_str(&format!("<style>html,body{{margin:0;height:100%;background:{bg}}}body{{display:flex;align-items:center;justify-content:center;overflow:hidden}}canvas{{display:block;touch-action:none;user-select:none}}</style>\n</head>\n<body>\n"));
@@ -777,6 +1007,8 @@ pub fn to_html(doc: &Document, opts: &HtmlOptions) -> Result<HtmlExport, String>
     html.push_str(&data);
     html.push_str("</script>\n<script>\n");
     html.push_str(PLAYER_JS);
+    html.push('\n');
+    html.push_str(FILTERS_JS);
     html.push('\n');
     html.push_str(CANVAS_JS);
     html.push_str("</script>\n</body>\n</html>\n");

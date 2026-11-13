@@ -9,9 +9,11 @@
 //! its scripts, so a script that loops forever costs one frame's budget, then stops with a
 //! message.
 
+use anicraft_doc::actions::as3::Problem;
 use anicraft_doc::actions::{Action, CompileResult, FrameScript, MAX_ACTIONS, PluginScript, check_actions};
-use anicraft_doc::player::{Event, Node, NodeKind, PlayerState, ScriptContext, ScriptHost, ScriptRun, Step};
-use anicraft_doc::{Document, LayerKind, SymbolKind, Timeline, player};
+use anicraft_doc::player::{Event, Node, NodeKind, PlayerState, ScriptContext, ScriptHost, ScriptRun, Step, TimelineRef};
+use anicraft_doc::field::{CaretLine, FieldLook};
+use anicraft_doc::{Document, LayerKind, SymbolKind, TextBlock, Timeline, player};
 use anicraft_geom::Vec2;
 use anicraft_plugins::{Host, Kind, Limits, Registry};
 use serde_json::{Map, Value, json};
@@ -91,6 +93,22 @@ impl ScriptHost for ScriptRunner<'_> {
             }
         }
     }
+
+    fn lay_out_field(&mut self, block: &TextBlock, shown: &str) -> Option<FieldLook> {
+        field_look(block, shown)
+    }
+}
+
+/// A field's text laid out with this computer's fonts, as the player draws and edits it
+/// (ADR 0066).
+pub fn field_look(block: &TextBlock, shown: &str) -> Option<FieldLook> {
+    let f = block.field.as_ref()?;
+    let l = crate::cmds_text::field_layout(anicraft_text::Fonts::get(), &crate::cmds_text::style_of(block), f, block.box_width, shown).ok()?;
+    let mut lines: Vec<CaretLine> = l.carets.into_iter().map(|c| CaretLine { start: c.start, end: c.end, stops: c.stops }).collect();
+    if lines.is_empty() {
+        lines.push(CaretLine { start: 0, end: 0, stops: vec![(0, 0.0)] });
+    }
+    Some(FieldLook { outline: std::sync::Arc::new(l.outline), lines: lines.into(), line_height: l.line_height, width: l.width, height: l.height })
 }
 
 /// What a running frame script talks to.
@@ -164,6 +182,26 @@ pub fn state_view(doc: &Document, st: &PlayerState, nodes: &[Node], here: Option
         "hover": path_of(&st.hover),
         "tick": st.tick,
     });
+    // Text fields (ADR 0066): their text as it is now, and which has the keyboard.
+    let fields: Vec<Value> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| n.field().map(|(t, f)| (i, n, t, f)))
+        .take(MAX_VIEW_CLIPS)
+        .map(|(i, n, t, f)| {
+            let fs = st.fields.get(&n.path);
+            let text = fs.map_or(t.text.as_str(), |x| x.value(t));
+            let mut o = json!({"path": path_name(nodes, i), "name": n.name, "type": f.kind.key(), "text": text});
+            if st.focus.as_ref() == Some(&n.path) {
+                let (a, b) = fs.map_or((0, 0), |x| x.selection());
+                o["focus"] = json!({"caret": fs.map_or(0, |x| x.caret), "selection": [a, b]});
+            }
+            o
+        })
+        .collect();
+    if !fields.is_empty() {
+        v["fields"] = Value::Array(fields);
+    }
     if let Some((i, frame, label)) = here {
         let n = nodes.get(i);
         v["timeline"] = json!({"path": path_name(nodes, i), "frame": frame, "frames": n.map_or(1, |n| n.frames), "label": label, "playing": n.and_then(|n| st.playhead(&n.path)).is_some_and(|c| c.playing)});
@@ -191,9 +229,14 @@ impl Movie {
     /// run and which are skipped and why (ADR 0013 tier 2), said once rather than each time the
     /// playhead passes.
     pub fn start(doc: &Document, scripts: &mut dyn ScriptHost) -> Movie {
+        Movie::start_seeded(doc, player::DEFAULT_SEED, scripts)
+    }
+
+    /// [`Movie::start`] with `Math.random()` seeded by `seed`.
+    pub fn start_seeded(doc: &Document, seed: u64, scripts: &mut dyn ScriptHost) -> Movie {
         let mut m = Movie { state: PlayerState::default(), output: Vec::new(), sounds: Vec::new() };
         m.output.extend(script_summary(doc).into_iter().map(|l| (0, l)));
-        let s = player::start(doc, scripts);
+        let s = player::start_seeded(doc, seed, scripts);
         m.take(s);
         m
     }
@@ -233,10 +276,51 @@ impl Movie {
     }
 }
 
-/// Parses a pointer event `{type: move|down|up|click|leave, x, y}` (a click is a press and
-/// a release at one point).
+/// The ActionScript key code a key event names: a number (1-255), a `Keyboard` constant
+/// (`"LEFT"`, `"SPACE"`) or one letter or digit.
+pub fn parse_key(v: &Value) -> Result<u32, String> {
+    match v {
+        Value::Number(n) => n.as_u64().filter(|k| (1..=255).contains(k)).map(|k| k as u32).ok_or_else(|| "a key code is 1-255".to_string()),
+        Value::String(s) => {
+            let t = s.trim();
+            let one = t.chars().count() == 1 && t.chars().all(|c| c.is_ascii_alphanumeric());
+            if one {
+                let c = t.to_ascii_uppercase();
+                return anicraft_doc::actions::as3::ir::key_code(&c).or_else(|| anicraft_doc::actions::as3::ir::key_code(&format!("NUMBER_{c}"))).ok_or_else(|| format!("unknown key '{t}'"));
+            }
+            anicraft_doc::actions::as3::ir::key_code(&t.to_ascii_uppercase()).ok_or_else(|| format!("unknown key '{t}' (a key code, a letter, or a Keyboard name such as LEFT or SPACE)"))
+        }
+        _ => Err("a key event needs a \"key\": a key code, a letter, or a Keyboard name such as LEFT".into()),
+    }
+}
+
+/// Most characters one `text` event types.
+pub const MAX_TYPED: usize = 10_000;
+
+/// Parses an event: a pointer event `{type: move|down|up|click|leave, x, y}` (a click is a
+/// press and a release at one point), a key event `{type: key_down|key_up|key, key}` (`key`
+/// is a press and a release), or typing into the focused text field (ADR 0066):
+/// `{type: text, text}` (each character typed in turn) and `{type: select_all}`.
 pub fn parse_events(v: &Value) -> Result<Vec<Event>, String> {
-    let kind = v.get("type").and_then(Value::as_str).ok_or("an event needs a \"type\": move, down, up, click or leave")?;
+    let kind = v.get("type").and_then(Value::as_str).ok_or("an event needs a \"type\": move, down, up, click, leave, key_down, key_up, key, text or select_all")?;
+    if kind == "text" {
+        let t = v.get("text").and_then(Value::as_str).ok_or("a text event needs a \"text\" to type")?;
+        if t.chars().count() > MAX_TYPED {
+            return Err(format!("a text event types at most {MAX_TYPED} characters"));
+        }
+        return Ok(t.chars().map(Event::Char).collect());
+    }
+    if kind == "select_all" {
+        return Ok(vec![Event::SelectAll]);
+    }
+    if matches!(kind, "key_down" | "key_up" | "key") {
+        let k = parse_key(v.get("key").unwrap_or(&Value::Null))?;
+        return Ok(match kind {
+            "key_down" => vec![Event::KeyDown(k)],
+            "key_up" => vec![Event::KeyUp(k)],
+            _ => vec![Event::KeyDown(k), Event::KeyUp(k)],
+        });
+    }
     let num = |k: &str| -> Result<f32, String> { v.get(k).and_then(Value::as_f64).filter(|f| f.is_finite() && f.abs() <= 1e7).map(|f| f as f32).ok_or(format!("a {kind} event needs a finite \"{k}\"")) };
     Ok(match kind {
         "leave" => vec![Event::Leave],
@@ -247,7 +331,7 @@ pub fn parse_events(v: &Value) -> Result<Vec<Event>, String> {
             let p = Vec2::new(num("x")?, num("y")?);
             vec![Event::Move(p), Event::Down(p), Event::Up(p)]
         }
-        other => return Err(format!("unknown event type '{other}' (move, down, up, click or leave)")),
+        other => return Err(format!("unknown event type '{other}' (move, down, up, click, leave, key_down, key_up, key, text or select_all)")),
     })
 }
 
@@ -258,12 +342,15 @@ pub struct KeptScript<'a> {
     /// The timeline runs frame scripts there (a scene or a movie clip, on a layer that plays).
     pub plays: bool,
     pub compiled: &'a CompileResult,
+    /// Why it doesn't run on its timeline although it compiles: names from other frames that
+    /// aren't there (ADR 0052).
+    pub links: Vec<Problem>,
 }
 
 impl KeptScript<'_> {
     /// It runs when the movie plays.
     pub fn runs(&self) -> bool {
-        self.plays && self.compiled.is_ok()
+        self.plays && self.compiled.is_ok() && self.links.is_empty()
     }
 }
 
@@ -276,17 +363,28 @@ fn layer_plays(tl: &Timeline, index: usize) -> bool {
 
 /// Every kept script in the document: the scenes' first, then the symbols'.
 pub fn kept_scripts(doc: &Document) -> Vec<KeptScript<'_>> {
-    let scenes = doc.scenes.iter().map(|s| (s.name.as_str(), &s.timeline, true));
-    let symbols = doc.library.iter().map(|s| (s.name.as_str(), &s.timeline, s.kind == SymbolKind::MovieClip));
+    let scenes = doc.scenes.iter().map(|s| (s.name.as_str(), &s.timeline, Some(TimelineRef::Root)));
+    let symbols = doc.library.iter().map(|s| (s.name.as_str(), &s.timeline, (s.kind == SymbolKind::MovieClip).then_some(TimelineRef::Symbol(s.id))));
     let mut out = Vec::new();
-    for (name, tl, runs) in scenes.chain(symbols) {
+    let mut root = None;
+    for (name, tl, which) in scenes.chain(symbols) {
+        let runs = which.is_some();
+        let decls = match which {
+            Some(TimelineRef::Root) => root.get_or_insert_with(|| player::decls(doc, TimelineRef::Root)).clone(),
+            Some(w) => player::decls(doc, w),
+            None => Default::default(),
+        };
         for (index, layer) in tl.layers.iter().enumerate() {
             for k in &layer.keyframes {
                 let Some(FrameScript::Source(src)) = &k.script else { continue };
                 if out.len() >= MAX_LISTED_SCRIPTS {
                     return out;
                 }
-                out.push(KeptScript { place: format!("{name} › {}, frame {}", layer.name, u64::from(k.start) + 1), plays: runs && layer_plays(tl, index), compiled: src.compiled() });
+                let links = match src.compiled() {
+                    Ok(c) if runs => decls.problems(c),
+                    _ => Vec::new(),
+                };
+                out.push(KeptScript { place: format!("{name} › {}, frame {}", layer.name, u64::from(k.start) + 1), plays: runs && layer_plays(tl, index), compiled: src.compiled(), links });
             }
         }
     }
@@ -300,20 +398,24 @@ pub fn script_summary(doc: &Document) -> Vec<String> {
     for k in kept_scripts(doc) {
         match (k.plays, k.compiled) {
             (false, _) => lines.push(format!("Frame script not run: {}: graphic and button timelines, guide layers and hidden layers don't run frame scripts", k.place)),
-            (true, Ok(c)) => {
+            (true, Ok(c)) if k.links.is_empty() => {
                 lines.push(format!("Frame script runs: {}", k.place));
                 lines.extend(c.notes.iter().map(|n| format!("Frame script at {}: {n}", k.place)));
             }
-            (true, Err(problems)) => {
-                let first = problems.first().map_or_else(String::new, ToString::to_string);
-                let more = match problems.len() {
-                    0 | 1 => String::new(),
-                    2 => " (and 1 more problem: see the Actions panel)".into(),
-                    n => format!(" (and {} more problems: see the Actions panel)", n - 1),
-                };
-                lines.push(format!("Frame script not run: {}: {first}{more}", k.place));
-            }
+            (true, Ok(_)) => lines.push(not_run(&k.place, &k.links)),
+            (true, Err(problems)) => lines.push(not_run(&k.place, problems)),
         }
     }
     lines
+}
+
+/// "Frame script not run: …" with the first problem and how many more there are.
+fn not_run(place: &str, problems: &[Problem]) -> String {
+    let first = problems.first().map_or_else(String::new, ToString::to_string);
+    let more = match problems.len() {
+        0 | 1 => String::new(),
+        2 => " (and 1 more problem: see the Actions panel)".into(),
+        n => format!(" (and {} more problems: see the Actions panel)", n - 1),
+    };
+    format!("Frame script not run: {place}: {first}{more}")
 }

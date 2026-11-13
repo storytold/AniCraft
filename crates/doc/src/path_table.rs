@@ -41,10 +41,17 @@ pub fn build_table(doc: &Document) -> Vec<Arc<Path>> {
         for layer in &tl.layers {
             for k in &layer.keyframes {
                 for e in &k.elements {
+                    // A warped shape's outline as drawn (ADR 0079) is written once too.
+                    if let ElementKind::Shape(s) = &e.kind
+                        && let Some(w) = &s.warp
+                        && seen.insert(Arc::as_ptr(&w.rest) as usize, ()).is_none()
+                    {
+                        out.push(w.rest.clone());
+                    }
                     let path = match &e.kind {
                         ElementKind::Shape(s) => &s.path,
                         ElementKind::Text(t) => &t.outline,
-                        ElementKind::Symbol { .. } | ElementKind::Camera => continue,
+                        ElementKind::Symbol { .. } | ElementKind::Camera | ElementKind::Group { .. } => continue,
                     };
                     if seen.insert(Arc::as_ptr(path) as usize, ()).is_none() {
                         out.push(path.clone());

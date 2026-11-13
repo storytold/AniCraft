@@ -70,10 +70,12 @@ are not used for UI text, because they would change metrics per OS.
   buttons (`on_fill`) and on the active tool (`on_active`) ≥ 4.5:1; marks on timeline blocks and
   the playhead flag (`ink`) ≥ 4.5:1; focus rings, selection, checkbox edges and timeline blocks
   ≥ 3:1 against their background.
-* **Two palettes, one set of roles** (ADR 0022): Graphite (the default) and High contrast
-  (Preferences › Appearance › Theme). Code reads `T.role`, never a palette by name, and never
-  assumes a colour: text on an accent fill is `T.on_fill`, not white; an icon under the pointer
-  is `T.icon_hot`. A new token needs a value in both palettes and a line in the contrast test.
+* **Three palettes, one set of roles** (ADR 0022, ADR 0077): Graphite (dark), Light and High
+  contrast (Preferences › Appearance › Theme). Code reads `T.role`, never a palette by name, and
+  never assumes a colour or a direction: text on an accent fill is `T.on_fill`, not white; an icon
+  under the pointer is `T.icon_hot`; a mark drawn across the timeline is `T.text`, not white,
+  because the panels may be light. A new token needs a value in every palette and a line in the
+  contrast test. Check UI changes with `--theme light` as well.
 * No raw colours outside `theme.rs`: add a token.
 
 ## 4. Shapes, borders, spacing and sizes (ADR 0008)

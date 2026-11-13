@@ -426,7 +426,7 @@ impl GpuRenderer {
     /// symbol within the parity target. Catches drivers that build the pipelines but compute
     /// garbage.
     fn self_test(&self) -> Result<(), GpuError> {
-        use anicraft_doc::{ColorEffect, DisplayItem, ElementId, Filter, Group, LayerId, Paint, Pixels, Rgba};
+        use anicraft_doc::{ColorTransform, DisplayItem, ElementId, Filter, Group, LayerId, Paint, Pixels, Rgba};
         use anicraft_geom::{Affine, FillRule, Path};
         let item = |path: Path, fill: Paint| DisplayItem {
             path: Arc::new(path),
@@ -434,7 +434,7 @@ impl GpuRenderer {
             fill: Some(fill),
             stroke: None,
             fill_rule: FillRule::NonZero,
-            color: ColorEffect::default(),
+            color: ColorTransform::IDENTITY,
             layer: LayerId(0),
             element: ElementId(0),
             outline: None,
@@ -444,6 +444,7 @@ impl GpuRenderer {
             group: None,
             image: None,
             smooth: true,
+            warp: None,
         };
         let solid = |x: f32, c: Rgba| item(Path::rect(x, 2.0, 8.0, 16.0), Paint::Solid(c));
         let mut bitmap = item(Path::rect(2.0, 18.0, 20.0, 2.0), Paint::Bitmap { bitmap: anicraft_doc::BitmapId(1), repeat: true, matrix: Affine::scale(3.0, 1.0) });
@@ -452,7 +453,7 @@ impl GpuRenderer {
         blurred.group = Some(0);
         let filters = Arc::from(vec![Filter::Blur { blur_x: 3.0, blur_y: 2.0, quality: 2 }, Filter::AdjustColor { brightness: 10.0, contrast: 0.0, saturation: -50.0, hue: 30.0 }]);
         let groups = vec![Group { parent: None, alpha: 1.0, blend: anicraft_doc::BlendMode::Normal, filters, clip: None }];
-        let dl = DisplayList { items: vec![solid(2.0, Rgba::new(1.0, 0.0, 0.0, 1.0)), solid(14.0, Rgba::new(0.0, 0.0, 1.0, 0.5)), bitmap, blurred], groups, ..Default::default() };
+        let dl = DisplayList { clip_modes: Vec::new(), items: vec![solid(2.0, Rgba::new(1.0, 0.0, 0.0, 1.0)), solid(14.0, Rgba::new(0.0, 0.0, 1.0, 0.5)), bitmap, blurred], groups, ..Default::default() };
         let view = View { transform: Affine::IDENTITY, width: 24, height: 20, background: Some(Rgba::WHITE) };
         let (oracle, _) = anicraft_render::render(&dl, &view).map_err(|e| GpuError::Unavailable(e.to_string()))?;
         let oracle = oracle.to_premul_rgba8();
@@ -473,7 +474,7 @@ impl GpuRenderer {
         check("through a texture", &self.read_texture(&t)?)?;
         // Binned on the GPU (the plain fills; the bitmap and the symbol bin on the CPU): if that
         // comes back wrong, only the binning stays on the CPU here.
-        let plain = DisplayList { items: dl.items.iter().take(3).cloned().collect(), ..Default::default() };
+        let plain = DisplayList { clip_modes: Vec::new(), items: dl.items.iter().take(3).cloned().collect(), ..Default::default() };
         let (want, _) = anicraft_render::render(&plain, &view).map_err(|e| GpuError::Unavailable(e.to_string()))?;
         let why = match self.render_with(&plain, &view, Output::Premul8, Binning::Gpu) {
             Ok(got) => match compare_premul8(&got.premul8, &want.to_premul_rgba8()) {

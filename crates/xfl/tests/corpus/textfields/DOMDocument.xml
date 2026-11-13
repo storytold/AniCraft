@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: text fields (ADR 0066). A dynamic score field with a border, an input
+     field for a name with a maximum length, a multiline input field, a password field that
+     keeps an ActionScript 2.0 variable name, and a frame script that sets the score and reads
+     the name. Fields keep their boxes, borders and instance names; the golden render imports
+     with no fonts, so it shows the boxes (their text needs the computer's fonts). Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F4F1EA">
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Actions" color="#4F80FF">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <Actionscript>
+                <script><![CDATA[stop();
+score_txt.text = "Score: " + 10;
+score_txt.appendText("!");
+stage.addEventListener(KeyboardEvent.KEY_DOWN, onKey);
+function onKey(e:KeyboardEvent):void {
+  if (e.keyCode == Keyboard.ENTER) {
+    score_txt.text = "Hello, " + name_txt.text + " (" + name_txt.length + ")";
+  }
+}]]></script>
+              </Actionscript>
+              <elements/>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Fields" color="#FF4F4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMDynamicText name="score_txt" fontRenderingMode="standard" width="200" height="28" border="true" isSelectable="false">
+                  <matrix><Matrix tx="20" ty="16"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>Score: 0</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="18" bitmapSize="360" face="ArialMT" fillColor="#264653"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMDynamicText>
+                <DOMInputText name="name_txt" fontRenderingMode="standard" width="200" height="24" border="true" maxCharacters="12">
+                  <matrix><Matrix tx="20" ty="60"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters></characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="14" bitmapSize="280" face="ArialMT" fillColor="#000000"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMInputText>
+                <DOMInputText name="notes_txt" fontRenderingMode="standard" width="140" height="64" lineType="multiline" border="true">
+                  <matrix><Matrix tx="20" ty="100"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>Notes wrap at the width of the field.</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="12" bitmapSize="240" face="ArialMT" fillColor="#2A9D8F"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMInputText>
+                <DOMInputText name="pw_txt" fontRenderingMode="standard" width="120" height="24" lineType="password" variableName="_root.password">
+                  <matrix><Matrix tx="180" ty="100"/></matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>secret</characters>
+                      <textAttrs><DOMTextAttrs aliasText="false" size="14" bitmapSize="280" face="ArialMT" fillColor="#E76F51"/></textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMInputText>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

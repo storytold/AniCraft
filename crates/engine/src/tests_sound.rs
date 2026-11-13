@@ -308,7 +308,7 @@ fn sounds_inside_symbols_are_in_the_exported_soundtrack_at_their_offset_and_loop
     let mut k = Keyframe::new(1, 3);
     k.sound = Some(FrameSound::new(SoundId(id)));
     inner.keyframes = vec![Arc::new(Keyframe::new(0, 1)), Arc::new(k)];
-    s.doc.library.push(Arc::new(Symbol { linkage: None, id: SymbolId(501), name: "Talk".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![Arc::new(inner)] } }));
+    s.doc.library.push(Arc::new(Symbol { linkage: None, scale_grid_kept: None, scale_grid: None, id: SymbolId(501), name: "Talk".into(), kind: SymbolKind::Graphic, timeline: Timeline { layers: vec![Arc::new(inner)] } }));
     let mut k = Keyframe::new(1, 8);
     k.elements.push(Arc::new(Element { id: ElementId(502), name: String::new(), transform: Default::default(), color: Default::default(), kind: ElementKind::Symbol { symbol: SymbolId(501), loop_mode: LoopMode::Loop, first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() } }));
     let mut outer = Layer::new(LayerId(503), "puppet");
@@ -327,4 +327,29 @@ fn sounds_inside_symbols_are_in_the_exported_soundtrack_at_their_offset_and_loop
         assert_eq!(l[i], first + second, "output frame {i}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sounds_on_a_button_s_frames_play_in_test_movie_and_stay_out_of_the_soundtrack() {
+    let dir = temp_dir("button");
+    let wav = dir.join("click.wav");
+    std::fs::write(&wav, crate::cmds_sound::test_wav(8000, &source())).unwrap();
+    let mut s = Session::new(anicraft_doc::sample::interactive());
+    let id = run(&mut s, "file.import_to_library", json!({"path": wav.display().to_string()}))["sound"].as_u64().unwrap();
+    // Inside the Play button, a click on its Over frame and another on its Down frame.
+    let button = s.doc.library.iter().find(|x| x.kind == anicraft_doc::SymbolKind::Button).map(|x| x.id).unwrap();
+    run(&mut s, "symbol.edit", json!({"symbol": button.0}));
+    run(&mut s, "sound.place", json!({"sound": id, "frame": 1}));
+    run(&mut s, "sound.place", json!({"sound": id, "frame": 2, "sync": "stream"}));
+    run(&mut s, "symbol.exit", json!({}));
+    // The button stands at (640, 400) on the menu.
+    let v = run(&mut s, "control.test_movie", json!({"frames": 6, "events": [{"tick": 2, "type": "move", "x": 640, "y": 400}, {"tick": 4, "type": "down", "x": 640, "y": 400}]}));
+    let heard: Vec<(u64, &str)> = v["sounds"].as_array().unwrap().iter().map(|x| (x["tick"].as_u64().unwrap(), x["sync"].as_str().unwrap())).collect();
+    assert_eq!(heard, [(2, "event"), (4, "event")], "Over, then Down (a stream plays as an event): {v}");
+    assert_eq!(v["sounds"][0]["name"], "click.wav");
+    // Nothing on the timelines plays them: the exported soundtrack is silent.
+    let out = dir.join("silent.wav");
+    run(&mut s, "file.export_audio", json!({"path": out.display().to_string(), "rate": 8000, "bits": 32, "confirm": true}));
+    let pcm = audio::decode(&std::fs::read(&out).unwrap()).unwrap();
+    assert!(pcm.samples.iter().all(|x| *x == 0.0));
 }

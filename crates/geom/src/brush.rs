@@ -77,10 +77,62 @@ pub fn size_factor(pressure: f32) -> f32 {
     MIN_PRESSURE_SIZE + (1.0 - MIN_PRESSURE_SIZE) * p
 }
 
+/// How a stroke is shaped beyond its tip (ADR 0068): tapered ends, separate dabs and a ragged
+/// edge. The default shapes nothing (ADR 0033's plain sweep).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Shaping {
+    /// The part of the stroke's length (`0..=0.5`) over which it swells from a point at its
+    /// start, and thins to a point at its end.
+    pub taper_start: f32,
+    pub taper_end: f32,
+    /// `0`: one continuous sweep. Otherwise the tip is stamped as separate dabs this far apart,
+    /// as a multiple of its size (`0.05..=10`).
+    pub spacing: f32,
+    /// How far the edge is worn away, as a part of the tip's size (`0..=0.5`): a chalk-like
+    /// ragged edge from a fixed noise pattern, so it is the same every time.
+    pub jitter: f32,
+}
+
+/// Most dabs one stroke stamps (the spacing widens past it).
+pub const MAX_DABS: usize = 20_000;
+/// Thinnest a taper makes the tip, as a part of its size.
+const TAPER_TIP: f32 = 0.05;
+
+impl Shaping {
+    /// The values clamped to their ranges (not a number reads as none).
+    pub fn sanitized(self) -> Shaping {
+        let c = |v: f32, hi: f32| if v.is_finite() { v.clamp(0.0, hi) } else { 0.0 };
+        let spacing = c(self.spacing, 10.0);
+        Shaping { taper_start: c(self.taper_start, 0.5), taper_end: c(self.taper_end, 0.5), spacing: if spacing > 0.0 { spacing.max(0.05) } else { 0.0 }, jitter: c(self.jitter, 0.5) }
+    }
+
+    /// The tapers' factor at fraction `u` of the stroke's length.
+    pub fn taper(&self, u: f32) -> f32 {
+        let ease = |x: f32| {
+            let x = x.clamp(0.0, 1.0);
+            x * (2.0 - x)
+        };
+        let mut f: f32 = 1.0;
+        if self.taper_start > 1e-4 {
+            f = f.min(ease(u / self.taper_start));
+        }
+        if self.taper_end > 1e-4 {
+            f = f.min(ease((1.0 - u) / self.taper_end));
+        }
+        TAPER_TIP + (1.0 - TAPER_TIP) * f
+    }
+}
+
 /// The smoothed centre line: points with the tip's size factor at each. `smoothing` is the
 /// curve fit's tolerance (stage units); `flatness` how closely the points follow the fitted
 /// curves. One distinct sample gives one point (a dab).
 pub fn centreline(samples: &[Sample], smoothing: f32, flatness: f32) -> Vec<(Vec2, f32)> {
+    centreline_shaped(samples, smoothing, flatness, &Shaping::default())
+}
+
+/// The centre line with the shaping's tapers applied to the size factors.
+pub fn centreline_shaped(samples: &[Sample], smoothing: f32, flatness: f32, shaping: &Shaping) -> Vec<(Vec2, f32)> {
+    let shaping = shaping.sanitized();
     let mut pts: Vec<Vec2> = Vec::with_capacity(samples.len().min(MAX_SAMPLES));
     let mut press: Vec<f32> = Vec::with_capacity(pts.capacity());
     for s in samples.iter().take(MAX_SAMPLES).filter(|s| s.at.is_finite()) {
@@ -118,6 +170,8 @@ pub fn centreline(samples: &[Sample], smoothing: f32, flatness: f32) -> Vec<(Vec
         acc.iter_mut().for_each(|a| *a /= total);
         acc
     };
+    // A taper needs points along the line to follow it (a straight drag flattens to two).
+    let line = if shaping.taper_start > 0.0 || shaping.taper_end > 0.0 { subdivide(&line, 96) } else { line };
     let (src, dst) = (along(&pts), along(&line));
     let mut j = 0;
     line.iter()
@@ -129,9 +183,89 @@ pub fn centreline(samples: &[Sample], smoothing: f32, flatness: f32) -> Vec<(Vec
             let (s0, s1) = (src.get(j).copied().unwrap_or(0.0), src.get(j + 1).copied().unwrap_or(1.0));
             let (f0, f1) = (press.get(j).copied().unwrap_or(1.0), press.get(j + 1).copied().or(press.get(j).copied()).unwrap_or(1.0));
             let t = if s1 - s0 > 1e-9 { ((u - s0) / (s1 - s0)).clamp(0.0, 1.0) } else { 0.0 };
-            (*p, f0 + (f1 - f0) * t)
+            (*p, (f0 + (f1 - f0) * t) * shaping.taper(u))
         })
         .collect()
+}
+
+/// The polyline with no piece longer than a `n`th of its length (at most `n` points added).
+fn subdivide(line: &[Vec2], n: usize) -> Vec<Vec2> {
+    let total: f32 = line.windows(2).map(|w| if let [a, b] = w { a.distance(*b) } else { 0.0 }).sum();
+    let piece = total / n.max(1) as f32;
+    if !(piece.is_finite() && piece > 1e-6) {
+        return line.to_vec();
+    }
+    let mut out = Vec::with_capacity(line.len() + n + 1);
+    out.extend(line.first().copied());
+    for w in line.windows(2) {
+        let &[a, b] = w else { continue };
+        let k = (a.distance(b) / piece).ceil().clamp(1.0, n as f32 + 1.0) as usize;
+        out.extend((1..=k).map(|i| a.lerp(b, i as f32 / k as f32)));
+    }
+    out
+}
+
+/// The Paint Brush's line (ADR 0068): the smoothed centre line as an open path, and the tip's
+/// size factor along it as `(fraction of length, factor)` at `max` (2..) evenly spaced places.
+/// An empty path when the samples don't make a line (one point, or none finite).
+pub fn centre_stroke(samples: &[Sample], shaping: &Shaping, smoothing: f32, flatness: f32, max: usize) -> (Path, Vec<(f32, f32)>) {
+    let line = centreline_shaped(samples, smoothing, flatness, shaping);
+    if line.len() < 2 {
+        return (Path::new(), Vec::new());
+    }
+    let pts: Vec<Vec2> = line.iter().map(|(p, _)| *p).collect();
+    let tol = if smoothing.is_finite() && smoothing > 0.01 { smoothing.min(flatness.max(0.05) * 4.0) } else { 0.05 };
+    let path = fit_curve(&pts, tol, tol * 2.0, false);
+    let mut along = Vec::with_capacity(line.len());
+    let mut d = 0.0;
+    for w in line.windows(2) {
+        if let [a, b] = w {
+            along.push(d);
+            d += a.0.distance(b.0);
+        }
+    }
+    along.push(d);
+    let total = d.max(1e-9);
+    let n = max.clamp(2, 1000);
+    let mut j = 0;
+    let profile = (0..n)
+        .map(|i| {
+            let u = i as f32 / (n - 1) as f32;
+            let at = u * total;
+            while j + 2 < along.len() && along.get(j + 1).is_some_and(|a| *a < at) {
+                j += 1;
+            }
+            let (a0, a1) = (along.get(j).copied().unwrap_or(0.0), along.get(j + 1).copied().unwrap_or(total));
+            let (f0, f1) = (line.get(j).map_or(1.0, |l| l.1), line.get(j + 1).map_or(1.0, |l| l.1));
+            let t = if a1 - a0 > 1e-9 { ((at - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+            (u, f0 + (f1 - f0) * t)
+        })
+        .collect();
+    (path, profile)
+}
+
+/// Dabs every `step` stage units along a centre line (the first point always), with the size
+/// factor where each falls. At most [`MAX_DABS`]: a longer line spaces them wider.
+pub fn dabs(line: &[(Vec2, f32)], step: f32) -> Vec<(Vec2, f32)> {
+    let total: f32 = line.windows(2).map(|w| if let [a, b] = w { a.0.distance(b.0) } else { 0.0 }).sum();
+    let mut out: Vec<(Vec2, f32)> = line.first().copied().into_iter().collect();
+    if !(step.is_finite() && step > 1e-3) {
+        return out;
+    }
+    let step = step.max(total / MAX_DABS as f32);
+    let mut next = step;
+    let mut walked = 0.0;
+    for w in line.windows(2) {
+        let &[(a, fa), (b, fb)] = w else { continue };
+        let l = a.distance(b);
+        while next <= walked + l && out.len() < MAX_DABS {
+            let t = if l > 1e-9 { (next - walked) / l } else { 0.0 };
+            out.push((a.lerp(b, t), fa + (fb - fa) * t));
+            next += step;
+        }
+        walked += l;
+    }
+    out
 }
 
 /// The filled outline of a brush stroke: closed loops (even-odd), or an empty path when there
@@ -139,8 +273,18 @@ pub fn centreline(samples: &[Sample], smoothing: f32, flatness: f32) -> Vec<(Vec
 /// `smoothing` is the centre line's curve-fit tolerance and `tolerance` the outline's (both in
 /// stage units).
 pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) -> Path {
+    outline_shaped(samples, tip, &Shaping::default(), smoothing, tolerance)
+}
+
+/// The outline with tapers, dabs or a ragged edge (ADR 0068).
+pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothing: f32, tolerance: f32) -> Path {
+    let shaping = shaping.sanitized();
     let tol = if tolerance.is_finite() && tolerance > 1e-3 { tolerance } else { 0.25 };
-    let line = centreline(samples, smoothing, tol * 0.25);
+    let mut line = centreline_shaped(samples, smoothing, tol * 0.25, &shaping);
+    let dabbed = shaping.spacing > 0.0 && line.len() > 1;
+    if dabbed {
+        line = dabs(&line, shaping.spacing * tip.size);
+    }
     let m = tip.to_stage();
     let Some(inv) = m.inverse().filter(|i| i.is_finite()) else { return Path::new() };
     if line.is_empty() || !(tip.size.is_finite() && tip.size > 0.0) {
@@ -164,6 +308,8 @@ pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) ->
         TipShape::Round => 1.0 / 6.0,
         TipShape::Square => 1.0 / 8.0,
     };
+    // A ragged edge needs cells finer than its grain.
+    let fine: f64 = if shaping.jitter > 0.0 { f64::min(fine, 1.0 / 14.0) } else { fine };
     let mut c: f64 = (fmin / 2.5).min(fine);
     for _ in 0..4 {
         let cells = ((hi.0 - lo.0) / c + 2.0 * MARGIN + 2.0) * ((hi.1 - lo.1) / c + 2.0 * MARGIN + 2.0);
@@ -180,6 +326,10 @@ pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) ->
     }
     let (w, h) = (w as usize, h as usize);
     let mut field = vec![OUTSIDE as f32; w * h];
+    // How deep the ragged edge wears in, in cells (the tip's radius is 1, its size 2); the
+    // field inside reaches that much deeper, so the wear never opens holes in the middle.
+    let wear = f64::from(shaping.jitter) * 2.0 / c;
+    let top = 1.0 + MARGIN + wear;
     // Nothing thinner than a cell, so no part slips between the samples.
     let pts: Vec<(P, f64)> = thin(&q, c * 0.5).into_iter().map(|(p, f)| (p, f.max(c))).collect();
     let mut stamp = |a: P, ra: f64, b: P, rb: f64| {
@@ -198,7 +348,7 @@ pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) ->
                     TipShape::Round => round_dist((px, py), a, ra, b, rb),
                     TipShape::Square => square_dist((px, py), a, ra, b, rb),
                 };
-                let v = (0.5 - d / c).clamp(OUTSIDE, 1.0 + MARGIN) as f32;
+                let v = (0.5 - d / c).clamp(OUTSIDE, top) as f32;
                 if let Some(cell) = field.get_mut(y * w + x)
                     && v > *cell
                 {
@@ -209,6 +359,7 @@ pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) ->
     };
     match pts.as_slice() {
         [(p, f)] => stamp(*p, *f, *p, *f),
+        _ if dabbed => pts.iter().for_each(|(p, f)| stamp(*p, *f, *p, *f)),
         _ => {
             for pair in pts.windows(2) {
                 let &[(a, ra), (b, rb)] = pair else { continue };
@@ -220,6 +371,18 @@ pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) ->
                     stamp(lerp(a, b, t0), ra + (rb - ra) * t0, lerp(a, b, t1), ra + (rb - ra) * t1);
                 }
             }
+        }
+    }
+    if wear > 0.0 {
+        // Wear the edge by a fixed noise pattern in tip space (so the grain stays put however
+        // the stroke runs): the field is a distance, so lowering it by `wear × n` moves the
+        // edge in by that much.
+        for (i, v) in field.iter_mut().enumerate() {
+            if *v <= OUTSIDE as f32 {
+                continue;
+            }
+            let (x, y) = ((i % w) as f64, (i / w) as f64);
+            *v -= (wear * grain((origin.0 + (x + 0.5) * c, origin.1 + (y + 0.5) * c))) as f32;
         }
     }
     let to_stage = |p: Vec2| m.apply(Vec2::new((origin.0 + f64::from(p.x) * c) as f32, (origin.1 + f64::from(p.y) * c) as f32));
@@ -260,6 +423,32 @@ fn dist(a: P, b: P) -> f64 {
 }
 fn lerp(a: P, b: P, t: f64) -> P {
     (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
+/// Smooth value noise in `0..1` from a fixed integer hash: two octaves, 0.5 and 0.2 tip units
+/// across. The same point always gives the same value, on every platform.
+fn grain(p: P) -> f64 {
+    fn hash(x: i64, y: i64) -> f64 {
+        // SplitMix64's finaliser over the lattice point.
+        let mut z = (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 11) as f64 / (1u64 << 53) as f64
+    }
+    // Each octave reads its own lattice rows (`layer` shifts them far apart), so the two
+    // octaves are independent.
+    fn octave(p: P, size: f64, layer: i64) -> f64 {
+        let (u, v) = (p.0 / size, p.1 / size);
+        let (x0, y0) = (u.floor(), v.floor());
+        let s = |t: f64| t * t * (3.0 - 2.0 * t);
+        let (sx, sy) = (s(u - x0), s(v - y0));
+        let (xi, yi) = (x0.clamp(-1e15, 1e15) as i64, (y0.clamp(-1e15, 1e15) as i64).wrapping_add(layer << 52));
+        let top = hash(xi, yi) + (hash(xi + 1, yi) - hash(xi, yi)) * sx;
+        let bottom = hash(xi, yi + 1) + (hash(xi + 1, yi + 1) - hash(xi, yi + 1)) * sx;
+        top + (bottom - top) * sy
+    }
+    (octave(p, 0.5, 0) * 2.0 + octave(p, 0.2, 1)) / 3.0
 }
 
 /// Drops points closer than `gap` to the last kept one (the last point always stays).
@@ -429,8 +618,80 @@ mod tests {
         }
     }
 
+    fn loops(p: &Path) -> usize {
+        p.cmds.iter().filter(|c| matches!(c, PathCmd::MoveTo(_))).count()
+    }
+
+    #[test]
+    fn tapers_come_to_points_and_keep_the_middle() {
+        let s = line(Vec2::ZERO, Vec2::new(300.0, 0.0), 60, |_| 1.0);
+        let sh = Shaping { taper_start: 0.3, taper_end: 0.3, ..Shaping::default() };
+        let p = outline_shaped(&s, &Tip::round(20.0), &sh, 1.0, 0.1);
+        let inside = |x: f32, y: f32| p.contains(Vec2::new(x, y), &Affine::IDENTITY, FillRule::EvenOdd);
+        assert!(inside(150.0, 9.0), "full width in the middle: {:?} {}", p.bounds(), loops(&p));
+        assert!(inside(5.0, 0.0) && !inside(5.0, 3.0), "pointed at the start");
+        assert!(!inside(295.0, 3.0), "pointed at the end");
+        // Area: less than the plain stroke, more than its middle part alone.
+        let plain = area(&outline(&s, &Tip::round(20.0), 1.0, 0.1));
+        let a = area(&p);
+        assert!(a < plain * 0.85 && a > 0.4 * 300.0 * 20.0, "{a} vs {plain}");
+        assert!((sh.taper(0.5) - 1.0).abs() < 1e-6 && sh.taper(0.0) < 0.06 && sh.taper(1.0) < 0.06);
+    }
+
+    #[test]
+    fn spacing_stamps_separate_dabs() {
+        let s = line(Vec2::ZERO, Vec2::new(200.0, 0.0), 40, |_| 1.0);
+        // Dabs two sizes apart: 200 / 20 + 1 = 11 separate dots of the tip's area.
+        let sh = Shaping { spacing: 2.0, ..Shaping::default() };
+        let p = outline_shaped(&s, &Tip::round(10.0), &sh, 0.5, 0.1);
+        assert_eq!(loops(&p), 11);
+        let want = 11.0 * std::f32::consts::PI * 25.0;
+        assert!((area(&p) - want).abs() / want < 0.02, "{} vs {want}", area(&p));
+        // Closer than the tip's size, they join into one stroke.
+        let joined = outline_shaped(&s, &Tip::round(10.0), &Shaping { spacing: 0.5, ..Shaping::default() }, 0.5, 0.1);
+        assert_eq!(loops(&joined), 1);
+        // A dab budget: a huge stroke at the smallest spacing still stamps a bounded number.
+        let long = dabs(&[(Vec2::ZERO, 1.0), (Vec2::new(1e6, 0.0), 1.0)], 0.01);
+        assert!(long.len() <= MAX_DABS);
+    }
+
+    #[test]
+    fn a_ragged_edge_wears_in_and_is_the_same_every_time() {
+        let s = line(Vec2::ZERO, Vec2::new(300.0, 40.0), 60, |t| 0.6 + 0.4 * t);
+        let sh = Shaping { jitter: 0.2, ..Shaping::default() };
+        let tip = Tip::round(24.0);
+        let p = outline_shaped(&s, &tip, &sh, 1.0, 0.2);
+        let plain = outline(&s, &tip, 1.0, 0.2);
+        let (a, b) = (area(&p), area(&plain));
+        // It wears in by up to a fifth of the size on each side: within the plain stroke,
+        // never less than what is left after the deepest wear.
+        assert!(a < b * 0.97 && a > b * 0.55, "{a} vs {b}");
+        assert!(p.bounds().width() <= plain.bounds().width() + 0.5);
+        assert!(p.anchors().len() > plain.anchors().len() * 2, "ragged: {} vs {}", p.anchors().len(), plain.anchors().len());
+        assert_eq!(p, outline_shaped(&s, &tip, &sh, 1.0, 0.2), "deterministic");
+    }
+
+    #[test]
+    fn the_paint_brush_line_has_a_profile() {
+        let s = line(Vec2::ZERO, Vec2::new(200.0, 0.0), 40, |t| t);
+        let (path, prof) = centre_stroke(&s, &Shaping::default(), 1.0, 0.1, 16);
+        assert!(!path.is_empty() && prof.len() == 16);
+        assert_eq!(prof.first().map(|p| p.0), Some(0.0));
+        assert_eq!(prof.last().map(|p| p.0), Some(1.0));
+        // Pressure from 0 to 1: factors from the floor to full.
+        assert!(prof.first().is_some_and(|p| (p.1 - MIN_PRESSURE_SIZE).abs() < 0.03));
+        assert!(prof.last().is_some_and(|p| p.1 > 0.97));
+        assert!(prof.windows(2).all(|w| w[1].1 >= w[0].1 - 1e-4), "rising");
+        let b = path.bounds();
+        assert!((b.width() - 200.0).abs() < 1.0 && b.height() < 1.0);
+        assert!(centre_stroke(&s[..1], &Shaping::default(), 1.0, 0.1, 16).0.is_empty(), "a dab is no line");
+    }
+
     #[test]
     fn hostile_input_is_empty_or_bounded() {
+        let wild = Shaping { taper_start: f32::NAN, taper_end: 1e9, spacing: -3.0, jitter: f32::INFINITY };
+        assert_eq!(wild.sanitized(), Shaping { taper_start: 0.0, taper_end: 0.5, spacing: 0.0, jitter: 0.0 });
+        let _ = outline_shaped(&line(Vec2::ZERO, Vec2::new(10.0, 0.0), 3, |_| 1.0), &Tip::round(5.0), &Shaping { spacing: 1e-9, jitter: 0.5, ..wild }, 1.0, 1.0);
         assert!(outline(&[], &Tip::round(10.0), 1.0, 1.0).is_empty());
         let nan = [Sample { at: Vec2::new(f32::NAN, 0.0), pressure: f32::NAN }];
         assert!(outline(&nan, &Tip::round(10.0), 1.0, 1.0).is_empty());

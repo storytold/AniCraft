@@ -49,23 +49,10 @@ enum Holds {
     Script,
 }
 
-/// Opens the panel on a tab.
+/// Opens the panel on a tab (it floats, or wherever it was docked: ADR 0075).
 pub fn open(app: &mut App, tab: Tab) {
-    app.show_actions = true;
+    app.show_panel(crate::dock::Panel::Actions);
     app.actions.tab = tab;
-}
-
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    if !app.show_actions {
-        return;
-    }
-    let mut open = app.show_actions;
-    let at = ctx.content_rect().right_top() + egui::vec2(-760.0, 96.0);
-    let shown = egui::Window::new(tr!("Actions")).id(egui::Id::new("actions_panel")).open(&mut open).default_pos(at).default_width(420.0).resizable(true).collapsible(false).show(ctx, |ui| {
-        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).auto_shrink([false, true]).show(ui, |ui| panel(app, ui));
-    });
-    crate::a11y::name_title_bar(&shown, tr!("Actions"));
-    app.show_actions = open;
 }
 
 /// The selected movie clip or button instance on the active layer, if exactly one is selected.
@@ -77,7 +64,8 @@ fn selected_instance(app: &App) -> Option<(Element, SymbolKind)> {
     (kind != SymbolKind::Graphic).then(|| ((**e).clone(), kind))
 }
 
-fn panel(app: &mut App, ui: &mut egui::Ui) {
+/// The panel's contents, wherever it is.
+pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     let inst = selected_instance(app);
     ui.horizontal(|ui| {
         if ui.selectable_label(app.actions.tab == Tab::Frame, tr!("Frame")).on_hover_text(tr!("What runs when the playhead enters a keyframe")).clicked() {
@@ -300,10 +288,10 @@ fn char_index(text: &str, line: u32, column: u32) -> usize {
     index
 }
 
-/// Under the editor: whether the script runs (ADR 0013 tier 2), what in it is ignored, and
-/// each problem that keeps it from running, where it is. Clicking a problem puts the cursor
-/// there.
-fn script_status(ui: &mut egui::Ui, src: &SourceScript, text_shown: &str, editor: egui::Id) {
+/// Under the editor: whether the script runs (ADR 0013 tiers 2 and 2.5), what in it is
+/// ignored, and each problem that keeps it from running, where it is (`links`: names it takes
+/// from other frames that its timeline doesn't have). Clicking a problem puts the cursor there.
+fn script_status(ui: &mut egui::Ui, src: &SourceScript, links: &[anicraft_engine::doc::actions::as3::Problem], text_shown: &str, editor: egui::Id) {
     let row = |ui: &mut egui::Ui, p: &anicraft_engine::doc::actions::as3::Problem, color: egui::Color32| {
         // The engine marks code with backticks (for the CLI and agents); here it reads plainly.
         let message = p.message.replace('`', "");
@@ -323,26 +311,27 @@ fn script_status(ui: &mut egui::Ui, src: &SourceScript, text_shown: &str, editor
             ui.ctx().memory_mut(|m| m.request_focus(editor));
         }
     };
-    match src.compiled() {
-        Ok(c) => {
+    let problems = match src.compiled() {
+        Ok(c) if links.is_empty() => {
             ui.horizontal(|ui| {
                 ui.label(text(Type::Body, tr!("Runs in Test Movie and the HTML canvas export")).color(T.ok));
-                ui.label(text(Type::Data, trn!("{n} step", "{n} steps", c.ops.len())).color(T.text_dim));
+                ui.label(text(Type::Data, trn!("{n} step", "{n} steps", c.steps)).color(T.text_dim));
             });
             for n in &c.notes {
                 row(ui, n, T.text_dim);
             }
+            return;
         }
-        Err(problems) => {
-            ui.label(text(Type::Body, trn!("Doesn't run: {n} problem", "Doesn't run: {n} problems", problems.len())).color(T.error));
-            // A few rows tall, so the code stays in view however many there are.
-            egui::ScrollArea::vertical().id_salt("act_script_problems").max_height(96.0).auto_shrink([false, true]).show(ui, |ui| {
-                for p in problems {
-                    row(ui, p, T.error);
-                }
-            });
+        Ok(_) => links,
+        Err(problems) => problems.as_slice(),
+    };
+    ui.label(text(Type::Body, trn!("Doesn't run: {n} problem", "Doesn't run: {n} problems", problems.len())).color(T.error));
+    // A few rows tall, so the code stays in view however many there are.
+    egui::ScrollArea::vertical().id_salt("act_script_problems").max_height(96.0).auto_shrink([false, true]).show(ui, |ui| {
+        for p in problems {
+            row(ui, p, T.error);
         }
-    }
+    });
 }
 
 /// The Script view: the kept script's language, and its text in a monospace editor with line
@@ -378,11 +367,22 @@ fn script_view(app: &mut App, ui: &mut egui::Ui, t: &FrameTarget, src: Option<&S
     let code = font(Type::Path);
     let rows = shown.split('\n').count().max(1);
     let editor_id = ui.make_persistent_id("act_script_editor");
+    // Names it takes from other frames of its timeline that aren't there (ADR 0052).
+    let links = match src.map(|s| s.compiled()) {
+        Some(Ok(c)) if t.runs => {
+            let which = t.base.get("symbol").and_then(Value::as_u64).map_or(anicraft_engine::doc::player::TimelineRef::Root, |id| anicraft_engine::doc::player::TimelineRef::Symbol(SymbolId(id)));
+            anicraft_engine::doc::player::link_problems(&app.s.doc, which, c)
+        }
+        _ => Vec::new(),
+    };
     // The lines that hold a problem, marked in the gutter.
-    let bad: std::collections::BTreeSet<u32> = src.and_then(|s| s.compiled().as_ref().err()).map(|p| p.iter().map(|p| p.line).collect()).unwrap_or_default();
+    let bad: std::collections::BTreeSet<u32> = match src.map(|s| s.compiled()) {
+        Some(Err(p)) => p.iter().map(|p| p.line).collect(),
+        _ => links.iter().map(|p| p.line).collect(),
+    };
     // Whether it runs, and what keeps it from running, above the code.
     if let Some(s) = src {
-        script_status(ui, s, &shown, editor_id);
+        script_status(ui, s, &links, &shown, editor_id);
     }
     let changed = egui::ScrollArea::both()
         .id_salt("act_script")
