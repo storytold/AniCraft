@@ -510,16 +510,17 @@ fn lay_out(data: &[u8], index: u32, text: &str, style: &Style, want_glyphs: bool
                 run
             })
         };
-        // Each byte's share of the width (a cluster's advance on its first byte), run by run. Only wrapping
-        // reads it, so a block without a width skips this pass (it would shape every paragraph twice).
-        let mut advance = vec![0.0f32; para.len()];
+        // Each cluster's advance on its first byte, run by run (`None` inside a cluster, where a
+        // line can't break). Only wrapping reads it, so a block without a width skips this pass
+        // (it would shape every paragraph twice).
+        let mut advance: Vec<Option<f32>> = vec![None; para.len()];
         let mut start = if style.width.is_some() { 0 } else { para.len() };
         while start < para.len() {
             let level = bidi.levels.get(start).copied();
             let end = (start..para.len()).find(|i| bidi.levels.get(*i).copied() != level).unwrap_or(para.len());
             for g in shape_run(start..end, level.is_some_and(|l| l.is_rtl())) {
                 if let Some(a) = advance.get_mut(g.cluster) {
-                    *a += g.advance;
+                    *a.get_or_insert(0.0) += g.advance;
                 }
             }
             start = end;
@@ -654,15 +655,16 @@ fn shape(shaper: &harfrust::Shaper<'_>, text: &str, rtl: bool, scale: f32, lette
         .collect()
 }
 
-/// A paragraph's lines as byte ranges in reading order, given each byte's share of the width:
-/// wrapped after the last space before `width` is passed (or within a word wider than the line),
-/// with the spaces at a line's end left out.
-fn break_lines(para: &str, advance: &[f32], width: Option<f32>) -> Vec<std::ops::Range<usize>> {
+/// A paragraph's lines as byte ranges in reading order, given each cluster's advance on its first
+/// byte (`None` inside a cluster): wrapped after the last space before `width` is passed (or
+/// between the clusters of a word wider than the line, never inside one), with the spaces at a
+/// line's end left out.
+fn break_lines(para: &str, advance: &[Option<f32>], width: Option<f32>) -> Vec<std::ops::Range<usize>> {
     let trimmed = |start: usize, end: usize| start..para.get(start..end).map_or(start, |s| start + s.trim_end().len());
     let mut lines = Vec::new();
     let (mut start, mut x, mut break_at) = (0usize, 0.0f32, None::<usize>);
     for (i, c) in para.char_indices() {
-        let a = advance.get(i).copied().unwrap_or(0.0);
+        let Some(a) = advance.get(i).copied().flatten() else { continue };
         let space = c.is_whitespace();
         if let Some(w) = width
             && !space
@@ -672,7 +674,7 @@ fn break_lines(para: &str, advance: &[f32], width: Option<f32>) -> Vec<std::ops:
             let end = break_at.unwrap_or(i);
             lines.push(trimmed(start, end));
             start = end;
-            x = advance.get(start..i).map_or(0.0, |s| s.iter().sum());
+            x = advance.get(start..i).map_or(0.0, |s| s.iter().flatten().sum());
             break_at = None;
         }
         x += a;
@@ -779,8 +781,12 @@ mod tests {
     #[test]
     fn mixed_directions_read_the_right_way_round() {
         // Lines are found in reading order: after the last space that fits, or within a word.
-        assert_eq!(break_lines("ab cd ef", &[1.0; 8], Some(5.0)), vec![0..5, 6..8]);
-        assert_eq!(break_lines("abcdefgh", &[1.0; 8], Some(3.0)), vec![0..3, 3..6, 6..8]);
+        assert_eq!(break_lines("ab cd ef", &[Some(1.0); 8], Some(5.0)), vec![0..5, 6..8]);
+        assert_eq!(break_lines("abcdefgh", &[Some(1.0); 8], Some(3.0)), vec![0..3, 3..6, 6..8]);
+        // Never inside a cluster, even one wider than the line: a combining mark stays with its
+        // letter, and a ligature stays whole.
+        assert_eq!(break_lines("a\u{0301}b", &[Some(10.0), None, None, Some(10.0)], Some(5.0)), vec![0..3, 3..4]);
+        assert_eq!(break_lines("ffix", &[Some(30.0), None, None, Some(10.0)], Some(10.0)), vec![0..3, 3..4]);
         let Some(fonts) = fonts() else { return };
         let lay = |t: &str, width| fonts.layout(t, &Style { width, ..style(40.0) }).unwrap();
         let arabic = lay("مرحبا 2026", None);
