@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+* **Motion Editor and timeline retiming** (ADR 0083, M2).
+  * **Moving keys in time** in the Motion Editor: drag a key sideways. It snaps to frames and
+    stops next to its neighbours, and the value and ease go with it. Shift-click picks keys
+    across properties, the new **All** lane picks every property's keys on a frame, and with
+    the curve focused Left and Right (Shift: ten frames) move the picked keys. One undo step
+    per drag.
+  * **Stretching tweens**: dragging a span's end stretches a motion tween's property keys in
+    proportion, as in Animate (Shift keeps them in place). Classic and shape tween spans
+    stretch too.
+  * **Moving and copying tween spans**: a click picks a whole motion tween span, and dragging
+    it (or a selection of whole tween spans) moves it at its length. **Alt-drag** copies it.
+  * **Split Motion** and **Join Motion** in the span's context menu and in Modify ›
+    Timeline. Splitting and then joining gives the original tween back.
+  * **Dock tabs** never run under a panel's menu button: they shrink with an ellipsis (the
+    full name is in the tooltip), and at the narrowest the strip scrolls.
+  * Headless: `motion.move_keys`, `timeline.resize_span`, `timeline.move_spans`,
+    `motion.split`, `motion.join`.
+
 * **Camera, second slice: layer depth, attaching layers and colour** (ADR 0082, M7).
   * **Layer depth in perspective**: through the camera, a pinhole with a fixed focal length
     (1,000 px), a deeper layer moves less when the camera pans and grows less when it zooms;
