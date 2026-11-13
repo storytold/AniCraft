@@ -11,7 +11,7 @@
 use crate::cmds_timeline::insert_keyframe_at;
 use crate::params::*;
 use crate::{CommandSpec, EngineError, KeyEdit, MAX_FRAME, Result, Session};
-use anicraft_doc::armature::{self, Armature, Bone, BoneId, Limits, MAX_BONES, MAX_LIMIT, MAX_NAME};
+use anicraft_doc::armature::{self, Armature, Bone, BoneId, Limits, MAX_BONES, MAX_LIMIT, MAX_NAME, MAX_SLIDE, Spring};
 use anicraft_doc::skin::{self, Binding, Influence, MAX_SKIN_POINTS, Skin};
 use anicraft_doc::{Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, Rgba, Tween, evaluate_layer_elements};
 use anicraft_geom::{Affine, Vec2};
@@ -38,10 +38,13 @@ pub fn specs() -> Vec<CommandSpec> {
         c("bone.bind", "Bind Points", "{bone, points?: [point index…] (default every point; see bone.info with points), mode?: \"only\" (the points follow just this bone; default) | \"add\" (they share it with the bones they follow) | \"remove\" | \"auto\" (back to automatic binding)} → {bone, changed, bound (how many points the bone moves)}. A shape armature's binding: which points of the shape follow which bone", true, bind),
         c("bone.remove", "Remove Bone", "{bone} removes it and the bones below it; the instances they moved go to a layer of their own as they look at the playhead (with the last bone, the whole armature does); asks first when the armature has more than one pose", true, remove),
         c("bone.set_limits", "Joint Limits", "{bone, constrain?: bool (false: turns freely), min?, max? (°, −360…360, from where it was drawn)} limits how far the joint turns, in every pose", true, set_limits),
+        c("bone.set_translation", "Joint Translation", "{bone, axis: \"x\" | \"y\" (along the axes of what the bone starts on, as it is turned), enabled?: bool (false: the joint doesn't slide that way), constrain?: bool (false: slides freely), min?, max? (px, ±10,000, from where it was drawn)} lets the joint slide, in every pose; posing (bone.solve, the Selection tool) slides it only where turning can't reach", true, set_translation),
+        c("bone.set_spring", "Bone Spring", "{bone, strength? (0–100: 0 is no spring; stiffer swings faster and lags less), damping? (0–100: how quickly the swing dies down; 100 absorbs it all)} secondary motion: the bone lags behind and swings past its pose as the bones it hangs from move, then settles. Evaluated, never stored: the keyed poses don't change", true, set_spring),
+        c("bone.enable_springs", "Enable Springs", "{enabled: bool, layer? (the armature layer) | bone?} turns the armature's springs on or off (off: it plays its keyed poses exactly, as while posing)", true, enable_springs),
         c("bone.pin", "Pin Bone", "{bone, pinned: bool} a pinned bone (and the bones it hangs from) stays put while dragging bones below it", true, pin),
-        c("bone.pose", "Pose Bone", "{bone?, angle? (°, the joint angle: 0 as drawn), rotate_by? (°), dx?, dy? (moves the whole armature), layer? (the armature layer, when no bone is given), frame?} keys the pose at the frame", true, pose),
+        c("bone.pose", "Pose Bone", "{bone?, angle? (°, the joint angle: 0 as drawn), rotate_by? (°), slide_x?, slide_y? (px: how far the joint slides, within its translation limits), dx?, dy? (moves the whole armature), layer? (the armature layer, when no bone is given), frame?} keys the pose at the frame", true, pose),
         c("bone.solve", "Drag Bone", "{bone, x, y (stage px: where the bone's end goes), local?: [x, y] (the point dragged, in the bone's instance's space; default its end), frame?} → {reached, error (px), chain}; inverse kinematics turns the bone and the bones above it (limits respected, pinned bones kept)", true, solve),
-        c("bone.info", "Armatures", "{frame?, layer?, points?: bool} → every armature on the scene at the frame: its bones with joint and end (stage px), joint angle and limits (°), pinned; a shape armature's shape, how many points each bone moves, and with points the shape's points (stage px) and the bones each follows", false, info),
+        c("bone.info", "Armatures", "{frame?, layer?, points?: bool} → every armature on the scene at the frame: its bones with joint and end (stage px, as keyed), joint angle and limits (°), slide and translation limits (px), spring (0–100) and its swing at the frame (°, what the spring adds to the angle), pinned; whether springs are on; a shape armature's shape, how many points each bone moves, and with points the shape's points (stage px) and the bones each follows", false, info),
     ]
 }
 
@@ -331,6 +334,108 @@ fn set_limits(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"bone": id.0, "constrain": limits.is_some(), "min": limits.map(|l| l.min.to_degrees()), "max": limits.map(|l| l.max.to_degrees())}))
 }
 
+/// The translation limits of an axis that slides freely.
+const FREE: Limits = Limits { min: -MAX_SLIDE, max: MAX_SLIDE };
+
+fn set_translation(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = bone_param(p)?;
+    let axis = str_req(p, "axis")?;
+    let along_x = match axis {
+        "x" => true,
+        "y" => false,
+        _ => return Err(EngineError::Param("param 'axis' must be \"x\" or \"y\"".into())),
+    };
+    let (enabled, constrain) = (opt_bool(p, "enabled")?, opt_bool(p, "constrain")?);
+    let (min, max) = (opt_f32(p, "min")?, opt_f32(p, "max")?);
+    for v in [min, max].into_iter().flatten() {
+        if !(-MAX_SLIDE..=MAX_SLIDE).contains(&v) {
+            return Err(EngineError::Param("joint translation limits must be within ±10,000 px".into()));
+        }
+    }
+    let (lid, arm) = find_bone(s, id)?;
+    unlocked(s, lid)?;
+    let b = arm.bone(id).ok_or_else(|| EngineError::State("no such bone".into()))?;
+    let cur = if along_x { b.slide_x } else { b.slide_y };
+    let limits = if enabled == Some(false) {
+        None
+    } else if enabled.is_none() && constrain.is_none() && min.is_none() && max.is_none() {
+        return Err(EngineError::Param("give 'enabled', 'constrain' or limits ('min', 'max')".into()));
+    } else if constrain == Some(false) {
+        Some(FREE)
+    } else if constrain.is_none() && min.is_none() && max.is_none() {
+        // Enabling: freely, or as it was.
+        Some(cur.unwrap_or(FREE))
+    } else {
+        // Constraining without numbers: 50 px either way.
+        let base = cur.filter(|l| *l != FREE).unwrap_or(Limits { min: -50.0, max: 50.0 });
+        let l = Limits { min: min.unwrap_or(base.min), max: max.unwrap_or(base.max) };
+        if l.min > l.max {
+            return Err(EngineError::Param("the joint's min must be at most its max".into()));
+        }
+        Some(l)
+    };
+    let mut arm = (*arm).clone();
+    if let Some(b) = arm.bone_mut(id) {
+        if along_x {
+            b.slide_x = limits;
+        } else {
+            b.slide_y = limits;
+        }
+    }
+    let l = s.layer_mut(Some(lid))?;
+    // Every pose keeps to the new limits.
+    if let Some(b) = arm.bone(id) {
+        for k in &mut l.keyframes {
+            let v = k.pose.slide(id);
+            if b.allow_slide(v) != v {
+                Arc::make_mut(k).pose.set_slide(id, b.allow_slide(v));
+            }
+        }
+    }
+    l.armature = Some(Arc::new(arm));
+    rebake(l);
+    Ok(json!({"bone": id.0, "axis": axis, "enabled": limits.is_some(), "constrain": limits.is_some_and(|l| l != FREE), "min": limits.map(|l| l.min), "max": limits.map(|l| l.max)}))
+}
+
+fn set_spring(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = bone_param(p)?;
+    let (strength, damping) = (opt_f32(p, "strength")?, opt_f32(p, "damping")?);
+    if strength.is_none() && damping.is_none() {
+        return Err(EngineError::Param("give 'strength' or 'damping' (0–100)".into()));
+    }
+    for (k, v) in [("strength", strength), ("damping", damping)] {
+        if v.is_some_and(|v| !(0.0..=100.0).contains(&v)) {
+            return Err(EngineError::Param(format!("param '{k}' must be between 0 and 100")));
+        }
+    }
+    let (lid, arm) = find_bone(s, id)?;
+    unlocked(s, lid)?;
+    let mut arm = (*arm).clone();
+    let springs = !arm.springs_off;
+    let b = arm.bone_mut(id).ok_or_else(|| EngineError::State("no such bone".into()))?;
+    let cur = b.spring.unwrap_or(Spring { strength: 0.0, damping: 0.0 });
+    let next = Spring { strength: strength.map_or(cur.strength, |v| v / 100.0), damping: damping.map_or(cur.damping, |v| v / 100.0) };
+    // Nothing set is no spring: the file says nothing.
+    b.spring = (next.strength > 0.0 || next.damping > 0.0).then_some(next);
+    s.layer_mut(Some(lid))?.armature = Some(Arc::new(arm));
+    Ok(json!({"bone": id.0, "strength": next.strength * 100.0, "damping": next.damping * 100.0, "springs": springs}))
+}
+
+fn enable_springs(s: &mut Session, p: &Value) -> Result<Value> {
+    let enabled = opt_bool(p, "enabled")?.ok_or_else(|| EngineError::Param("param 'enabled' (true or false) is required".into()))?;
+    let lid = match (opt_u64(p, "bone")?.map(BoneId), opt_u64(p, "layer")?) {
+        (Some(b), _) => find_bone(s, b)?.0,
+        (None, Some(l)) => LayerId(l),
+        (None, None) => s.layer,
+    };
+    unlocked(s, lid)?;
+    let l = s.layer_mut(Some(lid))?;
+    let mut arm = l.armature.as_deref().cloned().filter(|_| l.kind == LayerKind::Armature).ok_or_else(|| EngineError::State("that is not an armature layer".into()))?;
+    arm.springs_off = !enabled;
+    l.armature = Some(Arc::new(arm));
+    Ok(json!({"layer": lid.0, "springs": enabled}))
+}
+
 fn pin(s: &mut Session, p: &Value) -> Result<Value> {
     let id = bone_param(p)?;
     let pinned = opt_bool(p, "pinned")?.ok_or_else(|| EngineError::Param("param 'pinned' (true or false) is required".into()))?;
@@ -377,14 +482,18 @@ fn edit_pose<T>(s: &mut Session, lid: LayerId, frame: u32, edit: impl FnOnce(&Ar
 fn pose(s: &mut Session, p: &Value) -> Result<Value> {
     let bone = opt_u64(p, "bone")?.map(BoneId);
     let (angle, rotate_by, dx, dy) = (opt_f32(p, "angle")?, opt_f32(p, "rotate_by")?, opt_f32(p, "dx")?, opt_f32(p, "dy")?);
+    let (slide_x, slide_y) = (opt_f32(p, "slide_x")?, opt_f32(p, "slide_y")?);
+    if [slide_x, slide_y].into_iter().flatten().any(|v| !v.is_finite() || v.abs() > MAX_SLIDE) {
+        return Err(EngineError::Param("params 'slide_x' and 'slide_y' must be within ±10,000 px".into()));
+    }
     let frame = opt_u32(p, "frame")?.unwrap_or(s.frame);
     let lid = match (bone, opt_u64(p, "layer")?) {
         (Some(b), _) => find_bone(s, b)?.0,
         (None, Some(l)) => LayerId(l),
         (None, None) => s.layer,
     };
-    if bone.is_none() && (angle.is_some() || rotate_by.is_some()) {
-        return Err(EngineError::Param("param 'bone' says which joint 'angle' or 'rotate_by' turns".into()));
+    if bone.is_none() && (angle.is_some() || rotate_by.is_some() || slide_x.is_some() || slide_y.is_some()) {
+        return Err(EngineError::Param("param 'bone' says which joint 'angle', 'rotate_by' or the slide moves".into()));
     }
     let v = edit_pose(s, lid, frame, |arm, kf| {
         let mut out = json!({"layer": lid.0});
@@ -394,6 +503,15 @@ fn pose(s: &mut Session, p: &Value) -> Result<Value> {
             kf.pose.set(b.id, next);
             out["bone"] = json!(b.id.0);
             out["angle"] = json!(next.to_degrees());
+            if slide_x.is_some() || slide_y.is_some() {
+                if !b.slides() {
+                    return Err(EngineError::State("that joint doesn't slide: turn on its X or Y translation first (bone.set_translation)".into()));
+                }
+                let was = kf.pose.slide(b.id);
+                let v = b.allow_slide(Vec2::new(slide_x.unwrap_or(was.x), slide_y.unwrap_or(was.y)));
+                kf.pose.set_slide(b.id, v);
+                out["slide"] = json!([v.x, v.y]);
+            }
         }
         if dx.is_some() || dy.is_some() {
             let by = Affine::translate(dx.unwrap_or(0.0), dy.unwrap_or(0.0));
@@ -445,8 +563,10 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
         .filter_map(|l| {
             let arm = l.armature.as_deref()?;
             let pose = armature::pose_at(l, frame).unwrap_or_default();
+            let shown = anicraft_doc::spring::sprung_pose(l, frame, s.doc.stage.fps).unwrap_or_default();
             let (_, els) = evaluate_layer_elements(l, frame).unwrap_or((0, std::borrow::Cow::Borrowed(&[])));
             let at = armature::bones_at(arm, &els, &pose);
+            let limits = |l: Option<Limits>| l.map(|l| json!({"min": l.min, "max": l.max, "constrain": l != FREE}));
             let bones: Vec<Value> = arm
                 .bones
                 .iter()
@@ -459,11 +579,15 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
                         "angle": deg(b.allow(pose.angle(b.id))),
                         "min": b.limits.map(|l| deg(l.min)), "max": b.limits.map(|l| deg(l.max)),
                         "pinned": b.pinned,
+                        "slide": g.map(|g| pt(g.slide)),
+                        "slide_x": limits(b.slide_x), "slide_y": limits(b.slide_y),
+                        "spring": b.spring.map(|sp| json!({"strength": sp.strength * 100.0, "damping": sp.damping * 100.0})),
+                        "swing": deg(shown.angle(b.id) - b.allow(pose.angle(b.id))),
                         "points": arm.skin.as_ref().map(|k| k.points.iter().filter(|x| x.weight(b.id) > 0.0).count()),
                     })
                 })
                 .collect();
-            let mut out = json!({"layer": l.id.0, "name": l.name, "roots": arm.roots().iter().map(|e| e.0).collect::<Vec<_>>(), "poses": poses(l), "bones": bones, "shape": arm.skin_shape().map(|e| e.0)});
+            let mut out = json!({"layer": l.id.0, "name": l.name, "roots": arm.roots().iter().map(|e| e.0).collect::<Vec<_>>(), "poses": poses(l), "bones": bones, "shape": arm.skin_shape().map(|e| e.0), "springs": !arm.springs_off});
             if with_points && let Some(k) = &arm.skin {
                 out["points"] = json!(skin::points_shown(arm, &els).iter().zip(&k.points).map(|(at, b)| json!({"at": pt(*at), "bones": b.bones.iter().map(|i| json!([i.0.0, i.1])).collect::<Vec<_>>(), "manual": b.manual})).collect::<Vec<_>>());
             }
