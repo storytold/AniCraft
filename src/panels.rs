@@ -2165,9 +2165,7 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         Tool::Rect => row(ui, tr!("Corners"), |ui| {
             ui.add(egui::DragValue::new(&mut app.rect_radius).suffix(" px").range(0.0..=500.0)).set_name(tr!("Corner radius"));
         }),
-        Tool::Star => row(ui, tr!("Points"), |ui| {
-            ui.add(egui::DragValue::new(&mut app.star_points).range(3..=32)).set_name(tr!("Star points"));
-        }),
+        Tool::Star => polystar_props(app, ui),
         Tool::PaintBucket => row_prose(ui, tr!("Gap size"), |ui| {
             egui::ComboBox::from_id_salt("bucket_gap").width(170.0).selected_text(crate::i18n::t(app.bucket_gap.label())).show_ui(ui, |ui| {
                 for g in crate::app::GapSize::ALL {
@@ -2185,6 +2183,26 @@ fn tool_props(app: &mut App, ui: &mut egui::Ui) {
         }),
         Tool::Brush | Tool::PaintBrush => brush_props(app, ui),
         _ => {}
+    }
+}
+
+/// PolyStar's Tool Settings (ADR 0080), inline as the other tools' options: the style, the number
+/// of sides (or points) and, for a star, its point size.
+fn polystar_props(app: &mut App, ui: &mut egui::Ui) {
+    let o = &mut app.polystar;
+    row_prose(ui, tr!("Style"), |ui| {
+        ui.selectable_value(&mut o.star, false, tr!("Polygon")).on_hover_text(tr!("Draws a regular polygon."));
+        ui.selectable_value(&mut o.star, true, tr!("Star")).on_hover_text(tr!("Draws a star."));
+    });
+    row(ui, if o.star { tr!("Points") } else { tr!("Sides") }, |ui| {
+        ui.add(egui::DragValue::new(&mut o.sides).range(3..=32)).set_name(if o.star { tr!("Number of points") } else { tr!("Number of sides") });
+    });
+    if o.star {
+        row(ui, tr!("Point size"), |ui| {
+            ui.add(egui::DragValue::new(&mut o.point_size).range(0.0..=1.0).speed(0.01).fixed_decimals(2))
+                .on_hover_text(tr!("How deep the points are: near 0 they are thin spikes, at 1 the star is the polygon through its tips."))
+                .set_name(tr!("Star point size"));
+        });
     }
 }
 

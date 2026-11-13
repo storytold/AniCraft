@@ -1103,3 +1103,5 @@ mod path_text_tests;
 mod group_tests;
 #[cfg(test)]
 mod swatch_tests;
+#[cfg(test)]
+mod parity_tests;

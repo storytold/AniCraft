@@ -12,7 +12,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         c("draw.rect", "Rectangle", "", None, "{x, y, w, h, radius?, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_rect as crate::RunFn),
         c("draw.ellipse", "Oval", "", None, "{x, y, w, h, fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash?, object?}", true, draw_ellipse),
-        c("draw.star", "PolyStar", "", None, "{cx, cy, outer, inner?, points?, fill?, stroke?, profile?, cap?, join?, style?, dash?, object?}", true, draw_star),
+        c("draw.star", "PolyStar", "", None, "{cx, cy, outer (the corners' radius), shape?: star|polygon (default star; the PolyStar Tool Settings, ADR 0080), sides? (or points; 3..64, default 5), point_size? (0..1, default 0.5: how deep a star's points are, 1 is the polygon through its tips), inner? (an exact inner radius instead of point_size), fill?, stroke?, stroke_width?, profile?, cap?, join?, style?, dash? (the line style), object?}", true, draw_star),
         c("draw.line", "Line", "", None, "{x0, y0, x1, y1, stroke?, stroke_width?, profile? (a width profile name or [[t, left, right], ..]), cap?, join?, miter?, style?, dash?, dash_offset?, dot_spacing? (the line style, as stroke.set_style; default: the tool's), object? (true: a drawing object; default: Object Drawing, off: it merges with the raw shapes it touches)}", true, draw_line),
         c("draw.object_drawing", "Object Drawing", "", Some("J"), "{on?: bool} (default: toggle)", false, object_drawing),
         c("draw.snap_to_objects", "Snap to Objects", "View/Snapping", Some("Ctrl+Shift+/"), "{on?: bool} (default: toggle) dragged points and selections, and the points the Line, Rectangle, Oval, PolyStar and Pen tools draw, snap to points, lines and fill edges (while it is off, the `snap` params of element.translate, raw.move_point and draw.snap only snap to guides, the grid and pixels, as View › Guides, Grid and Snapping say)", false, snap_to_objects),
@@ -158,13 +158,36 @@ fn draw_star(s: &mut Session, p: &Value) -> Result<Value> {
     if !(0.5..=MAX_EXTENT).contains(&outer) {
         return Err(EngineError::Param("param 'outer' must be between 0.5 and 1,000,000".into()));
     }
-    let inner = opt_f32(p, "inner")?.unwrap_or(outer * 0.5).clamp(0.0, MAX_EXTENT);
-    let points = opt_u32(p, "points")?.unwrap_or(5);
+    // PolyStar's Tool Settings (ADR 0080): a polygon or a star, its sides (or points) and the
+    // star's point size.
+    let polygon = match opt_str(p, "shape")?.unwrap_or("star") {
+        "star" => false,
+        "polygon" => true,
+        other => return Err(EngineError::Param(format!("unknown PolyStar style '{other}' (polygon or star)"))),
+    };
+    let points = match (opt_u32(p, "sides")?, opt_u32(p, "points")?) {
+        (Some(n), _) | (None, Some(n)) => n,
+        (None, None) => 5,
+    };
     if !(3..=64).contains(&points) {
-        return Err(EngineError::Param("param 'points' must be between 3 and 64".into()));
+        return Err(EngineError::Param("param 'sides' (or 'points') must be between 3 and 64".into()));
     }
+    let point_size = match opt_f32(p, "point_size")? {
+        None => 0.5,
+        Some(v) if (0.0..=1.0).contains(&v) => v,
+        Some(_) => return Err(EngineError::Param("param 'point_size' must be between 0 and 1".into())),
+    };
     let (fill, stroke) = style(s, p, true)?;
-    add_shape(s, "star", Path::star(0.0, 0.0, outer, inner, points), Vec2::new(cx, cy), fill, stroke, object_param(s, p)?)
+    let object = object_param(s, p)?;
+    if polygon {
+        return add_shape(s, "polygon", Path::polystar(0.0, 0.0, outer, points, false, point_size), Vec2::new(cx, cy), fill, stroke, object);
+    }
+    // An explicit inner radius (scripts written before the point size) still wins.
+    let path = match opt_f32(p, "inner")? {
+        Some(inner) => Path::star(0.0, 0.0, outer, inner.clamp(0.0, MAX_EXTENT), points),
+        None => Path::polystar(0.0, 0.0, outer, points, true, point_size),
+    };
+    add_shape(s, "star", path, Vec2::new(cx, cy), fill, stroke, object)
 }
 
 fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {

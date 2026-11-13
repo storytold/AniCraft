@@ -1941,8 +1941,11 @@ fn create_shape(app: &mut App, start: Pos2, cur: Pos2) {
             app.draw("draw.ellipse", json!({"x": start.x, "y": start.y, "w": d.x, "h": d.y}));
         }
         Tool::Star => {
-            let r = d.length();
-            app.draw("draw.star", json!({"cx": start.x, "cy": start.y, "outer": r, "inner": r * 0.45, "points": app.star_points}));
+            let mut p = app.polystar.params();
+            p["cx"] = json!(start.x);
+            p["cy"] = json!(start.y);
+            p["outer"] = json!(d.length());
+            app.draw("draw.star", p);
         }
         Tool::Line => {
             app.draw("draw.line", json!({"x0": start.x, "y0": start.y, "x1": cur.x, "y1": cur.y}));
@@ -1973,15 +1976,9 @@ fn draw_preview(app: &App, painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32)
             painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
         }
         Tool::Star => {
-            let rr = (b - a).length();
-            let n = app.star_points.clamp(3, 64) as usize;
-            let pts: Vec<Pos2> = (0..n * 2)
-                .map(|i| {
-                    let r = if i % 2 == 0 { rr } else { rr * 0.45 };
-                    let t = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / n as f32;
-                    a + vec2(r * t.cos(), r * t.sin())
-                })
-                .collect();
+            // The same corners the command draws (ADR 0080).
+            let o = app.polystar;
+            let pts: Vec<Pos2> = anicraft_engine::geom::polystar_corners(a.x, a.y, (b - a).length(), o.sides.clamp(3, 32), o.star, o.point_size).into_iter().map(|v| Pos2::new(v.x, v.y)).collect();
             painter.add(egui::Shape::closed_line(pts, stroke));
         }
         Tool::Line => {

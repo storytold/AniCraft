@@ -149,7 +149,7 @@ impl Tool {
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
             Tool::Rect => tr_noop!("Drag to draw a rectangle. Shift draws a square."),
             Tool::Oval => tr_noop!("Drag to draw an oval. Shift draws a circle."),
-            Tool::Star => tr_noop!("Drag from the centre to draw a star."),
+            Tool::Star => tr_noop!("Drag from the centre to draw a star or a polygon (Style in the options)."),
             Tool::Line => tr_noop!("Drag to draw a line. Shift snaps to 45°."),
             Tool::PaintBucket => tr_noop!("Click inside an outline to fill it (on the layer's lines), or on a fill to recolour it. The gap size closes small openings."),
             Tool::InkBottle => tr_noop!("Click a shape to give it the current stroke colour and width."),
@@ -303,6 +303,28 @@ pub const SHOT_FRAMES: u32 = 120;
 /// The item picked in the Library panel (view state).
 pub use anicraft_engine::doc::LibraryItem;
 
+/// The PolyStar tool's settings (ADR 0080): a polygon or a star, how many sides or points (3 to
+/// 32), and how deep a star's points are (0 to 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PolyStarOptions {
+    pub star: bool,
+    pub sides: u32,
+    pub point_size: f32,
+}
+
+impl Default for PolyStarOptions {
+    fn default() -> Self {
+        PolyStarOptions { star: true, sides: 5, point_size: 0.5 }
+    }
+}
+
+impl PolyStarOptions {
+    /// `draw.star`'s shape params.
+    pub fn params(&self) -> serde_json::Value {
+        serde_json::json!({"shape": if self.star { "star" } else { "polygon" }, "sides": self.sides.clamp(3, 32), "point_size": self.point_size.clamp(0.0, 1.0)})
+    }
+}
+
 pub struct App {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) updates: crate::updates::Updates,
@@ -362,7 +384,8 @@ pub struct App {
     pub path_pick: Option<anicraft_engine::doc::ElementId>,
     /// Font families on this computer, listed once on first need.
     pub font_families: Option<Vec<String>>,
-    pub star_points: u32,
+    /// The PolyStar tool's settings (ADR 0080), as Animate's Tool Settings.
+    pub polystar: PolyStarOptions,
     pub rect_radius: f32,
     /// Pen path being drawn (view state until it is committed as one command).
     pub pen: Option<pathtools::PenPath>,
@@ -627,7 +650,7 @@ impl App {
             text_edit: None,
             path_pick: None,
             font_families: None,
-            star_points: 5,
+            polystar: PolyStarOptions::default(),
             rect_radius: 0.0,
             pen: None,
             pencil: Vec::new(),
