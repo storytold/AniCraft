@@ -233,7 +233,7 @@ fn chrome(pages: &[Page], root: &str, title: &str, current: Option<usize>, main:
         Kind::Search => ("search", format!("<script src=\"{root}{SEARCH_INDEX}\"></script>\n"), " aria-describedby=\"search-status\" aria-controls=\"results\""),
     };
     format!(
-        "<!doctype html>\n<html lang=\"en\" data-root=\"{root}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{t} · AniCraft User Guide</title>\n<link rel=\"stylesheet\" href=\"{root}{STYLESHEET}\">\n{index}</head>\n<body data-page=\"{page}\">\n\
          <a class=\"skip\" href=\"#content\">Skip to the chapter</a>\n\
          <header class=\"top\"><a href=\"{root}index.html\">AniCraft User Guide</a> <span class=\"version\">{VERSION}</span>\

@@ -130,6 +130,13 @@ fn the_index_covers_every_heading_of_every_page() {
         assert_eq!(anchors, indexed, "{}: every heading is a section of the index", p.file);
     }
     assert!(sections.iter().all(|s| !s.heading.trim().is_empty()), "every section has its heading");
+    // search.js links only to `page.html#anchor` of this shape (its PAGE pattern).
+    for s in &sections {
+        let file = html_path(PAGES[s.page].file);
+        let ok_file = file.ends_with(".html") && file.split('/').all(|part| !part.is_empty() && part.trim_end_matches(".html").chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+        let ok_anchor = s.anchor.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        assert!(ok_file && ok_anchor, "{file}#{} would not be linked by search.js", s.anchor);
+    }
     let json: serde_json::Value = serde_json::from_str(&search::index_json(PAGES, &sections)).expect("the index is JSON");
     assert_eq!(json["sections"].as_array().map(Vec::len), Some(sections.len()));
     assert_eq!(json["pages"].as_array().map(Vec::len), Some(PAGES.len()));

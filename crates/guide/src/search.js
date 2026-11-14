@@ -131,7 +131,9 @@
 
   // ---- In the book ----
   var LIMIT = 30;
-  var root = document.documentElement.getAttribute("data-root") || "";
+  // A page of the book from the index (search.html sits at the book's root): `page.html` or
+  // `page.html#anchor`, never a scheme or a path that climbs out.
+  var PAGE = /^[a-z0-9-]+(\/[a-z0-9-]+)*\.html(#[\p{L}\p{N}_-]*)?$/u;
 
   function isTyping(el) {
     return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
@@ -191,8 +193,9 @@
       : (hits.length === 1 ? "1 result" : hits.length + (hits.length === LIMIT ? "+ results" : " results")) + " for “" + query.trim() + "”.";
     hits.forEach(function (h) {
       var li = document.createElement("li");
+      if (!PAGE.test(h.url)) return;
       var a = document.createElement("a");
-      a.href = root + h.url;
+      a.setAttribute("href", h.url);
       var head = document.createElement("span");
       head.className = "hit-heading";
       head.textContent = h.heading;
