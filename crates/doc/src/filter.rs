@@ -401,15 +401,65 @@ impl Filter {
     }
 }
 
-/// The classic tween between two filter lists (ADR 0081): when both have the same kinds in the
-/// same order, each filter's numbers and colours travel (switches such as Inner and Knockout,
-/// and the quality, stay the first keyframe's; ramps travel stop by stop when they have as
-/// many stops). `None` when the lists are equal or don't pair up: the first list holds.
-pub fn lerp_filters(a: &[Filter], b: &[Filter], t: f32) -> Option<Vec<Filter>> {
-    if a == b || a.len() != b.len() {
+fn yes() -> bool {
+    true
+}
+fn is_on(b: &bool) -> bool {
+    *b
+}
+
+/// One filter in an instance's list (ADR 0091): the filter and whether it is on. A filter
+/// switched off keeps its settings and its place but draws nothing: [`active`] leaves it out,
+/// so every renderer and export sees exactly the list without it. In files it is the filter's
+/// own object with `"enabled": false` added (left out when on), so files from before open as
+/// they were.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FilterEntry {
+    #[serde(flatten)]
+    pub filter: Filter,
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    pub enabled: bool,
+}
+
+impl From<Filter> for FilterEntry {
+    fn from(filter: Filter) -> FilterEntry {
+        FilterEntry { filter, enabled: true }
+    }
+}
+
+impl FilterEntry {
+    /// The same entry with its filter in range.
+    pub fn sanitized(&self) -> FilterEntry {
+        FilterEntry { filter: self.filter.sanitized(), enabled: self.enabled }
+    }
+}
+
+/// The filters that draw, in order and in range: the ones switched on.
+pub fn active(list: &[FilterEntry]) -> Vec<Filter> {
+    list.iter().filter(|e| e.enabled).map(|e| e.filter.sanitized()).collect()
+}
+
+/// Whether any filter in the list draws.
+pub fn any_active(list: &[FilterEntry]) -> bool {
+    list.iter().any(|e| e.enabled)
+}
+
+/// Whether two lists pair up for a tween: the same kinds in the same order (Animate's rule;
+/// switched-off filters count, so switching one off never breaks a tween).
+pub fn pairs_up(a: &[FilterEntry], b: &[FilterEntry]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| std::mem::discriminant(&x.filter) == std::mem::discriminant(&y.filter))
+}
+
+/// The classic tween between two filter lists (ADR 0081, 0091): when both have the same kinds
+/// in the same order, each filter's numbers and colours travel (switches such as Inner and
+/// Knockout, the quality, and whether the filter is on stay the first keyframe's; ramps travel
+/// stop by stop when they have as many stops). `None` when the lists are equal or don't pair
+/// up: the first list holds.
+pub fn lerp_filters(a: &[FilterEntry], b: &[FilterEntry], t: f32) -> Option<Vec<FilterEntry>> {
+    if a == b || !pairs_up(a, b) {
         return None;
     }
-    a.iter().zip(b).map(|(x, y)| x.lerp(y, t)).collect()
+    a.iter().zip(b).map(|(x, y)| Some(FilterEntry { filter: x.filter.lerp(&y.filter, t)?, enabled: x.enabled })).collect()
 }
 
 fn ramp_lerp(a: &[GradientStop], b: &[GradientStop], t: f32) -> Vec<GradientStop> {

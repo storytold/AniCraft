@@ -32,7 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("element.set_alpha", "Alpha", "", None, "{alpha: 0..1} sets the alpha multiplier and keeps the rest of the colour effect (None becomes Alpha; Brightness and Tint become Advanced below 1)", true, |s, p| s.each_layer(true, |s| set_alpha(s, p))),
         c("element.set_color_effect", "Colour Effect", "", None, "{style?: none|brightness|tint|advanced|alpha (default: the style the values belong to, else each element's own), alpha? (%, 0..100), brightness? (%, -100..100), tint? (#rrggbb), tint_amount? (%, 0..100), red_multiplier?, green_multiplier?, blue_multiplier?, alpha_multiplier? (%, -100..100), red_offset?, green_offset?, blue_offset?, alpha_offset? (-255..255)} on every selected element (ADR 0056); values not given keep each element's own. A new style starts from the look it can keep: Advanced is exactly the effect before, Alpha keeps the opacity, Brightness and Tint start at 0 %. The camera has no opacity (no Alpha style, alpha multiplier or offset)", true, |s, p| s.each_layer(true, |s| set_color_effect(s, p))),
         c("element.set_blend", "Blending", "", None, "{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances", true, |s, p| s.each_layer(false, |s| set_blend(s, p))),
-        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| set_filters(s, p))),
+        c("element.set_filters", "Filters", "", None, "{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values, enabled?: bool (default true; false switches it off, keeping its settings)}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color \"#rrggbbaa\"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)", true, |s, p| s.each_layer(false, |s| crate::cmds_filter::set_filters(s, p))),
         c("element.set_loop", "Looping", "", None, "{loop?: loop|play_once|single_frame, first_frame?}", true, |s, p| s.each_layer(false, |s| set_loop(s, p))),
         c("symbol.set_kind", "Symbol Type", "", None, "{kind: graphic|movie_clip|button, symbol?: id (default: the symbols of every selected instance)}", true, set_symbol_kind),
         c(
@@ -554,61 +554,6 @@ fn set_color_effect(s: &mut Session, p: &Value) -> Result<Value> {
         first.get_or_insert(e.color);
     }
     Ok(first.map_or(Value::Null, |fx| crate::color_effect_json(&fx)))
-}
-
-/// Most filters on one instance.
-const MAX_FILTERS: usize = 16;
-
-/// Filters for the selected movie clip and button instances (Animate offers them on those only).
-fn set_filters(s: &mut Session, p: &Value) -> Result<Value> {
-    let mut list = p.get("filters").cloned().ok_or_else(|| EngineError::Param("param 'filters' is required (a list; [] removes them)".into()))?;
-    // Colours may be written "#rrggbb" (or "#rrggbbaa"), as everywhere in commands: the filter's
-    // own and its ramp stops'.
-    fn hex_colors(v: &mut Value, keys: &[&str]) -> Result<()> {
-        for k in keys {
-            if v.get(*k).is_some_and(Value::is_string) {
-                let c = opt_color(v, k)?.unwrap_or(anicraft_doc::Rgba::BLACK);
-                v[*k] = json!({"r": c.r, "g": c.g, "b": c.b, "a": c.a});
-            }
-        }
-        Ok(())
-    }
-    for f in list.as_array_mut().into_iter().flatten() {
-        hex_colors(f, &["color", "shadow_color", "highlight_color"])?;
-        if let Some(stops) = f.get_mut("stops").and_then(Value::as_array_mut) {
-            if stops.len() > anicraft_doc::MAX_RAMP_STOPS {
-                return Err(EngineError::Param(format!("a ramp has at most {} stops", anicraft_doc::MAX_RAMP_STOPS)));
-            }
-            for st in stops.iter_mut() {
-                hex_colors(st, &["color"])?;
-            }
-        }
-    }
-    let filters: Vec<anicraft_doc::Filter> = serde_json::from_value(list).map_err(|e| EngineError::Param(format!("'filters' must be a list of {{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …}}: {e}")))?;
-    if filters.len() > MAX_FILTERS {
-        return Err(EngineError::Param(format!("at most {MAX_FILTERS} filters per instance")));
-    }
-    let filters: Vec<anicraft_doc::Filter> = filters.iter().map(anicraft_doc::Filter::sanitized).collect();
-    let kinds: std::collections::HashMap<SymbolId, SymbolKind> = s.doc.library.iter().map(|x| (x.id, x.kind)).collect();
-    let (mut set, mut graphics) = (0, 0);
-    for e in s.selected_props_mut()? {
-        if let ElementKind::Symbol { symbol, filters: f, .. } = &mut e.kind {
-            if kinds.get(symbol) == Some(&SymbolKind::Graphic) {
-                graphics += 1;
-                continue;
-            }
-            f.clone_from(&filters);
-            set += 1;
-        }
-    }
-    if set == 0 {
-        return Err(EngineError::State(if graphics > 0 {
-            "filters apply to movie clip and button instances, as in Animate; set the symbol's Type to Movie Clip first".into()
-        } else {
-            "select a movie clip or button instance".into()
-        }));
-    }
-    Ok(json!({"filters": filters.len(), "set": set}))
 }
 
 /// Blending for the selected movie clip and button instances (Animate offers it on those only).

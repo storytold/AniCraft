@@ -561,7 +561,7 @@ fn instance_filters_tween_when_they_pair_up() {
     let mut d = Document::default();
     let sid = SymbolId(90);
     d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(Layer::new(LayerId(91), "x"))] } }));
-    let inst = |filters: Vec<Filter>| Element { id: ElementId(92), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters, events: Vec::new() } };
+    let inst = |filters: Vec<Filter>| Element { id: ElementId(92), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: filters.into_iter().map(Into::into).collect(), events: Vec::new() } };
     let blur = |b: f32| Filter::Blur { blur_x: b, blur_y: b, quality: 1 };
     let mut tw = Tween::new(Easing::Linear, TweenKind::Classic);
     tw.set_ease(crate::EaseGroup::Filters, Some(Easing::QuadIn));
@@ -575,8 +575,13 @@ fn instance_filters_tween_when_they_pair_up() {
         ElementKind::Symbol { filters, .. } => filters.clone(),
         _ => Vec::new(),
     };
-    assert_eq!(filters(5)[0], blur(40.0 * 0.25), "eased by the filters group's ease");
+    assert_eq!(filters(5)[0], blur(40.0 * 0.25).into(), "eased by the filters group's ease");
     // Lists that don't pair up hold the first keyframe's.
-    assert_eq!(crate::filter::lerp_filters(&[blur(1.0)], &[Filter::new("glow").unwrap()], 0.5), None);
-    assert_eq!(crate::filter::lerp_filters(&[blur(1.0)], &[blur(1.0), blur(2.0)], 0.5), None);
+    let e = |f: Filter| crate::FilterEntry::from(f);
+    assert_eq!(crate::filter::lerp_filters(&[e(blur(1.0))], &[e(Filter::new("glow").unwrap())], 0.5), None);
+    assert_eq!(crate::filter::lerp_filters(&[e(blur(1.0))], &[e(blur(1.0)), e(blur(2.0))], 0.5), None);
+    // A switched-off filter still pairs up (and stays off, as the first keyframe has it).
+    let off = crate::FilterEntry { filter: blur(0.0), enabled: false };
+    let got = crate::filter::lerp_filters(std::slice::from_ref(&off), &[e(blur(10.0))], 0.5).unwrap();
+    assert_eq!(got, vec![crate::FilterEntry { filter: blur(5.0), enabled: false }]);
 }
