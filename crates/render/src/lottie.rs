@@ -985,9 +985,16 @@ fn layer(tr: &Track, ind: usize, w: &mut Writer<'_>) -> Value {
         let col = |g: &dyn Fn(&Tr) -> Vec<f64>| trs.iter().map(g).collect::<Vec<Vec<f64>>>();
         // Position as one point, or x and y apart when their timings differ (a motion tween
         // keys them separately) and that takes fewer keys.
-        let p = w.keys(first, &col(&|t| t.p.to_vec()), TOL_PX);
-        let (px, py) = (w.keys(first, &col(&|t| vec![t.p[0]]), TOL_PX), w.keys(first, &col(&|t| vec![t.p[1]]), TOL_PX));
-        group_tr["p"] = if px.len() + py.len() < p.len() { json!({"s": true, "x": write_keys(&px, Enc::Scalar), "y": write_keys(&py, Enc::Scalar)}) } else { write_keys(&p, Enc::Vector) };
+        let fit_p = |g: &dyn Fn(&Tr) -> Vec<f64>| fit(&Series { first, values: &col(g), tol: TOL_PX }, w.eases);
+        let (p, joint_steps) = fit_p(&|t| t.p.to_vec());
+        let ((px, x_steps), (py, y_steps)) = (fit_p(&|t| vec![t.p[0]]), fit_p(&|t| vec![t.p[1]]));
+        group_tr["p"] = if px.len() + py.len() < p.len() {
+            w.stepped |= x_steps || y_steps;
+            json!({"s": true, "x": write_keys(&px, Enc::Scalar), "y": write_keys(&py, Enc::Scalar)})
+        } else {
+            w.stepped |= joint_steps;
+            write_keys(&p, Enc::Vector)
+        };
         group_tr["r"] = w.prop(first, &col(&|t| vec![t.r]), TOL_DEG, Enc::Scalar);
         group_tr["sk"] = w.prop(first, &col(&|t| vec![t.sk]), TOL_DEG, Enc::Scalar);
         group_tr["s"] = w.prop(first, &col(&|t| t.s.to_vec()), TOL_PCT, Enc::Vector);
