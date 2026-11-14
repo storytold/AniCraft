@@ -901,7 +901,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.stage_cache.service = Some(RenderService::new(DEFAULT_CACHE_BYTES, Some(Box::new(move || ctx.request_repaint()))));
         }
         if let Some(svc) = &app.stage_cache.service {
-            app.stage_cache.gpu.sync(app.prefs.stage_renderer, svc, ui.ctx());
+            // The stage's size in pixels: a change brings a GPU retry forward (ADR 0092).
+            let size = ((vis.width() * ppp).round() as u32, (vis.height() * ppp).round() as u32);
+            if let Some(n) = app.stage_cache.gpu.sync(app.prefs.stage_renderer, svc, ui.ctx(), size) {
+                let text = crate::gpu_stage::notice_text(&n);
+                match n {
+                    crate::gpu_stage::Notice::Back => app.status_ok(text),
+                    crate::gpu_stage::Notice::Stopped { .. } => app.status_err(text),
+                }
+            }
         }
         // Jobs are keyed by who draws them, so a renderer switch re-renders (old tiles stand in).
         let raster = app.stage_cache.service.as_ref().map_or(0, RenderService::raster_id);

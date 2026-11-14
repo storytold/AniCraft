@@ -614,6 +614,12 @@ impl App {
         // The GPU stage shares the window's device when it runs on wgpu (ADR 0029).
         #[cfg(gpu_stage)]
         app.stage_cache.gpu.set_window_device(cc.wgpu_render_state.as_ref());
+        // The driver's errors and the device's loss are written down instead of closing the
+        // window (ADR 0092).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            crate::gpu_watch::watch(&rs.device, &cc.egui_ctx);
+        }
         app
     }
 
@@ -3652,6 +3658,9 @@ impl App {
         crate::dock_ui::save_when_settled(self, &ctx);
         // After this frame's edits: start a recovery copy when one is due (off this thread).
         autosave::tick(self, &ctx);
+        // The graphics driver's trouble: autosave at once, or close to open again (ADR 0092).
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::gpu_watch::tick(self, &ctx);
         // Open Recent changed (an open, a save, a pin): into the preferences.
         crate::recent::sync(self);
         crate::brush_panel::sync(self);

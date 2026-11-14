@@ -506,6 +506,8 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                             State::Running { adapter, direct: true } => Some(tr!("Drawing on {adapter}, straight into the window.", adapter = adapter)),
                             State::Running { adapter, direct: false } => Some(tr!("Drawing on {adapter}, then copied to the window (slower: the window's graphics device can't be shared).", adapter = adapter)),
                             State::Failed(why) => Some(tr!("The graphics card can't draw the stage, so the CPU does: {why}", why = why)),
+                            State::Stopped { why, retry_at: Some(_) } => Some(tr!("The graphics card stopped drawing the stage, so the CPU does for now; AniCraft tries the graphics card again soon. It said: {why}", why = why)),
+                            State::Stopped { why, retry_at: None } => Some(tr!("The graphics card stopped drawing the stage, so the CPU does for the rest of this session. It said: {why}", why = why)),
                         };
                         if crate::gpu_stage::wanted(p.stage_renderer) != p.stage_renderer {
                             form_note(ui, LW, text(Type::Caption, tr!("ANICRAFT_STAGE_RENDERER is set, and it takes precedence over this choice.")));
