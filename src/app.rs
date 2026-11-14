@@ -1170,10 +1170,12 @@ impl App {
                     }
                 } else if let Some(folder) = crate::macros_ui::folder(self) {
                     let f = folder.display().to_string();
-                    for (name, steps) in [("Turn, Fade and Nudge", json!([n - 3, n - 2, n - 1])), ("Quarter Turn", json!([n - 3])), ("Fade to 60 %", json!([n - 2]))] {
+                    // i18n-exempt: sample names a user would type
+                    for (name, steps) in [("Turn, Fade and Nudge", json!([n.saturating_sub(3), n.saturating_sub(2), n.saturating_sub(1)])), ("Quarter Turn", json!([n.saturating_sub(3)])), ("Fade to 60 %", json!([n.saturating_sub(2)]))] {
                         let _ = self.s.execute("macro.save", &json!({"folder": f, "name": name, "history": steps, "confirm": true}));
                     }
                     crate::macros_ui::clear_picks(self);
+                    // i18n-exempt: a sample name
                     let id = crate::keymap::macro_id("Quarter Turn");
                     self.prefs.shortcuts.insert(id, vec!["Ctrl+Alt+R".into()]);
                     crate::macros_ui::open_manage(self);

@@ -627,10 +627,10 @@ pub(crate) fn history(app: &mut App, ui: &mut egui::Ui) {
             });
         }
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.set_min_height(crate::theme::TARGET);
         if picked.is_empty() {
-            ui.label(text(Type::Caption, tr!("Ctrl+click steps to save them as a command")));
+            ui.add(egui::Label::new(text(Type::Caption, tr!("Ctrl+click steps to save them as a command"))).wrap());
         } else {
             if ui.button(tr!("Save As Command…")).on_hover_text(tr!("Keep the picked steps as a command in the Commands menu, to run on any selection")).clicked() {
                 save = true;

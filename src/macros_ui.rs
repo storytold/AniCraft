@@ -204,7 +204,7 @@ fn save_window(app: &mut App, ctx: &egui::Context) {
         let refused = d.steps.iter().filter(|s| s.refused.is_some()).count();
         ui.add_space(4.0);
         if refused > 0 {
-            ui.label(text(Type::Caption, trn!("Take the step that can't be kept out of the picks (Ctrl+click it) to save the others.", "Take the {n} steps that can't be kept out of the picks (Ctrl+click them) to save the others.", refused)).color(T.error));
+            ui.label(text(Type::Caption, trn!("Take the {n} step that can't be kept out of the picks (Ctrl+click it) to save the others.", "Take the {n} steps that can't be kept out of the picks (Ctrl+click them) to save the others.", refused)).color(T.error));
         } else {
             ui.label(text(Type::Caption, tr!("It runs on whatever is selected when you choose it in the Commands menu.")));
         }
