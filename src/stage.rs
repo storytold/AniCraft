@@ -628,6 +628,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             (Drag::PointMarquee { cur: m, .. } | Drag::BindMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (Drag::BindPaint { last }, Some(c)) => {
+                let from = *last;
+                let to = crate::bind_tool::paint_to(app, from, c);
+                if let Drag::BindPaint { last } = &mut app.drag {
+                    *last = to;
+                }
+            }
             (Drag::WarpPin { element, pin }, Some(c)) => {
                 let (element, pin) = (*element, *pin);
                 crate::warp_tool::drag_to(app, element, pin, c);
@@ -669,6 +676,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
+            Drag::BindPaint { .. } => crate::bind_tool::paint_end(app),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Brush => crate::brushtool::commit(app, xf),
             Drag::Eraser => crate::erasertool::commit(app, xf),

@@ -827,6 +827,21 @@ pub fn to_rgba(c: Color32) -> anicraft_engine::doc::Rgba {
     anicraft_engine::doc::Rgba::new(f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, f32::from(a) / 255.0)
 }
 
+/// The heat map of a bone's weights (ADR 0090), the same in every palette because it is drawn
+/// over artwork: blue (none) through cyan, green and yellow to red (all of the point).
+pub const HEAT: [Color32; 5] = [Color32::from_rgb(0x2b, 0x4c, 0xd9), Color32::from_rgb(0x1f, 0xb5, 0xd6), Color32::from_rgb(0x2f, 0xc2, 0x5a), Color32::from_rgb(0xf2, 0xd0, 0x2a), Color32::from_rgb(0xe8, 0x3a, 0x2a)];
+
+/// The colour of weight `w` (0…1) on [`HEAT`], blended between its stops.
+pub fn heat(w: f32) -> Color32 {
+    let w = if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
+    let x = w * (HEAT.len() - 1) as f32;
+    let i = (x as usize).min(HEAT.len() - 2);
+    let t = x - i as f32;
+    let (a, b) = (HEAT.get(i).copied().unwrap_or(Color32::BLACK), HEAT.get(i + 1).copied().unwrap_or(Color32::BLACK));
+    let mix = |p: u8, q: u8| (f32::from(p) + (f32::from(q) - f32::from(p)) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
 pub fn to_color32(c: anicraft_engine::doc::Rgba) -> Color32 {
     let c = c.sanitized();
     Color32::from_rgba_unmultiplied((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8, (c.a * 255.0).round() as u8)

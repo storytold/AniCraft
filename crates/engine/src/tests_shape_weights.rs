@@ -213,3 +213,12 @@ fn plug_ins_may_paint_weights() {
         assert!(crate::cmds_plugin::plugin_may_call(id).is_ok(), "{id}");
     }
 }
+
+#[test]
+fn subselection_picks_the_bound_shape_to_show_its_points() {
+    let (mut s, _, _) = rigged();
+    run(&mut s, "element.pick", json!({"x": 150, "y": 150}));
+    assert!(s.selection.contains(s.layer, ElementId(TAIL)));
+    // It is a drawing object, so the Subselection tool lists its own points.
+    assert!(s.visible_elements().iter().any(|e| e.id.0 == TAIL && matches!(&e.kind, ElementKind::Shape(sh) if !sh.merge)));
+}
