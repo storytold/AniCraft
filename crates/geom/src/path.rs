@@ -40,7 +40,9 @@ impl Path {
         use std::fmt::Write;
         let mut s = String::with_capacity(self.cmds.len() * 16);
         let pt = |s: &mut String, p: Vec2| {
-            let _ = write!(s, "{} {}", p.x, p.y);
+            // Non-finite values would be rejected by `from_svg`; write 0 so a save always reloads.
+            let f = |v: f32| if v.is_finite() { v } else { 0.0 };
+            let _ = write!(s, "{} {}", f(p.x), f(p.y));
         };
         for c in &self.cmds {
             match *c {
@@ -608,6 +610,24 @@ mod tests {
         assert_eq!(star_inner_radius(10.0, 5, f32::NAN), star_inner_radius(10.0, 5, 0.5));
         assert_eq!(polystar_corners(0.0, 0.0, 1.0, 0, false, 0.5).len(), 3);
         assert_eq!(polystar_corners(0.0, 0.0, 1.0, u32::MAX, false, 0.5).len(), POLYSTAR_MAX_SIDES as usize);
+    }
+
+    #[test]
+    fn non_finite_coordinates_round_trip_as_zero() {
+        let mut p = Path::default();
+        p.cmds.push(PathCmd::MoveTo(Vec2::new(0.0, 0.0)));
+        p.cmds.push(PathCmd::LineTo(Vec2::new(f32::INFINITY, 1.0)));
+        p.cmds.push(PathCmd::LineTo(Vec2::new(f32::NAN, f32::NEG_INFINITY)));
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Path = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.cmds,
+            vec![
+                PathCmd::MoveTo(Vec2::new(0.0, 0.0)),
+                PathCmd::LineTo(Vec2::new(0.0, 1.0)),
+                PathCmd::LineTo(Vec2::new(0.0, 0.0)),
+            ]
+        );
     }
 
     #[test]
