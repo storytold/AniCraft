@@ -537,7 +537,7 @@ fn what_does_not_carry_across_is_reported() {
     let l = Arc::make_mut(&mut tl.layers[2]);
     let k = l.keyframe_mut(0).unwrap();
     if let ElementKind::Symbol { filters, blend, .. } = &mut Arc::make_mut(&mut k.elements[0]).kind {
-        filters.push(anicraft_doc::Filter::Blur { blur_x: 4.0, blur_y: 4.0, quality: 1 });
+        filters.push(anicraft_doc::Filter::Blur { blur_x: 4.0, blur_y: 4.0, quality: 1 }.into());
         *blend = BlendMode::Subtract;
     }
     Arc::make_mut(&mut tl.layers[0]).keyframe_mut(1).unwrap().script = Some(FrameScript::Plugin(PluginScript { id: "org.example.menu".into(), entry: "main".into() }));
@@ -1102,7 +1102,7 @@ fn filtered_doc(filters: &[anicraft_doc::Filter]) -> Document {
     d.library.push(symbol(300, SymbolKind::MovieClip, vec![layer(301, vec![kf(0, 1, vec![el(302, a), el(303, b)], vec![], "")])]));
     let mut i = (*inst(310, 300, "art", Affine::translate(18.4, 15.2), vec![])).clone();
     if let ElementKind::Symbol { filters: f, .. } = &mut i.kind {
-        *f = filters.to_vec();
+        *f = filters.iter().cloned().map(Into::into).collect();
     }
     Arc::make_mut(&mut d.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap().elements = vec![Arc::new(i)];
     d
