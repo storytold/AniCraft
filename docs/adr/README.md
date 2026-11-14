@@ -23,3 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
+| 0091 | m5/filters-2 (M5) | Filter presets, order, on/off and tweened filter values |
