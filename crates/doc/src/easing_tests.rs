@@ -345,8 +345,7 @@ fn a_sampled_ease_round_trips_through_the_file_format_and_survives_bad_files() {
     assert!(text.starts_with("{\"Sampled\":{\"name\":\"Stepped 4\",\"plugin\":\"org.anicraft.stepped-ease\",\"ease\":\"steps4\",\"values\":[0.0,"), "{text}");
     assert_eq!(serde_json::from_str::<Easing>(&text).unwrap(), e);
     // A hand-edited table is made valid on load.
-    let bad: Easing = serde_json::from_str(r#"{"Sampled":{"values":[5,0.5,"x"]}}"#).map_or(Easing::Linear, |e| e);
-    assert_eq!(bad, Easing::Linear, "a non-number value is a broken file, refused as any other");
+    assert!(serde_json::from_str::<Easing>(r#"{"Sampled":{"values":[5,0.5,"x"]}}"#).is_err(), "a non-number value is a broken file, refused as any other");
     let odd: Easing = serde_json::from_str(r#"{"Sampled":{"name":"Odd","values":[5,0.5,-20]}}"#).unwrap();
     assert_eq!(odd.sampled().unwrap().values(), &[0.0, 0.5, 1.0]);
 }
