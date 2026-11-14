@@ -433,6 +433,9 @@ pub struct App {
     pub filter_naming: crate::panels::FilterNaming,
     pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
     pub pen_pressure: Option<f32>,
+    /// Whether a pointer event has carried a pen's tilt this session (ADR 0093). Until one has,
+    /// the brushes' Tilt options stay hidden: they would do nothing.
+    pub pen_tilt_seen: bool,
     /// Eraser tool options (ADR 0034); its stroke's samples are `brush_samples`.
     pub eraser: crate::erasertool::EraserOptions,
     pub bucket_gap: GapSize,
@@ -705,6 +708,7 @@ impl App {
             filter_naming: Default::default(),
             brush_samples: Vec::new(),
             pen_pressure: None,
+            pen_tilt_seen: false,
             eraser: crate::erasertool::EraserOptions::default(),
             bucket_gap: GapSize::default(),
             align_to_stage: false,
@@ -2046,9 +2050,10 @@ impl App {
             Some("tiltbrush") => {
                 // Tilt and textured brushes (ADR 0093) on a new layer: a flat nib whose angle
                 // follows the pen's azimuth as it turns along an S, a round brush widening as the
-                // pen lies down, Charcoal (the paper grain) and Spatter. The Brush's options show
-                // Tilt, Texture and Scatter. Tilt comes in through the command's points, as no
-                // desktop system reports it to the toolkit yet.
+                // pen lies down, Charcoal (the paper grain) and Spatter.
+                // Tilt comes in through the command's points, as no
+                // desktop system reports it to the toolkit yet; so Properties shows Texture and
+                // Scatter, and keeps the Tilt options hidden (ADR 0093).
                 self.run("layer.new", json!({"name": "Tilt"}));
                 self.run("draw.object_drawing", json!({"on": false}));
                 let s_curve: Vec<[f32; 5]> = (0..=90)

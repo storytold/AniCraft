@@ -4,10 +4,11 @@
 
 * **Brushes and erasing, second slice: tilt, textured brushes, erasing inside symbols, profiles
   in the merge** (ADR 0093, M7).
-  * **Pen tilt** shapes the Brush: Properties › Tilt › **Angle** turns the tip with the way the
-    pen leans, **Width** paints up to twice as wide as it lies down (the Paint Brush too). A
-    mouse is never affected. Desktop systems don't pass tilt on to AniCraft yet, so tilt comes
-    in through `draw.brush` points as `[x, y, pressure, altitude, azimuth]`.
+  * **Pen tilt** shapes the Brush: it turns the tip with the way the pen leans and paints up
+    to twice as wide as it lies down (the Paint Brush too). A mouse is never affected. Desktop
+    systems don't pass tilt on to AniCraft yet, so the Tilt options stay hidden in Properties
+    until a pen reports it; scripts and MCP send it in `draw.brush` points as
+    `[x, y, pressure, altitude, azimuth]`.
   * **Textured brushes**, still vector: **Texture** lets a fixed paper grain show through the
     paint, **Scatter** throws dabs either side of the stroke. New built-in brushes **Charcoal**
     and **Spatter**.

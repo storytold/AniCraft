@@ -337,6 +337,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let xf = crate::pathtools::Xf { origin, zoom };
     // Pen pressure, when a tablet reports it (the Brush tool's width follows it).
     let pressure = crate::brushtool::frame_pressure(ui.ctx());
+    // Tilt, where the toolkit reports it: the brushes' Tilt options show once it has (ADR 0093).
+    crate::brushtool::note_tilt(app, crate::brushtool::frame_tilt(ui.ctx()));
     let now = ui.input(|i| i.time);
     // The motion path takes the pointer with the selection tools (ADR 0030): its ends and
     // handles before the object under them, the path itself only where no object is.

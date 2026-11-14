@@ -159,12 +159,14 @@ stipple. Both are still ordinary vector shapes: they merge, erase, scale and exp
 other paint, and the same stroke always comes out the same. The **Charcoal** and **Spatter**
 brushes in the Brush menu use them.
 
-**Tilt.** Under **Tilt**, **Angle** turns the tip with the pen (the way the pen leans adds to
-the brush's angle, so a flat nib follows your hand), and **Width** paints wider as the pen
-leans, up to twice as wide lying flat. The Paint Brush has **Width**. A mouse is never
-affected. Desktop systems don't pass a pen's tilt on to AniCraft yet, so for now these settings
-work for strokes sent with tilt from scripts and assistants (`draw.brush` points as
-`[x, y, pressure, altitude, azimuth]`), and are kept with your brushes for when they do.
+**Tilt.** Brushes can follow a pen's tilt: the tip turns with the way the pen leans (so a flat
+nib follows your hand), and paints wider as it leans, up to twice as wide lying flat. A mouse
+is never affected. Windows, macOS and Linux don't pass a pen's tilt on to AniCraft yet, so the
+**Tilt** options (**Angle** and **Width**; the Paint Brush has **Width**) stay hidden in
+Properties. They appear by themselves as soon as a pen reports its tilt. Meanwhile scripts and
+assistants can paint with tilt: `draw.brush` takes points as `[x, y, pressure, altitude,
+azimuth]` and `tilt_angle` and `tilt_width` (see [Working headless](working-headless.md)). The
+**Charcoal** brush follows tilt when there is any.
 
 **Snapping while you draw**: with **Snap to Objects** on (the magnet under the tools, or **Ctrl+Shift+/**), the Line,
 Rectangle, Oval, PolyStar and Pen tools snap their points to nearby points, lines and fill

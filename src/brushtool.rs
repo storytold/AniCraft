@@ -197,6 +197,23 @@ pub fn frame_pressure(ctx: &egui::Context) -> Option<f32> {
     })
 }
 
+/// The pen's tilt this frame, when the toolkit reports it (ADR 0093). egui 0.36's pointer and
+/// touch events carry only pressure, and winit 0.30 reports tilt only on iOS, so on the desktop
+/// this is `None` until they carry it. When it isn't, the Tilt options appear (see
+/// [`App::pen_tilt_seen`]).
+pub fn frame_tilt(ctx: &egui::Context) -> Option<anicraft_engine::geom::brush::Tilt> {
+    // No egui event carries a tilt yet; this is where it is read once one does.
+    let _ = ctx;
+    None
+}
+
+/// Notes a tilt reported this frame, so the Tilt options show from then on.
+pub fn note_tilt(app: &mut App, tilt: Option<anicraft_engine::geom::brush::Tilt>) {
+    if tilt.is_some() {
+        app.pen_tilt_seen = true;
+    }
+}
+
 /// Starts a stroke at stage point `p` at time `now` (seconds). A mouse paints at full
 /// pressure, or from half pressure when its speed stands in for it.
 pub fn start(app: &mut App, p: Vec2, pressure: Option<f32>, now: f64) -> Drag {

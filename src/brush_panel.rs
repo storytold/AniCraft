@@ -312,6 +312,7 @@ pub fn props(app: &mut App, ui: &mut egui::Ui, row: impl Fn(&mut egui::Ui, &str,
             ui.painter().image(t.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
         });
     }
+    let tilt_seen = app.pen_tilt_seen;
     let o = crate::brushtool::options_mut(app);
     row_prose(ui, tr!("Pressure"), &mut |ui| {
         crate::theme::checkbox(ui, &mut o.pressure_size, tr!("Size")).on_hover_text(tr!("Pen pressure varies the size, from 10 % to the full size"));
@@ -340,13 +341,16 @@ pub fn props(app: &mut App, ui: &mut egui::Ui, row: impl Fn(&mut egui::Ui, &str,
     row_prose(ui, tr!("Mouse"), &mut |ui| {
         crate::theme::checkbox(ui, &mut o.velocity, tr!("Speed as pressure")).on_hover_text(tr!("Without a pen: drawing faster makes the stroke thinner, as a pen pressed lightly would"));
     });
-    // Tilt (ADR 0093): a setting of the brush, used where the system reports a pen's tilt.
-    row_prose(ui, tr!("Tilt"), &mut |ui| {
-        if !as_stroke {
-            crate::theme::checkbox(ui, &mut o.tilt_angle, tr!("Angle")).on_hover_text(tr!("The pen's tilt turns the tip: the way it leans adds to the brush's angle. Tilt is read where the system reports it; desktop systems don't report it to AniCraft yet"));
-        }
-        crate::theme::checkbox(ui, &mut o.tilt_width, tr!("Width")).on_hover_text(tr!("A leaning pen paints wider, up to twice as wide lying flat. Tilt is read where the system reports it; desktop systems don't report it to AniCraft yet"));
-    });
+    // Tilt (ADR 0093): shown once a pen has reported its tilt this session. Until then the
+    // options would do nothing, so they stay out of the way (brushes keep their tilt settings).
+    if tilt_seen {
+        row_prose(ui, tr!("Tilt"), &mut |ui| {
+            if !as_stroke {
+                crate::theme::checkbox(ui, &mut o.tilt_angle, tr!("Angle")).on_hover_text(tr!("The pen's tilt turns the tip: the way it leans adds to the brush's angle"));
+            }
+            crate::theme::checkbox(ui, &mut o.tilt_width, tr!("Width")).on_hover_text(tr!("A leaning pen paints wider, up to twice as wide lying flat"));
+        });
+    }
     row(ui, tr!("Taper"), &mut |ui| {
         ui.add(egui::DragValue::new(&mut o.taper_start).suffix(" %").speed(0.5).range(0.0..=50.0).max_decimals(0)).named(tr!("Taper at the start")).on_hover_text(tr!("How much of the stroke swells from a point at its start"));
         ui.add(egui::DragValue::new(&mut o.taper_end).suffix(" %").speed(0.5).range(0.0..=50.0).max_decimals(0)).named(tr!("Taper at the end")).on_hover_text(tr!("How much of the stroke thins to a point at its end"));

@@ -43,9 +43,14 @@ was copied: no code, presets, textures or brushes.
 
    *The platform gap.* winit 0.30 reports tilt only on iOS (`Force::Calibrated`'s
    `altitude_angle`), and egui 0.36's touch events carry only `force`. No desktop system passes
-   a pen's tilt to the shell yet. The brush settings, the command and the model are ready, and the
-   shell reads tilt as soon as the toolkit gives it. Properties says so in the options' hover
-   text. We didn't add a platform-specific tablet API (Wintab, Windows Ink, NSEvent tilt,
+   a pen's tilt to the shell yet. The model, the point format and the command params are ready,
+   so scripts, the CLI and MCP can paint with tilt today.
+
+   *Hidden until a pen reports it.* A control that does nothing confuses artists, so
+   Properties shows no Tilt options until a pointer event has carried tilt this session
+   (`App::pen_tilt_seen`, set from `brushtool::frame_tilt`, the one place tilt is read). Then
+   they appear by themselves. Brushes keep their tilt settings either way (Charcoal follows
+   tilt), so a brush set moves between computers unchanged. A UI test checks both states. We didn't add a platform-specific tablet API (Wintab, Windows Ink, NSEvent tilt,
    XInput2 valuators): that would mean `unsafe`, FFI and a code path per OS for one value. The
    right place for it is upstream in winit.
 
@@ -111,8 +116,8 @@ was copied: no code, presets, textures or brushes.
      So does `brush.preset_save`, and brush presets keep them (`#[serde(default)]`: older brush
      sets and preferences load as before).
    * There is no new namespace, so the plug-in policy is unchanged (`draw.*` may be called).
-   * Shell: Properties › Tilt (Angle for the Brush, Width for both brushes), Texture and Scatter
-     for the Brush.
+   * Shell: Texture and Scatter for the Brush; Properties › Tilt (Angle for the Brush, Width for
+     both brushes) once a pen has reported tilt.
 
 ## Consequences
 
@@ -135,7 +140,8 @@ was copied: no code, presets, textures or brushes.
 
 ## Not yet
 
-* Reading tilt from a pen on Windows, macOS and Linux (waits for winit).
+* Reading tilt from a pen on Windows, macOS and Linux (waits for winit), and so the Tilt
+  options in Properties there.
 * Bitmap, art and pattern brushes; custom tip shapes.
 * Eraser pressure, tilt and presets.
 * A live preview through texture, scatter and tilt.
