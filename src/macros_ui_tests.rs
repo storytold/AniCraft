@@ -73,6 +73,40 @@ fn picked_steps_save_as_a_command_and_its_shortcut_runs_it() {
     app.perform("macro.delete", json!({"folder": folder, "name": "Twirl", "confirm": true}));
     assert!(app.macros.list.is_empty());
     assert!(app.prefs.shortcuts.keys().all(|k| keymap::macro_name(k).is_none()));
+
+    // The windows and the menu draw, and their buttons work (same folder: this test owns it).
+    app.open_panel(Some("managecommands"));
+    assert!(app.macros.manage.open);
+    assert_eq!(app.macros.list.len(), 3, "the sample commands");
+    for _ in 0..3 {
+        frame(&ctx, &mut app, vec![]);
+    }
+    let cmds = anicraft_engine::commands();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| crate::menus::menu_contents(&mut app, ui, "Commands", &cmds));
+    out.textures_delta.clear();
+    // Reorder and rename through the same requests the buttons make.
+    let first = app.macros.list[0].name.clone();
+    app.request("macro.move", json!({"folder": folder, "name": first, "index": 2}));
+    assert_eq!(app.macros.list[2].name, first);
+    app.macros.manage.renaming = Some((first.clone(), "Renamed".into()));
+    frame(&ctx, &mut app, vec![]);
+    crate::macros_ui::run_saved(&mut app, "Quarter Turn");
+    assert_eq!(app.s.undo_label(), Some("Quarter Turn"));
+    // A file shared from elsewhere comes in through Add from File (the folder is filled in).
+    let shared = std::env::temp_dir().join(format!("anicraft-shared-{}.json", std::process::id()));
+    std::fs::write(&shared, r#"[{"cmd": "modify.rotate_ccw"}]"#).unwrap();
+    app.request("macro.import", json!({"path": shared.display().to_string()}));
+    assert!(app.macros.list.iter().any(|c| c.name.starts_with("anicraft-shared")));
+    let _ = std::fs::remove_file(&shared);
+    app.macros.manage.open = false;
+    // History with steps picked, and Save As Command over it.
+    app.open_panel(Some("savecommand"));
+    assert!(app.macros.save.is_some());
+    for _ in 0..3 {
+        frame(&ctx, &mut app, vec![]);
+    }
+    crate::macros_ui::clear_picks(&mut app);
+    crate::macros_ui::open_save(&mut app);
     let _ = std::fs::remove_dir_all(&folder);
 }
 

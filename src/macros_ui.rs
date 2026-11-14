@@ -55,7 +55,7 @@ pub struct SaveDialog {
 pub struct Manage {
     pub open: bool,
     /// The command being renamed and the name typed so far.
-    renaming: Option<(String, String)>,
+    pub(crate) renaming: Option<(String, String)>,
     focus: bool,
 }
 
