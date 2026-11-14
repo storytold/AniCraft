@@ -313,9 +313,12 @@ fn main() -> eframe::Result {
     let mut last = startup::begin(platform::log_dir());
     let mut file = file;
     let mut reopened = 0;
-    'windows: loop {
+    let mut why = String::from("no attempt"); // i18n-exempt: log text
+    // Once, and again each time the window closed to reopen another way.
+    let mut opening = true;
+    while opening {
+        opening = false;
         let attempts = startup::plan(platform::forced_backend(renderer.as_deref()), prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), &last);
-        let mut why = String::from("no attempt"); // i18n-exempt: log text
         for (n, attempt) in attempts.iter().enumerate() {
             startup::trying(attempt, n + 1, attempts.len());
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone())));
@@ -331,7 +334,8 @@ fn main() -> eframe::Result {
                         last.retain(|l| *l != attempt.label());
                         last.push(attempt.label());
                         file = reopen;
-                        continue 'windows;
+                        opening = true;
+                        break;
                     }
                     startup::line("closed");
                     return Ok(());
@@ -350,9 +354,9 @@ fn main() -> eframe::Result {
                 return Err(eframe::Error::AppCreation(why.into()));
             }
         }
-        startup::give_up(&why);
-        return Err(eframe::Error::AppCreation(why.into()));
     }
+    startup::give_up(&why);
+    Err(eframe::Error::AppCreation(why.into()))
 }
 
 /// Times one run opens the window again after its graphics device was lost (ADR 0092); past
