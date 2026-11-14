@@ -46,7 +46,9 @@ USAGE:
                        ANICRAFT_PLUGINS environment variable); see docs/plugins.md.
                        Without it, headless runs use no plug-ins, so they are repeatable.
 
-Frames on the command line are 1-based, as in the timeline.";
+Frame flags on the command line (--frame, --from, --to) are 1-based, as in the
+timeline. Frame numbers inside JSON params, scripts and command results are
+0-based, as everywhere in the engine.";
 
 /// Parsed flags: positional args plus `--key value` pairs.
 pub struct Args {
@@ -706,5 +708,38 @@ mod tests {
         assert!(run(&["info".into()]).is_err());
         assert!(run(&["commands".into()]).unwrap().contains("timeline.insert_keyframe"));
         assert!(run(&["guide".into()]).is_err());
+    }
+
+    #[test]
+    fn usage_clarifies_frame_numbering_split() {
+        let help = run(&["help".into()]).unwrap();
+        assert!(help.contains("0-based"), "CLI usage should clarify that JSON command frame numbers are 0-based");
+        assert!(help.contains("1-based"), "CLI usage should clarify that command-line frame flags are 1-based");
+
+        let dir = std::env::temp_dir().join(format!("anicraft-cli-frame-split-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_cli = dir.join("cli.png");
+        let out_exec = dir.join("exec.png");
+
+        let res_cli: serde_json::Value = serde_json::from_str(
+            &run(&["render".into(), "--sample".into(), "--frame".into(), "1".into(), "--out".into(), out_cli.to_str().unwrap().into()]).unwrap(),
+        )
+        .unwrap();
+
+        let res_exec: serde_json::Value = serde_json::from_str(
+            &run(&[
+                "exec".into(),
+                "--sample".into(),
+                "file.export_png".into(),
+                format!(r#"{{"path": "{}", "frame": 0}}"#, out_exec.to_str().unwrap().replace('\\', "/")),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(res_cli["frame"], 0);
+        assert_eq!(res_exec["frame"], 0);
+        assert_eq!(std::fs::read(&out_cli).unwrap(), std::fs::read(&out_exec).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
