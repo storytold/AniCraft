@@ -68,7 +68,7 @@ fn types() -> [(&'static str, &'static str); 5] {
 /// The mask types, with their names and what each does.
 fn mask_types() -> [(&'static str, &'static str, &'static str); 3] {
     [
-        ("coverage", tr!("Shape"), tr!("The mask's fills reveal fully, whatever their colour or opacity (as in Animate)")),
+        ("coverage", tr!("Shape"), tr!("The mask's fills reveal fully, whatever their colour or opacity")),
         ("alpha", tr!("Alpha"), tr!("The mask's opacity reveals: gradients to transparent and faded shapes give soft edges")),
         ("luminance", tr!("Luminance"), tr!("The mask's brightness reveals: white shows, black hides, greys show partly")),
     ]

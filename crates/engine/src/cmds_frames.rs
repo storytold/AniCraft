@@ -1,7 +1,7 @@
 //! Copy, cut and paste frames (Edit › Timeline).
 //!
 //! Design notes (principal engineer / senior designer review):
-//! * Frames have their own clipboard, separate from copied artwork, as in Animate: copying
+//! * Frames have their own clipboard, separate from copied artwork: copying
 //!   frames never replaces copied shapes, and the reverse.
 //! * A copy is cut exactly at the selection edges by splitting a scratch copy of the layer with
 //!   the same keyframe logic as F6, so a span that starts before the selection, or is

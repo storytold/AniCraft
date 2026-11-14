@@ -337,7 +337,7 @@ pub struct Session {
     dl_cache: RefCell<Option<CachedList>>,
     /// Copied elements (and the symbols they use), outside the document so undo leaves it alone.
     pub clipboard: cmds_modify::Clipboard,
-    /// Copied frames (Copy Frames), separate from copied artwork as in Animate.
+    /// Copied frames (Copy Frames), separate from copied artwork.
     pub frame_clipboard: cmds_frames::FrameClipboard,
     /// A copied ease (Copy Ease, ADR 0081), for Paste Ease.
     pub ease_clipboard: Option<anicraft_doc::Easing>,

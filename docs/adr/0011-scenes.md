@@ -34,5 +34,5 @@ now the importer kept only the first.
 
 * Every editing command targets the open scene through `doc.timeline(s.scene)` and
   `doc.timeline_mut(s.scene)`, the only two ways in.
-* Playing in the editor plays the open scene, as in Animate; *Test* is still per scene. A
+* Playing in the editor plays the open scene; *Test* is still per scene. A
   whole-movie test player can come later without changing the model.
