@@ -393,6 +393,7 @@ dependencies = [
  "anicraft-doc",
  "anicraft-geom",
  "anicraft-text",
+ "anicraft-xml",
  "craft-xfl",
  "miniz_oxide 0.8.9",
  "png 0.17.16",
@@ -403,7 +404,8 @@ dependencies = [
 name = "anicraft-xml"
 version = "0.2.1"
 dependencies = [
- "craft-xfl",
+ "craft-xml",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1190,9 +1192,18 @@ dependencies = [
 [[package]]
 name = "craft-xfl"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=dd35916a98f0e4dad65c254bfcc00ba703987ced#dd35916a98f0e4dad65c254bfcc00ba703987ced"
+source = "git+https://github.com/storytold/craft-libs?rev=6ff30f4ee093e314c0f4698997e33f11ef3266d7#6ff30f4ee093e314c0f4698997e33f11ef3266d7"
 dependencies = [
  "miniz_oxide 0.8.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=98b500ec5a18ec262072a96fd9ab3b2cbe2e5557#98b500ec5a18ec262072a96fd9ab3b2cbe2e5557"
+dependencies = [
+ "quick-xml 0.41.0",
  "thiserror 2.0.21",
 ]
 

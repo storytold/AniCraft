@@ -9,8 +9,8 @@
 pub mod edges;
 pub mod import;
 pub mod text;
-/// The shared XML reader, under the compatibility path used by the importer.
-pub use craft_xfl::xml;
+/// The shared XML reader, under its compatibility path.
+pub use anicraft_xml as xml;
 /// XFL/FLA ZIP package reader, shared with other consumers through `craft-xfl`.
 pub mod zip {
     pub use craft_xfl::{Archive, MAX_DEPTH, MAX_ENTRIES, MAX_ENTRY, MAX_RATIO, MAX_TOTAL, ZipError, crc32};
