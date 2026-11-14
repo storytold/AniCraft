@@ -271,3 +271,107 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         start(app, replace);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin_fixture_tests::{EXPORTER, exporter, install, temp};
+    use anicraft_engine::Session;
+    use anicraft_engine::doc::sample;
+
+    fn app(ctx: &egui::Context) -> App {
+        // Screenshot mode, as the other shell tests: no settings folder, no plug-ins folder.
+        App::with_context(ctx, Session::new(sample::demo()), Some(std::path::PathBuf::from("unused.png")))
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            menu_items(app, ui);
+            show(app, ui.ctx());
+        });
+        out.textures_delta.clear();
+    }
+
+    /// Draws frames until the export finishes (at most ten seconds).
+    fn finish(ctx: &egui::Context, app: &mut App) {
+        for _ in 0..1000 {
+            if app.plugin_export.as_ref().is_none_or(|e| e.running.is_none()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            frame(ctx, app, vec![]);
+        }
+        panic!("the export didn't finish");
+    }
+
+    fn key(k: egui::Key) -> egui::Event {
+        egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn the_window_exports_on_a_worker_and_asks_before_replacing() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let dir = temp("export-window");
+        frame(&ctx, &mut app, vec![]);
+        install(&mut app, &dir, "dump.wasm", &exporter(false));
+        open(&mut app, EXPORTER);
+        let out = dir.join("movie.dump");
+        let e = app.plugin_export.as_mut().expect("the window");
+        assert!(e.path.ends_with("animation.dump"), "{}", e.path);
+        assert_eq!((e.from, e.to, e.values["mode"].as_str()), (0, app.s.doc.frame_count() - 1, Some("a")));
+        e.path = out.display().to_string();
+        frame(&ctx, &mut app, vec![]);
+        // Enter exports.
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        assert!(app.plugin_export.as_ref().is_some_and(|e| e.running.is_some()), "running on a worker");
+        finish(&ctx, &mut app);
+        assert!(app.plugin_export.is_none(), "the window closes when done");
+        assert!(app.status.as_ref().is_some_and(|s| !s.error && s.text.contains("movie.dump")));
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).expect("written")).expect("JSON");
+        assert_eq!(written["result"]["index"], 0);
+        // Again: the file is there, so it asks; Replace writes it.
+        open(&mut app, EXPORTER);
+        app.plugin_export.as_mut().expect("window").path = out.display().to_string();
+        start(&mut app, false);
+        assert!(app.plugin_export.as_ref().is_some_and(|e| e.asking && e.running.is_none()));
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        finish(&ctx, &mut app);
+        assert!(app.plugin_export.is_none());
+        // A bad range or path is an error in the window; Esc closes it.
+        open(&mut app, EXPORTER);
+        app.plugin_export.as_mut().expect("window").path = String::new();
+        start(&mut app, true);
+        assert!(app.plugin_export.as_ref().is_some_and(|e| e.error.is_some()));
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.plugin_export.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancel_stops_an_endless_export_and_writes_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let dir = temp("export-cancel");
+        install(&mut app, &dir, "dump.wasm", &exporter(true));
+        open(&mut app, EXPORTER);
+        let out = dir.join("never.dump");
+        app.plugin_export.as_mut().expect("window").path = out.display().to_string();
+        start(&mut app, false);
+        // The progress bar shows while it runs; closing the window cancels it.
+        frame(&ctx, &mut app, vec![]);
+        if let Some(r) = app.plugin_export.as_ref().and_then(|e| e.running.as_ref()) {
+            r.control.cancel();
+        }
+        frame(&ctx, &mut app, vec![]);
+        finish(&ctx, &mut app);
+        let e = app.plugin_export.as_ref().expect("the window stays");
+        assert!(e.error.is_none() && e.running.is_none());
+        assert!(app.status.as_ref().is_some_and(|s| s.text.contains("cancelled")));
+        assert!(!out.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

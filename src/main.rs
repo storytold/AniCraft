@@ -64,6 +64,10 @@ mod onion;
 mod pathtools;
 mod platform;
 mod plugin_export_ui;
+#[cfg(test)]
+mod plugin_fixture_tests;
+#[cfg(test)]
+mod plugin_ui_tests;
 mod plugins_ui;
 mod prefs;
 mod recent;

@@ -238,6 +238,7 @@ dependencies = [
  "sys-locale",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wat",
  "web-sys",
  "web-time",
  "winreg",

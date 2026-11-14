@@ -100,7 +100,10 @@ pub fn plan(s: &Session, p: &Value) -> Result<(Arc<Plugin>, Job)> {
     if plugin.manifest().kind != Kind::Exporter {
         return Err(EngineError::State(format!("{} is not an exporter plug-in", plugin.manifest().name)));
     }
-    let path = PathBuf::from(str_req(p, "path")?);
+    let path = PathBuf::from(str_req(p, "path")?.trim());
+    if path.as_os_str().is_empty() {
+        return Err(EngineError::Param("param 'path' is empty: name the file to write".into()));
+    }
     let last = s.doc.frame_count().saturating_sub(1);
     let from = opt_u32(p, "from")?.unwrap_or(0).min(last);
     let to = opt_u32(p, "to")?.unwrap_or(last).min(last);

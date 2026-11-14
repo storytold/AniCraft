@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 /// WAT string literal contents for `s`.
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.bytes().map(|b| if b == b'"' || b == b'\\' || !(0x20..0x7f).contains(&b) { format!("\\{b:02x}") } else { (b as char).to_string() }).collect()
 }
 
@@ -21,17 +21,7 @@ pub(crate) fn plugin(manifest: &str, requests: &[&str], check: bool, code: i32) 
 
 /// [`plugin`], running `tail` before it returns.
 pub(crate) fn plugin_then(manifest: &str, requests: &[&str], check: bool, tail: &str, code: i32) -> Vec<u8> {
-    let mut data = format!("(data (i32.const 1024) \"{}\")\n", esc(manifest));
-    let mut body = String::new();
-    let mut at = 8192;
-    for r in requests {
-        data.push_str(&format!("(data (i32.const {at}) \"{}\")\n", esc(r)));
-        body.push_str(&format!("(local.set $n (call $call (i32.const {at}) (i32.const {})))\n", r.len()));
-        if check {
-            body.push_str("(drop (call $response (i32.const 60000) (i32.const 16)))\n(if (i32.ne (i32.load8_u (i32.const 60006)) (i32.const 116)) (then (return (i32.const 1))))\n");
-        }
-        at += r.len() + 16;
-    }
+    let (data, body) = request_calls(manifest, requests, check);
     let text = format!(
         r#"(module
   (import "anicraft" "call" (func $call (param i32 i32) (result i32)))
@@ -50,7 +40,25 @@ pub(crate) fn plugin_then(manifest: &str, requests: &[&str], check: bool, tail: 
     wat::parse_str(&text).expect("test WAT")
 }
 
-const STARS: &str = r#"{"id":"org.test.stars","name":"Test Stars","version":"1.0","kind":"command","params":{"count":{"type":"int","min":1,"max":5,"default":3}}}"#;
+/// WAT data for `manifest` (at 1024) and `requests` (from 8192), and the code that sends each
+/// request in turn into local `$n` (with `check`, returning 1 at the first answer that isn't
+/// `{"ok":true…`).
+pub(crate) fn request_calls(manifest: &str, requests: &[&str], check: bool) -> (String, String) {
+    let mut data = format!("(data (i32.const 1024) \"{}\")\n", esc(manifest));
+    let mut body = String::new();
+    let mut at = 8192;
+    for r in requests {
+        data.push_str(&format!("(data (i32.const {at}) \"{}\")\n", esc(r)));
+        body.push_str(&format!("(local.set $n (call $call (i32.const {at}) (i32.const {})))\n", r.len()));
+        if check {
+            body.push_str("(drop (call $response (i32.const 60000) (i32.const 16)))\n(if (i32.ne (i32.load8_u (i32.const 60006)) (i32.const 116)) (then (return (i32.const 1))))\n");
+        }
+        at += r.len() + 16;
+    }
+    (data, body)
+}
+
+const STARS: &str =r#"{"id":"org.test.stars","name":"Test Stars","version":"1.0","kind":"command","params":{"count":{"type":"int","min":1,"max":5,"default":3}}}"#;
 const NUDGE: &str = r#"{"id":"org.test.nudge","name":"Nudge","kind":"command","selection":"required"}"#;
 
 fn stars() -> Vec<u8> {
@@ -58,14 +66,14 @@ fn stars() -> Vec<u8> {
     plugin(STARS, &[r#"{"op":"command","id":"layer.new","params":{"name":"Stars"}}"#, star, star, star], true, 0)
 }
 
-fn temp(name: &str) -> PathBuf {
+pub(crate) fn temp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("anicraft-engine-plugins-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("temp dir");
     d
 }
 
-fn install(s: &mut Session, dir: &std::path::Path, file: &str, bytes: &[u8]) -> Value {
+pub(crate) fn install(s: &mut Session, dir: &std::path::Path, file: &str, bytes: &[u8]) -> Value {
     let path = dir.join(file);
     std::fs::write(&path, bytes).expect("write module");
     s.execute("plugin.install", &json!({"path": path.display().to_string()})).expect("installs")

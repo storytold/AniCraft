@@ -3,29 +3,20 @@
 //! reaching an exporter; plug-in eases on tweens, kept as sampled curves that play the same
 //! once the plug-in is gone, through the file format too.
 
+use crate::ease_tests::{run, tweened, x_at};
 use crate::plugin_export;
+use crate::plugin_tests::{esc, install, request_calls, temp};
 use crate::publish::Control;
 use crate::{EngineError, Session};
 use anicraft_doc::{Easing, sample};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-
-fn esc(s: &str) -> String {
-    s.bytes().map(|b| if b == b'"' || b == b'\\' || !(0x20..0x7f).contains(&b) { format!("\\{b:02x}") } else { (b as char).to_string() }).collect()
-}
+use std::path::Path;
 
 const EXPORTER: &str = r#"{"id":"org.test.dump","name":"Frame Dump","kind":"exporter","format":{"name":"Frame Dump","extension":"dump"},"params":{"mode":{"type":"choice","options":["first","last"],"default":"first"}}}"#;
 
 /// An exporter that sends `requests` in order and returns the last answer as its file.
 fn exporter(requests: &[&str]) -> Vec<u8> {
-    let mut data = format!("(data (i32.const 1024) \"{}\")\n", esc(EXPORTER));
-    let mut body = String::new();
-    let mut at = 8192;
-    for r in requests {
-        data.push_str(&format!("(data (i32.const {at}) \"{}\")\n", esc(r)));
-        body.push_str(&format!("(local.set $n (call $call (i32.const {at}) (i32.const {})))\n", r.len()));
-        at += r.len() + 16;
-    }
+    let (data, body) = request_calls(EXPORTER, requests, false);
     let text = format!(
         r#"(module
   (import "anicraft" "call" (func $call (param i32 i32) (result i32)))
@@ -57,23 +48,6 @@ fn ease_plugin() -> Vec<u8> {
         EASES.len()
     );
     wat::parse_str(&text).expect("test WAT")
-}
-
-fn temp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("anicraft-engine-kinds-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("temp dir");
-    d
-}
-
-fn install(s: &mut Session, dir: &Path, file: &str, bytes: &[u8]) {
-    let path = dir.join(file);
-    std::fs::write(&path, bytes).expect("write module");
-    s.execute("plugin.install", &json!({"path": path.display().to_string()})).expect("installs");
-}
-
-fn run(s: &mut Session, id: &str, p: Value) -> Value {
-    s.execute(id, &p).unwrap_or_else(|e| panic!("{id} {p}: {e}"))
 }
 
 /// The answer the dump exporter wrote: `{"ok": …, "result"|"error": …}`.
@@ -158,6 +132,7 @@ fn export_params_are_checked() {
     let err = |s: &mut Session, p: Value| s.execute("file.export_plugin", &p).expect_err("refused").to_string();
     assert!(err(&mut s, json!({"format": "org.none", "path": path})).contains("installed: org.test.dump"));
     assert!(err(&mut s, json!({"format": "org.test.dump"})).contains("path"));
+    assert!(err(&mut s, json!({"format": "org.test.dump", "path": " "})).contains("empty"));
     assert!(err(&mut s, json!({"format": "org.test.dump", "path": path, "options": {"mode": "middle"}})).contains("mode"));
     assert!(err(&mut s, json!({"format": "org.test.dump", "path": path, "from": 5, "to": 2})).contains("before"));
     // An exporter is not a command, and a command plug-in can't export.
@@ -187,23 +162,6 @@ fn progress_counts_frames_read_and_cancel_stops_before_anything_is_written() {
     assert!(matches!(plugin_export::run(&plugin, &s.doc, &job2, Some(&control)), Err(EngineError::Cancelled)));
     assert!(!out2.exists(), "a cancelled export writes nothing");
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// A 10 × 10 square tweened (classic) 100 to the right over ten frames.
-fn tweened() -> Session {
-    let mut s = Session::default();
-    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
-    run(&mut s, "timeline.goto", json!({"frame": 10}));
-    run(&mut s, "timeline.insert_keyframe", json!({}));
-    run(&mut s, "edit.select_all", json!({}));
-    run(&mut s, "element.translate", json!({"dx": 100, "dy": 0}));
-    run(&mut s, "timeline.create_tween", json!({"frame": 0}));
-    s
-}
-
-fn x_at(s: &mut Session, f: u32) -> f32 {
-    s.set_frame(f);
-    s.visible_elements().first().map(|e| e.transform.translation().x - 5.0).unwrap_or(f32::NAN)
 }
 
 #[test]

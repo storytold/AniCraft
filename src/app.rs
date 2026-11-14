@@ -3441,6 +3441,7 @@ impl eframe::App for App {
                 raw.events.push(egui::Event::PointerMoved(over));
                 raw.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -2000.0), modifiers: Modifiers::NONE, phase: egui::TouchPhase::Move });
                 self.shot_click.set(None);
+                self.shot_step = 0;
             }
         }
         ctx.request_repaint();
