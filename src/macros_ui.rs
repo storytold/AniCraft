@@ -30,6 +30,10 @@ pub struct Macros {
     pub save: Option<SaveDialog>,
     /// Commands › Manage Saved Commands.
     pub manage: Manage,
+    /// Tests: this app's own folder. Test apps have none otherwise, so tests running side by
+    /// side never see each other's saved commands.
+    #[cfg(test)]
+    pub(crate) test_folder: Option<PathBuf>,
 }
 
 /// A picked step as Save As Command keeps it.
@@ -62,6 +66,9 @@ pub struct Manage {
 /// The folder the saved commands are in. Screenshot runs never touch the real one: they use a
 /// temporary folder (unless `ANICRAFT_COMMANDS_DIR` names one). None in a browser.
 pub fn folder(app: &App) -> Option<PathBuf> {
+    #[cfg(test)]
+    return app.macros.test_folder.clone();
+    #[cfg_attr(test, allow(unreachable_code))]
     if app.shot.is_some() && std::env::var_os("ANICRAFT_COMMANDS_DIR").is_none() && !crate::platform::WEB {
         return Some(std::env::temp_dir().join(format!("anicraft-commands-shot-{}", std::process::id())));
     }

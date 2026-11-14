@@ -22,10 +22,10 @@ fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
 fn picked_steps_save_as_a_command_and_its_shortcut_runs_it() {
     let ctx = egui::Context::default();
     let mut app = app(&ctx);
-    // (The only test here that writes to the folder.)
-    if let Some(f) = crate::macros_ui::folder(&app) {
-        let _ = std::fs::remove_dir_all(&f);
-    }
+    // A folder of its own.
+    let dir = std::env::temp_dir().join(format!("anicraft-macros-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    app.macros.test_folder = Some(dir);
     app.run("edit.select_all", json!({}));
     app.run("modify.rotate_cw", json!({}));
     app.run("element.set_color_effect", json!({"style": "alpha", "alpha": 50}));
@@ -114,6 +114,7 @@ fn picked_steps_save_as_a_command_and_its_shortcut_runs_it() {
 fn a_step_that_cant_be_kept_is_named_in_the_dialog() {
     let ctx = egui::Context::default();
     let mut app = app(&ctx);
+    app.macros.test_folder = Some(std::env::temp_dir().join(format!("anicraft-macros-ui-refused-{}", std::process::id())));
     app.run("edit.select_all", json!({}));
     app.run("edit.copy", json!({}));
     app.run("edit.paste", json!({}));
