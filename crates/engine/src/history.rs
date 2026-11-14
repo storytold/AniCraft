@@ -35,6 +35,89 @@ pub struct Snapshot {
     pub selection: crate::Selection,
     /// Estimated bytes this snapshot keeps alive that the neighbouring state does not share.
     pub bytes: usize,
+    /// The commands the step from this state ran, in order, as a saved command would run them
+    /// again (ADR 0097). `None`: they weren't kept (too many, or the step came from elsewhere).
+    pub commands: Option<Arc<[Recorded]>>,
+}
+
+/// A command a history step ran: its id and params (ADR 0097).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recorded {
+    pub cmd: String,
+    pub params: serde_json::Value,
+    /// Roughly how much memory the params hold (their JSON's length).
+    pub bytes: usize,
+}
+
+impl Recorded {
+    pub fn new(cmd: &str, params: &serde_json::Value) -> Recorded {
+        Recorded { cmd: cmd.to_string(), params: params.clone(), bytes: cmd.len() + params.to_string().len() }
+    }
+}
+
+/// Most commands one step keeps: a longer step (a very long drag) can't be saved as a command.
+pub const MAX_RECORDED: usize = 4096;
+/// Most bytes of params one step keeps.
+pub const MAX_RECORDED_BYTES: usize = 1 << 20;
+
+/// The commands run since the last step was recorded (ADR 0097).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Recording {
+    pub cmds: Vec<Recorded>,
+    pub bytes: usize,
+    /// More than [`MAX_RECORDED`] commands or [`MAX_RECORDED_BYTES`] bytes: none are kept.
+    pub overflow: bool,
+}
+
+impl Recording {
+    /// Adds a command that changed the document. Moves in a row (a drag) add up into one.
+    pub fn push(&mut self, r: Recorded) {
+        if self.overflow {
+            return;
+        }
+        if let Some(last) = self.cmds.last_mut()
+            && let Some(sum) = merged_translate(last, &r)
+        {
+            *last = sum;
+            return;
+        }
+        self.bytes += r.bytes;
+        self.cmds.push(r);
+        if self.cmds.len() > MAX_RECORDED || self.bytes > MAX_RECORDED_BYTES {
+            self.overflow = true;
+            self.cmds = Vec::new();
+            self.bytes = 0;
+        }
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        if !self.overflow && len < self.cmds.len() {
+            self.cmds.truncate(len);
+            self.bytes = self.cmds.iter().map(|r| r.bytes).sum();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        *self = Recording::default();
+    }
+
+    /// The commands for a step being recorded, leaving this empty.
+    pub fn take(&mut self) -> Option<Arc<[Recorded]>> {
+        let r = std::mem::take(self);
+        (!r.overflow).then(|| r.cmds.into())
+    }
+}
+
+/// Two `element.translate {dx, dy}` in a row as one, or `None`.
+fn merged_translate(a: &Recorded, b: &Recorded) -> Option<Recorded> {
+    let plain = |r: &Recorded| {
+        let o = r.params.as_object()?;
+        (r.cmd == "element.translate" && o.len() == 2).then_some(())?;
+        Some((o.get("dx")?.as_f64()?, o.get("dy")?.as_f64()?))
+    };
+    let ((ax, ay), (bx, by)) = (plain(a)?, plain(b)?);
+    let (dx, dy) = (ax + bx, ay + by);
+    (dx.is_finite() && dy.is_finite()).then(|| Recorded::new("element.translate", &serde_json::json!({"dx": dx, "dy": dy})))
 }
 
 /// Default memory budget for undo history.
@@ -62,7 +145,7 @@ impl Default for History {
 impl History {
     /// Records `before` as an undo step leading to `current`, and clears redo.
     pub fn record(&mut self, mut before: Snapshot, current: &Document) {
-        before.bytes = unique_bytes(&before.doc, current);
+        before.bytes = unique_bytes(&before.doc, current) + before.commands.as_ref().map_or(0, |c| c.iter().map(|r| r.bytes).sum());
         self.undo_bytes += before.bytes;
         self.undo.push_back(before);
         self.redo.clear();
@@ -85,6 +168,7 @@ impl History {
         self.undo_bytes = self.undo_bytes.saturating_sub(s.bytes);
         current.bytes = unique_bytes(&current.doc, &s.doc);
         current.label = s.label.clone();
+        current.commands = s.commands.clone();
         self.redo_bytes += current.bytes;
         self.redo.push(current);
         Some(s)
@@ -96,6 +180,7 @@ impl History {
         self.redo_bytes = self.redo_bytes.saturating_sub(s.bytes);
         current.bytes = unique_bytes(&current.doc, &s.doc);
         current.label = s.label.clone();
+        current.commands = s.commands.clone();
         self.undo_bytes += current.bytes;
         self.undo.push_back(current);
         self.enforce_budget();
@@ -127,6 +212,12 @@ impl History {
     /// Labels of redoable steps, next-to-redo first.
     pub fn redo_labels(&self) -> impl Iterator<Item = &str> {
         self.redo.iter().rev().map(|s| s.label.as_str())
+    }
+    /// Every step as the History panel lists it, oldest first: the steps that can be undone,
+    /// then the ones that can be redone (next to redo first), each with its label and the
+    /// commands it ran (ADR 0097).
+    pub fn steps(&self) -> impl Iterator<Item = (&str, Option<&[Recorded]>)> {
+        self.undo.iter().chain(self.redo.iter().rev()).map(|s| (s.label.as_str(), s.commands.as_deref()))
     }
     /// Estimated memory held by history.
     pub fn bytes(&self) -> usize {

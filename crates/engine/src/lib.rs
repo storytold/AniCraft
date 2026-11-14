@@ -26,6 +26,7 @@ mod cmds_retime;
 mod cmds_hints;
 mod cmds_layer;
 pub mod cmds_library;
+pub mod cmds_macro;
 pub mod cmds_paint;
 mod cmds_path;
 pub mod cmds_raw;
@@ -180,6 +181,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_sound::specs());
     v.extend(cmds_actions::specs());
     v.extend(cmds_script::specs());
+    v.extend(cmds_macro::specs());
     v
 }
 
@@ -198,7 +200,7 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
     commands().into_iter().find(|c| c.id == id)
 }
 
-pub use history::{Snapshot, StateId};
+pub use history::{Recorded, Snapshot, StateId};
 pub use selection::Selection;
 pub use snap::{Accuracy, SnapTo, ViewAids};
 pub use cmds_layer::LAYER_COLORS;
@@ -380,6 +382,13 @@ pub struct Session {
     pub filter_clipboard: Option<Vec<anicraft_doc::FilterEntry>>,
     /// The open envelope (ADR 0080): view state over the shapes it bends, like a gesture.
     pub(crate) envelope: Option<cmds_envelope::Envelope>,
+    /// The commands run since the last undo step was recorded, which the next step keeps so it
+    /// can be saved as a command (ADR 0097).
+    rec: history::Recording,
+    /// How many commands were recorded when the open gesture began (a revert goes back there).
+    gesture_rec: usize,
+    /// What the running command records instead of itself (`macro.run` records its steps).
+    pub(crate) record_as: Option<Vec<Recorded>>,
 }
 
 /// Each piece of a marquee's cut, with the shape it was cut from.
@@ -455,6 +464,9 @@ impl Session {
             filter_presets: filter_library::FilterLibrary::default(),
             filter_clipboard: None,
             envelope: None,
+            rec: history::Recording::default(),
+            gesture_rec: 0,
+            record_as: None,
         }
     }
 
@@ -497,6 +509,7 @@ impl Session {
         }
         // On a marquee's cut, the step (if the gesture makes one) starts from before the cut.
         let cut = self.live_cut().map(|p| (history::Snapshot { label: label.to_string(), ..p.before.clone() }, p.cut.clone()));
+        self.gesture_rec = self.rec.cmds.len();
         match cut {
             Some((before, doc)) => {
                 self.gesture_cut = Some(doc);
@@ -520,8 +533,17 @@ impl Session {
             }
             self.provisional = None;
         }
+        self.record(before);
+    }
+
+    /// Records `before` as the undo step to the current document, with the commands run since
+    /// the last step; an unchanged document records nothing and forgets them.
+    fn record(&mut self, mut before: Snapshot) {
         if self.doc != before.doc {
+            before.commands = self.rec.take();
             self.history.record(before, &self.doc);
+        } else {
+            self.rec.clear();
         }
     }
 
@@ -565,10 +587,7 @@ impl Session {
         {
             return Err(EngineError::NeedsConfirmation(format!("{} {} (pass \"confirm\": true to proceed)", c.title, c.message)));
         }
-        // A group open for editing is one layer and one frame (ADR 0073).
-        if spec.mutates && self.editing_group() && GROUP_REFUSES.iter().any(|ns| if ns.ends_with('.') { id.starts_with(ns) } else { id == *ns }) {
-            return Err(EngineError::State("a group has one layer and one frame: close it (Edit › Edit Document) to change the timeline, or convert it to a symbol (F8) to animate inside it".into()));
-        }
+        self.group_allows(&spec)?;
         self.settle_cut(id, params);
         if !spec.mutates {
             let r = (spec.run)(self, params);
@@ -588,7 +607,9 @@ impl Session {
         self.pending_cut = None;
         self.motion_edit = None;
         self.step_label = None;
+        self.record_as = None;
         let result = (spec.run)(self, params);
+        let record_as = self.record_as.take();
         // Edits to a motion tween's target become property keys (auto-key).
         if let Some(edit) = self.motion_edit.take()
             && result.is_ok()
@@ -610,6 +631,10 @@ impl Session {
                 if changed {
                     self.state = history::fresh_state();
                     self.revision += 1;
+                    match record_as {
+                        Some(steps) => steps.into_iter().for_each(|r| self.rec.push(r)),
+                        None => self.rec.push(Recorded::new(id, params)),
+                    }
                     match pending.filter(|_| self.gesture.is_none()) {
                         // A marquee's cut: provisional, no step (yet).
                         Some((origin, inside)) => self.begin_cut(before, cut.is_some(), origin, inside),
@@ -617,8 +642,8 @@ impl Session {
                             if cut.is_some() {
                                 self.provisional = None;
                             }
-                            if self.gesture.is_none() && self.doc != before.doc {
-                                self.history.record(before, &self.doc);
+                            if self.gesture.is_none() {
+                                self.record(before);
                             }
                         }
                     }
@@ -633,6 +658,16 @@ impl Session {
                 Err(e)
             }
         }
+    }
+
+    /// A group open for editing is one layer and one frame (ADR 0073): commands that change
+    /// the timeline are refused inside it.
+    fn group_allows(&self, spec: &CommandSpec) -> Result<()> {
+        let id = spec.id;
+        if spec.mutates && self.editing_group() && GROUP_REFUSES.iter().any(|ns| if ns.ends_with('.') { id.starts_with(ns) } else { id == *ns }) {
+            return Err(EngineError::State("a group has one layer and one frame: close it (Edit › Edit Document) to change the timeline, or convert it to a symbol (F8) to animate inside it".into()));
+        }
+        Ok(())
     }
 
     /// Inside a group (ADR 0073) the playhead stays on its only frame.
@@ -699,6 +734,8 @@ impl Session {
         if self.saved_state == Some(p.state) {
             self.saved_state = Some(p.before.state);
         }
+        // The cut's commands went with it.
+        self.rec.clear();
         self.doc = p.before.doc;
         self.state = p.before.state;
         self.selection = sel;
@@ -720,9 +757,19 @@ impl Session {
         if !spec.mutates {
             return (spec.run)(self, params);
         }
+        self.group_allows(&spec)?;
         let before = self.snapshot("");
         self.dl_cache.replace(None);
+        // Each command's edits to a motion tween's target become its keys, as when it runs on
+        // its own (the next one may work at another frame).
+        let outer = self.motion_edit.take();
         let result = (spec.run)(self, params);
+        if let Some(edit) = self.motion_edit.take()
+            && result.is_ok()
+        {
+            cmds_motion::finish_edit(self, edit);
+        }
+        self.motion_edit = outer;
         self.dl_cache.replace(None);
         self.pending_cut = None;
         match result {
@@ -752,14 +799,15 @@ impl Session {
         if g.doc == self.doc && g.selection == self.selection {
             return;
         }
-        let back = Snapshot { label: String::new(), doc: g.doc.clone(), state: g.state, scene: g.scene, editing: g.editing.clone(), frame: g.frame, layer: g.layer, selection: g.selection.clone(), bytes: 0 };
+        let back = Snapshot { label: String::new(), doc: g.doc.clone(), state: g.state, scene: g.scene, editing: g.editing.clone(), frame: g.frame, layer: g.layer, selection: g.selection.clone(), bytes: 0, commands: None };
+        self.rec.truncate(self.gesture_rec);
         self.restore(back);
         self.revision += 1;
         self.fix_selection();
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
-        Snapshot { label: label.to_string(), doc: self.doc.clone(), state: self.state, scene: self.scene, editing: self.editing.clone(), frame: self.frame, layer: self.layer, selection: self.selection.clone(), bytes: 0 }
+        Snapshot { label: label.to_string(), doc: self.doc.clone(), state: self.state, scene: self.scene, editing: self.editing.clone(), frame: self.frame, layer: self.layer, selection: self.selection.clone(), bytes: 0, commands: None }
     }
 
     fn restore(&mut self, s: Snapshot) {
@@ -790,6 +838,7 @@ impl Session {
     pub fn undo(&mut self) -> Result<Value> {
         self.end_gesture();
         self.heal_cut();
+        self.rec.clear();
         let cur = self.snapshot("");
         let s = self.history.undo(cur).ok_or_else(|| EngineError::State("nothing to undo".into()))?;
         let label = s.label.clone();
@@ -802,6 +851,7 @@ impl Session {
     pub fn redo(&mut self) -> Result<Value> {
         self.end_gesture();
         self.heal_cut();
+        self.rec.clear();
         let cur = self.snapshot("");
         let s = self.history.redo(cur).ok_or_else(|| EngineError::State("nothing to redo".into()))?;
         let label = s.label.clone();
@@ -1127,6 +1177,8 @@ mod motion_path_tests;
 mod motion_pin_tests;
 #[cfg(test)]
 mod plugin_tests;
+#[cfg(test)]
+mod macro_tests;
 #[cfg(test)]
 mod plugin_kinds_tests;
 #[cfg(test)]

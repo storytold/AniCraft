@@ -116,6 +116,25 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: true,
             })
         }
+        // Saved commands are files in your preferences (ADR 0097).
+        "macro.save" => {
+            let path = crate::cmds_macro::target(p).ok()?;
+            crate::vfs::exists(&path).then(|| overwrite(&path, "Saving the command"))
+        }
+        "macro.import" => {
+            let path = crate::cmds_macro::import_target(p).ok()?;
+            crate::vfs::exists(&path).then(|| overwrite(&path, "Adding the command"))
+        }
+        "macro.delete" => {
+            let path = crate::cmds_macro::target(p).ok()?;
+            let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            crate::vfs::is_file(&path).then(|| Confirmation {
+                title: "Delete saved command?".into(),
+                message: format!("The saved command “{name}” will be deleted from your commands. This cannot be undone."),
+                action: "Delete Command".into(),
+                irreversible: true,
+            })
+        }
         // Brushes of your own live in your preferences, outside undo (ADR 0068).
         "brush.preset_delete" => {
             let name = p.get("name").and_then(Value::as_str)?;
