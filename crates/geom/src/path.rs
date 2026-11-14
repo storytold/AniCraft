@@ -276,7 +276,9 @@ impl Path {
             return Path::rect(x, y, w, h);
         }
         let k = r * (1.0 - KAPPA);
-        let (x1, y1) = (x + w, y + h);
+        // Normalise negative sizes by swapping the corners.
+        let (x, x1) = if w < 0.0 { (x + w, x) } else { (x, x + w) };
+        let (y, y1) = if h < 0.0 { (y + h, y) } else { (y, y + h) };
         let mut p = Path::new();
         p.move_to(Vec2::new(x + r, y))
             .line_to(Vec2::new(x1 - r, y))
@@ -608,6 +610,15 @@ mod tests {
         assert_eq!(star_inner_radius(10.0, 5, f32::NAN), star_inner_radius(10.0, 5, 0.5));
         assert_eq!(polystar_corners(0.0, 0.0, 1.0, 0, false, 0.5).len(), 3);
         assert_eq!(polystar_corners(0.0, 0.0, 1.0, u32::MAX, false, 0.5).len(), POLYSTAR_MAX_SIDES as usize);
+    }
+
+    #[test]
+    fn rounded_rect_negative_size_matches_rect_bounds() {
+        for (w, h) in [(-10.0, 10.0), (10.0, -10.0), (-10.0, -10.0)] {
+            let b = Path::rounded_rect(0.0, 0.0, w, h, 2.0).bounds();
+            let e = Path::rect(0.0, 0.0, w, h).bounds();
+            assert_eq!((b.min, b.max), (e.min, e.max), "w={w} h={h}");
+        }
     }
 
     #[test]
