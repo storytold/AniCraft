@@ -94,8 +94,8 @@ fn literals(source: &str) -> Vec<String> {
             if !test_module {
                 out.push(text);
             }
-        } else if chars[at] == '\'' && chars.get(at + 2) == Some(&'\'') {
-            at += 3; // A character literal such as '"', not the start of a string.
+        } else if let Some(end) = char_literal_end(&chars, at) {
+            at = end;
         } else {
             if test_module {
                 match chars[at] {
@@ -114,6 +114,28 @@ fn literals(source: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn char_literal_end(chars: &[char], at: usize) -> Option<usize> {
+    if chars.get(at) != Some(&'\'') {
+        return None;
+    }
+    let mut end = at + 2;
+    if chars.get(at + 1) == Some(&'\\') {
+        end += 1;
+        match chars.get(at + 2)? {
+            'x' => end += 2,
+            'u' if chars.get(at + 3) == Some(&'{') => {
+                end = at + 4;
+                while chars.get(end).is_some_and(|c| *c != '}') {
+                    end += 1;
+                }
+                end += 1;
+            }
+            _ => {}
+        }
+    }
+    (chars.get(end) == Some(&'\'')).then_some(end + 1)
 }
 
 fn check_tree(path: &Path, failures: &mut Vec<String>) {
@@ -175,4 +197,14 @@ fn guard_scans_production_after_test_only_items() {
     "###;
     assert_eq!(literals(source), ["live label"]);
     assert_eq!(literals("#[cfg(test)] mod tests; fn live() { let _ = \"live label\"; }"), ["live label"]);
+}
+
+#[test]
+fn guard_scans_after_escaped_character_literals() {
+    let source = r###"let a = '\"'; let b = '\''; let c = '\\';
+        let d = '\u{22}'; let e = '\x22';
+        let label = "as in Animate";
+        fn lifetime<'a>(value: &'a str) { let _ = "like Animate"; }
+    "###;
+    assert_eq!(literals(source), ["as in Animate", "like Animate"]);
 }
