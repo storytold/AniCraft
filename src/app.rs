@@ -427,6 +427,8 @@ pub struct App {
     pub brush_clock: f64,
     /// Window › Brush Library and the brush pickers (ADR 0068).
     pub brush_lib: crate::brush_panel::BrushLibraryView,
+    /// A filter preset being named in Properties (ADR 0091).
+    pub filter_naming: crate::panels::FilterNaming,
     pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
     pub pen_pressure: Option<f32>,
     /// Eraser tool options (ADR 0034); its stroke's samples are `brush_samples`.
@@ -633,6 +635,7 @@ impl App {
         // Open Recent is the session's list, kept in the preferences (ADR 0059).
         session.recent = prefs.recent.clone();
         session.brushes = prefs.brushes.clone();
+        session.filter_presets = prefs.filter_presets.clone();
         // Whether rulers, grid and guides show and snap carries over between sessions (ADR 0076).
         session.aids = prefs.aids;
         // The editor draws as Animate does: merge drawing, until Object Drawing (J) is switched on.
@@ -695,6 +698,7 @@ impl App {
             paint_brush: crate::brushtool::BrushOptions::paint_brush(),
             brush_clock: 0.0,
             brush_lib: crate::brush_panel::BrushLibraryView::default(),
+            filter_naming: Default::default(),
             brush_samples: Vec::new(),
             pen_pressure: None,
             eraser: crate::erasertool::EraserOptions::default(),
@@ -2806,13 +2810,16 @@ impl App {
             // A brush set (ADR 0068): your brushes as a small JSON file.
             "brush.preset_export" => Some((tr_noop!("Export your brushes (a brush set file)"), "path", "brushes.json".to_string())),
             "brush.preset_import" => Some((tr_noop!("Import brushes (a brush set file)"), "path", "brushes.json".to_string())),
+            // Filter presets (ADR 0091): yours as a small JSON file.
+            "filter.preset_export" => Some((tr_noop!("Export your filter presets (a preset file)"), "path", "filter-presets.json".to_string())),
+            "filter.preset_import" => Some((tr_noop!("Import filter presets (a preset file)"), "path", "filter-presets.json".to_string())),
             // The document's swatches (ADR 0078): a swatch file, or a GIMP palette to import.
             "swatch.export" => Some((tr_noop!("Export swatches (a swatch file)"), "path", "swatches.json".to_string())),
             "swatch.import" => Some((tr_noop!("Import swatches (a swatch file or a GIMP palette)"), "path", "swatches.json".to_string())),
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
-            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "brush.preset_export" | "brush.preset_import" | "swatch.export" | "swatch.import"));
+            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "brush.preset_export" | "brush.preset_import" | "filter.preset_export" | "filter.preset_import" | "swatch.export" | "swatch.import"));
             if is_file && platform::WEB && platform::reads_file(id) {
                 // The browser's file picker (ADR 0036). The file arrives on a later frame
                 // (`open_picked`); a save or export asks for the download's name below.
@@ -3595,6 +3602,7 @@ impl App {
         // Open Recent changed (an open, a save, a pin): into the preferences.
         crate::recent::sync(self);
         crate::brush_panel::sync(self);
+        crate::panels::sync_filter_presets(self);
         crate::rulers::sync(self);
         // A browser asks before leaving a page with unsaved work (its close guard).
         platform::set_unsaved(self.s.is_dirty());
