@@ -143,6 +143,11 @@ Apache-2.0), and in the desktop app `cpal` (sound output, Apache-2.0) with its p
 bindings on macOS). No new licence. `symphonia`, the usual Rust decoder, is MPL-2.0 and was not
 used.
 
+Sound output in the browser (2026-11-13, ADR 0095) uses the same `cpal` with its `wasm-bindgen`
+feature (Web Audio), which brings only crates already in the web build or under MIT OR
+Apache-2.0 (`wasm-bindgen`, `js-sys`, `web-sys`, `futures-channel`, `futures-util`). No new
+licence.
+
 ### Installers (2026-11-09, ADR 0026)
 
 No new crate. The installers are built with tools that are not Rust dependencies, so

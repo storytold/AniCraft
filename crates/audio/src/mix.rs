@@ -201,7 +201,8 @@ fn interpolate(p: &Pcm, t: f64, looping: bool) -> (f32, f32) {
         let j = if looping { j.rem_euclid(len.max(1)) } else { j };
         if (0..len).contains(&j) { p.frame(j as usize) } else { (0.0, 0.0) }
     };
-    let (y0, y1, y2, y3) = (get(i - 1), get(i), get(i + 1), get(i + 2));
+    // Saturating: a hostile skip can put `t` at the end of the `i64` range.
+    let (y0, y1, y2, y3) = (get(i.saturating_sub(1)), get(i), get(i.saturating_add(1)), get(i.saturating_add(2)));
     (hermite(y0.0, y1.0, y2.0, y3.0, x), hermite(y0.1, y1.1, y2.1, y3.1, x))
 }
 

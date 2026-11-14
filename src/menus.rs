@@ -668,6 +668,16 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             if ui_item(ui, tr!("Loop Playback"), "", Some(app.looping)) {
                 app.looping = !app.looping;
             }
+            // Sound while you work (ADR 0095): the listener's settings, kept in the preferences.
+            ui.separator();
+            if ui_item(ui, tr!("Mute Sounds"), "", Some(app.prefs.sound_muted)) {
+                app.prefs.sound_muted = !app.prefs.sound_muted;
+                app.save_prefs();
+            }
+            if ui_item(ui, tr!("Audio Scrubbing"), "", Some(app.prefs.audio_scrubbing)) {
+                app.prefs.audio_scrubbing = !app.prefs.audio_scrubbing;
+                app.save_prefs();
+            }
         }
         "Window" => {
             // Workspaces (ADR 0075): the built-in ones, yours, Save and Reset.
