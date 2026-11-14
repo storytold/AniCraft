@@ -141,3 +141,113 @@ fn dashed_raw_strokes_keep_their_style_when_cut() {
     let back = crate::format::from_json(&crate::format::to_json(&s.doc).unwrap_or_default()).unwrap_or_default();
     assert_eq!(back, s.doc);
 }
+
+/// A raw regular `n`-gon of radius 80 at the origin with `fill` and `stroke` (`null` for none).
+fn polygon(s: &mut Session, n: u32, fill: &serde_json::Value, stroke: &serde_json::Value) {
+    let outer = 80.0f32;
+    let inner = outer * (std::f32::consts::PI / n as f32).cos();
+    run(s, "draw.star", json!({"cx": 0, "cy": 0, "outer": outer, "inner": inner, "points": n, "fill": fill, "stroke": stroke}));
+}
+
+/// A shape tween from polygon `a` on frame 0 to polygon `b` on frame 10 (sides, fill, stroke).
+fn polygon_tween(a: (u32, serde_json::Value, serde_json::Value), b: (u32, serde_json::Value, serde_json::Value)) -> Session {
+    let mut s = blank();
+    polygon(&mut s, a.0, &a.1, &a.2);
+    run(&mut s, "timeline.goto", json!({"frame": 10}));
+    run(&mut s, "timeline.insert_blank_keyframe", json!({}));
+    polygon(&mut s, b.0, &b.1, &b.2);
+    run(&mut s, "timeline.goto", json!({"frame": 0}));
+    run(&mut s, "timeline.create_shape_tween", json!({}));
+    s
+}
+
+/// The width of everything stroked at `frame`, and how many strokes there are.
+fn stroked_width(s: &Session, frame: u32) -> (f32, usize) {
+    let list = anicraft_doc::evaluate(&s.doc, frame);
+    let strokes: Vec<_> = list.items.iter().filter(|i| i.stroke.is_some()).collect();
+    let r = strokes.iter().fold(anicraft_geom::Rect::EMPTY, |r, i| r.union(&i.path.transformed(&i.transform).bounds()));
+    (if strokes.is_empty() { 0.0 } else { r.max.x - r.min.x }, strokes.len())
+}
+
+/// A stroke on only one keyframe of a shape tween shrinks away or grows in over the tween, in
+/// place of standing still and vanishing at the end (#119).
+#[test]
+fn a_stroke_on_one_keyframe_only_shrinks_away_or_grows_in() {
+    let red = json!("#ff0000");
+    // Stroked on the start only: it shrinks to nothing.
+    let s = polygon_tween((5, red.clone(), json!("#000000")), (3, red.clone(), json!(null)));
+    let (w0, _) = stroked_width(&s, 0);
+    let (w5, n5) = stroked_width(&s, 5);
+    let (w9, _) = stroked_width(&s, 9);
+    assert!(w0 > 100.0, "{w0}");
+    assert!(n5 > 0 && (w5 - w0 * 0.5).abs() < w0 * 0.1, "halfway: {w5} of {w0}");
+    assert!(w9 < w0 * 0.2, "near the end: {w9} of {w0}");
+    assert_eq!(stroked_width(&s, 10).1, 0);
+    // Stroked on the end only: it grows from nothing.
+    let s = polygon_tween((3, red.clone(), json!(null)), (5, red, json!("#000000")));
+    let (w10, _) = stroked_width(&s, 10);
+    let (w5, n5) = stroked_width(&s, 5);
+    assert!(w10 > 100.0, "{w10}");
+    assert_eq!(stroked_width(&s, 0).1, 0);
+    assert!(n5 > 0 && (w5 - w10 * 0.5).abs() < w10 * 0.1, "halfway: {w5} of {w10}");
+}
+
+/// A shape hint placed on a raw outline's stroke steers the stroke's morph when the keyframes'
+/// outlines have different numbers of runs (#119).
+#[test]
+fn a_hint_on_a_raw_stroke_steers_its_morph() {
+    let mut s = polygon_tween((3, json!(null), json!("#000000")), (5, json!(null), json!("#000000")));
+    // The triangle's top corner goes to the pentagon's lower right corner.
+    let a = anicraft_geom::Vec2::new(0.0, -80.0);
+    let angle = (-90.0f32 + 144.0).to_radians();
+    let b = anicraft_geom::Vec2::new(80.0 * angle.cos(), 80.0 * angle.sin());
+    let half = a.lerp(b, 0.5);
+    let anchor_at = |s: &Session, q: anicraft_geom::Vec2| {
+        anicraft_doc::evaluate(&s.doc, 5).items.iter().filter(|i| i.stroke.is_some()).any(|i| {
+            i.path.cmds.iter().any(|c| match *c {
+                anicraft_geom::PathCmd::MoveTo(p) | anicraft_geom::PathCmd::LineTo(p) | anicraft_geom::PathCmd::CubicTo(_, _, p) => {
+                    i.transform.apply(p).distance(q) < 0.5
+                }
+                _ => false,
+            })
+        })
+    };
+    assert!(!anchor_at(&s, half), "without a hint the corner goes elsewhere");
+    run(&mut s, "tween.add_hint", json!({}));
+    run(&mut s, "tween.move_hint", json!({"hint": "a", "x": a.x, "y": a.y}));
+    run(&mut s, "tween.move_hint", json!({"hint": "a", "frame": 10, "x": b.x, "y": b.y}));
+    assert!(anchor_at(&s, half), "the corner travels to the hinted point");
+}
+
+/// A shape tween between raw polygons with different side counts morphs the outline's stroke
+/// with its fill: the stroke covers the whole morphed edge, with no runs left behind (#119).
+#[test]
+fn a_shape_tween_morphs_the_stroke_with_the_fill() {
+    // The same stroke at both ends, and a stroke that changes colour.
+    for (from, to, end_stroke) in [(3u32, 5u32, "#000000"), (5, 3, "#000000"), (3, 5, "#0000ff"), (5, 3, "#0000ff")] {
+        let s = polygon_tween((from, json!("#ff0000"), json!("#000000")), (to, json!("#ff0000"), json!(end_stroke)));
+        for frame in [5u32, 9] {
+            let list = anicraft_doc::evaluate(&s.doc, frame);
+            let fills: Vec<_> = list.items.iter().filter(|i| i.fill.is_some()).collect();
+            let strokes: Vec<_> = list.items.iter().filter(|i| i.stroke.is_some()).collect();
+            assert_eq!(fills.len(), 1, "{from}->{to} frame {frame}");
+            assert!(!strokes.is_empty(), "{from}->{to} frame {frame}");
+            let fill = fills[0];
+            // Every point of the fill's edge lies on some stroke, and every stroke on the fill's edge.
+            for pl in fill.path.flatten(&fill.transform, 0.25) {
+                for &p in &pl.points {
+                    let d = strokes.iter().map(|st| st.path.distance_to_edge(p, &st.transform)).fold(f32::INFINITY, f32::min);
+                    assert!(d < 1.5, "{from}->{to} frame {frame}: fill edge point {p:?} is {d} from any stroke");
+                }
+            }
+            for st in &strokes {
+                for pl in st.path.flatten(&st.transform, 0.25) {
+                    for &p in &pl.points {
+                        let d = fill.path.distance_to_edge(p, &fill.transform);
+                        assert!(d < 1.5, "{from}->{to} frame {frame}: stroke point {p:?} is {d} off the fill's edge");
+                    }
+                }
+            }
+        }
+    }
+}
