@@ -82,7 +82,7 @@ fn edit_lists(s: &mut Session, nothing: &str, mut edit: impl FnMut(&mut Vec<Filt
     }
     if clips == 0 {
         return Err(EngineError::State(if graphics > 0 {
-            "filters apply to movie clip and button instances, as in Animate; set the symbol's Type to Movie Clip first".into()
+            "filters apply to movie clip and button instances; set the symbol's Type to Movie Clip first".into()
         } else {
             "select a movie clip or button instance".into()
         }));
