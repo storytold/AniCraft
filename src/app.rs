@@ -433,6 +433,18 @@ pub struct App {
     pub filter_naming: crate::panels::FilterNaming,
     pub brush_samples: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
     pub pen_pressure: Option<f32>,
+    /// The press came from a pen, so speed must not replace it (ADR 0096).
+    pub brush_from_pen: bool,
+    /// When the press happened, and how far and long the opening dash has run.
+    pub brush_down: f64,
+    pub brush_open_dist: f32,
+    pub brush_open_time: f32,
+    /// Recent raw pointer positions, newest last. Smoothing averages these.
+    pub brush_hand: Vec<anicraft_engine::geom::Vec2>,
+    /// The stroke just committed, kept on screen until the stage picture shows it.
+    pub brush_latch: Vec<(anicraft_engine::geom::Vec2, Option<f32>)>,
+    pub brush_latch_state: Option<anicraft_engine::StateId>,
+    pub brush_latch_erase: bool,
     /// Whether a pointer event has carried a pen's tilt this session (ADR 0093). Until one has,
     /// the brushes' Tilt options stay hidden: they would do nothing.
     pub pen_tilt_seen: bool,
@@ -718,6 +730,14 @@ impl App {
             filter_naming: Default::default(),
             brush_samples: Vec::new(),
             pen_pressure: None,
+            brush_from_pen: false,
+            brush_down: 0.0,
+            brush_open_dist: 0.0,
+            brush_open_time: 0.0,
+            brush_hand: Vec::new(),
+            brush_latch: Vec::new(),
+            brush_latch_state: None,
+            brush_latch_erase: false,
             pen_tilt_seen: false,
             eraser: crate::erasertool::EraserOptions::default(),
             bucket_gap: GapSize::default(),
@@ -3047,7 +3067,7 @@ impl App {
     }
 
     pub fn zoom_about(&mut self, canvas: egui::Rect, screen: egui::Pos2, new_zoom: f32) {
-        let new_zoom = new_zoom.clamp(0.05, 64.0);
+        let new_zoom = new_zoom.clamp(0.05, 256.0);
         let size = egui::vec2(self.s.doc.stage.width as f32, self.s.doc.stage.height as f32);
         let origin = canvas.center() + self.view.pan - size * self.view.zoom * 0.5;
         let stage_pt = (screen - origin) / self.view.zoom;

@@ -278,7 +278,7 @@ pub fn paint_guides(app: &App, painter: &Painter, geo: Geo, ppp: f32) {
 
 /// The step between labelled ticks: the first that leaves room for a number on screen.
 fn major_step(zoom: f32) -> f32 {
-    const STEPS: [f32; 17] = [1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 250.0, 500.0, 1_000.0, 2_000.0, 2_500.0, 5_000.0, 10_000.0, 20_000.0];
+    const STEPS: [f32; 19] = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 250.0, 500.0, 1_000.0, 2_000.0, 2_500.0, 5_000.0, 10_000.0, 20_000.0];
     STEPS.into_iter().find(|s| s * zoom >= 56.0).unwrap_or(50_000.0)
 }
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn ruler_ticks_stay_readable_at_every_zoom() {
-        for zoom in [0.05f32, 0.25, 0.5, 1.0, 3.0, 16.0, 64.0] {
+        for zoom in [0.05f32, 0.25, 0.5, 1.0, 3.0, 16.0, 64.0, 256.0] {
             let major = major_step(zoom);
             assert!(major * zoom >= 56.0 || major == 50_000.0, "zoom {zoom}");
             let minor = major / minor_count(major, zoom);

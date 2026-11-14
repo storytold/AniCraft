@@ -40,6 +40,8 @@ impl EraserOptions {
 /// Starts an eraser stroke at stage point `p` (the eraser ignores pen pressure).
 pub fn start(app: &mut App, p: Vec2) -> Drag {
     app.pen_pressure = None;
+    app.brush_from_pen = false;
+    app.brush_hand.clear();
     app.brush_samples = vec![(p, None)];
     Drag::Eraser
 }
@@ -57,10 +59,15 @@ pub fn commit(app: &mut App, xf: Xf) {
     // in place with a double-click so their own lines and fills can be erased.
     let kept = |v: &serde_json::Value| (v["kept"]["symbols"].as_u64().unwrap_or(0), v["kept"]["objects"].as_u64().unwrap_or(0));
     match app.run("draw.erase", params) {
-        Some(v) if v["erased"] == true => match kept(&v) {
-            (0, 0) => app.status_ok(tr!("Erased. {undo} to undo.", undo = undo)),
-            _ => app.status_ok(tr!("Erased the lines and fills. {undo} to undo. Symbols and drawing objects are kept: double-click one with the Selection tool to erase inside it.", undo = undo)),
-        },
+        Some(v) if v["erased"] == true => {
+            app.brush_latch = samples;
+            app.brush_latch_erase = true;
+            app.brush_latch_state = Some(app.s.stage_picture().state);
+            match kept(&v) {
+                (0, 0) => app.status_ok(tr!("Erased. {undo} to undo.", undo = undo)),
+                _ => app.status_ok(tr!("Erased the lines and fills. {undo} to undo. Symbols and drawing objects are kept: double-click one with the Selection tool to erase inside it.", undo = undo)),
+            }
+        }
         Some(v) if kept(&v) != (0, 0) => {
             let k = kept(&v);
             app.status_ok(match k {
@@ -105,6 +112,9 @@ pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, hover: Option<Po
     if app.drag == Drag::Eraser {
         let bg = to_color32(anicraft_engine::doc::Rgba { a: 1.0, ..app.s.doc.stage.background });
         draw_sweep(painter, xf, &tip, &app.brush_samples, bg);
+    } else if app.brush_latch_state.is_some() && app.brush_latch_erase {
+        let bg = to_color32(anicraft_engine::doc::Rgba { a: 1.0, ..app.s.doc.stage.background });
+        draw_sweep(painter, xf, &tip, &app.brush_latch, bg);
     }
     if let Some(h) = hover
         && !app.eraser.faucet

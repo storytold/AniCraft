@@ -13,6 +13,7 @@ crates/plugins  L0  Sandboxed WebAssembly plug-ins: wasmi host, ABI v1, limits, 
 crates/audio    L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing and resampling, WAV, peaks (ADR 0020)
 crates/actions  L0  Timeline action IR: stop/play/goto, targets, button events, frame scripts (ADR 0024)
 crates/guide    L0  The user guide (docs/guide) as a bundled static HTML book, with its link checks (ADR 0069)
+crates/pen-macos L0  macOS pen pressure: AppKit tablet points for the brush (ADR 0096)
 crates/doc      L1  Document model, easing, timeline evaluation, the interactive player, sample scene
 crates/text     L1  Fonts on this computer, shaping and line layout into outlines (ADR 0012)
 crates/render   L2  CPU oracle renderer (coverage accumulation, paints, strokes, PNG)
@@ -69,7 +70,9 @@ a new crate needs a row here and in its `LAYERS` table.
    `doc::evaluate` and keep it pure.
 4. **The CPU renderer is the oracle.** Renderer changes come with analytic or golden tests. Any
    future GPU renderer is tested against it.
-5. **No unsafe** (`unsafe_code = "forbid"`).
+5. **No unsafe** (`unsafe_code = "forbid"`). The one exception is `crates/pen-macos` (ADR 0096):
+   it reads macOS pen pressure, because the workspace lint cannot be inherited and then
+   overridden. `src/` does not call AppKit. Do not add a second exception.
 6. **Clean room.** Learn behaviour from public docs and observation only. Never copy proprietary
    code, presets, shaders or assets.
 7. **Verify UI changes visually**: `cargo run -- --screenshot shots/now.png`, then look at the PNG.

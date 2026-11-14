@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Raw brush** (ADR 0096, M7).
+  * **Smoothing Off** is the points you drew. The plain Brush opens there. The centre line is
+    the samples and the outline is the distance-field contour as line segments, with no cubic.
+    A command that omits smoothing stays at 50. Built-in presets keep theirs.
+  * **Thinnest** and **Max** are the widths at no pressure and at a full press (0.01 stage
+    pixels up to the size you set). A light pen, including the start of the stroke, can be a
+    hairline. Built-in pressure brushes keep the lightest width they were drawn at.
+  * The ink you see while the pen is down is one mesh of the samples, and it stays until the
+    stage picture shows that stroke. Every pointer position in the frame is kept.
+  * On macOS the stylus pressure is read (winit does not deliver it). Turning **Speed as
+    pressure** off leaves that pen alone and paints a mouse at full width. Speed is on for the
+    plain Brush, and the opening dash sets the width of the start.
+  * The view zooms from 5 % to 25600 %. Ruler steps of a quarter and a half stage pixel stay
+    readable there. Tilt, texture and scatter (ADR 0093) are unchanged. Object Drawing is
+    still off in the editor and on for a headless session.
 * **Sound output polish** (ADR 0095, M5).
   * The playhead follows the sound being **heard**: the device's latency is taken off and slow
     frames are dropped rather than drifting (within a frame over an hour of play in tests).

@@ -722,6 +722,20 @@ thread_local! {
     static MAC_INBOX: std::cell::RefCell<Option<fmv_macos_events::Inbox>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Stylus pressure this frame, `0.0..=1.0`, when this system has a tip-down tablet point
+/// (ADR 0096). macOS is the only platform that reports one here. A pen that arrives as a touch
+/// is read from egui by the brush. A plain mouse is `None`.
+pub fn pen_pressure() -> Option<f32> {
+    #[cfg(target_os = "macos")]
+    {
+        anicraft_pen_macos::current()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Listens for documents the system hands over while AniCraft runs. Keep the result until the
 /// event loop returns. On macOS it must start before the event loop does, so the document that
 /// launched the app (sent as an Apple Event, not on the command line) isn't missed. Windows and
@@ -738,6 +752,8 @@ pub fn listen_for_documents() -> DocumentListener {
     {
         let (registration, inbox) = fmv_macos_events::Registration::install();
         MAC_INBOX.with(|i| *i.borrow_mut() = Some(inbox));
+        // Before the first pen event, so a stroke that starts on the first frame still has it.
+        anicraft_pen_macos::install();
         DocumentListener { _registration: registration }
     }
     #[cfg(not(target_os = "macos"))]

@@ -1,0 +1,22 @@
+[package]
+name = "anicraft-pen-macos"
+description = "macOS pen pressure for the AniCraft brush: AppKit tablet points, so the shell stays free of unsafe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", features = ["exception"] }
+block2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSResponder", "block2"] }
+
+# Not the workspace lints: those forbid unsafe, and this crate is the one AppKit monitor
+# (the block returns the same event it was given). Clippy matches the workspace.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

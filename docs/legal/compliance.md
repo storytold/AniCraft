@@ -69,6 +69,23 @@ two Apple Event handlers (open documents, quit) and an observer, and returns pat
 main-thread inbox. It has no network, file or process access, and no build script. Read any
 new version in full before it comes in.
 
+### macOS pen pressure (2026-11-14, ADR 0096)
+
+No new crate from crates.io. `crates/pen-macos` is first-party (MIT OR Apache-2.0), built only
+for macOS, and only `src/platform.rs` calls it. It uses `objc2` 0.6 with the `exception`
+feature, `block2` 0.6 and `objc2-app-kit` 0.3.2 (default features off), which were already in
+the tree through wgpu and `fmv-macos-events`. `objc2-exception-helper` (Zlib OR Apache-2.0 OR
+MIT) comes in with that feature. That licence is already allowed. No new licence.
+
+The workspace forbids `unsafe` and that lint cannot be inherited and then overridden, so this
+crate sets its own (`unsafe_code = allow`) and does not take the workspace lints. There are
+two `unsafe` sites, each with a safety comment: the event-monitor block borrows the event
+AppKit is dispatching, and the call that registers the monitor. Both the block and the
+monitor token are kept for the process. Pressure and the button mask are read only on mouse
+and tablet events, inside `objc2::exception::catch`, because reading them on another event
+kind aborts the process. The shell has no `unsafe`. The crate reads pressure only. It does
+not read tilt (ADR 0093).
+
 ### The user guide (2026-11-11, ADR 0069)
 
 New crates, from crates.io: `pulldown-cmark` 0.13 (MIT) with `pulldown-cmark-escape` (MIT),

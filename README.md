@@ -119,7 +119,8 @@ The sample animation, exported as an animated GIF by AniCraft's own renderer fro
   expect them. If you know Adobe Animate or Flash, you already know AniCraft.
 - **Fast.** A pure Rust engine with a deterministic, analytic anti-aliasing CPU renderer, band-parallel
   rendering, a tiled stage and a background render worker. No Electron, no webview, no waiting.
-- **Robust.** No `unsafe` code (`unsafe_code = "forbid"`), no panics on input, every command fuzzed, and
+- **Robust.** No `unsafe` in the app (`unsafe_code = "forbid"`; the one exception is the macOS
+  pen-pressure monitor, ADR 0096), no panics on input, every command fuzzed, and
   undo with structural sharing (`Arc`), so history stays instant and memory-proportional.
 - **Time is a function.** The document is plain data, and the picture at a frame is a pure function,
   `evaluate(doc, frame)`. Classic tweens with easing presets and shape tweens with contour morphing.

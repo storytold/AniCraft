@@ -87,7 +87,8 @@ Priority: **P0** = M0–M2 skeleton must have, **P1** = parity core, **P2** = lo
 
 ## 3. Constraints and rules (inherited from the Craft family)
 
-1. Rust only; no unsafe (`unsafe_code = "forbid"` workspace-wide).
+1. Rust only; no unsafe (`unsafe_code = "forbid"` on the workspace). `crates/pen-macos` is the
+   one exception (ADR 0096): it reads macOS pen pressure. The shell does not contain that code.
 2. Everything a user can do is a **command** with an id, label, menu path, shortcut, params schema
    and tests. UI, CLI, JSON-lines and MCP all dispatch by id.
 3. The UI is thin: no document logic in `ui`.
