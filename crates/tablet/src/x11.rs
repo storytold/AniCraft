@@ -79,6 +79,8 @@ fn run(conn: &RustConnection, state: &mut State, callback: &dyn Fn(Option<Sample
             deliver(callback, sample);
         }
     }
+    // The display went away: no pen reading is current any more, so a stale one must not outlive the reader.
+    deliver(callback, None);
 }
 
 /// The slave pointer devices with their pen valuators (empty on any error).
