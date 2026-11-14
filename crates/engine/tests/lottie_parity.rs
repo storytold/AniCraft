@@ -29,7 +29,7 @@ const CHANNEL: u8 = 3;
 fn diff(a: &[u8], b: &[u8]) -> (usize, u8) {
     let mut count = 0;
     let mut worst = 0u8;
-    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (p, q) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         let d = p.iter().zip(q).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
         worst = worst.max(d);
         if d > CHANNEL {
