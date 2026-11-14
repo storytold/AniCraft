@@ -40,7 +40,7 @@ your hand.
 
 While a drawing tool is in your hand, its options appear at the top of **Properties**: fill
 and stroke, line style, and the tool's own settings. You can change any of these keys in the
-shortcut editor (**F1**).
+shortcut editor (**Ctrl+Alt+Shift+K**).
 
 The Bone and Camera tools are covered in
 [Masks, guides, camera and bones](masks-guides-camera-bones.md), and the Text tool in

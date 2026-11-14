@@ -274,6 +274,17 @@ pictures, so you can read it offline or host it next to your studio's own docume
 anicraft-cli guide --out docs/anicraft-guide
 ```
 
+`anicraft-cli guide search <words>` searches it from the terminal, with the same results, in the
+same order, as the search field in the guide's pages:
+
+```sh
+anicraft-cli guide search onion skin
+anicraft-cli guide search export gif --limit 3 --json yes
+```
+
+Each result gives the section's heading, its chapter, the page to open and a passage around the
+first match. See [Using this guide](using-this-guide.md).
+
 ## Performance check
 
 `anicraft-cli bench` builds a large generated document and times editing, undo, rendering,

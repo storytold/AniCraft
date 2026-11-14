@@ -68,7 +68,7 @@ pub fn commands_md() -> String {
         "Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), \
          `anicraft-cli` and AI assistants over MCP all run the same {} commands, listed here by menu. The id is what scripts and \
          [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the \
-         document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the \
+         document are one undo step each. Your own shortcuts (**Help › Keyboard Shortcuts**) replace the defaults shown here; see the \
          [shortcut reference](shortcuts.md).\n\n",
         cmds.len()
     ));
@@ -114,7 +114,7 @@ pub fn shortcuts_md() -> String {
     let mut out = String::from("# Shortcut reference\n\n");
     out.push_str(
         "AniCraft's default keyboard shortcuts. On macOS, **Ctrl** is **⌘** (Command) and **Alt** is **⌥** (Option). \
-         To change a shortcut, open **Help › Keyboard Shortcuts** (**F1**): see \
+         To change a shortcut, open **Help › Keyboard Shortcuts** (**Ctrl+Alt+Shift+K**): see \
          [Preferences, shortcuts, accessibility and languages](../preferences-shortcuts-accessibility.md). \
          The keys in the fixed rows can't be reassigned. Every command, with or without a key, is in the \
          [command reference](commands.md).\n\n\

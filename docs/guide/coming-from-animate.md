@@ -106,6 +106,8 @@ Asset Warp, the Paint Brush and Fluid Brush, Deco and the Spray Brush. More on t
 | Snap to objects | **Ctrl+Shift+/** | View › Snapping › Snap to Objects |
 | Zoom in and out | **Ctrl+=**, **Ctrl+-** | View |
 | Preferences (Windows and Linux) | **Ctrl+U** | Edit › Preferences… |
+| Help | **F1** | Help › Help for This (the guide at the section for what you are pointing at) |
+| Keyboard Shortcuts | **Ctrl+Alt+Shift+K** | Help › Keyboard Shortcuts |
 
 AniCraft also has **Home** and **End** (and **Shift+,** and **Shift+.**) for the first and last
 frame, and **Shift+PageUp** and **Shift+PageDown** for the previous and next scene.
@@ -122,7 +124,7 @@ frame, and **Shift+PageUp** and **Shift+PageDown** for the previous and next sce
 * Panel toggles such as **Ctrl+L** for the Library have no key yet; use the **Window** menu.
 * **Ctrl+0** fits the stage in the window and **Ctrl+1** shows it at 100 %.
 
-Any key can be changed in **Help › Keyboard Shortcuts** (**F1**), so you can bring back a habit
+Any key can be changed in **Help › Keyboard Shortcuts** (**Ctrl+Alt+Shift+K**, as in Animate), so you can bring back a habit
 of your own. See [Preferences, shortcuts, accessibility and languages](preferences-shortcuts-accessibility.md)
 and the full list in [the shortcut reference](reference/shortcuts.md).
 
