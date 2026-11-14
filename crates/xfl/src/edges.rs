@@ -36,87 +36,15 @@ pub struct Edge {
     pub segs: Vec<Seg>,
 }
 
-const TWIPS: f32 = 20.0;
-const MAX_SEGS: usize = 2_000_000;
-
-fn number(s: &[u8], i: &mut usize) -> Option<f32> {
-    while s.get(*i).is_some_and(|c| c.is_ascii_whitespace()) {
-        *i += 1;
-    }
-    let start = *i;
-    if s.get(*i) == Some(&b'#') {
-        *i += 1;
-        let h0 = *i;
-        while s.get(*i).is_some_and(u8::is_ascii_hexdigit) {
-            *i += 1;
-        }
-        let int = std::str::from_utf8(s.get(h0..*i)?).ok()?;
-        let mut frac = 0u32;
-        if s.get(*i) == Some(&b'.') {
-            *i += 1;
-            let f0 = *i;
-            while s.get(*i).is_some_and(u8::is_ascii_hexdigit) && *i - f0 < 2 {
-                *i += 1;
-            }
-            let f = std::str::from_utf8(s.get(f0..*i)?).ok()?;
-            // One digit means sixteenths of 256ths: "#A.8" = 10.5.
-            frac = u32::from_str_radix(f, 16).ok()? << (if f.len() == 1 { 4 } else { 0 });
-        }
-        let v = u32::from_str_radix(if int.is_empty() { "0" } else { int }, 16).ok()?;
-        let fixed = (v.wrapping_shl(8) | frac) as i32;
-        return Some(fixed as f32 / 256.0);
-    }
-    if matches!(s.get(*i), Some(b'-' | b'+')) {
-        *i += 1;
-    }
-    while s.get(*i).is_some_and(|c| c.is_ascii_digit() || *c == b'.' || *c == b'e' || *c == b'E') {
-        *i += 1;
-    }
-    std::str::from_utf8(s.get(start..*i)?).ok()?.parse::<f32>().ok().filter(|v| v.is_finite())
-}
-
-/// Decodes an `edges` attribute into segments (pixels). Stops quietly at anything it can't
-/// read, keeping what came before.
+/// Decodes an `edges` attribute through craft-libs and maps its neutral geometry to AniCraft.
 pub fn parse(s: &str) -> Vec<Seg> {
-    let b = s.as_bytes();
-    let mut i = 0;
-    let mut cur = Vec2::ZERO;
-    let mut out = Vec::new();
-    let pt = |b: &[u8], i: &mut usize| -> Option<Vec2> { Some(Vec2::new(number(b, i)? / TWIPS, number(b, i)? / TWIPS)) };
-    while let Some(&c) = b.get(i) {
-        i += 1;
-        match c {
-            b'!' => match pt(b, &mut i) {
-                Some(p) => cur = p,
-                None => break,
-            },
-            b'|' | b'/' => match pt(b, &mut i) {
-                Some(p) => {
-                    out.push(Seg { from: cur, ctrl: None, to: p });
-                    cur = p;
-                }
-                None => break,
-            },
-            b'[' | b']' => match (pt(b, &mut i), pt(b, &mut i)) {
-                (Some(q), Some(p)) => {
-                    out.push(Seg { from: cur, ctrl: Some(q), to: p });
-                    cur = p;
-                }
-                _ => break,
-            },
-            b'S' => {
-                while b.get(i).is_some_and(u8::is_ascii_digit) {
-                    i += 1;
-                }
-            }
-            c if c.is_ascii_whitespace() => {}
-            _ => break,
-        }
-        if out.len() >= MAX_SEGS {
-            break;
-        }
-    }
-    out
+    craft_xfl::edges::parse_edge_segments(s)
+        .into_iter()
+        .map(|segment| {
+            let point = |p: craft_xfl::edges::Point| Vec2::new(p.x, p.y);
+            Seg { from: point(segment.from), ctrl: segment.control.map(point), to: point(segment.to) }
+        })
+        .collect()
 }
 
 /// Hash key for an end point (to 1/100 px, which absorbs the format's rounding).
@@ -205,10 +133,9 @@ mod tests {
         assert_eq!(s[1].ctrl, Some(Vec2::new(20.0, 0.0)));
         assert_eq!(s[2], Seg { from: Vec2::new(20.0, 10.0), ctrl: None, to: Vec2::new(0.0, 10.0) });
         // Hex fixed point: #A.8 = 10.5 twips; a negative two's-complement value.
-        let mut i = 0;
-        assert_eq!(number(b"#A.8", &mut i), Some(10.5));
-        let mut i = 0;
-        assert_eq!(number(b"#FFFFFF.80", &mut i), Some(-0.5));
+        let hex = parse("!#A.8 -20|#FFFFFF.80 0");
+        assert_eq!(hex[0].from, Vec2::new(0.525, -1.0));
+        assert_eq!(hex[0].to, Vec2::new(-0.025, 0.0));
         assert!(parse("!1 2|x").is_empty(), "stops at garbage, never panics");
     }
 

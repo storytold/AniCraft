@@ -8,6 +8,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+craft-xml.workspace = true
 thiserror.workspace = true
 
 [lints]

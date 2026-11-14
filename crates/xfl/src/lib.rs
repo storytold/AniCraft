@@ -9,7 +9,7 @@
 pub mod edges;
 pub mod import;
 pub mod text;
-/// The shared XML reader (`anicraft-xml`), under its old path.
+/// The shared XML reader, under its compatibility path.
 pub use anicraft_xml as xml;
 /// XFL/FLA ZIP package reader, shared with other consumers through `craft-xfl`.
 pub mod zip {
