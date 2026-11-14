@@ -305,33 +305,37 @@ fn defaults_to_selection(doc: &str, key: &str) -> bool {
     })
 }
 
+/// Whether a recorded command can be kept: the params it would drop (they name this
+/// document's layers or objects and the command can act on the selection or active layer
+/// instead), or why it can't be kept. Reads only: listing a long history costs no copies.
+fn check(cmd: &str, params: &Value) -> std::result::Result<Vec<&'static str>, String> {
+    macro_may_call(cmd)?;
+    let spec = crate::find_command(cmd).ok_or_else(|| format!("'{cmd}' is not a command any more"))?;
+    let mut dropped = Vec::new();
+    for (k, v) in params.as_object().into_iter().flatten() {
+        let fixed = FIXED.contains(&k.as_str()) || (cmd.starts_with("bone.") && matches!(k.as_str(), "from" | "to")) || (cmd == "library.move" && k == "to");
+        let target = TARGETS.iter().find(|t| **t == k.as_str());
+        match target {
+            _ if v.is_null() => {}
+            Some(t) if !fixed && defaults_to_selection(spec.params, t) => dropped.push(*t),
+            None if !fixed => {}
+            _ => return Err(format!("it works on {} of this document", noun(k))),
+        }
+    }
+    Ok(dropped)
+}
+
 /// A recorded command as a saved command keeps it: its params without what names this
 /// document's layers and objects (and which of those went), or why it can't be kept.
 pub fn portable(cmd: &str, params: &Value) -> std::result::Result<(Value, Vec<String>), String> {
-    macro_may_call(cmd)?;
-    let spec = crate::find_command(cmd).ok_or_else(|| format!("'{cmd}' is not a command any more"))?;
-    let Some(o) = params.as_object() else { return Ok((Value::Object(Map::new()), Vec::new())) };
-    let mut out = Map::new();
-    let mut dropped = Vec::new();
-    for (k, v) in o {
-        let fixed = FIXED.contains(&k.as_str()) || (cmd.starts_with("bone.") && matches!(k.as_str(), "from" | "to")) || (cmd == "library.move" && k == "to");
-        if v.is_null() || !(fixed || TARGETS.contains(&k.as_str())) {
-            out.insert(k.clone(), v.clone());
-        } else if !fixed && defaults_to_selection(spec.params, k) {
-            dropped.push(k.clone());
-        } else {
-            return Err(format!("it works on {} of this document", noun(k)));
-        }
-    }
-    Ok((Value::Object(out), dropped))
+    let dropped = check(cmd, params)?;
+    let out: Map<String, Value> = params.as_object().into_iter().flatten().filter(|(k, _)| !dropped.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    Ok((Value::Object(out), dropped.into_iter().map(str::to_string).collect()))
 }
 
 /// An undo step as a saved command keeps it: its steps and the params dropped, or why not.
 fn keep_step(label: &str, cmds: Option<&[Recorded]>) -> std::result::Result<(Vec<Step>, Vec<String>), String> {
-    let cmds = cmds.ok_or("it ran too many commands to keep (a very long drag?)")?;
-    if cmds.is_empty() {
-        return Err("it has nothing to run again".into());
-    }
+    let cmds = usable(cmds)?;
     let mut steps = Vec::with_capacity(cmds.len());
     let mut dropped = Vec::new();
     for r in cmds {
@@ -344,6 +348,28 @@ fn keep_step(label: &str, cmds: Option<&[Recorded]>) -> std::result::Result<(Vec
         steps.push(Step { cmd: r.cmd.clone(), params, label: label.to_string() });
     }
     Ok((steps, dropped))
+}
+
+fn usable(cmds: Option<&[Recorded]>) -> std::result::Result<&[Recorded], String> {
+    let cmds = cmds.ok_or("it ran too many commands to keep (a very long drag?)")?;
+    if cmds.is_empty() {
+        return Err("it has nothing to run again".into());
+    }
+    Ok(cmds)
+}
+
+/// [`keep_step`] without building the steps: how many commands, and the params dropped.
+fn check_step(cmds: Option<&[Recorded]>) -> std::result::Result<(usize, Vec<String>), String> {
+    let cmds = usable(cmds)?;
+    let mut dropped: Vec<String> = Vec::new();
+    for r in cmds {
+        for g in check(&r.cmd, &r.params)? {
+            if !dropped.iter().any(|d| d == g) {
+                dropped.push(g.to_string());
+            }
+        }
+    }
+    Ok((cmds.len(), dropped))
 }
 
 /// What dropped params mean for the step, in a sentence.
@@ -366,10 +392,10 @@ fn history(s: &mut Session, _: &Value) -> Result<Value> {
         .enumerate()
         .map(|(i, (label, cmds))| {
             let mut v = json!({"index": i, "label": label, "undone": i >= done});
-            match keep_step(label, cmds) {
-                Ok((steps, dropped)) => {
+            match check_step(cmds) {
+                Ok((n, dropped)) => {
                     v["keep"] = json!(true);
-                    v["commands"] = json!(steps.len());
+                    v["commands"] = json!(n);
                     if let Some(note) = rewritten_note(&dropped) {
                         v["rewritten"] = json!(note);
                     }

@@ -721,9 +721,9 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!((v["name"].as_str(), v["steps"].as_u64()), (Some("Spin"), Some(2)), "{out}");
         // A failing step names itself and leaves nothing behind.
-        std::fs::write(&file, r#"{"steps": [{"cmd": "modify.rotate_cw"}, {"cmd": "layer.set_height", "params": {"height": 7}}]}"#).unwrap();
+        std::fs::write(&file, r#"{"steps": [{"cmd": "edit.select_all"}, {"cmd": "modify.rotate_cw"}, {"cmd": "layer.set_height", "params": {"height": 7}}]}"#).unwrap();
         let e = run(&["run".into(), "--sample".into(), file.display().to_string()]).unwrap_err();
-        assert!(e.contains("stopped at step 2 of 2"), "{e}");
+        assert!(e.contains("stopped at step 3 of 3"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

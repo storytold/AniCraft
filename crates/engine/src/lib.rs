@@ -197,7 +197,20 @@ pub const SHORTCUT_ALIASES: &[(&str, &str)] = &[
 ];
 
 pub fn find_command(id: &str) -> Option<CommandSpec> {
-    commands().into_iter().find(|c| c.id == id)
+    // Built once: every command run looks itself up, and a saved command checks each of its
+    // steps (ADR 0097), so this must not rebuild the registry per call.
+    static INDEX: std::sync::OnceLock<std::collections::HashMap<&'static str, CommandSpec>> = std::sync::OnceLock::new();
+    INDEX
+        .get_or_init(|| {
+            let mut m = std::collections::HashMap::new();
+            for c in commands() {
+                // The first of a repeated id wins, as a search in registry order finds it.
+                m.entry(c.id).or_insert(c);
+            }
+            m
+        })
+        .get(id)
+        .copied()
 }
 
 pub use history::{Recorded, Snapshot, StateId};
