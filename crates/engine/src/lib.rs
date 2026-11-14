@@ -34,6 +34,7 @@ mod cmds_rawpoints;
 pub mod brush_library;
 pub mod filter_library;
 pub mod cmds_recent;
+pub mod cmds_desktop;
 pub mod cmds_template;
 mod cmds_recovery;
 mod cmds_script;
@@ -138,6 +139,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_envelope::specs());
     v.extend(publish::specs());
     v.extend(cmds_recent::specs());
+    v.extend(cmds_desktop::specs());
     v.extend(cmds_drop::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
@@ -1151,6 +1153,8 @@ mod tests_warp;
 mod tests_filter;
 #[cfg(test)]
 mod tests_filter_tracks;
+#[cfg(test)]
+mod desktop_tests;
 #[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
