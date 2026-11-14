@@ -21,6 +21,13 @@
 //!
 //! The result is closed loops (outer boundaries and holes) filled with the even-odd rule. The
 //! grid has at most `MAX_CELLS` cells, so cost and memory are bounded for any input.
+//!
+//! **Tilt** (ADR 0093) turns the tip with the pen's azimuth and widens it as the pen leans.
+//! When the tip turns along a stroke there is no one tip space, so the field is sampled in stage
+//! space (in tip radii) instead, and each short piece of the stroke measures its distance in its
+//! own tip space. **Texture** opens a paper grain of holes in the paint, and **scatter** throws
+//! the dabs either side of the line: both are fixed patterns, so the same stroke always gives
+//! the same outline, and both are still vector outlines.
 
 use crate::{Affine, Path, PathCmd, Vec2, fit_curve, trace};
 
@@ -64,11 +71,66 @@ impl Tip {
     }
 }
 
-/// One pointer sample: where, and the pen pressure (0..1; a mouse gives 1).
+/// One pointer sample: where, the pen pressure (0..1; a mouse gives 1) and the pen's tilt
+/// where the system reports it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     pub at: Vec2,
     pub pressure: f32,
+    pub tilt: Option<Tilt>,
+}
+
+impl Sample {
+    /// A sample with no tilt.
+    pub fn new(at: Vec2, pressure: f32) -> Sample {
+        Sample { at, pressure, tilt: None }
+    }
+}
+
+/// A pen's tilt, as the W3C Pointer Events spec gives it (in degrees): `altitude` from 90
+/// (upright) to 0 (lying on the tablet), and `azimuth`, the direction the pen leans toward on
+/// the stage, clockwise from the +x axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tilt {
+    pub altitude: f32,
+    pub azimuth: f32,
+}
+
+impl Tilt {
+    /// How far the pen leans: 0 upright, 1 flat (`1 − altitude / 90°`).
+    pub fn lean(self) -> f32 {
+        let a = if self.altitude.is_finite() { self.altitude.clamp(0.0, 90.0) } else { 90.0 };
+        1.0 - a / 90.0
+    }
+    /// The lean as a vector toward the azimuth (length [`Tilt::lean`]), which blends smoothly
+    /// between samples and through upright.
+    fn vector(self) -> Vec2 {
+        let az = if self.azimuth.is_finite() { self.azimuth.rem_euclid(360.0).to_radians() } else { 0.0 };
+        Vec2::new(az.cos(), az.sin()) * self.lean()
+    }
+}
+
+/// What a pen's tilt shapes (Animate's tilt option).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TiltResponse {
+    /// The tip turns with the pen: its angle is the brush's angle plus the azimuth.
+    pub angle: bool,
+    /// The tip widens as the pen leans: by `1 + TILT_WIDTH × lean`.
+    pub width: bool,
+}
+
+/// How much wider a flat pen paints than an upright one, as a part of the size.
+pub const TILT_WIDTH: f32 = 1.0;
+/// Below this lean the azimuth is too noisy to turn the tip by.
+const MIN_LEAN: f32 = 0.02;
+
+/// The tip's angle (degrees) and size factor when the pen leans by `lean` (a vector toward the
+/// azimuth, length 0..1), for a brush at `angle` (ADR 0093). Analytic: the angle is `angle +
+/// azimuth`, and the size factor `1 + TILT_WIDTH × |lean|`.
+pub fn tilted(angle: f32, lean: Vec2, response: TiltResponse) -> (f32, f32) {
+    let l = if lean.is_finite() { lean.length().min(1.0) } else { 0.0 };
+    let turned = if response.angle && l >= MIN_LEAN { angle + lean.y.atan2(lean.x).to_degrees() } else { angle };
+    (turned, if response.width { 1.0 + TILT_WIDTH * l } else { 1.0 })
 }
 
 /// The tip's size factor at `pressure`: from `MIN_PRESSURE_SIZE` at none to 1 at full.
@@ -91,19 +153,42 @@ pub struct Shaping {
     /// How far the edge is worn away, as a part of the tip's size (`0..=0.5`): a chalk-like
     /// ragged edge from a fixed noise pattern, so it is the same every time.
     pub jitter: f32,
+    /// A paper grain of holes through the paint (`0..=1`: none to most of it), fixed on the
+    /// stage and scaled to the tip's size, as dry media on rough paper (ADR 0093).
+    pub texture: f32,
+    /// Dabs thrown either side of the line, up to this many sizes away (`0..=2`), and varied in
+    /// size: spatter and stipple. A continuous stroke scatters as dabs a quarter size apart.
+    pub scatter: f32,
+    /// What the pen's tilt shapes.
+    pub tilt: TiltResponse,
 }
 
 /// Most dabs one stroke stamps (the spacing widens past it).
 pub const MAX_DABS: usize = 20_000;
 /// Thinnest a taper makes the tip, as a part of its size.
 const TAPER_TIP: f32 = 0.05;
+/// Dab spacing of a scattered stroke that has none of its own, as a part of the size.
+const SCATTER_SPACING: f32 = 0.25;
 
 impl Shaping {
     /// The values clamped to their ranges (not a number reads as none).
     pub fn sanitized(self) -> Shaping {
         let c = |v: f32, hi: f32| if v.is_finite() { v.clamp(0.0, hi) } else { 0.0 };
         let spacing = c(self.spacing, 10.0);
-        Shaping { taper_start: c(self.taper_start, 0.5), taper_end: c(self.taper_end, 0.5), spacing: if spacing > 0.0 { spacing.max(0.05) } else { 0.0 }, jitter: c(self.jitter, 0.5) }
+        Shaping {
+            taper_start: c(self.taper_start, 0.5),
+            taper_end: c(self.taper_end, 0.5),
+            spacing: if spacing > 0.0 { spacing.max(0.05) } else { 0.0 },
+            jitter: c(self.jitter, 0.5),
+            texture: c(self.texture, 1.0),
+            scatter: c(self.scatter, 2.0),
+            tilt: self.tilt,
+        }
+    }
+
+    /// The dab spacing a stroke stamps at (scatter needs dabs).
+    fn dab_spacing(&self) -> f32 {
+        if self.spacing <= 0.0 && self.scatter > 0.0 { SCATTER_SPACING } else { self.spacing }
     }
 
     /// The tapers' factor at fraction `u` of the stroke's length.
@@ -130,25 +215,51 @@ pub fn centreline(samples: &[Sample], smoothing: f32, flatness: f32) -> Vec<(Vec
     centreline_shaped(samples, smoothing, flatness, &Shaping::default())
 }
 
-/// The centre line with the shaping's tapers applied to the size factors.
+/// The centre line with the shaping's tapers applied to the size factors (and the tilt's
+/// widening, when the shaping says tilt shapes the width).
 pub fn centreline_shaped(samples: &[Sample], smoothing: f32, flatness: f32, shaping: &Shaping) -> Vec<(Vec2, f32)> {
+    centre_points(samples, smoothing, flatness, shaping).into_iter().map(|p| (p.at, p.f)).collect()
+}
+
+/// A point of the centre line: where, the tip's size factor, and the pen's lean there (a vector
+/// toward the azimuth, zero without tilt).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pt {
+    at: Vec2,
+    f: f32,
+    lean: Vec2,
+}
+
+impl Pt {
+    fn lerp(self, o: Pt, t: f32) -> Pt {
+        Pt { at: self.at.lerp(o.at, t), f: self.f + (o.f - self.f) * t, lean: self.lean.lerp(o.lean, t) }
+    }
+}
+
+fn centre_points(samples: &[Sample], smoothing: f32, flatness: f32, shaping: &Shaping) -> Vec<Pt> {
     let shaping = shaping.sanitized();
     let mut pts: Vec<Vec2> = Vec::with_capacity(samples.len().min(MAX_SAMPLES));
     let mut press: Vec<f32> = Vec::with_capacity(pts.capacity());
+    let mut leans: Vec<Vec2> = Vec::with_capacity(pts.capacity());
+    let lean_of = |s: &Sample| s.tilt.map_or(Vec2::ZERO, Tilt::vector);
     for s in samples.iter().take(MAX_SAMPLES).filter(|s| s.at.is_finite()) {
         if pts.last().is_some_and(|l| l.distance(s.at) <= 1e-4) {
-            // A held pointer: keep the latest pressure.
-            if let Some(p) = press.last_mut() {
+            // A held pointer: keep the latest pressure and tilt.
+            if let (Some(p), Some(l)) = (press.last_mut(), leans.last_mut()) {
                 *p = size_factor(s.pressure);
+                *l = lean_of(s);
             }
             continue;
         }
         pts.push(s.at);
         press.push(size_factor(s.pressure));
+        leans.push(lean_of(s));
     }
-    match (pts.as_slice(), press.as_slice()) {
-        ([], _) => return Vec::new(),
-        ([p], [f, ..]) => return vec![(*p, *f)],
+    // The tilt's widening multiplies the size factor (ADR 0093).
+    let widen = |f: f32, lean: Vec2| f * tilted(0.0, lean, TiltResponse { angle: false, width: shaping.tilt.width }).1;
+    match (pts.as_slice(), press.as_slice(), leans.as_slice()) {
+        ([], _, _) => return Vec::new(),
+        ([p], [f, ..], [l, ..]) => return vec![Pt { at: *p, f: widen(*f, *l), lean: *l }],
         _ => {}
     }
     let tol = if smoothing.is_finite() && smoothing > 0.01 { smoothing } else { 0.01 };
@@ -182,8 +293,10 @@ pub fn centreline_shaped(samples: &[Sample], smoothing: f32, flatness: f32, shap
             }
             let (s0, s1) = (src.get(j).copied().unwrap_or(0.0), src.get(j + 1).copied().unwrap_or(1.0));
             let (f0, f1) = (press.get(j).copied().unwrap_or(1.0), press.get(j + 1).copied().or(press.get(j).copied()).unwrap_or(1.0));
+            let (l0, l1) = (leans.get(j).copied().unwrap_or(Vec2::ZERO), leans.get(j + 1).copied().or(leans.get(j).copied()).unwrap_or(Vec2::ZERO));
             let t = if s1 - s0 > 1e-9 { ((u - s0) / (s1 - s0)).clamp(0.0, 1.0) } else { 0.0 };
-            (*p, (f0 + (f1 - f0) * t) * shaping.taper(u))
+            let lean = l0.lerp(l1, t);
+            Pt { at: *p, f: widen((f0 + (f1 - f0) * t) * shaping.taper(u), lean), lean }
         })
         .collect()
 }
@@ -247,8 +360,15 @@ pub fn centre_stroke(samples: &[Sample], shaping: &Shaping, smoothing: f32, flat
 /// Dabs every `step` stage units along a centre line (the first point always), with the size
 /// factor where each falls. At most [`MAX_DABS`]: a longer line spaces them wider.
 pub fn dabs(line: &[(Vec2, f32)], step: f32) -> Vec<(Vec2, f32)> {
-    let total: f32 = line.windows(2).map(|w| if let [a, b] = w { a.0.distance(b.0) } else { 0.0 }).sum();
-    let mut out: Vec<(Vec2, f32)> = line.first().copied().into_iter().collect();
+    let pts: Vec<Pt> = line.iter().map(|&(at, f)| Pt { at, f, lean: Vec2::ZERO }).collect();
+    dab_points(&pts, step).into_iter().map(|(p, _)| (p.at, p.f)).collect()
+}
+
+/// [`dabs`] over centre-line points, each with the line's direction there.
+fn dab_points(line: &[Pt], step: f32) -> Vec<(Pt, Vec2)> {
+    let total: f32 = line.windows(2).map(|w| if let [a, b] = w { a.at.distance(b.at) } else { 0.0 }).sum();
+    let dir0 = line.windows(2).find_map(|w| if let [a, b] = w { Some((b.at - a.at).normalized()).filter(|d| d.is_finite() && d.length() > 0.5) } else { None }).unwrap_or(Vec2::new(1.0, 0.0));
+    let mut out: Vec<(Pt, Vec2)> = line.first().copied().map(|p| (p, dir0)).into_iter().collect();
     if !(step.is_finite() && step > 1e-3) {
         return out;
     }
@@ -256,11 +376,12 @@ pub fn dabs(line: &[(Vec2, f32)], step: f32) -> Vec<(Vec2, f32)> {
     let mut next = step;
     let mut walked = 0.0;
     for w in line.windows(2) {
-        let &[(a, fa), (b, fb)] = w else { continue };
-        let l = a.distance(b);
+        let &[a, b] = w else { continue };
+        let l = a.at.distance(b.at);
+        let dir = if l > 1e-9 { (b.at - a.at) * (1.0 / l) } else { dir0 };
         while next <= walked + l && out.len() < MAX_DABS {
             let t = if l > 1e-9 { (next - walked) / l } else { 0.0 };
-            out.push((a.lerp(b, t), fa + (fb - fa) * t));
+            out.push((a.lerp(b, t), dir));
             next += step;
         }
         walked += l;
@@ -276,25 +397,33 @@ pub fn outline(samples: &[Sample], tip: &Tip, smoothing: f32, tolerance: f32) ->
     outline_shaped(samples, tip, &Shaping::default(), smoothing, tolerance)
 }
 
-/// The outline with tapers, dabs or a ragged edge (ADR 0068).
+/// The outline with tapers, dabs, a ragged edge, texture, scatter or tilt (ADR 0068, 0093).
 pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothing: f32, tolerance: f32) -> Path {
     let shaping = shaping.sanitized();
     let tol = if tolerance.is_finite() && tolerance > 1e-3 { tolerance } else { 0.25 };
-    let mut line = centreline_shaped(samples, smoothing, tol * 0.25, &shaping);
-    let dabbed = shaping.spacing > 0.0 && line.len() > 1;
+    let mut line = centre_points(samples, smoothing, tol * 0.25, &shaping);
+    let spacing = shaping.dab_spacing();
+    let dabbed = spacing > 0.0 && line.len() > 1;
     if dabbed {
-        line = dabs(&line, shaping.spacing * tip.size);
+        line = scattered(dab_points(&line, spacing * tip.size), shaping.scatter * tip.size);
     }
-    let m = tip.to_stage();
-    let Some(inv) = m.inverse().filter(|i| i.is_finite()) else { return Path::new() };
     if line.is_empty() || !(tip.size.is_finite() && tip.size > 0.0) {
         return Path::new();
     }
-    // Tip space, in f64.
-    let q: Vec<(P, f64)> = line.iter().map(|(p, f)| (v64(inv.apply(*p)), f64::from(*f))).collect();
+    // The tip's angle at each point: the brush's, turned by the pen's azimuth (ADR 0093).
+    let angles: Vec<f32> = line.iter().map(|p| tilted(tip.angle, p.lean, TiltResponse { angle: shaping.tilt.angle, width: false }).0).collect();
+    let turns = angles.iter().any(|a| (a - tip.angle).abs() > 1e-3);
+    let round = if tip.roundness.is_finite() { f64::from(tip.roundness.clamp(0.05, 1.0)) } else { 1.0 };
+    let half = if tip.size.is_finite() { tip.size.max(0.0) * 0.5 } else { 0.0 };
+    // The grid's space: the tip's own, or (when the tip turns) the stage in tip radii, where
+    // each piece measures in its own tip space.
+    let m = if turns { Affine::scale(half, half) } else { tip.to_stage() };
+    let Some(inv) = m.inverse().filter(|i| i.is_finite()) else { return Path::new() };
+    // Grid space, in f64, with each point's tip angle (radians).
+    let q: Vec<(P, f64, f64)> = line.iter().zip(&angles).map(|(p, a)| (v64(inv.apply(p.at)), f64::from(p.f), f64::from(*a).to_radians())).collect();
     let (mut lo, mut hi) = ((f64::INFINITY, f64::INFINITY), (f64::NEG_INFINITY, f64::NEG_INFINITY));
     let mut fmin: f64 = 1.0;
-    for (p, f) in &q {
+    for (p, f, _) in &q {
         lo = (lo.0.min(p.0 - f), lo.1.min(p.1 - f));
         hi = (hi.0.max(p.0 + f), hi.1.max(p.1 + f));
         fmin = fmin.min(*f);
@@ -308,9 +437,12 @@ pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothin
         TipShape::Round => 1.0 / 6.0,
         TipShape::Square => 1.0 / 8.0,
     };
-    // A ragged edge needs cells finer than its grain.
+    // A ragged edge needs cells finer than its grain, and the paper grain finer still.
     let fine: f64 = if shaping.jitter > 0.0 { f64::min(fine, 1.0 / 14.0) } else { fine };
-    let mut c: f64 = (fmin / 2.5).min(fine);
+    let fine: f64 = if shaping.texture > 0.0 { f64::min(fine, 1.0 / 18.0) } else { fine };
+    // In stage space the tip's narrow side is `round` radii across.
+    let narrow = if turns { round } else { 1.0 };
+    let mut c: f64 = (fmin / 2.5).min(fine) * narrow;
     for _ in 0..4 {
         let cells = ((hi.0 - lo.0) / c + 2.0 * MARGIN + 2.0) * ((hi.1 - lo.1) / c + 2.0 * MARGIN + 2.0);
         if cells <= MAX_CELLS as f64 {
@@ -331,8 +463,11 @@ pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothin
     let wear = f64::from(shaping.jitter) * 2.0 / c;
     let top = 1.0 + MARGIN + wear;
     // Nothing thinner than a cell, so no part slips between the samples.
-    let pts: Vec<(P, f64)> = thin(&q, c * 0.5).into_iter().map(|(p, f)| (p, f.max(c))).collect();
-    let mut stamp = |a: P, ra: f64, b: P, rb: f64| {
+    let pts: Vec<(P, f64, f64)> = thin(&q, c * 0.5).into_iter().map(|(p, f, a)| (p, f.max(c / narrow), a)).collect();
+    // A piece's frame when the tip turns: grid space to its tip space is a turn by −angle and
+    // a stretch of the narrow side. A distance there times `round` is at most the distance in
+    // the grid, with the same zero level.
+    let mut stamp = |a: P, ra: f64, b: P, rb: f64, turn: Option<(f64, f64)>| {
         let reach = ra.max(rb) + (MARGIN - 1.0) * c;
         let (x0, x1) = (((a.0.min(b.0) - reach - origin.0) / c).floor().max(0.0), ((a.0.max(b.0) + reach - origin.0) / c).ceil());
         let (y0, y1) = (((a.1.min(b.1) - reach - origin.1) / c).floor().max(0.0), ((a.1.max(b.1) + reach - origin.1) / c).ceil());
@@ -340,14 +475,21 @@ pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothin
         if x1 < x0 || y1 < y0 {
             return;
         }
+        let to_tip = |p: P| match turn {
+            Some((cs, sn)) => (p.0 * cs + p.1 * sn, (-p.0 * sn + p.1 * cs) / round),
+            None => p,
+        };
+        let scale = if turn.is_some() { round } else { 1.0 };
+        let (ta, tb) = (to_tip(a), to_tip(b));
         for y in y0 as usize..=y1 as usize {
             let py = origin.1 + (y as f64 + 0.5) * c;
             for x in x0 as usize..=x1 as usize {
                 let px = origin.0 + (x as f64 + 0.5) * c;
+                let tx = to_tip((px, py));
                 let d = match tip.shape {
-                    TipShape::Round => round_dist((px, py), a, ra, b, rb),
-                    TipShape::Square => square_dist((px, py), a, ra, b, rb),
-                };
+                    TipShape::Round => round_dist(tx, ta, ra, tb, rb),
+                    TipShape::Square => square_dist(tx, ta, ra, tb, rb),
+                } * scale;
                 let v = (0.5 - d / c).clamp(OUTSIDE, top) as f32;
                 if let Some(cell) = field.get_mut(y * w + x)
                     && v > *cell
@@ -357,18 +499,22 @@ pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothin
             }
         }
     };
+    let turn_at = |a: f64| turns.then(|| (a.cos(), a.sin()));
     match pts.as_slice() {
-        [(p, f)] => stamp(*p, *f, *p, *f),
-        _ if dabbed => pts.iter().for_each(|(p, f)| stamp(*p, *f, *p, *f)),
+        [(p, f, a)] => stamp(*p, *f, *p, *f, turn_at(*a)),
+        _ if dabbed => pts.iter().for_each(|(p, f, a)| stamp(*p, *f, *p, *f, turn_at(*a))),
         _ => {
             for pair in pts.windows(2) {
-                let &[(a, ra), (b, rb)] = pair else { continue };
+                let &[(a, ra, aa), (b, rb, ab)] = pair else { continue };
                 // Long segments in short pieces, so each one's bounds stay small (the pieces'
-                // sweeps are the segment's).
-                let n = (dist(a, b) / PIECE.max(16.0 * c)).ceil().clamp(1.0, 1e6) as usize;
+                // sweeps are the segment's); a turning tip turns at most 3° a piece.
+                let n = (dist(a, b) / PIECE.max(16.0 * c)).ceil().clamp(1.0, 1e6);
+                let da = half_turn(ab - aa);
+                let n = if turns { n.max((da.abs() / 3f64.to_radians()).ceil()).min(1e6) } else { n } as usize;
                 for i in 0..n {
                     let (t0, t1) = (i as f64 / n as f64, (i + 1) as f64 / n as f64);
-                    stamp(lerp(a, b, t0), ra + (rb - ra) * t0, lerp(a, b, t1), ra + (rb - ra) * t1);
+                    let mid = aa + da * (t0 + t1) * 0.5;
+                    stamp(lerp(a, b, t0), ra + (rb - ra) * t0, lerp(a, b, t1), ra + (rb - ra) * t1, turn_at(mid));
                 }
             }
         }
@@ -385,6 +531,27 @@ pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothin
             *v -= (wear * grain((origin.0 + (x + 0.5) * c, origin.1 + (y + 0.5) * c))) as f32;
         }
     }
+    if shaping.texture > 0.0 {
+        // The paper grain: where a fixed noise on the stage (in tip radii, so it scales with
+        // the brush) falls below the threshold, the paint has a hole. The noise's slope is about
+        // one per grain, so `(n − τ) × grain` is roughly a distance, which is all the tracing's
+        // interpolation needs.
+        let tau = 0.2 + 0.4 * f64::from(shaping.texture);
+        let unit = 1.0 / f64::from(half).max(1e-9);
+        let grain_cells = PAPER / c;
+        for (i, v) in field.iter_mut().enumerate() {
+            if *v <= 0.0 {
+                continue;
+            }
+            let (x, y) = ((i % w) as f64, (i / w) as f64);
+            let st = m.apply(Vec2::new((origin.0 + (x + 0.5) * c) as f32, (origin.1 + (y + 0.5) * c) as f32));
+            let n = paper((f64::from(st.x) * unit, f64::from(st.y) * unit));
+            let hole = ((n - tau) * grain_cells) as f32;
+            if hole < *v {
+                *v = hole;
+            }
+        }
+    }
     let to_stage = |p: Vec2| m.apply(Vec2::new((origin.0 + f64::from(p.x) * c) as f32, (origin.1 + f64::from(p.y) * c) as f32));
     // A corner is a turn of 60° over the window either side. Round tips: two cells (their
     // tightest curve is 2.5 cells, too gentle to count). Square tips: four, so a corner the
@@ -396,7 +563,7 @@ pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothin
     };
     let window = (cells * cell_stage).max(tol * 2.0);
     let mut out = Path::new();
-    for lp in trace::contours(&field, w, h) {
+    for lp in trace::contours(&field, w, h).into_iter().take(MAX_LOOPS) {
         let stage: Vec<Vec2> = lp.into_iter().map(to_stage).collect();
         let part = fit_curve(&stage, tol, window, true);
         if part.cmds.iter().any(|c| matches!(c, PathCmd::CubicTo(..) | PathCmd::LineTo(..))) {
@@ -404,6 +571,50 @@ pub fn outline_shaped(samples: &[Sample], tip: &Tip, shaping: &Shaping, smoothin
         }
     }
     out
+}
+
+/// Most loops one outline keeps (a fine paper grain on a long stroke opens many holes).
+pub const MAX_LOOPS: usize = 20_000;
+/// The paper grain's size, in tip radii.
+const PAPER: f64 = 0.35;
+
+/// An angle difference (radians) as the shortest turn of a tip that looks the same turned
+/// half way round: in `-π/2..=π/2`.
+fn half_turn(d: f64) -> f64 {
+    let pi = std::f64::consts::PI;
+    let d = d.rem_euclid(pi);
+    if d > pi * 0.5 { d - pi } else { d }
+}
+
+/// Dabs thrown up to `reach` either side of the line, and varied from 60 to 100 % in size, by
+/// a fixed hash of each dab's number (so the same stroke scatters the same way).
+fn scattered(dabs: Vec<(Pt, Vec2)>, reach: f32) -> Vec<Pt> {
+    if !(reach.is_finite() && reach > 0.0) {
+        return dabs.into_iter().map(|(p, _)| p).collect();
+    }
+    dabs.into_iter()
+        .enumerate()
+        .map(|(i, (p, dir))| {
+            let (u, v) = (unit_hash(i as u64, 1), unit_hash(i as u64, 2));
+            let side = Vec2::new(-dir.y, dir.x) * ((u as f32 * 2.0 - 1.0) * reach);
+            Pt { at: p.at + side, f: p.f * (0.6 + 0.4 * v as f32), lean: p.lean }
+        })
+        .collect()
+}
+
+/// A number in `0..1` from `(i, k)`, the same on every platform (SplitMix64's finaliser).
+fn unit_hash(i: u64, k: u64) -> f64 {
+    let mut z = i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k.wrapping_mul(0xD1B5_4A32_D192_ED03);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// The paper grain: value noise in `0..1`, two octaves ([`PAPER`] and 0.4 of it), on lattice
+/// rows of its own (apart from the ragged edge's).
+fn paper(p: P) -> f64 {
+    grain_octaves(p, PAPER, PAPER * 0.4, 7)
 }
 
 type P = (f64, f64);
@@ -428,6 +639,13 @@ fn lerp(a: P, b: P, t: f64) -> P {
 /// Smooth value noise in `0..1` from a fixed integer hash: two octaves, 0.5 and 0.2 tip units
 /// across. The same point always gives the same value, on every platform.
 fn grain(p: P) -> f64 {
+    grain_octaves(p, 0.5, 0.2, 0)
+}
+
+/// Two octaves of value noise (`big` and `small` across, the big one weighted twice) on lattice
+/// rows from `layer`: each octave reads rows of its own (`layer` shifts them far apart), so the
+/// octaves are independent.
+fn grain_octaves(p: P, big: f64, small: f64, layer: i64) -> f64 {
     fn hash(x: i64, y: i64) -> f64 {
         // SplitMix64's finaliser over the lattice point.
         let mut z = (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
@@ -436,8 +654,6 @@ fn grain(p: P) -> f64 {
         z ^= z >> 31;
         (z >> 11) as f64 / (1u64 << 53) as f64
     }
-    // Each octave reads its own lattice rows (`layer` shifts them far apart), so the two
-    // octaves are independent.
     fn octave(p: P, size: f64, layer: i64) -> f64 {
         let (u, v) = (p.0 / size, p.1 / size);
         let (x0, y0) = (u.floor(), v.floor());
@@ -448,21 +664,21 @@ fn grain(p: P) -> f64 {
         let bottom = hash(xi, yi + 1) + (hash(xi + 1, yi + 1) - hash(xi, yi + 1)) * sx;
         top + (bottom - top) * sy
     }
-    (octave(p, 0.5, 0) * 2.0 + octave(p, 0.2, 1)) / 3.0
+    (octave(p, big, layer) * 2.0 + octave(p, small, layer + 1)) / 3.0
 }
 
 /// Drops points closer than `gap` to the last kept one (the last point always stays).
-fn thin(q: &[(P, f64)], gap: f64) -> Vec<(P, f64)> {
-    let mut out: Vec<(P, f64)> = Vec::with_capacity(q.len());
-    for (i, &(p, f)) in q.iter().enumerate() {
+fn thin(q: &[(P, f64, f64)], gap: f64) -> Vec<(P, f64, f64)> {
+    let mut out: Vec<(P, f64, f64)> = Vec::with_capacity(q.len());
+    for (i, &(p, f, a)) in q.iter().enumerate() {
         let last = i + 1 == q.len();
         match out.last_mut() {
-            Some((l, lf)) if dist(*l, p) < gap => {
+            Some((l, lf, la)) if dist(*l, p) < gap => {
                 if last {
-                    (*l, *lf) = (p, f);
+                    (*l, *lf, *la) = (p, f, a);
                 }
             }
-            _ => out.push((p, f)),
+            _ => out.push((p, f, a)),
         }
     }
     out
@@ -520,7 +736,7 @@ mod tests {
     use crate::FillRule;
 
     fn line(a: Vec2, b: Vec2, n: usize, pressure: impl Fn(f32) -> f32) -> Vec<Sample> {
-        (0..=n).map(|i| i as f32 / n as f32).map(|t| Sample { at: a.lerp(b, t), pressure: pressure(t) }).collect()
+        (0..=n).map(|i| i as f32 / n as f32).map(|t| Sample::new(a.lerp(b, t), pressure(t))).collect()
     }
 
     /// Area of an even-odd path (flattened finely).
@@ -554,12 +770,12 @@ mod tests {
 
     #[test]
     fn a_dab_is_the_tip() {
-        let p = outline(&[Sample { at: Vec2::new(10.0, 10.0), pressure: 1.0 }], &Tip::round(8.0), 1.0, 0.05);
+        let p = outline(&[Sample::new(Vec2::new(10.0, 10.0), 1.0)], &Tip::round(8.0), 1.0, 0.05);
         let want = std::f32::consts::PI * 16.0;
         assert!((area(&p) - want).abs() / want < 0.01, "{}", area(&p));
         // A square tip at 45°: a diamond of the same area as the square.
         let tip = Tip { shape: TipShape::Square, size: 10.0, angle: 45.0, roundness: 1.0 };
-        let d = outline(&[Sample { at: Vec2::ZERO, pressure: 1.0 }], &tip, 1.0, 0.05);
+        let d = outline(&[Sample::new(Vec2::ZERO, 1.0)], &tip, 1.0, 0.05);
         assert!((area(&d) - 100.0).abs() < 2.0, "{}", area(&d));
         assert!(d.contains(Vec2::new(0.0, 6.8), &Affine::IDENTITY, FillRule::EvenOdd), "a corner points down");
         assert!(!d.contains(Vec2::new(4.6, 4.6), &Affine::IDENTITY, FillRule::EvenOdd), "an unturned square's corner is outside");
@@ -580,7 +796,7 @@ mod tests {
     #[test]
     fn smoothing_reduces_anchors() {
         // A shaky hand: a straight drag with jitter.
-        let s: Vec<Sample> = (0..=200).map(|i| Sample { at: Vec2::new(i as f32 * 2.0, ((i * 7919) % 13) as f32 * 0.35), pressure: 1.0 }).collect();
+        let s: Vec<Sample> = (0..=200).map(|i| Sample::new(Vec2::new(i as f32 * 2.0, ((i * 7919) % 13) as f32 * 0.35), 1.0)).collect();
         let rough = outline(&s, &Tip::round(12.0), 0.3, 0.3);
         let smooth = outline(&s, &Tip::round(12.0), 6.0, 0.3);
         let (a, b) = (rough.anchors().len(), smooth.anchors().len());
@@ -590,7 +806,7 @@ mod tests {
     #[test]
     fn crossing_strokes_leave_holes_and_ellipses_follow_the_angle() {
         // A loop that closes on itself leaves a hole in the middle.
-        let ring: Vec<Sample> = (0..=72).map(|i| i as f32 / 72.0 * std::f32::consts::TAU).map(|a| Sample { at: Vec2::new(100.0 * a.cos(), 100.0 * a.sin()), pressure: 1.0 }).collect();
+        let ring: Vec<Sample> = (0..=72).map(|i| i as f32 / 72.0 * std::f32::consts::TAU).map(|a| Sample::new(Vec2::new(100.0 * a.cos(), 100.0 * a.sin()), 1.0)).collect();
         let p = outline(&ring, &Tip::round(10.0), 0.5, 0.2);
         let loops = p.cmds.iter().filter(|c| matches!(c, PathCmd::MoveTo(_))).count();
         assert_eq!(loops, 2, "outer edge and hole");
@@ -687,13 +903,105 @@ mod tests {
         assert!(centre_stroke(&s[..1], &Shaping::default(), 1.0, 0.1, 16).0.is_empty(), "a dab is no line");
     }
 
+    /// The bounds of the curve itself (`Path::bounds` includes control points).
+    trait Tight {
+        fn tight(&self) -> crate::Rect;
+    }
+    impl Tight for Path {
+        fn tight(&self) -> crate::Rect {
+            let mut r = crate::Rect::EMPTY;
+            for pl in self.flatten(&Affine::IDENTITY, 0.05) {
+                pl.points.into_iter().for_each(|x| r.include(x));
+            }
+            r
+        }
+    }
+
+    fn tilted_line(n: usize, len: f32, tilt: impl Fn(f32) -> Tilt) -> Vec<Sample> {
+        (0..=n).map(|i| i as f32 / n as f32).map(|t| Sample { at: Vec2::new(len * t, 0.0), pressure: 1.0, tilt: Some(tilt(t)) }).collect()
+    }
+
+    #[test]
+    fn tilt_maps_to_angle_and_width_analytically() {
+        let both = TiltResponse { angle: true, width: true };
+        let lean = |alt: f32, az: f32| Tilt { altitude: alt, azimuth: az }.vector();
+        // Upright: the brush as set.
+        assert_eq!(tilted(20.0, lean(90.0, 75.0), both), (20.0, 1.0));
+        // Lying flat toward 30°: turned by 30°, twice as wide.
+        let (a, f) = tilted(20.0, lean(0.0, 30.0), both);
+        assert!((a - 50.0).abs() < 1e-3 && (f - 2.0).abs() < 1e-5, "{a} {f}");
+        // Half way down (45°): half the lean, 1.5 × as wide; azimuth 270 is −90.
+        let (a, f) = tilted(0.0, lean(45.0, 270.0), both);
+        assert!((a + 90.0).abs() < 1e-3 && (f - 1.5).abs() < 1e-5, "{a} {f}");
+        // Each part only when asked for.
+        assert_eq!(tilted(10.0, lean(0.0, 30.0), TiltResponse::default()), (10.0, 1.0));
+        assert!((tilted(10.0, lean(0.0, 30.0), TiltResponse { angle: false, width: true }).1 - 2.0).abs() < 1e-5);
+        // Hostile tilts read as upright.
+        assert_eq!(Tilt { altitude: f32::NAN, azimuth: f32::INFINITY }.lean(), 0.0);
+        assert_eq!(tilted(5.0, Vec2::new(f32::NAN, 1.0), both), (5.0, 1.0));
+    }
+
+    #[test]
+    fn a_tilted_flat_tip_turns_with_the_pen() {
+        let flat = Tip { shape: TipShape::Round, size: 20.0, angle: 0.0, roundness: 0.2 };
+        let turn = Shaping { tilt: TiltResponse { angle: true, width: false }, ..Shaping::default() };
+        // Leaning toward 90° all along: the nib stands across the drag, as a 90° brush does.
+        let across = outline_shaped(&tilted_line(10, 100.0, |_| Tilt { altitude: 30.0, azimuth: 90.0 }), &flat, &turn, 1.0, 0.1);
+        let set = outline(&line(Vec2::ZERO, Vec2::new(100.0, 0.0), 10, |_| 1.0), &Tip { angle: 90.0, ..flat }, 1.0, 0.1);
+        assert!((across.tight().height() - 20.0).abs() < 0.6, "{:?}", across.tight());
+        assert!((area(&across) - area(&set)).abs() / area(&set) < 0.03, "{} vs {}", area(&across), area(&set));
+        // Without the tilt option the pen's lean does nothing.
+        let plain = outline_shaped(&tilted_line(10, 100.0, |_| Tilt { altitude: 30.0, azimuth: 90.0 }), &flat, &Shaping::default(), 1.0, 0.1);
+        assert!((plain.tight().height() - 4.0).abs() < 0.6, "{:?}", plain.tight());
+        // Turning from along the drag (thin) to across it (wide) as it goes.
+        let s = tilted_line(60, 300.0, |t| Tilt { altitude: 20.0, azimuth: 90.0 * t });
+        let p = outline_shaped(&s, &flat, &turn, 1.0, 0.1);
+        let inside = |x: f32, y: f32| p.contains(Vec2::new(x, y), &Affine::IDENTITY, FillRule::EvenOdd);
+        assert!(inside(15.0, 0.0) && !inside(15.0, 4.0), "thin at the start");
+        assert!(inside(290.0, 9.0), "wide at the end");
+        assert_eq!(loops(&p), 1);
+        // Widening: a round 10 tip flat on the paper paints 20 wide.
+        let wide = Shaping { tilt: TiltResponse { angle: false, width: true }, ..Shaping::default() };
+        let w = outline_shaped(&tilted_line(10, 100.0, |_| Tilt { altitude: 0.0, azimuth: 0.0 }), &Tip::round(10.0), &wide, 1.0, 0.1);
+        assert!((w.tight().height() - 20.0).abs() < 0.5, "{:?}", w.tight());
+        assert_eq!(w, outline_shaped(&tilted_line(10, 100.0, |_| Tilt { altitude: 0.0, azimuth: 0.0 }), &Tip::round(10.0), &wide, 1.0, 0.1), "deterministic");
+    }
+
+    #[test]
+    fn texture_opens_a_fixed_paper_grain_and_scatter_throws_dabs() {
+        let s = line(Vec2::ZERO, Vec2::new(300.0, 30.0), 60, |_| 1.0);
+        let tip = Tip::round(30.0);
+        let plain = outline(&s, &tip, 1.0, 0.2);
+        let sh = Shaping { texture: 0.5, ..Shaping::default() };
+        let p = outline_shaped(&s, &tip, &sh, 1.0, 0.2);
+        let (a, b) = (area(&p), area(&plain));
+        assert!(a < b * 0.9 && a > b * 0.25, "grain takes some of the paint: {a} vs {b}");
+        assert!(loops(&p) > 10, "holes through the paint: {}", loops(&p));
+        assert!(p.tight().width() <= plain.tight().width() + 0.5 && p.tight().height() <= plain.tight().height() + 0.5);
+        assert_eq!(p, outline_shaped(&s, &tip, &sh, 1.0, 0.2), "deterministic");
+        // More texture, less paint.
+        let more = area(&outline_shaped(&s, &tip, &Shaping { texture: 1.0, ..Shaping::default() }, 1.0, 0.2));
+        assert!(more < a, "{more} vs {a}");
+        // Scatter: dabs either side of the line, past the plain stroke's edge.
+        let flat = line(Vec2::ZERO, Vec2::new(300.0, 0.0), 60, |_| 1.0);
+        let sc = Shaping { scatter: 1.5, spacing: 0.8, ..Shaping::default() };
+        let q = outline_shaped(&flat, &Tip::round(10.0), &sc, 1.0, 0.2);
+        assert!(q.tight().height() > 20.0, "{:?}", q.tight());
+        assert!(q.tight().height() < 10.0 + 2.0 * 15.0 + 1.0, "within the scatter's reach: {:?}", q.tight());
+        assert!(loops(&q) > 5);
+        assert_eq!(q, outline_shaped(&flat, &Tip::round(10.0), &sc, 1.0, 0.2), "deterministic");
+        // Scatter on a continuous brush stamps dabs a quarter size apart.
+        let cont = outline_shaped(&flat, &Tip::round(10.0), &Shaping { scatter: 1.0, ..Shaping::default() }, 1.0, 0.2);
+        assert!(cont.tight().height() > 12.0);
+    }
+
     #[test]
     fn hostile_input_is_empty_or_bounded() {
-        let wild = Shaping { taper_start: f32::NAN, taper_end: 1e9, spacing: -3.0, jitter: f32::INFINITY };
-        assert_eq!(wild.sanitized(), Shaping { taper_start: 0.0, taper_end: 0.5, spacing: 0.0, jitter: 0.0 });
+        let wild = Shaping { taper_start: f32::NAN, taper_end: 1e9, spacing: -3.0, jitter: f32::INFINITY, texture: f32::NAN, scatter: 1e9, tilt: TiltResponse::default() };
+        assert_eq!(wild.sanitized(), Shaping { taper_start: 0.0, taper_end: 0.5, spacing: 0.0, jitter: 0.0, texture: 0.0, scatter: 2.0, tilt: TiltResponse::default() });
         let _ = outline_shaped(&line(Vec2::ZERO, Vec2::new(10.0, 0.0), 3, |_| 1.0), &Tip::round(5.0), &Shaping { spacing: 1e-9, jitter: 0.5, ..wild }, 1.0, 1.0);
         assert!(outline(&[], &Tip::round(10.0), 1.0, 1.0).is_empty());
-        let nan = [Sample { at: Vec2::new(f32::NAN, 0.0), pressure: f32::NAN }];
+        let nan = [Sample::new(Vec2::new(f32::NAN, 0.0), f32::NAN)];
         assert!(outline(&nan, &Tip::round(10.0), 1.0, 1.0).is_empty());
         assert!(outline(&line(Vec2::ZERO, Vec2::new(10.0, 0.0), 3, |_| 1.0), &Tip::round(0.0), 1.0, 1.0).is_empty());
         assert!(outline(&line(Vec2::ZERO, Vec2::new(10.0, 0.0), 3, |_| 1.0), &Tip::round(f32::INFINITY), 1.0, 1.0).is_empty());

@@ -15,6 +15,7 @@ anicraft-xfl.workspace = true
 anicraft-svg.workspace = true
 anicraft-text.workspace = true
 anicraft-plugins.workspace = true
+craft-anicraft-format.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -9,7 +9,8 @@
 pub mod edges;
 pub mod import;
 pub mod text;
-/// The shared XML reader, under its compatibility path.
+pub mod video;
+/// The shared XML reader (`anicraft-xml`), under its old path.
 pub use anicraft_xml as xml;
 /// XFL/FLA ZIP package reader, shared with other consumers through `craft-xfl`.
 pub mod zip {
@@ -19,7 +20,7 @@ pub mod zip {
     pub(crate) use crate::pack;
 }
 
-pub use import::{MAX_FLA_BYTES, Report, XflError, import_fla, import_fla_with_fonts, import_path, import_with, import_with_fonts};
+pub use import::{MAX_FLA_BYTES, MAX_NAMED, Report, XflError, import_fla, import_fla_with_fonts, import_path, import_with, import_with_fonts};
 
 #[cfg(test)]
 #[path = "../tests/support/fla.rs"]

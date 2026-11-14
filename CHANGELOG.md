@@ -2,6 +2,160 @@
 
 ## Unreleased
 
+* **Sound output polish** (ADR 0095, M5).
+  * The playhead follows the sound being **heard**: the device's latency is taken off and slow
+    frames are dropped rather than drifting (within a frame over an hour of play in tests).
+  * **Event sounds play to their end** when Loop Playback goes round and after the playhead stops
+    on the last frame; pressing Enter stops all sound.
+  * **Volume and mute** in the timeline header (also **Control › Mute Sounds** and **Preferences ›
+    Sound**): for listening only, kept in your preferences, never in exports.
+  * **Control › Audio Scrubbing** turns scrubbing off or on; a scrub plays at least 1/20 s.
+  * No sound device, or one unplugged mid-play, never crashes: playback carries on silently with a
+    notice and a log line, and the next play opens the device again.
+  * The **web version plays sound** through Web Audio.
+* **Portable copies and AppImage desktop integration** (ADR 0094, M8).
+  * **The Windows zip and the Linux tar.gz are portable**: preferences, autosaved work, logs,
+    plug-ins, templates, brushes, filter presets, workspaces and recent files stay in a `data`
+    folder beside AniCraft. A file named `anicraft-portable` next to the program (or next to
+    `AniCraft.app` or an `.AppImage`) is what makes a copy portable; delete it to use your user
+    folder. A portable folder that can't be written falls back to your user folder and says so.
+  * **Preferences › About** shows the version, whether this copy is installed or portable, and
+    every folder AniCraft keeps things in, each with an Open button.
+  * **AppImage: Add to Menu.** The first start from an AppImage offers once, in a card that
+    nothing waits on, to add AniCraft to your applications menu and open `.anicraft`, `.fla` and
+    `.xfl` files with it. Only `~/.local/share` changes; Preferences › About removes it again,
+    and the entry follows the AppImage when you move or update it. Headless:
+    `desktop.integrate`, `desktop.remove`, `desktop.status`.
+  * **Store readiness:** a Packaging lint job validates the Flatpak manifests, the AppStream
+    metainfo (`appstreamcli validate`), the desktop entry and any winget or MSIX manifests.
+    Nothing is submitted.
+
+* **Brushes and erasing, second slice: tilt, textured brushes, erasing inside symbols, profiles
+  in the merge** (ADR 0093, M7).
+  * **Pen tilt** shapes the Brush: it turns the tip with the way the pen leans and paints up
+    to twice as wide as it lies down (the Paint Brush too). A mouse is never affected. Desktop
+    systems don't pass tilt on to AniCraft yet, so the Tilt options stay hidden in Properties
+    until a pen reports it; scripts and MCP send it in `draw.brush` points as
+    `[x, y, pressure, altitude, azimuth]`.
+  * **Textured brushes**, still vector: **Texture** lets a fixed paper grain show through the
+    paint, **Scatter** throws dabs either side of the stroke. New built-in brushes **Charcoal**
+    and **Spatter**.
+  * **Variable-width lines are merged drawing**: a line across one, or the Eraser, cuts it, and
+    each piece keeps the widths it had there. Pressured Paint Brush lines are raw now.
+  * **Erased gradients** keep their gradient in place in every piece.
+  * **Erasing inside symbols**: open a symbol or drawing object (double-click) and the Eraser
+    erases its lines and fills; on the stage it keeps them and the status bar says how.
+  * Fix: the curve fitter could send a handle far off on a tiny, nearly closed stretch.
+* **Surviving graphics card failures, and filters in the Motion Editor** (ADR 0092, M3).
+  * **The stage keeps drawing when the graphics card fails mid-session**: the CPU takes it over
+    at once, the status bar says so, and the graphics card is tried again after 3, 15, 60 and
+    300 seconds (sooner when the window is resized). Preferences › Stage says why.
+  * **A graphics driver error no longer closes AniCraft** (#255: `Surface::configure` "Failed to
+    wait for GPU to come idle"): the error goes to the log, unsaved work is autosaved at once,
+    and a surface that fails is reconfigured, then made anew. If the window loses its graphics
+    device, AniCraft saves the work, reopens the window a safer way and offers the work back;
+    the next three starts try that safer way first (#207).
+  * **Filters animate in the Motion Editor**: each filter of a movie clip in a motion tween lists
+    its numbers (Blur X/Y, Strength, Angle, Distance, Adjust Color's four) under its name, with
+    curves, keys, eases and retiming like the other properties. Changing a filter in Properties
+    with the playhead inside the tween keys it; reordering or removing filters takes their keys
+    along. Headless: `motion.set_key {"property": "filter.0.blur_x", …}`; files keep the tracks
+    under `filter_tracks`, so older builds still open them.
+
+* **Shape armatures, second slice: painted weights and reshaping** (ADR 0090, M7).
+  * The **Bind** tool's **Paint Weights** (Properties › Bone) brushes a bone's influence onto
+    the points of its shape: **Add**, **Subtract** or **Smooth**, with a size (`[` and `]`)
+    and a strength, fading to the brush's rim. The bone's share shows live as a heat map on the
+    outline and its points, blue (none) to red (all). Each point's weights always add up to
+    100 %, painted points stay as painted when bones are added, and a stroke is one undo step.
+  * **Weights as numbers**: Properties › Bone shows a point's share of the bone as a field to
+    type in, and every bone the point follows. Click a point or type its number.
+  * **Reshaping a shape with bones**: at the rest pose, Subselection moves, adds, deletes and
+    converts its points. The bones keep their binding: new points blend their neighbours'
+    weights, deleted ones drop theirs, and every pose bends the new outline.
+  * Headless: `bone.paint_weights`, `bone.set_weight`; the `path.*` point commands reshape a
+    bound shape at rest.
+* **Filters, second slice: order, on/off, copy and paste, presets** (ADR 0091, M5).
+  * **Reorder filters** in Properties › Filters: drag a filter by its grip, or focus the grip
+    and press Alt+Up/Alt+Down, or right-click for Move Up/Down. The order changes the picture
+    (filters apply from the top down).
+  * **Switch a filter off** with its eye: it keeps its settings and draws nothing, on the
+    stage and in every export (SVG, HTML canvas, Lottie, video, images). Enable All and
+    Disable All in the **…** menu. Animate files' switched-off filters now come in switched
+    off instead of being dropped.
+  * **Copy and paste filters** between movie clips and buttons (Copy All Filters, Copy Filter,
+    Paste Filters).
+  * **Filter presets**: Save as Preset…, apply by name (replaces the filters, undoable),
+    rename, delete (asks), and export or import them as a small JSON file. Presets are kept in
+    your preferences, for any document.
+  * Classic tweens keep tweening filter values when a filter is switched off; tests cover a
+    blur and a glow at a tween's midpoint.
+  * Headless: `filter.move`, `filter.enable`, `filter.remove`, `filter.copy`,
+    `filter.paste`, `filter.preset_list/save/apply/rename/delete/export/import`, and
+    `enabled` in `element.set_filters`.
+* **Lottie export with real keyframes and eases** (ADR 0089, M4).
+  * Tweens become **Lottie keyframes with Lottie's own Bézier eases** instead of a key at every
+    frame: No Ease, Classic Ease, Bézier handles, Quad, Cubic, Back and Bounce, and custom
+    curves (a key per piece) come across exactly, and the motion is smooth on any screen.
+  * Objects that move, turn or scale keep their outline and move as a whole (an animated group
+    transform: position, rotation, skew, scale); shape tweens between outlines of one
+    structure are shape keys; colours, gradients, strokes, opacity and masks are keyed the
+    same way.
+  * Every frame still shows exactly what AniCraft shows: each eased span is checked at every
+    frame, and what no Lottie ease draws (Elastic, Sine, curved motion guides, tweens inside
+    tweening symbols) stays frame by frame and is reported once.
+  * Files are much smaller: the demo 46.7 → 10.4 kB, a 240-frame stress movie 14.5 → 1.45 MB
+    (and it exports in 360 ms instead of 931 ms).
+  * A playback parity test plays the exported file with a Lottie player written from the
+    public format description through the CPU oracle at every frame, for the sample scenes, a
+    movie of every tween and ease, and the XFL corpus.
+
+* **Plug-ins, second slice: export formats and eases** (ADR 0088, M6).
+  * **Export-format plug-ins** appear in **File › Export** below the built-in formats. Their
+    **Export** window has the plug-in's options, the frames and the file, then a progress bar
+    and **Cancel** while the export runs in the background. The plug-in gets the movie's
+    evaluated frames, never the document, and AniCraft writes the file it returns (at most
+    64 MB). Replacing a file asks first.
+  * **Ease plug-ins** add eases to every ease menu, under **Plug-in eases**. AniCraft samples
+    each ease once when the plug-in loads, and a tween keeps the curve, so the movie plays the
+    same without the plug-in.
+  * Hostile plug-ins stop with a clear message: endless loops, huge or misplaced output, eases
+    that give NaN, leave −10..10 or miss 0 and 1 at their ends.
+  * Samples: **Plain Text Frames** (an exporter) and **Stepped Eases** (Stepped 2, 4, 8, Smooth
+    Steps 4), built and run in CI; the guest SDK gains `exporter!`, `ease!`, `movie()` and
+    `frame()`.
+  * Headless: `file.export_plugin`, `file.export_formats`, `{"plugin", "ease"}` and
+    `{"sampled"}` easing params, plug-in eases in `ease.list`; `anicraft-cli export --format
+    <id>` (built-in formats too) and `anicraft-cli formats`.
+* **Dockable panels, second slice** (ADR 0087, M8).
+  * **The tools move like any panel**: drag the grip at the top of the tools (or use its
+    menu) to put them in a slim bar on any side, as a tab in a dock (laid out in as many
+    columns as fit), or floating. Older preferences keep them on the left.
+  * **Floating windows hold several tabs**: drop a tab on a floating window, or use the panel
+    menu's **Stack With**. **Drag a floating window back into a dock** by its grip (or its
+    title bar inside the editor), with the same drop targets as a tab; **Dock** puts each
+    panel back where it came from.
+  * **Docks collapse to icons**: the » button (or the panel menu) shrinks a dock to a strip
+    of panel icons, names as tooltips; a click opens the panel over the stage, Esc or a click
+    outside closes it. Ctrl+F6 and the Window menu reach panels there.
+  * **Manage Workspaces…**: rename and delete your own workspaces (delete asks with a second
+    click); built-in ones can be reset but not deleted.
+  * **Panels fit narrow docks**: at the narrowest side dock (now 200 pt) form rows put their
+    value under the label and fields shrink, so nothing runs off the edge (Properties' "Snap
+    to objects", the stage size, the Align buttons and "To stage" did); a test checks every
+    panel at that width in English and the pseudo-locale. Long section titles end in "…".
+  * Fixed: clicking a tab above or below the stage could start a drag instead of showing it.
+
+* **Animate files: sounds, videos and more archive layouts** (ADR 0086, M4).
+  * Frame sounds keep their **effect**: Left or Right Channel, the fades, or a custom envelope.
+  * Sounds and videos that don't come across are **named in the report** with the reason
+    ("theme.aif: AIFF", "voice.wav: WAV in IMA ADPCM", "intro.flv: FLV, On2 VP6, 4.5 s");
+    `file.open` returns them as `named`.
+  * A **Screen Video** comes in as a still of its first frame, in the Library and where the
+    video was placed; other videos are named with their format and length.
+  * A **zipped XFL folder** (one top folder, `__MACOSX` ignored) and a **self-extracting
+    archive** renamed to `.fla` open like any `.fla`.
+  * The corpus gains `sounds` and `video` packages and six archive layouts.
 * **Motion Editor and timeline retiming** (ADR 0083, M2).
   * **Moving keys in time** in the Motion Editor: drag a key sideways. It snaps to frames and
     stops next to its neighbours, and the value and ease go with it. Shift-click picks keys
@@ -19,6 +173,7 @@
     full name is in the tooltip), and at the narrowest the strip scrolls.
   * Headless: `motion.move_keys`, `timeline.resize_span`, `timeline.move_spans`,
     `motion.split`, `motion.join`.
+
 * **Bones, second slice: springs, joint translation and editing members** (ADR 0084, M7).
   * **Joint translation**: Properties › Bone › X/Y translation lets a joint slide along the
     axes of what the bone starts on, freely or within limits (pixels). Slides are part of each

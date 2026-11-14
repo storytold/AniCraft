@@ -2,7 +2,7 @@
 # wasm32-unknown-unknown only. Build with ./build.sh.
 [workspace]
 resolver = "3"
-members = ["sdk", "star-field", "jitter"]
+members = ["sdk", "star-field", "jitter", "text-export", "stepped-ease"]
 
 [workspace.package]
 version = "1.0.0"

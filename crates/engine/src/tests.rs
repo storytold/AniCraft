@@ -666,6 +666,10 @@ fn panic_hunt_every_command() {
         json!({"format": "sprite_sheet", "columns": u64::MAX, "padding": 256, "from": null, "to": null, "output": "{name}{name}{name}.png"}),
         json!({"profile": {"gif": {"scale": 1e30, "range": {"from": 5, "to": 1}, "output": ""}, "audio": {"bits": 3, "rate": 0}, "html": {"title": "x"}}}),
         json!({"profile": {"png": {"frame": 99_999, "enabled": true}}, "format": "svg", "enabled": true}),
+        // Desktop integration (ADR 0094): system folders, missing files, line breaks, junk.
+        json!({"appimage": "/no/such/AniCraft.AppImage", "data_home": "/usr/share", "refresh": "x"}),
+        json!({"appimage": "/a
+Exec=evil", "data_home": "relative/share", "refresh": false}),
     ];
     // File commands are exercised separately (they touch the disk).
     let skip = |id: &str| id.starts_with("file.");
@@ -2429,7 +2433,7 @@ fn bevel_and_gradient_filters_render_save_and_export() {
     // A gradient glow whose ramp ends in blue; its start stays transparent whatever is sent.
     run(&mut s, "element.set_filters", json!({"filters": [{"type": "gradient_glow", "blur_x": 0, "blur_y": 0, "distance": 0, "stops": [{"offset": 0, "color": "#ff00ffff"}, {"offset": 1, "color": "#0000ff"}]}]}));
     let ElementKind::Symbol { filters, .. } = &s.doc.timeline(s.scene).layers[0].keyframes[0].elements[0].kind else { panic!() };
-    let Some(Filter::GradientGlow { stops, side: FilterSide::Outer, .. }) = filters.first() else { panic!("{filters:?}") };
+    let Some(Filter::GradientGlow { stops, side: FilterSide::Outer, .. }) = filters.first().map(|e| &e.filter) else { panic!("{filters:?}") };
     assert_eq!(stops[0].color.a, 0.0, "pinned transparent");
     assert_eq!(px(&s, 150, 150), [1.0, 0.0, 0.0, 1.0]);
     assert!(s.execute("element.set_filters", &json!({"filters": [{"type": "gradient_bevel", "stops": vec![json!({"offset": 0.5, "color": "#ffffff"}); 16]}]})).is_err(), "too many stops");

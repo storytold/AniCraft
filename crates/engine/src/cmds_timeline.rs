@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
         c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_tween),
         c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_shape_tween),
         c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?} (a motion tween leaves its object as it is on the first frame)", true, remove_tween),
-        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}", true, set_easing),
+        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name} | {plugin: id, ease: id} (an ease plug-in's; the tween keeps its sampled curve), group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}", true, set_easing),
         c("timeline.set_orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}", true, set_orient),
         c("timeline.set_label", "Frame Label", "", None, "{label, layer?, frame?}", true, set_label),
         c("timeline.goto", "Go to Frame", "", None, "{frame}", false, goto),
@@ -677,7 +677,7 @@ fn create_shape_tween(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
-    let given = opt_easing_in(&s.doc, p, "easing")?;
+    let given = opt_easing_in(s, p, "easing")?;
     let k = keyframe_mut(s, p)?;
     // Switching kinds keeps the easing the span already had, unless one is given; a classic
     // tween keeps its property groups' eases (a shape tween has one ease, as in Animate).
@@ -705,7 +705,7 @@ fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set_easing(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing_in(&s.doc, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let easing = opt_easing_in(s, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
     let group = crate::cmds_ease::group(p)?;
     let k = keyframe_mut(s, p)?;
     let t = k.tween.as_mut().ok_or_else(|| EngineError::State("this span has no tween; create one first".into()))?;

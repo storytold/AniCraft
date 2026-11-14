@@ -322,11 +322,11 @@ fn gradient_fills_take_part_in_the_merge() {
     run(&mut s, "draw.rect", json!({"x": 50, "y": 25, "w": 50, "h": 50, "fill": "#00ff00", "stroke": null}));
     let g = fills(&s).into_iter().find(|e| fill_color(e).is_none()).unwrap();
     assert!((area(&g) - (20_000.0 - 2_500.0)).abs() < 1.0);
-    // A width profile still makes an object.
+    // A width profile is raw too (ADR 0093: the merge carries it into each piece).
     let mut t = raw_session();
     t.style.set_profile(anicraft_doc::ProfilePreset::TaperBoth);
     run(&mut t, "draw.line", json!({"x0": 0, "y0": 0, "x1": 100, "y1": 0}));
-    assert!(raw(&t).is_empty());
+    assert_eq!(raw(&t).len(), 1);
     let _ = Affine::IDENTITY;
 }
 

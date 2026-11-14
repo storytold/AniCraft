@@ -1,15 +1,15 @@
 # Plug-ins
 
-Plug-ins add new commands to AniCraft: generators that draw for you, effects that change the
-selection, and scripts that steer a movie while it plays. This chapter shows how to install, run
-and manage them, and what a plug-in is and isn't allowed to do.
+Plug-ins add to AniCraft: generators that draw for you, effects that change the selection,
+scripts that steer a movie while it plays, export formats and eases. This chapter shows how to
+install, run and manage them, and what a plug-in is and isn't allowed to do.
 
 On macOS, press ⌘ where this guide says Ctrl, and ⌥ where it says Alt.
 
 ## What a plug-in is
 
 A plug-in is a single `.wasm` file (a WebAssembly module). The same file works on Windows, macOS
-and Linux. There are two kinds:
+and Linux. There are four kinds:
 
 * **Command plug-ins** appear in **Commands › Plug-ins**. A generator, such as a star field
   scattered over the stage, works on its own. A selection effect, such as one that jitters the
@@ -17,6 +17,10 @@ and Linux. There are two kinds:
 * **Frame-script plug-ins** don't appear in the Commands menu. You pick one for a keyframe in the
   Actions panel, and it runs while the movie plays in Test Movie. See
   [Interactivity](interactivity.md) for keyframe actions.
+* **Export-format plug-ins** appear in **File › Export**, below the built-in formats. See
+  [Exporting with a plug-in](#exporting-with-a-plug-in).
+* **Ease plug-ins** add eases to every ease menu, under **Plug-in eases**. See
+  [Plug-in eases](#plug-in-eases).
 
 A plug-in changes your document only through AniCraft's own commands, the same ones the menus
 use. So everything it does is checked like any other edit, and the whole run is a single step
@@ -90,6 +94,37 @@ plug-in with its name, version, author, id and size, and its description.
 
 When nothing is installed yet, the window says so: "No plug-ins installed yet".
 
+## Exporting with a plug-in
+
+1. Choose **File › Export** and the plug-in's format, for example **Plain Text Frames…**. Its
+   name is the plug-in's own; hover over it for its description.
+2. The **Export** window shows the plug-in's options (as a settings dialog does), the
+   **Frames** to export (**All** sets the whole movie), and the **File**. **Browse…** picks the
+   file with your system's dialog.
+3. Choose **Export** (or press **Enter**). A progress bar counts the frames while the plug-in
+   works, and you can keep editing. **Cancel** stops it, and nothing is written.
+
+If the file is already there, the window asks before replacing it ("A file with this name is
+already there. Replace it? This can't be undone."), and the button becomes **Replace**. When the
+export is done, the window closes and the status bar says where the file went and how big it
+is.
+
+An export-format plug-in never sees your document. AniCraft hands it each frame as the stage
+draws it (shapes, positions, colours) and writes the file it makes. In the Plug-ins window, such
+a plug-in has an **Export…** button instead of Run.
+
+## Plug-in eases
+
+An ease plug-in adds its eases to the ease menu of the timeline, of **Properties › Frame** and of
+the Motion Editor, under **Plug-in eases**, as small curves under the plug-in's name. Click one to
+ease the tween with it; the menu then shows its name, for example **Stepped 4**.
+
+The tween keeps the curve itself, not a link to the plug-in. So your document plays the same on
+a computer without the plug-in, and installing a newer version of the plug-in doesn't change
+tweens you already eased (choose the ease again to take the new curve). In **Edit Ease…** a
+plug-in's ease shows as its curve; adding or moving a point turns it into a custom ease drawn
+like it.
+
 ## The sandbox: what plug-ins may do
 
 Plug-ins run sandboxed. In the words of the Plug-ins window: they can change the open document
@@ -118,7 +153,11 @@ document. If a plug-in goes over a limit, fails or crashes, the run stops, the d
 to how it was before the run, and the status bar says why.
 
 While a command plug-in runs, AniCraft waits for it, at most for its time limit. Frame-script
-plug-ins have much tighter limits per frame, and if one runs out the movie keeps playing.
+plug-ins have much tighter limits per frame, and if one runs out the movie keeps playing. An
+export runs in the background with more time (up to 10 minutes) and a limit on the size of
+the file (64 MB). An ease plug-in's eases are worked out once, when it loads; one that gives
+something that isn't a number, or doesn't start at 0 and end at 1, doesn't load, and the status
+bar says which ease and why.
 
 ## Frame-script plug-ins
 
@@ -145,19 +184,22 @@ Test Movie notes it and plays on without it.
 * **The web version** can't install, remove or reload plug-ins, because they live in a folder on
   your computer. Use the desktop app.
 * **On the command line**, plug-ins load only when you ask, so scripted runs are repeatable. See
-  [Working headless](working-headless.md).
+  [Working headless](working-headless.md). `anicraft-cli export --format <id>` exports with a
+  plug-in's format (or a built-in one), and `anicraft-cli formats` lists them.
 
 ## What isn't there yet
 
-* Plug-ins that add export formats, easing presets, panels or other parts of the interface.
-* Running a long plug-in in the background with a progress bar and Cancel.
+* Plug-ins that add panels or other parts of the interface.
+* Plug-in formats in **File › Publish Settings**, and ease plug-ins with settings.
+* Running a long command plug-in in the background with a progress bar and Cancel (exports
+  already do).
 * A plug-in catalogue, signed plug-ins and per-plug-in permissions beyond the fixed rules above.
 
 ## For plug-in authors
 
 Plug-ins can be written in any language that compiles to WebAssembly. The AniCraft repository
-has a small Rust kit and two complete sample plug-ins, Star Field (a generator) and Jitter
-Selection (a selection effect). The plug-in interface, the manifest that describes a plug-in's
+has a small Rust kit and four complete sample plug-ins: Star Field (a generator), Jitter
+Selection (a selection effect), Plain Text Frames (an export format) and Stepped Eases (eases). The plug-in interface, the manifest that describes a plug-in's
 settings, the exact limits and the frame-script requests are documented in
 [the plug-in API on GitHub](https://github.com/storytold/AniCraft/blob/main/docs/plugins.md).
 

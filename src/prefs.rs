@@ -151,6 +151,9 @@ pub struct Prefs {
     /// Brushes of your own (ADR 0068), for the Brush and the Paint Brush.
     #[serde(deserialize_with = "lenient_brushes")]
     pub brushes: anicraft_engine::brush_library::BrushLibrary,
+    /// Filter presets of your own (ADR 0091), for movie clips and buttons in any document.
+    #[serde(deserialize_with = "lenient_filter_presets")]
+    pub filter_presets: anicraft_engine::filter_library::FilterLibrary,
     /// Test Movie plays in a window of its own (ADR 0062); off, or where a system can't open
     /// one, it floats inside the editor.
     pub test_movie_window: bool,
@@ -164,6 +167,17 @@ pub struct Prefs {
     /// Whether the rulers, grid and guides show and snap (ADR 0076), kept from session to
     /// session; where the guides are and how they look is the document's.
     pub aids: anicraft_engine::ViewAids,
+    /// The monitor volume for playback, scrubbing, previews and Test Movie (ADR 0095), `0..=1`:
+    /// the listener's, never the document's, and never in an export.
+    pub sound_volume: f32,
+    /// Control › Mute Sounds: playback is silent (the playhead still keeps time).
+    pub sound_muted: bool,
+    /// Control › Audio Scrubbing: a playhead moved while stopped plays a short slice of the
+    /// stream sounds there.
+    pub audio_scrubbing: bool,
+    /// The offer to add an AppImage to the applications menu was answered (ADR 0094): it is
+    /// made once; Preferences › About adds or removes the entry any time.
+    pub desktop_offered: bool,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -225,10 +239,15 @@ impl Default for Prefs {
             recent: Default::default(),
             start_screen: true,
             brushes: Default::default(),
+            filter_presets: Default::default(),
             test_movie_window: true,
             test_movie_pos: None,
             workspaces: crate::dock::Workspaces::default(),
             aids: Default::default(),
+            sound_volume: 1.0,
+            sound_muted: false,
+            audio_scrubbing: true,
+            desktop_offered: false,
         }
     }
 }
@@ -254,6 +273,16 @@ fn lenient_brushes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_en
         _ => Vec::new(),
     };
     Ok(anicraft_engine::brush_library::BrushLibrary::from_values(list))
+}
+
+/// Your filter presets as written, skipping entries that aren't one (a hand-edited file).
+fn lenient_filter_presets<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_engine::filter_library::FilterLibrary, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    let list: Vec<serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a,
+        _ => Vec::new(),
+    };
+    Ok(anicraft_engine::filter_library::FilterLibrary::from_values(list))
 }
 
 /// Autosave intervals offered in Preferences: `(seconds, label)`.
@@ -309,6 +338,7 @@ impl Prefs {
         let lang = self.language.trim().to_ascii_lowercase();
         self.language = if lang.is_empty() || lang.len() > 35 || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { crate::i18n::AUTO.to_string() } else { lang };
         self.shortcuts = crate::keymap::sanitize(std::mem::take(&mut self.shortcuts));
+        self.sound_volume = if self.sound_volume.is_finite() { self.sound_volume.clamp(0.0, 1.0) } else { 1.0 };
         self.autosave_secs = self.autosave_secs.clamp(*AUTOSAVE_SECS_RANGE.start(), *AUTOSAVE_SECS_RANGE.end());
         self.autosave_edits = self.autosave_edits.min(*AUTOSAVE_EDITS_RANGE.end());
         self.onion.before = self.onion.before.min(ONION_REACH_MAX);
@@ -324,6 +354,7 @@ impl Prefs {
             .collect();
         self.recent = std::mem::take(&mut self.recent).sanitized();
         self.brushes = std::mem::take(&mut self.brushes).sanitized();
+        self.filter_presets = std::mem::take(&mut self.filter_presets).sanitized();
         self.test_movie_pos = self.test_movie_pos.filter(|[x, y]| x.is_finite() && y.is_finite() && x.abs() < 1e5 && y.abs() < 1e5);
         self
     }

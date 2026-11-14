@@ -41,12 +41,16 @@ mod camera_tool;
 mod convert_symbol;
 mod layer_depth;
 mod layer_props;
+mod desktop_ui;
 mod dialogs;
 mod dock;
+mod dock_float;
 mod dock_ui;
 mod drop;
 mod ease_editor;
 mod gpu_stage;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_watch;
 mod gradient_tool;
 mod icons;
 mod keymap;
@@ -62,6 +66,11 @@ mod motion_path;
 mod onion;
 mod pathtools;
 mod platform;
+mod plugin_export_ui;
+#[cfg(test)]
+mod plugin_fixture_tests;
+#[cfg(test)]
+mod plugin_ui_tests;
 mod plugins_ui;
 mod prefs;
 mod recent;
@@ -82,6 +91,7 @@ mod timeline;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod widthtool;
+mod workspaces_window;
 
 #[cfg(not(target_arch = "wasm32"))]
 use anicraft_engine::Session;
@@ -256,7 +266,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
 /// `--help` (the console's text, in English).
 #[cfg(not(target_arch = "wasm32"))]
 // i18n-exempt: the --help console text
-const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png [--shot-width <px>]] [--renderer gl|wgpu|vulkan|dx12|metal] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|selectzoom|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|rulers|editguides|editgrid|symboledit|groups|combine|nineslice|nineslicedit|brush|brushing|polystar|paintinside|drawingedit|shapeenvelope|brushlibrary|brushcurve|paintbrush|eraser|erasing|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|bones|springbones|shapebones|layerdepth|layerdepthview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|softmask|pathtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|ease|easepreset|library|librarymenu|colour|layerprops|frameview|layercolour|timelinepolish|dock|animator|designer|gradient|gradientbucket|swatches|swatchpanel]\n\
+const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--screenshot out.png [--shot-width <px>]] [--renderer gl|wgpu|vulkan|dx12|metal] [--theme graphite|high-contrast] [--scale <percent>] [--lang <code>|auto|pseudo] [--open palette|shortcuts|lastscene|start|drop|droplibrary|select|selectzoom|about|files|confirm|transform|points|merge|rawparts|rawedit|rawsub|rawpoints|rawsnap|rulers|editguides|editgrid|symboledit|groups|combine|nineslice|nineslicedit|brush|brushing|polystar|paintinside|drawingedit|shapeenvelope|brushlibrary|brushcurve|paintbrush|eraser|erasing|erasemerge|tiltbrush|eyedropper|pen|frames|span|bucket|tlzoom|tlwide|motion|motionspan|motionpath|motionpoints|motionedit|motionpins|motionpinsspan|hints|hintsend|camera|cameraview|bones|springbones|shapebones|shapeweights|layerdepth|layerdepthview|filters|strokes|prefs|licenses|zoom|recovery|plugins|actions|script|scriptproblems|testmovie|testmovieinside|testscript|textfields|testtext|softmask|pathtext|button|testhits|exporthtml|publish|publishreport|publishanim|sound|envelope|ease|easepreset|plugineases|pluginexport|pluginexportwindow|library|librarymenu|libraryfolders|colour|layerprops|frameview|layercolour|timelinepolish|dock|dockicons|floattabs|docknarrow|workspaces|animator|designer|gradient|gradientbucket|swatches|swatchpanel]\n\
      --renderer   the window's graphics (also ANICRAFT_RENDERER); default automatic, falling back to OpenGL\n\
      --open       shows a panel at start (handy with --screenshot for visual checks)\n\
      --shot-width scales the screenshot down to this width (the user guide's pictures)\n\
@@ -301,30 +311,59 @@ fn main() -> eframe::Result {
     // The window: the graphics asked for, then this platform's order down to OpenGL. A way that
     // fails or panics before the window is up falls through to the next; a start that died
     // inside a driver last time tries that way last (#207, `startup`).
-    let died_in = startup::begin(platform::log_dir());
-    let attempts = startup::plan(platform::forced_backend(renderer.as_deref()), prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), died_in.as_deref());
+    let mut last = startup::begin(platform::log_dir());
+    let mut file = file;
+    let mut reopened = 0;
     let mut why = String::from("no attempt"); // i18n-exempt: log text
-    for (n, attempt) in attempts.iter().enumerate() {
-        startup::trying(attempt, n + 1, attempts.len());
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone())));
-        why = match result {
-            Ok(Ok(())) => {
-                startup::line("closed");
-                return Ok(());
+    // Once, and again each time the window closed to reopen another way.
+    let mut opening = true;
+    while opening {
+        opening = false;
+        let attempts = startup::plan(platform::forced_backend(renderer.as_deref()), prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), &last);
+        for (n, attempt) in attempts.iter().enumerate() {
+            startup::trying(attempt, n + 1, attempts.len());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone())));
+            why = match result {
+                Ok(Ok(())) => {
+                    // The window's graphics device was lost mid-session (ADR 0092): it closed
+                    // with the work autosaved, to open again another way, which offers it back.
+                    if let Some(reopen) = startup::take_reopen()
+                        && reopened < MAX_REOPENS
+                    {
+                        reopened += 1;
+                        startup::line(&format!("opening the window again, {} last", attempt.label()));
+                        last.retain(|l| *l != attempt.label());
+                        last.push(attempt.label());
+                        file = reopen;
+                        opening = true;
+                        break;
+                    }
+                    startup::line("closed");
+                    return Ok(());
+                }
+                Ok(Err(e)) => e.to_string(),
+                Err(p) => format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())), // i18n-exempt: a log line
+            };
+            startup::line(&format!("{} failed: {why}", attempt.label()));
+            // It ran and then stopped: not a start-up problem, and opening a second window would
+            // surprise (autosave offers the work back next time). A graphics failure makes the
+            // next starts try this way late (ADR 0092).
+            if startup::started() {
+                if startup::is_graphics_failure(&why) {
+                    startup::lost_mid_session();
+                }
+                return Err(eframe::Error::AppCreation(why.into()));
             }
-            Ok(Err(e)) => e.to_string(),
-            Err(p) => format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())), // i18n-exempt: a log line
-        };
-        startup::line(&format!("{} failed: {why}", attempt.label()));
-        // It ran and then stopped: not a start-up problem, and opening a second window would
-        // surprise (autosave offers the work back next time).
-        if startup::started() {
-            return Err(eframe::Error::AppCreation(why.into()));
         }
     }
     startup::give_up(&why);
     Err(eframe::Error::AppCreation(why.into()))
 }
+
+/// Times one run opens the window again after its graphics device was lost (ADR 0092); past
+/// that it closes, and the next start offers the work back.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_REOPENS: u32 = 2;
 
 #[cfg(test)]
 mod args_tests {
@@ -379,6 +418,8 @@ mod guide_reference_tests;
 #[cfg(test)]
 mod guidelines_tests;
 #[cfg(test)]
+mod dock_narrow_tests;
+#[cfg(test)]
 mod architecture_tests;
 #[cfg(test)]
 mod packaging_tests;
@@ -386,3 +427,5 @@ mod packaging_tests;
 mod rulers_tests;
 #[cfg(test)]
 mod retime_ui_tests;
+#[cfg(test)]
+mod tilt_ui_tests;

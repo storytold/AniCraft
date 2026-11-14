@@ -81,6 +81,18 @@ impl Bitmap {
         Bitmap::from_png(id, name, png).ok_or(ImageError::Unreadable)
     }
 
+    /// A bitmap from straight RGBA8 pixels, row by row (a decoded video frame, say). `None`
+    /// when the size is empty, over [`MAX_BITMAP_EDGE`] or doesn't match the pixels.
+    pub fn from_rgba(id: BitmapId, name: impl Into<String>, width: u32, height: u32, rgba: Vec<u8>) -> Option<Bitmap> {
+        if width == 0 || height == 0 || width > MAX_BITMAP_EDGE || height > MAX_BITMAP_EDGE || rgba.len() != width as usize * height as usize * 4 {
+            return None;
+        }
+        let png = encode_png(width, height, &rgba)?;
+        let decoded = OnceLock::new();
+        let _ = decoded.set(Some(Arc::new(Pixels { width, height, rgba })));
+        Some(Bitmap { id, name: name.into(), width, height, png: Arc::new(png), smoothing: true, decoded: Arc::new(decoded) })
+    }
+
     /// The decoded pixels (decoded once and shared by every clone). `None` for unreadable data.
     pub fn pixels(&self) -> Option<Arc<Pixels>> {
         self.decoded.get_or_init(|| decode_png(&self.png).map(Arc::new)).clone()

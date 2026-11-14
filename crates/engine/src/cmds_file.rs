@@ -212,6 +212,8 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
         info["kept"] = json!(report.kept);
         info["runs"] = json!(report.runs);
         info["missing_fonts"] = json!(report.missing_fonts);
+        // The sounds and videos that didn't come across, by name and why (ADR 0086).
+        info["named"] = json!(report.names);
         info["merged_keyframes"] = json!(merged);
         return Ok(info);
     }
@@ -790,7 +792,8 @@ pub fn gif_delays(frames: usize, fps: f32) -> Vec<u16> {
         .collect()
 }
 
-/// The movie as a Lottie (JSON) animation, frame-accurate (see `anicraft_render::lottie`).
+/// The movie as a Lottie (JSON) animation, keyed with eases and equal to `evaluate` at every
+/// frame (see `anicraft_render::lottie`, ADR 0089).
 fn export_lottie(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     let last = s.doc.frame_count().saturating_sub(1);

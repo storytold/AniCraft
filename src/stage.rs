@@ -337,6 +337,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let xf = crate::pathtools::Xf { origin, zoom };
     // Pen pressure, when a tablet reports it (the Brush tool's width follows it).
     let pressure = crate::brushtool::frame_pressure(ui.ctx());
+    // Tilt, where the toolkit reports it: the brushes' Tilt options show once it has (ADR 0093).
+    crate::brushtool::note_tilt(app, crate::brushtool::frame_tilt(ui.ctx()));
     let now = ui.input(|i| i.time);
     // The motion path takes the pointer with the selection tools (ADR 0030): its ends and
     // handles before the object under them, the path itself only where no object is.
@@ -628,6 +630,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             (Drag::PointMarquee { cur: m, .. } | Drag::BindMarquee { cur: m, .. }, Some(c)) => *m = c,
+            (Drag::BindPaint { last }, Some(c)) => {
+                let from = *last;
+                let to = crate::bind_tool::paint_to(app, from, c);
+                if let Drag::BindPaint { last } = &mut app.drag {
+                    *last = to;
+                }
+            }
             (Drag::WarpPin { element, pin }, Some(c)) => {
                 let (element, pin) = (*element, *pin);
                 crate::warp_tool::drag_to(app, element, pin, c);
@@ -669,6 +678,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Drag::MotionPath { .. } => crate::motion_path::drag_end(app),
             Drag::PointMarquee { start, cur } => crate::pathtools::marquee_points(app, start, cur, shift),
             Drag::BindMarquee { start, cur } => crate::bind_tool::drag_end(app, start, cur, shift, command),
+            Drag::BindPaint { .. } => crate::bind_tool::paint_end(app),
             Drag::Pencil => crate::pathtools::commit_pencil(app, xf),
             Drag::Brush => crate::brushtool::commit(app, xf),
             Drag::Eraser => crate::erasertool::commit(app, xf),
@@ -893,7 +903,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             app.stage_cache.service = Some(RenderService::new(DEFAULT_CACHE_BYTES, Some(Box::new(move || ctx.request_repaint()))));
         }
         if let Some(svc) = &app.stage_cache.service {
-            app.stage_cache.gpu.sync(app.prefs.stage_renderer, svc, ui.ctx());
+            // The stage's size in pixels: a change brings a GPU retry forward (ADR 0092).
+            let size = ((vis.width() * ppp).round() as u32, (vis.height() * ppp).round() as u32);
+            if let Some(n) = app.stage_cache.gpu.sync(app.prefs.stage_renderer, svc, ui.ctx(), size) {
+                let text = crate::gpu_stage::notice_text(&n);
+                match n {
+                    crate::gpu_stage::Notice::Back => app.status_ok(text),
+                    crate::gpu_stage::Notice::Stopped { .. } => app.status_err(text),
+                }
+            }
         }
         // Jobs are keyed by who draws them, so a renderer switch re-renders (old tiles stand in).
         let raster = app.stage_cache.service.as_ref().map_or(0, RenderService::raster_id);

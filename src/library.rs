@@ -440,10 +440,10 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
 fn toolbar(app: &mut App, ui: &mut egui::Ui) {
     let search = ui.add(egui::TextEdit::singleline(&mut app.library.filter).hint_text(tr!("Search")).desired_width(ui.available_width()));
     search.set_name(tr!("Search the Library"));
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(text(Type::Label, tr!("Sort")));
         egui::ComboBox::from_id_salt("lib_sort")
-            .width(110.0)
+            .width(crate::theme::fit(ui, 110.0))
             .selected_text(app.library.sort.label())
             .show_ui(ui, |ui| {
                 for s in Sort::ALL {
@@ -756,7 +756,7 @@ fn row_menu(app: &mut App, ui: &mut egui::Ui, e: LibraryEntry) {
 
 /// New Folder and Delete, and placing the current item.
 fn actions_row(app: &mut App, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if crate::timeline::icon_button(ui, tr!("New Folder"), None, Icon::FolderPlus).clicked() {
             new_folder(app);
         }
@@ -791,7 +791,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             let Some((kind, linkage)) = app.s.doc.symbol(id).map(|s| (s.kind, s.linkage.clone())) else { return };
             crate::theme::form_row(ui, crate::theme::FORM_LABEL_DOCK, tr!("Type"), |ui| {
                 egui::ComboBox::from_id_salt("lib_symkind")
-                    .width(150.0)
+                    .width(crate::theme::fit(ui, 150.0))
                     .selected_text(crate::panels::symbol_kind_label(kind))
                     .show_ui(ui, |ui| {
                         for (k, key) in [(SymbolKind::Graphic, "graphic"), (SymbolKind::MovieClip, "movie_clip"), (SymbolKind::Button, "button")] {

@@ -24,6 +24,31 @@ files show AniCraft under "Open with", but your default app for them doesn't cha
 command-line tool, `anicraft-cli`, is installed alongside the app (see
 [Working headless](working-headless.md)).
 
+### Running the AppImage
+
+The first time you start AniCraft from an `.AppImage`, a small card at the bottom right offers to
+**Add to Menu**. Say yes and AniCraft appears in your applications menu with its icon, and
+double-clicking a `.anicraft`, `.fla` or `.xfl` file opens it. Only your own data folder
+(`~/.local/share`) changes; nothing is installed for other users. **Not Now** puts the card away
+for good. Either way, **Preferences › About** has the button to add AniCraft to the menu or
+remove it again. If you move the AppImage or an update replaces it, the menu follows the copy
+you start next.
+
+### Portable copies
+
+The Windows `.zip` and the Linux `.tar.gz` are **portable**: they keep your preferences,
+autosaved work, logs, plug-ins, templates, brushes, filter presets, workspaces and recent files
+in a `data` folder beside AniCraft, not in your user folder. Unpack one onto a USB stick and
+your setup travels with it. A file named `anicraft-portable` next to the program is what makes a
+copy portable: delete it to use your user folder instead, or put one next to an `.AppImage` or
+next to `AniCraft.app` on a Mac to make those portable too. If the `data` folder can't be
+written (a read-only disc, say), AniCraft uses your user folder and says so. To bring your
+existing settings along, copy the contents of your user settings folder (Preferences › About
+shows it in an installed copy) into the portable copy's `data` folder.
+
+**Preferences › About** shows which kind of copy you are running and every folder it uses, each
+with an **Open** button.
+
 There is also a web version that runs in a modern browser. It can't play sound, export video
 or install plug-ins yet, and menu items that can't work there are dimmed and say why.
 

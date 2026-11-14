@@ -238,6 +238,7 @@ dependencies = [
  "sys-locale",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wat",
  "web-sys",
  "web-time",
  "winreg",
@@ -270,6 +271,7 @@ dependencies = [
  "anicraft-guide",
  "anicraft-render",
  "serde_json",
+ "wat",
 ]
 
 [[package]]
@@ -296,6 +298,7 @@ dependencies = [
  "anicraft-svg",
  "anicraft-text",
  "anicraft-xfl",
+ "craft-anicraft-format",
  "gif",
  "image-webp",
  "miniz_oxide 0.8.9",
@@ -1135,6 +1138,8 @@ dependencies = [
  "block2 0.6.2",
  "coreaudio-rs",
  "dasp_sample",
+ "futures-channel",
+ "futures-util",
  "jni",
  "js-sys",
  "libc",
@@ -1150,6 +1155,8 @@ dependencies = [
  "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "windows",
  "windows-core",
@@ -1162,6 +1169,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "craft-anicraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b77af389f30bb10de10d8436ca9b39fe94e3bb67#b77af389f30bb10de10d8436ca9b39fe94e3bb67"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1192,7 +1208,7 @@ dependencies = [
 [[package]]
 name = "craft-xfl"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=427fa158995128c5af5847274ededa4975362ccf#427fa158995128c5af5847274ededa4975362ccf"
+source = "git+https://github.com/storytold/craft-libs?rev=b423529943cc8b389e04cde6f08a08b92d0c4dea#b423529943cc8b389e04cde6f08a08b92d0c4dea"
 dependencies = [
  "miniz_oxide 0.8.9",
  "thiserror 2.0.21",

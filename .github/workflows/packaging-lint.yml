@@ -22,6 +22,27 @@ jobs:
     # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
     uses: storytold/craft-common-actions/.github/workflows/packaging-lint.yml@main
 
+  # Store readiness (ADR 0094): the metadata Flathub, AppStream consumers and winget/MSIX read.
+  # Checks only; nothing is submitted (submissions are the team's job, docs/release.md).
+  store-readiness:
+    timeout-minutes: 10
+    name: Store readiness (Flatpak, AppStream, winget/MSIX)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the validators
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends appstream desktop-file-utils python3-yaml
+      - name: Check store metadata
+        run: packaging/check-store-readiness.sh
+
   windows-install-policy:
     timeout-minutes: 15
     name: Windows installation policy (no app build)

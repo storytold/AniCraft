@@ -10,8 +10,8 @@ pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 /// Most parameters a plug-in may declare.
 pub const MAX_PARAMS: usize = 32;
 
-/// What a plug-in is (ADR 0017); exporters and easing presets are later kinds on the same
-/// host.
+/// What a plug-in is (ADR 0017): a command, a frame script (ADR 0024), an export format or a
+/// set of eases (ADR 0088), all on the same host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
@@ -23,6 +23,12 @@ pub enum Kind {
     /// (ADR 0024).
     #[serde(rename = "frame-script")]
     FrameScript,
+    /// An export format (File › Export, `file.export_plugin`): it is handed the movie's
+    /// evaluated frames, never the document, and returns the file's bytes from `ac_export`.
+    Exporter,
+    /// Named eases, each a pure function of time (`ac_ease`) that AniCraft samples into a table
+    /// once, when the plug-in loads; a tween that uses one keeps the table.
+    Ease,
 }
 
 impl Kind {
@@ -30,12 +36,37 @@ impl Kind {
         match self {
             Kind::Command => "command",
             Kind::FrameScript => "frame-script",
+            Kind::Exporter => "exporter",
+            Kind::Ease => "ease",
         }
     }
 }
 
 /// Most entry points a frame-script plug-in may declare.
 pub const MAX_ENTRIES: usize = 32;
+/// Most eases one ease plug-in may declare.
+pub const MAX_EASES: usize = 32;
+
+/// The file format an exporter plug-in writes (`"format"` in its manifest).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportFormat {
+    /// The name File › Export lists ("Plain Text Frames"), 1-64 printable characters.
+    pub name: String,
+    /// The file extension, without the dot: 1-16 characters from a-z 0-9 (kept lower case).
+    pub extension: String,
+}
+
+/// One ease an ease plug-in declares (`"eases": [{"id", "name"}, …]`); `ac_ease` gets its
+/// index in the list.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EaseDecl {
+    /// Stable id within the plug-in, `[A-Za-z0-9_-]{1,32}`.
+    pub id: String,
+    /// The name the ease menu shows, 1-48 printable characters.
+    pub name: String,
+}
 
 /// Whether a command plug-in works on the selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -93,6 +124,12 @@ pub struct Manifest {
     /// `[A-Za-z0-9_]{1,32}`; a keyframe picks one.
     #[serde(default)]
     pub entries: Vec<String>,
+    /// An exporter's file format (required for `kind: "exporter"`).
+    #[serde(default)]
+    pub format: Option<ExportFormat>,
+    /// An ease plug-in's eases, 1-32 (required for `kind: "ease"`).
+    #[serde(default)]
+    pub eases: Vec<EaseDecl>,
 }
 
 impl Manifest {
@@ -107,6 +144,14 @@ impl Manifest {
         if man.kind == Kind::FrameScript && man.entries.is_empty() {
             man.entries.push("main".into());
         }
+        if let Some(f) = &mut man.format {
+            f.name = f.name.trim().to_string();
+            f.extension = f.extension.trim().trim_start_matches('.').to_ascii_lowercase();
+        }
+        for e in &mut man.eases {
+            e.name = e.name.trim().to_string();
+        }
+        man.validate_kind()?;
         Ok(man)
     }
 
@@ -137,6 +182,47 @@ impl Manifest {
         for (i, (k, _)) in self.params.iter().enumerate() {
             if self.params.iter().take(i).any(|(o, _)| o == k) {
                 return Err(Error::Manifest(format!("parameter `{k}` is declared twice")));
+            }
+        }
+        Ok(())
+    }
+
+    /// What only some kinds declare: an exporter's format, an ease plug-in's eases.
+    fn validate_kind(&self) -> Result<()> {
+        match (&self.format, self.kind) {
+            (None, Kind::Exporter) => return Err(Error::Manifest("an exporter needs a `format`: {\"name\": \"…\", \"extension\": \"txt\"}".into())),
+            (Some(_), k) if k != Kind::Exporter => return Err(Error::Manifest("only an exporter declares a `format`".into())),
+            (Some(f), _) => {
+                if !printable(&f.name, 64) {
+                    return Err(Error::Manifest("the format's `name` must be 1-64 printable characters".into()));
+                }
+                if !(1..=16).contains(&f.extension.len()) || !f.extension.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
+                    return Err(Error::Manifest(format!("the format's `extension` {:?} must be 1-16 characters from a-z 0-9, without the dot", f.extension)));
+                }
+            }
+            (None, _) => {}
+        }
+        if self.kind != Kind::Ease {
+            if !self.eases.is_empty() {
+                return Err(Error::Manifest("only an ease plug-in (`kind: \"ease\"`) declares `eases`".into()));
+            }
+            return Ok(());
+        }
+        if self.eases.is_empty() || self.eases.len() > MAX_EASES {
+            return Err(Error::Manifest(format!("an ease plug-in declares 1-{MAX_EASES} `eases`: [{{\"id\": \"steps\", \"name\": \"Stepped\"}}, …]")));
+        }
+        if !self.params.is_empty() {
+            return Err(Error::Manifest("an ease plug-in has no `params`: declare one ease per variant instead".into()));
+        }
+        for (i, e) in self.eases.iter().enumerate() {
+            if !(1..=32).contains(&e.id.len()) || !e.id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+                return Err(Error::Manifest(format!("invalid ease id {:?}: use 1-32 characters from a-z A-Z 0-9 _ -", e.id)));
+            }
+            if !printable(&e.name, 48) {
+                return Err(Error::Manifest(format!("ease `{}`: `name` must be 1-48 printable characters", e.id)));
+            }
+            if self.eases.iter().take(i).any(|o| o.id == e.id) {
+                return Err(Error::Manifest(format!("ease `{}` is declared twice", e.id)));
             }
         }
         Ok(())
