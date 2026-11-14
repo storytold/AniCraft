@@ -59,7 +59,10 @@ pub enum XmlError {
 pub const TEXT_NODE: &str = "#text";
 
 fn options() -> craft_xml::Options<'static> {
-    let attributes = MAX_INPUT / 5;
+    // Use craft-xml's documented attribute budgets. Deriving attribute counts from the input
+    // byte limit allowed tens of millions of repeated attributes to accumulate before the
+    // facade collapsed them into its HashMap, exhausting memory on a small element.
+    let default_limits = craft_xml::Limits::DEFAULT;
     craft_xml::Options {
         strict_end_tags: true,
         unknown_entity: craft_xml::UnknownEntity::Literal,
@@ -69,8 +72,8 @@ fn options() -> craft_xml::Options<'static> {
             max_depth: MAX_DEPTH + 1,
             max_nodes: MAX_ELEMENTS * 2 + 1,
             max_elements: MAX_ELEMENTS,
-            max_attrs: attributes,
-            max_attrs_total: attributes,
+            max_attrs: default_limits.max_attrs,
+            max_attrs_total: default_limits.max_attrs_total,
         },
         ..craft_xml::Options::default()
     }
@@ -179,5 +182,21 @@ mod tests {
         }
         let deep = format!("{}{}", "<a>".repeat(MAX_DEPTH + 2), "</a>".repeat(MAX_DEPTH + 2));
         assert!(matches!(parse(deep.as_bytes()), Err(XmlError::TooDeep)));
+    }
+
+    #[test]
+    fn repeated_attributes_cannot_bypass_the_shared_reader_budget() {
+        let mut input = String::from("<root");
+        for _ in 0..=craft_xml::Limits::DEFAULT.max_attrs {
+            input.push_str(" x=''");
+        }
+        input.push_str("/>");
+        assert!(matches!(parse(input.as_bytes()), Err(XmlError::TooMany)));
+    }
+
+    #[test]
+    fn duplicate_attributes_keep_the_historical_last_value() {
+        let root = parse(b"<root x='first' x='last'/>").unwrap();
+        assert_eq!(root.attr("x"), Some("last"));
     }
 }
