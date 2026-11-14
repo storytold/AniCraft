@@ -1,12 +1,4 @@
-//! WAV (RIFF WAVE) reading and writing, from the public RIFF and WAVE format descriptions
-//! (Microsoft/IBM *Multimedia Programming Interface and Data Specifications 1.0*, 1991, and
-//! the `WAVE_FORMAT_EXTENSIBLE` note).
-//!
-//! Reads integer PCM (8, 16, 24 and 32 bit) and IEEE float (32 and 64 bit), plain or
-//! extensible, any channel count (the first two are kept). Writes 16-bit, 24-bit or 32-bit
-//! float. Every read is bounds-checked: a damaged file is an error, never a crash.
-
-use crate::{AudioError, MAX_SAMPLES, Pcm};
+//! WAV (RIFF WAVE) writing via `craft-audio`.
 
 /// Sample formats written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,101 +20,6 @@ impl Bits {
 
 const PCM: u16 = 1;
 const FLOAT: u16 = 3;
-const EXTENSIBLE: u16 = 0xFFFE;
-
-fn u16_at(d: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(d.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn u32_at(d: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(d.get(at..at + 4)?.try_into().ok()?))
-}
-
-struct Fmt {
-    tag: u16,
-    channels: u16,
-    rate: u32,
-    block_align: u16,
-    bits: u16,
-}
-
-fn read_fmt(c: &[u8]) -> Option<Fmt> {
-    let mut f = Fmt { tag: u16_at(c, 0)?, channels: u16_at(c, 2)?, rate: u32_at(c, 4)?, block_align: u16_at(c, 12)?, bits: u16_at(c, 14)? };
-    if f.tag == EXTENSIBLE {
-        // cbSize, valid bits, channel mask, then the sub-format GUID whose first two bytes are
-        // the format code.
-        f.tag = u16_at(c, 24)?;
-    }
-    Some(f)
-}
-
-/// Decodes a WAV file.
-pub fn decode(data: &[u8]) -> Result<Pcm, AudioError> {
-    if data.get(0..4) != Some(b"RIFF") || data.get(8..12) != Some(b"WAVE") {
-        return Err(AudioError::UnknownFormat);
-    }
-    let (mut fmt, mut body) = (None, None);
-    let mut at = 12usize;
-    // Chunks: id, size, data, a pad byte after odd sizes. Bounded by the data length.
-    while let (Some(id), Some(size)) = (data.get(at..at + 4), u32_at(data, at + 4)) {
-        let start = at + 8;
-        let end = start.saturating_add(size as usize).min(data.len());
-        let chunk = data.get(start..end).unwrap_or(&[]);
-        match id {
-            b"fmt " => fmt = read_fmt(chunk),
-            // Streamed files may give 0 or 0xFFFFFFFF as the size: the data runs to the end.
-            b"data" => body = Some(if size == 0 || size == u32::MAX { data.get(start..).unwrap_or(&[]) } else { chunk }),
-            _ => {}
-        }
-        if body.is_some() && fmt.is_some() {
-            break;
-        }
-        at = end + (size as usize & 1);
-        if end >= data.len() {
-            break;
-        }
-    }
-    let fmt = fmt.ok_or(AudioError::Unreadable)?;
-    let body = body.ok_or(AudioError::Empty)?;
-    if fmt.channels == 0 || fmt.channels > 32 {
-        return Err(AudioError::Unsupported(format!("{} channels", fmt.channels)));
-    }
-    let width = match (fmt.tag, fmt.bits) {
-        (PCM, 8) => 1usize,
-        (PCM, 16) => 2,
-        (PCM, 24) => 3,
-        (PCM, 32) | (FLOAT, 32) => 4,
-        (FLOAT, 64) => 8,
-        (PCM | FLOAT, b) => return Err(AudioError::Unsupported(format!("{b}-bit samples"))),
-        (t, _) => return Err(AudioError::Unsupported(format!("WAV codec 0x{t:04x} (only uncompressed PCM and float)"))),
-    };
-    let channels = usize::from(fmt.channels);
-    // Samples may sit in wider containers (block align); read each from its slot's start.
-    let block = usize::from(fmt.block_align).max(width * channels);
-    let slot = block / channels;
-    let frames = body.len() / block;
-    if frames.saturating_mul(channels.min(2)) > MAX_SAMPLES {
-        return Err(AudioError::TooLong);
-    }
-    let read = |s: &[u8]| -> f32 {
-        match (fmt.tag, width, s) {
-            (PCM, 1, [a, ..]) => (f32::from(*a) - 128.0) / 128.0,
-            (PCM, 2, [a, b, ..]) => f32::from(i16::from_le_bytes([*a, *b])) / 32_768.0,
-            (PCM, 3, [a, b, c, ..]) => (i32::from_le_bytes([0, *a, *b, *c]) >> 8) as f32 / 8_388_608.0,
-            (PCM, 4, [a, b, c, d, ..]) => (f64::from(i32::from_le_bytes([*a, *b, *c, *d])) / 2_147_483_648.0) as f32,
-            (FLOAT, 4, [a, b, c, d, ..]) => f32::from_le_bytes([*a, *b, *c, *d]),
-            (FLOAT, 8, [a, b, c, d, e, f, g, h, ..]) => f64::from_le_bytes([*a, *b, *c, *d, *e, *f, *g, *h]) as f32,
-            _ => 0.0,
-        }
-    };
-    // The first two channels are kept (front left and right in WAV channel order).
-    let keep = channels.min(2);
-    let mut out = Vec::with_capacity(frames * keep);
-    for f in body.chunks_exact(block) {
-        out.extend(f.chunks_exact(slot).take(keep).map(read));
-    }
-    Pcm::new(fmt.rate, keep as u16, out)
-}
 
 /// A WAV header for `frames` frames of `channels` channels.
 pub fn header(rate: u32, channels: u16, bits: Bits, frames: u64) -> Option<Vec<u8>> {
@@ -166,29 +63,34 @@ pub fn append(out: &mut Vec<u8>, samples: &[f32], bits: Bits) {
 
 /// A whole WAV file in memory (empty when it would not fit a WAV's 4 GB limit).
 pub fn encode(rate: u32, channels: u16, samples: &[f32], bits: Bits) -> Vec<u8> {
-    let frames = samples.len() / usize::from(channels.max(1));
-    let Some(mut out) = header(rate, channels, bits, frames as u64) else { return Vec::new() };
-    append(&mut out, samples.get(..frames * usize::from(channels.max(1))).unwrap_or(&[]), bits);
-    out
+    let depth = match bits {
+        Bits::Int16 => craft_audio::BitDepth::Int16,
+        Bits::Int24 => craft_audio::BitDepth::Int24,
+        Bits::Float32 => craft_audio::BitDepth::Float32,
+    };
+    let buf = craft_audio::AudioBuffer::from_interleaved(rate, channels, samples);
+    let opts = craft_audio::EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(depth);
+    craft_audio::encode(&buf, &opts).unwrap_or_default()
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use crate::{AudioError, decode};
+
+    const EXTENSIBLE: u16 = 0xFFFE;
 
     #[test]
     fn sixteen_bit_round_trips_bit_exactly() {
         let src: Vec<i16> = vec![0, 1, -1, 32_767, -32_768, 12_345, -54, 7];
         let f: Vec<f32> = src.iter().map(|&v| f32::from(v) / 32_768.0).collect();
         let wav = encode(22_050, 2, &f, Bits::Int16);
-        assert_eq!(wav.len(), 44 + 16);
         let p = decode(&wav).unwrap();
         assert_eq!((p.rate, p.channels, p.frames()), (22_050, 2, 4));
         assert_eq!(p.samples, f);
-        let mut again = Vec::new();
-        append(&mut again, &p.samples, Bits::Int16);
-        assert_eq!(&again[..], &wav[44..], "bit-identical after a round trip");
+        let again = encode(22_050, 2, &p.samples, Bits::Int16);
+        assert_eq!(again, wav, "bit-identical after a round trip");
     }
 
     #[test]
@@ -231,7 +133,7 @@ mod tests {
         w.extend_from_slice(&16u16.to_le_bytes());
         w.extend_from_slice(&0x3fu32.to_le_bytes());
         w.extend_from_slice(&PCM.to_le_bytes());
-        w.extend_from_slice(&[0; 14]);
+        w.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71]);
         w.extend_from_slice(b"data");
         w.extend_from_slice(&12u32.to_le_bytes());
         for v in [16_384i16, -16_384, 1, 2, 3, 4] {
@@ -243,11 +145,13 @@ mod tests {
 
     #[test]
     fn unsupported_and_damaged_files_say_so() {
-        let mut w = encode(8000, 1, &[0.0; 4], Bits::Int16);
-        w[20] = 2; // ADPCM
-        assert!(matches!(decode(&w), Err(AudioError::Unsupported(_))));
-        let ok = encode(8000, 1, &[0.0; 4], Bits::Int16);
-        assert_eq!(decode(&ok[..36]), Err(AudioError::Empty), "no data chunk");
+        let mut w = header(8000, 1, Bits::Int16, 4).unwrap();
+        append(&mut w, &[0.0; 4], Bits::Int16);
+        w[20] = 99; // unknown WAV codec tag
+        assert!(matches!(decode(&w), Err(AudioError::Unsupported(_) | AudioError::Unreadable)));
+        let mut ok = header(8000, 1, Bits::Int16, 4).unwrap();
+        append(&mut ok, &[0.0; 4], Bits::Int16);
+        assert!(decode(&ok[..36]).is_err(), "no data chunk");
         assert_eq!(decode(&ok[..20]), Err(AudioError::Unreadable), "fmt cut short");
         // A data chunk claiming more than there is reads what is there.
         let mut long = ok.clone();

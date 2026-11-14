@@ -260,15 +260,8 @@ fn shape_tweens_come_across_as_shape_tweens() {
 }
 
 fn png_2x1() -> Vec<u8> {
-    let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, 2, 1);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut wr = enc.write_header().unwrap();
-        wr.write_image_data(&[255, 0, 0, 255, 0, 0, 255, 255]).unwrap();
-    }
-    out
+    let img = craft_image_codecs::Image::from_u8(2, 1, craft_image_codecs::ChannelLayout::Rgba, vec![255, 0, 0, 255, 0, 0, 255, 255]).unwrap();
+    craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default()).unwrap()
 }
 
 const BITMAP_DOC: &str = r##"<DOMDocument width="200" height="100">

@@ -13,10 +13,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable, clippy::indexing_slicing)]
 
 pub mod mix;
-mod mp3;
 mod peaks;
 mod player;
-mod vorbis;
 pub mod wav;
 
 pub use mix::{EnvPoint, Envelope, MixOptions, Voice, VoiceKind, mix};
@@ -119,16 +117,12 @@ impl Format {
 
     /// Told apart by content, not by file name.
     pub fn sniff(data: &[u8]) -> Option<Format> {
-        if data.len() >= 12 && data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WAVE") {
-            return Some(Format::Wav);
+        match craft_audio::detect_container(data, None)? {
+            craft_audio::Container::Wav => Some(Format::Wav),
+            craft_audio::Container::Ogg => Some(Format::Vorbis),
+            craft_audio::Container::MpegAudio => Some(Format::Mp3),
+            _ => None,
         }
-        if data.starts_with(b"OggS") {
-            return Some(Format::Vorbis);
-        }
-        if data.starts_with(b"ID3") || nanomp3::detect(data) {
-            return Some(Format::Mp3);
-        }
-        None
     }
 }
 
@@ -163,50 +157,32 @@ impl std::error::Error for AudioError {}
 
 /// Decodes a WAV, Ogg Vorbis or MP3 file (told apart by content).
 pub fn decode(data: &[u8]) -> Result<Pcm, AudioError> {
-    match Format::sniff(data).ok_or(AudioError::UnknownFormat)? {
-        Format::Wav => wav::decode(data),
-        Format::Vorbis => guarded(|| vorbis::decode(data)),
-        Format::Mp3 => guarded(|| mp3::decode(data)),
+    let _ = Format::sniff(data).ok_or(AudioError::UnknownFormat)?;
+    let opts = craft_audio::DecodeOptions::default().with_max_samples(MAX_SAMPLES as u64);
+    let (_, buf) = craft_audio::decode_with(data, None, &opts).map_err(|e| match e {
+        craft_audio::AudioError::TooLarge(_) => AudioError::TooLong,
+        craft_audio::AudioError::Unsupported(what) => AudioError::Unsupported(what),
+        craft_audio::AudioError::Malformed(_) | craft_audio::AudioError::Encode(_) | craft_audio::AudioError::Io(_) => AudioError::Unreadable,
+        _ => AudioError::Unreadable,
+    })?;
+    let frames = buf.frames();
+    let ch_count = buf.channels.len();
+    if frames == 0 || ch_count == 0 {
+        return Err(AudioError::Empty);
     }
-}
-
-/// Runs a third-party decoder on untrusted data: should it panic on a malformed file, the
-/// file is reported unreadable instead of taking the app down (golden rule 1).
-fn guarded(f: impl FnOnce() -> Result<Pcm, AudioError>) -> Result<Pcm, AudioError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(Err(AudioError::Unreadable))
-}
-
-/// Collects decoded interleaved samples with `channels` channels, keeping at most two (the
-/// first two: front left and right in WAV and Vorbis order), within [`MAX_SAMPLES`].
-pub(crate) struct Collector {
-    pub channels: usize,
-    pub samples: Vec<f32>,
-}
-
-impl Collector {
-    pub fn new(channels: usize) -> Collector {
-        Collector { channels: channels.max(1), samples: Vec::new() }
-    }
-
-    pub fn out_channels(&self) -> u16 {
-        if self.channels >= 2 { 2 } else { 1 }
-    }
-
-    /// Appends whole frames from `src`; `Err(TooLong)` past the limit.
-    pub fn push(&mut self, src: &[f32]) -> Result<(), AudioError> {
-        let keep = usize::from(self.out_channels());
-        if self.samples.len() + src.len() / self.channels * keep > MAX_SAMPLES {
-            return Err(AudioError::TooLong);
+    let out_channels = if ch_count >= 2 { 2 } else { 1 };
+    let mut samples = Vec::with_capacity(frames.saturating_mul(usize::from(out_channels)));
+    if out_channels == 1 {
+        if let Some(c0) = buf.channels.first() {
+            samples.extend_from_slice(c0.get(..frames).unwrap_or(c0));
         }
-        if self.channels == keep {
-            self.samples.extend_from_slice(src);
-        } else {
-            for frame in src.chunks_exact(self.channels) {
-                self.samples.extend(frame.iter().take(keep));
-            }
+    } else if let (Some(c0), Some(c1)) = (buf.channels.first(), buf.channels.get(1)) {
+        for i in 0..frames {
+            samples.push(c0.get(i).copied().unwrap_or(0.0));
+            samples.push(c1.get(i).copied().unwrap_or(0.0));
         }
-        Ok(())
     }
+    Pcm::new(buf.sample_rate, out_channels, samples)
 }
 
 #[cfg(test)]
@@ -300,13 +276,5 @@ mod tests {
         assert_eq!(p.frame(9), (0.0, 0.0));
         let m = Pcm::new(8000, 1, vec![0.3]).unwrap();
         assert_eq!(m.frame(0), (0.3, 0.3));
-    }
-
-    #[test]
-    fn collector_keeps_the_front_pair_of_surround_sound() {
-        let mut c = Collector::new(6);
-        c.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]).unwrap();
-        assert_eq!(c.samples, vec![1.0, 2.0, 7.0, 8.0]);
-        assert_eq!(c.out_channels(), 2);
     }
 }

@@ -242,26 +242,20 @@ fn riff_chunk<'a>(riff: &'a [u8], id: &[u8; 4]) -> Option<&'a [u8]> {
 /// Compresses `px` (`w` × `h` RGBA8) as one frame's data.
 fn compress(kind: Kind, px: &[u8], w: u32, h: u32) -> Result<Vec<u8>> {
     let fail = |e: String| EngineError::Format(format!("{} frame: {e}", kind.name()));
+    let img = craft_image_codecs::Image::from_u8(w, h, craft_image_codecs::ChannelLayout::Rgba, px.to_vec())
+        .map_err(|e| fail(e.to_string()))?;
     match kind {
         Kind::Apng => {
-            let mut buf = Vec::new();
-            {
-                let mut enc = png::Encoder::new(&mut buf, w, h);
-                enc.set_color(png::ColorType::Rgba);
-                enc.set_depth(png::BitDepth::Eight);
-                enc.set_adaptive_filter(png::AdaptiveFilterType::Adaptive);
-                enc.set_compression(png::Compression::Best);
-                let mut wr = enc.write_header().map_err(|e| fail(e.to_string()))?;
-                wr.write_image_data(px).map_err(|e| fail(e.to_string()))?;
-            }
+            let opts = craft_image_codecs::EncodeOptions {
+                png_compression: craft_image_codecs::PngCompression::Best,
+                ..Default::default()
+            };
+            let buf = craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &opts).map_err(|e| fail(e.to_string()))?;
             idat(&buf)
         }
         Kind::Webp => {
-            if px.len() != w as usize * h as usize * 4 {
-                return Err(fail("the frame has the wrong size".into()));
-            }
-            let mut buf = Vec::new();
-            image_webp::WebPEncoder::new(&mut buf).encode(px, w, h, image_webp::ColorType::Rgba8).map_err(|e| fail(e.to_string()))?;
+            let opts = craft_image_codecs::EncodeOptions { webp_lossless: true, ..Default::default() };
+            let buf = craft_image_codecs::encode(&img, craft_image_codecs::Format::WebP, &opts).map_err(|e| fail(e.to_string()))?;
             riff_chunk(&buf, b"VP8L").map(<[u8]>::to_vec).ok_or_else(|| fail("the WebP encoder wrote no lossless image".into()))
         }
     }

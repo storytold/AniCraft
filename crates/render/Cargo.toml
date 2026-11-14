@@ -11,7 +11,7 @@ repository.workspace = true
 anicraft-geom.workspace = true
 anicraft-doc.workspace = true
 rayon.workspace = true
-png.workspace = true
+craft-image-codecs.workspace = true
 thiserror.workspace = true
 # Lottie export writes JSON.
 serde_json.workspace = true

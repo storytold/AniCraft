@@ -328,14 +328,12 @@ fn big_fla() -> (Vec<u8>, usize) {
     for b in 0..24 {
         let (w, h) = (1024u32, 512u32);
         let pixels: Vec<u8> = (0..w * h * 4).map(|_| rng.next() as u8).collect();
-        let mut png = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut png, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_compression(png::Compression::Fast);
-            let mut wr = enc.write_header().unwrap();
-            wr.write_image_data(&pixels).unwrap();
-        }
+        let img = craft_image_codecs::Image::from_u8(w, h, craft_image_codecs::ChannelLayout::Rgba, pixels).unwrap();
+        let opts = craft_image_codecs::EncodeOptions {
+            png_compression: craft_image_codecs::PngCompression::Fast,
+            ..Default::default()
+        };
+        let png = craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &opts).unwrap();
         files.insert(format!("LIBRARY/Images/noise {b}.png"), png);
         media.push_str(&format!("<DOMBitmapItem name=\"Images/noise {b}.png\" href=\"Images/noise {b}.png\"/>"));
     }

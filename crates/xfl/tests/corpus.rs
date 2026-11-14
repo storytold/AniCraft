@@ -69,10 +69,9 @@ const REPORTS: &[(&str, &[(&str, usize)])] = &[
     (
         "sounds",
         &[
-            ("frame sounds whose sound isn't in the package", 1),
             ("missing sound files", 1),
             ("sound in and out points (played whole)", 1),
-            ("sounds in formats AniCraft can't decode", 3),
+            ("sounds in formats AniCraft can't decode", 2),
             ("unknown sound effects (played without)", 1),
         ],
     ),
@@ -98,7 +97,7 @@ const NAMES: &[(&str, &[Named])] = &[
             ("missing sound files", &["lost.wav"]),
             (
                 "sounds in formats AniCraft can't decode",
-                &["theme.aif: AIFF", "voice.wav: WAV in IMA ADPCM", "Sounds/loop: Animate's own sound data"],
+                &["theme.aif: AIFF", "Sounds/loop: Animate's own sound data"],
             ),
         ],
     ),
@@ -372,12 +371,11 @@ fn sounds_come_across_with_their_sync_repeats_and_effects() {
     use anicraft_doc::{LibraryEntry, LibraryItem, SoundSync};
     let (doc, _) = import("sounds");
     let sounds: Vec<(&str, u32, u16)> = doc.sounds.iter().map(|s| (s.name.as_str(), s.rate, s.channels)).collect();
-    assert_eq!(sounds, [("beep.wav", 11025, 1), ("tone.mp3", 22050, 1)]);
+    assert_eq!(sounds, [("beep.wav", 11025, 1), ("tone.mp3", 22050, 1), ("voice.wav", 8000, 1)]);
     assert_eq!(doc.sounds[0].frames, 11025 / 4);
-    for s in &doc.sounds {
-        assert_eq!(doc.entry_path(LibraryEntry::Item(LibraryItem::Sound(s.id))), format!("Sounds/{}", s.name));
-    }
-    let (beep, tone) = (doc.sounds[0].id, doc.sounds[1].id);
+    let paths: Vec<String> = doc.sounds.iter().map(|s| doc.entry_path(LibraryEntry::Item(LibraryItem::Sound(s.id)))).collect();
+    assert_eq!(paths, ["Sounds/beep.wav", "Sounds/tone.mp3", "voice.wav"]);
+    let (beep, tone, voice) = (doc.sounds[0].id, doc.sounds[1].id, doc.sounds[2].id);
     let music = doc.timeline(0).layers[0].keyframes[0].sound.clone().unwrap();
     assert_eq!((music.sound, music.sync, music.looping), (tone, SoundSync::Stream, true));
     let got: Vec<_> = doc.timeline(0).layers[1].keyframes.iter().map(|k| (k.start, k.sound.as_ref().map(|s| (s.sound, s.sync, s.repeat, s.effect.clone())))).collect();
@@ -394,8 +392,8 @@ fn sounds_come_across_with_their_sync_repeats_and_effects() {
             (18, Some((beep, SoundSync::Stop, 1, SoundEffect::None))),
             // In and out points are reported; the sound plays whole.
             (20, Some((beep, SoundSync::Event, 1, SoundEffect::None))),
-            // Its sound is in a format AniCraft can't decode.
-            (22, None),
+            // IMA ADPCM WAV is now decoded by craft-audio.
+            (22, Some((voice, SoundSync::Event, 1, SoundEffect::None))),
         ]
     );
     // The soundtrack hears them: the stream across the movie and the beeps where they start.

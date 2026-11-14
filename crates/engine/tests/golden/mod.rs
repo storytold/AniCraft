@@ -34,14 +34,9 @@ fn out_dir() -> PathBuf {
 }
 
 fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut reader = png::Decoder::new(bytes).read_info().map_err(|e| e.to_string())?;
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return Err(format!("expected 8-bit RGBA, found {:?} {:?}", info.color_type, info.bit_depth));
-    }
-    buf.truncate(info.buffer_size());
-    Ok((info.width, info.height, buf))
+    let img = craft_image_codecs::decode_as(craft_image_codecs::Format::Png, bytes).map_err(|e| e.to_string())?;
+    let (w, h) = img.dimensions();
+    Ok((w, h, img.to_rgba8()))
 }
 
 fn write(path: &Path, width: u32, height: u32, rgba: &[u8]) {

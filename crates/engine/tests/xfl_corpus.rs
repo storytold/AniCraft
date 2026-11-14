@@ -365,8 +365,8 @@ fn file_open_names_the_sounds_and_videos_that_did_not_come_across() {
     let mut s = Session::default();
     let got = s.execute("file.open", &json!({"path": corpus().join("sounds").display().to_string()})).unwrap();
     assert_eq!(got["named"]["missing sound files"], json!(["lost.wav"]));
-    assert!(got["report"].as_str().unwrap().contains("3 sounds in formats AniCraft can't decode (theme.aif: AIFF; voice.wav: WAV in IMA ADPCM; Sounds/loop: Animate's own sound data)"), "{}", got["report"]);
-    assert_eq!(s.doc.sounds.len(), 2);
+    assert!(got["report"].as_str().unwrap().contains("2 sounds in formats AniCraft can't decode (theme.aif: AIFF; Sounds/loop: Animate's own sound data)"), "{}", got["report"]);
+    assert_eq!(s.doc.sounds.len(), 3);
     assert!(s.doc.sounds.iter().all(|x| x.decoded().is_some_and(|d| d.pcm.frames() > 0)), "waveforms ready to draw");
     let got = s.execute("file.open", &json!({"path": corpus().join("video").display().to_string(), "confirm": true})).unwrap();
     assert_eq!(got["named"]["videos AniCraft can't play"], json!(["intro.flv: FLV, On2 VP6, 4.5 s", "gone.mp4: its file is missing, 1.0 s"]));
