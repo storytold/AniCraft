@@ -2043,6 +2043,68 @@ impl App {
                     self.drag = Drag::Eraser;
                 }
             }
+            Some("tiltbrush") => {
+                // Tilt and textured brushes (ADR 0093) on a new layer: a flat nib whose angle
+                // follows the pen's azimuth as it turns along an S, a round brush widening as the
+                // pen lies down, Charcoal (the paper grain) and Spatter. The Brush's options show
+                // Tilt, Texture and Scatter. Tilt comes in through the command's points, as no
+                // desktop system reports it to the toolkit yet.
+                self.run("layer.new", json!({"name": "Tilt"}));
+                self.run("draw.object_drawing", json!({"on": false}));
+                let s_curve: Vec<[f32; 5]> = (0..=90)
+                    .map(|i| {
+                        let t = i as f32 / 90.0;
+                        [140.0 + t * 520.0, 200.0 + (t * std::f32::consts::TAU).sin() * 70.0, 1.0, 35.0, 180.0 * t]
+                    })
+                    .collect();
+                self.run("draw.brush", json!({"points": s_curve, "size": 30, "roundness": 15, "angle": 0, "tilt_angle": true, "color": "#1b2a4a"}));
+                let lying: Vec<[f32; 5]> = (0..=60).map(|i| [140.0 + i as f32 * 8.6, 380.0, 1.0, 90.0 - i as f32 * 1.5, 0.0]).collect();
+                self.run("draw.brush", json!({"points": lying, "size": 14, "tilt_width": true, "color": "#e8553b"}));
+                let wave = |y: f32| -> Vec<[f32; 3]> { (0..=60).map(|i| [140.0 + i as f32 * 8.6, y + (i as f32 * 0.16).sin() * 22.0, 0.4 + 0.6 * (i as f32 / 60.0 * std::f32::consts::PI).sin()]).collect() };
+                self.run("draw.brush", json!({"points": wave(500.0), "preset": "charcoal", "size": 34, "color": "#3a4150"}));
+                self.run("draw.brush", json!({"points": wave(620.0), "preset": "spatter", "size": 9, "color": "#3d8bfd"}));
+                // Sample artwork's labels are document text, not interface text.
+                for (y, text) in [(180.0, "Tilt turns the nib"), (360.0, "Tilt widens the tip"), (470.0, "Charcoal"), (610.0, "Spatter")] { // i18n-exempt: sample text
+                    self.run("text.create", json!({"x": 720, "y": y, "text": text, "size": 22, "color": "#f4f1ea"}));
+                }
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Brush;
+                if let Some(p) = anicraft_engine::brush_library::builtin("charcoal") {
+                    crate::brush_panel::choose(self, &p);
+                }
+            }
+            Some("erasemerge") => {
+                // ADR 0093 on a new layer: a raw gradient rectangle cut in two by the eraser (each
+                // piece keeps its part of the gradient), a variable-width raw line erased across
+                // (each piece keeps its widths), and a symbol the eraser passed over on the stage,
+                // with the hint that says how to erase inside it.
+                self.run("layer.new", json!({"name": "Erased"}));
+                self.run("draw.object_drawing", json!({"on": false}));
+                let stops = vec![anicraft_engine::doc::GradientStop { offset: 0.0, color: anicraft_engine::doc::Rgba::hex(0xe8553b) }, anicraft_engine::doc::GradientStop { offset: 1.0, color: anicraft_engine::doc::Rgba::hex(0x3d8bfd) }];
+                self.s.style.fill_paint = Some(anicraft_engine::doc::Paint::linear(anicraft_engine::geom::Vec2::new(120.0, 0.0), anicraft_engine::geom::Vec2::new(600.0, 0.0), stops));
+                self.s.style.lock_fill = true;
+                self.run("draw.rect", json!({"x": 120, "y": 120, "w": 480, "h": 240, "stroke": null}));
+                self.s.style.fill_paint = None;
+                self.s.style.lock_fill = false;
+                let band: Vec<[f32; 2]> = (0..=60).map(|i| [360.0 + (i as f32 * 0.2).sin() * 40.0, 90.0 + i as f32 * 5.0]).collect();
+                self.run("draw.erase", json!({"points": band, "size": 36}));
+                self.s.style.set_profile(anicraft_engine::doc::ProfilePreset::TaperBoth);
+                self.run("draw.line", json!({"x0": 120, "y0": 480, "x1": 600, "y1": 480, "stroke": "#1b2a4a", "stroke_width": 28}));
+                self.s.style.set_profile(anicraft_engine::doc::ProfilePreset::Uniform);
+                for x in [260.0f32, 440.0] {
+                    self.run("draw.erase", json!({"points": [[x, 440.0], [x + 10.0, 520.0]], "size": 44}));
+                }
+                self.run("draw.ellipse", json!({"x": 760, "y": 160, "w": 300, "h": 300, "fill": "#f2c14e", "stroke": "#1b2a4a", "stroke_width": 4}));
+                self.run("edit.select_all", json!({}));
+                let disc = self.s.visible_elements().iter().filter(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Shape(sh) if sh.merge && sh.path.bounds().transformed(&e.transform).min.x >= 740.0)).map(|e| e.id.0).collect::<Vec<_>>();
+                self.run("element.select", json!({"ids": disc}));
+                self.run("modify.convert_to_symbol", json!({"name": "Sun"})); // i18n-exempt: a sample symbol name
+                self.run("edit.deselect", json!({}));
+                self.tool = Tool::Eraser;
+                self.eraser = crate::erasertool::EraserOptions { size: 30.0, ..Default::default() };
+                self.brush_samples = (0..=30).map(|i| (anicraft_engine::geom::Vec2::new(720.0 + i as f32 * 12.0, 310.0), None)).collect();
+                crate::erasertool::commit(self, crate::pathtools::Xf { origin: egui::Pos2::ZERO, zoom: 1.0 });
+            }
             Some("eyedropper") => {
                 // The sample's sky gradient picked with the Eyedropper: the fill swatch holds it.
                 self.run("paint.pick", json!({"x": 640, "y": 40}));

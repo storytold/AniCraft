@@ -53,8 +53,22 @@ pub fn commit(app: &mut App, xf: Xf) {
     let o = app.eraser;
     let params = json!({"points": points(&samples), "size": o.size, "shape": shape_key(o.shape), "mode": o.mode.key(), "unit": xf.unit()});
     let undo = app.undo_key();
+    // What the stroke passed over and kept (ADR 0093): symbols and drawing objects, which open
+    // in place with a double-click so their own lines and fills can be erased.
+    let kept = |v: &serde_json::Value| (v["kept"]["symbols"].as_u64().unwrap_or(0), v["kept"]["objects"].as_u64().unwrap_or(0));
     match app.run("draw.erase", params) {
-        Some(v) if v["erased"] == true => app.status_ok(tr!("Erased. {undo} to undo.", undo = undo)),
+        Some(v) if v["erased"] == true => match kept(&v) {
+            (0, 0) => app.status_ok(tr!("Erased. {undo} to undo.", undo = undo)),
+            _ => app.status_ok(tr!("Erased the lines and fills. {undo} to undo. Symbols and drawing objects are kept: double-click one with the Selection tool to erase inside it.", undo = undo)),
+        },
+        Some(v) if kept(&v) != (0, 0) => {
+            let k = kept(&v);
+            app.status_ok(match k {
+                (_, 0) => tr!("Nothing erased: on the stage the Eraser keeps symbols. Double-click one with the Selection tool to erase inside it."),
+                (0, _) => tr!("Nothing erased: the Eraser keeps drawing objects. Double-click one with the Selection tool to erase inside it."),
+                _ => tr!("Nothing erased: the Eraser keeps symbols and drawing objects. Double-click one with the Selection tool to erase inside it."),
+            });
+        }
         Some(v) => {
             // The engine's reason is English from below the shell.
             let why = v["reason"].as_str().map_or(std::borrow::Cow::Borrowed(tr!("nothing to erase there")), crate::i18n::t_dyn);

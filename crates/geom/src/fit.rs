@@ -256,8 +256,11 @@ fn generate(pts: &[P], u: &[f64], t1: P, t2: P) -> [P; 4] {
     let det1 = x[0] * c[1][1] - x[1] * c[0][1];
     let (mut al, mut ar) = if det.abs() > 1e-12 { (det1 / det, det0 / det) } else { (0.0, 0.0) };
     let seg = len(sub(p3, p0));
+    // A handle longer than the points' own length is a bad solve (a nearly closed stretch can
+    // send it far off): fall back, and the error check splits the stretch instead (ADR 0093).
+    let arc: f64 = pts.windows(2).map(|w| len(sub(w[1], w[0]))).sum();
     // Schneider's fallback when the solve is degenerate or flips a handle.
-    if al < 1e-6 * seg || ar < 1e-6 * seg {
+    if al < 1e-6 * seg || ar < 1e-6 * seg || al > arc || ar > arc {
         al = seg / 3.0;
         ar = seg / 3.0;
     }

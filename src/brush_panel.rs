@@ -338,7 +338,14 @@ pub fn props(app: &mut App, ui: &mut egui::Ui, row: impl Fn(&mut egui::Ui, &str,
         });
     });
     row_prose(ui, tr!("Mouse"), &mut |ui| {
-        crate::theme::checkbox(ui, &mut o.velocity, tr!("Speed as pressure")).on_hover_text(tr!("Without a pen: drawing faster makes the stroke thinner, as a pen pressed lightly would. Pen tilt is not read yet"));
+        crate::theme::checkbox(ui, &mut o.velocity, tr!("Speed as pressure")).on_hover_text(tr!("Without a pen: drawing faster makes the stroke thinner, as a pen pressed lightly would"));
+    });
+    // Tilt (ADR 0093): a setting of the brush, used where the system reports a pen's tilt.
+    row_prose(ui, tr!("Tilt"), &mut |ui| {
+        if !as_stroke {
+            crate::theme::checkbox(ui, &mut o.tilt_angle, tr!("Angle")).on_hover_text(tr!("The pen's tilt turns the tip: the way it leans adds to the brush's angle. Tilt is read where the system reports it; desktop systems don't report it to AniCraft yet"));
+        }
+        crate::theme::checkbox(ui, &mut o.tilt_width, tr!("Width")).on_hover_text(tr!("A leaning pen paints wider, up to twice as wide lying flat. Tilt is read where the system reports it; desktop systems don't report it to AniCraft yet"));
     });
     row(ui, tr!("Taper"), &mut |ui| {
         ui.add(egui::DragValue::new(&mut o.taper_start).suffix(" %").speed(0.5).range(0.0..=50.0).max_decimals(0)).named(tr!("Taper at the start")).on_hover_text(tr!("How much of the stroke swells from a point at its start"));
@@ -358,6 +365,13 @@ pub fn props(app: &mut App, ui: &mut egui::Ui, row: impl Fn(&mut egui::Ui, &str,
         });
         row(ui, tr!("Rough edge"), &mut |ui| {
             ui.add(egui::DragValue::new(&mut o.jitter).suffix(" %").speed(0.5).range(0.0..=50.0).max_decimals(0)).named(tr!("Rough edge")).on_hover_text(tr!("Wears the edge in by up to this part of the size, like chalk. The same every time"));
+        });
+        // Textured brushes (ADR 0093): still vector paint.
+        row(ui, tr!("Texture"), &mut |ui| {
+            ui.add(egui::DragValue::new(&mut o.texture).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Texture")).on_hover_text(tr!("A paper grain shows through the paint, like charcoal on rough paper. The grain stays put on the stage, so strokes over each other share it"));
+        });
+        row(ui, tr!("Scatter"), &mut |ui| {
+            ui.add(egui::DragValue::new(&mut o.scatter).suffix(" %").speed(1.0).range(0.0..=200.0).max_decimals(0)).named(tr!("Scatter")).on_hover_text(tr!("Throws dabs either side of the stroke, up to this part of the size away, and varies their size: spatter and stipple"));
         });
     }
 }
