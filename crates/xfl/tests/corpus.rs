@@ -425,8 +425,10 @@ fn a_screen_video_comes_across_as_its_first_frame() {
 #[test]
 fn filters_and_blend_modes_come_across() {
     let (doc, _) = import("filters");
-    let filters: Vec<usize> = doc.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| if let ElementKind::Symbol { filters, .. } = &e.kind { filters.len() } else { 99 }).collect();
-    assert_eq!(filters, [1, 1, 1, 1, 1, 1, 1, 2, 0, 0, 1], "switched-off and unknown filters are left out");
+    let filters: Vec<(usize, usize)> = doc.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| if let ElementKind::Symbol { filters, .. } = &e.kind { (filters.len(), filters.iter().filter(|f| f.enabled).count()) } else { (99, 99) }).collect();
+    // A switched-off filter comes in switched off, keeping its place (ADR 0091); unknown ones
+    // are left out.
+    assert_eq!(filters, [(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (2, 2), (1, 0), (0, 0), (1, 1)]);
     let blends: Vec<&str> = doc.timeline(0).layers[1].keyframes[0].elements.iter().filter_map(|e| if let ElementKind::Symbol { blend, .. } = &e.kind { Some(blend.key()) } else { None }).collect();
     assert_eq!(blends, ["multiply", "screen", "difference", "add", "subtract", "overlay", "hardlight", "invert"]);
 }
