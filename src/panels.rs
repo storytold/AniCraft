@@ -403,6 +403,8 @@ fn renderer_tag(app: &App) -> Option<String> {
     Some(match (app.stage_cache.gpu.state(), &app.stage_cache.drawn_by) {
         (State::Starting, _) => tr!("GPU starting").into(),
         (State::Failed(_), _) => tr!("CPU (GPU unavailable)").into(),
+        (State::Stopped { retry_at: Some(_), .. }, _) => tr!("CPU (GPU stopped; trying again soon)").into(),
+        (State::Stopped { retry_at: None, .. }, _) => tr!("CPU (GPU stopped)").into(),
         (State::Running { .. }, Some((true, _))) => "GPU".into(), // i18n-exempt: renderer name
         (State::Running { .. }, Some((false, Some(why)))) => tr!("CPU for {reason}", reason = crate::i18n::t_dyn(why)),
         _ => "CPU".into(), // i18n-exempt: renderer name

@@ -48,6 +48,8 @@ mod dock_ui;
 mod drop;
 mod ease_editor;
 mod gpu_stage;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_watch;
 mod gradient_tool;
 mod icons;
 mod keymap;
@@ -308,30 +310,59 @@ fn main() -> eframe::Result {
     // The window: the graphics asked for, then this platform's order down to OpenGL. A way that
     // fails or panics before the window is up falls through to the next; a start that died
     // inside a driver last time tries that way last (#207, `startup`).
-    let died_in = startup::begin(platform::log_dir());
-    let attempts = startup::plan(platform::forced_backend(renderer.as_deref()), prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), died_in.as_deref());
+    let mut last = startup::begin(platform::log_dir());
+    let mut file = file;
+    let mut reopened = 0;
     let mut why = String::from("no attempt"); // i18n-exempt: log text
-    for (n, attempt) in attempts.iter().enumerate() {
-        startup::trying(attempt, n + 1, attempts.len());
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone())));
-        why = match result {
-            Ok(Ok(())) => {
-                startup::line("closed");
-                return Ok(());
+    // Once, and again each time the window closed to reopen another way.
+    let mut opening = true;
+    while opening {
+        opening = false;
+        let attempts = startup::plan(platform::forced_backend(renderer.as_deref()), prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), &last);
+        for (n, attempt) in attempts.iter().enumerate() {
+            startup::trying(attempt, n + 1, attempts.len());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone())));
+            why = match result {
+                Ok(Ok(())) => {
+                    // The window's graphics device was lost mid-session (ADR 0092): it closed
+                    // with the work autosaved, to open again another way, which offers it back.
+                    if let Some(reopen) = startup::take_reopen()
+                        && reopened < MAX_REOPENS
+                    {
+                        reopened += 1;
+                        startup::line(&format!("opening the window again, {} last", attempt.label()));
+                        last.retain(|l| *l != attempt.label());
+                        last.push(attempt.label());
+                        file = reopen;
+                        opening = true;
+                        break;
+                    }
+                    startup::line("closed");
+                    return Ok(());
+                }
+                Ok(Err(e)) => e.to_string(),
+                Err(p) => format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())), // i18n-exempt: a log line
+            };
+            startup::line(&format!("{} failed: {why}", attempt.label()));
+            // It ran and then stopped: not a start-up problem, and opening a second window would
+            // surprise (autosave offers the work back next time). A graphics failure makes the
+            // next starts try this way late (ADR 0092).
+            if startup::started() {
+                if startup::is_graphics_failure(&why) {
+                    startup::lost_mid_session();
+                }
+                return Err(eframe::Error::AppCreation(why.into()));
             }
-            Ok(Err(e)) => e.to_string(),
-            Err(p) => format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())), // i18n-exempt: a log line
-        };
-        startup::line(&format!("{} failed: {why}", attempt.label()));
-        // It ran and then stopped: not a start-up problem, and opening a second window would
-        // surprise (autosave offers the work back next time).
-        if startup::started() {
-            return Err(eframe::Error::AppCreation(why.into()));
         }
     }
     startup::give_up(&why);
     Err(eframe::Error::AppCreation(why.into()))
 }
+
+/// Times one run opens the window again after its graphics device was lost (ADR 0092); past
+/// that it closes, and the next start offers the work back.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_REOPENS: u32 = 2;
 
 #[cfg(test)]
 mod args_tests {

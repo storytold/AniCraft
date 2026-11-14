@@ -21,7 +21,8 @@
 //! time the whole path when only the ends are pinned. Anchors that aren't pinned shape the path
 //! only.
 
-use crate::{ColorEffect, ColorStyle, ColorTransform, Element, ElementId, Easing, Rgba};
+use crate::{ColorEffect, ColorStyle, ColorTransform, Element, ElementId, ElementKind, Easing, FilterParam, FilterProp, MAX_FILTER_SLOTS, Rgba};
+use std::borrow::Cow;
 use anicraft_geom::edit::ANCHOR;
 use anicraft_geom::walk::CurveWalk;
 use anicraft_geom::{Affine, Decomposed, Path, PathCmd, Vec2};
@@ -39,8 +40,9 @@ pub const MAX_PATH_SEGMENTS: usize = 1_000;
 
 /// A property a motion tween animates. Values are in the units the Motion Editor shows:
 /// pixels, percent, degrees, and 0–255 for colour channels and offsets (as Animate shows them).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// In files and commands a property is its [`Property::key`]: `x`, `scale_x`, `alpha`…, and a
+/// filter's number `filter.<slot>.<param>` (`filter.0.blur_x`, ADR 0092).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Property {
     /// Registration point, stage pixels.
     X,
@@ -70,9 +72,24 @@ pub enum Property {
     GreenOffset,
     BlueOffset,
     AlphaOffset,
+    /// A number of a filter on the target (ADR 0092), by the filter's place in its list.
+    Filter(FilterProp),
 }
 
-/// How many properties there are.
+impl Serialize for Property {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for Property {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let k = Cow::<str>::deserialize(d)?;
+        Property::from_key(&k).ok_or_else(|| serde::de::Error::custom(format!("unknown motion tween property '{k}'")))
+    }
+}
+
+/// How many properties there are (besides the filters' numbers).
 pub const PROPERTIES: usize = 20;
 
 impl Property {
@@ -111,9 +128,9 @@ impl Property {
         Property::AlphaOffset,
     ];
 
-    /// The name used in files and commands (`x`, `scale_x`, `alpha`…).
-    pub fn key(self) -> &'static str {
-        match self {
+    /// The name used in files and commands (`x`, `scale_x`, `alpha`…, `filter.0.blur_x`).
+    pub fn key(self) -> Cow<'static, str> {
+        Cow::Borrowed(match self {
             Property::X => "x",
             Property::Y => "y",
             Property::ScaleX => "scale_x",
@@ -134,9 +151,23 @@ impl Property {
             Property::GreenOffset => "green_offset",
             Property::BlueOffset => "blue_offset",
             Property::AlphaOffset => "alpha_offset",
+            Property::Filter(f) => return Cow::Owned(format!("filter.{}.{}", f.slot, f.param.key())),
+        })
+    }
+
+    /// The filter number this is, if it is one.
+    pub fn filter(self) -> Option<FilterProp> {
+        match self {
+            Property::Filter(f) => Some(f),
+            _ => None,
         }
     }
 
+    pub fn is_filter(self) -> bool {
+        self.filter().is_some()
+    }
+
+    /// The label (for a filter's number, the number's: the Motion Editor shows the filter above).
     pub fn label(self) -> &'static str {
         match self {
             Property::X => "X",
@@ -159,11 +190,13 @@ impl Property {
             Property::GreenOffset => "Green offset",
             Property::BlueOffset => "Blue offset",
             Property::AlphaOffset => "Alpha offset",
+            Property::Filter(f) => f.param.label(),
         }
     }
 
     pub fn unit(self) -> &'static str {
         match self {
+            Property::Filter(f) => f.param.unit(),
             Property::X | Property::Y => "px",
             Property::ScaleX | Property::ScaleY | Property::Alpha | Property::Brightness | Property::Tint => "%",
             Property::RedMultiplier | Property::GreenMultiplier | Property::BlueMultiplier | Property::AlphaMultiplier => "%",
@@ -172,8 +205,11 @@ impl Property {
         }
     }
 
-    /// The Motion Editor's groups: Position, Transform, Colour effect.
+    /// The Motion Editor's groups: Position, Transform, Colour effect, Filters.
     pub fn group(self) -> &'static str {
+        if self.is_filter() {
+            return "Filters";
+        }
         match self.style() {
             None if matches!(self, Property::X | Property::Y) => "Position",
             None => "Transform",
@@ -181,9 +217,11 @@ impl Property {
         }
     }
 
-    /// The colour effect style a colour property belongs to (`None` for position and transform).
+    /// The colour effect style a colour property belongs to (`None` for position, transform
+    /// and filters).
     pub fn style(self) -> Option<ColorStyle> {
         match self {
+            Property::Filter(_) => None,
             Property::X | Property::Y | Property::ScaleX | Property::ScaleY | Property::Rotation | Property::Skew => None,
             Property::Alpha => Some(ColorStyle::Alpha),
             Property::Brightness => Some(ColorStyle::Brightness),
@@ -193,6 +231,12 @@ impl Property {
     }
 
     pub fn from_key(s: &str) -> Option<Property> {
+        // `filter.<slot>.<param>`: a filter's number, by the filter's place in the list.
+        if let Some(rest) = s.trim().strip_prefix("filter.") {
+            let (slot, param) = rest.split_once('.')?;
+            let slot = slot.trim().parse::<u8>().ok().filter(|n| *n < MAX_FILTER_SLOTS)?;
+            return Some(Property::Filter(FilterProp { slot, param: FilterParam::from_key(param)? }));
+        }
         let s = s.trim().to_ascii_lowercase().replace([' ', '-'], "_");
         let s = match s.as_str() {
             "scalex" => "scale_x",
@@ -208,6 +252,7 @@ impl Property {
     /// Values a key may hold (commands reject others; files are clamped into it).
     pub fn range(self) -> std::ops::RangeInclusive<f32> {
         match self {
+            Property::Filter(f) => f.param.range(),
             Property::X | Property::Y => -1_000_000.0..=1_000_000.0,
             Property::ScaleX | Property::ScaleY => -1_000_000.0..=1_000_000.0,
             Property::Rotation => -100_000.0..=100_000.0,
@@ -219,12 +264,18 @@ impl Property {
         }
     }
 
-    fn index(self) -> usize {
-        Property::ALL.iter().position(|p| *p == self).unwrap_or(0)
+    /// Its place in a tween's track list: [`Property::ALL`]'s order, then the filters' numbers
+    /// by slot. Only the first [`PROPERTIES`] index into [`Props`].
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Property::Filter(f) => PROPERTIES + f.index(),
+            p => Property::ALL.iter().position(|q| *q == p).unwrap_or(0),
+        }
     }
 
-    fn is_transform(self) -> bool {
-        self.style().is_none()
+    /// Position and transform (the properties the element's matrix holds).
+    pub fn is_transform(self) -> bool {
+        self.style().is_none() && !self.is_filter()
     }
 
     fn clamp(self, v: f32) -> f32 {
@@ -312,6 +363,33 @@ impl Props {
         }
         .compose()
     }
+}
+
+/// The object's own value of `p`: its transform's and colour effect's, or a filter's number
+/// (`None` when it has no filter there with that number, ADR 0092).
+pub fn own_value(el: &Element, p: Property) -> Option<f32> {
+    match p {
+        Property::Filter(f) => filter_entry(el, f.slot).and_then(|e| e.filter.param(f.param)),
+        p => Some(Props::of(el).get(p)),
+    }
+}
+
+fn filter_entry(el: &Element, slot: u8) -> Option<&crate::FilterEntry> {
+    match &el.kind {
+        ElementKind::Symbol { filters, .. } => filters.get(usize::from(slot)),
+        _ => None,
+    }
+}
+
+/// Every filter number the object has, in its list's order (the Motion Editor's filter rows).
+pub fn filter_properties(el: &Element) -> Vec<Property> {
+    let ElementKind::Symbol { filters, .. } = &el.kind else { return Vec::new() };
+    filters
+        .iter()
+        .take(usize::from(MAX_FILTER_SLOTS))
+        .enumerate()
+        .flat_map(|(slot, e)| e.filter.params().iter().map(move |&param| Property::Filter(FilterProp { slot: slot as u8, param })))
+        .collect()
 }
 
 /// A property keyframe.
@@ -436,26 +514,58 @@ pub enum PinError {
 }
 
 /// A motion tween on a keyframe span (see the module docs).
+///
+/// In files the filters' tracks are kept apart, under `filter_tracks` (ADR 0092): a build from
+/// before them ignores that key and opens the file, the filters then holding still.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TweenFile", into = "TweenFile")]
 pub struct MotionTween {
     /// The object it animates. When no element has this id but the keyframe holds exactly one
     /// element, that one is the target (so edits that replace the object keep its motion).
     pub target: ElementId,
-    /// At most one per property, in [`Property::ALL`] order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// At most one per property, in [`Property::ALL`] order, then the filters' numbers by slot.
     pub tracks: Vec<Track>,
     /// The motion path (ADR 0030), in the layer's space: a move and cubics (see
     /// [`motion_path`]). Its ends are the start and end positions; the X/Y curves give the
     /// timing along it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<Path>,
     /// Orient to path: the object turns as the path turns (relative to its turn at the start).
-    #[serde(default, skip_serializing_if = "is_false")]
     pub orient: bool,
     /// Anchors between the ends pinned to frames (ADR 0049), by frame; both frames and anchors
     /// increase. Files from before pins have none: only the ends are pinned.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pins: Vec<Pin>,
+}
+
+/// A [`MotionTween`] as files hold it.
+#[derive(Clone, Serialize, Deserialize)]
+struct TweenFile {
+    target: ElementId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tracks: Vec<Track>,
+    /// The filters' tracks (ADR 0092).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    filter_tracks: Vec<Track>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<Path>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    orient: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pins: Vec<Pin>,
+}
+
+impl From<TweenFile> for MotionTween {
+    fn from(f: TweenFile) -> MotionTween {
+        let mut tracks = f.tracks;
+        tracks.extend(f.filter_tracks);
+        MotionTween { target: f.target, tracks, path: f.path, orient: f.orient, pins: f.pins }
+    }
+}
+
+impl From<MotionTween> for TweenFile {
+    fn from(m: MotionTween) -> TweenFile {
+        let (filter_tracks, tracks) = m.tracks.into_iter().partition(|t| t.property.is_filter());
+        TweenFile { target: m.target, tracks, filter_tracks, path: m.path, orient: m.orient, pins: m.pins }
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -1013,6 +1123,17 @@ impl MotionTween {
         if self.tracks.is_empty() && self.path.is_none() {
             return el;
         }
+        // The filters' numbers (ADR 0092): a track whose filter isn't there, or has no such
+        // number, does nothing (its filter was replaced by another kind).
+        if let ElementKind::Symbol { filters, .. } = &mut el.kind {
+            for t in self.tracks.iter().filter(|t| t.property.is_filter()) {
+                if let (Some(f), Some(v)) = (t.property.filter(), t.value_at(frame))
+                    && let Some(e) = filters.get_mut(usize::from(f.slot))
+                {
+                    e.filter.set_param(f.param, v);
+                }
+            }
+        }
         let base_props = Props::of(base);
         let mut props = self.props_at(&base_props, frame);
         let on_path = self.on_path(&base_props);
@@ -1031,7 +1152,7 @@ impl MotionTween {
             }
         }
         // Colour: the styles keyed here and the target's own, composed (ADR 0056).
-        if self.tracks.iter().any(|t| !t.property.is_transform()) {
+        if self.tracks.iter().any(|t| t.property.style().is_some()) {
             el.color = props.color_effect(&self.colour_styles(&base.color));
         }
         el
@@ -1061,8 +1182,8 @@ impl MotionTween {
             if frame > 0 {
                 keys.push(PropertyKey { frame: 0, value: p.clamp(base), ease: Easing::Linear });
             }
-            let at = Property::ALL.iter().position(|x| *x == p).unwrap_or(0);
-            let pos = self.tracks.partition_point(|t| Property::ALL.iter().position(|x| *x == t.property).unwrap_or(0) < at);
+            let at = p.index();
+            let pos = self.tracks.partition_point(|t| t.property.index() < at);
             self.tracks.insert(pos, Track { property: p, keys });
         }
         if let Some(t) = self.track_mut(p) {
@@ -1150,6 +1271,24 @@ impl MotionTween {
             }
         }
         tail
+    }
+
+    /// The target's filter list changed shape (ADR 0092): `map[old]` is where the filter that
+    /// was at slot `old` is now (`None`: it went). Its tracks follow it; the tracks of filters
+    /// that went go too.
+    pub fn remap_filters(&mut self, map: &[Option<usize>]) {
+        self.tracks.retain_mut(|t| {
+            let Some(f) = t.property.filter() else { return true };
+            match map.get(usize::from(f.slot)).copied().flatten().and_then(|n| u8::try_from(n).ok()).filter(|n| *n < MAX_FILTER_SLOTS) {
+                Some(slot) => {
+                    t.property = Property::Filter(FilterProp { slot, ..f });
+                    true
+                }
+                None => false,
+            }
+        });
+        self.tracks.sort_by_key(|t| t.property.index());
+        self.tracks.dedup_by_key(|t| t.property);
     }
 
     /// Whether loading must repair it (unsorted or duplicate keys, values out of range,
@@ -1319,7 +1458,7 @@ mod tests {
     #[test]
     fn property_keys_round_trip() {
         for p in Property::ALL {
-            assert_eq!(Property::from_key(p.key()), Some(p));
+            assert_eq!(Property::from_key(&p.key()), Some(p));
             assert!(!p.label().is_empty() && (!p.unit().is_empty() || p.range() == (0.0..=255.0) || p.range() == (-255.0..=255.0)) && !p.group().is_empty());
         }
         assert_eq!(Property::from_key("Scale X"), Some(Property::ScaleX));
@@ -1804,5 +1943,139 @@ mod tests {
         assert!(!m.is_sane());
         m.sanitize();
         assert!(m.pins.is_empty());
+    }
+
+    /// A movie clip instance with `filters`, at (x, 0).
+    fn clip(x: f32, filters: Vec<crate::Filter>) -> Element {
+        Element {
+            kind: ElementKind::Symbol { symbol: crate::SymbolId(1), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: filters.into_iter().map(crate::FilterEntry::from).collect(), events: Vec::new() },
+            ..el(1, x, 0.0)
+        }
+    }
+
+    fn blur_x(e: &Element, slot: usize) -> Option<f32> {
+        match &e.kind {
+            ElementKind::Symbol { filters, .. } => filters.get(slot).and_then(|f| f.filter.param(FilterParam::BlurX)),
+            _ => None,
+        }
+    }
+
+    fn fp(slot: u8, param: FilterParam) -> Property {
+        Property::Filter(FilterProp { slot, param })
+    }
+
+    /// ADR 0092: a filter's number tweens like any property, eased per segment; untracked
+    /// numbers and the other filters keep the object's own.
+    #[test]
+    fn a_blur_tweens_on_its_own_curve() {
+        let blur = crate::Filter::new("blur").unwrap();
+        let shadow = crate::Filter::new("drop_shadow").unwrap();
+        let base = clip(0.0, vec![shadow.clone(), blur]);
+        let mut m = MotionTween::new(ElementId(1));
+        m.set_key(fp(1, FilterParam::BlurX), 10, 25.0, 5.0);
+        assert_eq!(m.track(fp(1, FilterParam::BlurX)).map(|t| t.keys.len()), Some(2), "the first key pins the span's start to the object's own value");
+        assert_eq!(blur_x(&m.apply(&base, 0.0), 1), Some(5.0));
+        assert_eq!(blur_x(&m.apply(&base, 4.0), 1), Some(13.0));
+        assert_eq!(blur_x(&m.apply(&base, 10.0), 1), Some(25.0));
+        assert_eq!(blur_x(&m.apply(&base, 4.0), 0), shadow.param(FilterParam::BlurX), "the shadow keeps its own blur");
+        let at4 = m.apply(&base, 4.0);
+        assert_eq!((at4.transform, at4.color), (base.transform, base.color), "a filter-only tween keeps the transform and colour bit for bit");
+        // Eased: CubicOut on 0..10.
+        if let Some(k) = m.track_mut(fp(1, FilterParam::BlurX)).and_then(|t| t.keys.first_mut()) {
+            k.ease = Easing::CubicOut;
+        }
+        let want = 5.0 + 20.0 * Easing::CubicOut.apply(0.4);
+        assert!((blur_x(&m.apply(&base, 4.0), 1).unwrap() - want).abs() < 1e-4);
+        // Strength is shown in percent; the filter holds a multiplier.
+        m.set_key(fp(0, FilterParam::Strength), 10, 300.0, 100.0);
+        let ElementKind::Symbol { filters, .. } = &m.apply(&base, 5.0).kind else { panic!() };
+        let crate::Filter::DropShadow { strength, .. } = filters[0].filter else { panic!() };
+        assert!((strength - 2.0).abs() < 1e-5, "{strength}");
+        // A track whose filter isn't there (or is another kind) does nothing, and never panics.
+        let plain = clip(0.0, vec![crate::Filter::new("adjust_color").unwrap()]);
+        assert_eq!(m.apply(&plain, 5.0).kind, plain.kind);
+        let shape = el(1, 0.0, 0.0);
+        assert_eq!(m.apply(&shape, 5.0), shape);
+        assert_eq!(own_value(&base, fp(1, FilterParam::BlurX)), Some(5.0));
+        assert_eq!(own_value(&base, fp(1, FilterParam::Angle)), None, "a blur has no angle");
+        assert_eq!(own_value(&base, fp(5, FilterParam::BlurX)), None);
+        assert_eq!(filter_properties(&base).len(), 5 + 2);
+    }
+
+    /// In files a filter's track sits under `filter_tracks`, addressed `filter.<slot>.<param>`,
+    /// so a build from before them still opens the file (the filters hold still there).
+    #[test]
+    fn filter_tracks_round_trip_apart_from_the_others() {
+        let mut m = MotionTween::new(ElementId(1));
+        m.set_key(Property::X, 10, 50.0, 0.0);
+        m.set_key(fp(2, FilterParam::Hue), 10, 90.0, 0.0);
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["tracks"].as_array().map(Vec::len), Some(1));
+        assert_eq!(v["tracks"][0]["property"], "x");
+        assert_eq!(v["filter_tracks"][0]["property"], "filter.2.hue");
+        let back: MotionTween = serde_json::from_value(v).unwrap();
+        assert_eq!(back, m);
+        // Without filter tracks the file is exactly as before.
+        let mut plain = MotionTween::new(ElementId(1));
+        plain.set_key(Property::X, 10, 50.0, 0.0);
+        assert!(serde_json::to_value(&plain).unwrap().get("filter_tracks").is_none());
+        // Keys parse and print the same; nonsense is refused.
+        for k in ["filter.0.blur_x", "filter.15.distance", "filter.3.strength"] {
+            assert_eq!(Property::from_key(k).map(Property::key).as_deref(), Some(k));
+        }
+        for k in ["filter.16.blur_x", "filter.0.sparkle", "filter.x.blur_x", "filter.", "filter.0"] {
+            assert_eq!(Property::from_key(k), None, "{k}");
+        }
+        assert!(serde_json::from_str::<MotionTween>(r#"{"target":1,"tracks":[{"property":"filter.99.blur_x","keys":[]}]}"#).is_err());
+        assert!(!fp(0, FilterParam::BlurX).is_transform() && fp(0, FilterParam::BlurX).style().is_none());
+        // Ordered after the twenty, by slot.
+        assert!(fp(0, FilterParam::Hue).index() > Property::AlphaOffset.index() && fp(1, FilterParam::BlurX).index() > fp(0, FilterParam::Hue).index());
+    }
+
+    /// Tracks follow their filter when the list is reordered, and go with it.
+    #[test]
+    fn filter_tracks_follow_their_filter() {
+        let mut m = MotionTween::new(ElementId(1));
+        m.set_key(fp(0, FilterParam::BlurX), 4, 10.0, 0.0);
+        m.set_key(fp(1, FilterParam::Strength), 4, 10.0, 0.0);
+        m.set_key(fp(2, FilterParam::Hue), 4, 10.0, 0.0);
+        // 0 → 2, 1 gone, 2 → 0.
+        m.remap_filters(&[Some(2), None, Some(0)]);
+        let props: Vec<Property> = m.tracks.iter().map(|t| t.property).collect();
+        assert_eq!(props, vec![fp(0, FilterParam::Hue), fp(2, FilterParam::BlurX)]);
+        assert!(m.is_sane());
+    }
+
+    /// Retiming and splitting treat filter keys as any other.
+    #[test]
+    fn filter_keys_retime_split_and_join() {
+        let base = clip(0.0, vec![crate::Filter::new("blur").unwrap()]);
+        let mut m = MotionTween::new(ElementId(1));
+        m.set_key(fp(0, FilterParam::BlurX), 10, 45.0, 5.0);
+        m.set_key(Property::X, 20, 100.0, 0.0);
+        let (by, now) = m.move_keys(&[(fp(0, FilterParam::BlurX), 10)], 4, 20);
+        assert_eq!((by, now), (4, vec![(fp(0, FilterParam::BlurX), 14)]));
+        let mut s = m.clone();
+        s.stretch(21, 41);
+        assert_eq!(s.track(fp(0, FilterParam::BlurX)).map(|t| t.keys.iter().map(|k| k.frame).collect::<Vec<_>>()), Some(vec![0, 28]));
+        // Split, then join: the same motion on every frame.
+        let props = Props::of(&base);
+        let tail = m.split_at(&props, 7);
+        let tail_base = m.apply(&base, 7.0);
+        let j = m.join(&base, 7, &tail, &tail_base).expect("joins");
+        for f in 0..=20 {
+            assert_eq!(blur_x(&j.apply(&base, f as f32), 0), blur_x(&m.apply(&base, f as f32), 0), "frame {f}");
+        }
+        // Two tweens joined anew (not one split): each frame keeps its blur.
+        let mut a = MotionTween::new(ElementId(1));
+        a.set_key(fp(0, FilterParam::BlurX), 9, 30.0, 5.0);
+        let b_base = clip(0.0, vec![crate::Filter::Blur { blur_x: 2.0, blur_y: 5.0, quality: 1 }]);
+        let b = MotionTween::new(ElementId(1));
+        let j = a.join(&base, 10, &b, &b_base).expect("joins");
+        for f in 0..10 {
+            assert!((blur_x(&j.apply(&base, f as f32), 0).unwrap() - blur_x(&a.apply(&base, f as f32), 0).unwrap()).abs() < 1e-4, "frame {f}");
+        }
+        assert_eq!(blur_x(&j.apply(&base, 12.0), 0), Some(2.0), "the next span's own blur");
+        assert!(j.is_sane());
     }
 }

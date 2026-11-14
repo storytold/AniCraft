@@ -135,6 +135,22 @@ impl Recovery {
         self.show = self.show && !self.found.is_empty();
     }
 
+    /// Writes a copy of unsaved work now, without waiting for the interval (the graphics driver
+    /// reported trouble, ADR 0092: the next thing may be the window going). Whether one was
+    /// started; nothing to do when the newest copy already holds this state.
+    pub fn write_now(&mut self, s: &anicraft_engine::Session) -> bool {
+        let Some(saver) = &mut self.saver else { return false };
+        if !s.is_dirty() || self.written == Some(s.state) {
+            return false;
+        }
+        saver.write(s.doc.clone(), s.path.as_deref());
+        self.has_copy = true;
+        self.written = Some(s.state);
+        self.rev_at_copy = s.revision;
+        self.dirty_since = None;
+        true
+    }
+
     /// Ends the session: a clean exit removes this session's copy; anything else (unsaved work
     /// the user didn't decide about) is written one last time for the next start.
     pub fn finish(&mut self, s: &anicraft_engine::Session, clean: bool) {

@@ -182,6 +182,19 @@ all** gives every property's segment there the same ease. Each drag is one undo 
 **Remove Tween** takes the motion tween away, leaving the object as it is on the span's first
 frame.
 
+### Animating filters
+
+A movie clip or button with filters (see **Properties › Filters**) lists each filter in the
+Motion Editor, below the colour effect, with its numbers under its name: **Blur X** and **Blur Y**,
+**Strength**, **Angle** and **Distance** for the shadows, glows and bevels, and **Brightness**,
+**Contrast**, **Saturation** and **Hue** for Adjust Color. They key, curve, ease and retime like
+any other property, so a blur can sharpen with an ease-out and then pulse.
+
+You can also change a filter in **Properties › Filters** with the playhead inside the tween: the
+number you changed gets a key there, as moving the object does. Reordering or removing filters
+takes their keys along with them. A filter's colours, quality and switches aren't animated yet;
+they stay as the object has them.
+
 ### Moving keys in time
 
 Drag a key **sideways** to move it to another frame. It snaps to whole frames, carries its value

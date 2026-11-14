@@ -876,6 +876,39 @@ fn gpu_hands_back_what_it_does_not_draw_and_stays_usable() {
     assert!(g.broken().is_none());
 }
 
+/// ADR 0092: a device lost mid-session (here destroyed on purpose, the way a driver reset
+/// takes it) never panics: every later call is an error saying why, so the stage hands the
+/// frame to the CPU. A renderer told from outside (the window's device was lost) refuses too.
+#[test]
+fn a_lost_device_turns_every_call_into_an_error_and_says_why() {
+    // A device of its own: the shared one stays for the other tests.
+    let opened = GpuRenderer::new().or_else(|_| GpuRenderer::software());
+    let Ok(g) = opened else {
+        eprintln!("skipping the lost-device test: no GPU");
+        return;
+    };
+    let dl = list(vec![item(Path::rect(1.0, 1.0, 6.0, 6.0), Paint::Solid(Rgba::BLACK))]);
+    assert!(g.render(&dl, &view(8, 8, None), Output::Premul8).is_ok());
+    g.device.destroy();
+    let _ = g.wait_idle();
+    let first = g.render(&dl, &view(8, 8, None), Output::Premul8);
+    assert!(matches!(first, Err(GpuError::Device(_))), "a lost device fails the frame");
+    assert!(g.broken().is_some(), "and the renderer says it is broken");
+    assert!(matches!(g.render_texture(&dl, &view(8, 8, None)), Err(GpuError::Device(_))));
+    // Told from outside: the first reason stays.
+    let why = g.broken();
+    g.fail("the window's device was lost");
+    assert_eq!(g.broken(), why);
+    // A fresh renderer told from outside refuses at once, with that reason.
+    if let Ok(h) = GpuRenderer::new().or_else(|_| GpuRenderer::software()) {
+        h.fail("the window's device was lost");
+        match h.render(&dl, &view(8, 8, None), Output::Premul8) {
+            Err(GpuError::Device(e)) => assert!(e.contains("window's device"), "{e}"),
+            other => panic!("expected a device error, got {:?}", other.map(|f| f.width)),
+        }
+    }
+}
+
 #[test]
 fn gpu_renders_from_many_threads_at_once() {
     let Some(g) = gpu() else { return };

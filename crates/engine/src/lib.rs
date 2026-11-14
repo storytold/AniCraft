@@ -1150,6 +1150,8 @@ mod tests_warp;
 #[cfg(test)]
 mod tests_filter;
 #[cfg(test)]
+mod tests_filter_tracks;
+#[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
 mod raw_tests;
