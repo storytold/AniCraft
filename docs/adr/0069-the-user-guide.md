@@ -70,6 +70,6 @@ isn't there yet. It must work offline from the app, match the version it ships w
 
 ## Not yet
 
-* Translated guides, search inside the book, and a printable single-page or PDF edition.
-* Context help (a "?" in a panel opening its chapter at the right heading).
+* Translated guides, and a printable single-page or PDF edition.
+* ~~Search inside the book~~ and ~~context help~~: ADR 0096.
 * Screenshots on macOS and Linux, and in high contrast.

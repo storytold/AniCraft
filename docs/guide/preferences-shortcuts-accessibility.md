@@ -90,7 +90,7 @@ AniCraft starts**.
 Every menu command, every tool and the view keys (zoom, onion skin, panel focus and so on) can
 have shortcuts. The full list of defaults is in [the shortcut reference](reference/shortcuts.md).
 
-Open the editor with **Help › Keyboard Shortcuts** (**F1**). Actions are grouped by menu, then
+Open the editor with **Help › Keyboard Shortcuts** (**Ctrl+Alt+Shift+K**). Actions are grouped by menu, then
 **Tools**, **View** and **Other**. Type in **Filter by name or key…** to find an action by its
 name or by the key it uses: typing `F6` shows what F6 does.
 
@@ -126,7 +126,8 @@ lists them as **fixed** and won't assign them to anything else:
 | Key | Kept for |
 |---|---|
 | **Ctrl+K**, **Ctrl+Shift+P** | the command palette |
-| **F1**, **Ctrl+Alt+Shift+K** | the shortcut editor |
+| **F1** | help for what you are pointing at (see [Using this guide](using-this-guide.md#help-for-what-youre-working-on)) |
+| **Ctrl+Alt+Shift+K** | the shortcut editor |
 | **Ctrl+U**, **Ctrl+,** | Preferences |
 | **Ctrl+Q** | quitting |
 | **Enter** | play and stop |

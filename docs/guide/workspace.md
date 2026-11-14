@@ -144,7 +144,7 @@ and **Enter** to run it. Installed plug-ins show up here too.
 
 It's the fastest way to reach anything when you don't remember which menu it lives in.
 
-For a list of every shortcut, choose **Help › Keyboard Shortcuts** (**F1**). That sheet also
+For a list of every shortcut, choose **Help › Keyboard Shortcuts** (**Ctrl+Alt+Shift+K**). That sheet also
 lets you change them (see [Preferences, shortcuts and accessibility](preferences-shortcuts-accessibility.md)).
 
 ## Moving around the stage

@@ -100,6 +100,10 @@ fn tool_items(app: &mut App, ui: &mut egui::Ui, area: Rect, flow: ToolFlow) {
         if active {
             a11y::anchor(ui, a11y::Region::Tools, area, &resp);
         }
+        // F1 over (or on) a tool's button: that tool's section of the guide (ADR 0096).
+        if resp.hovered() || resp.has_focus() {
+            crate::context_help::offer(app, ui.ctx(), crate::context_help::Subject::Tool(tool));
+        }
         let resp = resp.on_hover_text(format!("{name}
 {}", crate::i18n::t(tool.hint())));
         if resp.clicked() {

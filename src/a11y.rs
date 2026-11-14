@@ -214,6 +214,8 @@ struct Anchor {
     /// The pass that drew it: a panel that stopped drawing (the timeline while the Motion
     /// Editor shows) has no anchor.
     pass: u64,
+    /// The layer it is drawn on: a docked panel under a floating window isn't the one pointed at.
+    layer: egui::LayerId,
 }
 
 /// Registers `resp` as the anchor of `region`, which covers `area` on screen. While a surface's
@@ -221,7 +223,7 @@ struct Anchor {
 /// of moving focus to the neighbouring widget.
 pub fn anchor(ui: &egui::Ui, region: Region, area: Rect, resp: &Response) {
     let pass = ui.ctx().cumulative_pass_nr();
-    ui.ctx().data_mut(|d| d.insert_temp(region.key(), Anchor { id: resp.id, rect: area, pass }));
+    ui.ctx().data_mut(|d| d.insert_temp(region.key(), Anchor { id: resp.id, rect: area, pass, layer: ui.layer_id() }));
     if region.is_surface() && resp.has_focus() {
         let filter = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() };
         ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, filter));
@@ -232,6 +234,21 @@ pub fn anchor(ui: &egui::Ui, region: Region, area: Rect, resp: &Response) {
 fn anchor_of(ctx: &egui::Context, region: Region) -> Option<Anchor> {
     let now = ctx.cumulative_pass_nr();
     ctx.data(|d| d.get_temp::<Anchor>(region.key())).filter(|a| a.pass + 1 >= now)
+}
+
+/// The panel under the pointer at `pos`, if any (context help, ADR 0096): the one drawn on the
+/// topmost layer there.
+pub fn region_at(ctx: &egui::Context, pos: egui::Pos2) -> Option<Region> {
+    let top = ctx.layer_id_at(pos);
+    let order = order(ctx);
+    let hits: Vec<(Region, Anchor)> = order.into_iter().filter_map(|r| anchor_of(ctx, r).map(|a| (r, a))).filter(|(_, a)| a.rect.contains(pos)).collect();
+    hits.iter().find(|(_, a)| Some(a.layer) == top).or(hits.first()).map(|(r, _)| *r)
+}
+
+/// Where a panel was drawn this pass or the one before.
+#[cfg(test)]
+pub fn region_rect(ctx: &egui::Context, region: Region) -> Option<Rect> {
+    anchor_of(ctx, region).map(|a| a.rect)
 }
 
 /// The panel holding the focused widget, if any.

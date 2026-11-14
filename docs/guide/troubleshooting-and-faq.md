@@ -160,7 +160,7 @@ damaged preferences file never stops AniCraft from starting: it falls back to th
   where windows go. To keep the movie inside the editor, turn off **Preferences › Test Movie ›
   Play Test Movie in a window of its own**.
 * **A shortcut doesn't do anything.** Check what the key is bound to in **Help › Keyboard
-  Shortcuts** (**F1**): type the key in the filter. See
+  Shortcuts** (**Ctrl+Alt+Shift+K**): type the key in the filter. See
   [Preferences, shortcuts, accessibility and languages](preferences-shortcuts-accessibility.md).
 
 ## The web version

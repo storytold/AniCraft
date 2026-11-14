@@ -732,6 +732,14 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             if ui_item(ui, tr!("User Guide"), "", None) {
                 app.open_user_guide();
             }
+            // The guide at the section for the dialog in front, the focused panel or the tool
+            // in hand (F1 also counts what the pointer is over; ADR 0096).
+            if ui_item(ui, tr!("Help for This"), "F1", None) {
+                crate::context_help::help_for_this(app, ui.ctx(), false);
+            }
+            if ui_item(ui, tr!("Search the User Guide"), "", None) {
+                app.open_guide_search();
+            }
             ui.separator();
             #[cfg(not(target_arch = "wasm32"))]
             if ui_item(ui, tr!("Check for Updates…"), "", None) {
@@ -740,7 +748,7 @@ pub(crate) fn menu_contents(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &
             if ui_item(ui, tr!("Command Palette…"), "Ctrl+K", None) {
                 app.palette = Some(crate::dialogs::Palette::default());
             }
-            if ui_item(ui, tr!("Keyboard Shortcuts"), "F1", None) {
+            if ui_item(ui, tr!("Keyboard Shortcuts"), "Ctrl+Alt+Shift+K", None) {
                 app.show_shortcuts = true;
             }
             ui.separator();

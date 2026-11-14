@@ -151,6 +151,8 @@ pub(crate) enum Act {
     Placed(u32, [f32; 2], [f32; 2]),
     Collapse(Side, bool),
     Flyout(Option<Panel>),
+    /// The panel's section of the user guide (ADR 0096).
+    Help(Panel),
 }
 
 /// Where a control is, in its id: a panel's tab or menu is drawn in one place a frame, but a
@@ -870,6 +872,10 @@ pub(crate) fn panel_menu(ui: &mut egui::Ui, at: Where, p: Panel, layout: &Layout
         Where::Bar(_) => {}
     }
     ui.separator();
+    // "?": the panel's section of the user guide (ADR 0096), as in other studios' panel menus.
+    if item(ui, &tr!("? Help for {panel}", panel = crate::i18n::t(p.label()))) {
+        acts.push(Act::Help(p));
+    }
     if item(ui, &tr!("Close {panel}", panel = crate::i18n::t(p.label()))) {
         acts.push(Act::Close(p));
     }
@@ -1320,6 +1326,7 @@ pub(crate) fn apply(app: &mut App, acts: Vec<Act>) {
                 app.dock_view.flyout = None;
                 changed = true;
             }
+            Act::Help(p) => app.open_help(crate::context_help::panel_topic(p)),
             Act::Flyout(p) => {
                 app.dock_view.flyout = p;
                 if let Some(p) = p

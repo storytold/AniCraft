@@ -342,6 +342,7 @@ name = "anicraft-guide"
 version = "0.2.1"
 dependencies = [
  "pulldown-cmark",
+ "serde_json",
 ]
 
 [[package]]

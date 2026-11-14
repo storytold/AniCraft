@@ -451,6 +451,28 @@ pub fn open_user_guide() -> Result<(), String> {
     }
 }
 
+/// Context help and search (ADR 0096): the bundled book at `page` (a page of the book with its
+/// anchor, `timeline.html#onion-skin`). A `file://` page opened by the system loses its anchor
+/// on some systems, so the desktop writes a page beside the book that sends the browser on.
+pub fn open_user_guide_at(page: &str) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Tests press F1 and click every control: they never write to the cache or open a browser.
+        if cfg!(test) {
+            return Ok(());
+        }
+        let dir = guide_dir();
+        anicraft_guide::write_site(&dir).map_err(|e| tr!("could not write the user guide to {path}: {e}", path = dir.display(), e = e))?;
+        let help = dir.join(anicraft_guide::HELP_PAGE);
+        std::fs::write(&help, anicraft_guide::redirect_page(page)).map_err(|e| tr!("could not write the user guide to {path}: {e}", path = dir.display(), e = e))?;
+        crate::app::open_in_system(&help)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::web::open_page(&format!("guide/{page}"))
+    }
+}
+
 /// Where settings are kept, for Preferences (in the interface language).
 pub fn settings_place() -> String {
     if WEB {

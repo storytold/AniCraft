@@ -492,6 +492,10 @@ pub struct App {
     /// Undoable-tier confirmations the user chose not to see again this session.
     pub skip_confirm: HashSet<String>,
     pub palette: Option<dialogs::Palette>,
+    /// What a widget under the pointer or keyboard offers F1 this pass (ADR 0096).
+    pub help_offered: Option<crate::context_help::Offered>,
+    /// The guide place context help last opened (`timeline.md#onion-skin`).
+    pub help_opened: Option<String>,
     /// The open plug-in dialog (its preview is an open gesture).
     pub plugin_dialog: Option<crate::plugins_ui::Dialog>,
     /// File › Export with an exporter plug-in: its window, and the export while it runs (ADR 0088).
@@ -749,6 +753,8 @@ impl App {
             confirm: None,
             skip_confirm: HashSet::new(),
             palette: None,
+            help_offered: None,
+            help_opened: None,
             plugin_dialog: None,
             plugin_export: None,
             show_plugins: false,
@@ -956,6 +962,28 @@ impl App {
         }
     }
 
+    /// Context help (ADR 0096): the guide at `target`, a chapter link from the context map
+    /// (`timeline.md#onion-skin`), naming the section in the status bar.
+    pub fn open_help(&mut self, target: &str) {
+        self.help_opened = Some(target.to_string());
+        // A screenshot run shows what F1 did without starting a browser.
+        let opened = if self.shot.is_some() { Ok(()) } else { platform::open_user_guide_at(&crate::context_help::page_of(target)) };
+        match (opened, crate::context_help::heading_of(target)) {
+            // The guide is English for now (ADR 0069): the section's name is as it is written.
+            (Ok(()), Some(heading)) => self.status_ok(tr!("Opened the user guide at “{section}”", section = heading)),
+            (Ok(()), None) => self.status_ok(tr!("Opened the user guide in your browser")),
+            (Err(e), _) => self.status_err(e),
+        }
+    }
+
+    /// Help › Search the User Guide: the guide's search page, ready to type in.
+    pub fn open_guide_search(&mut self) {
+        match platform::open_user_guide_at(crate::context_help::SEARCH_PAGE) {
+            Ok(()) => self.status_ok(tr!("Opened the user guide's search in your browser")),
+            Err(e) => self.status_err(e),
+        }
+    }
+
     pub fn open_prefs(&mut self) {
         self.show_prefs = true;
         self.scan_system_fonts();
@@ -1137,7 +1165,12 @@ impl App {
                     crate::plugin_export_ui::open(self, &id);
                 }
             }
-            Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
+            // F1 with the Bone tool in hand (ADR 0096): the status bar names the guide's section.
+            Some("helpbone") => {
+                self.tool = Tool::Bone;
+                self.script_keys([(K::F1, M::NONE)]);
+            }
+            Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), ..Default::default() }),
             Some("shortcuts") => self.show_shortcuts = true,
             Some("lastscene") => {
                 let last = self.s.doc.scenes.len().saturating_sub(1);
@@ -3195,6 +3228,12 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // F1: help for what the person is working with (ADR 0096), from anywhere, a dialog that
+        // holds the editor and a text field included; only the shortcut editor's recording
+        // takes it.
+        if self.key_capture.is_none() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
+            crate::context_help::help_for_this(self, ctx, true);
+        }
         // While the shortcut editor records a key, every key press belongs to it.
         if self.modal_open() || self.key_capture.is_some() {
             return;
@@ -3210,7 +3249,7 @@ impl App {
         let (palette, sheet, prefs_key, quit) = ctx.input_mut(|i| {
             // The shortcut sheet first: Ctrl+Alt+Shift+K (Animate's Keyboard Shortcuts) must not
             // be taken by Ctrl+K, which egui would match with the extra modifiers ignored.
-            let sheet = i.consume_key(Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT, Key::K) || i.consume_key(Modifiers::NONE, Key::F1);
+            let sheet = i.consume_key(Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT, Key::K);
             (
                 i.consume_key(Modifiers::COMMAND, Key::K) || i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::P),
                 sheet,
