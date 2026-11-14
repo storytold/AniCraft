@@ -6,7 +6,7 @@
 //! the dialogs' place, its storage the settings folder's, and the glue lives in `web.rs`.
 
 use crate::prefs::WindowBackend;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,17 +257,150 @@ pub fn shortcut_label_for(os: Os, s: &str, glyphs: bool) -> String {
     out
 }
 
-/// Where preferences live: %APPDATA%\AniCraft, ~/Library/Application Support/AniCraft, or
-/// $XDG_CONFIG_HOME/anicraft (default ~/.config/anicraft).
-pub fn config_dir() -> Option<PathBuf> {
-    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    match OS {
+// ----- portable mode (ADR 0094) -----------------------------------------------------------------
+
+/// The file that makes a copy of AniCraft portable (ADR 0094): next to the program, above `bin/`
+/// in the Linux tar.gz, next to `AniCraft.app` on macOS, or next to the `.AppImage`. The Windows
+/// zip and the Linux tar.gz ship with it. Its contents don't matter.
+pub const PORTABLE_MARKER: &str = "anicraft-portable";
+/// The folder beside the marker where a portable copy keeps everything it would otherwise keep
+/// in the user's settings folder.
+pub const PORTABLE_DATA: &str = "data";
+
+/// The folder holding the portable marker for a program at `exe`, if this copy is portable: the
+/// program's folder; the folder above it when that is the tar.gz's `bin/`; on macOS the folder
+/// holding the `.app` (writing inside the bundle would break its signature); for an AppImage the
+/// folder holding the `.AppImage` file (`appimage`, from `$APPIMAGE`), since the running image is
+/// a read-only mount that goes away. Pure, so each layout is tested with made-up paths.
+pub fn portable_root_for(os: Os, exe: &Path, appimage: Option<&Path>, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    if os == Os::Web {
+        return None;
+    }
+    let mut candidates: Vec<&Path> = Vec::new();
+    match appimage.filter(|a| unix_absolute(a) && matches!(os, Os::Linux | Os::Other)) {
+        Some(a) => candidates.extend(a.parent()),
+        None => {
+            let dir = exe.parent()?;
+            let bundle = (os == Os::Mac && dir.ends_with("Contents/MacOS")).then(|| dir.parent().and_then(Path::parent)).flatten();
+            match bundle.filter(|b| b.extension().is_some_and(|e| e.eq_ignore_ascii_case("app"))) {
+                Some(app) => candidates.extend(app.parent()),
+                None => {
+                    candidates.push(dir);
+                    if dir.file_name().is_some_and(|n| n == "bin") {
+                        candidates.extend(dir.parent());
+                    }
+                }
+            }
+        }
+    }
+    candidates.into_iter().find(|d| is_file(&d.join(PORTABLE_MARKER))).map(Path::to_path_buf)
+}
+
+/// Where this copy keeps its data, decided once at start.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Placement {
+    /// The portable data folder, when this copy is portable and the folder can be written.
+    pub portable: Option<PathBuf>,
+    /// A portable copy whose data folder can't be written (a read-only disc or share): the
+    /// folder and why. The user's settings folder is used instead, and Preferences says so.
+    pub unwritable: Option<(PathBuf, String)>,
+}
+
+/// Whether `dir` can be made and written to (a small probe file, removed again).
+#[cfg(not(target_arch = "wasm32"))]
+fn writable(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let probe = dir.join(".anicraft-write-test");
+    std::fs::write(&probe, b"").map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// The placement for a marker folder (`root`, from [`portable_root_for`]), given whether its
+/// data folder can be written.
+pub fn placement_for(root: Option<&Path>, can_write: &dyn Fn(&Path) -> Result<(), String>) -> Placement {
+    let Some(data) = root.map(|r| r.join(PORTABLE_DATA)) else { return Placement::default() };
+    match can_write(&data) {
+        Ok(()) => Placement { portable: Some(data), unwritable: None },
+        Err(e) => Placement { portable: None, unwritable: Some((data, e)) },
+    }
+}
+
+/// This copy's placement (portable or installed), decided once: the one switch every folder
+/// below goes through.
+pub fn placement() -> &'static Placement {
+    static PLACEMENT: std::sync::OnceLock<Placement> = std::sync::OnceLock::new();
+    PLACEMENT.get_or_init(|| {
+        #[cfg(target_arch = "wasm32")]
+        return Placement::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Ok(exe) = std::env::current_exe() else { return Placement::default() };
+            let root = portable_root_for(OS, &exe, appimage().as_deref(), &|p| p.is_file());
+            placement_for(root.as_deref(), &writable)
+        }
+    })
+}
+
+/// The AppImage this copy runs from (`$APPIMAGE`, set by the AppImage runtime): Linux only, an
+/// absolute path to a file that is there.
+pub fn appimage() -> Option<PathBuf> {
+    if !matches!(OS, Os::Linux | Os::Other) {
+        return None;
+    }
+    std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute() && p.is_file())
+}
+
+/// The user's data folder for desktop files (`$XDG_DATA_HOME`, default `~/.local/share`), where
+/// AppImage desktop integration writes (ADR 0094). A relative `$XDG_DATA_HOME` is ignored, as the
+/// XDG Base Directory spec says.
+pub fn data_home_for(env: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    env("XDG_DATA_HOME").filter(|p| unix_absolute(p)).or_else(|| env("HOME").filter(|h| unix_absolute(h)).map(|h| h.join(".local").join("share")))
+}
+
+/// Absolute on this system, or `/…` (a Linux path, so the Linux rules are tested on any OS).
+fn unix_absolute(p: &Path) -> bool {
+    p.is_absolute() || p.has_root()
+}
+
+/// [`data_home_for`] with this process's environment.
+pub fn data_home() -> Option<PathBuf> {
+    data_home_for(&|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
+}
+
+/// The user's settings folder on `os`, from the environment `env`: %APPDATA%\AniCraft,
+/// ~/Library/Application Support/AniCraft, or $XDG_CONFIG_HOME/anicraft (default
+/// ~/.config/anicraft). A portable copy's data folder (`portable`) wins over all of them.
+pub fn config_dir_for(os: Os, portable: Option<&Path>, env: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(p) = portable {
+        return Some(p.to_path_buf());
+    }
+    match os {
         Os::Windows => env("APPDATA").map(|p| p.join("AniCraft")),
         Os::Mac => env("HOME").map(|p| p.join("Library").join("Application Support").join("AniCraft")), // i18n-exempt: folder names
         // A web page has no folders: settings go to browser storage (`load_settings`).
         Os::Web => None,
         Os::Linux | Os::Other => env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config"))).map(|p| p.join("anicraft")),
     }
+}
+
+/// Where preferences, autosave, logs, plug-ins, templates and thumbnails live: the portable data
+/// folder, or the user's settings folder ([`config_dir_for`]).
+pub fn config_dir() -> Option<PathBuf> {
+    config_dir_for(OS, placement().portable.as_deref(), &|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
+}
+
+/// Every folder AniCraft keeps things in, for Preferences › About: `(name, folder)`, the name
+/// English (translated where shown).
+pub fn places() -> Vec<(&'static str, Option<PathBuf>)> {
+    if WEB {
+        return Vec::new();
+    }
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut v = vec![(tr_noop!("Preferences"), config_dir()), (tr_noop!("Autosave"), recovery_dir()), (tr_noop!("Logs"), log_dir()), (tr_noop!("Plug-ins"), plugins_dir()), (tr_noop!("Templates"), templates_dir())];
+    #[cfg(not(target_arch = "wasm32"))]
+    v.push((tr_noop!("User guide"), Some(guide_dir())));
+    v
 }
 
 /// Where crash-recovery copies live (ADR 0015): `Recovery` in the settings folder.
@@ -285,15 +418,19 @@ pub fn recovery_dir_overridden() -> bool {
 }
 
 /// Where Help › User Guide writes the bundled book (ADR 0069): the system's cache folder
-/// (%LOCALAPPDATA%, ~/Library/Caches, $XDG_CACHE_HOME or ~/.cache), else the temporary folder.
+/// (%LOCALAPPDATA%, ~/Library/Caches, $XDG_CACHE_HOME or ~/.cache), else the temporary folder;
+/// `Cache` in the data folder of a portable copy.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn guide_dir() -> PathBuf {
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    let cache = match OS {
-        Os::Windows => env("LOCALAPPDATA").map(|p| p.join("AniCraft")),
-        Os::Mac => env("HOME").map(|p| p.join("Library").join("Caches").join("AniCraft")), // i18n-exempt: folder names
-        Os::Web => None,
-        Os::Linux | Os::Other => env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache"))).map(|p| p.join("anicraft")),
+    let cache = match placement().portable.as_ref() {
+        Some(data) => Some(data.join("Cache")), // i18n-exempt: a folder name
+        None => match OS {
+            Os::Windows => env("LOCALAPPDATA").map(|p| p.join("AniCraft")),
+            Os::Mac => env("HOME").map(|p| p.join("Library").join("Caches").join("AniCraft")), // i18n-exempt: folder names
+            Os::Web => None,
+            Os::Linux | Os::Other => env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache"))).map(|p| p.join("anicraft")),
+        },
     };
     cache.unwrap_or_else(|| std::env::temp_dir().join("AniCraft")).join(format!("guide-{}", env!("CARGO_PKG_VERSION"))) // i18n-exempt: a folder name
 }
@@ -376,6 +513,7 @@ pub fn unavailable(cmd: &str) -> Option<&'static str> {
     match cmd {
         "file.export_video" => Some(tr_noop!("Video export runs ffmpeg, which a web browser can't start: use the desktop app, or export an animated GIF or a PNG sequence")),
         "plugin.install" | "plugin.remove" | "plugin.reload" => Some(tr_noop!("Plug-ins are installed into a folder on your computer: use the desktop app")),
+        "desktop.integrate" | "desktop.remove" | "desktop.status" => Some(tr_noop!("The applications menu belongs to an AppImage on Linux: use the desktop app")),
         "file.save_as_template" => Some(tr_noop!("Your templates are kept in a folder on your computer: use the desktop app (the built-in templates work here)")),
         _ => None,
     }
@@ -900,5 +1038,73 @@ mod tests {
             assert!(tries.iter().all(|(b, _)| window_backends(os).contains(b)), "{os:?}: Preferences offers each");
         }
         assert!(window_attempts(Os::Windows).contains(&(WindowBackend::Dx12, true)), "DirectX 12 on the integrated GPU");
+    }
+
+    /// A made-up file system: the files that exist.
+    fn files(list: &[&str]) -> impl Fn(&Path) -> bool {
+        let set: Vec<PathBuf> = list.iter().map(PathBuf::from).collect();
+        move |p: &Path| set.iter().any(|f| f == p)
+    }
+
+    #[test]
+    fn a_marker_beside_the_program_makes_each_layout_portable() {
+        let none = files(&[]);
+        // Windows zip: the marker next to anicraft.exe.
+        let zip = files(&["D:/Tools/AniCraft/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Windows, Path::new("D:/Tools/AniCraft/anicraft.exe"), None, &zip), Some(PathBuf::from("D:/Tools/AniCraft")));
+        assert_eq!(portable_root_for(Os::Windows, Path::new("D:/Tools/AniCraft/anicraft.exe"), None, &none), None, "an installed copy has no marker");
+        // Linux tar.gz: the marker at the top, above bin/.
+        let tar = files(&["/home/a b/anicraft-0.1.0-linux-x86_64/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Linux, Path::new("/home/a b/anicraft-0.1.0-linux-x86_64/bin/anicraft"), None, &tar), Some(PathBuf::from("/home/a b/anicraft-0.1.0-linux-x86_64")));
+        // A package's /usr/bin/anicraft is never portable (no marker in /usr or /usr/bin).
+        assert_eq!(portable_root_for(Os::Linux, Path::new("/usr/bin/anicraft"), None, &tar), None);
+        // macOS: next to AniCraft.app, not inside it.
+        let mac = files(&["/Volumes/Stick/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Mac, Path::new("/Volumes/Stick/AniCraft.app/Contents/MacOS/anicraft"), None, &mac), Some(PathBuf::from("/Volumes/Stick")));
+        let inside = files(&["/Volumes/Stick/AniCraft.app/Contents/MacOS/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Mac, Path::new("/Volumes/Stick/AniCraft.app/Contents/MacOS/anicraft"), None, &inside), None, "never inside the signed bundle");
+        // AppImage: next to the .AppImage file; the mounted image doesn't count.
+        let img = files(&["/home/ana/Apps/anicraft-portable", "/tmp/.mount_AniCrXYZ/usr/bin/anicraft-portable"]);
+        let exe = Path::new("/tmp/.mount_AniCrXYZ/usr/bin/anicraft");
+        assert_eq!(portable_root_for(Os::Linux, exe, Some(Path::new("/home/ana/Apps/AniCraft.AppImage")), &img), Some(PathBuf::from("/home/ana/Apps")));
+        assert_eq!(portable_root_for(Os::Linux, exe, Some(Path::new("/elsewhere/AniCraft.AppImage")), &img), None);
+        assert_eq!(portable_root_for(Os::Web, Path::new("/x/anicraft"), None, &files(&["/x/anicraft-portable"])), None);
+    }
+
+    #[test]
+    fn portable_data_wins_over_every_settings_folder_and_unwritable_falls_back() {
+        let env = |k: &str| match k {
+            "APPDATA" => Some(PathBuf::from("C:/Users/ana/AppData/Roaming")),
+            "HOME" => Some(PathBuf::from("/home/ana")),
+            _ => None,
+        };
+        assert_eq!(config_dir_for(Os::Windows, None, &env), Some(PathBuf::from("C:/Users/ana/AppData/Roaming/AniCraft")));
+        assert_eq!(config_dir_for(Os::Mac, None, &env), Some(PathBuf::from("/home/ana/Library/Application Support/AniCraft")));
+        assert_eq!(config_dir_for(Os::Linux, None, &env), Some(PathBuf::from("/home/ana/.config/anicraft")));
+        assert_eq!(config_dir_for(Os::Web, None, &env), None);
+        let data = Path::new("D:/Tools/AniCraft/data");
+        for os in [Os::Windows, Os::Mac, Os::Linux] {
+            assert_eq!(config_dir_for(os, Some(data), &env).as_deref(), Some(data), "{os:?}");
+        }
+        // The data folder is `data` beside the marker, used when it can be written.
+        let ok = placement_for(Some(Path::new("/media/stick")), &|_| Ok(()));
+        assert_eq!(ok.portable, Some(PathBuf::from("/media/stick").join(PORTABLE_DATA)));
+        let ro = placement_for(Some(Path::new("/media/cd")), &|_| Err("read-only file system".into()));
+        assert_eq!((ro.portable, ro.unwritable.map(|(d, _)| d)), (None, Some(PathBuf::from("/media/cd").join(PORTABLE_DATA))));
+        assert_eq!(placement_for(None, &|_| Ok(())), Placement::default());
+    }
+
+    #[test]
+    fn the_desktop_data_folder_follows_xdg() {
+        let with = |xdg: Option<&'static str>| move |k: &str| match k {
+            "XDG_DATA_HOME" => xdg.map(PathBuf::from),
+            "HOME" => Some(PathBuf::from("/home/a b")),
+            _ => None,
+        };
+        assert_eq!(data_home_for(&with(Some("/data/me"))), Some(PathBuf::from("/data/me")));
+        assert_eq!(data_home_for(&with(None)), Some(PathBuf::from("/home/a b/.local/share")));
+        assert_eq!(data_home_for(&with(Some("relative"))), Some(PathBuf::from("/home/a b/.local/share")), "a relative XDG_DATA_HOME is ignored");
+        // This test process is not portable: no marker beside the test binary.
+        assert_eq!(placement().portable, None);
     }
 }

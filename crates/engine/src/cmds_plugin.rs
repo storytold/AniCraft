@@ -56,6 +56,7 @@ pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
             "swatch" if matches!(id, "swatch.import" | "swatch.export") => Err("plug-ins can't read or write swatch files"),
             "swatch" => Ok(()),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
+            "desktop" => Err("plug-ins can't change your applications menu or which app opens your files"),
             "control" => Err("plug-ins can't play the movie"),
             // A scene's guides are the document's (ADR 0076); whether rulers, grid and guides
             // show and snap is how you work.

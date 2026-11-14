@@ -521,6 +521,10 @@ pub struct App {
     pub close_after_save: bool,
     pub prefs: prefs::Prefs,
     pub show_prefs: bool,
+    /// This copy as an AppImage, and its applications menu entry (ADR 0094); `None` elsewhere.
+    pub desktop: Option<crate::desktop_ui::Desktop>,
+    /// Preferences scrolls to About when it next opens (`--open prefsabout`).
+    pub prefs_to_about: bool,
     /// Installed fonts, scanned off the UI thread on first need.
     pub system_fonts: Option<std::sync::Arc<prefs::SystemFonts>>,
     fonts_rx: Option<std::sync::mpsc::Receiver<prefs::SystemFonts>>,
@@ -762,6 +766,8 @@ impl App {
             close_after_save: false,
             prefs,
             show_prefs: false,
+            desktop: None,
+            prefs_to_about: false,
             system_fonts: None,
             fonts_rx: None,
             glyph_check: true,
@@ -799,6 +805,8 @@ impl App {
             app.status_err(e);
         }
         crate::plugins_ui::load_at_start(&mut app);
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::desktop_ui::at_start(&mut app);
         app
     }
 
@@ -1283,6 +1291,18 @@ impl App {
             Some("prefs") => {
                 self.show_prefs = true;
                 self.scan_system_fonts();
+            }
+            Some(which @ ("prefsabout" | "desktopoffer")) => {
+                // Preferences › About and the AppImage offer (ADR 0094), on a made-up AppImage in
+                // the temporary folder, so they show on any OS.
+                if let Some(d) = crate::desktop_ui::sample(which) {
+                    let _ = std::fs::remove_dir_all(&d.data_home);
+                    crate::desktop_ui::start_with(self, d, false);
+                }
+                if which == "prefsabout" {
+                    self.open_prefs();
+                    self.prefs_to_about = true;
+                }
             }
             Some("confirm") => self.request("layer.delete", json!({})),
             Some("libraryfolders") => {
@@ -3743,6 +3763,7 @@ impl App {
         self.about_window(&ctx);
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
+        crate::desktop_ui::offer(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
         crate::plugin_export_ui::show(self, &ctx);
         crate::dock_float::floating(self, &ctx);

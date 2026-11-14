@@ -175,6 +175,9 @@ pub struct Prefs {
     /// Control › Audio Scrubbing: a playhead moved while stopped plays a short slice of the
     /// stream sounds there.
     pub audio_scrubbing: bool,
+    /// The offer to add an AppImage to the applications menu was answered (ADR 0094): it is
+    /// made once; Preferences › About adds or removes the entry any time.
+    pub desktop_offered: bool,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -244,6 +247,7 @@ impl Default for Prefs {
             sound_volume: 1.0,
             sound_muted: false,
             audio_scrubbing: true,
+            desktop_offered: false,
         }
     }
 }
