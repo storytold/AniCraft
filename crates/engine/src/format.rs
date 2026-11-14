@@ -12,14 +12,14 @@ use std::sync::Arc;
 /// controls when a payload is decoded in the envelope stream.
 struct DocumentDecoder;
 
-impl PayloadDecoder<Path> for DocumentDecoder {
+impl PayloadDecoder<Arc<Path>> for DocumentDecoder {
     type Document = Document;
 
-    fn decode<'de, D>(&mut self, deserializer: D, paths: Option<Vec<Path>>) -> Result<Self::Document, D::Error>
+    fn decode<'de, D>(&mut self, deserializer: D, paths: Option<Vec<Arc<Path>>>) -> Result<Self::Document, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let _scope = paths.map(|paths| path_table::begin_read(paths.into_iter().map(Arc::new).collect()));
+        let _scope = paths.map(path_table::begin_read);
         Document::deserialize(deserializer)
     }
 }
@@ -31,7 +31,7 @@ pub fn to_json(doc: &Document) -> Result<String, EngineError> {
 }
 
 pub fn from_json(text: &str) -> Result<Document, EngineError> {
-    let env = craft_anicraft_format::read::<Path, _>(text, &mut DocumentDecoder)
+    let env = craft_anicraft_format::read::<Arc<Path>, _>(text, &mut DocumentDecoder)
         .map_err(|e| EngineError::Format(format!("not a valid .anicraft file: {e}")))?;
     if env.format != FORMAT_NAME {
         return Err(EngineError::Format(format!("unexpected format '{}'", env.format)));
