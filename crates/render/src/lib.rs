@@ -11,6 +11,7 @@ pub mod filters;
 pub mod hairline;
 pub mod html;
 pub mod lottie;
+mod lottie_keys;
 pub mod svg;
 pub mod warp;
 

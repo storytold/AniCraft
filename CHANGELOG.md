@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+* **Lottie export with real keyframes and eases** (ADR 0089, M4).
+  * Tweens become **Lottie keyframes with Lottie's own Bézier eases** instead of a key at every
+    frame: No Ease, Classic Ease, Bézier handles, Quad, Cubic, Back and Bounce, and custom
+    curves (a key per piece) come across exactly, and the motion is smooth on any screen.
+  * Objects that move, turn or scale keep their outline and move as a whole (an animated group
+    transform: position, rotation, skew, scale); shape tweens between outlines of one
+    structure are shape keys; colours, gradients, strokes, opacity and masks are keyed the
+    same way.
+  * Every frame still shows exactly what AniCraft shows: each eased span is checked at every
+    frame, and what no Lottie ease draws (Elastic, Sine, curved motion guides, tweens inside
+    tweening symbols) stays frame by frame and is reported once.
+  * Files are much smaller: the demo 46.7 → 10.4 kB, a 240-frame stress movie 14.5 → 1.45 MB
+    (and it exports in 360 ms instead of 931 ms).
+  * A playback parity test plays the exported file with a Lottie player written from the
+    public format description through the CPU oracle at every frame, for the sample scenes, a
+    movie of every tween and ease, and the XFL corpus.
+
 * **Plug-ins, second slice: export formats and eases** (ADR 0088, M6).
   * **Export-format plug-ins** appear in **File › Export** below the built-in formats. Their
     **Export** window has the plug-in's options, the frames and the file, then a progress bar

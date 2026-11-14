@@ -792,7 +792,8 @@ pub fn gif_delays(frames: usize, fps: f32) -> Vec<u16> {
         .collect()
 }
 
-/// The movie as a Lottie (JSON) animation, frame-accurate (see `anicraft_render::lottie`).
+/// The movie as a Lottie (JSON) animation, keyed with eases and equal to `evaluate` at every
+/// frame (see `anicraft_render::lottie`, ADR 0089).
 fn export_lottie(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     let last = s.doc.frame_count().saturating_sub(1);
