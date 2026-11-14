@@ -18,6 +18,22 @@
   * **Erasing inside symbols**: open a symbol or drawing object (double-click) and the Eraser
     erases its lines and fills; on the stage it keeps them and the status bar says how.
   * Fix: the curve fitter could send a handle far off on a tiny, nearly closed stretch.
+* **Surviving graphics card failures, and filters in the Motion Editor** (ADR 0092, M3).
+  * **The stage keeps drawing when the graphics card fails mid-session**: the CPU takes it over
+    at once, the status bar says so, and the graphics card is tried again after 3, 15, 60 and
+    300 seconds (sooner when the window is resized). Preferences › Stage says why.
+  * **A graphics driver error no longer closes AniCraft** (#255: `Surface::configure` "Failed to
+    wait for GPU to come idle"): the error goes to the log, unsaved work is autosaved at once,
+    and a surface that fails is reconfigured, then made anew. If the window loses its graphics
+    device, AniCraft saves the work, reopens the window a safer way and offers the work back;
+    the next three starts try that safer way first (#207).
+  * **Filters animate in the Motion Editor**: each filter of a movie clip in a motion tween lists
+    its numbers (Blur X/Y, Strength, Angle, Distance, Adjust Color's four) under its name, with
+    curves, keys, eases and retiming like the other properties. Changing a filter in Properties
+    with the playhead inside the tween keys it; reordering or removing filters takes their keys
+    along. Headless: `motion.set_key {"property": "filter.0.blur_x", …}`; files keep the tracks
+    under `filter_tracks`, so older builds still open them.
+
 * **Shape armatures, second slice: painted weights and reshaping** (ADR 0090, M7).
   * The **Bind** tool's **Paint Weights** (Properties › Bone) brushes a bone's influence onto
     the points of its shape: **Add**, **Subtract** or **Smooth**, with a size (`[` and `]`)

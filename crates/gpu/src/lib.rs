@@ -513,6 +513,13 @@ impl GpuRenderer {
         self.broken.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(|| why.to_string());
     }
 
+    /// Marks the renderer failed from outside (ADR 0092): a renderer on the window's device
+    /// hears of the device's loss from the window, which owns the device's callbacks. Every
+    /// later call refuses with `why` (the first reason given stays), and callers draw on the CPU.
+    pub fn fail(&self, why: &str) {
+        self.mark_broken(why);
+    }
+
     /// Bitmaps uploaded and kept, and their bytes (at most about [`images::IMAGE_BUDGET`]).
     pub fn cached_images(&self) -> (usize, u64) {
         self.images.lock().unwrap_or_else(PoisonError::into_inner).held()
