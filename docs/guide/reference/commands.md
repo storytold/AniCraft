@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 335 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 347 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -496,7 +496,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Blending** `element.set_blend` · changes the document
   Parameters: `{mode: normal|layer|darken|multiply|lighten|screen|overlay|hardlight|add|subtract|difference|invert|alpha|erase} on the selected movie clip and button instances`
 - **Filters** `element.set_filters` · changes the document
-  Parameters: `{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color "#rrggbbaa"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)`
+  Parameters: `{filters: [{type: blur|drop_shadow|glow|bevel|gradient_glow|gradient_bevel|adjust_color, …values, enabled?: bool (default true; false switches it off, keeping its settings)}]} replaces the selected movie clip and button instances' filters (in order; [] removes them). Bevel: shadow_color, highlight_color, side: inner|outer|full, knockout; gradient filters: stops: [{offset 0..1, color "#rrggbbaa"}] (Gradient Glow's start and Gradient Bevel's middle stay transparent)`
 - **Looping** `element.set_loop` · changes the document
   Parameters: `{loop?: loop|play_once|single_frame, first_frame?}`
 - **Symbol Type** `symbol.set_kind` · changes the document
@@ -601,6 +601,30 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{path, names? (default: all yours)} writes your brushes to a brush set file (JSON)`
 - **Import Brushes** `brush.preset_import`
   Parameters: `{path} adds the brushes in a brush set file to yours (a name you have already gets a number)`
+- **Move Filter** `filter.move` · changes the document
+  Parameters: ``{from, to} moves the filter at index `from` (0 is the first, applied first) to index `to` in the selected movie clip and button instances' lists; the order changes how they draw``
+- **Enable Filter** `filter.enable` · changes the document
+  Parameters: `{enabled: bool, index? (default: every filter)} switches a filter on or off; a filter switched off keeps its settings and draws nothing`
+- **Remove Filter** `filter.remove` · changes the document
+  Parameters: `{index? (default: every filter)} removes a filter from the selected movie clip and button instances`
+- **Copy Filters** `filter.copy`
+  Parameters: `{index? (default: every filter)} copies the selected instance's filters (one, or all), for Paste Filters`
+- **Paste Filters** `filter.paste` · changes the document
+  Parameters: `{replace? (default false: added after the instances' own)} pastes the copied filters onto the selected movie clip and button instances`
+- **Filter Presets** `filter.preset_list`
+  Parameters: `{} your filter presets, each a name and its filters`
+- **Save Filter Preset** `filter.preset_save`
+  Parameters: `{name, filters? (a list as element.set_filters takes; default: the selected instance's)} saves a filter preset of your own (kept in your preferences; a name you have already is replaced, after asking)`
+- **Apply Filter Preset** `filter.preset_apply` · changes the document
+  Parameters: `{name} gives the selected movie clip and button instances the preset's filters, replacing theirs (as Animate does)`
+- **Rename Filter Preset** `filter.preset_rename`
+  Parameters: `{name, to}`
+- **Delete Filter Preset** `filter.preset_delete`
+  Parameters: `{name} deletes a filter preset (asks first: it can't be undone; artwork that used it keeps its filters)`
+- **Export Filter Presets** `filter.preset_export`
+  Parameters: `{path, names? (default: all)} writes your filter presets to a small JSON file`
+- **Import Filter Presets** `filter.preset_import`
+  Parameters: `{path} adds the presets in a filter preset file to yours (a name you have already gets a number)`
 - **Eraser** `draw.erase` · changes the document
   Parameters: `{points: [[x, y] or [x, y, pressure], ..] (one point erases a dab), size? (stage units, default 10), shape?: round|square, angle?, roundness?, mode?: normal|fills|lines|selected_fills|inside (Erase Normal takes fills and lines, Erase Fills leaves lines, Erase Lines leaves fills, Erase Selected Fills only the selected fills, Erase Inside only the fill the stroke starts on), unit? (stage units per screen point)} erases from the raw shapes on the active layer; drawing objects, symbols and text are kept`
 - **Faucet** `draw.faucet` · changes the document

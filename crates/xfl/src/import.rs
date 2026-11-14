@@ -24,7 +24,7 @@
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterEntry, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
     Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, CustomEase, EaseGroup, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript, Spread, MAX_FOCAL,
 };
 use anicraft_doc::sound::{EnvelopePoint, SoundEffect, clean_points};
@@ -444,14 +444,13 @@ impl<'a> Builder<'a> {
         out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)).mul(&fit), ColorEffect::default()));
     }
 
-    /// An instance's filters, by Animate's element names; switched-off filters are left out,
-    /// and unknown ones reported.
-    fn filters(&mut self, el: &X) -> Vec<Filter> {
+    /// An instance's filters, by Animate's element names, in order; switched-off filters
+    /// (`enabled="false"`) come in switched off with their settings (ADR 0091), and unknown ones
+    /// are reported.
+    fn filters(&mut self, el: &X) -> Vec<FilterEntry> {
         let mut out = Vec::new();
         for f in el.list("filters") {
-            if f.bool("enabled") == Some(false) {
-                continue;
-            }
+            let enabled = f.bool("enabled") != Some(false);
             let num = |k: &str, d: f32| f.f32(k).unwrap_or(d);
             let flag = |k: &str| f.bool(k).unwrap_or(false);
             let quality = f.u32("quality").unwrap_or(1).clamp(1, 3) as u8;
@@ -498,7 +497,7 @@ impl<'a> Builder<'a> {
                     continue;
                 }
             };
-            out.push(filter.sanitized());
+            out.push(FilterEntry { filter: filter.sanitized(), enabled });
         }
         out
     }

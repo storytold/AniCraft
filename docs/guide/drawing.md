@@ -419,8 +419,35 @@ Convert your artwork to a movie clip symbol first (see
 **Filters**: choose **Add filter** under Filters in Properties, and stack as many as you like:
 **Drop Shadow**, **Blur**, **Glow**, **Bevel**, **Gradient Glow**, **Gradient Bevel** and
 **Adjust Color**. Each has its own settings (blur, strength, quality, colour, angle, distance,
-knockout and so on); the gradient ones have a colour ramp you click to add stops. **Remove**
-takes a filter off.
+knockout and so on); the gradient ones have a colour ramp you click to add stops.
+
+Each filter in the list has a row of its own:
+
+* **The order matters**: filters apply from the top down, so a Glow above Adjust Color is
+  greyed with the artwork, and one below it stays in colour. Drag a filter by its grip (the
+  dots on the left) to move it; or click the grip and press **Alt+Up** or **Alt+Down**; or
+  right-click the row for **Move Up** and **Move Down**.
+* **The eye** switches a filter off without losing its settings, and back on. A filter that is
+  off draws nothing anywhere: on the stage, in Test Movie and in every export.
+* **The bin** removes the filter.
+
+The **…** button next to **Add filter** has **Copy All Filters**, **Paste Filters** (adds the
+copied filters after the instance's own; select another movie clip or button first),
+**Enable All**, **Disable All** and **Remove All**. Right-click a filter's row for **Copy
+Filter** to copy just that one.
+
+**Filter presets** keep a list of filters under a name, for any document. Click the folder
+button next to **Add filter**: **Save as Preset…** names the current list; click a preset's
+name to apply it (it replaces the instance's filters, as in Animate; **Edit › Undo** takes it
+back). **Rename Preset** and **Delete Preset** manage them (deleting asks first; artwork keeps
+the filters it got). **Export Presets…** writes them to a small JSON file and **Import
+Presets…** adds a file's presets to yours, to move them to another computer. Presets are kept
+in your preferences.
+
+**Tweening filters**: a classic tween changes filter values smoothly when both keyframes have
+the same filters in the same order (switched-off ones count), as in Animate: a Blur from 0 to
+20 is 10 halfway. On/off, Inner, Knockout and Quality stay as the first keyframe has them.
+If the lists differ, the first keyframe's filters hold until the next keyframe.
 
 **Blending** sets how the instance mixes with what's below it: Normal, Layer, Darken,
 Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha and

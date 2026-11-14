@@ -33,7 +33,7 @@ pub mod templates;
 pub mod sound;
 pub mod swatch;
 
-pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
+pub use filter::{Filter, FilterEntry, FilterSide, active as active_filters, any_active as any_active_filter, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_decode, base64_encode, decode_png, image_to_png};
 pub use easing::{CustomEase, EaseDir, EaseFamily, EasePoint, Easing, Handle, MAX_EASE_NAME, MAX_EASE_POINTS, MAX_EASE_SAMPLES, MAX_EASE_Y, MAX_SAVED_EASES, SampledEase, SavedEase, ease_name};
 pub use color_effect::{ADVANCED_ADD, ADVANCED_MUL, ColorEffect, ColorStyle, ColorTransform};
@@ -563,9 +563,10 @@ pub enum ElementKind {
         /// How the instance blends with what is below it (movie clips and buttons).
         #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
         blend: BlendMode,
-        /// Filters, applied in order (movie clips and buttons).
+        /// Filters, applied in order (movie clips and buttons); each may be switched off
+        /// (ADR 0091).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        filters: Vec<Filter>,
+        filters: Vec<FilterEntry>,
         /// What the instance does on pointer events in the player (buttons and movie clips;
         /// ADR 0024), one handler per event.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
