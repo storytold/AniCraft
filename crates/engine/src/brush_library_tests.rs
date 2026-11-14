@@ -120,8 +120,8 @@ fn pressure_curves_map_before_the_size() {
         area(&shapes(&s)[0])
     };
     let (lin, soft, firm) = (area_with(json!("linear")), area_with(json!("soft")), area_with(json!("firm")));
-    // Linear: factor 0.1 + 0.9 × 0.5 = 0.55 of 20 across 400.
-    assert!((lin - 400.0 * 11.0).abs() / (400.0 * 11.0) < 0.06, "{lin}");
+    // Linear, plain brush: Thinnest 0.01, so half pressure is about half of 20 across 400.
+    assert!((lin - 400.0 * 10.0).abs() / (400.0 * 10.0) < 0.06, "{lin}");
     assert!(soft > lin * 1.15 && firm < lin * 0.85, "{soft} {lin} {firm}");
     // A curve of points: flat at 1 paints full size at any pressure.
     let full = area_with(json!([[0, 1], [1, 1]]));

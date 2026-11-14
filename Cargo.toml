@@ -127,6 +127,9 @@ cpal = { version = "0.18", optional = true }
 # objc2 / objc2-app-kit / objc2-foundation are the versions wgpu already brings on macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 fmv-macos-events = "=0.1.0"
+# Pen pressure (ADR 0096). winit drops the tablet point; this crate reads it. The shell stays
+# free of unsafe. First-party, macOS only. Only src/platform.rs calls it.
+anicraft-pen-macos = { path = "crates/pen-macos" }
 
 # The system's high-contrast setting (ADR 0064): one registry value. MIT, already in the tree
 # through craft-update.

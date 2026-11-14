@@ -339,7 +339,7 @@ pub fn props(app: &mut App, ui: &mut egui::Ui, row: impl Fn(&mut egui::Ui, &str,
         });
     });
     row_prose(ui, tr!("Mouse"), &mut |ui| {
-        crate::theme::checkbox(ui, &mut o.velocity, tr!("Speed as pressure")).on_hover_text(tr!("Without a pen: drawing faster makes the stroke thinner, as a pen pressed lightly would"));
+        crate::theme::checkbox(ui, &mut o.velocity, tr!("Speed as pressure")).on_hover_text(tr!("A pen still uses its own pressure when this is off, from Thinnest at a light touch, including the start. On, a fast mouse stroke thins the same way. The plain Brush starts with it on."));
     });
     // Tilt (ADR 0093): shown once a pen has reported its tilt this session. Until then the
     // options would do nothing, so they stay out of the way (brushes keep their tilt settings).

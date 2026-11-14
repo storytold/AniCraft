@@ -137,9 +137,11 @@ takes back the last point, and **Alt**-click on a line or a selected shape adds 
 ### The Brush
 
 The **Brush** (**B**) paints filled shapes in the fill colour: the shape is exactly the area
-the tip sweeps. A click paints a single dab. The options set the **Size** (or press **[** and
-**]**), **Shape** (Round or Square), **Angle** and **Roundness** for calligraphic tips,
-**Smoothing** to steady a shaky hand, and the **Mode**:
+the tip sweeps. A click paints a single dab. The options set **Smoothing** first (the plain
+Brush opens at **Off**, which keeps every point of the stroke), **Thinnest** (the width at no
+pressure, 0.01 stage pixels unless you set another) and **Max** (the width at a full press;
+**[** and **]** change Max), **Shape** (Round or Square), **Angle** and **Roundness** for
+calligraphic tips, and the **Mode**:
 
 * **Paint Normal** covers lines and fills.
 * **Paint Fills** leaves lines alone.
@@ -149,8 +151,12 @@ the tip sweeps. A click paints a single dab. The options set the **Size** (or pr
 * **Paint Inside** paints only inside the fill where your stroke starts, however far you go
   past its edge. Started on empty stage inside an outline, it fills only that empty area.
 
-The last three never cover lines. With
-a pen tablet, pressure sets the width, from 10 % to the full size.
+The last three never cover lines. Pressure runs from Thinnest to Max. On macOS a stylus
+uses its own pressure, including a light start, whether or not **Speed as pressure** is on.
+Speed is the mouse: it is on for the plain Brush, a fast stroke goes down to Thinnest, and
+turning it off paints a mouse at full width. The curve still decides how fast a light press
+thickens. Marker and Dotted stay one width. Zoom runs from 5 % to 25600 %, so a hairline can
+be placed. Widths are stage pixels, the same at any zoom.
 
 **Texture and scatter.** **Texture** lets a paper grain show through the paint, like charcoal
 on rough paper; the grain stays put on the stage, so strokes laid over each other share it.

@@ -20,12 +20,12 @@ pub fn specs() -> Vec<CommandSpec> {
         c(
             "draw.brush",
             "Brush Stroke",
-            "{points: [[x, y], [x, y, pressure 0..1 (clamped)] or [x, y, pressure, altitude, azimuth] (the pen's tilt in degrees: altitude 90 upright to 0 flat, azimuth the way it leans, clockwise from +x)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), texture? (0..100 %: a paper grain of holes through the paint), scatter? (0..200 % of the size: dabs thrown either side of the line, varied in size), tilt_angle? (the pen's tilt turns the tip: its angle plus the azimuth), tilt_width? (the pen's tilt widens the tip, up to twice as wide flat; also the Paint Brush's width), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind|selection|inside (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas, Paint Selection only inside the selected fills, Paint Inside only inside the fill the stroke starts on or the empty area closed off around it; ADR 0080), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
+            "{points: [[x, y], [x, y, pressure 0..1 (clamped)] or [x, y, pressure, altitude, azimuth] (the pen's tilt in degrees: altitude 90 upright to 0 flat, azimuth the way it leans, clockwise from +x)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units at full pressure, default 10), min_size? (stage units at no pressure, default 0.01, never above size), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from min_size to size), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), texture? (0..100 %: a paper grain of holes through the paint), scatter? (0..200 % of the size: dabs thrown either side of the line, varied in size), tilt_angle? (the pen's tilt turns the tip: its angle plus the azimuth), tilt_width? (the pen's tilt widens the tip, up to twice as wide flat; also the Paint Brush's width), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind|selection|inside (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas, Paint Selection only inside the selected fills, Paint Inside only inside the fill the stroke starts on or the empty area closed off around it; ADR 0080), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
             true,
             draw_brush as crate::RunFn,
         ),
         c("brush.preset_list", "Brush Presets", "{} the built-in brushes and yours, with their settings", false, preset_list),
-        c("brush.preset_save", "Save Brush", "{name, from? (a preset to start from; default: the plain brush), size?, shape?, angle?, roundness?, smoothing?, curve?, pressure_size?, pressure_opacity?, taper_start?, taper_end?, spacing?, jitter?, texture?, scatter?, tilt_angle?, tilt_width? (as draw.brush)} saves a brush of your own (replacing yours of that name; kept in your preferences)", false, preset_save),
+        c("brush.preset_save", "Save Brush", "{name, from? (a preset to start from; default: the plain brush), size?, min_size?, shape?, angle?, roundness?, smoothing?, curve?, pressure_size?, pressure_opacity?, taper_start?, taper_end?, spacing?, jitter?, texture?, scatter?, tilt_angle?, tilt_width? (as draw.brush)} saves a brush of your own (replacing yours of that name; kept in your preferences)", false, preset_save),
         c("brush.preset_rename", "Rename Brush", "{name, to}", false, preset_rename),
         c("brush.preset_delete", "Delete Brush", "{name} deletes a brush of your own (asks first: it can't be undone)", false, preset_delete),
         c("brush.preset_export", "Export Brushes", "{path, names? (default: all yours)} writes your brushes to a brush set file (JSON)", false, preset_export),
@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// Brush sizes, in stage units.
-pub const SIZE_RANGE: std::ops::RangeInclusive<f32> = 0.1..=2000.0;
+pub const SIZE_RANGE: std::ops::RangeInclusive<f32> = 0.01..=2000.0;
 
 /// A paint mode (Animate's names).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -240,11 +240,12 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
     // Pressure through the curve (ADR 0068) before it sizes the tip.
     let pts: Vec<Sample> = pts.iter().map(|x| Sample { pressure: b.size_pressure(x.pressure), ..*x }).collect();
 
-    // Smoothing and accuracy are screen distances, so a stroke looks the same at any zoom: at 50
-    // the centre line may wander 3.3 screen points from the hand, at 0 a third of a point.
-    // The outline is fitted within a third of a screen point, or a hundredth of the size for
-    // small brushes (so a small dab is still round).
-    let (smoothing, tol) = (unit * (0.3 + b.smoothing * 0.06), (unit * 0.35).min(size * 0.01));
+    // Smoothing and accuracy are screen distances, so a stroke looks the same at any zoom.
+    // Smoothing 0 is the points themselves: no cubic through the centre line or the outline
+    // (ADR 0096). Just above 0 the centre line stays within 0.3 of a screen point, and at 100
+    // it may wander 6.3. The outline, above 0, is fitted within about a third of a screen
+    // point, or a hundredth of the size for small brushes.
+    let (smoothing, tol) = if b.smoothing <= 1e-8 { (0.0, 0.0) } else { (unit * (0.3 + b.smoothing * 0.06), (unit * 0.35).min(size * 0.01)) };
     if as_stroke {
         return paint_stroke(s, &pts, &b, smoothing, tol, color, object);
     }
@@ -358,7 +359,7 @@ const PROFILE_TOLERANCE: f32 = 0.015;
 /// stroke colour, its width profile following the pressure and tapers, so the Width tool edits
 /// it afterwards. A stroke of one width is a plain line and merges like the Pencil's.
 fn paint_stroke(s: &mut Session, pts: &[Sample], b: &BrushPreset, smoothing: f32, tol: f32, color: Rgba, object: bool) -> Result<Value> {
-    let (path, factors) = centre_stroke(pts, &b.shaping(), smoothing, tol * 0.25, PROFILE_SAMPLES);
+    let (path, factors) = centre_stroke(pts, &b.shaping(), smoothing, tol * 0.25, PROFILE_SAMPLES, b.size);
     if !path.cmds.iter().any(|c| matches!(c, PathCmd::CubicTo(..) | PathCmd::LineTo(..))) {
         return Err(EngineError::Param("the stroke is too short to draw a line".into()));
     }

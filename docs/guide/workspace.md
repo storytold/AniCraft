@@ -164,7 +164,7 @@ lets you change them (see [Preferences, shortcuts and accessibility](preferences
 | Zoom out | **View › Zoom Out** (**Ctrl+-**), or **Alt**-click with the Zoom tool |
 | Fit the whole stage in the window | **View › Fit in Window** (**Ctrl+0**, or **Ctrl+2**) |
 | See the stage at actual size | **View › 100%** (**Ctrl+1**) |
-| Jump to a set zoom | the zoom menu at the right of the edit bar: Fit in window, 25 % to 800 % |
+| Jump to a set zoom | the zoom menu at the right of the edit bar: Fit in window, 25 % to 25600 % |
 
 ### The pasteboard
 

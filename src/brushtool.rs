@@ -19,8 +19,10 @@ use serde_json::json;
 /// The tool options (view state, as in Animate: they are the tool's, not the document's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrushOptions {
-    /// Diameter (or side), stage units.
+    /// Diameter (or side) at full pressure, stage units.
     pub size: f32,
+    /// Diameter at no pressure, stage units. Never above `size`.
+    pub min_size: f32,
     pub shape: TipShape,
     /// Degrees, clockwise.
     pub angle: f32,
@@ -33,7 +35,8 @@ pub struct BrushOptions {
     pub curve: PressureCurve,
     pub pressure_size: bool,
     pub pressure_opacity: bool,
-    /// With a mouse, the hand's speed stands in for pressure (faster is thinner). Off by default.
+    /// With a mouse, the hand's speed stands in for pressure (faster is thinner). On by default.
+    /// A pen uses its own pressure either way (ADR 0096).
     pub velocity: bool,
     /// Percent of the stroke's length.
     pub taper_start: f32,
@@ -52,14 +55,15 @@ pub struct BrushOptions {
 }
 
 impl Default for BrushOptions {
-    /// The plain brush (ADR 0033).
+    /// The plain brush opens raw: smoothing off, a hairline at no pressure, and speed standing
+    /// in for a mouse (ADR 0096). A preset you pick keeps its own smoothing and Thinnest.
     fn default() -> Self {
-        BrushOptions::from_preset(&BrushPreset::default())
+        BrushOptions { smoothing: 0.0, velocity: true, min_size: 0.01, ..BrushOptions::from_preset(&BrushPreset::default()) }
     }
 }
 
-/// Sizes the tool offers (the command takes 0.1..2000).
-pub const SIZE_MIN: f32 = 1.0;
+/// Sizes the tool offers (the command takes 0.01..2000).
+pub const SIZE_MIN: f32 = 0.01;
 pub const SIZE_MAX: f32 = 400.0;
 
 impl BrushOptions {
@@ -71,6 +75,7 @@ impl BrushOptions {
     fn from_preset(p: &BrushPreset) -> BrushOptions {
         BrushOptions {
             size: p.size,
+            min_size: p.min_size,
             shape: p.shape.tip(),
             angle: p.angle,
             roundness: p.roundness,
@@ -101,6 +106,7 @@ impl BrushOptions {
         BrushPreset {
             name: name.to_string(),
             size: self.size,
+            min_size: self.min_size.min(self.size),
             shape: Shape::from_tip(self.shape),
             angle: self.angle,
             roundness: self.roundness,
@@ -128,7 +134,7 @@ impl BrushOptions {
 
     /// The size factor the tip has at a measured pressure (for previews).
     pub fn factor(&self, pressure: Option<f32>) -> f32 {
-        size_factor(if self.pressure_size { self.curve.map(pressure.unwrap_or(1.0)) } else { 1.0 })
+        size_factor(if self.pressure_size { self.curve.map(pressure.unwrap_or(1.0)) } else { 1.0 }, self.min_size, self.size)
     }
 
     /// The tip mapped onto the stage, for previews: unit circle or square → the tip at `at`.
@@ -171,6 +177,9 @@ pub fn resize(app: &mut App, larger: bool) {
         Tool::Brush | Tool::PaintBrush => {
             let o = options_mut(app);
             o.size = step_size(o.size, larger);
+            if o.min_size > o.size {
+                o.min_size = o.size;
+            }
             let size = o.size;
             app.status_ok(tr!("Brush size {size} px", size = size));
         }
@@ -187,8 +196,14 @@ pub fn resize(app: &mut App, larger: bool) {
     }
 }
 
-/// The pen's pressure this frame, when a tablet reports it (egui gives it with touch events).
+/// The pen's pressure this frame, when a tablet reports it.
+///
+/// On macOS that is the stylus (a tip-down tablet point). It is used whether or not Speed as
+/// pressure is on. egui's touch force is the other path. A plain mouse has no pressure.
 pub fn frame_pressure(ctx: &egui::Context) -> Option<f32> {
+    if let Some(p) = crate::platform::pen_pressure() {
+        return Some(p);
+    }
     ctx.input(|i| {
         i.raw.events.iter().rev().find_map(|e| match e {
             egui::Event::Touch { force: Some(f), .. } if f.is_finite() => Some(f.clamp(0.0, 1.0)),
@@ -214,37 +229,92 @@ pub fn note_tilt(app: &mut App, tilt: Option<anicraft_engine::geom::brush::Tilt>
     }
 }
 
-/// Starts a stroke at stage point `p` at time `now` (seconds). A mouse paints at full
-/// pressure, or from half pressure when its speed stands in for it.
+/// Starts a stroke at stage point `p` at time `now` (seconds).
+///
+/// A pen starts at that sample, which can be the thinnest setting. A mouse does not invent a
+/// width yet: with Speed as pressure the first movement sets it, and without it the stroke
+/// is full width.
 pub fn start(app: &mut App, p: Vec2, pressure: Option<f32>, now: f64) -> Drag {
-    let pressure = pressure.or_else(|| options(app).velocity.then_some(VELOCITY_START));
+    let pressure = pressure.filter(|p| p.is_finite()).map(|p| p.clamp(0.0, 1.0));
+    app.brush_from_pen = pressure.is_some();
     app.pen_pressure = pressure;
     app.brush_clock = now;
+    app.brush_down = now;
+    app.brush_open_dist = 0.0;
+    app.brush_open_time = 0.0;
+    app.brush_hand.clear();
+    app.brush_hand.push(p);
     app.brush_samples = vec![(p, pressure)];
     Drag::Brush
 }
 
-/// The pressure a mouse stroke starts at when its speed stands in for it.
+/// Stand-in when a velocity sample has no previous pressure. Not the stroke's first dab.
 pub const VELOCITY_START: f32 = 0.5;
 /// Screen speed (points a second) at which a velocity stroke is thinnest.
 const VELOCITY_FAST: f32 = 2400.0;
+/// Screen points whose speed is the width of the whole opening, including the press.
+const OPENING_PTS: f32 = 12.0;
+/// A pen sample this soon after the press replaces the mouse event the system sent with it.
+const PEN_OPEN_SECS: f64 = 0.03;
 
-/// The pressure speed stands in for (ADR 0068): full when the hand is still, down to a fifth
-/// at `VELOCITY_FAST` and beyond, eased from the last value so one jerky event doesn't show.
-pub fn velocity_pressure(prev: f32, distance_pts: f32, dt: f32) -> f32 {
-    let prev = if prev.is_finite() { prev.clamp(0.0, 1.0) } else { VELOCITY_START };
-    if !(distance_pts.is_finite() && dt.is_finite() && dt > 1e-4) {
-        return prev;
+/// The width speed stands in for, before it is eased: full when the hand is still, down to
+/// none (the thinnest setting) at [`VELOCITY_FAST`]. `None` when the interval is not a movement.
+pub fn velocity_target(distance_pts: f32, dt: f32) -> Option<f32> {
+    if !(distance_pts.is_finite() && dt.is_finite() && dt > 1e-4 && distance_pts >= 0.0) {
+        return None;
     }
-    let speed = distance_pts / dt;
-    let target = 1.0 - 0.8 * (speed / VELOCITY_FAST).clamp(0.0, 1.0);
-    prev + (target - prev) * 0.3
+    Some(1.0 - (speed_of(distance_pts, dt)))
 }
 
-/// The stroke's samples as command points (with pressure when a pen gave any).
+fn speed_of(distance_pts: f32, dt: f32) -> f32 {
+    (distance_pts / dt / VELOCITY_FAST).clamp(0.0, 1.0)
+}
+
+/// The pressure speed stands in for. `follow` is how far this sample moves (`1` is this
+/// sample's own speed). Smoothing 0 uses `1`. Higher smoothing uses a fraction.
+pub fn velocity_pressure(prev: f32, distance_pts: f32, dt: f32, follow: f32) -> f32 {
+    let prev = if prev.is_finite() { prev.clamp(0.0, 1.0) } else { VELOCITY_START };
+    let Some(target) = velocity_target(distance_pts, dt) else { return prev };
+    let follow = if follow.is_finite() { follow.clamp(0.0, 1.0) } else { 0.3 };
+    prev + (target - prev) * follow
+}
+
+/// Gives every sample `pressure`, so the opening's first real reading is the start as well.
+pub fn stamp_pressure(samples: &mut [(Vec2, Option<f32>)], pressure: f32) {
+    if !pressure.is_finite() {
+        return;
+    }
+    let p = pressure.clamp(0.0, 1.0);
+    for (_, s) in samples {
+        *s = Some(p);
+    }
+}
+
+/// The stroke's samples as command points.
+///
+/// A sample that is still waiting takes the first real reading, not full pressure, so the
+/// start is not a fat dot in front of a thin line.
 pub fn points(samples: &[(Vec2, Option<f32>)]) -> Vec<serde_json::Value> {
-    let pen = samples.iter().any(|(_, p)| p.is_some());
-    samples.iter().map(|(v, p)| if pen { json!([v.x, v.y, p.unwrap_or(1.0)]) } else { json!([v.x, v.y]) }).collect()
+    let Some(first) = samples.iter().find_map(|(_, p)| *p) else {
+        return samples.iter().map(|(v, _)| json!([v.x, v.y])).collect();
+    };
+    let mut prev = first;
+    let mut seen = false;
+    samples
+        .iter()
+        .map(|(v, p)| {
+            let p = if let Some(p) = *p {
+                seen = true;
+                prev = p;
+                p
+            } else if !seen {
+                first
+            } else {
+                prev
+            };
+            json!([v.x, v.y, p])
+        })
+        .collect()
 }
 
 /// A tip shape's name in commands.
@@ -255,32 +325,97 @@ pub fn shape_key(s: TipShape) -> &'static str {
     }
 }
 
-/// Adds a sample at time `now` (closer than half a screen point adds nothing unless the
-/// pressure moved).
-pub fn sample(app: &mut App, p: Vec2, pressure: Option<f32>, xf: Xf, now: f64) {
-    if pressure.is_some() {
-        app.pen_pressure = pressure;
-    } else if options(app).velocity
-        && matches!(app.tool, Tool::Brush | Tool::PaintBrush)
-        && let Some((last, _)) = app.brush_samples.last()
-    {
-        let moved = last.distance(p) * xf.zoom;
-        if moved < 0.5 {
-            return;
-        }
-        app.pen_pressure = Some(velocity_pressure(app.pen_pressure.unwrap_or(VELOCITY_START), moved, (now - app.brush_clock) as f32));
-        app.brush_clock = now;
+/// How many raw pointer samples the stabilizer looks back over.
+const HAND: usize = 12;
+
+/// The point the stroke follows. Smoothing 0 is the latest sample. Higher smoothing is a
+/// weighted average of the recent hand, newest heaviest.
+pub fn stabilize(raw: &[Vec2], smoothing: f32) -> Vec2 {
+    let Some(&last) = raw.iter().rev().find(|p| p.is_finite()) else { return Vec2::ZERO };
+    let t = if smoothing.is_finite() { (smoothing / 100.0).clamp(0.0, 1.0) } else { 0.0 };
+    if t <= 1e-4 {
+        return last;
     }
+    let n = (1.0 + t * (HAND as f32 - 1.0)).round() as usize;
+    let mut acc = Vec2::ZERO;
+    let mut wsum = 0.0;
+    let mut k = 0.0;
+    for p in raw.iter().skip(raw.len().saturating_sub(n.max(1))) {
+        if !p.is_finite() {
+            continue;
+        }
+        k += 1.0;
+        acc = acc + *p * k;
+        wsum += k;
+    }
+    if wsum <= 1e-6 { last } else { acc * (1.0 / wsum) }
+}
+
+/// Adds a sample at time `now`. The stored point is the stabilized one, which is also what
+/// the preview draws, so the ink on screen is the ink that lands.
+pub fn sample(app: &mut App, p: Vec2, pressure: Option<f32>, xf: Xf, now: f64) {
+    let prev = app.brush_hand.last().copied().unwrap_or(p);
+    let moved = prev.distance(p) * xf.zoom;
+    let (velocity, smoothing) = {
+        let brush = options(app);
+        (brush.velocity, brush.smoothing)
+    };
+    if matches!(app.tool, Tool::Brush | Tool::PaintBrush) {
+        let pressure = pressure.filter(|n| n.is_finite()).map(|n| n.clamp(0.0, 1.0));
+        if let Some(pressure) = pressure {
+            if !app.brush_from_pen && (now - app.brush_down) <= PEN_OPEN_SECS {
+                stamp_pressure(&mut app.brush_samples, pressure);
+            }
+            app.brush_from_pen = true;
+            app.pen_pressure = Some(pressure);
+        } else if !app.brush_from_pen && velocity && moved >= 0.5 {
+            let follow = if smoothing <= 1e-4 { 1.0 } else { 0.3 };
+            let raw_dt = (now - app.brush_clock) as f32;
+            if raw_dt > 1e-4 {
+                let opening = app.brush_open_time == 0.0 || app.brush_open_dist < OPENING_PTS;
+                app.brush_open_dist += moved;
+                app.brush_open_time += raw_dt;
+                if opening {
+                    if let Some(target) = velocity_target(app.brush_open_dist, app.brush_open_time) {
+                        app.pen_pressure = Some(target);
+                        stamp_pressure(&mut app.brush_samples, target);
+                    }
+                } else {
+                    app.pen_pressure = Some(velocity_pressure(app.pen_pressure.unwrap_or(VELOCITY_START), moved, raw_dt, follow));
+                }
+                app.brush_clock = now;
+            } else if app.brush_open_time == 0.0 && app.pen_pressure.is_none() {
+                let dt = 1.0 / 60.0;
+                app.brush_open_dist += moved;
+                app.brush_open_time += dt;
+                if let Some(target) = velocity_target(app.brush_open_dist, app.brush_open_time) {
+                    app.pen_pressure = Some(target);
+                    stamp_pressure(&mut app.brush_samples, target);
+                }
+                app.brush_clock = now;
+            }
+        }
+    }
+    if prev.distance(p) > 1e-4 {
+        app.brush_hand.push(p);
+        if app.brush_hand.len() > HAND {
+            let extra = app.brush_hand.len() - HAND;
+            app.brush_hand.drain(0..extra);
+        }
+    }
+    let placed = if app.brush_hand.is_empty() { p } else { stabilize(&app.brush_hand, smoothing) };
     let pr = app.pen_pressure;
-    let far = app.brush_samples.last().is_none_or(|(l, lp)| l.distance(p) * xf.zoom >= 0.5 || (pr.unwrap_or(1.0) - lp.unwrap_or(1.0)).abs() > 0.05);
+    let min_change = if smoothing <= 1e-4 { 0.01 } else { 0.05 };
+    let far = app.brush_samples.last().is_none_or(|(l, lp)| l.distance(placed) * xf.zoom >= 0.5 || (pr.unwrap_or(1.0) - lp.unwrap_or(1.0)).abs() > min_change);
     if far && app.brush_samples.len() < anicraft_engine::geom::brush::MAX_SAMPLES {
-        app.brush_samples.push((p, pr));
+        app.brush_samples.push((placed, pr));
     }
 }
 
 /// Sends the stroke (one command, one undo step). Smoothing and accuracy follow the screen.
 pub fn commit(app: &mut App, xf: Xf) {
     let samples = std::mem::take(&mut app.brush_samples);
+    app.brush_hand.clear();
     if samples.is_empty() {
         return;
     }
@@ -293,22 +428,30 @@ pub fn commit(app: &mut App, xf: Xf) {
     params["unit"] = json!(xf.unit());
     params["as_stroke"] = json!(as_stroke);
     if as_stroke {
-        if let Some(v) = app.draw("draw.brush", params)
-            && v["width_points"].as_u64().is_some_and(|n| n > 1)
-        {
-            app.status_ok(tr!("A line whose width you can shape with the Width tool."));
+        if let Some(v) = app.draw("draw.brush", params) {
+            app.brush_latch = samples;
+            app.brush_latch_erase = false;
+            app.brush_latch_state = Some(app.s.stage_picture().state);
+            if v["width_points"].as_u64().is_some_and(|n| n > 1) {
+                app.status_ok(tr!("A line whose width you can shape with the Width tool."));
+            }
         }
         return;
     }
     // Paint Selection keeps the selection it paints in, for the next stroke (ADR 0080).
     let v = if o.mode == PaintMode::Selection { app.run("draw.brush", params) } else { app.draw("draw.brush", params) };
-    if let Some(v) = v
-        && v["elements"].as_array().is_some_and(Vec::is_empty)
-    {
-        match o.mode {
-            PaintMode::Selection => app.status_ok(tr!("Nothing painted: Paint Selection paints only inside the selected fills. Select them with the Selection tool first.")),
-            PaintMode::Inside => app.status_ok(tr!("Nothing painted: Paint Inside paints only inside the fill where the stroke starts.")),
-            _ => app.status_ok(tr!("Nothing to paint behind there: Paint Behind only paints empty areas.")),
+    if let Some(v) = v {
+        let empty = v["elements"].as_array().is_some_and(Vec::is_empty);
+        if empty {
+            match o.mode {
+                PaintMode::Selection => app.status_ok(tr!("Nothing painted: Paint Selection paints only inside the selected fills. Select them with the Selection tool first.")),
+                PaintMode::Inside => app.status_ok(tr!("Nothing painted: Paint Inside paints only inside the fill where the stroke starts.")),
+                _ => app.status_ok(tr!("Nothing to paint behind there: Paint Behind only paints empty areas.")),
+            }
+        } else {
+            app.brush_latch = samples;
+            app.brush_latch_erase = false;
+            app.brush_latch_state = Some(app.s.stage_picture().state);
         }
     }
 }
@@ -357,6 +500,9 @@ pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, hover: Option<Po
         // Opaque, so overlapping pieces don't darken each other.
         let color = to_color32(anicraft_engine::doc::Rgba { a: 1.0, ..paint });
         draw_sweep(painter, xf, &tip, &app.brush_samples, color);
+    } else if app.brush_latch_state.is_some() && !app.brush_latch_erase {
+        let color = to_color32(anicraft_engine::doc::Rgba { a: 1.0, ..paint });
+        draw_sweep(painter, xf, &tip, &app.brush_latch, color);
     }
     if let Some(h) = hover {
         // The tip's size and shape at the pointer, as Animate shows it.
@@ -365,6 +511,9 @@ pub fn draw_overlay(app: &App, painter: &egui::Painter, xf: Xf, hover: Option<Po
 }
 
 /// The tip swept along `samples` (shared with the Eraser, ADR 0034), filled with `color`.
+///
+/// One mesh, not a shape per step. Separate shapes antialias against the stage along every
+/// shared edge, so the stroke flashes as it grows.
 pub fn draw_sweep(painter: &egui::Painter, xf: Xf, o: &BrushOptions, samples: &[(Vec2, Option<f32>)], color: egui::Color32) {
     if samples.is_empty() {
         return;
@@ -376,14 +525,30 @@ pub fn draw_sweep(painter: &egui::Painter, xf: Xf, o: &BrushOptions, samples: &[
     };
     let step = samples.len().div_ceil(MAX_PREVIEW).max(1);
     let picked: Vec<&(Vec2, Option<f32>)> = samples.iter().step_by(step).chain(samples.last()).collect();
+    let mut mesh = egui::Mesh::default();
+    let mut fan = |pts: Vec<Pos2>| {
+        if pts.len() < 3 || mesh.vertices.len().saturating_add(pts.len()) >= u32::MAX as usize {
+            return;
+        }
+        let base = mesh.vertices.len() as u32;
+        for p in &pts {
+            mesh.colored_vertex(*p, color);
+        }
+        for i in 1..pts.len() - 1 {
+            mesh.add_triangle(base, base + i as u32, base + (i as u32) + 1);
+        }
+    };
     if let [only] = picked.as_slice() {
-        painter.add(egui::Shape::convex_polygon(hull(screen(only.0, only.1)), color, Stroke::NONE));
+        fan(hull(screen(only.0, only.1)));
     }
     for pair in picked.windows(2) {
         let &[a, b] = pair else { continue };
         let mut pts = screen(a.0, a.1);
         pts.extend(screen(b.0, b.1));
-        painter.add(egui::Shape::convex_polygon(hull(pts), color, Stroke::NONE));
+        fan(hull(pts));
+    }
+    if !mesh.indices.is_empty() {
+        painter.add(egui::Shape::mesh(mesh));
     }
 }
 
@@ -422,25 +587,29 @@ mod tests {
         assert_eq!(o.preset("Ink Pen"), ink);
         o.size += 1.0;
         assert!(!o.matches(&ink), "changed since");
-        // The defaults are the plain brush's (ADR 0033).
-        assert!(BrushOptions::default().matches(&BrushPreset::default()));
+        // The tool opens raw. A preset's own smoothing is what `matches` compares.
+        assert_eq!(BrushOptions::default().smoothing, 0.0);
+        assert_eq!(BrushOptions::default().min_size, 0.01);
+        assert!(BrushOptions::default().velocity);
+        let plain = BrushOptions { smoothing: BrushPreset::default().smoothing, ..BrushOptions::default() };
+        assert!(plain.matches(&BrushPreset::default()));
         assert_eq!(BrushOptions::default().size, 10.0);
     }
 
     #[test]
     fn speed_stands_in_for_pressure() {
-        // Still: it rises toward full; fast: it falls toward a fifth; never outside 0..1.
+        // Still: it rises toward full. Fast: it falls toward the thinnest, not a fifth.
         let mut p = VELOCITY_START;
         for _ in 0..30 {
-            p = velocity_pressure(p, 1.0, 0.1);
+            p = velocity_pressure(p, 1.0, 0.1, 0.3);
         }
         assert!(p > 0.95, "{p}");
-        for _ in 0..30 {
-            p = velocity_pressure(p, 500.0, 0.016);
+        for _ in 0..40 {
+            p = velocity_pressure(p, 500.0, 0.016, 0.3);
         }
-        assert!((p - 0.2).abs() < 0.02, "{p}");
-        assert_eq!(velocity_pressure(0.4, 10.0, 0.0), 0.4, "no time passed");
-        assert_eq!(velocity_pressure(f32::NAN, f32::INFINITY, 1.0), VELOCITY_START);
+        assert!(p < 0.05, "{p}");
+        assert_eq!(velocity_pressure(0.4, 10.0, 0.0, 0.3), 0.4, "no time passed");
+        assert_eq!(velocity_pressure(f32::NAN, f32::INFINITY, 1.0, 0.3), VELOCITY_START);
     }
 
     #[test]

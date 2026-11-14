@@ -321,11 +321,12 @@ pub fn edit_bar(app: &mut App, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let z = app.view.zoom;
             let canvas = app.stage_cache.canvas;
-            egui::ComboBox::from_id_salt("zoom").width(84.0).selected_text(text(Type::Data, format!("{:>4.0}%", z * 100.0))).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("zoom").width(96.0).selected_text(text(Type::Data, format!("{:>4.0}%", z * 100.0))).show_ui(ui, |ui| {
                 if ui.selectable_label(false, tr!("Fit in window")).clicked() {
                     app.view.fit = true;
                 }
-                for pct in [25.0f32, 50.0, 100.0, 200.0, 400.0, 800.0] {
+                // Through 25600 %, the view's own limit (ADR 0096): a hairline is drawable once you can see it.
+                for pct in [25.0f32, 50.0, 100.0, 200.0, 400.0, 800.0, 1_600.0, 3_200.0, 6_400.0, 12_800.0, 25_600.0] {
                     if ui.selectable_label((z * 100.0 - pct).abs() < 0.5, text(Type::Data, format!("{pct:>4.0}%"))).clicked() {
                         app.zoom_about(canvas, canvas.center(), pct / 100.0);
                     }
@@ -2723,23 +2724,37 @@ fn eraser_props(app: &mut App, ui: &mut egui::Ui) {
 /// and shaping. The tip's shape and the paint mode are the Brush's only (the Paint Brush draws
 /// a round line).
 fn brush_props(app: &mut App, ui: &mut egui::Ui) {
-    crate::brush_panel::props(app, ui, |ui, l, f| row(ui, l, |ui| f(ui)), |ui, l, f| row_prose(ui, l, |ui| f(ui)));
     let paint_brush = app.tool == Tool::PaintBrush;
     use crate::brushtool::{SIZE_MAX, SIZE_MIN};
     use anicraft_engine::cmds_brush::PaintMode;
     use anicraft_engine::geom::brush::TipShape;
+    {
+        let b = crate::brushtool::options_mut(app);
+        // A number, not a slider: the slider's own value sits outside the row and runs past a
+        // 200 pt dock once Off is translated (ADR 0087, ADR 0096). Off is the raw-ink stop.
+        row(ui, tr!("Smoothing"), |ui| {
+            if ui.selectable_label(b.smoothing <= 0.5, tr!("Off")).on_hover_text(tr!("Off keeps every point of the stroke. Nothing fits a curve through it.")).clicked() {
+                b.smoothing = 0.0;
+            }
+            ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Brush smoothing"));
+        });
+    }
+    crate::brush_panel::props(app, ui, |ui, l, f| row(ui, l, |ui| f(ui)), |ui, l, f| row_prose(ui, l, |ui| f(ui)));
     let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
     let b = crate::brushtool::options_mut(app);
-    row(ui, tr!("Size"), |ui| {
-        let r = ui.add(egui::DragValue::new(&mut b.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(1)).named(tr!("Brush size"));
+    row(ui, tr!("Thinnest"), |ui| {
+        ui.add(egui::DragValue::new(&mut b.min_size).suffix(" px").speed(0.05).range(SIZE_MIN..=b.size).max_decimals(2)).named(tr!("Thinnest brush size")).on_hover_text(tr!("The width at no pressure. A light touch is this wide."));
+    });
+    row(ui, tr!("Max"), |ui| {
+        let r = ui.add(egui::DragValue::new(&mut b.size).suffix(" px").speed(0.25).range(SIZE_MIN..=SIZE_MAX).max_decimals(2)).named(tr!("Brush size"));
+        if b.min_size > b.size {
+            b.min_size = b.size;
+        }
         if !keys.is_empty() {
-            r.on_hover_text(tr!("Brush size ({keys})", keys = keys));
+            r.on_hover_text(tr!("The width at full pressure ({keys})", keys = keys));
         }
     });
     if paint_brush {
-        row(ui, tr!("Smoothing"), |ui| {
-            ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Brush smoothing")).on_hover_text(tr!("How much the stroke is smoothed: 0 follows the hand closely"));
-        });
         return;
     }
     row(ui, tr!("Shape"), |ui| {
@@ -2752,9 +2767,6 @@ fn brush_props(app: &mut App, ui: &mut egui::Ui) {
     });
     row(ui, tr!("Roundness"), |ui| {
         ui.add(egui::DragValue::new(&mut b.roundness).suffix(" %").speed(0.5).range(5.0..=100.0).max_decimals(0)).named(tr!("Brush roundness")).on_hover_text(tr!("100 %: as wide as it is tall. Less flattens the tip, for calligraphic strokes"));
-    });
-    row(ui, tr!("Smoothing"), |ui| {
-        ui.add(egui::DragValue::new(&mut b.smoothing).speed(0.5).range(0.0..=100.0).max_decimals(0)).named(tr!("Brush smoothing")).on_hover_text(tr!("How much the stroke is smoothed: 0 follows the hand closely"));
     });
     row_prose(ui, tr!("Mode"), |ui| {
         egui::ComboBox::from_id_salt("brush_mode").width(crate::theme::fit(ui, 170.0)).selected_text(crate::i18n::t(b.mode.label())).show_ui(ui, |ui| {

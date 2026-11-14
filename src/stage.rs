@@ -207,6 +207,28 @@ fn to_v(p: Pos2) -> Vec2 {
     Vec2::new(p.x, p.y)
 }
 
+/// Every pointer position this frame, oldest first. One position per frame cuts the corners
+/// out of a fast stroke, so the line that lands is smoother than the hand (ADR 0096).
+fn paint_moves(app: &mut App, ui: &egui::Ui, xf: crate::pathtools::Xf, pressure: Option<f32>, now: f64) {
+    let moves = ui.input(|i| {
+        let mut pts: Vec<Pos2> = i.events.iter().filter_map(|e| match e { egui::Event::PointerMoved(p) => Some(*p), _ => None }).collect();
+        if pts.is_empty()
+            && let Some(p) = i.pointer.interact_pos()
+        {
+            pts.push(p);
+        }
+        pts
+    });
+    let n = moves.len();
+    let t0 = app.brush_clock;
+    let span = now - t0;
+    for (i, p) in moves.into_iter().enumerate() {
+        // Share the frame's time across its events, so each one's speed is its own.
+        let t = if n > 1 && span > 1e-4 { t0 + span * ((i + 1) as f64 / n as f64) } else { now };
+        crate::brushtool::sample(app, xf.to_stage(p), pressure, xf, t);
+    }
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // View › Rulers along the top and the left (ADR 0076); the stage view in what is left.
     let (canvas, bars) = crate::rulers::layout(app, ui.max_rect());
@@ -230,7 +252,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.view.fit = true;
     }
     if app.view.fit && canvas.width() > 10.0 && canvas.height() > 10.0 {
-        app.view.zoom = ((canvas.width() - 64.0) / size.x).min((canvas.height() - 64.0) / size.y).clamp(0.05, 64.0);
+        app.view.zoom = ((canvas.width() - 64.0) / size.x).min((canvas.height() - 64.0) / size.y).clamp(0.05, 256.0);
         app.view.pan = egui::Vec2::ZERO;
         app.view.fit = false;
         app.view.fitted = Some((vec2(canvas.width(), canvas.height()), app.view.zoom));
@@ -654,8 +676,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 crate::shape_envelope::drag_to(app, d, to_v(c));
             }
             (Drag::Pencil, Some(c)) => crate::pathtools::pencil_sample(app, to_v(c), xf),
-            (Drag::Brush, Some(c)) => crate::brushtool::sample(app, to_v(c), pressure, xf, now),
-            (Drag::Eraser, Some(c)) => crate::brushtool::sample(app, to_v(c), None, xf, now),
+            (Drag::Brush, _) => paint_moves(app, ui, xf, pressure, now),
+            (Drag::Eraser, _) => paint_moves(app, ui, xf, None, now),
             (Drag::Marquee { cur: m, .. }, Some(c)) => *m = c,
             (Drag::Shape { start, cur: m }, Some(c)) => *m = constrain(app.tool, *start, c, shift),
             _ => {}
@@ -1190,6 +1212,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::widthtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p)));
     crate::gradient_tool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
     crate::shape_envelope::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning));
+    if app.brush_latch_state.is_some() {
+        let shown = app.s.stage_picture().state;
+        let on_screen = app.stage_cache.shown_state == Some(shown);
+        if on_screen || app.brush_latch_state != Some(shown) {
+            app.brush_latch.clear();
+            app.brush_latch_state = None;
+            app.brush_latch_erase = false;
+        }
+    }
     crate::brushtool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     crate::erasertool::draw_overlay(app, &painter, xf, pointer.filter(|p| canvas.contains(*p) && !panning && !paused));
     // After this frame's edits, so a drag on the path shows where it is now.
