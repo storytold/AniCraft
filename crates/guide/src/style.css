@@ -45,6 +45,26 @@ blockquote { margin: 1em 0; padding: 4px 16px; border-left: 3px solid var(--acce
 nav.pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 3em; padding-top: 12px; border-top: 1px solid var(--line); }
 nav.pager a[rel="next"] { margin-left: auto; text-align: right; }
 footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 20px; border-top: 1px solid var(--line); }
+/* Search (ADR 0096): the field in every page's header, the results on search.html. */
+header.top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+form.search { margin-left: auto; display: flex; align-items: center; gap: 8px; font-weight: 400; }
+form.search label { color: var(--muted); font-size: 0.9rem; }
+form.search input { font: inherit; font-size: 0.95rem; width: 18rem; max-width: 60vw; padding: 4px 10px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 4px; }
+form.search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+ol.results { list-style: none; padding: 0; margin: 1em 0; }
+ol.results li { margin: 0 0 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+ol.results a { display: block; text-decoration: none; }
+ol.results a:hover .hit-heading { text-decoration: underline; }
+.hit-heading { font-weight: 600; font-size: 1.05rem; }
+.hit-chapter { display: block; color: var(--muted); font-size: 0.85rem; }
+.hit-snippet { margin: 4px 0 0; font-size: 0.92rem; }
+mark { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }
+.hint { color: var(--muted); font-size: 0.88rem; }
+kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; background: var(--panel); }
+@media (forced-colors: active) {
+  mark { background: Highlight; color: HighlightText; }
+}
 @media (max-width: 800px) {
   .layout { display: block; }
   nav.toc { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -54,6 +74,6 @@ footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 2
   nav.toc a[aria-current="page"] { text-decoration: underline; }
 }
 @media print {
-  nav.toc, nav.pager, header.top, .skip { display: none; }
+  nav.toc, nav.pager, header.top, .skip, form.search { display: none; }
   main { max-width: none; }
 }

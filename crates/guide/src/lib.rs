@@ -77,6 +77,7 @@ pub const IMAGES: &[(&str, &[u8])] = &[
 ];
 
 const STYLE: &str = include_str!("style.css");
+const SEARCH_JS: &str = include_str!("search.js");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The stylesheet's path in the built book.
 pub const STYLESHEET: &str = "style.css";
@@ -211,38 +212,131 @@ fn root_prefix(file: &str) -> String {
     "../".repeat(file.matches('/').count())
 }
 
+/// What kind of page the chrome is around (the `data-page` the search script reads).
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Chapter,
+    Search,
+}
+
+/// The book's chrome around `main`: the header with the search field, the chapter list (with
+/// `current` marked) and the footer. `root` climbs from the page to the book's root.
+fn chrome(pages: &[Page], root: &str, title: &str, current: Option<usize>, main: &str, kind: Kind) -> String {
+    let mut toc = String::new();
+    for (i, p) in pages.iter().enumerate() {
+        let here = if Some(i) == current { " aria-current=\"page\"" } else { "" };
+        toc.push_str(&format!("<li><a href=\"{root}{}\"{here}>{}</a></li>\n", html_path(p.file), escape(&self::title(p.markdown))));
+    }
+    let (page, index, field) = match kind {
+        Kind::Chapter => ("chapter", String::new(), ""),
+        Kind::Search => ("search", format!("<script src=\"{root}{SEARCH_INDEX}\"></script>\n"), " aria-describedby=\"search-status\" aria-controls=\"results\""),
+    };
+    format!(
+        "<!doctype html>\n<html lang=\"en\" data-root=\"{root}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{t} · AniCraft User Guide</title>\n<link rel=\"stylesheet\" href=\"{root}{STYLESHEET}\">\n{index}</head>\n<body data-page=\"{page}\">\n\
+         <a class=\"skip\" href=\"#content\">Skip to the chapter</a>\n\
+         <header class=\"top\"><a href=\"{root}index.html\">AniCraft User Guide</a> <span class=\"version\">{VERSION}</span>\
+         <form class=\"search\" role=\"search\" action=\"{root}{SEARCH_PAGE}\" method=\"get\"><label for=\"q\">Search</label> \
+         <input id=\"q\" name=\"q\" type=\"search\" placeholder=\"Search the guide ( / )\" autocomplete=\"off\" spellcheck=\"false\"{field}></form></header>\n\
+         <div class=\"layout\">\n<nav class=\"toc\" aria-label=\"Chapters\">\n<ol>\n{toc}</ol>\n</nav>\n\
+         <main id=\"content\">\n{main}</main>\n</div>\n\
+         <footer>AniCraft {VERSION} · MIT OR Apache-2.0 · AniCraft is not affiliated with or endorsed by Adobe.</footer>\n\
+         <script src=\"{root}{SEARCH_SCRIPT}\"></script>\n</body>\n</html>\n",
+        t = escape(title),
+    )
+}
+
 /// A chapter as a complete HTML page, with the chapter list and previous / next links.
 pub fn render_page(pages: &[Page], at: usize) -> String {
     let Some(page) = pages.get(at) else { return String::new() };
     let root = root_prefix(page.file);
     let mut body = String::new();
     pulldown_cmark::html::push_html(&mut body, events(page.markdown).into_iter());
-    let title = title(page.markdown);
-    let mut toc = String::new();
-    for (i, p) in pages.iter().enumerate() {
-        let current = if i == at { " aria-current=\"page\"" } else { "" };
-        toc.push_str(&format!("<li><a href=\"{root}{}\"{current}>{}</a></li>\n", html_path(p.file), escape(&self::title(p.markdown))));
-    }
     let link = |p: Option<&Page>, rel: &str, word: &str| {
         p.map_or_else(String::new, |p| format!("<a rel=\"{rel}\" href=\"{root}{}\">{word}: {}</a>", html_path(p.file), escape(&self::title(p.markdown))))
     };
     let prev = link(at.checked_sub(1).and_then(|i| pages.get(i)), "prev", "Previous");
     let next = link(pages.get(at + 1), "next", "Next");
+    let main = format!("{body}<nav class=\"pager\" aria-label=\"Previous and next chapters\">{prev}{next}</nav>\n");
+    chrome(pages, &root, &title(page.markdown), Some(at), &main, Kind::Chapter)
+}
+
+/// The search page (ADR 0096): the field in its header searches as you type, and the results
+/// are links with their chapter and a passage (`search.js`, over `search-index.js`).
+pub fn render_search_page(pages: &[Page]) -> String {
+    let main = "<h1>Search</h1>\n\
+        <p id=\"search-status\" role=\"status\" aria-live=\"polite\">Type a word or two to search the guide.</p>\n\
+        <noscript><p>Search needs JavaScript in this browser. Every chapter is in the list beside this page.</p></noscript>\n\
+        <ol id=\"results\" class=\"results\" aria-label=\"Search results\"></ol>\n\
+        <p class=\"hint\">Every word you type must match. <kbd>↓</kbd> and <kbd>↑</kbd> move through the results, <kbd>Enter</kbd> opens the first one, \
+        <kbd>Esc</kbd> clears the search, and <kbd>/</kbd> brings you back to the search field from any page.</p>\n";
+    chrome(pages, "", "Search", None, main, Kind::Search)
+}
+
+/// A page that sends the browser on to `target` (a page of the book with its anchor). Opening a
+/// `file://` page at an anchor loses the anchor on some systems, so context help opens this.
+pub fn redirect_page(target: &str) -> String {
+    let t = escape(target);
     format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{t} · AniCraft User Guide</title>\n<link rel=\"stylesheet\" href=\"{root}{STYLESHEET}\">\n</head>\n<body>\n\
-         <a class=\"skip\" href=\"#content\">Skip to the chapter</a>\n\
-         <header class=\"top\"><a href=\"{root}index.html\">AniCraft User Guide</a> <span class=\"version\">{VERSION}</span></header>\n\
-         <div class=\"layout\">\n<nav class=\"toc\" aria-label=\"Chapters\">\n<ol>\n{toc}</ol>\n</nav>\n\
-         <main id=\"content\">\n{body}<nav class=\"pager\" aria-label=\"Previous and next chapters\">{prev}{next}</nav>\n</main>\n</div>\n\
-         <footer>AniCraft {VERSION} · MIT OR Apache-2.0 · AniCraft is not affiliated with or endorsed by Adobe.</footer>\n</body>\n</html>\n",
-        t = escape(&title),
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"refresh\" content=\"0; url={t}\">\n\
+         <title>AniCraft User Guide</title>\n</head>\n<body>\n<p><a href=\"{t}\">Open the AniCraft User Guide</a></p>\n</body>\n</html>\n"
     )
 }
 
-/// The whole book: one HTML page per chapter, the stylesheet and the pictures.
+/// The search page, its script and its index in the built book (ADR 0096).
+pub const SEARCH_PAGE: &str = "search.html";
+pub const SEARCH_SCRIPT: &str = "search.js";
+pub const SEARCH_INDEX: &str = "search-index.js";
+/// The page context help writes beside the book and opens ([`redirect_page`]).
+pub const HELP_PAGE: &str = "help.html";
+
+/// A place in the book written as a chapter link (`timeline.md#onion-skin`) as the page to open
+/// (`timeline.html#onion-skin`).
+pub fn target_html(target: &str) -> String {
+    rewrite_link(target)
+}
+
+/// The heading a chapter link names (`timeline.md#onion-skin` → "Onion skin"; a page alone, its
+/// title), or `None` when it names nothing in the book.
+pub fn heading_of(pages: &[Page], target: &str) -> Option<String> {
+    let (file, anchor) = target.split_once('#').map_or((target, None), |(f, a)| (f, Some(a)));
+    let at = pages.iter().position(|p| p.file == file)?;
+    let page = pages.get(at)?;
+    match anchor {
+        None => Some(title(page.markdown)),
+        Some(a) => search::sections(std::slice::from_ref(page)).into_iter().find(|s| s.anchor == a).map(|s| s.heading),
+    }
+}
+
+/// Every place in `targets` (chapter links: `file.md` or `file.md#anchor`) that isn't a page
+/// and heading of the book. Context help's map is checked with this, as the chapters' own links
+/// are checked by [`check`].
+pub fn check_targets(pages: &[Page], targets: &[&str]) -> Vec<String> {
+    let scans: BTreeMap<&str, Scan> = pages.iter().map(|p| (p.file, scan(p.markdown))).collect();
+    let mut problems = Vec::new();
+    for t in targets {
+        let (file, anchor) = t.split_once('#').map_or((*t, None), |(f, a)| (f, Some(a)));
+        match scans.get(file) {
+            None => problems.push(format!("{t}: {file} is not a page of the book")),
+            Some(s) => {
+                if let Some(a) = anchor
+                    && !s.anchors.contains(a)
+                {
+                    problems.push(format!("{t}: {file} has no heading #{a}"));
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// The whole book: one HTML page per chapter, the search page with its script and index, the
+/// stylesheet and the pictures.
 pub fn site() -> Vec<SiteFile> {
     let mut out: Vec<SiteFile> = (0..PAGES.len()).filter_map(|i| PAGES.get(i).map(|p| SiteFile { path: html_path(p.file), bytes: render_page(PAGES, i).into_bytes() })).collect();
+    out.push(SiteFile { path: SEARCH_PAGE.to_string(), bytes: render_search_page(PAGES).into_bytes() });
+    out.push(SiteFile { path: SEARCH_SCRIPT.to_string(), bytes: SEARCH_JS.as_bytes().to_vec() });
+    out.push(SiteFile { path: SEARCH_INDEX.to_string(), bytes: search::index_js(PAGES).into_bytes() });
     out.push(SiteFile { path: STYLESHEET.to_string(), bytes: STYLE.as_bytes().to_vec() });
     out.extend(IMAGES.iter().map(|(path, bytes)| SiteFile { path: (*path).to_string(), bytes: bytes.to_vec() }));
     out
@@ -384,6 +478,8 @@ pub fn check(pages: &[Page], images: &[&str]) -> Vec<String> {
     }
     problems
 }
+
+pub mod search;
 
 #[cfg(test)]
 mod tests;
