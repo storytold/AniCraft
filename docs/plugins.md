@@ -44,6 +44,12 @@ anicraft-cli exec --sample plugin.run '{"id":"org.anicraft.star-field","params":
     --plugins examples/plugins/dist --save stars.anicraft
 ```
 
+## Saved commands share the rule
+
+A saved command (ADR 0097, History › Save As Command) may call exactly the commands a plug-in
+may (`plugin_may_call`), and no `macro.*` command. Plug-ins may not call any `macro.*` command
+either, so the two can never call each other.
+
 ## The sandbox
 
 The host is [`wasmi`](https://github.com/wasmi-labs/wasmi), a pure-Rust WebAssembly interpreter

@@ -43,6 +43,11 @@ with every release, and `anicraft_commands` lets it find what it needs. Frames i
 0-based, as everywhere in the engine (the CLI's own `--frame` flags are 1-based, as in the
 timeline).
 
+Saved commands (ADR 0097) run through `anicraft_run` too: `macro.run` with `{"path": …}` (a
+saved command's file) or `{"steps": [{"cmd", "params"}]}` runs the steps as one undo step, and
+unlike `anicraft_run_script` a failing step leaves the document as it was. `macro.history` and
+`macro.save` turn the session's undo steps into a saved command.
+
 ## Safety
 
 * Everything runs through the engine's commands, so params are checked and every edit can be
