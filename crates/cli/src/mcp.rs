@@ -164,7 +164,7 @@ fn call_tool(s: &mut Session, name: &str, args: &Value) -> Result<Value, String>
             json!({
                 "content": [
                     {"type": "image", "data": anicraft_doc::base64_encode(&png), "mimeType": "image/png"},
-                    {"type": "text", "text": format!("Frame {frame} of scene {} at {:.0}% ({}Ã—{} stage).", s.scene, scale * 100.0, stage.width, stage.height)}
+                    {"type": "text", "text": format!("Frame {frame} of scene {} at {:.0}% ({}×{} stage).", s.scene, scale * 100.0, stage.width, stage.height)}
                 ],
                 "isError": false
             })
@@ -297,9 +297,16 @@ mod tests {
     fn render_returns_a_png_picture() {
         let mut s = Session::new(anicraft_doc::sample::demo());
         let r = tool(&mut s, "anicraft_render", json!({"frame": 3, "scale": 0.25}));
+        assert_eq!(r["isError"], false);
+        assert_eq!(r["content"].as_array().unwrap().len(), 2);
+        assert_eq!(r["content"][1]["type"], "text");
+        assert_eq!(r["content"][1]["text"], "Frame 3 of scene 0 at 25% (1280×720 stage).");
         assert_eq!(r["content"][0]["type"], "image");
         assert_eq!(r["content"][0]["mimeType"], "image/png");
         assert!(r["content"][0]["data"].as_str().unwrap().starts_with("iVBORw0KGgo"), "base64 of the PNG signature");
+        let png = anicraft_doc::base64_decode(r["content"][0]["data"].as_str().unwrap()).unwrap();
+        let pixels = anicraft_doc::decode_png(&png).unwrap();
+        assert_eq!((pixels.width, pixels.height), (320, 180));
         assert_eq!(tool(&mut s, "anicraft_render", json!({"frame": 1_000_000}))["isError"], true);
         assert_eq!(call(&mut s, 7, "tools/call", json!({"name": "anicraft_render", "arguments": {"scale": -1}}))["error"]["code"], -32602);
     }
