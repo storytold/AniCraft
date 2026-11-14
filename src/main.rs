@@ -41,6 +41,7 @@ mod camera_tool;
 mod convert_symbol;
 mod layer_depth;
 mod layer_props;
+mod desktop_ui;
 mod dialogs;
 mod dock;
 mod dock_float;

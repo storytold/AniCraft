@@ -372,6 +372,8 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
     let sys = app.system_fonts.clone();
     let (bundled_ui, bundled_mono) = crate::theme::bundled_names();
     let mut reset_confirms = false;
+    let mut about_act: Option<crate::desktop_ui::Act> = None;
+    let to_about = std::mem::take(&mut app.prefs_to_about);
     let title = if crate::platform::OS == crate::platform::Os::Mac { tr!("Settings") } else { tr!("Preferences") };
     let shown = egui::Window::new(title)
         // An id of its own: the window keeps its place when the language changes.
@@ -612,6 +614,15 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                     });
                 });
 
+                // Where this copy keeps its things, portable or installed, and an AppImage's
+                // applications menu entry (ADR 0094).
+                let (head, _) = crate::theme::section_with_header(ui, "prefs_about", Section::Rule, tr!("About"), None, |ui| {
+                    about_act = crate::desktop_ui::about(app, ui, LW);
+                });
+                if to_about {
+                    head.scroll_to_me(Some(egui::Align::TOP));
+                }
+
             });
             ui.separator();
             ui.label(text(Type::Caption, tr!("{os} · settings stored in {place}", os = crate::platform::OS.name(), place = crate::platform::settings_place())));
@@ -619,6 +630,9 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
     a11y::name_title_bar(&shown, title);
     if reset_confirms {
         app.skip_confirm.clear();
+    }
+    if let Some(a) = about_act {
+        crate::desktop_ui::apply(app, a);
     }
     if p != app.prefs {
         app.set_prefs(ctx, p);
