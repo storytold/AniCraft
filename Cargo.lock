@@ -1192,7 +1192,7 @@ dependencies = [
 [[package]]
 name = "craft-xfl"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=545155124f2c6a416b69207676e929331a2d912b#545155124f2c6a416b69207676e929331a2d912b"
+source = "git+https://github.com/storytold/craft-libs?rev=427fa158995128c5af5847274ededa4975362ccf#427fa158995128c5af5847274ededa4975362ccf"
 dependencies = [
  "miniz_oxide 0.8.9",
  "thiserror 2.0.21",
