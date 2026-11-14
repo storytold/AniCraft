@@ -1144,6 +1144,8 @@ mod tests_bone_spring;
 #[cfg(test)]
 mod tests_shape_bone;
 #[cfg(test)]
+mod tests_shape_weights;
+#[cfg(test)]
 mod tests_warp;
 #[cfg(test)]
 mod tests_filter;

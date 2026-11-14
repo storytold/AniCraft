@@ -143,7 +143,7 @@ impl Tool {
             Tool::Eraser => tr_noop!("Drag to erase lines and fills drawn with Object Drawing off (drawing objects and symbols are kept). [ and ] change the size; the options set the shape and erase mode, and the Faucet deletes a whole fill or line with a click. Double-click the tool to erase everything on the stage."),
             Tool::Width => tr_noop!("Hover a stroke to see its width points. Drag a point's handle to widen or narrow the stroke there (Alt: one side only), drag its dot to slide it along, or drag anywhere on the stroke to add a point. Click a point and press Delete to remove it."),
             Tool::Bone => tr_noop!("Drag from one symbol instance to another to join them with a bone (they move to an armature layer), or drag inside a shape to draw a bone in it (the shape bends with its bones); start on a bone's end to continue the chain. Click a bone to select it. Pose the armature by dragging bones or instances with the Selection tool."),
-            Tool::Bind => tr_noop!("Shows the points of shapes with bones: a square follows one bone, a triangle several. Click a bone to see the points it moves (filled). Click a point, or drag a box around points, to make them follow only that bone; Shift shares the bone with the ones they follow, Ctrl takes them from it."),
+            Tool::Bind => tr_noop!("Shows the points of shapes with bones: a square follows one bone, a triangle several. Click a bone to see the points it moves (filled). Click a point, or drag a box around points, to make them follow only that bone; Shift shares the bone with the ones they follow, Ctrl takes them from it. Turn on Paint Weights in Properties to brush the bone's influence on, off or smooth, shown as a heat map."),
             Tool::Warp => tr_noop!("Click a shape or a bitmap to pin it (the first pin covers it with a warp mesh). Drag a pin to bend the artwork around the other pins; with one pin it moves. Click a pin and press Delete to remove it. A pin moved at another frame keys it, and pins tween."),
             Tool::GradientTransform => tr_noop!("Click a shape with a gradient or bitmap fill to show its handles. Drag the centre to move the fill, the square to change its width, the circle to change its size, the knob to rotate it (Shift: 15° steps) and, on a radial gradient, the triangle to move its focal point. A bitmap fill also has a square for its height and diamonds to skew it. Each drag is one undo step."),
             Tool::Transform => tr_noop!("Drag a corner or edge to scale (Shift keeps proportions, Alt scales from the centre), just outside a corner to rotate (Shift snaps 15°), inside to move."),
@@ -257,6 +257,8 @@ pub enum Drag {
     Bone { from: anicraft_engine::doc::ElementId, head: egui::Pos2, cur: egui::Pos2 },
     /// Bind tool (ADR 0071): a box from `start` to `cur` (stage) binding the points inside it.
     BindMarquee { start: egui::Pos2, cur: egui::Pos2 },
+    /// Bind tool, Paint Weights (ADR 0090): a brush stroke whose last dab was at `last` (stage).
+    BindPaint { last: egui::Pos2 },
     /// Posing by inverse kinematics: point `local` of the bone's instance follows the pointer.
     BonePose { bone: anicraft_engine::doc::BoneId, local: egui::Pos2 },
     /// Moving a whole armature by its root, from stage point `last` last frame.
@@ -448,6 +450,8 @@ pub struct App {
     pub open_fill_swatch: bool,
     /// The bone picked on the stage (ADR 0043; view state).
     pub bone_sel: Option<anicraft_engine::doc::BoneId>,
+    /// The Bind tool's options: Paint Weights, the brush, the focused point (ADR 0090).
+    pub bind: crate::bind_tool::BindOptions,
     /// The warp pin picked with the Warp tool, and the artwork it is on (ADR 0079; view state).
     pub warp_pin: Option<(anicraft_engine::doc::ElementId, anicraft_engine::doc::warp::PinId)>,
     /// Subselection: the selected motion path anchors, whose handles show (ADR 0030, 0038).
@@ -710,6 +714,7 @@ impl App {
             width_sel: None,
             open_fill_swatch: false,
             bone_sel: None,
+            bind: crate::bind_tool::BindOptions::default(),
             warp_pin: None,
             motion_anchors: Vec::new(),
             motion_drag: None,
@@ -2256,6 +2261,47 @@ impl App {
                 self.run("timeline.goto", json!({"frame": 0}));
                 self.bone_sel = bones.get(1).copied().map(anicraft_engine::doc::BoneId);
                 self.tool = Tool::Bind;
+            }
+            Some("shapeweights") => {
+                // Painted weights (ADR 0090): the tail of `shapebones` at rest, a point added to
+                // its outline with Subselection, and the second bone's weights mid-stroke with
+                // the Bind tool's brush, shown as a heat map.
+                self.run("layer.new", json!({"name": "Tail"}));
+                // A tapering tail with a point every 20 px along both edges, so the heat map reads.
+                let half = |x: f32| 40.0 * (1.0 - (x - 220.0) / 700.0) + 4.0;
+                let mid = |x: f32| 300.0 - 0.00004 * (x - 220.0) * (x - 220.0);
+                let xs: Vec<f32> = (0..=32).map(|i| 220.0 + 20.0 * i as f32).collect();
+                let mut d = String::new();
+                for (i, x) in xs.iter().enumerate() {
+                    d.push_str(&format!("{}{x} {} ", if i == 0 { "M" } else { "L" }, mid(*x) - half(*x)));
+                }
+                for x in xs.iter().rev() {
+                    d.push_str(&format!("L{x} {} ", mid(*x) + half(*x)));
+                }
+                d.push('Z');
+                let id = |v: Option<Value>, k: &str| v.and_then(|v| v[k].as_u64()).unwrap_or(0);
+                let shape = id(self.run("draw.path", json!({"d": d, "fill": "#e8833a", "stroke": "#4a2c14", "stroke_width": 3, "object": true})), "element");
+                self.run("timeline.insert_frame", json!({"frame": 23}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                let mut bone = id(self.run("bone.add_in_shape", json!({"shape": shape, "head": [222.0, mid(222.0)], "tail": [380.0, mid(380.0)]})), "bone");
+                let mut bones = vec![bone];
+                for x in [540.0, 700.0, 850.0] {
+                    bone = id(self.run("bone.add_in_shape", json!({"parent": bone, "tail": [x, mid(x)]})), "bone");
+                    bones.push(bone);
+                }
+                for (b, z) in bones.iter().zip([3, 10, 14, 18]) {
+                    self.run("bone.pose", json!({"bone": b, "angle": z, "frame": 23}));
+                }
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.run("path.add_point", json!({"id": shape, "x": 470.0, "y": mid(470.0) - half(470.0), "slop": 8}));
+                let b2 = bones.get(1).copied().unwrap_or(0);
+                self.bone_sel = Some(anicraft_engine::doc::BoneId(b2));
+                self.tool = Tool::Bind;
+                self.bind = crate::bind_tool::BindOptions { paint: true, radius: 55.0, strength: 35.0, point: Some(14), preview: Some(anicraft_engine::geom::Vec2::new(500.0, mid(500.0) - 20.0)), ..Default::default() };
+                // A stroke along the top edge, still under way.
+                self.s.begin_gesture(tr_noop!("Paint Weights"));
+                let at: Vec<[f32; 2]> = (0..25).map(|i| 300.0 + 8.0 * i as f32).map(|x| [x, mid(x) - 20.0]).collect();
+                self.run("bone.paint_weights", json!({"bone": b2, "at": at, "radius": 55, "strength": 35}));
             }
             Some("tlwide") => {
                 // Zoomed in: wide frames, playhead on frame 1 and frame 4.

@@ -2121,6 +2121,7 @@ fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId
         row(ui, tr!("Points"), |ui| {
             ui.label(text(Type::Data, format!("{mine} / {total}"))).on_hover_text(tr!("How many of the shape's points this bone moves. Adjust them with the Bind tool"));
         });
+        bind_props(app, ui, id, &layer, total);
     }
     ui.horizontal_wrapped(|ui| {
         if skin.is_some() {
@@ -2137,6 +2138,65 @@ fn bone_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId
         }
     });
     ui.label(text(Type::Caption, if skin.is_some() { tr!("Drag bones with the Selection tool to bend the shape; a pose at another frame keys it, and poses tween.") } else { tr!("Drag bones or instances with the Selection tool to pose; a pose at another frame keys it, and poses tween.") }));
+}
+
+/// A shape bone's weights (ADR 0090): with the Bind tool, Paint Weights and its brush; always, the
+/// focused point's share of the bone as a number (keyboard users edit weights here) and the bones
+/// the point follows.
+fn bind_props(app: &mut App, ui: &mut egui::Ui, id: anicraft_engine::doc::BoneId, layer: &anicraft_engine::doc::Layer, total: usize) {
+    use crate::bind_tool::{RADIUS_MAX, RADIUS_MIN, brush_label};
+    use anicraft_engine::doc::weights::Brush;
+    if app.tool == Tool::Bind {
+        let keys = [app.keymap.primary("view.brush_smaller"), app.keymap.primary("view.brush_larger")].into_iter().flatten().map(crate::platform::shortcut_label).collect::<Vec<_>>().join(" / ");
+        let o = &mut app.bind;
+        row_prose(ui, tr!("Weights"), |ui| {
+            crate::theme::checkbox(ui, &mut o.paint, tr!("Paint Weights")).on_hover_text(tr!("Drag over the shape to brush this bone's influence onto its points, shown as a heat map: blue none, red all. Off: click or box points to bind them"));
+        });
+        if o.paint {
+            row(ui, tr!("Brush"), |ui| {
+                for b in [Brush::Add, Brush::Subtract, Brush::Smooth] {
+                    let (label, hint) = brush_label(b);
+                    ui.selectable_value(&mut o.brush, b, crate::i18n::t(label)).on_hover_text(crate::i18n::t(hint));
+                }
+            });
+            row(ui, tr!("Size"), |ui| {
+                let r = ui.add(egui::DragValue::new(&mut o.radius).suffix(" px").speed(0.25).range(RADIUS_MIN..=RADIUS_MAX).max_decimals(1)).named(tr!("Weight brush size"));
+                if !keys.is_empty() {
+                    r.on_hover_text(tr!("The brush's radius on the stage ({keys})", keys = keys));
+                }
+            });
+            row(ui, tr!("Strength"), |ui| {
+                ui.add(egui::DragValue::new(&mut o.strength).speed(0.5).range(1.0..=100.0).max_decimals(0)).named(tr!("Weight brush strength")).on_hover_text(tr!("How much one dab changes the weights at the brush's centre, 1 to 100; it fades to nothing at the rim"));
+            });
+        }
+    }
+    if total == 0 {
+        return;
+    }
+    let point = app.bind.point.unwrap_or(0).min(total - 1);
+    let mut shown = point + 1;
+    row(ui, tr!("Point"), |ui| {
+        let r = ui.add(egui::DragValue::new(&mut shown).speed(0.1).range(1..=total)).named(tr!("Focused point")).on_hover_text(tr!("The point whose weights show below (ringed on the stage). Click one with the Bind tool, or type its number"));
+        if r.changed() {
+            app.bind.point = Some(shown.saturating_sub(1).min(total - 1));
+        }
+    });
+    let arm = layer.armature.as_ref();
+    let binding = arm.and_then(|a| a.skin.as_ref()).and_then(|k| k.points.get(point)).cloned().unwrap_or_default();
+    let mut w = binding.weight(id) * 100.0;
+    row(ui, tr!("Weight"), |ui| {
+        let r = ui.add(egui::DragValue::new(&mut w).suffix(" %").speed(0.5).range(0.0..=100.0).max_decimals(1)).named(tr!("Bone weight at the point"));
+        if r.on_hover_text(tr!("How much this bone moves the point, 0 to 100 %; the point's other bones share the rest")).changed() {
+            app.bind.point = Some(point);
+            live(app, tr_noop!("Set Point Weight"), "bone.set_weight", json!({"bone": id.0, "points": [point], "weight": w}));
+        }
+    });
+    let name = |b: anicraft_engine::doc::BoneId| arm.and_then(|a| a.bone(b)).map(|x| x.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("#{}", b.0));
+    // Names and numbers are data; the note for an unbound point is prose.
+    let follows = if binding.bones.is_empty() { text(Type::Body, tr!("No bone: the point stays where it was drawn")) } else { text(Type::Data, binding.bones.iter().map(|i| format!("{} {:.0} %", name(i.0), i.1 * 100.0)).collect::<Vec<_>>().join(" · ")) };
+    row(ui, tr!("Follows"), |ui| {
+        ui.label(follows).on_hover_text(tr!("The bones that move the point, and their shares"));
+    });
 }
 
 fn document_props(app: &mut App, ui: &mut egui::Ui) {

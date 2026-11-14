@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* **Shape armatures, second slice: painted weights and reshaping** (ADR 0090, M7).
+  * The **Bind** tool's **Paint Weights** (Properties › Bone) brushes a bone's influence onto
+    the points of its shape: **Add**, **Subtract** or **Smooth**, with a size (`[` and `]`)
+    and a strength, fading to the brush's rim. The bone's share shows live as a heat map on the
+    outline and its points, blue (none) to red (all). Each point's weights always add up to
+    100 %, painted points stay as painted when bones are added, and a stroke is one undo step.
+  * **Weights as numbers**: Properties › Bone shows a point's share of the bone as a field to
+    type in, and every bone the point follows. Click a point or type its number.
+  * **Reshaping a shape with bones**: at the rest pose, Subselection moves, adds, deletes and
+    converts its points. The bones keep their binding: new points blend their neighbours'
+    weights, deleted ones drop theirs, and every pose bends the new outline.
+  * Headless: `bone.paint_weights`, `bone.set_weight`; the `path.*` point commands reshape a
+    bound shape at rest.
 * **Filters, second slice: order, on/off, copy and paste, presets** (ADR 0091, M5).
   * **Reorder filters** in Properties › Filters: drag a filter by its grip, or focus the grip
     and press Alt+Up/Alt+Down, or right-click for Move Up/Down. The order changes the picture

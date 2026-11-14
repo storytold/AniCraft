@@ -381,6 +381,18 @@ mod tests {
         assert_eq!((score.role(), score.value()), (Role::Label, Some("Hello, Ada Lovelace!")));
     }
 
+    /// Painted weights (ADR 0090) are reachable without a pointer: the brush and a point's weight
+    /// are named fields, the weight a number to type.
+    #[test]
+    fn shape_weights_are_named_numeric_fields() {
+        let (t, _, _) = tree(|a, _| a.open_panel(Some("shapeweights")));
+        for n in ["Paint Weights", "Weight brush size", "Weight brush strength", "Focused point", "Bone weight at the point"] {
+            assert!(t.nodes.iter().any(|(_, x)| x.label() == Some(n)), "no node named {n}");
+        }
+        let w = t.nodes.iter().map(|(_, x)| x).find(|x| x.label() == Some("Bone weight at the point")).expect("the weight field");
+        assert!(matches!(w.role(), Role::SpinButton | Role::Slider | Role::TextInput), "{:?}", w.role());
+    }
+
     /// The layer footer (after #265 cut "Delete" short): icon buttons only, each named, side
     /// by side inside the layer column at the default window size, none clipped or overlapping.
     #[test]
@@ -414,7 +426,7 @@ mod tests {
         for tool in [Tool::Bone, Tool::Bind, Tool::Warp, Tool::Rect, Tool::Star, Tool::Text, Tool::Pencil, Tool::Brush, Tool::PaintBrush, Tool::Eraser, Tool::PaintBucket, Tool::InkBottle, Tool::Eyedropper, Tool::Pen] {
             found.extend(check(&format!("{tool:?} tool"), |a, _| a.tool = tool));
         }
-        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "springbones", "shapebones", "warp", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple", "library", "librarymenu", "edittransform", "onionsymbol", "layerprops", "frameview", "layercolour", "timelinepolish", "convert", "mixed", "bitmap", "nineslice", "nineslicedit", "find", "explorer", "publish", "publishreport", "publishanim", "start", "drop", "droplibrary", "testmovie", "testmovieinside", "templates", "savetemplate", "droptimeline", "textfields", "testtext", "softmask", "pathtext", "gradient", "gradientbucket", "swatches", "swatchpanel", "brushlibrary", "brushcurve", "paintbrush"] {
+        for panel in ["select", "motion", "motionspan", "motionpath", "motionpoints", "motionedit", "motionpins", "motionpinsspan", "rawsub", "camera", "cameraview", "bones", "springbones", "shapebones", "shapeweights", "warp", "sound", "envelope", "prefs", "shortcuts", "palette", "about", "files", "licenses", "confirm", "recovery", "frames", "actions", "script", "scriptproblems", "testscript", "onion", "onionmenu", "editmultiple", "library", "librarymenu", "edittransform", "onionsymbol", "layerprops", "frameview", "layercolour", "timelinepolish", "convert", "mixed", "bitmap", "nineslice", "nineslicedit", "find", "explorer", "publish", "publishreport", "publishanim", "start", "drop", "droplibrary", "testmovie", "testmovieinside", "templates", "savetemplate", "droptimeline", "textfields", "testtext", "softmask", "pathtext", "gradient", "gradientbucket", "swatches", "swatchpanel", "brushlibrary", "brushcurve", "paintbrush"] {
             found.extend(check(panel, |a, _| a.open_panel(Some(panel))));
         }
         // Every panel in front where it docks, and floating (ADR 0075); the other workspaces.

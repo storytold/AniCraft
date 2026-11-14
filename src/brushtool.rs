@@ -163,6 +163,11 @@ pub fn resize(app: &mut App, larger: bool) {
             app.eraser.size = step_size(app.eraser.size, larger);
             app.status_ok(tr!("Eraser size {size} px", size = app.eraser.size));
         }
+        // Painting weights (ADR 0090).
+        Tool::Bind if app.bind.paint => {
+            app.bind.radius = step_size(app.bind.radius, larger).clamp(crate::bind_tool::RADIUS_MIN, crate::bind_tool::RADIUS_MAX);
+            app.status_ok(tr!("Brush size {size} px", size = app.bind.radius));
+        }
         _ => {}
     }
 }

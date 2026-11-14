@@ -11,6 +11,7 @@ pub mod aids;
 pub mod armature;
 pub mod spring;
 pub mod skin;
+pub mod weights;
 pub mod warp;
 mod bitmap;
 mod color_effect;
