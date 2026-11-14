@@ -99,15 +99,16 @@ impl Affine {
     pub fn decompose(&self) -> Decomposed {
         let [a, b, c, d, e, f] = self.m;
         let sx = (a * a + b * b).sqrt();
-        let rotation = b.atan2(a);
         let det = a * d - b * c;
-        let (sy, skew) = if sx > 1e-12 {
+        let (rotation, sy, skew) = if sx > 1e-12 {
             let sy = det / sx;
             // col1 · col2 = sx · sy · skew
             let skew = if det.abs() > 1e-12 { (a * c + b * d) / det } else { 0.0 };
-            (sy, skew)
+            (b.atan2(a), sy, skew)
         } else {
-            ((c * c + d * d).sqrt(), 0.0)
+            // Degenerate first column: take the rotation from the second column, which
+            // `compose` maps to (-sin r, cos r) · sy.
+            ((-c).atan2(d), (c * c + d * d).sqrt(), 0.0)
         };
         Decomposed { tx: e, ty: f, sx, sy, rotation, skew }
     }
@@ -169,6 +170,14 @@ mod tests {
 
     fn close(a: &Affine, b: &Affine) -> bool {
         a.m.iter().zip(b.m.iter()).all(|(x, y)| (x - y).abs() < 1e-4)
+    }
+
+    #[test]
+    fn decompose_roundtrip_zero_sx() {
+        for m in [[0.0, 0.0, -1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 3.0, 4.0], [0.0, 0.0, 2.0, -3.0, 1.0, 1.0]] {
+            let m = Affine { m };
+            assert!(close(&m.decompose().compose(), &m), "{:?}", m.decompose().compose());
+        }
     }
 
     #[test]
