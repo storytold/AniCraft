@@ -71,6 +71,9 @@ mod plugin_export_ui;
 mod plugin_fixture_tests;
 #[cfg(test)]
 mod plugin_ui_tests;
+#[cfg(test)]
+mod macros_ui_tests;
+mod macros_ui;
 mod plugins_ui;
 mod prefs;
 mod recent;

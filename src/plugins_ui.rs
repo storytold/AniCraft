@@ -141,6 +141,8 @@ pub fn menu(app: &mut App, ui: &mut egui::Ui, cmds: &[CommandSpec], item: impl F
     for spec in cmds.iter().filter(|c| c.menu == "Commands") {
         item(app, ui, spec);
     }
+    // Saved commands last, as Animate lists them (ADR 0097).
+    crate::macros_ui::menu_items(app, ui);
 }
 
 fn hex_rgb(s: &str) -> [u8; 3] {

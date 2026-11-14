@@ -579,6 +579,8 @@ pub struct App {
     pub thumbs: crate::recent::Thumbs,
     /// Templates: their pictures, the user's list and the Save as Template dialog (ADR 0065).
     pub templates: crate::templates::Templates,
+    /// Saved commands (ADR 0097): the folder's list, the History panel's picks, their windows.
+    pub macros: crate::macros_ui::Macros,
 }
 
 /// How often (seconds) the system's contrast and light or dark setting are asked again (ADR 0064).
@@ -797,6 +799,7 @@ impl App {
             drop: Default::default(),
             thumbs: Default::default(),
             templates: Default::default(),
+            macros: Default::default(),
         };
         app.apply_prefs(ctx);
         app.decode_sounds();
@@ -805,6 +808,7 @@ impl App {
             app.status_err(e);
         }
         crate::plugins_ui::load_at_start(&mut app);
+        crate::macros_ui::rescan(&mut app);
         #[cfg(not(target_arch = "wasm32"))]
         crate::desktop_ui::at_start(&mut app);
         app
@@ -901,8 +905,7 @@ impl App {
         ctx.set_zoom_factor(self.prefs.ui_scale);
         theme::apply_palette(ctx, self.prefs.palette(self.system_look));
         crate::onion::refresh_colors(self);
-        self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
-        self.shortcuts = self.keymap.table();
+        self.refresh_keymap();
         let wants_system = [&self.prefs.ui_font, &self.prefs.data_font].iter().any(|f| matches!(f, prefs::FontChoice::System(_)));
         if wants_system && self.system_fonts.is_none() {
             self.scan_system_fonts();
@@ -963,6 +966,12 @@ impl App {
 
     /// Changes preferences: applies them live and saves them.
     /// Writes the preferences as they are (a setting changed in place, such as the volume).
+    /// The shortcut map again, from the preferences and the saved commands listed (ADR 0097).
+    pub fn refresh_keymap(&mut self) {
+        self.keymap = keymap::Keymap::new(&self.prefs.shortcuts);
+        self.shortcuts = self.keymap.table();
+    }
+
     pub fn save_prefs(&mut self) {
         if self.shot.is_none()
             && let Err(e) = self.prefs.save()
@@ -1139,6 +1148,37 @@ impl App {
             }
             Some("palette") => self.palette = Some(dialogs::Palette { query: "key".into(), selected: 0 }),
             Some("shortcuts") => self.show_shortcuts = true,
+            Some("savecommand") | Some("managecommands") => {
+                // Saved commands (ADR 0097): three edits on the sample's selection, picked in the
+                // History panel with Save As Command open; or a few saved commands, managed.
+                self.tool = Tool::Select;
+                self.run("edit.select_all", json!({}));
+                self.run("modify.rotate_cw", json!({}));
+                self.run("element.set_color_effect", json!({"style": "alpha", "alpha": 60}));
+                self.run("element.translate", json!({"dx": 24, "dy": -12}));
+                if !self.panel_visible(crate::dock::Panel::History) {
+                    self.toggle_panel(crate::dock::Panel::History);
+                }
+                let n = self.s.history_len();
+                for i in n.saturating_sub(3)..n {
+                    crate::macros_ui::pick(self, i, true, false);
+                }
+                if which == Some("savecommand") {
+                    crate::macros_ui::open_save(self);
+                    if let Some(d) = self.macros.save.as_mut() {
+                        d.name = "Turn, Fade and Nudge".into(); // i18n-exempt: a sample name a user would type
+                    }
+                } else if let Some(folder) = crate::macros_ui::folder(self) {
+                    let f = folder.display().to_string();
+                    for (name, steps) in [("Turn, Fade and Nudge", json!([n - 3, n - 2, n - 1])), ("Quarter Turn", json!([n - 3])), ("Fade to 60 %", json!([n - 2]))] {
+                        let _ = self.s.execute("macro.save", &json!({"folder": f, "name": name, "history": steps, "confirm": true}));
+                    }
+                    crate::macros_ui::clear_picks(self);
+                    let id = crate::keymap::macro_id("Quarter Turn");
+                    self.prefs.shortcuts.insert(id, vec!["Ctrl+Alt+R".into()]);
+                    crate::macros_ui::open_manage(self);
+                }
+            }
             Some("lastscene") => {
                 let last = self.s.doc.scenes.len().saturating_sub(1);
                 self.run("scene.select", json!({"scene": last}));
@@ -2638,7 +2678,14 @@ impl App {
 
     /// The single entry point for user-initiated commands: asks first when the engine says the
     /// command needs confirmation (ADR 0004), otherwise runs it.
-    pub fn request(&mut self, id: &str, params: Value) {
+    pub fn request(&mut self, id: &str, mut params: Value) {
+        // A saved command from a file goes into the user's commands folder (ADR 0097).
+        if id == "macro.import"
+            && params.get("folder").is_none()
+            && let (Some(o), Some(f)) = (params.as_object_mut(), crate::macros_ui::folder(self))
+        {
+            o.insert("folder".into(), json!(f.display().to_string()));
+        }
         if let Some(c) = self.s.confirmation(id, &params)
             && (c.irreversible || !self.skip_confirm.contains(id))
         {
@@ -2843,6 +2890,7 @@ impl App {
                 });
             }
             "plugin.run" | "plugin.install" | "plugin.remove" | "plugin.reload" => crate::plugins_ui::status(self, id, v),
+            id if id.starts_with("macro.") => crate::macros_ui::done(self, id, v),
             "timeline.remove_frame" => {
                 let n = v["removed"].as_u64().unwrap_or(1);
                 self.status_ok(if n == 1 { tr!("Removed frame — {undo} to undo", undo = self.undo_key()).to_string() } else { trn!("Removed {n} frame — {undo} to undo", "Removed {n} frames — {undo} to undo", n, undo = self.undo_key()) });
@@ -2931,6 +2979,16 @@ impl App {
             self.show_plugins = true;
             return;
         }
+        if id == "macro.list" {
+            // Commands › Manage Saved Commands (ADR 0097; headless, the command lists them).
+            crate::macros_ui::open_manage(self);
+            return;
+        }
+        if id == "macro.save" {
+            // Save As Command, for the steps picked in the History panel.
+            crate::macros_ui::open_save(self);
+            return;
+        }
         if id == "layer.set_properties" {
             // Modify › Timeline › Layer Properties: the dialog for the active layer.
             crate::layer_props::open(self, None);
@@ -2989,6 +3047,9 @@ impl App {
             "file.import_to_library" => Some((tr_noop!("Import to library (WAV, OGG or MP3 sound; PNG or JPEG image)"), "path", "sound.wav".to_string())),
             "file.import" => Some((tr_noop!("Import to stage (SVG, PNG or JPEG; WAV, OGG or MP3 onto a new layer)"), "path", "drawing.svg".to_string())),
             "plugin.install" => Some((tr_noop!("Install plug-in (.wasm file)"), "path", "plugin.wasm".to_string())),
+            // Saved commands (ADR 0097): run a file, or copy one into your commands.
+            "macro.run" => Some((tr_noop!("Run a saved command (a .json file)"), "path", "command.json".to_string())),
+            "macro.import" => Some((tr_noop!("Add a saved command (a .json file)"), "path", "command.json".to_string())),
             // A brush set (ADR 0068): your brushes as a small JSON file.
             "brush.preset_export" => Some((tr_noop!("Export your brushes (a brush set file)"), "path", "brushes.json".to_string())),
             "brush.preset_import" => Some((tr_noop!("Import brushes (a brush set file)"), "path", "brushes.json".to_string())),
@@ -3001,7 +3062,7 @@ impl App {
             _ => None,
         };
         if let Some((title, key, text)) = prompt {
-            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "brush.preset_export" | "brush.preset_import" | "filter.preset_export" | "filter.preset_import" | "swatch.export" | "swatch.import"));
+            let is_file = matches!(key, "path" | "dir") && (id.starts_with("file.") || matches!(id, "plugin.install" | "macro.run" | "macro.import" | "brush.preset_export" | "brush.preset_import" | "filter.preset_export" | "filter.preset_import" | "swatch.export" | "swatch.import"));
             if is_file && platform::WEB && platform::reads_file(id) {
                 // The browser's file picker (ADR 0036). The file arrives on a later frame
                 // (`open_picked`); a save or export asks for the download's name below.
@@ -3330,6 +3391,8 @@ impl App {
                 "view.brush_smaller" => crate::brushtool::resize(self, false),
                 "view.brush_larger" => crate::brushtool::resize(self, true),
                 id if id.starts_with("tool.") => tool = keymap::tool_for(id).or(tool),
+                // A saved command's own key (ADR 0097).
+                id if keymap::macro_name(id).is_some() => crate::macros_ui::run_saved(self, keymap::macro_name(id).unwrap_or("")),
                 _ => self.invoke(id),
             }
         }
@@ -3768,6 +3831,7 @@ impl App {
         crate::plugin_export_ui::show(self, &ctx);
         crate::dock_float::floating(self, &ctx);
         crate::workspaces_window::show(self, &ctx);
+        crate::macros_ui::show(self, &ctx);
         crate::find_panel::show(self, &ctx);
         crate::brush_panel::show(self, &ctx);
         crate::publish_panel::show(self, &ctx);

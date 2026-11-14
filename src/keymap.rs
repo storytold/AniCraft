@@ -10,7 +10,8 @@
 use crate::app::{Tool, VIEW_SHORTCUTS};
 use anicraft_engine::{SHORTCUT_ALIASES, commands};
 use egui::{Key, Modifiers};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Keys handled before the shortcut map, which the editor will not assign, and what for
 /// (English: translated where it is shown).
@@ -94,8 +95,56 @@ fn view_label(id: &str) -> &'static str {
     }
 }
 
+/// The start of a saved command's action id (ADR 0097): `macro:<its name>`.
+pub const MACRO_PREFIX: &str = "macro:";
+
+/// Most distinct saved command names the map ever binds in one run (see [`intern`]).
+const MAX_INTERNED: usize = 4096;
+
+thread_local! {
+    /// The saved commands that can carry a shortcut, as `(action id, name)`, in their order.
+    static MACROS: RefCell<Vec<(&'static str, &'static str)>> = const { RefCell::new(Vec::new()) };
+    static INTERNED: RefCell<BTreeSet<&'static str>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+/// `s` for the life of the program, each distinct string kept once. An action's id and label
+/// are `&'static str` everywhere the map is used; saved commands are the only actions named at
+/// run time, and a run meets a handful of their names, so keeping each one is the simple
+/// choice. Past [`MAX_INTERNED`] names a new one can't carry a shortcut until the next start.
+fn intern(s: &str) -> Option<&'static str> {
+    INTERNED.with(|set| {
+        let mut set = set.borrow_mut();
+        if let Some(kept) = set.get(s) {
+            return Some(*kept);
+        }
+        if set.len() >= MAX_INTERNED {
+            return None;
+        }
+        let kept: &'static str = Box::leak(s.to_string().into_boxed_str());
+        set.insert(kept);
+        Some(kept)
+    })
+}
+
+/// A saved command's action id.
+pub fn macro_id(name: &str) -> String {
+    format!("{MACRO_PREFIX}{name}")
+}
+
+/// The saved command an action id names.
+pub fn macro_name(id: &str) -> Option<&str> {
+    id.strip_prefix(MACRO_PREFIX)
+}
+
+/// The saved commands, in their order, as actions that can carry a shortcut (Manage Saved
+/// Commands sets them whenever the list changes; rebuild the [`Keymap`] after).
+pub fn set_macros<'a>(names: impl IntoIterator<Item = &'a str>) {
+    let list: Vec<(&'static str, &'static str)> = names.into_iter().filter_map(|n| Some((intern(&macro_id(n))?, intern(n)?))).collect();
+    MACROS.with(|m| *m.borrow_mut() = list);
+}
+
 /// Every action that can carry a shortcut: the menu commands, any command with a default key,
-/// the tools and the view keys.
+/// the tools, the view keys and the saved commands.
 pub fn actions() -> Vec<Action> {
     let mut v: Vec<Action> = commands()
         .into_iter()
@@ -120,6 +169,7 @@ pub fn actions() -> Vec<Action> {
         group: tr_noop!("View"),
         defaults: VIEW_SHORTCUTS.iter().filter(|(_, i)| *i == id).map(|(k, _)| *k).collect(),
     }));
+    MACROS.with(|m| v.extend(m.borrow().iter().map(|&(id, label)| Action { id, label, group: tr_noop!("Commands"), defaults: Vec::new() })));
     v
 }
 
@@ -192,11 +242,17 @@ pub struct Keymap {
 impl Keymap {
     pub fn new(overrides: &BTreeMap<String, Vec<String>>) -> Keymap {
         let actions = actions();
+        // A chord bound twice (a saved command's key in a hand-edited preferences file) stays
+        // with the action listed first.
+        let mut taken: BTreeSet<String> = BTreeSet::new();
         let keys = actions
             .iter()
-            .map(|a| match overrides.get(a.id) {
-                Some(user) => user.iter().filter_map(|k| normalize(k)).collect(),
-                None => a.defaults.iter().filter_map(|k| normalize(k)).collect(),
+            .map(|a| {
+                let ks: Vec<String> = match overrides.get(a.id) {
+                    Some(user) => user.iter().filter_map(|k| normalize(k)).collect(),
+                    None => a.defaults.iter().filter_map(|k| normalize(k)).collect(),
+                };
+                ks.into_iter().filter(|k| taken.insert(k.clone())).collect()
             })
             .collect();
         Keymap { actions, keys }
@@ -326,7 +382,9 @@ pub fn sanitize(overrides: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Ve
     let known = actions();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, keys) in overrides.into_iter().take(1_000) {
-        if !known.iter().any(|a| a.id == id) {
+        // A saved command's keys are kept while it isn't listed yet (they bind once it is).
+        let saved = macro_name(&id).is_some_and(|n| !n.is_empty() && n.chars().count() <= 64);
+        if !saved && !known.iter().any(|a| a.id == id) {
             continue;
         }
         let mut clean: Vec<String> = Vec::new();
