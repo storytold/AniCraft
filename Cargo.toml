@@ -27,6 +27,7 @@ anicraft-plugins = { path = "crates/plugins" }
 anicraft-audio = { path = "crates/audio" }
 anicraft-gpu = { path = "crates/gpu" }
 anicraft-guide = { path = "crates/guide" }
+anicraft-tablet = { path = "crates/tablet" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
@@ -108,6 +109,12 @@ serde_json.workspace = true
 web-time.workspace = true
 # The system's interface language, for the default language (ADR 0040; MIT OR Apache-2.0).
 sys-locale = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pen pressure on X11/Xwayland (src/pen.rs). Wayland gives a pen no input, so a pen on Wayland opens the window through Xwayland.
+anicraft-tablet.workspace = true
+# eframe doesn't re-export winit's `EventLoopBuilderExtX11`. Already in Cargo.lock (eframe); pinned exactly.
+winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The user guide, bundled for Help › User Guide (ADR 0069). The web build serves it as pages instead.

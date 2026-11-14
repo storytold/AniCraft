@@ -21,6 +21,7 @@
 // First, so its `tr!` macros are in scope in every module after it.
 #[macro_use]
 mod i18n;
+mod pen;
 mod a11y;
 mod actions_panel;
 mod aids_dialog;
@@ -139,10 +140,23 @@ struct Look {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look) -> eframe::Result {
-    let options = attempt.options(eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = attempt.options(eframe::NativeOptions {
         viewport: platform::viewport(egui::ViewportBuilder::default().with_title("AniCraft").with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0])),
         ..Default::default()
     });
+    // A pen on Wayland gets no input in a native window: open through Xwayland, and read the
+    // pen's pressure from XInput2 whenever the window is on X11 (pen.rs).
+    #[cfg(target_os = "linux")]
+    let on_x11 = {
+        let session_wayland = ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
+        let x11_asked = std::env::var("WINIT_UNIX_BACKEND").is_ok_and(|b| b.eq_ignore_ascii_case("x11"));
+        let force = pen::use_xwayland();
+        if force {
+            pen::force_x11(&mut options);
+        }
+        force || x11_asked || !session_wayland
+    };
     // The embedded interface font joins the text library before anything lays text out:
     // opening an Animate document from the command line lays its text out right here.
     anicraft_engine::text::Fonts::register(theme::embedded_fonts());
@@ -156,6 +170,8 @@ fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, op
         Box::new(move |cc| {
             // A document the system hands over while AniCraft is idle wakes it (ADR 0062).
             platform::wake_on_requests(&cc.egui_ctx);
+            #[cfg(target_os = "linux")]
+            pen::spawn(on_x11);
             startup::log_adapter(cc.wgpu_render_state.as_ref());
             let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);

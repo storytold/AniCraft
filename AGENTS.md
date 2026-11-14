@@ -12,6 +12,7 @@ crates/xml      L0  Bounded XML element reader shared by the importers (XFL, SVG
 crates/plugins  L0  Sandboxed WebAssembly plug-ins: wasmi host, ABI v1, limits, registry (ADR 0017)
 crates/audio    L0  Sound decoding (WAV, Ogg Vorbis, MP3), pure mixing and resampling, WAV, peaks (ADR 0020)
 crates/actions  L0  Timeline action IR: stop/play/goto, targets, button events, frame scripts (ADR 0024)
+crates/tablet   L0  Pen pressure, tilt and eraser end from XInput2 raw events on Linux X11/Xwayland (no unsafe)
 crates/guide    L0  The user guide (docs/guide) as a bundled static HTML book, with its link checks (ADR 0069)
 crates/doc      L1  Document model, easing, timeline evaluation, the interactive player, sample scene
 crates/text     L1  Fonts on this computer, shaping and line layout into outlines (ADR 0012)

@@ -225,6 +225,7 @@ dependencies = [
  "anicraft-gpu",
  "anicraft-guide",
  "anicraft-render",
+ "anicraft-tablet",
  "cpal",
  "craft-update",
  "eframe",
@@ -240,6 +241,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "winit",
  "winreg",
  "winresource",
 ]
@@ -374,6 +376,13 @@ dependencies = [
  "anicraft-text",
  "anicraft-xml",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "anicraft-tablet"
+version = "0.2.1"
+dependencies = [
+ "x11rb",
 ]
 
 [[package]]
