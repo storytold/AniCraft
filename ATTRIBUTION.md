@@ -61,6 +61,7 @@ here.
 |---|---|---|---|
 | Inter Regular | UI prose (primary) | The Inter Project Authors (Rasmus Andersson) | SIL OFL 1.1, shipped as `OFL-Inter.txt` |
 | JetBrains Mono Regular | UI data: timeline, readouts, values, shortcuts (primary) | The JetBrains Mono Project Authors | SIL OFL 1.1, shipped as `OFL-JetBrainsMono.txt` |
+| Noto Sans Georgian (variable) | Fallback face for Georgian (`Geor` in craft-fonts) | The Noto Project Authors | SIL OFL 1.1, shipped as `OFL-noto-sans-georgian.txt` |
 
 ### Optional build input: craft-i18n (not files in this repo)
 

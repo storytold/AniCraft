@@ -96,7 +96,7 @@ and a trailing `…`. Then open a pull request in craft-i18n. Follow its clean-r
 from the plain meaning of the English, never from another product's translated interface.
 
 A language is offered once craft-i18n has its `anicraft.tsv` and it is in `i18n::READY`
-(left-to-right Latin, Greek and Cyrillic scripts today).
+(left-to-right Latin, Greek and Cyrillic scripts today, and Georgian in builds with its craft-fonts face).
 
 ## Building with translations
 
@@ -118,7 +118,8 @@ shaping. So:
 | Script | Today |
 |---|---|
 | Latin, Greek, Cyrillic | Offered when a catalog exists. |
-| Chinese, Japanese, Korean, Georgian | Draw correctly, but need a font the app doesn't bundle (a craft-fonts face), then a `READY` entry. |
+| Georgian | Offered when a catalog exists and the build embedded a valid Noto Sans Georgian from craft-fonts (via `CRAFT_FONTS_DIR` or the nearby checkout `build.rs` discovers); hidden only when it did not (`i18n::ready_codes`). |
+| Chinese, Japanese, Korean | Draw correctly, but need a font the app doesn't bundle (a craft-fonts face), then a `READY` entry. |
 | Arabic, Hebrew, Persian, Urdu, Kurdish, Dhivehi | Not offered: right to left needs bidi and shaping in egui's text layout, and mirrored widgets. We follow upstream egui rather than fork it. |
 | Devanagari, Bengali, Tamil, Telugu, Thai, Lao | Not offered: they need shaping. |
 | Vietnamese | Not offered yet: needs a check that every fallback face has its letters. |

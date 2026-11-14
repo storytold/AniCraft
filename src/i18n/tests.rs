@@ -309,6 +309,37 @@ fn offered_languages_have_their_own_catalog_and_a_ready_script() {
 }
 
 #[test]
+fn georgian_is_offered_only_when_its_face_is_embedded() {
+    let ka = [("ka", "", "@id\tlanguage.name\tქართული\n")];
+    let offered = |face: bool| Languages::new(&ka, &ready_with(face)).0.list.iter().any(|l| l.code == "ka");
+    assert!(!offered(false), "no face, no Georgian");
+    assert!(offered(true));
+    // The real build agrees with its own face.
+    assert_eq!(ready_codes().contains(&"ka"), crate::theme::georgian_font().is_some());
+    // CRAFT_FONTS_REQUIRED=1 (release builds, CI with craft-fonts) makes a missing face a failure.
+    let face = crate::theme::georgian_font();
+    if std::env::var("CRAFT_FONTS_REQUIRED").is_ok_and(|v| v == "1") {
+        assert!(face.is_some(), "CRAFT_FONTS_REQUIRED=1 but this build embeds no valid NotoSansGeorgian.ttf (craft-fonts `Geor`)");
+    }
+    let Some(face) = face else {
+        println!("georgian face test: skipped, this build embeds no Georgian face");
+        return;
+    };
+    let letters: String = ('\u{10D0}'..='\u{10FA}').collect();
+    let fonts = anicraft_engine::text::Fonts::from_faces([face.to_vec()]);
+    let laid = fonts.layout(&letters, &anicraft_engine::text::Style::default()).expect("layout");
+    assert_eq!(laid.missing, 0, "the face lacks some of U+10D0..U+10FA");
+    // ... and through the Proportional family install_fonts builds. Not Monospace: epaint's
+    // has_glyph is a false negative there (the Georgian face is that chain's replacement-glyph face).
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx, None, None);
+    ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear(); // fonts apply at the start of a frame
+    let prop = egui::FontId::proportional(14.0);
+    assert!(ctx.fonts_mut(|f| f.has_glyphs(&prop, &letters)), "Proportional lacks Georgian letters");
+    println!("georgian face test: ran, {} letters covered", letters.chars().count());
+}
+
+#[test]
 fn lookups_fall_back_from_app_to_shared_to_base_language_to_english() {
     let l = fixture();
     let (de, pt_br, ru) = (1, 2, 3);

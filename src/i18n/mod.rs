@@ -39,10 +39,25 @@ pub const PSEUDO: &str = "pseudo";
 /// Languages the interface can be drawn in today: written left to right, in scripts the bundled
 /// faces cover and egui lays out a letter at a time (Latin, Greek, Cyrillic). A catalog for any
 /// other locale is embedded but not offered (docs/localisation.md › Scripts and direction).
-/// A regional variant (`es-mx`) is ready when its language is.
+/// A regional variant (`es-mx`) is ready when its language is. Georgian is not listed here: its
+/// face is not bundled, so [`ready_codes`] adds it only when the build embedded Noto Sans
+/// Georgian from craft-fonts.
 pub const READY: &[&str] = &[
     "az", "bg", "bs", "ca", "cs", "da", "de", "el", "es", "et", "fi", "fr", "gl", "hr", "hu", "id", "it", "kk", "lt", "lv", "nb", "nl", "pl", "pt", "pt-br", "ro", "ru", "sk", "sl", "sq", "sr", "sr-latn", "sv", "tr", "uk",
 ];
+
+/// [`READY`] plus the languages whose script needs a craft-fonts face this build embedded.
+pub fn ready_codes() -> Vec<&'static str> {
+    ready_with(crate::theme::georgian_font().is_some())
+}
+
+fn ready_with(georgian_face: bool) -> Vec<&'static str> {
+    let mut codes = READY.to_vec();
+    if georgian_face {
+        codes.push("ka");
+    }
+    codes
+}
 
 enum Kind {
     English,
@@ -177,7 +192,7 @@ impl Languages {
 static ENGLISH_LANGUAGE: Language = Language { code: String::new(), name: String::new(), kind: Kind::English };
 
 static LANGUAGES: LazyLock<Languages> = LazyLock::new(|| {
-    let (languages, problems) = Languages::new(CRAFT_I18N, READY);
+    let (languages, problems) = Languages::new(CRAFT_I18N, &ready_codes());
     for p in problems {
         eprintln!("interface catalog: {p} (shown in English)");
     }
