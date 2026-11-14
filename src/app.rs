@@ -1474,18 +1474,25 @@ impl App {
                 self.run("draw.rect", json!({"x": 640, "y": 500, "w": 300, "h": 180, "fill": "#f3d36b", "stroke": "#3d8bfd", "stroke_width": 6, "cap": "none", "join": "miter", "dash": [18, 8], "object": true}));
             }
             Some("filters") => {
-                // A movie clip with a bevel and a gradient glow, selected: Properties › Filters
-                // shows both (scrolled to the glow's ramp editor).
+                // A movie clip with a drop shadow switched off, a bevel and a gradient glow,
+                // selected, and a filter preset of your own: Properties › Filters shows the list
+                // with its grips and switches (ADR 0091), and the glow's ramp editor.
                 self.run("draw.rect", json!({"x": 960, "y": 470, "w": 200, "h": 130, "fill": "#e8553b", "stroke": null}));
                 self.run("modify.convert_to_symbol", json!({"name": "Badge"}));
                 self.run("symbol.set_kind", json!({"kind": "movie_clip"}));
                 self.run(
                     "element.set_filters",
                     json!({"filters": [
+                        {"type": "drop_shadow", "blur_x": 10, "blur_y": 10, "distance": 8, "enabled": false},
                         {"type": "bevel", "blur_x": 8, "blur_y": 8, "distance": 6, "strength": 1.2, "quality": 2},
                         {"type": "gradient_glow", "blur_x": 28, "blur_y": 28, "quality": 2, "distance": 0, "stops": [{"offset": 0, "color": "#ffffff00"}, {"offset": 0.55, "color": "#ffd36b"}, {"offset": 1, "color": "#ff4d3d"}]},
                     ]}),
                 );
+                self.run("filter.preset_save", json!({"name": "Warm badge"})); // i18n-exempt: a sample preset name
+                // Room for the whole list (this run only: screenshot runs never save the layout).
+                for p in [crate::dock::Panel::Align, crate::dock::Panel::Library, crate::dock::Panel::MovieExplorer, crate::dock::Panel::History] {
+                    self.dock.close(p);
+                }
             }
             Some("testmovieinside") => {
                 // Test Movie floating inside the editor (ADR 0062), as where there can't be a
