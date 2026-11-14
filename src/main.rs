@@ -150,12 +150,11 @@ fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, op
     #[cfg(target_os = "linux")]
     let on_x11 = {
         let session_wayland = ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
-        let x11_asked = std::env::var("WINIT_UNIX_BACKEND").is_ok_and(|b| b.eq_ignore_ascii_case("x11"));
         let force = pen::use_xwayland();
         if force {
             pen::force_x11(&mut options);
         }
-        force || x11_asked || !session_wayland
+        force || !session_wayland
     };
     // The embedded interface font joins the text library before anything lays text out:
     // opening an Animate document from the command line lays its text out right here.
