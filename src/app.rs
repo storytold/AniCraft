@@ -459,6 +459,8 @@ pub struct App {
     pub dock: crate::dock::Layout,
     /// The dock's view state: a tab being dragged, where groups were drawn.
     pub dock_view: crate::dock_ui::DockView,
+    /// Window › Workspace › Manage Workspaces… (ADR 0087).
+    pub manage_workspaces: crate::workspaces_window::Manage,
     /// The Motion Editor's view state: the property whose curve it shows, the picked key
     /// (frames into the span), its drag and its list scroll.
     pub me_prop: anicraft_engine::doc::Property,
@@ -704,6 +706,7 @@ impl App {
             tl_drag: timeline::TlDrag::None,
             dock: prefs.workspaces.layout(),
             dock_view: Default::default(),
+            manage_workspaces: Default::default(),
             me_prop: anicraft_engine::doc::Property::X,
             me_key: None,
             me_sel: Vec::new(),
@@ -1156,6 +1159,33 @@ impl App {
                 self.dock.move_to(P::Align, Target::Float(Some([980.0, 420.0])));
                 self.dock.top.size = Some(300.0);
                 self.dock_changed();
+            }
+            // Dockable panels, second slice (ADR 0087): the right dock collapsed to icons with
+            // Properties open over the stage; Colour and Swatches as two tabs of one floating
+            // window (inside the editor, so the screenshot shows it); Properties at the
+            // narrowest a side dock goes, with a shape selected.
+            Some("dockicons") => {
+                self.dock.right.collapsed = true;
+                self.dock_view.flyout = Some(crate::dock::Panel::Properties);
+                self.dock_changed();
+            }
+            Some("floattabs") => {
+                use crate::dock::{Panel as P, Target};
+                self.dock_view.inside = true;
+                self.dock.move_to(P::Colour, Target::Float(Some([760.0, 240.0])));
+                self.dock.move_to(P::Swatches, Target::Stack(P::Colour));
+                self.dock_changed();
+            }
+            Some("docknarrow") => {
+                self.dock.right.size = Some(crate::dock_ui::MIN_SIDE);
+                self.dock_view.epoch += 1;
+                self.run("layer.select", json!({"index": 0}));
+                self.run("edit.select_all", json!({}));
+                self.dock_changed();
+            }
+            Some("workspaces") => {
+                self.save_workspace("Inking"); // i18n-exempt: a sample workspace name the user typed
+                crate::workspaces_window::open(self);
             }
             Some("animator") => self.switch_workspace("animator"),
             Some("designer") => self.switch_workspace("designer"),
@@ -3464,7 +3494,8 @@ impl App {
         dialogs::show_all(self, &ctx);
         autosave::window(self, &ctx);
         crate::plugins_ui::show(self, &ctx);
-        crate::dock_ui::floating(self, &ctx);
+        crate::dock_float::floating(self, &ctx);
+        crate::workspaces_window::show(self, &ctx);
         crate::find_panel::show(self, &ctx);
         crate::brush_panel::show(self, &ctx);
         crate::publish_panel::show(self, &ctx);

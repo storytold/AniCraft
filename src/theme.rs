@@ -665,21 +665,55 @@ pub fn radio_value<V: PartialEq>(ui: &mut egui::Ui, current: &mut V, value: V, l
     with_control_edges(ui, |ui| ui.radio_value(current, value, label))
 }
 
+/// The narrowest a field or list shrinks to in a narrow panel (ADR 0087).
+pub const MIN_FIELD: f32 = 56.0;
+
+/// A field's or list's width: `w`, or the room left in the row when that is less (never under
+/// `MIN_FIELD`), so a narrow panel shrinks it rather than cutting it off.
+pub fn fit(ui: &egui::Ui, w: f32) -> f32 {
+    // In a wrapping row `available_width` is a whole row; the room left on this one is less.
+    w.min(ui.available_size_before_wrap().x).max(MIN_FIELD)
+}
+
 /// Label column widths for forms: dialogs (Preferences) and the narrow dock.
 pub const FORM_LABEL_DIALOG: f32 = 150.0;
 pub const FORM_LABEL_DOCK: f32 = 78.0;
 
 /// A form row on a two-column grid: the label left-aligned in a fixed column, the controls after
 /// it. Every row's controls start at the same x, so a form reads as one column of values.
+///
+/// In a narrow panel (ADR 0087) a row whose controls don't fit beside the label puts them under
+/// it instead, wrapping if they still don't fit, so nothing is drawn past the panel's edge. The
+/// controls' width beside the label is remembered per row, so the choice holds steady while the
+/// panel is resized; a change of choice redraws the frame at once.
 pub fn form_row<R>(ui: &mut egui::Ui, label_w: f32, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(egui::vec2(label_w, TARGET), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.set_min_size(egui::vec2(label_w, TARGET));
-            ui.label(text(Type::Label, label));
-        });
-        add(ui)
-    })
-    .inner
+    let id = ui.id().with(("form_row", label));
+    let avail = ui.available_width();
+    let gap = ui.spacing().item_spacing.x;
+    let need: Option<f32> = ui.data(|d| d.get_temp(id));
+    if need.is_some_and(|n| label_w + gap + n > avail + 0.5) {
+        ui.add(egui::Label::new(text(Type::Label, label)).wrap());
+        return ui.horizontal_wrapped(add).inner;
+    }
+    let (r, used) = ui
+        .horizontal(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(label_w, TARGET), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_min_size(egui::vec2(label_w, TARGET));
+                ui.set_max_width(label_w);
+                ui.add(egui::Label::new(text(Type::Label, label)).wrap());
+            });
+            let start = ui.cursor().left();
+            let r = add(ui);
+            (r, ui.min_rect().right() - start)
+        })
+        .inner;
+    if need.is_none_or(|n| (n - used).abs() > 0.5) {
+        ui.data_mut(|d| d.insert_temp(id, used));
+        if label_w + gap + used > avail + 0.5 {
+            ui.ctx().request_discard("a form row no longer fits beside its label"); // i18n-exempt: a debug reason, never shown
+        }
+    }
+    r
 }
 
 /// A note that belongs to the controls above it (an explanation, a preview): aligned with the
@@ -746,7 +780,11 @@ pub fn section_with_header<R>(ui: &mut egui::Ui, id: &str, style: Section, title
     let icon = if open { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronRight };
     crate::icons::paint(p, chevron, icon, if hot { T.text } else { T.text_dim });
     let mut x = rect.left() + left + 20.0;
-    let title_g = p.layout_no_wrap(title.to_string(), font(Type::Heading), color(Type::Heading));
+    // A title longer than the row (a narrow dock, a long translation) ends in "…" at its edge;
+    // the full title is the header's accessible name.
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_string(), font(Type::Heading), color(Type::Heading));
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - x - 4.0).max(0.0));
+    let title_g = p.layout_job(job);
     let w = title_g.rect.width();
     p.galley(pos2(x, rect.center().y - title_g.rect.height() * 0.5), title_g, color(Type::Heading));
     x += w;

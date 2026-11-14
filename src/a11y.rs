@@ -429,6 +429,12 @@ mod tests {
         for w in ["animator", "designer"] {
             found.extend(check(w, |a, _| a.switch_workspace(w)));
         }
+        // Dockable panels, second slice (ADR 0087).
+        for state in ["dockicons", "floattabs", "docknarrow", "workspaces"] {
+            found.extend(check(state, |a, _| a.open_panel(Some(state))));
+        }
+        found.extend(check("tools above the stage", |a, _| a.dock.move_to(crate::dock::Panel::Tools, crate::dock::Target::Bar(crate::dock::Side::Top))));
+        found.extend(check("tools as a tab", |a, _| a.dock.move_to(crate::dock::Panel::Tools, crate::dock::Target::Stack(crate::dock::Panel::Library))));
         found.extend(check("timeline above the stage", |a, _| a.dock.move_to(crate::dock::Panel::Timeline, crate::dock::Target::Split { side: crate::dock::Side::Top, before: None })));
         // Test Movie in a window of its own (ADR 0062): its controls, named in that window.
         found.extend(check("test movie window", |a, ctx| {
