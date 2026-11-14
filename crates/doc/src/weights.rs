@@ -97,8 +97,9 @@ pub fn with_share(b: &Binding, bone: BoneId, w: f32, fallback: impl FnOnce() -> 
     out
 }
 
-/// The bones automatic binding gives a point at `p` (as drawn) leaving out `bone`.
-fn others_at(segments: &[(BoneId, Vec2, Vec2)], bone: BoneId, p: Vec2) -> Vec<Influence> {
+/// The bones automatic binding gives a point at `p` (as drawn) leaving out `bone`: who takes a
+/// point's weight when the only bone it followed gives some up.
+pub fn others_at(segments: &[(BoneId, Vec2, Vec2)], bone: BoneId, p: Vec2) -> Vec<Influence> {
     let without: Vec<(BoneId, Vec2, Vec2)> = segments.iter().copied().filter(|s| s.0 != bone).collect();
     if without.is_empty() {
         return Vec::new();
