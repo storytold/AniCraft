@@ -2,7 +2,8 @@
 //!
 //! The menu offers what Animate's ease presets do: No Ease, Classic Ease (one strength slider),
 //! and the families Quad, Cubic, Quart, Quint, Sine, Back, Circ, Bounce and Elastic, each In,
-//! Out and In Out as a curve to click; then the eases saved in the document, and Edit Ease….
+//! Out and In Out as a curve to click; then the eases saved in the document, the eases of the
+//! installed ease plug-ins (ADR 0088), and Edit Ease….
 //!
 //! The Custom Ease window edits one ease: a classic tween's (or, eased separately, one of its
 //! property groups': Position, Rotation, Scale, Colour, Filters), a motion-tween property's
@@ -140,6 +141,8 @@ pub fn label(doc: &Document, e: &Easing) -> String {
         Easing::Linear => tr!("No Ease").to_string(),
         Easing::Classic(s) => tr!("Classic Ease {strength}", strength = format!("{s:+.0}")),
         Easing::CubicBezier(..) | Easing::Custom(_) => tr!("Custom").to_string(),
+        // A plug-in's ease goes by the name its plug-in gave it.
+        Easing::Sampled(s) => s.name().to_string(),
         named => named.family().map_or_else(|| tr!("Custom").to_string(), |(f, d)| preset_name(f, d)),
     }
 }
@@ -189,12 +192,52 @@ pub fn picker(app: &App, ui: &mut egui::Ui, menu: &str, current: &Easing, width:
                 }
             }
         }
+        if let Some(p) = plugin_eases(app, ui, current) {
+            out = Some(p);
+        }
         ui.separator();
         if ui.button(tr!("Edit Ease…")).on_hover_text(tr!("Shape the curve point by point, save it, copy it to other tweens")).clicked() {
             out = Some(Picked::Edit);
         }
     });
+    if app.shot_ease_menu.get() == Some(menu) {
+        // A screenshot of the menu open (`--open plugineases`): a click on the button, as a
+        // person would (see `App::press_scripted_key`).
+        app.shot_ease_menu.set(None);
+        app.shot_click.set(Some(r.response.rect.center()));
+    }
     r.response.set_name(name);
+    out
+}
+
+/// The installed ease plug-ins' eases, as curves to click under each plug-in's name.
+fn plugin_eases(app: &App, ui: &mut egui::Ui, current: &Easing) -> Option<Picked> {
+    let eases = anicraft_engine::cmds_ease::plugin_eases(&app.s);
+    if eases.is_empty() {
+        return None;
+    }
+    let mut out = None;
+    ui.separator();
+    ui.label(text(Type::Heading, tr!("Plug-in eases")));
+    let mut i = 0;
+    while let Some((plugin, _)) = eases.get(i) {
+        let group: Vec<_> = eases[i..].iter().take_while(|(p, _)| p.id() == plugin.id()).collect();
+        i += group.len();
+        // The plug-in's own name and its eases' names are its text, shown as written.
+        ui.label(text(Type::Caption, plugin.manifest().name.clone()));
+        ui.horizontal_wrapped(|ui| {
+            for (p, c) in group {
+                let e = Easing::Sampled(std::sync::Arc::new(anicraft_engine::doc::SampledEase::new(&c.name, p.id(), &c.id, c.values.clone())));
+                let on = current.sampled().is_some_and(|s| s.plugin() == p.id() && s.ease() == c.id);
+                ui.vertical(|ui| {
+                    if thumb(ui, &e, on, &c.name).clicked() {
+                        out = Some(Picked::Ease(json!({"plugin": p.id(), "ease": c.id})));
+                    }
+                    ui.add_sized([THUMB.x + 24.0, 14.0], egui::Label::new(text(Type::Caption, c.name.clone())).truncate());
+                });
+            }
+        });
+    }
     out
 }
 
@@ -445,9 +488,9 @@ impl View {
 
 fn graph(app: &mut App, ed: &mut EaseEditor, ui: &mut egui::Ui, ease: &Easing) {
     let curve = ease.to_custom();
-    // A named preset shows as its curve alone (its fitted points would only clutter it);
-    // clicking the curve adds a point and makes it a custom ease to shape.
-    let preset = ease.family().is_some();
+    // A named preset or a plug-in's ease shows as its curve alone (its fitted points would
+    // only clutter it); clicking the curve adds a point and makes it a custom ease to shape.
+    let preset = ease.family().is_some() || ease.sampled().is_some();
     if preset && ed.drag.is_none() {
         ed.selected = None;
     }

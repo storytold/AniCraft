@@ -684,7 +684,7 @@ fn remove_key(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set_ease(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing_in(&s.doc, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let easing = opt_easing_in(s, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
     let only = property(p)?;
     let label = easing.label();
     let (kf, offset) = motion_span(s, p)?;

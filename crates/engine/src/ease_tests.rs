@@ -6,7 +6,7 @@ use super::*;
 use anicraft_doc::{CustomEase, EaseGroup, Easing, Property, TweenKind};
 use serde_json::json;
 
-fn run(s: &mut Session, id: &str, p: Value) -> Value {
+pub(crate) fn run(s: &mut Session, id: &str, p: Value) -> Value {
     match s.execute(id, &p) {
         Ok(v) => v,
         Err(e) => panic!("{id} {p}: {e}"),
@@ -14,7 +14,7 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
 }
 
 /// A 10 × 10 square at the origin, tweened (classic) 100 to the right over ten frames.
-fn tweened() -> Session {
+pub(crate) fn tweened() -> Session {
     let mut s = Session::default();
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 10, "h": 10}));
     run(&mut s, "timeline.goto", json!({"frame": 10}));
@@ -26,7 +26,7 @@ fn tweened() -> Session {
 }
 
 /// How far the square has moved at frame `f` (it starts centred on x = 5).
-fn x_at(s: &mut Session, f: u32) -> f32 {
+pub(crate) fn x_at(s: &mut Session, f: u32) -> f32 {
     s.set_frame(f);
     s.visible_elements().first().map(|e| e.transform.translation().x - 5.0).unwrap_or(f32::NAN)
 }

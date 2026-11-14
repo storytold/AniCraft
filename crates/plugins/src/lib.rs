@@ -12,6 +12,10 @@
 //! - **bounded traffic**: request, response, log and host-call counts are capped;
 //! - a **fresh instance per run**, so no state survives between runs.
 //!
+//! Four kinds share the host (ADR 0017, 0024, 0088): commands, frame scripts, exporters
+//! ([`Plugin::export`]: frames in, bytes out) and eases (sampled once at load,
+//! [`Plugin::eases`]).
+//!
 //! This crate knows nothing about documents: the engine implements [`Host`] over its command
 //! registry. Every failure (malformed module, trap, exhausted budget, bad output) is an
 //! [`Error`]; nothing a module does can panic or hang the host.
@@ -21,9 +25,9 @@ pub mod manifest;
 pub mod registry;
 mod runtime;
 
-pub use manifest::{Kind, Manifest, ParamKind, ParamSpec, SelectionNeed};
+pub use manifest::{EaseDecl, ExportFormat, Kind, Manifest, ParamKind, ParamSpec, SelectionNeed};
 pub use registry::{FolderReport, Registry};
-pub use runtime::{ABI_VERSION, IMPORT_MODULE, Limits, Plugin, RunReport};
+pub use runtime::{ABI_VERSION, EASE_SAMPLES, IMPORT_MODULE, Limits, MAX_EASE_VALUE, Plugin, RunReport, SampledCurve};
 
 use serde_json::Value;
 
@@ -48,6 +52,8 @@ pub enum Error {
     NotFound(String),
     #[error("{0}")]
     Io(String),
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -58,4 +64,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub trait Host {
     /// Handles one request: `op` is its `"op"` field, `request` the whole JSON object.
     fn request(&mut self, op: &str, request: &Value) -> std::result::Result<Value, String>;
+
+    /// Whether the run should stop now (an export's Cancel): checked at every request and
+    /// every slice of fuel, so even a busy loop stops within milliseconds.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }

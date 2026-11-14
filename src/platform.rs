@@ -716,6 +716,17 @@ pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf
     }
 }
 
+/// The platform's save dialog for a file type that isn't a command's (an exporter plug-in's,
+/// ADR 0088): `label` names it in the filter, `ext` without the dot. `None` when cancelled.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_dialog(title: &str, label: &str, ext: &str, dir: Option<&std::path::Path>, default_name: &str) -> Option<PathBuf> {
+    let mut d = rfd::FileDialog::new().set_title(title).add_filter(label, &[ext]).set_file_name(default_name);
+    if let Some(dir) = dir.filter(|d| d.is_dir()) {
+        d = d.set_directory(dir);
+    }
+    d.save_file()
+}
+
 /// In a browser: asks for a file with the browser's file picker. It arrives later through
 /// [`picked_file`]; nothing arrives if the user cancels. The desktop has [`file_dialog`].
 #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables, dead_code))]
