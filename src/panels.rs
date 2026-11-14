@@ -1269,40 +1269,251 @@ fn instance_rows(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::Ele
     ui.add_space(4.0);
 }
 
-/// The Filters rows of a movie clip or button instance: an Add menu, then each filter's values
-/// with a remove button. Every change replaces the list (`element.set_filters`), one undo step
-/// per gesture.
-fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc::Filter], differs: bool) {
-    use anicraft_engine::doc::Filter;
+/// Naming a filter preset in Properties (ADR 0091): saving the list under a new name, or
+/// renaming one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FilterNaming {
+    /// The name typed so far, and the preset being renamed (`None`: saving a new one).
+    pub name: Option<(String, Option<String>)>,
+}
+
+/// Copies the session's filter presets into the preferences when a command changed them, and
+/// saves them (not in screenshot or test runs, which never write the user's preferences).
+pub fn sync_filter_presets(app: &mut App) {
+    if app.s.filter_presets == app.prefs.filter_presets {
+        return;
+    }
+    app.prefs.filter_presets = app.s.filter_presets.clone();
+    if app.shot.is_none()
+        && let Err(e) = app.prefs.save()
+    {
+        app.status_err(tr!("Could not save preferences: {e}", e = e));
+    }
+}
+
+/// What the filter list was asked to do this frame (done after drawing it), each one command.
+enum FilterAct {
+    Move(usize, usize),
+    Enable(Option<usize>, bool),
+    Remove(Option<usize>),
+    Copy(Option<usize>),
+    Paste,
+    Apply(String),
+    Delete(String),
+}
+
+/// A filter's grip: drag it up or down the list to reorder, or, focused, Alt+Up and Alt+Down
+/// move it.
+fn filter_grip(ui: &mut egui::Ui, fname: &str, i: usize, n: usize, act: &mut Option<FilterAct>) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(14.0, crate::theme::TARGET), Sense::click_and_drag());
+    let hot = resp.hovered() || resp.dragged() || resp.has_focus();
+    let c = if hot { T.icon_hot } else { T.text_faint };
+    for (dx, dy) in [(-2.5, -5.0), (2.5, -5.0), (-2.5, 0.0), (2.5, 0.0), (-2.5, 5.0), (2.5, 5.0)] {
+        ui.painter().circle_filled(rect.center() + vec2(dx, dy), 1.4, c);
+    }
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect.expand(1.0), 2.0, Stroke::new(1.0, T.text), StrokeKind::Outside);
+        let (up, down, alt) = ui.input(|inp| (inp.key_pressed(egui::Key::ArrowUp), inp.key_pressed(egui::Key::ArrowDown), inp.modifiers.alt));
+        if alt {
+            ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, egui::EventFilter { vertical_arrows: true, ..Default::default() }));
+            if up && i > 0 {
+                *act = Some(FilterAct::Move(i, i - 1));
+            } else if down && i + 1 < n {
+                *act = Some(FilterAct::Move(i, i + 1));
+            }
+        }
+    }
+    let (up, down) = (crate::platform::shortcut_label("Alt+Up"), crate::platform::shortcut_label("Alt+Down"));
+    a11y::control(ui, &resp, WidgetType::Button, &tr!("Move {filter}: drag, or {up} and {down}", filter = fname, up = up.as_str(), down = down.as_str()), None);
+    resp.on_hover_text(tr!("Drag to change the order (filters apply from the top down)"))
+}
+
+/// The Filters rows of a movie clip or button instance, as Animate's Filters section: Add,
+/// Presets and an options menu (copy, paste, all on or off, remove all), then each filter with
+/// its grip (drag, or Alt+arrows, to reorder), its on/off switch, its name and Remove, and its
+/// values. A filter switched off keeps its values. Value changes replace the list
+/// (`element.set_filters`, one undo step per gesture); the rest are `filter.*` commands.
+fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc::FilterEntry], differs: bool) {
+    use anicraft_engine::doc::{Filter, FilterEntry};
     // As the renderer sees them (a file may hold values or ramps a command would refuse).
-    let mut list: Vec<Filter> = current.iter().map(Filter::sanitized).collect();
+    let mut list: Vec<FilterEntry> = current.iter().map(FilterEntry::sanitized).collect();
+    let n = list.len();
     let mut changed: Option<&'static str> = None;
+    let mut act: Option<FilterAct> = None;
+    let presets: Vec<(String, String)> = app.s.filter_presets.presets().iter().map(|p| (p.name.clone(), p.filters.iter().map(|f| crate::i18n::t(f.filter.label())).collect::<Vec<_>>().join(", "))).collect();
+    let copied = app.s.filter_clipboard.as_ref().map_or(0, Vec::len);
+    let mut naming = app.filter_naming.name.clone();
     row_prose(ui, tr!("Filters"), |ui| {
         egui::ComboBox::from_id_salt("add_filter").selected_text(if list.is_empty() { tr!("None") } else { tr!("Add filter") }).show_ui(ui, |ui| {
             for (kind, label) in Filter::KINDS {
                 if ui.selectable_label(false, crate::i18n::t(label)).clicked()
                     && let Some(f) = Filter::new(kind)
                 {
-                    list.push(f);
+                    list.push(f.into());
                     changed = Some(tr_noop!("Add filter"));
                 }
             }
         })
         .response
         .set_name(tr!("Add filter"));
+        let pr = crate::timeline::icon_button(ui, tr!("Filter presets: apply, save, rename, delete, import, export"), None, Icon::Folder);
+        egui::Popup::menu(&pr).id(egui::Id::new("anicraft.filters.presets")).show(|ui| {
+            if presets.is_empty() {
+                ui.label(text(Type::Caption, tr!("No presets yet. Set up filters, then Save as Preset.")));
+            }
+            for (name, what) in &presets {
+                if ui.button(name.as_str()).on_hover_text(tr!("Apply: {filters} (replaces the filters)", filters = what.as_str())).clicked() {
+                    act = Some(FilterAct::Apply(name.clone()));
+                }
+            }
+            ui.separator();
+            if ui.add_enabled(n > 0, egui::Button::new(tr!("Save as Preset…"))).on_hover_text(tr!("Keep these filters under a name, for any document")).clicked() {
+                naming = Some((String::new(), None));
+            }
+            ui.add_enabled_ui(!presets.is_empty(), |ui| {
+                ui.menu_button(tr!("Rename Preset"), |ui| {
+                    for (name, _) in &presets {
+                        if ui.button(name.as_str()).clicked() {
+                            naming = Some((name.clone(), Some(name.clone())));
+                        }
+                    }
+                });
+                ui.menu_button(tr!("Delete Preset"), |ui| {
+                    for (name, _) in &presets {
+                        if ui.button(name.as_str()).clicked() {
+                            act = Some(FilterAct::Delete(name.clone()));
+                        }
+                    }
+                });
+            });
+            ui.separator();
+            if ui.button(tr!("Import Presets…")).on_hover_text(tr!("Add the presets in a filter preset file (.json)")).clicked() {
+                app.invoke("filter.preset_import");
+            }
+            if ui.add_enabled(!presets.is_empty(), egui::Button::new(tr!("Export Presets…"))).on_hover_text(tr!("Write your filter presets to a file, to use on another computer")).clicked() {
+                app.invoke("filter.preset_export");
+            }
+        });
+        let more = crate::timeline::icon_button(ui, tr!("Filter options: copy, paste, enable, disable, remove"), None, Icon::Ellipsis);
+        egui::Popup::menu(&more).id(egui::Id::new("anicraft.filters.menu")).show(|ui| {
+            if ui.add_enabled(n > 0, egui::Button::new(tr!("Copy All Filters"))).clicked() {
+                act = Some(FilterAct::Copy(None));
+            }
+            let paste = if copied == 0 { tr!("Paste Filters").to_string() } else { trn!("Paste {n} Filter", "Paste {n} Filters", copied as u64, n = copied) };
+            if ui.add_enabled(copied > 0, egui::Button::new(paste)).on_hover_text(tr!("Add the copied filters after these")).clicked() {
+                act = Some(FilterAct::Paste);
+            }
+            ui.separator();
+            if ui.add_enabled(list.iter().any(|f| !f.enabled), egui::Button::new(tr!("Enable All"))).clicked() {
+                act = Some(FilterAct::Enable(None, true));
+            }
+            if ui.add_enabled(list.iter().any(|f| f.enabled), egui::Button::new(tr!("Disable All"))).clicked() {
+                act = Some(FilterAct::Enable(None, false));
+            }
+            if ui.add_enabled(n > 0, egui::Button::new(tr!("Remove All"))).clicked() {
+                act = Some(FilterAct::Remove(None));
+            }
+        });
         mixed(ui, differs);
     });
+    // Naming a preset, inline: Enter saves, Escape cancels.
+    if let Some((buf, renaming)) = naming.as_mut() {
+        let mut done: Option<bool> = None;
+        let rename = renaming.is_some();
+        row_prose(ui, if rename { tr!("Rename") } else { tr!("Preset") }, |ui| {
+            let r = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0).hint_text(tr!("Name"))).named(tr!("Filter preset name"));
+            if !r.has_focus() && !r.lost_focus() && buf.is_empty() {
+                r.request_focus();
+            }
+            let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+            let ok = !buf.trim().is_empty();
+            if ui.add_enabled(ok, egui::Button::new(if rename { tr!("Rename") } else { tr!("Save") })).clicked() || (enter && r.lost_focus() && ok) {
+                done = Some(true);
+            } else if ui.button(tr!("Cancel")).clicked() || esc {
+                done = Some(false);
+            }
+        });
+        match done {
+            Some(true) => {
+                let to = buf.trim().to_string();
+                let ok = match renaming.clone() {
+                    Some(from) => app.run("filter.preset_rename", json!({"name": from, "to": to})).is_some(),
+                    None => {
+                        // Asks first when it would replace a preset of that name.
+                        app.request("filter.preset_save", json!({"name": to}));
+                        true
+                    }
+                };
+                if ok {
+                    naming = None;
+                }
+            }
+            Some(false) => naming = None,
+            None => {}
+        }
+    }
+    app.filter_naming.name = naming;
     let quality_names = [tr!("Low"), tr!("Medium"), tr!("High")];
-    let mut remove = None;
-    for (i, f) in list.iter_mut().enumerate() {
+    // Dragging a filter by its grip: which one, and where each header row starts (last frame's,
+    // for the drop: rows don't move while one is dragged).
+    let drag_id = egui::Id::new("anicraft.filters.drag");
+    let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_id));
+    let last_tops: Vec<f32> = ui.data(|d| d.get_temp(drag_id.with("tops"))).unwrap_or_default();
+    let drop_at = |y: f32| last_tops.iter().take(n).rposition(|t| y >= *t).unwrap_or(0);
+    let mut tops: Vec<f32> = Vec::with_capacity(n + 1);
+    let (list_left, list_w) = (ui.cursor().left(), ui.available_width());
+    for (i, entry) in list.iter_mut().enumerate() {
         // Screen readers hear which filter a value belongs to: "Drop Shadow blur X".
-        let fname = crate::i18n::t(f.label());
+        let fname = crate::i18n::t(entry.filter.label());
+        let on = entry.enabled;
         ui.push_id(("filter", i), |ui| {
-            row_prose(ui, fname, |ui| {
-                if ui.small_button(tr!("Remove")).named(&tr!("Remove {filter}", filter = fname)).on_hover_text(tr!("Remove this filter")).clicked() {
-                    remove = Some(i);
+            tops.push(ui.cursor().top());
+            let header = ui.horizontal(|ui| {
+                let grip = filter_grip(ui, fname, i, n, &mut act);
+                let tip = if on { tr!("Turn {filter} off (it keeps its settings)", filter = fname) } else { tr!("Turn {filter} on", filter = fname) };
+                if crate::timeline::icon_button(ui, &tip, Some(on), if on { Icon::Eye } else { Icon::EyeOff }).clicked() {
+                    act = Some(FilterAct::Enable(Some(i), !on));
+                }
+                let name = if on { text(Type::Label, fname) } else { text(Type::Label, tr!("{filter} (off)", filter = fname)).color(T.text_faint) };
+                ui.label(name);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::timeline::icon_button(ui, &tr!("Remove {filter}", filter = fname), None, Icon::Trash).clicked() {
+                        act = Some(FilterAct::Remove(Some(i)));
+                    }
+                });
+                grip
+            });
+            let grip = header.inner;
+            if grip.drag_started() {
+                dragging = Some(i);
+            }
+            if grip.drag_stopped() && dragging == Some(i) {
+                dragging = None;
+                if let Some(p) = ui.ctx().pointer_interact_pos()
+                    && drop_at(p.y) != i
+                {
+                    act = Some(FilterAct::Move(i, drop_at(p.y)));
+                }
+            }
+            header.response.context_menu(|ui| {
+                if ui.add_enabled(i > 0, egui::Button::new(tr!("Move Up"))).clicked() {
+                    act = Some(FilterAct::Move(i, i - 1));
+                }
+                if ui.add_enabled(i + 1 < n, egui::Button::new(tr!("Move Down"))).clicked() {
+                    act = Some(FilterAct::Move(i, i + 1));
+                }
+                ui.separator();
+                if ui.button(if on { tr!("Turn Off") } else { tr!("Turn On") }).clicked() {
+                    act = Some(FilterAct::Enable(Some(i), !on));
+                }
+                if ui.button(tr!("Copy Filter")).clicked() {
+                    act = Some(FilterAct::Copy(Some(i)));
+                }
+                if ui.button(tr!("Remove Filter")).clicked() {
+                    act = Some(FilterAct::Remove(Some(i)));
                 }
             });
+            let f = &mut entry.filter;
             let blur_rows = |ui: &mut egui::Ui, bx: &mut f32, by: &mut f32, quality: &mut u8, changed: &mut Option<&'static str>| {
                 row(ui, tr!("Blur"), |ui| {
                     let a = ui.add(egui::DragValue::new(bx).prefix("X ").suffix(" px").speed(0.25).range(0.0..=255.0).max_decimals(1)).named(&tr!("{filter} blur X", filter = fname));
@@ -1384,9 +1595,54 @@ fn filter_rows(app: &mut App, ui: &mut egui::Ui, current: &[anicraft_engine::doc
             }
         });
     }
-    if let Some(i) = remove {
-        list.remove(i);
-        changed = Some(tr_noop!("Remove filter"));
+    // Where the rows are, for the next frame's drop, and the drop mark while one is dragged:
+    // a bar where it would land.
+    tops.push(ui.cursor().top());
+    ui.data_mut(|d| d.insert_temp(drag_id.with("tops"), tops.clone()));
+    if let (Some(from), Some(p)) = (dragging, ui.ctx().pointer_interact_pos())
+        && ui.ctx().dragged_id().is_some()
+    {
+        let to = drop_at(p.y);
+        if to != from
+            && let Some(y) = tops.get(if to > from { to + 1 } else { to }).copied()
+        {
+            ui.painter().line_segment([pos2(list_left, y), pos2(list_left + list_w, y)], Stroke::new(2.0, T.accent));
+        }
+    } else if ui.ctx().dragged_id().is_none() {
+        dragging = None;
+    }
+    ui.data_mut(|d| match dragging {
+        Some(v) => {
+            d.insert_temp(drag_id, v);
+        }
+        None => d.remove::<usize>(drag_id),
+    });
+    if let Some(a) = act {
+        match a {
+            FilterAct::Move(from, to) => {
+                app.run("filter.move", json!({"from": from, "to": to}));
+            }
+            FilterAct::Enable(index, on) => {
+                app.run("filter.enable", json!({"index": index, "enabled": on}));
+            }
+            FilterAct::Remove(index) => {
+                app.run("filter.remove", json!({"index": index}));
+            }
+            FilterAct::Copy(index) => {
+                if let Some(v) = app.run("filter.copy", json!({"index": index})) {
+                    let k = v["copied"].as_u64().unwrap_or(0);
+                    app.status_ok(trn!("Copied {n} filter.", "Copied {n} filters.", k, n = k));
+                }
+            }
+            FilterAct::Paste => {
+                app.run("filter.paste", json!({}));
+            }
+            FilterAct::Apply(name) => {
+                app.run("filter.preset_apply", json!({"name": name}));
+            }
+            FilterAct::Delete(name) => app.request("filter.preset_delete", json!({"name": name})),
+        }
+        return;
     }
     if let Some(label) = changed
         && let Ok(v) = serde_json::to_value(&list)

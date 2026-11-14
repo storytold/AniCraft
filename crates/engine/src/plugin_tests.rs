@@ -184,6 +184,9 @@ fn every_command_namespace_has_a_plugin_policy() {
             "publish" => assert_eq!(verdict.is_ok(), c.id == "publish.settings_get", "{}", c.id),
             // Brushes (ADR 0068): list yes; your own brushes and brush set files no.
             "brush" => assert_eq!(verdict.is_ok(), c.id == "brush.preset_list", "{}", c.id),
+            // Filters (ADR 0091): the document's lists yes (and listing and applying presets);
+            // the clipboard, your presets and preset files no.
+            "filter" => assert_eq!(verdict.is_ok(), matches!(c.id, "filter.move" | "filter.enable" | "filter.remove" | "filter.preset_list" | "filter.preset_apply"), "{}", c.id),
             // Swatches (ADR 0078): document data yes, swatch files no.
             "swatch" => assert_eq!(verdict.is_ok(), !matches!(c.id, "swatch.import" | "swatch.export"), "{}", c.id),
             // Rulers, grid and guides (ADR 0076): a scene's guides yes, how you see and snap no.

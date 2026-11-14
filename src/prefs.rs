@@ -151,6 +151,9 @@ pub struct Prefs {
     /// Brushes of your own (ADR 0068), for the Brush and the Paint Brush.
     #[serde(deserialize_with = "lenient_brushes")]
     pub brushes: anicraft_engine::brush_library::BrushLibrary,
+    /// Filter presets of your own (ADR 0091), for movie clips and buttons in any document.
+    #[serde(deserialize_with = "lenient_filter_presets")]
+    pub filter_presets: anicraft_engine::filter_library::FilterLibrary,
     /// Test Movie plays in a window of its own (ADR 0062); off, or where a system can't open
     /// one, it floats inside the editor.
     pub test_movie_window: bool,
@@ -225,6 +228,7 @@ impl Default for Prefs {
             recent: Default::default(),
             start_screen: true,
             brushes: Default::default(),
+            filter_presets: Default::default(),
             test_movie_window: true,
             test_movie_pos: None,
             workspaces: crate::dock::Workspaces::default(),
@@ -254,6 +258,16 @@ fn lenient_brushes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_en
         _ => Vec::new(),
     };
     Ok(anicraft_engine::brush_library::BrushLibrary::from_values(list))
+}
+
+/// Your filter presets as written, skipping entries that aren't one (a hand-edited file).
+fn lenient_filter_presets<'de, D: serde::Deserializer<'de>>(d: D) -> Result<anicraft_engine::filter_library::FilterLibrary, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    let list: Vec<serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a,
+        _ => Vec::new(),
+    };
+    Ok(anicraft_engine::filter_library::FilterLibrary::from_values(list))
 }
 
 /// Autosave intervals offered in Preferences: `(seconds, label)`.
@@ -324,6 +338,7 @@ impl Prefs {
             .collect();
         self.recent = std::mem::take(&mut self.recent).sanitized();
         self.brushes = std::mem::take(&mut self.brushes).sanitized();
+        self.filter_presets = std::mem::take(&mut self.filter_presets).sanitized();
         self.test_movie_pos = self.test_movie_pos.filter(|[x, y]| x.is_finite() && y.is_finite() && x.abs() < 1e5 && y.abs() < 1e5);
         self
     }

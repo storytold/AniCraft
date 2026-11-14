@@ -1103,10 +1103,10 @@ fn filtered_sample() -> anicraft_doc::Document {
         for k in &mut l.keyframes {
             for e in &mut Arc::make_mut(k).elements {
                 if let ElementKind::Symbol { filters, .. } = &mut Arc::make_mut(e).kind {
-                    *filters = match i {
+                    *filters = Vec::from_iter(match i {
                         0 => vec![F::DropShadow { blur_x: 8.0, blur_y: 8.0, strength: 0.8, quality: 2, angle: 45.0, distance: 10.0, color: Rgba::BLACK, inner: false, knockout: false, hide_object: false }, F::Bevel { blur_x: 5.0, blur_y: 5.0, strength: 1.0, quality: 1, angle: 45.0, distance: 4.0, shadow_color: Rgba::BLACK, highlight_color: Rgba::WHITE, side: anicraft_doc::FilterSide::Inner, knockout: false }],
                         _ => vec![F::Glow { blur_x: 12.0, blur_y: 12.0, strength: 1.4, quality: 2, color: Rgba::new(1.0, 0.85, 0.2, 1.0), inner: false, knockout: false }],
-                    };
+                    }.into_iter().map(anicraft_doc::FilterEntry::from));
                 }
             }
         }

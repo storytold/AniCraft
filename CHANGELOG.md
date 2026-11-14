@@ -15,6 +15,24 @@
     weights, deleted ones drop theirs, and every pose bends the new outline.
   * Headless: `bone.paint_weights`, `bone.set_weight`; the `path.*` point commands reshape a
     bound shape at rest.
+* **Filters, second slice: order, on/off, copy and paste, presets** (ADR 0091, M5).
+  * **Reorder filters** in Properties › Filters: drag a filter by its grip, or focus the grip
+    and press Alt+Up/Alt+Down, or right-click for Move Up/Down. The order changes the picture
+    (filters apply from the top down).
+  * **Switch a filter off** with its eye: it keeps its settings and draws nothing, on the
+    stage and in every export (SVG, HTML canvas, Lottie, video, images). Enable All and
+    Disable All in the **…** menu. Animate files' switched-off filters now come in switched
+    off instead of being dropped.
+  * **Copy and paste filters** between movie clips and buttons (Copy All Filters, Copy Filter,
+    Paste Filters).
+  * **Filter presets**: Save as Preset…, apply by name (replaces the filters, undoable),
+    rename, delete (asks), and export or import them as a small JSON file. Presets are kept in
+    your preferences, for any document.
+  * Classic tweens keep tweening filter values when a filter is switched off; tests cover a
+    blur and a glow at a tween's midpoint.
+  * Headless: `filter.move`, `filter.enable`, `filter.remove`, `filter.copy`,
+    `filter.paste`, `filter.preset_list/save/apply/rename/delete/export/import`, and
+    `enabled` in `element.set_filters`.
 * **Lottie export with real keyframes and eases** (ADR 0089, M4).
   * Tweens become **Lottie keyframes with Lottie's own Bézier eases** instead of a key at every
     frame: No Ease, Classic Ease, Bézier handles, Quad, Cubic, Back and Bounce, and custom
