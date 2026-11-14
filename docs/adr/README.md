@@ -23,4 +23,4 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
-| 0096 | (outside contribution) | Raw brush |
+| 0096 | #336 (outside contribution) | Raw brush |
