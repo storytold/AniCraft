@@ -346,7 +346,7 @@ fn volume(app: &mut App, ui: &mut egui::Ui) {
     let r = ui
         .scope(|ui| {
             ui.spacing_mut().slider_width = VOLUME_W;
-            ui.add_enabled(!muted, egui::Slider::new(&mut pct, 0.0..=100.0).step_by(1.0).show_value(false))
+            ui.add_enabled(!muted, egui::Slider::new(&mut pct, 0.0..=100.0).step_by(1.0).show_value(false).trailing_fill(true))
         })
         .inner
         .named(tr!("Playback volume"));
