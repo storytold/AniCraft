@@ -1,0 +1,14 @@
+[package]
+name = "anicraft-tablet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pen tablet pressure, tilt, rotation and eraser end on Linux X11 (XInput2)"
+
+[lints]
+workspace = true
+
+# Pure-Rust X11 client (no unsafe in the RustConnection path we use); already in Cargo.lock
+# (winit, eframe); pinned exactly.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "=0.13.2", default-features = false, features = ["xinput"] }

@@ -167,14 +167,17 @@ pub fn resize(app: &mut App, larger: bool) {
     }
 }
 
-/// The pen's pressure this frame, when a tablet reports it (egui gives it with touch events).
+/// The pen's pressure this frame, when a tablet reports it (egui gives it with touch events, or
+/// on Linux the XInput2 reader in `pen.rs`).
 pub fn frame_pressure(ctx: &egui::Context) -> Option<f32> {
-    ctx.input(|i| {
+    let touch = ctx.input(|i| {
         i.raw.events.iter().rev().find_map(|e| match e {
             egui::Event::Touch { force: Some(f), .. } if f.is_finite() => Some(f.clamp(0.0, 1.0)),
             _ => None,
         })
-    })
+    });
+    // Linux: winit drops the pen's pressure; the XInput2 reader (`pen.rs`) has it.
+    touch.or_else(crate::pen::pressure)
 }
 
 /// Starts a stroke at stage point `p` at time `now` (seconds). A mouse paints at full
