@@ -73,6 +73,14 @@ Preferences.
 * **Safety › Confirmations**: if you ticked "Don't ask again this session" in a confirmation,
   **Show all again** brings those questions back.
 
+### About
+
+**About** shows AniCraft's version, whether this copy is installed or portable (see
+[Portable copies](getting-started.md#portable-copies)), and every folder it keeps things in
+(preferences, autosave, logs, plug-ins, templates and the offline user guide), each with an
+**Open** button. Run from an AppImage on Linux, it also adds AniCraft to your applications menu or
+removes it again.
+
 Preferences also keep your shortcuts, onion skin options, Publish presets, recent files and
 whether the start screen shows. The start screen has its own checkbox: **Show this screen when
 AniCraft starts**.
