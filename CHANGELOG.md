@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* **Saved commands (command macros)** (ADR 0097, M6).
+  * In the **History** panel, **Ctrl+click** steps (Shift+click a range) and choose **Save As
+    Command…**: the steps come back at the end of the **Commands** menu, to run on whatever is
+    selected as **one undo step**. Steps that name a layer or object of this document act on the
+    active layer or the selection instead; a step that can't be kept (the clipboard, particular
+    path points or Library items) is named with the reason.
+  * A run that fails at a step changes nothing and says which step stopped it.
+  * **Commands › Manage Saved Commands…**: run, reorder, rename, delete, give a **shortcut** (the
+    Keyboard Shortcuts editor, under Commands) and add one from a file. **Commands › Run
+    Command…** runs a saved command file.
+  * Saved commands are small JSON files in the settings folder's `Commands`, easy to share. They
+    may do only what a plug-in may (no files, clipboard or preferences), and plug-ins can't run
+    them. `anicraft-cli run` takes them; `macro.*` commands work headless and over MCP.
 * **Sound output polish** (ADR 0095, M5).
   * The playhead follows the sound being **heard**: the device's latency is taken off and slow
     frames are dropped rather than drifting (within a frame over an hour of play in tests).
