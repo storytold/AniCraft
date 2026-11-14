@@ -1168,7 +1168,7 @@ dependencies = [
 [[package]]
 name = "craft-anicraft-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=0b1688098abcd27787adfb86d35b2e168f9d668d#0b1688098abcd27787adfb86d35b2e168f9d668d"
+source = "git+https://github.com/storytold/craft-libs?rev=b77af389f30bb10de10d8436ca9b39fe94e3bb67#b77af389f30bb10de10d8436ca9b39fe94e3bb67"
 dependencies = [
  "serde",
  "serde_json",
