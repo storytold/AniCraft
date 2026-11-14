@@ -1201,7 +1201,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=98b500ec5a18ec262072a96fd9ab3b2cbe2e5557#98b500ec5a18ec262072a96fd9ab3b2cbe2e5557"
+source = "git+https://github.com/storytold/craft-libs?rev=de7640a00688cff31470e44c3e43285ed7beb244#de7640a00688cff31470e44c3e43285ed7beb244"
 dependencies = [
  "quick-xml 0.41.0",
  "thiserror 2.0.21",

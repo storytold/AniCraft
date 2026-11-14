@@ -27,7 +27,7 @@ anicraft-plugins = { path = "crates/plugins" }
 anicraft-audio = { path = "crates/audio" }
 anicraft-gpu = { path = "crates/gpu" }
 craft-xfl = { git = "https://github.com/storytold/craft-libs", rev = "6ff30f4ee093e314c0f4698997e33f11ef3266d7" }
-craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "98b500ec5a18ec262072a96fd9ab3b2cbe2e5557", version = "=0.1.0" }
+craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "de7640a00688cff31470e44c3e43285ed7beb244", version = "=0.1.0" }
 anicraft-guide = { path = "crates/guide" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
