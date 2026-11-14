@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 352 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 360 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**F1**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -249,6 +249,10 @@ This page is generated from the command registry, so it always matches the versi
   Parameters: `{} lists the installed plug-ins (the app shows them in a window)`
 - **Reload Plug-ins** `plugin.reload`
   Parameters: `{folder? (makes it the plug-ins folder first)} re-reads every .wasm in the plug-ins folder`
+- **Run Command…** `macro.run` · changes the document
+  Parameters: `{name + folder (a saved command) | path (a saved command's file, or a JSON array of {cmd, params}) | steps: [{cmd, params?, label?}], name? (for steps)} → {name, steps, results}: runs the steps in order as one undo step named after it. At the first step that fails nothing is changed and the error names the step. Steps may call what a plug-in may, never macro.*`
+- **Manage Saved Commands…** `macro.list`
+  Parameters: `{folder} → {commands: [{name, path, steps}], problems: [{file, error}]}: the saved commands in the folder, in their order (the app shows them in a window)`
 
 ## Control
 
@@ -733,3 +737,15 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: ``{text: the script, language?: actionscript3|actionscript1or2|other (default actionscript3)} whether it would run (the ActionScript 3.0 subset, ADR 0013), its problems with line and column, what is ignored, the names it takes from other frames of its timeline (`uses`), and what it compiles to (`steps`, `program`); changes nothing``
 - **Set Script Class** `script.set_class` · changes the document
   Parameters: `{symbol?: id (default: the document), class: dotted class name ("" clears), base?: the class it extends} sets a symbol's linkage class, or the document class; kept as text, not run`
+- **List History Steps** `macro.history`
+  Parameters: ``{} → {steps: [{index, label, undone, keep, commands?, why?, rewritten?}]}: every undo-history step as Save As Command keeps it: `keep` false says `why` it can't be kept; `rewritten` names params dropped so the step acts on the selection or active layer``
+- **Save As Command…** `macro.save`
+  Parameters: `{folder, name, history: [index, ..] (as macro.history lists them) | steps: [{cmd, params?, label?}], confirm? (to replace a saved command of that name)} → {name, path, steps, rewritten}: keeps the steps as <folder>/<name>.json, last in the list`
+- **Rename Saved Command** `macro.rename`
+  Parameters: `{folder, name, to} → {name, from, path}: renames a saved command (its file); its place in the list stays`
+- **Delete Saved Command** `macro.delete`
+  Parameters: `{folder, name, confirm}: deletes a saved command's file (cannot be undone)`
+- **Move Saved Command** `macro.move`
+  Parameters: `{folder, name, index (its new place in the list, 0-based)}`
+- **Add Saved Command from File** `macro.import`
+  Parameters: `{folder, path (a saved command's file), name? (default: the file's), confirm? (to replace one of that name)} → {name, path, steps}: checks it and copies it in, last in the list`

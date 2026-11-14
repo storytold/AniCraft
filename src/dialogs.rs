@@ -834,6 +834,20 @@ fn take_key_press(ctx: &egui::Context) -> Option<(egui::Modifiers, Key)> {
     })
 }
 
+/// Opens the shortcut editor filtered to `filter` and waiting for a new key for `id` (Manage
+/// Saved Commands' Shortcut…, ADR 0097).
+pub(crate) fn shortcuts_for(app: &mut App, ctx: &egui::Context, filter: &str, id: &'static str) {
+    let state_id = egui::Id::new("shortcut_editor");
+    let mut st: SheetState = ctx.data_mut(|d| d.get_temp(state_id).unwrap_or_default());
+    st.filter = filter.to_string();
+    st.notice = None;
+    st.steal = None;
+    ctx.data_mut(|d| d.insert_temp(state_id, st));
+    app.show_shortcuts = true;
+    let replace = (!app.keymap.keys(id).is_empty()).then_some(0);
+    app.key_capture = Some(KeyCapture { id, replace });
+}
+
 fn shortcut_sheet(app: &mut App, ctx: &egui::Context) {
     if !app.show_shortcuts {
         app.key_capture = None;

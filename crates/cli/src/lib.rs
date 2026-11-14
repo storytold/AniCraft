@@ -30,6 +30,8 @@ USAGE:
   anicraft-cli formats                   lists every export format, plug-ins included (JSON)
   anicraft-cli commands
   anicraft-cli run <file|--sample> <script.json> [--save <out.anicraft>]
+                                         a JSON array of {cmd, params}, or a saved command
+                                         (one undo step; nothing changes if a step fails)
   anicraft-cli exec <file|--sample> <command.id> [<json-params>] [--save <out.anicraft>]
   anicraft-cli new --out <file.anicraft> [--width W] [--height H] [--fps F]
   anicraft-cli guide --out <folder>      writes the user guide as HTML pages (open index.html)
@@ -239,7 +241,16 @@ pub fn run(argv: &[String]) -> Result<String, String> {
             let script = a.positional.get(1).ok_or("run needs a script.json")?;
             let text = std::fs::read_to_string(script).map_err(|e| format!("{script}: {e}"))?;
             // Windows editors often save UTF-8 with a byte-order mark; JSON parsers reject it.
-            let steps: Vec<Value> = serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("{script}: expected a JSON array of {{cmd, params}}: {e}"))?;
+            let parsed: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("{script}: expected a JSON array of {{cmd, params}} or a saved command: {e}"))?;
+            // A saved command (ADR 0097) runs as one transactional step, as in the app.
+            if parsed.is_object() {
+                let v = exec(&mut s, "macro.run", &json!({"path": script}))?;
+                if let Some(out) = a.flag("save") {
+                    exec(&mut s, "file.save", &json!({"path": out}))?;
+                }
+                return serde_json::to_string_pretty(&v).map_err(|e| e.to_string());
+            }
+            let steps: Vec<Value> = serde_json::from_value(parsed).map_err(|e| format!("{script}: expected a JSON array of {{cmd, params}}: {e}"))?;
             let mut results = Vec::new();
             for (i, step) in steps.iter().enumerate() {
                 let id = step.get("cmd").and_then(Value::as_str).ok_or_else(|| format!("step {}: missing \"cmd\"", i + 1))?;
@@ -696,6 +707,23 @@ mod tests {
         run(&argv(&["export", "--sample", "--format", "org.test.count", "--out", out.to_str().unwrap(), "--plugins", plugins.to_str().unwrap(), "--overwrite", "yes"])).unwrap();
         let err = run(&argv(&["export", "--sample", "--format", "org.test.count", "--out", out.to_str().unwrap()])).unwrap_err();
         assert!(err.contains("lottie") && err.contains("--plugins"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_takes_a_saved_command_file() {
+        let dir = std::env::temp_dir().join(format!("anicraft-cli-macro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Spin.json");
+        std::fs::write(&file, r#"{"format": "anicraft-command", "version": 1, "steps": [{"cmd": "edit.select_all"}, {"cmd": "modify.rotate_cw"}]}"#).unwrap();
+        let out = run(&["run".into(), "--sample".into(), file.display().to_string()]).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!((v["name"].as_str(), v["steps"].as_u64()), (Some("Spin"), Some(2)), "{out}");
+        // A failing step names itself and leaves nothing behind.
+        std::fs::write(&file, r#"{"steps": [{"cmd": "edit.select_all"}, {"cmd": "modify.rotate_cw"}, {"cmd": "layer.set_height", "params": {"height": 7}}]}"#).unwrap();
+        let e = run(&["run".into(), "--sample".into(), file.display().to_string()]).unwrap_err();
+        assert!(e.contains("stopped at step 3 of 3"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

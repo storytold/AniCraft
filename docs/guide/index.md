@@ -34,12 +34,13 @@ the panels, tools and shortcuts you know to AniCraft's, and lists what works dif
 
 13. [Preferences, shortcuts, accessibility and languages](preferences-shortcuts-accessibility.md).
 14. [Plug-ins](plugins.md): add commands safely.
-15. [Working headless](working-headless.md): the command line and AI assistants, for pipelines.
+15. [Saved commands](saved-commands.md): keep steps from the History panel and run them again on any selection.
+16. [Working headless](working-headless.md): the command line and AI assistants, for pipelines.
 
 ## Help
 
-16. [Troubleshooting and FAQ](troubleshooting-and-faq.md).
-17. [Coming from Animate](coming-from-animate.md).
+17. [Troubleshooting and FAQ](troubleshooting-and-faq.md).
+18. [Coming from Animate](coming-from-animate.md).
 
 ## Reference
 

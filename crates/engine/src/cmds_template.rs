@@ -52,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// A name usable as a file or folder name on every system, or why not.
-fn clean_name(raw: &str, what: &str) -> Result<String> {
+pub(crate) fn clean_name(raw: &str, what: &str) -> Result<String> {
     let name = raw.trim();
     if name.is_empty() {
         return Err(EngineError::Param(format!("give the {what} a name")));

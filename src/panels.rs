@@ -576,29 +576,77 @@ pub(crate) fn align_panel(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Undo history: past steps (click to go back), the current state, and redoable steps (dimmed).
+/// Ctrl+click picks steps (Shift+click a range) for Save As Command, which keeps them as a
+/// saved command in the Commands menu (ADR 0097); so does each step's context menu.
 pub(crate) fn history(app: &mut App, ui: &mut egui::Ui) {
+    let picked: std::collections::BTreeSet<usize> = crate::macros_ui::picked(app).into_iter().collect();
     let hist = app.s.history();
     let past: Vec<String> = hist.undo_labels().map(str::to_string).collect();
     let future: Vec<String> = hist.redo_labels().map(str::to_string).collect();
     let evicted = hist.evicted;
     let mut target = None;
-    egui::ScrollArea::vertical().id_salt("history").max_height(ui.available_height().max(60.0)).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+    // (step, toggle, range)
+    let mut pick: Option<(usize, bool, bool)> = None;
+    let mut save = false;
+    let footer = crate::theme::TARGET + 8.0;
+    let tip = tr!("Click to go back to this step · Ctrl+click picks it for Save As Command, Shift+click a range");
+    egui::ScrollArea::vertical().id_salt("history").max_height((ui.available_height() - footer).max(crate::theme::TARGET)).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
         let base = if evicted > 0 { tr!("… older steps freed (memory budget)") } else { tr!("Opened document") };
-        if ui.selectable_label(past.is_empty(), text(Type::Body, base).color(if evicted > 0 { T.text_faint } else { T.text_dim })).clicked() {
+        if ui.selectable_label(past.is_empty() && picked.is_empty(), text(Type::Body, base).color(if evicted > 0 { T.text_faint } else { T.text_dim })).clicked() {
             target = Some(0);
         }
-        for (i, label) in past.iter().enumerate() {
+        let rows = past.iter().map(|l| (l, false)).chain(future.iter().map(|l| (l, true)));
+        for (i, (label, undone)) in rows.enumerate() {
             let current = i + 1 == past.len();
-            if ui.selectable_label(current, crate::i18n::t_dyn(label).into_owned()).clicked() {
-                target = Some(i + 1);
+            let on = picked.contains(&i);
+            let shown = crate::i18n::t_dyn(label).into_owned();
+            // With steps picked, the picks are highlighted and the current step is marked.
+            let shown = if current && !picked.is_empty() { format!("› {shown}") } else { shown };
+            let t = if undone { text(Type::Body, shown).color(T.text_faint).italics() } else { text(Type::Body, shown) };
+            let r = ui.selectable_label(if picked.is_empty() { current } else { on }, t).on_hover_text(tip);
+            if r.clicked() {
+                let m = ui.input(|i| i.modifiers);
+                if m.command || m.shift {
+                    pick = Some((i, m.command, m.shift));
+                } else {
+                    target = Some(i + 1);
+                }
             }
+            r.context_menu(|ui| {
+                if ui.button(if on { tr!("Unpick Step") } else { tr!("Pick for Save As Command") }).clicked() {
+                    pick = Some((i, true, false));
+                    ui.close();
+                }
+                if ui.button(tr!("Save As Command…")).clicked() {
+                    if !on {
+                        pick = Some((i, true, false));
+                    }
+                    save = true;
+                    ui.close();
+                }
+            });
         }
-        for (i, label) in future.iter().enumerate() {
-            if ui.selectable_label(false, text(Type::Body, crate::i18n::t_dyn(label)).color(T.text_faint).italics()).clicked() {
-                target = Some(past.len() + i + 1);
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.set_min_height(crate::theme::TARGET);
+        if picked.is_empty() {
+            ui.add(egui::Label::new(text(Type::Caption, tr!("Ctrl+click steps to save them as a command"))).wrap());
+        } else {
+            if ui.button(tr!("Save As Command…")).on_hover_text(tr!("Keep the picked steps as a command in the Commands menu, to run on any selection")).clicked() {
+                save = true;
+            }
+            ui.label(text(Type::Caption, trn!("{n} step picked", "{n} steps picked", picked.len())));
+            if ui.small_button(tr!("Clear")).on_hover_text(tr!("Unpick every step")).clicked() {
+                crate::macros_ui::clear_picks(app);
             }
         }
     });
+    if let Some((i, toggle, range)) = pick {
+        crate::macros_ui::pick(app, i, toggle, range);
+    }
+    if save {
+        crate::macros_ui::open_save(app);
+    }
     if let Some(t) = target
         && let Err(e) = app.s.travel_to(t)
     {

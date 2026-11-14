@@ -301,6 +301,10 @@ drag is always a single step. The **History** panel at the bottom of the dock li
 by name. Click any step to jump back to it, and click a later (dimmed) one to go forward
 again.
 
+To keep steps you repeat, **Ctrl+click** them in the History panel and choose **Save As
+Command…**: they come back at the end of the Commands menu, to run on any selection as one step.
+See [Saved commands](saved-commands.md).
+
 Undo history is kept in memory while the document is open. It isn't saved with the file.
 
 ## Right-click menus
