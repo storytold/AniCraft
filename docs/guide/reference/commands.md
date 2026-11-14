@@ -342,7 +342,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Layer Height** `layer.set_height` · changes the document
   Parameters: `{height: 100 | 200 | 300 (percent of a normal row), layer?} the layer's row height on the timeline`
 - **Mask Type** `layer.set_mask` · changes the document
-  Parameters: `{mask: coverage|alpha|luminance, layer?} how a mask layer reveals the layers it masks: coverage (its fills' area, as in Animate), alpha (its artwork's opacity: gradients and faded shapes make soft edges) or luminance (its brightness: white shows, black hides; SVG's mask) (ADR 0070)`
+  Parameters: `{mask: coverage|alpha|luminance, layer?} how a mask layer reveals the layers it masks: coverage (its fills' area), alpha (its artwork's opacity: gradients and faded shapes make soft edges) or luminance (its brightness: white shows, black hides; SVG's mask) (ADR 0070)`
 - **Get Layer Properties** `layer.properties`
   Parameters: `{layer?} the layer's name, type, mask type (mask layers), colour, outline, height (percent), visible, locked and onion`
 - **Camera** `camera.set` · changes the document
