@@ -15,11 +15,12 @@ pub fn specs() -> Vec<CommandSpec> {
         c("timeline.insert_blank_keyframe", "Blank Keyframe", "Insert/Timeline", Some("F7"), "{layer? | layers?: [..], frame?, advance?: true (on a keyframe the blank key goes on the next frame instead of clearing it, and the playhead moves onto it)}", true, insert_blank_keyframe),
         c("timeline.clear_keyframe", "Clear Keyframe", "Insert/Timeline", Some("Shift+F6"), "{layer? | layers?: [..], frame?, count?}", true, clear_keyframe),
         c("timeline.move_keyframes", "Move Keyframes", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up)}", true, move_keyframes),
+        c("timeline.move_spans", "Move Spans", "", None, "{layer? | layers?: [..], from, to?, by, layer_by? (rows down; negative = up), copy?: true (Alt-drag: the frames stay where they were too)}: the spans starting in from..=to move whole, keeping their lengths and tweens (as dragging a tween span in Animate), replacing what they land on; the frames they leave are empty", true, move_spans),
         c("timeline.create_motion_tween", "Create Motion Tween", "Insert", None, "{layer?, frame?} (several objects on the key become one graphic symbol; a one-frame span grows to a second)", true, crate::cmds_motion::create),
         c("timeline.create_tween", "Create Classic Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_tween),
         c("timeline.create_shape_tween", "Create Shape Tween", "Insert", None, "{layer?, frame?, easing? (as timeline.set_easing takes it)}", true, create_shape_tween),
         c("timeline.remove_tween", "Remove Tween", "Insert", None, "{layer?, frame?} (a motion tween leaves its object as it is on the first frame)", true, remove_tween),
-        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name}, group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}", true, set_easing),
+        c("timeline.set_easing", "Set Tween Easing", "", None, "{easing: a preset name (Linear, QuadIn … ElasticInOut) | {classic: -100..100} | {bezier: [x1, y1, x2, y2]} | {custom: {points: [..]} | [[x, y], ..]} | {saved: name} | {plugin: id, ease: id} (an ease plug-in's; the tween keeps its sampled curve), group?: all|position|rotation|scale|color|filters (classic tweens: that property group's own ease), layer?, frame?}", true, set_easing),
         c("timeline.set_orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}", true, set_orient),
         c("timeline.set_label", "Frame Label", "", None, "{label, layer?, frame?}", true, set_label),
         c("timeline.goto", "Go to Frame", "", None, "{frame}", false, goto),
@@ -506,7 +507,7 @@ fn move_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v.as_i64().ok_or_else(|| EngineError::Param("param 'layer_by' must be a whole number of layers".into()))?,
     };
     if layer_by != 0 {
-        return move_across_layers(s, p, from, to, by, layer_by);
+        return move_across_layers(s, p, from, to, by, layer_by, false);
     }
     let mut moved = 0;
     for id in target_layers(s, p)? {
@@ -515,12 +516,37 @@ fn move_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"moved": moved}))
 }
 
-/// Dragging keyframes onto other layers (`layer_by` rows down, negative = up): the frames are
-/// lifted out of every source layer first (leaving blank keyframes), then
-/// placed on the target layers, replacing what was there; frames after the landing range
-/// keep their content. Lifting everything before placing anything makes overlapping row
-/// ranges (dragging two rows down by one) come out right.
-fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, layer_by: i64) -> Result<Value> {
+/// Moving whole spans (ADR 0083): the spans starting in `from..=to` keep their lengths, motion
+/// and tweens, and land `by` frames later and `layer_by` rows down, replacing what was there.
+/// `copy` (Alt-drag) leaves the originals where they were.
+fn move_spans(s: &mut Session, p: &Value) -> Result<Value> {
+    let from = opt_u32(p, "from")?.ok_or_else(|| EngineError::Param("param 'from' is required".into()))?;
+    let to = opt_u32(p, "to")?.unwrap_or(from);
+    let by = p.get("by").and_then(Value::as_i64).ok_or_else(|| EngineError::Param("param 'by' must be a whole number of frames".into()))?;
+    if to < from || to > MAX_FRAME || by.unsigned_abs() > u64::from(MAX_FRAME) {
+        return Err(EngineError::Param(format!("frames must be in order and within {MAX_FRAME}")));
+    }
+    let layer_by = match p.get("layer_by") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v.as_i64().ok_or_else(|| EngineError::Param("param 'layer_by' must be a whole number of layers".into()))?,
+    };
+    let copy = opt_bool(p, "copy")?.unwrap_or(false);
+    if by == 0 && layer_by == 0 {
+        if copy {
+            return Err(EngineError::State("the copy would land on the frames it copies: drag it somewhere else".into()));
+        }
+        return Ok(json!({"moved": 0}));
+    }
+    move_across_layers(s, p, from, to, by, layer_by, copy)
+}
+
+/// Dragging keyframes onto other layers (`layer_by` rows down, negative = up), or whole spans
+/// along their own: the frames are lifted out of every source layer first (leaving blank
+/// keyframes, as in Animate; a `copy` leaves them be), then placed on the target layers,
+/// replacing what was there; frames after the landing range keep their content. Lifting
+/// everything before placing anything makes overlapping row ranges (dragging two rows down by
+/// one) come out right.
+fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, layer_by: i64, copy: bool) -> Result<Value> {
     let order: Vec<LayerId> = s.timeline().layers.iter().map(|l| l.id).collect();
     let mut rows: Vec<usize> = target_layers(s, p)?.iter().filter_map(|id| order.iter().position(|o| o == id)).collect();
     rows.sort_unstable();
@@ -536,7 +562,9 @@ fn move_across_layers(s: &mut Session, p: &Value, from: u32, to: u32, by: i64, l
     for &(src, dst) in &plan {
         let layer = s.layer_mut(Some(src))?;
         let keys: Vec<Keyframe> = layer.keyframes.iter().filter(|k| k.start >= from && k.start <= to).map(|k| (**k).clone()).collect();
-        if let (Some(first), Some(last)) = (keys.first().map(|k| k.start), keys.last().map(Keyframe::end)) {
+        if !copy
+            && let (Some(first), Some(last)) = (keys.first().map(|k| k.start), keys.last().map(Keyframe::end))
+        {
             layer.keyframes.retain(|k| !(k.start >= from && k.start <= to));
             // The frames stay; their content leaves.
             layer.keyframes.push(Arc::new(Keyframe::new(first, last - first)));
@@ -649,7 +677,7 @@ fn create_shape_tween(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn tween_of_kind(s: &mut Session, p: &Value, kind: TweenKind) -> Result<Value> {
-    let given = opt_easing_in(&s.doc, p, "easing")?;
+    let given = opt_easing_in(s, p, "easing")?;
     let k = keyframe_mut(s, p)?;
     // Switching kinds keeps the easing the span already had, unless one is given; a classic
     // tween keeps its property groups' eases (a shape tween has one ease, as in Animate).
@@ -677,7 +705,7 @@ fn remove_tween(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn set_easing(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing_in(&s.doc, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let easing = opt_easing_in(s, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
     let group = crate::cmds_ease::group(p)?;
     let k = keyframe_mut(s, p)?;
     let t = k.tween.as_mut().ok_or_else(|| EngineError::State("this span has no tween; create one first".into()))?;

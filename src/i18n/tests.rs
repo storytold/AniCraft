@@ -122,6 +122,9 @@ fn all_keys() -> BTreeSet<Key> {
     }
     add(&doc::Easing::Linear.label());
     doc::Property::ALL.iter().for_each(|p| add(p.label()));
+    doc::FilterParam::ALL.iter().for_each(|p| add(p.label()));
+    add("Filters");
+    add("Filter");
     doc::ColorStyle::ALL.iter().for_each(|s| add(s.label()));
     doc::EaseFamily::ALL.iter().for_each(|f| add(f.label()));
     doc::EaseDir::ALL.iter().for_each(|d| add(d.label()));
@@ -599,7 +602,7 @@ fn every_control_can_be_used_in_the_pseudo_locale() {
             a.run("element.set_color_effect", serde_json::json!({"style": style}));
         }));
     }
-    for panel in ["sound", "camera", "springbones", "shapebones", "warp", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside", "templates", "savetemplate", "brushlibrary", "brushcurve"] {
+    for panel in ["sound", "camera", "springbones", "shapebones", "shapeweights", "warp", "motion", "motionpins", "actions", "script", "prefs", "envelope", "onionmenu", "editmultiple", "edittransform", "onionsymbol", "find", "explorer", "publish", "publishreport", "publishanim", "start", "testmovie", "testmovieinside", "templates", "savetemplate", "brushlibrary", "brushcurve"] {
         found.extend(click_everything(panel, |a, _| a.open_panel(Some(panel))));
     }
     // Test Movie in a window of its own (ADR 0062; egui stands in for the window system here).

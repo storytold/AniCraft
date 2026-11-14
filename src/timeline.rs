@@ -11,6 +11,9 @@ use serde_json::json;
 use std::sync::Arc;
 
 const LAYER_W: f32 = 252.0;
+/// The narrowest the layer column goes, and the least room kept for frames beside it.
+const MIN_LAYER_W: f32 = 150.0;
+const MIN_FRAMES_W: f32 = 40.0;
 /// Rows are click targets (≥ `theme::TARGET`).
 const ROW_H: f32 = TARGET;
 const RULER_H: f32 = 24.0;
@@ -138,6 +141,27 @@ impl FrameSel {
         let (f0, f1) = self.frames();
         self.rows(layers).is_some_and(|(a, b)| row >= a && row <= b) && frame >= f0 && frame <= f1
     }
+    /// Whether the selection is whole spans, at least one of them a tween (classic, shape or
+    /// motion): on every selected layer it starts where a span starts and ends where a span
+    /// ends. Dragging such a selection moves the spans whole, as in Animate (ADR 0083).
+    pub fn is_whole_tweens(&self, layers: &[Arc<Layer>]) -> bool {
+        let (f0, f1) = self.frames();
+        let ids = self.layers(layers);
+        let mut tween = false;
+        for l in layers.iter().filter(|l| ids.contains(&l.id) && l.kind != LayerKind::Folder) {
+            let mut inside = l.keyframes.iter().filter(|k| k.start >= f0 && k.start <= f1).peekable();
+            let Some(first) = inside.peek().map(|k| k.start) else { return false };
+            let mut end = first;
+            for k in inside {
+                tween |= k.motion.is_some() || k.tween.is_some();
+                end = k.end();
+            }
+            if first != f0 || end != f1 + 1 {
+                return false;
+            }
+        }
+        tween
+    }
     /// Whether any selected layer has a keyframe starting in the selected frames.
     pub fn has_keys(&self, layers: &[Arc<Layer>]) -> bool {
         let (f0, f1) = self.frames();
@@ -157,6 +181,49 @@ pub enum TlDrag {
     Move { grab: u32, by: i64, grab_row: usize, rows_by: i64 },
     /// Dragging the end of the span `start..end` on `layer` to `to`.
     Span { layer: LayerId, start: u32, end: u32, to: u32 },
+}
+
+/// The motion tween span holding `frame` on `layer`, as a frame selection.
+fn whole_motion_span(layer: &Layer, frame: u32) -> Option<FrameSel> {
+    let k = layer.keyframe_at(frame).filter(|k| k.motion.is_some())?;
+    Some(FrameSel { anchor: (layer.id, k.start), head: (layer.id, k.end() - 1) })
+}
+
+/// Whether Split Motion can cut the motion tween at the playhead (not on its first frame), and
+/// the last frame Join Motion would join up to: the selection's end when it covers several
+/// motion spans, else the span after the one at the playhead (when that is a motion tween too).
+pub fn motion_cuts(app: &App) -> (bool, Option<u32>) {
+    let Some(layer) = app.s.active_layer() else { return (false, None) };
+    let f = app.s.frame;
+    let Some(k) = layer.keyframe_at(f).filter(|k| k.motion.is_some()) else { return (false, None) };
+    let split = f > k.start;
+    let next = layer.keyframes.iter().find(|n| n.start == k.end()).filter(|n| n.motion.is_some());
+    let to = match app.frame_sel.map(|s| s.frames()) {
+        Some((_, f1)) if f1 >= k.end() => Some(f1),
+        _ => next.map(|n| n.start),
+    };
+    (split, to.filter(|_| next.is_some()))
+}
+
+/// Split Motion at the playhead: two tweens, each moving as before.
+pub fn split_motion(app: &mut App) {
+    if app.run("motion.split", json!({"frame": app.s.frame})).is_some() {
+        app.status_ok(tr!("Split the motion tween in two at frame {frame} — {undo} to undo", frame = app.s.frame + 1, undo = app.undo_key()));
+    }
+}
+
+/// Join Motion: the tween at the playhead with the ones after it, up to frame `to`.
+pub fn join_motion(app: &mut App, to: Option<u32>) {
+    let Some(to) = to else { return };
+    let start = app.s.active_layer().and_then(|l| l.keyframe_at(app.s.frame)).map_or(app.s.frame, |k| k.start);
+    if let Some(v) = app.run("motion.join", json!({"frame": start, "to": to})) {
+        let n = v["joined"].as_u64().unwrap_or(2);
+        let frames = v["frames"].as_u64().unwrap_or(0) as u32;
+        if let Some(l) = app.s.active_layer() {
+            app.frame_sel = Some(FrameSel { anchor: (l.id, start), head: (l.id, start + frames.saturating_sub(1)) });
+        }
+        app.status_ok(trn!("Joined {n} motion tween into one — {undo} to undo", "Joined {n} motion tweens into one — {undo} to undo", n, undo = app.undo_key()));
+    }
 }
 
 /// Range params for the frame commands when frames are selected: `{layers, frame, count}`.
@@ -249,6 +316,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
     if icon_button(ui, tr!("Loop playback"), Some(looping), Icon::Loop).clicked() {
         app.looping = !app.looping;
     }
+    volume(app, ui);
     crate::onion::buttons(app, ui);
     // Add Camera, as Animate has it on the timeline: on while the scene has a camera; a click
     // then takes it away (asking first when the camera moves; undoable).
@@ -263,6 +331,40 @@ fn transport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 }
+
+/// The monitor volume (ADR 0095): a speaker that mutes and a short slider, for playback,
+/// scrubbing, previews and Test Movie. The listener's (kept in the preferences), never the
+/// document's: exports keep their sound. Layer volumes are in Properties.
+fn volume(app: &mut App, ui: &mut egui::Ui) {
+    let muted = app.prefs.sound_muted;
+    let tip = if muted { tr!("Unmute sounds") } else { tr!("Mute sounds (while you work; exports keep their sound)") };
+    if icon_button(ui, tip, Some(muted), if muted { Icon::SoundOff } else { Icon::Sound }).clicked() {
+        app.prefs.sound_muted = !muted;
+        app.save_prefs();
+    }
+    let mut pct = (app.prefs.sound_volume.clamp(0.0, 1.0) * 100.0).round();
+    let r = ui
+        .scope(|ui| {
+            ui.spacing_mut().slider_width = VOLUME_W;
+            ui.add_enabled(!muted, egui::Slider::new(&mut pct, 0.0..=100.0).step_by(1.0).show_value(false).trailing_fill(true))
+        })
+        .inner
+        .named(tr!("Playback volume"));
+    let r = r.on_hover_text(tr!("Playback volume: {pct} %", pct = pct));
+    if r.changed() {
+        // Heard at once while dragging; written to the preferences when the drag ends.
+        app.prefs.sound_volume = pct / 100.0;
+        if !r.dragged() {
+            app.save_prefs();
+        }
+    }
+    if r.drag_stopped() {
+        app.save_prefs();
+    }
+}
+
+/// The header's volume slider, in points: short, as the header is full.
+const VOLUME_W: f32 = 56.0;
 
 /// The timeline header's tools, beside the dock's tabs (ADR 0075): transport, readouts, frame
 /// and tween buttons, `width` wide at most. What doesn't fit scrolls sideways (Shift+wheel) in
@@ -290,7 +392,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let painter = ui.painter_at(body);
     painter.rect_filled(body, 0.0, T.panel);
 
-    let grid = Rect::from_min_max(pos2(body.left() + LAYER_W, body.top()), body.right_bottom());
+    // In a narrow dock (ADR 0087) the layer column gives up width to keep a strip of frames;
+    // the layers' toggles stay whole and their names are cut short.
+    let layer_w = LAYER_W.min(body.width() - MIN_FRAMES_W).max(MIN_LAYER_W);
+    let grid = Rect::from_min_max(pos2(body.left() + layer_w, body.top()), body.right_bottom());
     let frames_total = app.s.frame_count();
     app.tl_cell_w = app.tl_cell_w.clamp(*CELL_RANGE.start(), *CELL_RANGE.end());
     // Ctrl+wheel (or pinch) over the frames zooms about the pointer: the frame under it stays put.
@@ -879,16 +984,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             cp.line_segment([pos2(x, y + 1.0), pos2(x, y + rh - 1.0)], Stroke::new(2.0, T.text));
             let n = to - start;
             let secs = n as f32 / app.s.doc.stage.fps.max(1.0);
-            let label = trn!("{n} frame · {secs} s", "{n} frames · {secs} s", n, secs = format!("{secs:.2}"));
-            let at = pos2(x + 6.0, y + rh * 0.5);
+            let mut label = trn!("{n} frame · {secs} s", "{n} frames · {secs} s", n, secs = format!("{secs:.2}"));
+            // A motion tween's keys stretch with it (Shift keeps them where they are).
+            if layer.keyframe_starting_at(start).and_then(|i| layer.keyframes.get(i)).is_some_and(|k| k.motion.is_some()) {
+                let how = if ui.input(|i| i.modifiers.shift) { tr!("keys stay (Shift)") } else { tr!("keys stretch") };
+                label = format!("{label} · {how}");
+            }
             let galley = painter.layout_no_wrap(label, font(Type::DataSmall), T.text);
             let (w, h) = (galley.rect.width(), galley.rect.height());
+            // Right of the end line, or left of it where the grid ends.
+            let at = if x + 12.0 + w > grid.right() { pos2(x - 12.0 - w, y + rh * 0.5) } else { pos2(x + 6.0, y + rh * 0.5) };
             let bg = Rect::from_min_size(at - vec2(3.0, h * 0.5 + 2.0), vec2(w + 6.0, h + 4.0));
             painter.rect_filled(bg, T.rc(), T.chrome);
             painter.rect_stroke(bg, T.rc(), Stroke::new(1.0, T.border), StrokeKind::Inside);
             painter.galley(bg.min + vec2(3.0, 2.0), galley, T.text);
         }
         let cr = ui.interact(cells, ui.id().with(("cells", layer.id.0)), a11y::pointer_only());
+        if is_active {
+            // Where the active row's frames are drawn, for tests that point at them.
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("tl_geometry"), (cells, grid.left() + pad, cell_w, scroll)));
+        }
         a11y::control(ui, &cr, WidgetType::Button, &tr!("Frames of {name}", name = layer.name), None);
         if is_active {
             // Its keyframes and spans, one by one, for screen readers (ADR 0064).
@@ -935,8 +1050,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         {
             let f = frame_at(p.x);
             let grab = app.frame_sel.filter(|s| s.contains(&layers, i, f) && s.has_keys(&layers));
+            // A motion tween span is picked whole by a press, as in Animate, and drags away
+            // whole (Ctrl starts a frame selection inside it instead).
+            let span = whole_motion_span(layer, f).filter(|_| grab.is_none() && !ui.input(|inp| inp.modifiers.command));
             if grab.is_some() {
                 app.tl_drag = TlDrag::Move { grab: f, by: 0, grab_row: i, rows_by: 0 };
+            } else if let Some(sel) = span {
+                app.frame_sel = Some(sel);
+                app.tl_drag = TlDrag::Move { grab: f, by: 0, grab_row: i, rows_by: 0 };
+                select_here(app, f);
             } else {
                 app.frame_sel = Some(FrameSel::cell(layer.id, f));
                 app.tl_drag = TlDrag::Select;
@@ -976,13 +1098,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
         }
         if cr.drag_stopped()
-            && let TlDrag::Span { layer: lid, start: _, end, to } = app.tl_drag
+            && let TlDrag::Span { layer: lid, start, end, to } = app.tl_drag
         {
-            let lid = lid.0;
-            if to > end {
-                app.request("timeline.insert_frame", json!({"layer": lid, "frame": end - 1, "count": to - end}));
-            } else if to < end {
-                app.request("timeline.remove_frame", json!({"layer": lid, "frame": to, "count": end - to}));
+            // One step: the span's new length, its motion keys stretched in proportion (as
+            // in Animate) unless Shift is held; later frames move with the end (ADR 0083).
+            let keep = ui.input(|i| i.modifiers.shift);
+            if to != end
+                && let Some(v) = app.run("timeline.resize_span", json!({"layer": lid.0, "frame": start, "frames": to - start, "scale_keys": !keep}))
+            {
+                let n = to - start;
+                app.status_ok(if v["scaled"] == json!(true) {
+                    trn!("Stretched the tween to {n} frame, its keys in proportion — {undo} to undo", "Stretched the tween to {n} frames, its keys in proportion — {undo} to undo", n, undo = app.undo_key())
+                } else {
+                    trn!("The span is {n} frame long — {undo} to undo", "The span is {n} frames long — {undo} to undo", n, undo = app.undo_key())
+                });
             }
             app.tl_drag = TlDrag::None;
         }
@@ -992,7 +1121,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             {
                 let (f0, f1) = sel.frames();
                 let ids: Vec<u64> = sel.layers(&layers).iter().map(|l| l.0).collect();
-                if app.run("timeline.move_keyframes", json!({"layers": ids, "from": f0, "to": f1, "by": by, "layer_by": rows_by})).is_some() {
+                // Whole tween spans move whole, keeping their lengths; Alt-drag copies (ADR 0083).
+                let copy = ui.input(|inp| inp.modifiers.alt);
+                let (id, params) = if copy || sel.is_whole_tweens(&layers) {
+                    ("timeline.move_spans", json!({"layers": ids, "from": f0, "to": f1, "by": by, "layer_by": rows_by, "copy": copy}))
+                } else {
+                    ("timeline.move_keyframes", json!({"layers": ids, "from": f0, "to": f1, "by": by, "layer_by": rows_by}))
+                };
+                if app.run(id, params).is_some() {
                     // The selection follows the frames: shifted in time and onto the target rows.
                     let shift_by = |f: u32| (i64::from(f) + by).max(0) as u32;
                     let row_of = |id: LayerId| layers.iter().position(|l| l.id == id).and_then(|r| layers.get((r as i64 + rows_by).max(0) as usize)).map_or(id, |l| l.id);
@@ -1001,6 +1137,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     // One sentence per direction; the frame count is a phrase of its own.
                     let frames = trn!("{n} frame", "{n} frames", n);
                     app.status_ok(match rows_by {
+                        _ if copy => trn!("Copied {n} frame — {undo} to undo", "Copied {n} frames — {undo} to undo", n, undo = app.undo_key()),
                         0 => trn!("Moved {n} frame by {by} — {undo} to undo", "Moved {n} frames by {by} — {undo} to undo", n, by = format!("{by:+}"), undo = app.undo_key()),
                         r if r < 0 => trn!("Moved {frames} {n} layer up — {undo} to undo", "Moved {frames} {n} layers up — {undo} to undo", r.unsigned_abs(), frames = frames, undo = app.undo_key()),
                         r => trn!("Moved {frames} {n} layer down — {undo} to undo", "Moved {frames} {n} layers down — {undo} to undo", r.unsigned_abs(), frames = frames, undo = app.undo_key()),
@@ -1020,9 +1157,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             && let Some(p) = cr.interact_pointer_pos()
         {
             let f = frame_at(p.x);
+            let ctrl = ui.input(|inp| inp.modifiers.command);
             match app.frame_sel.as_mut() {
                 Some(sel) if shift => sel.head = (layer.id, f),
-                _ => app.frame_sel = Some(FrameSel::cell(layer.id, f)),
+                // A click on a motion tween picks the whole span (Ctrl-click: one frame).
+                _ => app.frame_sel = Some(whole_motion_span(layer, f).filter(|_| !ctrl).unwrap_or(FrameSel::cell(layer.id, f))),
             }
             select_here(app, f);
         }
@@ -1057,6 +1196,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 menus::cmd_item(app, ui, "timeline.create_tween");
                 menus::cmd_item(app, ui, "timeline.remove_tween");
+                ui.separator();
+                let (split, join) = motion_cuts(app);
+                if ui.add_enabled(split, egui::Button::new(tr!("Split Motion"))).clicked() {
+                    split_motion(app);
+                    ui.close();
+                }
+                if ui.add_enabled(join.is_some(), egui::Button::new(tr!("Join Motion"))).clicked() {
+                    join_motion(app, join);
+                    ui.close();
+                }
                 return;
             }
             let tween = here.and_then(|k| k.tween.clone());

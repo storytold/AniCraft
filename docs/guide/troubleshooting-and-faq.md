@@ -47,6 +47,27 @@ is set, that environment variable overrides Preferences; remove it to choose aga
 
 Exports always use the CPU renderer, so a stage problem never ends up in your files.
 
+## The graphics card stopped in the middle of my work
+
+Under heavy load (a game or a render running beside AniCraft, a very large scene) a graphics
+driver can stop answering or reset itself. AniCraft keeps going:
+
+* **The stage** switches to the CPU at once and the status bar says so. The picture is the same,
+  only slower on big scenes. AniCraft tries the graphics card again after a few seconds, then
+  after longer pauses (and sooner when you resize the window); the status bar says when it is
+  back. After several failures in a row the CPU keeps the stage for the rest of the session.
+* **A driver error** the window survives is written to the log, your unsaved work is autosaved
+  straight away, and the status bar says AniCraft carried on.
+* **If the window itself loses the graphics card**, AniCraft saves your work, closes the window
+  and opens it again a safer way (on Windows, DirectX 12 on the built-in graphics chip, then
+  OpenGL). The **Recover unsaved work** window offers your work back. The next three starts try
+  that safer way first too, then the fastest way gets its chance again.
+
+If it keeps happening, update the graphics driver, or choose another way in **Preferences ›
+Stage › Window graphics**. The log (`anicraft.log`, in the `Logs` folder of the
+[settings folder](#where-settings-live)) says what the driver reported; please attach it to a
+bug report.
+
 ## Fonts look different or are missing
 
 * **The interface font.** AniCraft's builds normally include the Inter and JetBrains Mono
@@ -148,7 +169,6 @@ The web version is the same program running in a browser, with some limits:
 
 | Not in the web version yet | What to do |
 |---|---|
-| Sound playback while editing | Sounds still import and export (WAV, HTML page); play them in the desktop app. |
 | Video export | Export a GIF, animated PNG or WebP, a PNG sequence or an HTML page. |
 | Installing plug-ins and saving your own templates | Use the desktop app (the built-in templates work). |
 | Fonts on your computer | Text uses the built-in faces. |

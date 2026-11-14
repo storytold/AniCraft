@@ -122,8 +122,8 @@ Unknown ops answer `{"ok":false,"error":"unknown op '…'"}`, so a plug-in can f
 New ops and plug-in kinds are added without changing version 1; the version changes only
 when an existing contract changes.
 
-**Reserved for later kinds**: exporters (`kind: "exporter"`, frames in, bytes out); easing
-presets. Frame scripts are below.
+Two more kinds are below: frame scripts, and exporters and eases
+([ADR 0088](adr/0088-exporter-and-easing-plug-ins.md)).
 
 ## Frame scripts (`kind: "frame-script"`)
 
@@ -186,6 +186,78 @@ fn run(p: &Value) -> Result<(), String> {
 }
 ```
 
+## Exporters (`kind: "exporter"`)
+
+An exporter adds an export format. File › Export lists it below the built-in formats; it opens
+an Export window with the plug-in's options, the frames and the file, then shows a progress bar
+and Cancel while the export runs (on a worker thread, with a snapshot of the document).
+Headless: `file.export_plugin` and `anicraft-cli export --format <id>`.
+
+```json
+{"id": "org.example.text", "name": "Plain Text Frames", "kind": "exporter",
+ "format": {"name": "Plain Text Frames", "extension": "txt"},
+ "params": {"detail": {"type": "choice", "options": ["Summary", "Shapes"], "default": "Shapes"}}}
+```
+
+* `format`: `name` (1-64 printable characters; the menu item and the window's title) and
+  `extension` (1-16 characters from a-z 0-9, without the dot; the file dialog's filter).
+* `params` are the export's **options**, declared and checked exactly as a command's parameters.
+* Exports: `memory`, `ac_abi_version`, `ac_manifest`, `ac_alloc` and
+  **`ac_export(options_ptr, options_len) -> i64`**: `(len << 32) | ptr` of the file's bytes in
+  the module's memory, or a negative number when it fails (the last log line says why).
+  AniCraft writes the file; an exporter never touches files.
+* An exporter **never sees the document**, only evaluated frames:
+
+| Request | Result |
+|---|---|
+| `{"op":"movie"}` | `{abi, name (the file's stem), width, height, fps, background: "#rrggbbaa", from, to (movie frames, 0-based), frames (in the export), total_frames, scenes: [{name, start, frames}]}` |
+| `{"op":"frame","index":i}` | Frame `from + i`, evaluated as the stage shows it at that frame (guides left out): `{index, frame, scene, scene_frame, items, clips, groups}` |
+| `{"op":"log","message":"…"}` | `null` |
+| `command`, `document`, `elements` | Refused |
+
+Each item of a frame is one filled or stroked path, in drawing order:
+`{layer, element, path (SVG path data, local space), transform: [a,b,c,d,e,f] (local → stage),
+fill, stroke, fill_rule: "nonzero"|"evenodd", alpha, color?: {mul: [r,g,b,a], add: [r,g,b,a]}
+(the colour effect, when there is one), clip?, masks?, group?}`.
+`fill` is `null` or `{"type": "solid", "color": "#rrggbbaa"}`, `{"type": "linear", start, end,
+stops: [[offset, colour]], spread, linear_rgb}`, `{"type": "radial", center, radius, focal,
+matrix, stops, spread, linear_rgb}` or `{"type": "bitmap", bitmap (library id), repeat,
+matrix}`; `stroke` is `null` or `{color, width, cap, join, miter_limit, dash?, variable_width?}`.
+An item with `masks: n` is mask artwork that forms clip `n` (it isn't drawn); an item with
+`clip: n` is drawn only inside clip `n`; `clips[n]` is the clip it is intersected with.
+`groups[n]` (`{parent, alpha, blend, clip, filters}`) fades its items as one. Text arrives as
+outlines.
+
+**Limits** (`Limits::exporter`): 50,000,000,000 instructions (about 100 s of computing), 10
+minutes, 1,000,000 requests, 32 MiB per answer, **64 MiB of output** (checked before a byte is
+copied). Progress is the frames read (each counted once); Cancel stops the export at its next
+request or within one slice of fuel, and nothing is written.
+
+## Eases (`kind: "ease"`)
+
+An ease plug-in adds eases to every ease menu (the timeline's, Properties › Frame, the Motion
+Editor), under **Plug-in eases**.
+
+```json
+{"id": "org.example.steps", "name": "Stepped Eases", "kind": "ease",
+ "eases": [{"id": "steps4", "name": "Stepped 4"}, {"id": "smooth4", "name": "Smooth Steps 4"}]}
+```
+
+* `eases`: 1-32 of `{id ([A-Za-z0-9_-]{1,32}), name (1-48 printable characters)}`. No `params`.
+* Exports: `memory`, `ac_abi_version`, `ac_manifest` and
+  **`ac_ease(index: i32, t: f64) -> f64`**: ease number `index`'s eased progress at time `t`.
+* AniCraft calls it **once, when the plug-in loads**, at 257 times (`t = i / 256`), with no host
+  calls allowed, and keeps the table. The values must be finite, within −10..10, 0 at t = 0
+  and 1 at t = 1 (within 0.001); otherwise the plug-in doesn't load and the message names the
+  ease, the time and the value.
+* A tween given one **keeps the table** (`Easing::Sampled`, read with linear interpolation), so
+  the document opens and plays the same without the plug-in, and a newer version of it never
+  changes a finished movie. Pick the ease again to take a newer curve. Editing its points in
+  the Custom Ease window makes it a custom ease through 48 of its samples.
+* Easing params take `{"plugin": "org.example.steps", "ease": "steps4"}` (its id or name) and
+  `{"sampled": {…}}` (what `ease.info` returns; works without the plug-in). `ease.list` lists the
+  installed plug-ins' eases.
+
 ### Manifest
 
 ```json
@@ -212,7 +284,8 @@ fn run(p: &Value) -> Result<(), String> {
 * `name`: the menu label, 1–64 printable characters (control characters and invisible
   format characters such as bidi overrides are rejected). The app adds "…" when there are
   parameters.
-* `kind`: `"command"`, or `"frame-script"` (see Frame scripts above, with its `entries`).
+* `kind`: `"command"`, `"frame-script"` (see Frame scripts above, with its `entries`),
+  `"exporter"` (with its `format`) or `"ease"` (with its `eases`); see above.
 * `selection`: `"optional"` (default; generators) or `"required"` (selection transforms: the
   menu item is disabled without a selection and `plugin.run` refuses).
 * `params`: in dialog order, at most 32. Names are `[A-Za-z0-9_]`, 1–32 characters, not
@@ -230,6 +303,34 @@ fn run(p: &Value) -> Result<(), String> {
   `element.set_transform`, `element.set_alpha`).
 * **Jitter Selection** (`jitter/`): a selection transform. Moves, turns and scales each selected
   element about its own centre (`elements`, `element.select`, `modify.transform`).
+* **Plain Text Frames** (`text-export/`): an exporter. The movie as readable text, one block per
+  frame, each shape with its position and paint (`exporter!`, `movie`, `frame`).
+* **Stepped Eases** (`stepped-ease/`): an ease plug-in. Stepped 2, 4 and 8, and Smooth Steps 4
+  (`ease!`).
+
+```rust
+// An exporter: options in, the file's bytes out.
+ac::exporter!(MANIFEST, export);
+fn export(options: &Value) -> Result<Vec<u8>, String> {
+    let movie = ac::movie()?;
+    let mut out = String::new();
+    for i in 0..movie["frames"].as_u64().unwrap_or(0) {
+        let f = ac::frame(i)?;
+        out += &format!("frame {}: {} shapes\n", f["frame"], f["items"].as_array().map_or(0, Vec::len));
+    }
+    Ok(out.into_bytes())
+}
+
+// An ease plug-in: eased progress of ease `index` at time `t`.
+ac::ease!(MANIFEST, ease);
+fn ease(index: usize, t: f64) -> f64 {
+    let n = [2.0, 4.0][index.min(1)];
+    if t >= 1.0 { 1.0 } else { (t * n).floor() / n }
+}
+```
+
+Built for anything but WebAssembly, the SDK's host imports are stand-ins that answer every
+request with an error, so `cargo test` runs a plug-in's pure parts natively (the samples do).
 
 ```rust
 use anicraft_plugin_sdk::{self as ac, Rng};
@@ -271,6 +372,8 @@ dependencies, `anicraft-cli run --sample … --plugins examples/plugins/dist`):
 | Star Field, 120 stars (361 requests, 60 M instructions for 200) | ~27 ms, fast enough for the live preview |
 | Star Field, 1,000 stars (3,001 requests) | ~230 ms |
 | Jitter Selection on one element | ~1 ms (0.8 M instructions) |
+| Plain Text Frames, the 48-frame demo with paths (70 KB of text) | ~77 ms (92 M instructions) |
+| Stepped Eases: load and sample four eases (1,028 calls) | ~1.8 ms |
 | A busy loop in the interpreter | ~470 M instructions/s (20 M in 43 ms) |
 
 A request costs about 75 µs here: most of it is the command itself plus the plug-in parsing
@@ -279,10 +382,11 @@ second per run.
 
 ## Not in v1
 
-* Exporters and easing plug-ins (reserved above), panels and other UI plug-ins.
+* Panels and other UI plug-ins; exporter plug-ins in Publish Settings; bitmaps' pixels and
+  sounds handed to exporters; ease plug-ins with parameters.
 * State that survives between frame-script runs (each run is a fresh instance).
-* Runs on a background thread with progress and cancel: a run blocks the app for at most its
-  time budget (5 s).
+* Command plug-ins on a background thread with progress and cancel: a run blocks the app for at
+  most its time budget (5 s). (Exports already run on one.)
 * A compact binary view of large documents (v1 answers JSON only), and requests that edit a
   path's points directly by data (today: `path.*` commands, or redraw with `draw.path`).
 * Signing, a plug-in catalogue, and per-plug-in permissions beyond the fixed policy above.

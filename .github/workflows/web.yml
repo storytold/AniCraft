@@ -33,6 +33,11 @@ jobs:
       command: |
         # Every crate builds for wasm32.
         cargo build --workspace --target wasm32-unknown-unknown --locked
+        # The sample plug-ins (examples/plugins; ADR 0017, 0088): built to WebAssembly, their own
+        # tests, and the engine running the built modules.
+        examples/plugins/build.sh
+        (cd examples/plugins && cargo test --locked)
+        ANICRAFT_EXAMPLE_PLUGINS="$PWD/examples/plugins/dist" cargo test -p anicraft-engine --test example_plugins --locked
         # wasm-bindgen CLI at the version Cargo.lock pins.
         version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
         cargo install wasm-bindgen-cli --version "$version" --locked

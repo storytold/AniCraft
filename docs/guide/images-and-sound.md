@@ -206,15 +206,29 @@ soundtrack: audio and video exports don't include them. See
 ## Hearing it: playback and scrubbing
 
 * Press **Enter** (**Control › Play**) to play the movie with its sound. The playhead follows the
-  sound, so picture and sound stay together.
+  sound being heard, so picture and sound stay together: if your computer can't draw every
+  frame in time, frames are skipped rather than the picture falling behind.
 * **Stream** sounds pick up wherever the playhead jumps.
-* **Drag the playhead** to scrub: you hear short snippets of the sound under it, which helps with
-  lip sync.
+* **Event** sounds play to their end: when Loop Playback goes round to frame 1, or the playhead
+  stops on the last frame, they carry on. Press **Enter** again to stop all sound.
+* **Drag the playhead** to scrub: you hear a short slice of the stream sounds under it, which
+  helps with lip sync. Turn it off with **Control › Audio Scrubbing**.
 * **Test Movie** (**Ctrl+Enter**) plays the sounds too, including those in movie clips, graphics
   and buttons.
 
-The web version of AniCraft plays silently for now. Sounds still import, show on the timeline
-and export.
+### Volume and mute while you work
+
+The speaker and slider in the timeline's header set how loud you hear the movie; click the
+speaker (or choose **Control › Mute Sounds**) to silence it. They are yours, not the document's:
+they're kept in your preferences (**Preferences › Sound**) and never change an export. To make a
+layer quieter in the movie itself, use its volume in Properties.
+
+If there is no sound device, or it is unplugged while playing, playback carries on silently and
+the status bar says so; plug one in and press **Enter** again. A new default device (headphones
+plugged in) is followed on its own where the system allows.
+
+The web version plays sound through the browser (Web Audio); the browser lets it start on your
+first play.
 
 ## Getting sound out
 

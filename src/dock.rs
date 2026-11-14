@@ -29,11 +29,13 @@ pub enum Panel {
     Actions,
     Output,
     Swatches,
+    /// The tools (ADR 0087): a slim bar on a side of the editor, or a panel like the others.
+    Tools,
 }
 
 impl Panel {
     /// In the Window menu's order.
-    pub const ALL: [Panel; 12] = [Panel::Actions, Panel::Align, Panel::Colour, Panel::History, Panel::LayerDepth, Panel::Library, Panel::MotionEditor, Panel::MovieExplorer, Panel::Output, Panel::Properties, Panel::Swatches, Panel::Timeline];
+    pub const ALL: [Panel; 13] = [Panel::Actions, Panel::Align, Panel::Colour, Panel::History, Panel::LayerDepth, Panel::Library, Panel::MotionEditor, Panel::MovieExplorer, Panel::Output, Panel::Properties, Panel::Swatches, Panel::Timeline, Panel::Tools];
 
     /// Its machine name, in the preferences (English, never translated).
     pub fn id(self) -> &'static str {
@@ -50,6 +52,7 @@ impl Panel {
             Panel::Actions => "actions",
             Panel::Output => "output",
             Panel::Swatches => "swatches",
+            Panel::Tools => "tools",
         }
     }
 
@@ -72,6 +75,7 @@ impl Panel {
             Panel::Actions => tr_noop!("Actions"),
             Panel::Output => tr_noop!("Output"),
             Panel::Swatches => tr_noop!("Swatches"),
+            Panel::Tools => tr_noop!("Tools"),
         }
     }
 
@@ -84,6 +88,8 @@ impl Panel {
             Panel::Align => [300.0, 140.0],
             Panel::Swatches => [300.0, 300.0],
             Panel::LayerDepth => [440.0, 260.0],
+            // Two columns of tools.
+            Panel::Tools => [MIN_FLOAT, 520.0],
             _ => [320.0, 460.0],
         }
     }
@@ -171,54 +177,120 @@ pub struct Zone {
     pub groups: Vec<Group>,
     /// In points; `None`: worked out from the window (the Essentials sizes).
     pub size: Option<f32>,
+    /// Collapsed to a strip of panel icons (ADR 0087); a click on one opens it over the stage.
+    pub collapsed: bool,
 }
 
-/// A panel floating in a window of its own (or inside the editor where there can't be one).
+impl Zone {
+    /// Its panels in order, group by group.
+    pub fn panels(&self) -> impl Iterator<Item = Panel> + '_ {
+        self.groups.iter().flat_map(|g| g.tabs.iter().copied())
+    }
+}
+
+/// Panels floating together in a window of their own (or inside the editor where there can't
+/// be one), as tabs; one of them shown at a time (ADR 0087).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "FloatFile")]
 pub struct Float {
-    pub panel: Panel,
+    pub tabs: Vec<Panel>,
+    /// The tab shown.
+    pub active: usize,
     /// Top-left corner, in points (on the desktop for a window of its own); `None`: let the
     /// system place it.
-    #[serde(default)]
     pub at: Option<[f32; 2]>,
     pub size: [f32; 2],
+    /// Names its window while it is open, however its tabs change (never 0 once tidied).
+    pub id: u32,
+    /// The first tab, for versions before tabbed windows (they read only this one).
+    panel: Option<Panel>,
+}
+
+impl Float {
+    fn new(tabs: Vec<Panel>, at: Option<[f32; 2]>, size: [f32; 2], id: u32) -> Float {
+        Float { panel: tabs.first().copied(), tabs, active: 0, at, size, id }
+    }
+
+    /// The panel shown.
+    pub fn shown(&self) -> Option<Panel> {
+        self.tabs.get(self.active).or(self.tabs.first()).copied()
+    }
+}
+
+/// A floating window as written by this version (`tabs`) or an older one (`panel`).
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct FloatFile {
+    #[serde(deserialize_with = "lenient_option")]
+    panel: Option<Panel>,
+    #[serde(deserialize_with = "lenient_vec")]
+    tabs: Vec<Panel>,
+    active: usize,
+    #[serde(deserialize_with = "lenient_option")]
+    at: Option<[f32; 2]>,
+    #[serde(deserialize_with = "lenient_option")]
+    size: Option<[f32; 2]>,
+    id: u32,
+}
+
+impl From<FloatFile> for Float {
+    fn from(f: FloatFile) -> Float {
+        let tabs = if f.tabs.is_empty() { f.panel.into_iter().collect() } else { f.tabs };
+        let size = f.size.or_else(|| tabs.first().map(|p| p.float_size())).unwrap_or([MIN_FLOAT, MIN_FLOAT]);
+        Float { active: f.active, ..Float::new(tabs, f.at, size, f.id) }
+    }
 }
 
 /// Where a closed or floating panel goes back to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Home {
     pub side: Side,
-    /// A panel it was stacked with or next to: it goes back into that one's group.
+    /// A panel it was stacked with or next to: it goes back into that one's group (or that
+    /// one's floating window, when it was floating).
     #[serde(default, deserialize_with = "lenient_option")]
     pub near: Option<Panel>,
     /// It was floating when closed: it reopens floating.
     #[serde(default)]
     pub floating: bool,
+    /// A panel it floated with, as tabs: it reopens in that one's window.
+    #[serde(default, deserialize_with = "lenient_option")]
+    pub beside: Option<Panel>,
+    /// The tools were the slim bar on `side`: they go back to it.
+    #[serde(default)]
+    pub bar: bool,
 }
 
 /// Where a panel is now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
     Docked { side: Side, group: usize, tab: usize },
-    Floating(usize),
+    Floating { window: usize, tab: usize },
+    /// The tools' slim bar on a side of the editor.
+    Bar(Side),
 }
 
 /// Where a moved panel goes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
-    /// A tab in the group that holds this panel.
+    /// A tab in the group or floating window that holds this panel.
     Stack(Panel),
     /// A group of its own in `side`'s dock, before the group holding `before` (at the end when
     /// `None`, or when that panel isn't in that dock).
     Split { side: Side, before: Option<Panel> },
     /// A window of its own, its top-left corner here (`None`: where the system puts it).
     Float(Option<[f32; 2]>),
+    /// The tools' slim bar on this side (any other panel: a group of its own there).
+    Bar(Side),
 }
 
 /// Bounds a layout read from a file is held to.
 pub const MIN_ZONE: f32 = 80.0;
 pub const MAX_ZONE: f32 = 4000.0;
 pub const MIN_FLOAT: f32 = 160.0;
+
+fn left_bar() -> Option<Side> {
+    Some(Side::Left)
+}
 
 /// The whole arrangement.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -232,6 +304,11 @@ pub struct Layout {
     pub floating: Vec<Float>,
     #[serde(deserialize_with = "lenient_map")]
     pub homes: BTreeMap<Panel, Home>,
+    /// The tools' slim bar (ADR 0087), outside the dock on that side; `None` while the tools
+    /// are a panel in a dock or window, or closed. Files from before it was movable have no
+    /// such field: their tools stay on the left, where they always were.
+    #[serde(default = "left_bar", deserialize_with = "lenient_option")]
+    pub tools_bar: Option<Side>,
 }
 
 impl Layout {
@@ -254,6 +331,11 @@ impl Layout {
     }
 
     pub fn place(&self, p: Panel) -> Option<Place> {
+        if p == Panel::Tools
+            && let Some(side) = self.tools_bar
+        {
+            return Some(Place::Bar(side));
+        }
         for side in Side::ALL {
             for (g, group) in self.zone(side).groups.iter().enumerate() {
                 if let Some(tab) = group.tabs.iter().position(|t| *t == p) {
@@ -261,40 +343,56 @@ impl Layout {
                 }
             }
         }
-        self.floating.iter().position(|f| f.panel == p).map(Place::Floating)
+        self.floating.iter().enumerate().find_map(|(window, f)| f.tabs.iter().position(|t| *t == p).map(|tab| Place::Floating { window, tab }))
     }
 
     pub fn is_open(&self, p: Panel) -> bool {
         self.place(p).is_some()
     }
 
-    /// Open and in front: the shown tab of its group, or floating.
+    /// Open and in front: the shown tab of its group or floating window, or the tools' bar.
     pub fn is_shown(&self, p: Panel) -> bool {
         match self.place(p) {
             Some(Place::Docked { side, group, .. }) => self.zone(side).groups.get(group).and_then(Group::shown) == Some(p),
-            Some(Place::Floating(_)) => true,
+            Some(Place::Floating { window, .. }) => self.floating.get(window).and_then(Float::shown) == Some(p),
+            Some(Place::Bar(_)) => true,
             None => false,
         }
     }
 
     pub fn is_floating(&self, p: Panel) -> bool {
-        matches!(self.place(p), Some(Place::Floating(_)))
+        matches!(self.place(p), Some(Place::Floating { .. }))
+    }
+
+    /// The side whose dock is collapsed to icons with `p` in it.
+    pub fn collapsed_side(&self, p: Panel) -> Option<Side> {
+        match self.place(p) {
+            Some(Place::Docked { side, .. }) if self.zone(side).collapsed => Some(side),
+            _ => None,
+        }
+    }
+
+    /// Floating window `id`'s index.
+    pub fn window(&self, id: u32) -> Option<usize> {
+        self.floating.iter().position(|f| f.id == id)
     }
 
     /// Every docked panel in Ctrl+F6 order: the top dock, the bottom one, the right, the left;
-    /// then the floating ones.
+    /// then the floating ones; then the tools' bar.
     pub fn order(&self) -> Vec<Panel> {
         let mut v = Vec::new();
         for side in [Side::Top, Side::Bottom, Side::Right, Side::Left] {
-            for g in &self.zone(side).groups {
-                v.extend(g.tabs.iter().copied());
-            }
+            v.extend(self.zone(side).panels());
         }
-        v.extend(self.floating.iter().map(|f| f.panel));
+        v.extend(self.floating.iter().flat_map(|f| f.tabs.iter().copied()));
+        if self.tools_bar.is_some() {
+            v.push(Panel::Tools);
+        }
         v
     }
 
-    /// Takes `p` out of wherever it is, keeping where it was (its home). Empty groups go.
+    /// Takes `p` out of wherever it is, keeping where it was (its home). Empty groups and
+    /// windows go.
     fn take(&mut self, p: Panel) {
         match self.place(p) {
             Some(Place::Docked { side, group, tab }) => {
@@ -311,11 +409,25 @@ impl Layout {
                     after.or_else(|| group.checked_sub(1).and_then(|i| zone.groups.get(i)).and_then(|g| g.tabs.first().copied()))
                 });
                 zone.groups.retain(|g| !g.tabs.is_empty());
-                self.homes.insert(p, Home { side, near, floating: false });
+                self.homes.insert(p, Home { side, near, floating: false, beside: None, bar: false });
             }
-            Some(Place::Floating(i)) => {
-                self.floating.remove(i);
-                self.homes.entry(p).or_insert_with(|| default_home(p)).floating = true;
+            Some(Place::Floating { window, tab }) => {
+                let Some(f) = self.floating.get_mut(window) else { return };
+                f.tabs.remove(tab);
+                if f.active >= tab && f.active > 0 {
+                    f.active -= 1;
+                }
+                f.panel = f.tabs.first().copied();
+                // A tab left behind: it reopens beside it. Where it docks stays as it was.
+                let beside = f.tabs.first().copied();
+                self.floating.retain(|f| !f.tabs.is_empty());
+                let home = self.homes.entry(p).or_insert_with(|| default_home(p));
+                home.floating = true;
+                home.beside = beside;
+            }
+            Some(Place::Bar(side)) => {
+                self.tools_bar = None;
+                self.homes.insert(p, Home { side, near: None, floating: false, beside: None, bar: true });
             }
             None => {}
         }
@@ -335,11 +447,19 @@ impl Layout {
                     g.folded = false;
                 }
             }
-            Some(Place::Floating(_)) => {}
+            Some(Place::Floating { window, tab }) => {
+                if let Some(f) = self.floating.get_mut(window) {
+                    f.active = tab;
+                }
+            }
+            Some(Place::Bar(_)) => {}
             None => {
                 let home = self.homes.get(&p).copied().unwrap_or_else(|| default_home(p));
                 if home.floating {
-                    self.move_to(p, Target::Float(None));
+                    match home.beside.filter(|n| *n != p && self.is_floating(*n)) {
+                        Some(n) => self.move_to(p, Target::Stack(n)),
+                        None => self.move_to(p, Target::Float(None)),
+                    }
                 } else {
                     self.dock_home(p, home);
                 }
@@ -366,7 +486,64 @@ impl Layout {
         self.dock_home(p, Home { floating: false, ..home });
     }
 
+    /// Puts every panel of floating window `id` back where it came from; the one shown stays
+    /// in front.
+    pub fn dock_back_window(&mut self, id: u32) {
+        let Some(f) = self.window(id).and_then(|i| self.floating.get(i)).cloned() else { return };
+        for p in &f.tabs {
+            self.dock_back(*p);
+        }
+        if let Some(p) = f.shown() {
+            self.show(p);
+        }
+    }
+
+    /// Closes every panel of floating window `id`.
+    pub fn close_window(&mut self, id: u32) {
+        let tabs = self.window(id).and_then(|i| self.floating.get(i)).map(|f| f.tabs.clone()).unwrap_or_default();
+        for p in tabs {
+            self.close(p);
+        }
+    }
+
+    /// Moves floating window `id` with all its tabs (dragged by its tab strip): stacked into a
+    /// group or another window, a group of its own in a dock, or the window moved. The one
+    /// shown stays in front.
+    pub fn move_window(&mut self, id: u32, target: Target) {
+        let Some(f) = self.window(id).and_then(|i| self.floating.get(i)).cloned() else { return };
+        let Some(first) = f.tabs.first().copied() else { return };
+        match target {
+            Target::Float(at) => {
+                if let (Some(w), Some(at)) = (self.window(id).and_then(|i| self.floating.get_mut(i)), at) {
+                    w.at = Some(at);
+                }
+                return;
+            }
+            // Onto itself: nothing to do.
+            Target::Stack(with) if f.tabs.contains(&with) => return,
+            Target::Stack(_) => {
+                for p in &f.tabs {
+                    self.move_to(*p, target);
+                }
+            }
+            Target::Split { .. } | Target::Bar(_) => {
+                let target = if let Target::Bar(side) = target { Target::Split { side, before: None } } else { target };
+                self.move_to(first, target);
+                for p in f.tabs.iter().skip(1) {
+                    self.move_to(*p, Target::Stack(first));
+                }
+            }
+        }
+        if let Some(p) = f.shown() {
+            self.show(p);
+        }
+    }
+
     fn dock_home(&mut self, p: Panel, home: Home) {
+        if home.bar && p == Panel::Tools {
+            self.move_to(p, Target::Bar(home.side));
+            return;
+        }
         let target = match home.near.filter(|n| *n != p && matches!(self.place(*n), Some(Place::Docked { side, .. }) if side == home.side)) {
             Some(n) => Target::Stack(n),
             None => Target::Split { side: home.side, before: None },
@@ -374,22 +551,54 @@ impl Layout {
         self.move_to(p, target);
     }
 
+    fn next_id(&self) -> u32 {
+        self.floating.iter().map(|f| f.id).max().unwrap_or(0).saturating_add(1).max(1)
+    }
+
     /// Moves `p` (dragged by its tab, or from its menu). Moving onto itself changes nothing.
     pub fn move_to(&mut self, p: Panel, target: Target) {
         match target {
             Target::Stack(with) => {
-                if with == p || !matches!(self.place(with), Some(Place::Docked { .. })) {
+                if with == p || !matches!(self.place(with), Some(Place::Docked { .. } | Place::Floating { .. })) {
+                    return;
+                }
+                // Already a tab there: brought to the front, its order kept.
+                let together = match (self.place(p), self.place(with)) {
+                    (Some(Place::Docked { side, group, .. }), Some(Place::Docked { side: s, group: g, .. })) => side == s && group == g,
+                    (Some(Place::Floating { window, .. }), Some(Place::Floating { window: w, .. })) => window == w,
+                    _ => false,
+                };
+                if together {
+                    self.show(p);
                     return;
                 }
                 self.take(p);
-                if let Some(Place::Docked { side, group, .. }) = self.place(with)
-                    && let Some(g) = self.zone_mut(side).groups.get_mut(group)
-                {
-                    g.tabs.push(p);
-                    g.active = g.tabs.len() - 1;
-                    g.folded = false;
+                match self.place(with) {
+                    Some(Place::Docked { side, group, .. }) => {
+                        if let Some(g) = self.zone_mut(side).groups.get_mut(group) {
+                            g.tabs.push(p);
+                            g.active = g.tabs.len() - 1;
+                            g.folded = false;
+                        }
+                    }
+                    Some(Place::Floating { window, .. }) => {
+                        if let Some(f) = self.floating.get_mut(window) {
+                            f.tabs.push(p);
+                            f.active = f.tabs.len() - 1;
+                            f.panel = f.tabs.first().copied();
+                        }
+                    }
+                    _ => {}
                 }
             }
+            Target::Bar(side) if p == Panel::Tools => {
+                if self.tools_bar == Some(side) {
+                    return;
+                }
+                self.take(p);
+                self.tools_bar = Some(side);
+            }
+            Target::Bar(side) => self.move_to(p, Target::Split { side, before: None }),
             Target::Split { side, before } => {
                 // Already alone in a group just there: nothing to do.
                 if let Some(Place::Docked { side: s, group, .. }) = self.place(p)
@@ -409,22 +618,29 @@ impl Layout {
                 zone.groups.insert(at, Group::of(&[p], share));
             }
             Target::Float(at) => {
-                if let Some(Place::Floating(i)) = self.place(p) {
-                    if let (Some(f), Some(at)) = (self.floating.get_mut(i), at) {
+                if let Some(Place::Floating { window, .. }) = self.place(p)
+                    && let Some(f) = self.floating.get_mut(window)
+                    && f.tabs.len() == 1
+                {
+                    if let Some(at) = at {
                         f.at = Some(at);
                     }
                     return;
                 }
                 self.take(p);
-                self.floating.push(Float { panel: p, at, size: p.float_size() });
+                let id = self.next_id();
+                self.floating.push(Float::new(vec![p], at, p.float_size(), id));
             }
         }
     }
 
     /// Holds a layout read from a file to what the editor can draw: each panel once, no empty
-    /// groups, finite sizes in range, the shown tab in range.
+    /// groups or windows, finite sizes in range, the shown tab in range, a name for each window.
     pub fn tidy(&mut self) {
         let mut seen = std::collections::BTreeSet::new();
+        if self.tools_bar.is_some() {
+            seen.insert(Panel::Tools);
+        }
         for side in Side::ALL {
             let zone = self.zone_mut(side);
             zone.size = zone.size.filter(|s| s.is_finite()).map(|s| s.clamp(MIN_ZONE, MAX_ZONE));
@@ -440,11 +656,26 @@ impl Layout {
             }
             zone.groups.retain(|g| !g.tabs.is_empty());
         }
-        self.floating.retain(|f| seen.insert(f.panel));
         for f in &mut self.floating {
+            f.tabs.retain(|p| seen.insert(*p));
+            if f.active >= f.tabs.len() {
+                f.active = 0;
+            }
+            f.panel = f.tabs.first().copied();
             f.at = f.at.filter(|a| a.iter().all(|v| v.is_finite() && v.abs() < 1e6));
             for v in &mut f.size {
                 *v = if v.is_finite() { v.clamp(MIN_FLOAT, MAX_ZONE) } else { MIN_FLOAT };
+            }
+        }
+        self.floating.retain(|f| !f.tabs.is_empty());
+        // Every window named once (files from before tabbed windows have no names).
+        let mut ids = std::collections::BTreeSet::new();
+        let mut next = self.floating.iter().map(|f| f.id).max().unwrap_or(0);
+        for f in &mut self.floating {
+            if f.id == 0 || !ids.insert(f.id) {
+                next = next.saturating_add(1);
+                f.id = next;
+                ids.insert(next);
             }
         }
     }
@@ -464,8 +695,9 @@ fn default_home(p: Panel) -> Home {
         // Layer Depth opens as a tab beside the Library, under Properties, where it has the
         // width for its tracks.
         Panel::LayerDepth => (Side::Right, Some(Panel::Library)),
+        Panel::Tools => (Side::Left, None),
     };
-    Home { side, near, floating: p == Panel::Actions }
+    Home { side, near, floating: p == Panel::Actions, beside: None, bar: p == Panel::Tools }
 }
 
 // ----- workspaces ---------------------------------------------------------------------------------
@@ -479,7 +711,7 @@ pub const MAX_NAME: usize = 64;
 
 /// A built-in workspace's layout.
 pub fn built_in(key: &str) -> Option<Layout> {
-    let zone = |groups: Vec<Group>, size: Option<f32>| Zone { groups, size };
+    let zone = |groups: Vec<Group>, size: Option<f32>| Zone { groups, size, collapsed: false };
     let mut l = match key {
         // Today's layout: Properties, Align, Library with the Movie Explorer, History on the
         // right; the timeline and the Motion Editor below the stage.
@@ -503,6 +735,7 @@ pub fn built_in(key: &str) -> Option<Layout> {
         },
         _ => return None,
     };
+    l.tools_bar = Some(Side::Left);
     for p in Panel::ALL {
         if !l.is_open(p) {
             l.homes.insert(p, default_home(p));
@@ -572,16 +805,29 @@ impl Workspaces {
         Some(self.layout())
     }
 
+    /// Forgets the changes made to a workspace not in use (the one in use: `reset`).
+    pub fn forget_changes(&mut self, key: &str) {
+        if key != self.current {
+            self.live.remove(key);
+        }
+    }
+
+    /// Changed since built or saved.
+    pub fn changed(&self, key: &str) -> bool {
+        match (self.live.get(key), self.base(key)) {
+            (Some(live), Some(base)) => *live != base,
+            _ => false,
+        }
+    }
+
     /// Back to the current workspace as built or saved.
     pub fn reset(&mut self) -> Layout {
         self.live.remove(&self.current);
         self.layout()
     }
 
-    /// Saves `layout` as a workspace of your own called `name` (replacing one of that name),
-    /// and makes it the current one. Returns its key.
-    pub fn save_as(&mut self, name: &str, layout: &Layout) -> Result<String, &'static str> {
-        let name = name.trim();
+    /// Why `name` can't name a workspace of your own (other than `except`, being renamed).
+    fn check_name(&self, name: &str, except: Option<&str>) -> Result<(), &'static str> {
         if name.is_empty() {
             return Err(tr_noop!("Give the workspace a name"));
         }
@@ -591,6 +837,17 @@ impl Workspaces {
         if BUILT_IN.iter().any(|(k, n)| k.eq_ignore_ascii_case(name) || n.eq_ignore_ascii_case(name)) {
             return Err(tr_noop!("That name belongs to a built-in workspace"));
         }
+        if except.is_some_and(|e| e != name) && self.saved.contains_key(name) {
+            return Err(tr_noop!("There is already a workspace of that name"));
+        }
+        Ok(())
+    }
+
+    /// Saves `layout` as a workspace of your own called `name` (replacing one of that name),
+    /// and makes it the current one. Returns its key.
+    pub fn save_as(&mut self, name: &str, layout: &Layout) -> Result<String, &'static str> {
+        let name = name.trim();
+        self.check_name(name, None)?;
         if !self.saved.contains_key(name) && self.saved.len() >= MAX_SAVED {
             return Err(tr_noop!("There are too many workspaces; replace one of yours"));
         }
@@ -598,6 +855,43 @@ impl Workspaces {
         self.live.insert(name.to_string(), layout.clone());
         self.current = name.to_string();
         Ok(name.to_string())
+    }
+
+    /// Renames a workspace of yours (with its changes since saving); the built-in ones keep
+    /// their names. Returns the new key.
+    pub fn rename(&mut self, key: &str, to: &str) -> Result<String, &'static str> {
+        let to = to.trim();
+        if !self.saved.contains_key(key) {
+            return Err(tr_noop!("Only workspaces of your own can be renamed"));
+        }
+        if to == key {
+            return Ok(key.to_string());
+        }
+        self.check_name(to, Some(key))?;
+        if let Some(l) = self.saved.remove(key) {
+            self.saved.insert(to.to_string(), l);
+        }
+        if let Some(l) = self.live.remove(key) {
+            self.live.insert(to.to_string(), l);
+        }
+        if self.current == key {
+            self.current = to.to_string();
+        }
+        Ok(to.to_string())
+    }
+
+    /// Deletes a workspace of yours; the built-in ones can only be reset. Deleting the one in
+    /// use goes to Essentials, as it was last arranged; returns its layout then.
+    pub fn delete(&mut self, key: &str) -> Result<Option<Layout>, &'static str> {
+        if self.saved.remove(key).is_none() {
+            return Err(tr_noop!("Built-in workspaces can be reset but not deleted"));
+        }
+        self.live.remove(key);
+        if self.current == key {
+            self.current = "essentials".into();
+            return Ok(Some(self.layout()));
+        }
+        Ok(None)
     }
 
     /// Holds what was read from the preferences file to sane bounds.
@@ -767,8 +1061,12 @@ mod tests {
         assert_eq!(l.right.groups[0].tabs, vec![Panel::Properties]);
         assert_eq!(l.right.groups[0].active, 0);
         assert_eq!(l.right.size, Some(MAX_ZONE));
-        assert_eq!(l.floating.len(), 1);
-        assert_eq!(l.floating[0].size, [MIN_FLOAT, MAX_ZONE]);
+        // A window with a junk size keeps its panel at its usual size.
+        assert_eq!(l.floating.len(), 2);
+        assert_eq!((l.floating[0].tabs.clone(), l.floating[0].size), (vec![Panel::Align], [300.0, MIN_FLOAT]));
+        assert_eq!(l.floating[1].size, [MIN_FLOAT, MAX_ZONE]);
+        assert!(l.floating[0].id != l.floating[1].id && l.floating.iter().all(|f| f.id > 0), "each window named once");
+        assert_eq!(l.tools_bar, Some(Side::Left), "no tools bar in an older file: on the left, as always");
         // Not even an object: the defaults.
         let w = lenient_workspaces(&mut serde_json::Deserializer::from_str("42")).expect("never fails");
         assert_eq!(w, Workspaces::default());

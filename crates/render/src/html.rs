@@ -676,9 +676,11 @@ impl<'a> Bake<'a> {
                 }
                 // Filters run in the page as the renderer runs them (ADR 0072): `fx` the list,
                 // `fm` how far they reach together (stage pixels).
-                if !filters.is_empty() {
-                    o.insert("fx".into(), Value::Array(filters.iter().map(filter_json).collect()));
-                    o.insert("fm".into(), exact(filters.iter().map(anicraft_doc::Filter::margin).sum::<f32>()));
+                // Filters switched off are left out, as the renderer leaves them (ADR 0091).
+                let on = anicraft_doc::active_filters(filters);
+                if !on.is_empty() {
+                    o.insert("fx".into(), Value::Array(on.iter().map(filter_json).collect()));
+                    o.insert("fm".into(), exact(on.iter().map(anicraft_doc::Filter::margin).sum::<f32>()));
                 }
                 if !events.is_empty() {
                     o.insert("ev".into(), Value::Array(events.iter().map(|h| json!([h.event.key(), actions(&h.actions)])).collect()));

@@ -77,6 +77,8 @@ fn every_preset_paints_within_its_area_bounds() {
         ("chalk", 0.35, 0.55),       // its edge worn in
         // Dots 2.2 sizes apart, each a quarter π of size²: π / 8.8 = 0.357 of length × size.
         ("dotted", 0.33, 0.38),
+        ("charcoal", 0.38, 0.52), // a 60 % oval with the paper grain through it
+        ("spatter", 0.4, 0.65),  // dabs 0.6 sizes apart, 60–100 % of the size, thrown aside
     ];
     assert_eq!(bounds.len(), BUILTIN.len(), "every built-in has bounds");
     for (key, lo, hi) in bounds {

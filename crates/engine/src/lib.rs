@@ -12,6 +12,7 @@ mod cmds_warp;
 pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
+pub mod cmds_filter;
 pub mod cmds_ease;
 pub mod cmds_envelope;
 pub mod cmds_drop;
@@ -21,6 +22,7 @@ mod cmds_frames;
 mod cmds_group;
 mod cmds_modify;
 mod cmds_motion;
+mod cmds_retime;
 mod cmds_hints;
 mod cmds_layer;
 pub mod cmds_library;
@@ -30,7 +32,9 @@ pub mod cmds_raw;
 pub mod cmds_rawsub;
 mod cmds_rawpoints;
 pub mod brush_library;
+pub mod filter_library;
 pub mod cmds_recent;
+pub mod cmds_desktop;
 pub mod cmds_template;
 mod cmds_recovery;
 mod cmds_script;
@@ -57,6 +61,7 @@ pub mod render_service;
 pub mod selection;
 pub mod snap;
 pub mod params;
+pub mod plugin_export;
 pub mod player;
 pub mod publish;
 pub mod vfs;
@@ -130,9 +135,11 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(plugin_export::specs());
     v.extend(cmds_envelope::specs());
     v.extend(publish::specs());
     v.extend(cmds_recent::specs());
+    v.extend(cmds_desktop::specs());
     v.extend(cmds_drop::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
@@ -141,6 +148,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(cmds_bone::specs());
     v.extend(cmds_warp::specs());
     v.extend(cmds_motion::specs());
+    v.extend(cmds_retime::specs());
     v.extend(cmds_ease::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
@@ -161,6 +169,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(find::specs());
     v.extend(explorer::specs());
     v.extend(cmds_brush::specs());
+    v.extend(cmds_filter::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
     v.extend(cmds_swatch::specs());
@@ -364,6 +373,11 @@ pub struct Session {
     /// The user's own brush presets (ADR 0068). Like recent files they belong to the session
     /// and survive New and Open; the desktop app keeps them in its preferences.
     pub brushes: brush_library::BrushLibrary,
+    /// The user's filter presets (ADR 0091). Like brushes they belong to the session and
+    /// survive New and Open; the desktop app keeps them in its preferences.
+    pub filter_presets: filter_library::FilterLibrary,
+    /// Copied filters (Copy Filters, ADR 0091), for Paste Filters.
+    pub filter_clipboard: Option<Vec<anicraft_doc::FilterEntry>>,
     /// The open envelope (ADR 0080): view state over the shapes it bends, like a gesture.
     pub(crate) envelope: Option<cmds_envelope::Envelope>,
 }
@@ -438,6 +452,8 @@ impl Session {
             published: std::collections::BTreeSet::new(),
             recent: cmds_recent::RecentFiles::default(),
             brushes: brush_library::BrushLibrary::default(),
+            filter_presets: filter_library::FilterLibrary::default(),
+            filter_clipboard: None,
             envelope: None,
         }
     }
@@ -522,9 +538,14 @@ impl Session {
         let plugins = std::mem::take(&mut self.plugins);
         let recent = std::mem::take(&mut self.recent);
         let brushes = std::mem::take(&mut self.brushes);
+        let filter_presets = std::mem::take(&mut self.filter_presets);
+        let filter_clipboard = self.filter_clipboard.take();
         *self = Session::new(doc);
         self.recent = recent;
         self.brushes = brushes;
+        self.filter_presets = filter_presets;
+        // Like copied artwork, copied filters carry across to the next document.
+        self.filter_clipboard = filter_clipboard;
         // The clipboard survives New/Open, so artwork can move between documents.
         self.clipboard = clipboard;
         self.plugins = plugins;
@@ -1095,6 +1116,8 @@ mod tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod retime_tests;
+#[cfg(test)]
 mod ease_tests;
 #[cfg(test)]
 mod color_tests;
@@ -1104,6 +1127,8 @@ mod motion_path_tests;
 mod motion_pin_tests;
 #[cfg(test)]
 mod plugin_tests;
+#[cfg(test)]
+mod plugin_kinds_tests;
 #[cfg(test)]
 mod tests_sound;
 #[cfg(test)]
@@ -1121,7 +1146,15 @@ mod tests_bone_spring;
 #[cfg(test)]
 mod tests_shape_bone;
 #[cfg(test)]
+mod tests_shape_weights;
+#[cfg(test)]
 mod tests_warp;
+#[cfg(test)]
+mod tests_filter;
+#[cfg(test)]
+mod tests_filter_tracks;
+#[cfg(test)]
+mod desktop_tests;
 #[cfg(test)]
 mod merge_tests;
 #[cfg(test)]

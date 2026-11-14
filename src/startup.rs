@@ -49,6 +49,9 @@ impl Attempt {
             return base;
         }
         base.renderer = eframe::Renderer::Wgpu;
+        // A surface that fails is reconfigured, then made anew, instead of the frame being
+        // skipped for ever (ADR 0092).
+        base.wgpu_options.on_surface_status = std::sync::Arc::new(crate::gpu_watch::on_surface_status);
         let mut setup = WgpuSetupCreateNew::without_display_handle();
         match self.backend {
             WindowBackend::Vulkan => setup.instance_descriptor.backends = wgpu::Backends::VULKAN,
@@ -65,9 +68,10 @@ impl Attempt {
 }
 
 /// The attempts in order: `forced` (the command line) or else `chosen` (Preferences) first, then
-/// the platform's order `platform`, each once. The attempt named `died_in` (the previous start
-/// crashed or hung in it) goes last.
-pub fn plan(forced: Option<WindowBackend>, chosen: WindowBackend, platform: &[(WindowBackend, bool)], died_in: Option<&str>) -> Vec<Attempt> {
+/// the platform's order `platform`, each once. The attempts named in `last` (the previous start
+/// crashed or hung in one; a session lost its graphics device in another, ADR 0092) go last, in
+/// that order.
+pub fn plan(forced: Option<WindowBackend>, chosen: WindowBackend, platform: &[(WindowBackend, bool)], last: &[String]) -> Vec<Attempt> {
     let mut out: Vec<Attempt> = Vec::new();
     let first = forced.unwrap_or(chosen);
     if first != WindowBackend::Auto {
@@ -82,14 +86,33 @@ pub fn plan(forced: Option<WindowBackend>, chosen: WindowBackend, platform: &[(W
     if out.is_empty() {
         out.push(Attempt { backend: WindowBackend::Auto, low_power: false });
     }
-    if let Some(dead) = died_in
-        && let Some(i) = out.iter().position(|a| a.label() == dead)
-        && out.len() > 1
-    {
-        let a = out.remove(i);
-        out.push(a);
+    for dead in last {
+        if let Some(i) = out.iter().position(|a| a.label() == *dead)
+            && out.len() > 1
+        {
+            let a = out.remove(i);
+            out.push(a);
+        }
     }
     out
+}
+
+/// Starts the record of a mid-session loss counts for: that many starts try another way first,
+/// then the fastest way gets its chance again (the driver may have been updated, or the load
+/// that brought it down gone).
+pub const LOST_STARTS: u32 = 3;
+
+/// The record a mid-session loss leaves (ADR 0092): the attempt's label and the starts it still
+/// counts for, one per line.
+pub fn lost_record(text: &str) -> Option<(String, u32)> {
+    let mut lines = text.lines();
+    let label = lines.next()?.trim().chars().take(200).collect::<String>();
+    let left = lines.next().and_then(|l| l.trim().parse::<u32>().ok()).unwrap_or(0).min(LOST_STARTS);
+    (!label.is_empty() && left > 0).then_some((label, left))
+}
+
+fn lost_record_text(label: &str, left: u32) -> String {
+    format!("{label}\n{left}\n")
 }
 
 /// Longest log written in one run: enough for any start-up, bounded however long AniCraft runs.
@@ -102,6 +125,7 @@ const SLOW_START_SECS: u64 = 20;
 const LOG_NAME: &str = "anicraft.log";
 const PREVIOUS_LOG_NAME: &str = "anicraft.previous.log";
 const MARKER_NAME: &str = "starting";
+const LOST_NAME: &str = "graphics-lost";
 
 struct Log {
     dir: PathBuf,
@@ -112,14 +136,29 @@ struct Log {
 
 static LOG: Mutex<Option<Log>> = Mutex::new(None);
 static FRAMES: AtomicU32 = AtomicU32::new(0);
+/// The attempt the window runs on now (for the record a mid-session loss leaves).
+static CURRENT: Mutex<Option<String>> = Mutex::new(None);
+/// The window closed to open again another way (ADR 0092), with the document to open then.
+static REOPEN: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
 
 /// Opens the log in `dir` for this run (the previous run's becomes `anicraft.previous.log`) and
-/// returns the attempt the previous start died in, if its marker is still there. Panics are
-/// written to the log from now on.
-pub fn begin(dir: Option<PathBuf>) -> Option<String> {
-    let dir = dir?;
+/// returns the attempts to try last: the one an earlier session lost its graphics device in (for
+/// [`LOST_STARTS`] starts, ADR 0092), then the one the previous start died in, if its marker is
+/// still there. Panics are written to the log from now on.
+pub fn begin(dir: Option<PathBuf>) -> Vec<String> {
+    let Some(dir) = dir else { return Vec::new() };
     let _ = std::fs::create_dir_all(&dir);
     let died_in = std::fs::read_to_string(dir.join(MARKER_NAME)).ok().map(|s| s.trim().chars().take(200).collect::<String>()).filter(|s| !s.is_empty());
+    // This start uses up one of the record's starts.
+    let lost = std::fs::read_to_string(dir.join(LOST_NAME)).ok().and_then(|t| lost_record(&t));
+    match &lost {
+        Some((label, left)) if *left > 1 => {
+            let _ = std::fs::write(dir.join(LOST_NAME), lost_record_text(label, left - 1));
+        }
+        _ => {
+            let _ = std::fs::remove_file(dir.join(LOST_NAME));
+        }
+    }
     let _ = std::fs::rename(dir.join(LOG_NAME), dir.join(PREVIOUS_LOG_NAME));
     let file = std::fs::File::create(dir.join(LOG_NAME)).ok();
     if let Ok(mut g) = LOG.lock() {
@@ -134,10 +173,49 @@ pub fn begin(dir: Option<PathBuf>) -> Option<String> {
     }));
     let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     line(&format!("AniCraft {} ({}), {} {}, started at {unix} (Unix time)", env!("CARGO_PKG_VERSION"), crate::app::RELEASE_STAGE, std::env::consts::OS, std::env::consts::ARCH));
+    if let Some((l, left)) = &lost {
+        line(&format!("a session lost its graphics device with {l}: trying it late ({left} more start(s) counting this one)"));
+    }
     if let Some(d) = &died_in {
         line(&format!("the previous start stopped while opening the window with {d}: trying it last"));
     }
-    died_in
+    lost.map(|(l, _)| l).into_iter().chain(died_in).collect()
+}
+
+/// The window's graphics device was lost after it was up (ADR 0092): the next [`LOST_STARTS`]
+/// starts try the attempt it ran on late.
+pub fn lost_mid_session() {
+    let Some(label) = current() else { return };
+    let dir = LOG.lock().ok().and_then(|g| g.as_ref().map(|l| l.dir.clone()));
+    if let Some(d) = dir {
+        let _ = std::fs::write(d.join(LOST_NAME), lost_record_text(&label, LOST_STARTS));
+    }
+    line(&format!("the next {LOST_STARTS} starts try {label} late"));
+}
+
+/// The attempt the window runs on now.
+pub fn current() -> Option<String> {
+    CURRENT.lock().ok().and_then(|g| g.clone())
+}
+
+/// The window is closing to open again another way, then with `file` (the app asks this when
+/// its graphics device is gone).
+pub fn ask_reopen(file: Option<PathBuf>) {
+    if let Ok(mut g) = REOPEN.lock() {
+        *g = Some(file);
+    }
+}
+
+/// Whether the window that just closed asked to open again, and with which document.
+pub fn take_reopen() -> Option<Option<PathBuf>> {
+    REOPEN.lock().ok().and_then(|mut g| g.take())
+}
+
+/// Whether a failure after the window was up came from the graphics (wgpu, its surface, the
+/// driver): then it counts as a mid-session loss.
+pub fn is_graphics_failure(why: &str) -> bool {
+    let w = why.to_ascii_lowercase();
+    ["wgpu", "surface", "device lost", "gpu", "dxgi", "vk_error", "vulkan", "direct3d"].iter().any(|k| w.contains(k)) // i18n-exempt: words looked for in a log line
 }
 
 /// Adds a line to the log (and the console in debug builds), with the seconds since it began.
@@ -169,6 +247,9 @@ pub fn log_path() -> Option<PathBuf> {
 /// notes in the log if the window is still not up after a while (a driver that hangs).
 pub fn trying(a: &Attempt, n: usize, of: usize) {
     line(&format!("opening the window with {} (attempt {n} of {of})", a.label()));
+    if let Ok(mut g) = CURRENT.lock() {
+        *g = Some(a.label());
+    }
     let marker = LOG.lock().ok().and_then(|g| g.as_ref().map(|l| l.dir.join(MARKER_NAME)));
     if let Some(m) = marker {
         let _ = std::fs::write(m, a.label());
@@ -244,15 +325,15 @@ mod tests {
 
     #[test]
     fn automatic_tries_the_platform_order_ending_with_opengl() {
-        assert_eq!(labels(&plan(None, Auto, WINDOWS, None)), ["wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"]);
+        assert_eq!(labels(&plan(None, Auto, WINDOWS, &[])), ["wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"]);
     }
 
     #[test]
     fn a_chosen_or_forced_interface_goes_first_and_still_falls_back() {
-        assert_eq!(labels(&plan(None, Vulkan, WINDOWS, None)), ["wgpu Vulkan", "wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"]);
+        assert_eq!(labels(&plan(None, Vulkan, WINDOWS, &[])), ["wgpu Vulkan", "wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"]);
         // The command line wins over Preferences; OpenGL isn't tried twice.
-        assert_eq!(labels(&plan(Some(OpenGl), Dx12, WINDOWS, None)), ["OpenGL", "wgpu (automatic)", "wgpu DirectX 12, low-power GPU"]);
-        assert_eq!(labels(&plan(Some(Auto), Dx12, WINDOWS, None)), ["wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"], "--renderer wgpu is automatic");
+        assert_eq!(labels(&plan(Some(OpenGl), Dx12, WINDOWS, &[])), ["OpenGL", "wgpu (automatic)", "wgpu DirectX 12, low-power GPU"]);
+        assert_eq!(labels(&plan(Some(Auto), Dx12, WINDOWS, &[])), ["wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"], "--renderer wgpu is automatic");
     }
 
     /// Each attempt sets the window up as it says: OpenGL through glow, the others through
@@ -288,9 +369,27 @@ mod tests {
     /// #207: when the last start died inside a driver (nothing to catch), that way goes last.
     #[test]
     fn the_way_the_last_start_died_in_goes_last() {
-        assert_eq!(labels(&plan(None, Auto, WINDOWS, Some("wgpu (automatic)"))), ["wgpu DirectX 12, low-power GPU", "OpenGL", "wgpu (automatic)"]);
-        assert_eq!(labels(&plan(None, Auto, WINDOWS, Some("something else"))), ["wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"]);
-        assert_eq!(labels(&plan(None, Auto, &[], None)), ["wgpu (automatic)"], "never nothing to try");
+        assert_eq!(labels(&plan(None, Auto, WINDOWS, &["wgpu (automatic)".into()])), ["wgpu DirectX 12, low-power GPU", "OpenGL", "wgpu (automatic)"]);
+        assert_eq!(labels(&plan(None, Auto, WINDOWS, &["something else".into()])), ["wgpu (automatic)", "wgpu DirectX 12, low-power GPU", "OpenGL"]);
+        assert_eq!(labels(&plan(None, Auto, &[], &[])), ["wgpu (automatic)"], "never nothing to try");
+    }
+
+    /// ADR 0092: a session that lost its graphics device mid-way makes the next starts try that
+    /// way late (after a start that died in a driver, which goes last of all), for
+    /// [`LOST_STARTS`] starts; then the fastest way gets its chance again.
+    #[test]
+    fn the_plan_after_a_mid_session_death_tries_that_way_late() {
+        assert_eq!(lost_record("wgpu (automatic)\n3\n"), Some(("wgpu (automatic)".into(), 3)));
+        assert_eq!(lost_record("wgpu (automatic)\n99"), Some(("wgpu (automatic)".into(), LOST_STARTS)), "never more than the limit");
+        assert_eq!(lost_record("wgpu (automatic)\n0"), None);
+        assert_eq!(lost_record("\n2"), None);
+        assert_eq!(lost_record("garbage"), None);
+        let last = ["wgpu (automatic)".to_string(), "wgpu DirectX 12, low-power GPU".to_string()];
+        assert_eq!(labels(&plan(None, Auto, WINDOWS, &last)), ["OpenGL", "wgpu (automatic)", "wgpu DirectX 12, low-power GPU"]);
+        assert_eq!(labels(&plan(None, Auto, WINDOWS, &last[..1])), ["wgpu DirectX 12, low-power GPU", "OpenGL", "wgpu (automatic)"]);
+        assert!(is_graphics_failure("wgpu error: Validation Error\n\nCaused by:\n  In Surface::configure"));
+        assert!(is_graphics_failure("Failed to wait for GPU to come idle before reconfiguring the Surface"));
+        assert!(!is_graphics_failure("index out of bounds: the len is 3 but the index is 7"));
     }
 
     /// The log, the crash marker and the previous run's log, in a folder of their own.
@@ -298,11 +397,11 @@ mod tests {
     fn the_log_keeps_the_previous_run_and_finds_a_crashed_start() {
         let dir = std::env::temp_dir().join(format!("anicraft-startup-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(begin(Some(dir.clone())), None, "a first start");
+        assert!(begin(Some(dir.clone())).is_empty(), "a first start");
         trying(&Attempt { backend: Dx12, low_power: true }, 1, 3);
         line("hello");
         // Killed here (a driver crash): the marker stays, and the next start finds it.
-        assert_eq!(begin(Some(dir.clone())).as_deref(), Some("wgpu DirectX 12, low-power GPU"));
+        assert_eq!(begin(Some(dir.clone())), ["wgpu DirectX 12, low-power GPU"]);
         let previous = std::fs::read_to_string(dir.join(PREVIOUS_LOG_NAME)).unwrap();
         assert!(previous.contains("opening the window with wgpu DirectX 12, low-power GPU (attempt 1 of 3)") && previous.contains("hello"), "{previous}");
         let now = std::fs::read_to_string(dir.join(LOG_NAME)).unwrap();
@@ -315,6 +414,12 @@ mod tests {
         assert!(started());
         assert!(!dir.join(MARKER_NAME).exists());
         assert_eq!(log_path(), Some(dir.join(LOG_NAME)));
+        // The window lost its device mid-session: the next starts try it late, then not.
+        lost_mid_session();
+        for left in (1..=LOST_STARTS).rev() {
+            assert_eq!(begin(Some(dir.clone())).first().map(String::as_str), Some("OpenGL"), "{left} start(s) left");
+        }
+        assert!(begin(Some(dir.clone())).is_empty(), "the record is used up");
         // A panic is written down.
         let _ = std::panic::catch_unwind(|| panic!("the driver said no"));
         assert!(std::fs::read_to_string(dir.join(LOG_NAME)).unwrap().contains("the driver said no"));

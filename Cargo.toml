@@ -27,6 +27,7 @@ anicraft-plugins = { path = "crates/plugins" }
 anicraft-audio = { path = "crates/audio" }
 anicraft-gpu = { path = "crates/gpu" }
 anicraft-guide = { path = "crates/guide" }
+craft-anicraft-format = { git = "https://github.com/storytold/craft-libs", rev = "b77af389f30bb10de10d8436ca9b39fe94e3bb67" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
@@ -141,9 +142,17 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit", 
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+# Sound output in the browser (ADR 0095): cpal's Web Audio host, on the wasm-bindgen glue above
+# (Apache-2.0). The AudioContext opens on the first play, which is a click, as browsers ask.
+cpal = { version = "0.18", optional = true, features = ["wasm-bindgen"] }
 # In the browser the page's language (navigator.languages) is the system's.
 sys-locale = { version = "0.3", features = ["js"] }
 web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "DomRect", "DragEvent", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "MediaQueryList", "Navigator", "Storage", "Url", "Window", "console"] }
+
+[dev-dependencies]
+# Plug-in fixtures for the shell's plug-in tests, in WebAssembly text (Apache-2.0 WITH
+# LLVM-exception; already in the tree for the engine's tests).
+wat = "1.228"
 
 [build-dependencies]
 # Embeds the app icon in anicraft.exe on Windows (build.rs); does nothing on other targets.

@@ -12,7 +12,7 @@
 
 use crate::params::*;
 use crate::{EngineError, Result};
-use anicraft_geom::brush::{Shaping, Tip, TipShape};
+use anicraft_geom::brush::{Shaping, TiltResponse, Tip, TipShape};
 use anicraft_geom::pressure::PressureCurve;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,6 +85,14 @@ pub struct BrushPreset {
     pub spacing: f32,
     /// A ragged edge, worn in by up to this percentage of the size (0..=50).
     pub jitter: f32,
+    /// A paper grain of holes through the paint, as a percentage (0..=100; ADR 0093).
+    pub texture: f32,
+    /// Dabs thrown either side of the line, up to this percentage of the size (0..=200).
+    pub scatter: f32,
+    /// The pen's tilt turns the tip (its angle plus the pen's azimuth).
+    pub tilt_angle: bool,
+    /// The pen's tilt widens the tip (up to twice as wide lying flat).
+    pub tilt_width: bool,
 }
 
 impl Default for BrushPreset {
@@ -104,12 +112,16 @@ impl Default for BrushPreset {
             taper_end: 0.0,
             spacing: 0.0,
             jitter: 0.0,
+            texture: 0.0,
+            scatter: 0.0,
+            tilt_angle: false,
+            tilt_width: false,
         }
     }
 }
 
 /// The built-in presets: `(key, name)`, in the order the library shows them.
-pub const BUILTIN: [(&str, &str); 7] = [
+pub const BUILTIN: [(&str, &str); 9] = [
     ("pencil", "Pencil"),
     ("ink_pen", "Ink Pen"),
     ("calligraphy", "Flat Calligraphy"),
@@ -117,6 +129,8 @@ pub const BUILTIN: [(&str, &str); 7] = [
     ("marker", "Marker"),
     ("chalk", "Chalk"),
     ("dotted", "Dotted"),
+    ("charcoal", "Charcoal"),
+    ("spatter", "Spatter"),
 ];
 
 /// A one-line description of each built-in preset, for tooltips.
@@ -129,6 +143,8 @@ pub fn builtin_hint(key: &str) -> &'static str {
         "marker" => "A chisel-tipped marker of one width, whatever the pressure.",
         "chalk" => "A broad stroke with a ragged, worn edge.",
         "dotted" => "Round dots spaced along the stroke.",
+        "charcoal" => "A soft, broad stroke with the paper's grain showing through; it follows the pen's tilt.",
+        "spatter" => "Drops of paint thrown either side of the stroke.",
         _ => "",
     }
 }
@@ -145,6 +161,8 @@ pub fn builtin(key: &str) -> Option<BrushPreset> {
         "marker" => BrushPreset { size: 16.0, shape: Shape::Square, angle: 30.0, roundness: 45.0, smoothing: 40.0, pressure_size: false, ..d },
         "chalk" => BrushPreset { size: 20.0, roundness: 80.0, angle: 20.0, smoothing: 40.0, jitter: 18.0, ..d },
         "dotted" => BrushPreset { size: 8.0, smoothing: 60.0, pressure_size: false, spacing: 220.0, ..d },
+        "charcoal" => BrushPreset { size: 24.0, roundness: 60.0, angle: 30.0, smoothing: 45.0, curve: PressureCurve::SOFT, jitter: 8.0, texture: 35.0, tilt_angle: true, tilt_width: true, ..d },
+        "spatter" => BrushPreset { size: 7.0, smoothing: 50.0, spacing: 60.0, scatter: 140.0, ..d },
         _ => d,
     })
 }
@@ -167,6 +185,8 @@ impl BrushPreset {
             self.spacing = self.spacing.max(5.0);
         }
         self.jitter = c(self.jitter, 0.0, 50.0, 0.0);
+        self.texture = c(self.texture, 0.0, 100.0, 0.0);
+        self.scatter = c(self.scatter, 0.0, 200.0, 0.0);
         self
     }
 
@@ -175,7 +195,16 @@ impl BrushPreset {
     }
 
     pub fn shaping(&self) -> Shaping {
-        Shaping { taper_start: self.taper_start / 100.0, taper_end: self.taper_end / 100.0, spacing: self.spacing / 100.0, jitter: self.jitter / 100.0 }.sanitized()
+        Shaping {
+            taper_start: self.taper_start / 100.0,
+            taper_end: self.taper_end / 100.0,
+            spacing: self.spacing / 100.0,
+            jitter: self.jitter / 100.0,
+            texture: self.texture / 100.0,
+            scatter: self.scatter / 100.0,
+            tilt: TiltResponse { angle: self.tilt_angle, width: self.tilt_width },
+        }
+        .sanitized()
     }
 
     /// The tip's size factor input at a measured pressure: the curve's output when pressure
@@ -225,6 +254,10 @@ impl BrushPreset {
             return Err(EngineError::Param("param 'spacing' must be 0 (a continuous stroke) or from 5 to 1000 %".into()));
         }
         b.jitter = r(p, "jitter", 0.0..=50.0, b.jitter)?;
+        b.texture = r(p, "texture", 0.0..=100.0, b.texture)?;
+        b.scatter = r(p, "scatter", 0.0..=200.0, b.scatter)?;
+        b.tilt_angle = opt_bool(p, "tilt_angle")?.unwrap_or(b.tilt_angle);
+        b.tilt_width = opt_bool(p, "tilt_width")?.unwrap_or(b.tilt_width);
         Ok(b)
     }
 }

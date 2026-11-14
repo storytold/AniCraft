@@ -269,6 +269,155 @@ impl ProfilePreset {
     }
 }
 
+impl WidthProfile {
+    /// This profile carried onto a piece of its stroke (ADR 0093): the piece runs along the
+    /// stretches `spans` of `path` (the stroke's path, in path positions: `k + t` is parameter
+    /// `t` of the segment command `k` draws, as `anicraft_geom::planar::Piece::spans` gives
+    /// them; a stretch with `to < from` runs backwards). The piece's width at each place is the
+    /// stroke's width there: every width point inside a stretch moves to the same place on the
+    /// piece (positions are rescaled by arc length), and where the piece starts, ends or jumps
+    /// mid-profile, a point there holds the width it had. Running backwards swaps left and
+    /// right. `None` when the piece has one width.
+    pub fn along(&self, path: &Path, spans: &[[f64; 2]]) -> Option<WidthProfile> {
+        let m = Measure::new(path);
+        let pts = self.points();
+        let (first, last) = (pts.first().map_or(0.0, |p| p.t), pts.last().map_or(1.0, |p| p.t));
+        let inside = |f: f32| f > first + MERGE && f < last - MERGE;
+        // Each stretch: its subpath, and where it starts and ends along it (arc length).
+        let parts: Vec<(usize, f64, f64)> = spans.iter().take(4096).filter_map(|sp| Some((m.locate(sp[0])?, m.locate(sp[1])?))).filter(|(a, b)| a.0 == b.0).map(|(a, b)| (a.0, a.1, b.1)).collect();
+        let total: f64 = parts.iter().map(|(_, a, b)| (b - a).abs()).sum();
+        if !total.is_finite() || total <= 1e-9 {
+            return Some(self.clone());
+        }
+        let mut out: Vec<WidthPoint> = Vec::new();
+        let mut cum = 0.0f64;
+        let side = |f: f32, fwd: bool| {
+            let (l, r) = self.at(f);
+            if fwd { (l, r) } else { (r, l) }
+        };
+        for (i, &(sub, a, b)) in parts.iter().enumerate() {
+            let len = m.sub_len.get(sub).copied().unwrap_or(0.0);
+            if !len.is_finite() || len <= 1e-12 {
+                continue;
+            }
+            let (fa, fb) = ((a / len) as f32, (b / len) as f32);
+            let fwd = b >= a;
+            let q = |s: f64| ((cum + (s - a).abs()) / total) as f32;
+            // Joined to the stretch before it without a jump: its points carry on.
+            let joined_before = i > 0 && parts.get(i - 1).is_some_and(|&(ps, _, pb)| ps == sub && (pb - a).abs() < 1e-6 * len.max(1.0));
+            let joined_after = parts.get(i + 1).is_some_and(|&(ns, na, _)| ns == sub && (na - b).abs() < 1e-6 * len.max(1.0));
+            let mark = |s: f64, f: f32, out: &mut Vec<WidthPoint>| {
+                let (l, r) = side(f, fwd);
+                out.push(WidthPoint::new(q(s), l, r));
+            };
+            // A width point of the stroke's own already sits there.
+            let has_point = |f: f32| pts.iter().any(|p| (p.t - f).abs() < 1e-6);
+            if !joined_before && (i > 0 || inside(fa)) && !has_point(fa) {
+                mark(a, fa, &mut out);
+            }
+            let (lo, hi) = (fa.min(fb) - 1e-6, fa.max(fb) + 1e-6);
+            let within: Vec<&WidthPoint> = pts.iter().filter(|p| p.t >= lo && p.t <= hi).collect();
+            let ordered: Box<dyn Iterator<Item = &&WidthPoint>> = if fwd { Box::new(within.iter()) } else { Box::new(within.iter().rev()) };
+            for p in ordered {
+                let (l, r) = if fwd { (p.left, p.right) } else { (p.right, p.left) };
+                out.push(WidthPoint::new(q(f64::from(p.t) * len), l, r));
+            }
+            if !joined_after && (i + 1 < parts.len() || inside(fb)) && !has_point(fb) {
+                mark(b, fb, &mut out);
+            }
+            cum += (b - a).abs();
+        }
+        if out.len() > MAX_WIDTH_POINTS {
+            // Evenly spaced, the ends kept.
+            let n = out.len();
+            let k = MAX_WIDTH_POINTS;
+            out = (0..k).filter_map(|i| out.get(i * (n - 1) / (k - 1)).copied()).collect();
+        }
+        if out.is_empty() {
+            // No point falls on the piece: it lies where the width holds, one width all along.
+            let f = parts.first().and_then(|&(sub, a, _)| m.sub_len.get(sub).filter(|l| **l > 1e-12).map(|l| (a / l) as f32)).unwrap_or(0.0);
+            let fwd = parts.first().is_none_or(|&(_, a, b)| b >= a);
+            let (l, r) = side(f, fwd);
+            out.push(WidthPoint::new(0.0, l, r));
+        }
+        WidthProfile::new(out)
+    }
+}
+
+/// Arc lengths along a path's subpaths, by path position.
+struct Measure {
+    /// Each drawn command: its index, subpath, arc length where it starts, and its curve.
+    segs: Vec<(usize, usize, f64, [Vec2; 4])>,
+    sub_len: Vec<f64>,
+}
+
+impl Measure {
+    fn new(path: &Path) -> Measure {
+        use anicraft_geom::PathCmd;
+        let mut segs = Vec::new();
+        let mut sub_len: Vec<f64> = Vec::new();
+        let (mut start, mut cur, mut acc) = (Vec2::ZERO, Vec2::ZERO, 0.0f64);
+        let line = |a: Vec2, b: Vec2| [a, a.lerp(b, 1.0 / 3.0), a.lerp(b, 2.0 / 3.0), b];
+        for (k, c) in path.cmds.iter().enumerate().take(1 << 20) {
+            let curve = match *c {
+                PathCmd::MoveTo(p) => {
+                    if !sub_len.is_empty() || !segs.is_empty() {
+                        sub_len.push(acc);
+                    }
+                    (start, cur, acc) = (p, p, 0.0);
+                    continue;
+                }
+                PathCmd::LineTo(p) => line(cur, p),
+                PathCmd::QuadTo(q, p) => [cur, cur.lerp(q, 2.0 / 3.0), p.lerp(q, 2.0 / 3.0), p],
+                PathCmd::CubicTo(a, b, p) => [cur, a, b, p],
+                PathCmd::Close => line(cur, start),
+            };
+            segs.push((k, sub_len.len(), acc, curve));
+            acc += cubic_length(&curve, 1.0);
+            cur = curve[3];
+        }
+        sub_len.push(acc);
+        Measure { segs, sub_len }
+    }
+
+    /// The subpath and arc length from its start at path position `u`.
+    fn locate(&self, u: f64) -> Option<(usize, f64)> {
+        if !u.is_finite() {
+            return None;
+        }
+        let k = u.floor();
+        let t = u - k;
+        // Position `k + 1` is the end of command `k`.
+        let (k, t) = if t == 0.0 && k >= 1.0 && !self.segs.iter().any(|s| s.0 as f64 == k) { (k - 1.0, 1.0) } else { (k, t) };
+        let i = self.segs.partition_point(|s| (s.0 as f64) < k);
+        match self.segs.get(i) {
+            Some(&(cmd, sub, at, c)) if cmd as f64 == k => Some((sub, at + cubic_length(&c, t))),
+            // The end of the last command (or of one before a MoveTo).
+            _ => {
+                let &(_, sub, at, c) = self.segs.get(i.checked_sub(1)?)?;
+                (t == 0.0).then(|| (sub, at + cubic_length(&c, 1.0)))
+            }
+        }
+    }
+}
+
+/// Arc length of a cubic from 0 to `t` (composite five-point Gauss–Legendre on 16 pieces).
+fn cubic_length(c: &[Vec2; 4], t: f64) -> f64 {
+    const G: [(f64, f64); 5] = [(0.046_910_077_030_668, 0.118_463_442_528_094_5), (0.230_765_344_947_158_45, 0.239_314_335_249_683_2), (0.5, 0.284_444_444_444_444_4), (0.769_234_655_052_841_6, 0.239_314_335_249_683_2), (0.953_089_922_969_332, 0.118_463_442_528_094_5)];
+    let t = t.clamp(0.0, 1.0);
+    let p = c.map(|v| (f64::from(v.x), f64::from(v.y)));
+    let speed = |s: f64| {
+        let u = 1.0 - s;
+        let (d0, d1, d2) = (3.0 * u * u, 6.0 * u * s, 3.0 * s * s);
+        let dx = d0 * (p[1].0 - p[0].0) + d1 * (p[2].0 - p[1].0) + d2 * (p[3].0 - p[2].0);
+        let dy = d0 * (p[1].1 - p[0].1) + d1 * (p[2].1 - p[1].1) + d2 * (p[3].1 - p[2].1);
+        (dx * dx + dy * dy).sqrt()
+    };
+    const N: usize = 16;
+    let h = t / N as f64;
+    (0..N).map(|i| G.iter().map(|&(x, w)| w * speed((i as f64 + x) * h)).sum::<f64>() * h).sum()
+}
+
 /// The unit normal on the left of direction `d` on a y-down screen (`-d.perp()`).
 pub fn left_normal(d: Vec2) -> Vec2 {
     Vec2::new(d.y, -d.x)
@@ -402,5 +551,58 @@ mod tests {
         let sq = stroke_walks(&Path::rect(0.0, 0.0, 10.0, 10.0), 0.25);
         assert_eq!(sq[0].length(), 40.0);
         assert!(nearest_on_stroke(&[], Vec2::ZERO).is_none());
+    }
+
+    fn near(a: (f32, f32), b: (f32, f32), tol: f32) -> bool {
+        (a.0 - b.0).abs() <= tol && (a.1 - b.1).abs() <= tol
+    }
+
+    #[test]
+    fn a_piece_of_a_stroke_keeps_the_widths_it_had_there() {
+        // An asymmetric swell along a 100-long line (command 1 draws it).
+        let line = Path::line(Vec2::ZERO, Vec2::new(100.0, 0.0));
+        let p = WidthProfile::new(vec![WidthPoint::new(0.0, 0.5, 1.0), WidthPoint::new(0.4, 3.0, 2.0), WidthPoint::new(1.0, 1.0, 0.25)]).unwrap();
+        // Uncut: the same profile.
+        let whole = p.along(&line, &[[1.0, 2.0]]).unwrap();
+        for (a, b) in whole.points().iter().zip(p.points()) {
+            assert!((a.t - b.t).abs() < 1e-5 && a.left == b.left && a.right == b.right, "{whole:?}");
+        }
+        // The stretch from 20 to 70: its point at 0.4 moves to (40 − 20) / 50 = 0.4 of the piece,
+        // and every place on the piece has the width it had on the stroke.
+        let piece = p.along(&line, &[[1.2, 1.7]]).unwrap();
+        for k in 0..=20 {
+            let u = k as f32 / 20.0;
+            let src = 0.2 + 0.5 * u;
+            assert!(near(piece.at(u), p.at(src), 0.12), "at {u}: {:?} vs {:?}", piece.at(u), p.at(src));
+        }
+        assert!(piece.points().iter().any(|w| (w.t - 0.4).abs() < 1e-4 && w.left == 3.0), "{piece:?}");
+        // Backwards: the far end comes first, and left and right swap.
+        let back = p.along(&line, &[[1.7, 1.2]]).unwrap();
+        for k in 0..=20 {
+            let u = k as f32 / 20.0;
+            let (l, r) = p.at(0.7 - 0.5 * u);
+            assert!(near(back.at(u), (r, l), 0.12), "back at {u}: {:?} vs {:?}", back.at(u), (r, l));
+        }
+        // A piece where the width holds (past the last point) has none of its own.
+        let flat = WidthProfile::new(vec![WidthPoint::new(0.0, 0.0, 0.0), WidthPoint::new(0.5, 2.0, 2.0)]).unwrap();
+        assert!(flat.along(&line, &[[1.6, 2.0]]).is_some_and(|q| q.at(0.0) == (2.0, 2.0) && q.at(1.0) == (2.0, 2.0)));
+        let one = WidthProfile::new(vec![WidthPoint::new(0.0, 0.0, 0.0), WidthPoint::new(0.5, 1.0, 1.0)]).unwrap();
+        assert!(one.along(&line, &[[1.6, 2.0]]).is_none(), "nominal all along: uniform");
+    }
+
+    #[test]
+    fn pieces_across_segments_and_hostile_spans() {
+        // Two segments of 50 and 50: the stretch 25..75 crosses from command 1 into command 2.
+        let mut path = Path::new();
+        path.move_to(Vec2::ZERO);
+        path.line_to(Vec2::new(50.0, 0.0));
+        path.line_to(Vec2::new(50.0, 50.0));
+        let p = WidthProfile::new(vec![WidthPoint::new(0.0, 1.0, 1.0), WidthPoint::new(1.0, 3.0, 3.0)]).unwrap();
+        let piece = p.along(&path, &[[1.5, 2.0], [2.0, 2.5]]).unwrap();
+        assert!(near(piece.at(0.0), p.at(0.25), 1e-3) && near(piece.at(1.0), p.at(0.75), 1e-3), "{piece:?}");
+        // Positions past the path, not numbers, or nothing: never a panic.
+        let _ = p.along(&path, &[[f64::NAN, 9.0], [-4.0, 1e300]]);
+        assert!(p.along(&path, &[]).is_some());
+        assert!(p.along(&Path::new(), &[[1.0, 2.0]]).is_some());
     }
 }

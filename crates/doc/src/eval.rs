@@ -715,9 +715,9 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
             // An alpha offset (Advanced) changes each item's alpha on its own: it stays
             // in the items' transform, and the group (for a blend or filters) is opaque.
             let fade = fx.alpha_factor().unwrap_or(1.0);
-            let (color, group) = if masks.is_none() && (fade < 1.0 - 1e-4 || !blend.is_normal() || !filters.is_empty()) {
+            let (color, group) = if masks.is_none() && (fade < 1.0 - 1e-4 || !blend.is_normal() || crate::filter::any_active(filters)) {
                 let gid = out.groups.len() as u32;
-                out.groups.push(Group { parent: cx.group, alpha: fade, blend: *blend, filters: filters.iter().map(crate::Filter::sanitized).collect(), clip });
+                out.groups.push(Group { parent: cx.group, alpha: fade, blend: *blend, filters: crate::filter::active(filters).into(), clip });
                 let inner = if fx.alpha_factor().is_some() { fx.without_alpha() } else { fx };
                 (cx.color.concat(&inner), Some(gid))
             } else {

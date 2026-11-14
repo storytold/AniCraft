@@ -168,6 +168,7 @@ On the left is the list of properties, with each one's value at the playhead.
 On the right is the selected property's curve:
 
 * drag a key up or down to change its value;
+* drag a key sideways to move it in time (see below);
 * drag the two handles of a segment to shape its ease (overshoot is allowed, for a bounce or a
   wind-up);
 * double-click to add a key;
@@ -181,7 +182,60 @@ all** gives every property's segment there the same ease. Each drag is one undo 
 **Remove Tween** takes the motion tween away, leaving the object as it is on the span's first
 frame.
 
-Not there yet: moving keys in time (retiming), and stretching keys when you resize the span.
+### Animating filters
+
+A movie clip or button with filters (see **Properties › Filters**) lists each filter in the
+Motion Editor, below the colour effect, with its numbers under its name: **Blur X** and **Blur Y**,
+**Strength**, **Angle** and **Distance** for the shadows, glows and bevels, and **Brightness**,
+**Contrast**, **Saturation** and **Hue** for Adjust Color. They key, curve, ease and retime like
+any other property, so a blur can sharpen with an ease-out and then pulse.
+
+You can also change a filter in **Properties › Filters** with the playhead inside the tween: the
+number you changed gets a key there, as moving the object does. Reordering or removing filters
+takes their keys along with them. A filter's colours, quality and switches aren't animated yet;
+they stay as the object has them.
+
+### Moving keys in time
+
+Drag a key **sideways** to move it to another frame. It snaps to whole frames, carries its value
+and ease with it, and never passes the key before or after it on the same property (it stops
+next to that key). A drag goes either sideways or up and down, depending on which way you first
+move the pointer, so retiming never changes a value by accident.
+
+To move several keys together:
+
+* **Shift-click** (or Ctrl-click) keys to pick them. The pick stays when you switch to another
+  property, so you can pick keys of X, Y and rotation and move them as one.
+* The **All** lane under the frame numbers has a diamond on every frame that holds a key. Click
+  one to pick every property's keys on that frame, then drag it to move them all.
+
+With the curve focused (click it, or Tab to it), **Left** and **Right** move the picked keys one
+frame; with **Shift**, ten frames. Each drag, and each key press, is one undo step.
+
+On a motion path, a frame pinned to a path point keeps its X and Y keys together: moving one
+moves both, and the pin moves with them.
+
+## Retiming tweens on the timeline
+
+* **Stretch a tween**: drag the right edge of a span. On a motion tween its property keyframes
+  stretch in proportion, as in Animate: a key halfway through stays halfway through. Hold
+  **Shift** while you let go to keep the keys on their frames instead. The readout beside the
+  edge shows the new length and what happens to the keys. Later frames on the layer move with
+  the edge. Classic and shape tweens get longer or shorter the same way.
+* **Move a tween**: click a motion tween span to pick the whole span (Ctrl-click picks a single
+  frame), then drag it. A selection that covers whole classic or shape tween spans moves the
+  same way. The span keeps its length and its tween, and replaces what it lands on. The frames
+  it leaves become empty.
+* **Copy a tween**: hold **Alt** while you drag. The original stays where it was.
+* **Split Motion**: right-click a motion tween on any frame after its first and choose **Split
+  Motion**, or use **Modify › Timeline › Split Motion**. You get two tweens, and the object
+  moves exactly as it did before.
+* **Join Motion**: put the playhead on a motion tween that has another motion tween of the same
+  object right after it, and choose **Join Motion** from the right-click menu or **Modify ›
+  Timeline**. To join more than two, select frames across all of them first. Tweens you split
+  join back exactly as they were. Other tweens keep how the object looks on every frame. Join
+  Motion doesn't join two tweens with their own motion paths yet, and it won't join a keyframe
+  that has a sound or actions on it (move those first).
 
 ## Motion paths
 

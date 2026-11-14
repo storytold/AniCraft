@@ -36,7 +36,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Mask Type",
             "",
             None,
-            "{mask: coverage|alpha|luminance, layer?} how a mask layer reveals the layers it masks: coverage (its fills' area, as in Animate), alpha (its artwork's opacity: gradients and faded shapes make soft edges) or luminance (its brightness: white shows, black hides; SVG's mask) (ADR 0070)",
+            "{mask: coverage|alpha|luminance, layer?} how a mask layer reveals the layers it masks: coverage (its fills' area), alpha (its artwork's opacity: gradients and faded shapes make soft edges) or luminance (its brightness: white shows, black hides; SVG's mask) (ADR 0070)",
             true,
             set_mask,
         ),

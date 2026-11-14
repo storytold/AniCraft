@@ -228,3 +228,130 @@ fn bad_params_are_errors_and_plug_ins_may_erase() {
         assert!(crate::cmds_plugin::plugin_may_call(id).is_ok(), "{id}");
     }
 }
+
+// ----- ADR 0093: gradients and width profiles through the merge, erasing inside symbols --------
+
+#[test]
+fn an_erased_gradient_keeps_its_gradient_in_both_pieces_where_it_was() {
+    let mut s = blank(false);
+    let stops = vec![anicraft_doc::GradientStop { offset: 0.0, color: Rgba::hex(0xff0000) }, anicraft_doc::GradientStop { offset: 1.0, color: Rgba::hex(0x0000ff) }];
+    let paint = Paint::linear(Vec2::new(100.0, 100.0), Vec2::new(300.0, 100.0), stops);
+    s.style.fill_paint = Some(paint.clone());
+    s.style.lock_fill = true;
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 200, "h": 100, "stroke": null}));
+    run(&mut s, "edit.deselect", json!({}));
+    let r = run(&mut s, "draw.erase", json!({"points": stroke(200.0, 60.0, 200.0, 240.0), "size": 20}));
+    assert_eq!(r["erased"], true);
+    let pieces = shapes(&s);
+    assert_eq!(pieces.len(), 2, "cut in two");
+    for (sh, m) in &pieces {
+        let f = sh.fill.as_ref().map(|f| f.transformed(m)).expect("filled");
+        assert!(crate::merge::same_paint(&f, &paint), "the gradient stays in the same place on the stage: {f:?}");
+    }
+    assert!(near(measure(&s).0, 18_000.0, 40.0));
+    // The renderer agrees: left red, right blue, the band empty.
+    let img = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
+    let (l, r) = (img.pixel(110, 150).unwrap(), img.pixel(290, 150).unwrap());
+    assert!(l[0] > 0.85 && l[2] < 0.15 && r[2] > 0.85 && r[0] < 0.15, "{l:?} {r:?}");
+}
+
+/// The raw strokes on the active layer with their profiles, as (start x, end x, profile).
+fn profiled(s: &Session) -> Vec<(f32, f32, Option<anicraft_doc::WidthProfile>)> {
+    shapes(s)
+        .into_iter()
+        .filter_map(|(sh, m)| {
+            let st = sh.stroke.as_ref()?;
+            let ends: Vec<Vec2> = sh.path.anchors().iter().map(|p| m.apply(p.1)).collect();
+            Some((ends.first()?.x, ends.last()?.x, st.profile.clone()))
+        })
+        .collect()
+}
+
+#[test]
+fn a_variable_width_stroke_split_by_the_eraser_keeps_its_profile_per_piece() {
+    let mut s = blank(false);
+    s.style.set_profile(anicraft_doc::ProfilePreset::TaperBoth);
+    let source = anicraft_doc::ProfilePreset::TaperBoth.profile().unwrap();
+    run(&mut s, "draw.line", json!({"x0": 100, "y0": 100, "x1": 300, "y1": 100, "stroke": BLACK, "stroke_width": 12}));
+    run(&mut s, "edit.deselect", json!({}));
+    assert_eq!(profiled(&s).len(), 1, "a variable-width line is raw (ADR 0093)");
+    let r = run(&mut s, "draw.erase", json!({"points": stroke(150.0, 60.0, 150.0, 140.0), "size": 20}));
+    assert_eq!(r["erased"], true);
+    let pieces = profiled(&s);
+    assert_eq!(pieces.len(), 2, "{pieces:?}");
+    for (x0, x1, prof) in &pieces {
+        let prof = prof.as_ref().expect("each piece keeps a profile");
+        // Every place on the piece has the width it had on the line.
+        for k in 0..=10 {
+            let u = k as f32 / 10.0;
+            let x = x0 + (x1 - x0) * u;
+            let want = source.at((x - 100.0) / 200.0);
+            let got = prof.at(u);
+            assert!((got.0 - want.0).abs() < 0.06 && (got.1 - want.1).abs() < 0.06, "at x {x}: {got:?} vs {want:?} ({x0}..{x1})");
+        }
+    }
+    // The left piece starts at a point and ends wide; erasing nothing changes nothing.
+    let doc = s.doc.clone();
+    let r = run(&mut s, "draw.erase", json!({"points": stroke(150.0, 300.0, 150.0, 340.0), "size": 20}));
+    assert_eq!(r["erased"], false);
+    assert_eq!(s.doc, doc);
+    // A line across a variable-width line cuts it too, the profile following each piece.
+    let mut t = blank(false);
+    t.style.set_profile(anicraft_doc::ProfilePreset::TaperBoth);
+    run(&mut t, "draw.line", json!({"x0": 100, "y0": 100, "x1": 300, "y1": 100, "stroke": BLACK, "stroke_width": 12}));
+    t.style.set_profile(anicraft_doc::ProfilePreset::Uniform);
+    run(&mut t, "draw.line", json!({"x0": 200, "y0": 0, "x1": 200, "y1": 200, "stroke": RED, "stroke_width": 2}));
+    let cut: Vec<_> = profiled(&t).into_iter().filter(|p| p.2.is_some()).collect();
+    assert_eq!(cut.len(), 2, "{cut:?}");
+    // Merging the pieces again (a drop) keeps them as they are.
+    let before = profiled(&t);
+    let ids: Vec<u64> = t.visible_elements().iter().map(|e| e.id.0).collect();
+    t.select_only(ids.iter().map(|i| anicraft_doc::ElementId(*i)));
+    run(&mut t, "draw.drop", json!({}));
+    let after = profiled(&t);
+    assert_eq!(after.len(), before.len());
+    for (a, b) in after.iter().filter(|p| p.2.is_some()).zip(before.iter().filter(|p| p.2.is_some())) {
+        let (pa, pb) = (a.2.as_ref().unwrap(), b.2.as_ref().unwrap());
+        for k in 0..=10 {
+            let u = k as f32 / 10.0;
+            assert!((pa.at(u).0 - pb.at(u).0).abs() < 1e-3, "remerged profile drifted");
+        }
+    }
+    // And the file keeps them.
+    let json = crate::format::to_json(&s.doc).unwrap();
+    assert_eq!(crate::format::from_json(&json).unwrap(), s.doc);
+}
+
+#[test]
+fn the_eraser_works_inside_an_open_symbol_and_says_how_on_the_stage() {
+    let mut s = blank(false);
+    run(&mut s, "draw.rect", json!({"x": 100, "y": 100, "w": 200, "h": 100, "fill": BLUE, "stroke": null}));
+    run(&mut s, "edit.select_all", json!({}));
+    run(&mut s, "modify.convert_to_symbol", json!({"name": "Card"}));
+    let inst = s.selection.id_list().first().copied().expect("the instance is selected");
+    run(&mut s, "edit.deselect", json!({}));
+    // On the stage, the symbol is kept, and the reason says how to erase inside it.
+    let (doc, steps) = (s.doc.clone(), s.history_len());
+    let r = run(&mut s, "draw.erase", json!({"points": stroke(200.0, 60.0, 200.0, 240.0), "size": 20}));
+    assert_eq!(r["erased"], false);
+    assert_eq!(r["kept"]["symbols"], 1);
+    assert!(r["reason"].as_str().unwrap().contains("double-click"), "{r}");
+    assert_eq!((s.doc.clone(), s.history_len()), (doc, steps), "no change, no undo step");
+    // Opened in place, its raw shapes erase, in the symbol's own space.
+    run(&mut s, "symbol.edit", json!({"id": inst}));
+    let to_symbol = s.editing.last().map(|l| l.transform).and_then(|m| m.inverse()).unwrap();
+    let pts: Vec<[f32; 2]> = stroke(200.0, 60.0, 200.0, 240.0).into_iter().map(|[x, y]| to_symbol.apply(Vec2::new(x, y))).map(|p| [p.x, p.y]).collect();
+    let r = run(&mut s, "draw.erase", json!({"points": pts, "size": 20}));
+    assert_eq!(r["erased"], true, "{r}");
+    run(&mut s, "symbol.exit", json!({"all": true}));
+    // The instance on the stage shows the cut (the renderer, the oracle).
+    let img = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
+    let bg = s.doc.stage.background;
+    let (gap, kept) = (img.pixel(200, 150).unwrap(), img.pixel(150, 150).unwrap());
+    assert!((gap[2] - bg.b).abs() < 0.02 && (gap[0] - bg.r).abs() < 0.02, "{gap:?}");
+    assert!(kept[2] > 0.9, "{kept:?}");
+    // One undo step puts the symbol back whole.
+    run(&mut s, "edit.undo", json!({}));
+    let img = anicraft_render::render_frame(&s.doc, 0, 1.0).unwrap();
+    assert!(img.pixel(200, 150).unwrap()[2] > 0.9);
+}

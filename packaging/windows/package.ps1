@@ -5,7 +5,8 @@
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
     anicraft-<version>-windows-<arch>.msi            installer (WiX v5, per-user by default, everyone optional)
-    anicraft-<version>-windows-<arch>-portable.zip   anicraft.exe + anicraft-cli.exe + notices
+    anicraft-<version>-windows-<arch>-portable.zip   anicraft.exe + anicraft-cli.exe + notices + the
+                                                     anicraft-portable marker (ADR 0094)
     anicraft-<version>-windows-<arch>-symbols.zip    anicraft.pdb + anicraft_cli.pdb (optional, for profilers)
 
   The installer registers .anicraft (AniCraft is its default app) and offers AniCraft under
@@ -167,19 +168,21 @@ Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Ms
 
 # ---- portable zip ------------------------------------------------------------------------------
 # The exes and notices at the archive's root (`<folder>\*`, not the folder itself), so they come
-# out side by side wherever it is extracted. Settings still live in %APPDATA%\AniCraft.
+# out side by side wherever it is extracted. The anicraft-portable marker makes it a portable copy
+# (ADR 0094): preferences, autosave, logs, plug-ins and templates go to a data\ folder beside it.
 $Portable = Join-Path $TargetDir "windows-package\anicraft-$Version-windows-$Arch-portable"
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 Copy-Item (Join-Path $Docs '*') $Portable
+Set-Content -LiteralPath (Join-Path $Portable 'anicraft-portable') -Encoding ascii -Value 'This copy of AniCraft is portable: it keeps its settings in the data folder here (ADR 0094). Delete this file to use the settings folder in your user profile instead.'
 $Zip = Join-Path $Dist "anicraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $Portable '*') -DestinationPath $Zip
 $Check = Join-Path $TargetDir 'windows-package\portable-zip-check'
 Remove-Item -Recurse -Force $Check -ErrorAction SilentlyContinue
 Expand-Archive -Path $Zip -DestinationPath $Check -Force
-foreach ($f in 'anicraft.exe', 'anicraft-cli.exe', 'NOTICE') {
+foreach ($f in 'anicraft.exe', 'anicraft-cli.exe', 'NOTICE', 'anicraft-portable') {
   if (-not (Test-Path (Join-Path $Check $f))) { throw "the portable zip has no $f at its root: $Zip" }
 }
 Remove-Item -Recurse -Force $Check -ErrorAction SilentlyContinue

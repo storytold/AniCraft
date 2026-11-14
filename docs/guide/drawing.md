@@ -152,6 +152,22 @@ the tip sweeps. A click paints a single dab. The options set the **Size** (or pr
 The last three never cover lines. With
 a pen tablet, pressure sets the width, from 10 % to the full size.
 
+**Texture and scatter.** **Texture** lets a paper grain show through the paint, like charcoal
+on rough paper; the grain stays put on the stage, so strokes laid over each other share it.
+**Scatter** throws dabs either side of the stroke and varies their size, for spatter and
+stipple. Both are still ordinary vector shapes: they merge, erase, scale and export like any
+other paint, and the same stroke always comes out the same. The **Charcoal** and **Spatter**
+brushes in the Brush menu use them.
+
+**Tilt.** Brushes can follow a pen's tilt: the tip turns with the way the pen leans (so a flat
+nib follows your hand), and paints wider as it leans, up to twice as wide lying flat. A mouse
+is never affected. Windows, macOS and Linux don't pass a pen's tilt on to AniCraft yet, so the
+**Tilt** options (**Angle** and **Width**; the Paint Brush has **Width**) stay hidden in
+Properties. They appear by themselves as soon as a pen reports its tilt. Meanwhile scripts and
+assistants can paint with tilt: `draw.brush` takes points as `[x, y, pressure, altitude,
+azimuth]` and `tilt_angle` and `tilt_width` (see [Working headless](working-headless.md)). The
+**Charcoal** brush follows tilt when there is any.
+
 **Snapping while you draw**: with **Snap to Objects** on (the magnet under the tools, or **Ctrl+Shift+/**), the Line,
 Rectangle, Oval, PolyStar and Pen tools snap their points to nearby points, lines and fill
 edges, within 10 screen pixels. A ring shows where a point will snap.
@@ -176,6 +192,10 @@ The **Subselection** tool (**A**) shows and edits the points of a shape:
 A line's thickness can change along its length. To give a line a profile, select it and pick
 one under **Width** in Properties: Uniform, Taper both ends, Taper start, Taper end, Bulge or
 Pinch. Set a profile in a drawing tool's options to make new lines start that way.
+
+Variable-width lines are merged drawing too. A line drawn across one, or the Eraser, cuts it
+into pieces, and each piece keeps the widths it had there: a tapered line cut in the middle
+gives two pieces, each tapering at its outer end.
 
 For finer control, use the **Width** tool (**U**); the pointer becomes a crosshair. Hover over a
 line: a white box on it shows where a drag adds a width point, and the line's points show
@@ -313,7 +333,13 @@ Tick **Faucet** to delete a whole fill or line with a single click. **Erase Ever
 a double-click on the Eraser tool, clears every visible, unlocked layer at the current frame.
 It asks first, and you can undo it.
 
-The Eraser can't erase inside symbols, or lines with a width profile, yet.
+Gradient fills and variable-width lines erase like any other: each piece that's left keeps its
+part of the gradient where it was, and its widths along the line.
+
+On the stage the Eraser leaves symbols and drawing objects alone, and the status bar says so.
+To erase inside one, **double-click** it with the Selection tool (or select it and press
+**Ctrl+E**): it opens in place, and the Eraser works on its own lines and fills. A symbol
+changes everywhere it's used.
 
 ## Transforming artwork
 
@@ -419,8 +445,35 @@ Convert your artwork to a movie clip symbol first (see
 **Filters**: choose **Add filter** under Filters in Properties, and stack as many as you like:
 **Drop Shadow**, **Blur**, **Glow**, **Bevel**, **Gradient Glow**, **Gradient Bevel** and
 **Adjust Color**. Each has its own settings (blur, strength, quality, colour, angle, distance,
-knockout and so on); the gradient ones have a colour ramp you click to add stops. **Remove**
-takes a filter off.
+knockout and so on); the gradient ones have a colour ramp you click to add stops.
+
+Each filter in the list has a row of its own:
+
+* **The order matters**: filters apply from the top down, so a Glow above Adjust Color is
+  greyed with the artwork, and one below it stays in colour. Drag a filter by its grip (the
+  dots on the left) to move it; or click the grip and press **Alt+Up** or **Alt+Down**; or
+  right-click the row for **Move Up** and **Move Down**.
+* **The eye** switches a filter off without losing its settings, and back on. A filter that is
+  off draws nothing anywhere: on the stage, in Test Movie and in every export.
+* **The bin** removes the filter.
+
+The **…** button next to **Add filter** has **Copy All Filters**, **Paste Filters** (adds the
+copied filters after the instance's own; select another movie clip or button first),
+**Enable All**, **Disable All** and **Remove All**. Right-click a filter's row for **Copy
+Filter** to copy just that one.
+
+**Filter presets** keep a list of filters under a name, for any document. Click the folder
+button next to **Add filter**: **Save as Preset…** names the current list; click a preset's
+name to apply it (it replaces the instance's filters, as in Animate; **Edit › Undo** takes it
+back). **Rename Preset** and **Delete Preset** manage them (deleting asks first; artwork keeps
+the filters it got). **Export Presets…** writes them to a small JSON file and **Import
+Presets…** adds a file's presets to yours, to move them to another computer. Presets are kept
+in your preferences.
+
+**Tweening filters**: a classic tween changes filter values smoothly when both keyframes have
+the same filters in the same order (switched-off ones count), as in Animate: a Blur from 0 to
+20 is 10 halfway. On/off, Inner, Knockout and Quality stay as the first keyframe has them.
+If the lists differ, the first keyframe's filters hold until the next keyframe.
 
 **Blending** sets how the instance mixes with what's below it: Normal, Layer, Darken,
 Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha and
@@ -469,6 +522,7 @@ without snapping. Rulers, the grid and guides never show in Test Movie or in exp
 ## Not there yet
 
 Not in AniCraft yet: gradient and bitmap strokes; swatch folders, bitmap swatches and the
-swatches inside Animate files; moving the Envelope's handles from the keyboard; pen tilt for
-brushes; erasing inside symbols; and Animate's ragged, stipple and hatched line styles (drawn
+swatches inside Animate files; moving the Envelope's handles from the keyboard; reading a
+pen's tilt on Windows, macOS and Linux (the brushes' tilt settings are ready for it); bitmap
+and art brushes; and Animate's ragged, stipple and hatched line styles (drawn
 solid when you open an Animate file).

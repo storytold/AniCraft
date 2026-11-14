@@ -9,7 +9,7 @@ use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
 use anicraft_doc::{ColorEffect, Element, ElementId, ElementKind, MAX_WIDTH_POINTS, Paint, Rgba, Shape, Stroke, WidthPoint, WidthProfile};
 use anicraft_geom::planar;
-use anicraft_geom::brush::{MAX_SAMPLES, Sample, Tip, TipShape, centre_stroke, outline_shaped};
+use anicraft_geom::brush::{MAX_SAMPLES, Sample, Tilt, Tip, TipShape, centre_stroke, outline_shaped};
 use anicraft_geom::{Affine, FillRule, Path, PathCmd, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -20,12 +20,12 @@ pub fn specs() -> Vec<CommandSpec> {
         c(
             "draw.brush",
             "Brush Stroke",
-            "{points: [[x, y] or [x, y, pressure 0..1 (clamped)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind|selection|inside (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas, Paint Selection only inside the selected fills, Paint Inside only inside the fill the stroke starts on or the empty area closed off around it; ADR 0080), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
+            "{points: [[x, y], [x, y, pressure 0..1 (clamped)] or [x, y, pressure, altitude, azimuth] (the pen's tilt in degrees: altitude 90 upright to 0 flat, azimuth the way it leans, clockwise from +x)], ..] (one point paints a dab), preset? (a brush from brush.preset_list, by key or name: its settings are the defaults for the rest), size? (stage units, default 10), shape?: round|square, angle? (degrees), roundness? (5..100 %, default 100), smoothing? (0..100, default 50), curve?: linear|soft|firm|[[pressure, output], ..] (how pressure maps, both 0..1), pressure_size? (default true: pressure varies the size from 10 to 100 %), pressure_opacity? (default false: the stroke's average pressure sets its opacity), taper_start?, taper_end? (0..50 % of the stroke's length), spacing? (0 continuous, or 5..1000 % of the size between dabs), jitter? (0..50 % of the size: a ragged edge), texture? (0..100 %: a paper grain of holes through the paint), scatter? (0..200 % of the size: dabs thrown either side of the line, varied in size), tilt_angle? (the pen's tilt turns the tip: its angle plus the azimuth), tilt_width? (the pen's tilt widens the tip, up to twice as wide flat; also the Paint Brush's width), as_stroke? (default false; true: the Paint Brush, a variable-width stroke in the stroke colour, editable with the Width tool), mode?: normal|fills|behind|selection|inside (Paint Normal covers fills and lines, Paint Fills leaves lines, Paint Behind paints only empty areas, Paint Selection only inside the selected fills, Paint Inside only inside the fill the stroke starts on or the empty area closed off around it; ADR 0080), color? (default: the fill colour, or the stroke colour as a stroke), unit? (stage units per screen point, default 1: smoothing and accuracy follow it), object?}",
             true,
             draw_brush as crate::RunFn,
         ),
         c("brush.preset_list", "Brush Presets", "{} the built-in brushes and yours, with their settings", false, preset_list),
-        c("brush.preset_save", "Save Brush", "{name, from? (a preset to start from; default: the plain brush), size?, shape?, angle?, roundness?, smoothing?, curve?, pressure_size?, pressure_opacity?, taper_start?, taper_end?, spacing?, jitter? (as draw.brush)} saves a brush of your own (replacing yours of that name; kept in your preferences)", false, preset_save),
+        c("brush.preset_save", "Save Brush", "{name, from? (a preset to start from; default: the plain brush), size?, shape?, angle?, roundness?, smoothing?, curve?, pressure_size?, pressure_opacity?, taper_start?, taper_end?, spacing?, jitter?, texture?, scatter?, tilt_angle?, tilt_width? (as draw.brush)} saves a brush of your own (replacing yours of that name; kept in your preferences)", false, preset_save),
         c("brush.preset_rename", "Rename Brush", "{name, to}", false, preset_rename),
         c("brush.preset_delete", "Delete Brush", "{name} deletes a brush of your own (asks first: it can't be undone)", false, preset_delete),
         c("brush.preset_export", "Export Brushes", "{path, names? (default: all yours)} writes your brushes to a brush set file (JSON)", false, preset_export),
@@ -136,7 +136,7 @@ fn paint_region(s: &mut Session, mode: PaintMode, start: Vec2, object: bool) -> 
 }
 
 pub(crate) fn samples(p: &Value) -> Result<Vec<Sample>> {
-    let bad = || EngineError::Param("param 'points' must be a list of [x, y] or [x, y, pressure]".into());
+    let bad = || EngineError::Param("param 'points' must be a list of [x, y], [x, y, pressure] or [x, y, pressure, altitude, azimuth]".into());
     let list = p.get("points").and_then(Value::as_array).ok_or_else(bad)?;
     if list.is_empty() {
         return Err(EngineError::Param("param 'points' needs at least one point".into()));
@@ -146,7 +146,7 @@ pub(crate) fn samples(p: &Value) -> Result<Vec<Sample>> {
     }
     list.iter()
         .map(|v| {
-            let xyp = v.as_array().filter(|a| (2..=3).contains(&a.len())).ok_or_else(bad)?;
+            let xyp = v.as_array().filter(|a| matches!(a.len(), 2 | 3 | 5)).ok_or_else(bad)?;
             let n = |i: usize| xyp.get(i).and_then(Value::as_f64).map(|f| f as f32).filter(|f| f.is_finite());
             let at = Vec2::new(n(0).ok_or_else(bad)?, n(1).ok_or_else(bad)?);
             // Pressure is a measurement: tablets and arithmetic stray a little past 0..1, so it
@@ -155,7 +155,19 @@ pub(crate) fn samples(p: &Value) -> Result<Vec<Sample>> {
                 None => 1.0,
                 Some(_) => n(2).ok_or_else(|| EngineError::Param("a point's pressure must be a number from 0 to 1".into()))?.clamp(0.0, 1.0),
             };
-            Ok(Sample { at, pressure })
+            // Tilt (ADR 0093): the pen's altitude (90 upright .. 0 flat) and azimuth (the way
+            // it leans on the stage, clockwise from +x), both in degrees, as Pointer Events
+            // report them. A measurement too: the altitude is clamped, the azimuth wraps.
+            let tilt = match (xyp.get(3), xyp.get(4)) {
+                (Some(_), Some(_)) => {
+                    let bad_tilt = || EngineError::Param("a point's altitude and azimuth must be numbers of degrees".into());
+                    let altitude = n(3).filter(|a| a.abs() <= 1e6).ok_or_else(bad_tilt)?.clamp(0.0, 90.0);
+                    let azimuth = n(4).filter(|a| a.abs() <= 1e6).ok_or_else(bad_tilt)?;
+                    Some(Tilt { altitude, azimuth })
+                }
+                _ => None,
+            };
+            Ok(Sample { at, pressure, tilt })
         })
         .collect()
 }
@@ -226,7 +238,7 @@ fn draw_brush(s: &mut Session, p: &Value) -> Result<Value> {
     let color = Rgba { a: color.a * pressure_opacity(&b, &pts), ..color };
     let object = object_param(s, p)?;
     // Pressure through the curve (ADR 0068) before it sizes the tip.
-    let pts: Vec<Sample> = pts.iter().map(|x| Sample { at: x.at, pressure: b.size_pressure(x.pressure) }).collect();
+    let pts: Vec<Sample> = pts.iter().map(|x| Sample { pressure: b.size_pressure(x.pressure), ..*x }).collect();
 
     // Smoothing and accuracy are screen distances, so a stroke looks the same at any zoom: at 50
     // the centre line may wander 3.3 screen points from the hand, at 0 a third of a point.

@@ -85,8 +85,17 @@ stage colour.
 ### Lottie
 
 A Lottie JSON animation for websites and apps. Shapes, strokes, solid and gradient fills,
-colour effects, opacity and masks come across, frame for frame. Some things can't be written
-exactly; the status bar names them after the export:
+colour effects, opacity and masks come across, and every frame shows what AniCraft shows.
+
+Tweens become Lottie keyframes with Lottie's own eases, so the file stays small and the motion
+is smooth on any screen: No Ease, Classic Ease, Quad, Cubic, Back and Bounce, Bézier handles
+and your custom curves come across exactly (a custom curve of several points becomes a key per
+piece). Objects that move, turn or scale keep their shape and move as a whole. Where Lottie
+has no matching ease (Elastic, Sine, Quart, Quint and Circ, motion along a curved guide, a
+tween inside a tweening symbol), that motion is written frame by frame instead: still exact at
+every frame, and the status bar says so.
+
+Some things can't be written exactly; the status bar names them after the export:
 
 * bitmaps and bitmap fills, and sound;
 * masks inside masks (the innermost is kept);

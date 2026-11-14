@@ -269,10 +269,38 @@ to pick it, and the points it moves fill in. Then:
 back to the automatic binding. Adding or removing bones rebinds the points you haven't bound
 by hand.
 
+**Painting weights.** For a softer or more exact bend than clicks give, paint how much a bone
+moves each point. Pick a bone with the **Bind** tool, then turn on **Paint Weights** in
+**Properties › Bone**. The outline and its points turn into a heat map of that bone's share:
+blue where it moves nothing, through green and yellow, to red where it moves the point alone.
+Drag over the shape to paint:
+
+* **Add** gives the bone more of the points under the brush, **Subtract** gives it less, and
+  **Smooth** evens out its share, softening a hard edge between two bones;
+* **Size** is the brush's radius (**[** and **]** change it), and **Strength** is how much one
+  pass changes the weights at its centre. The effect fades to nothing at the rim.
+
+A point's shares always add up to 100 %. What one bone gains the point's other bones lose, in
+proportion. A point taken from its only bone goes to the next nearest bone. Each stroke is one
+step to undo. Painted points count as bound by hand, so adding a bone later leaves them alone.
+
+**Typing a weight.** Properties › Bone also shows one point's weights as numbers. Click a
+point with the Bind tool, or type its number in **Point**. Then type the bone's share in
+**Weight**, and **Follows** lists every bone the point follows. Keyboard users can do all of
+this without the stage.
+
+**Reshaping a shape that has bones.** At the rest pose (every bone as drawn), use the
+**Subselection** tool to edit the shape's outline. You can move points and handles,
+double-click the outline to add a point, delete points, or make them smooth or corners. The
+bones keep their binding. Moved points keep their weights, and a new point takes the weights
+of the points on either side, blended by where it sits between them. A deleted point's
+weights go with it. Every pose bends the new outline. At a posed frame AniCraft asks you to go
+to the rest pose first.
+
 Bones inside a shape take joint translation and springs too.
 
-Not there yet: symbols and shapes in one armature, reshaping a shape after it has bones,
-armatures that scripts pose while the movie plays, and armatures from Animate files.
+Not there yet: symbols and shapes in one armature, reshaping at a posed frame, armatures
+that scripts pose while the movie plays, and armatures from Animate files.
 
 ## Asset Warp
 
