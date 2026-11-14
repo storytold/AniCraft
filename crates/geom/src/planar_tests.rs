@@ -370,3 +370,31 @@ fn intersect_clips_to_the_region() {
     let want = std::f32::consts::PI * 100.0 / 4.0;
     assert!((area(&quarter) - want).abs() < want * 0.002, "{} vs {want}", area(&quarter));
 }
+
+#[test]
+fn stroke_pieces_say_which_stretch_of_their_path_they_run_along() {
+    // A line from x 0 to 100, crossed by another at x 30 (crossings start new pieces): its two
+    // pieces run along positions 1.0..1.3 and 1.3..2.0 (command 1 draws it).
+    let a = Path::line(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
+    let b = Path::line(Vec2::new(30.0, -50.0), Vec2::new(30.0, 50.0));
+    let m = run(&[stroked(&a, None, 1), stroked(&b, None, 2)]);
+    let mut spans: Vec<[f64; 2]> = m.strokes.iter().filter(|p| p.item == 0).flat_map(|p| p.spans.clone()).collect();
+    spans.sort_by(|x, y| x[0].min(x[1]).total_cmp(&y[0].min(y[1])));
+    assert_eq!(spans.len(), 2, "{m:?}");
+    let lo = |s: [f64; 2]| s[0].min(s[1]);
+    let hi = |s: [f64; 2]| s[0].max(s[1]);
+    assert!((lo(spans[0]) - 1.0).abs() < 1e-6 && (hi(spans[0]) - 1.3).abs() < 1e-3, "{spans:?}");
+    assert!((lo(spans[1]) - 1.3).abs() < 1e-3 && (hi(spans[1]) - 2.0).abs() < 1e-6, "{spans:?}");
+    // A polyline uncut keeps one span over all its segments, and fills carry none.
+    let mut z = Path::new();
+    z.move_to(Vec2::new(0.0, 0.0));
+    z.line_to(Vec2::new(50.0, 0.0));
+    z.cubic_to(Vec2::new(70.0, 0.0), Vec2::new(90.0, 5.0), Vec2::new(100.0, 20.0));
+    let r = rect(200.0, 0.0, 10.0, 10.0);
+    let m = run(&[stroked(&z, None, 1), fill(&r, 3)]);
+    assert_eq!(m.strokes.len(), 1);
+    let sp = &m.strokes[0].spans;
+    assert_eq!(sp.len(), 1, "{sp:?}");
+    assert!((lo(sp[0]) - 1.0).abs() < 1e-9 && (hi(sp[0]) - 3.0).abs() < 1e-9, "{sp:?}");
+    assert!(m.fills.iter().all(|f| f.spans.is_empty()));
+}

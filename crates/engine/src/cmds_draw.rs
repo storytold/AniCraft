@@ -111,7 +111,7 @@ pub(crate) fn add_shape(s: &mut Session, name: &str, local: Path, origin: Vec2, 
     // A gradient or bitmap from the fill swatch is in stage space: with Lock Fill it stays where
     // it is on the stage, else it is fitted to the new shape (ADR 0074).
     let fill = fill.map(|f| if s.style.lock_fill || matches!(f, Paint::Solid(_)) { f.transformed(&Affine::translate(-origin.x, -origin.y)) } else { f.fitted(&local.bounds()) });
-    let merge = !object && crate::merge::can_merge(stroke.as_ref());
+    let merge = !object;
     let id = ElementId(s.doc.alloc_id());
     let el = Element {
         id,
