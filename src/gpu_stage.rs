@@ -340,7 +340,7 @@ mod imp {
                 && g.shared()
                 && let Some(w) = &window_lost
             {
-                g.fail(&format!("the window's graphics device was lost: {w}"));
+                g.fail(&format!("the window's graphics device was lost: {w}")); // i18n-exempt: the driver's reason, as GPU errors are
             }
             if let Some(g) = &self.renderer
                 && let Some(e) = g.broken()
@@ -368,7 +368,7 @@ mod imp {
                         self.starting = Some(rx);
                         if retry_due {
                             self.retry.trying();
-                            crate::startup::line("trying the GPU stage again");
+                            crate::startup::line("trying the GPU stage again"); // i18n-exempt: log text
                             if let State::Stopped { retry_at, .. } = &mut self.state {
                                 *retry_at = None;
                             }
@@ -414,7 +414,7 @@ mod imp {
 
     fn retry_line(retry_at: Option<f64>, now: f64) -> String {
         match retry_at {
-            Some(t) => format!("trying the GPU again in {:.0} s", t - now),
+            Some(t) => format!("trying the GPU again in {:.0} s", t - now), // i18n-exempt: log text
             None => "not trying the GPU again this session".into(), // i18n-exempt: log text
         }
     }

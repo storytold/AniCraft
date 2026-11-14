@@ -215,7 +215,7 @@ pub fn take_reopen() -> Option<Option<PathBuf>> {
 /// driver): then it counts as a mid-session loss.
 pub fn is_graphics_failure(why: &str) -> bool {
     let w = why.to_ascii_lowercase();
-    ["wgpu", "surface", "device lost", "gpu", "dxgi", "vk_error", "vulkan", "direct3d"].iter().any(|k| w.contains(k))
+    ["wgpu", "surface", "device lost", "gpu", "dxgi", "vk_error", "vulkan", "direct3d"].iter().any(|k| w.contains(k)) // i18n-exempt: words looked for in a log line
 }
 
 /// Adds a line to the log (and the console in debug builds), with the seconds since it began.

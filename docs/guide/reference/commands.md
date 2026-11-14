@@ -388,7 +388,7 @@ These commands have no menu item: the panels, the stage and the timeline use the
 - **Warp Mesh** `warp.info`
   Parameters: `{element?, frame?} → the artwork's warp at the frame: resolution, the mesh's columns, rows, vertices and triangles, whether it is bent, and its pins (id, where they show in stage px, and where they were placed on the artwork as drawn, in its own space)`
 - **Property Keyframe** `motion.set_key` · changes the document
-  Parameters: `{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)`
+  Parameters: `{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255)|filter.<slot>.<blur_x|blur_y|strength (%)|angle|distance|brightness|contrast|saturation|hue> (a number of the object's filter at that place, 0 the first; ADR 0092), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)`
 - **Remove Property Keyframe** `motion.remove_key` · changes the document
   Parameters: `{property? (default: every property), frame?, layer?}`
 - **Property Ease** `motion.set_ease` · changes the document

@@ -2420,6 +2420,33 @@ impl App {
                 self.me_shot_drag = true;
                 self.run("timeline.goto", json!({"frame": start + mid + 3}));
             }
+            Some("motionfilters") => {
+                // A blur tweening in the Motion Editor (ADR 0092): the Star becomes a movie clip
+                // with a blur and a glow, its tween keys the blur up and down again with an ease
+                // and pulses the glow, and the editor shows the Blur X curve mid-way.
+                self.run("layer.select", json!({"index": 1}));
+                self.run("timeline.goto", json!({"frame": 0}));
+                self.run("edit.select_all", json!({}));
+                self.run("symbol.set_kind", json!({"kind": "movie_clip"}));
+                self.run("element.set_filters", json!({"filters": [{"type": "blur", "blur_x": 0, "blur_y": 0, "quality": 2}, {"type": "glow", "color": "#ffd54a", "blur_x": 12, "blur_y": 12, "strength": 1}]}));
+                if self.run("timeline.create_motion_tween", json!({"frame": 0})).is_some() {
+                    let frames = self.s.active_layer().and_then(|l| l.keyframes.first()).map_or(24, |k| k.duration);
+                    let (mid, end) = (frames / 2, frames.saturating_sub(1));
+                    for (p, f, v) in [("filter.0.blur_x", mid, 24.0), ("filter.0.blur_x", end, 0.0), ("filter.0.blur_y", mid, 8.0), ("filter.0.blur_y", end, 0.0), ("filter.1.strength", mid, 260.0), ("filter.1.strength", end, 100.0)] {
+                        self.run("motion.set_key", json!({"property": p, "frame": f, "value": v}));
+                    }
+                    self.run("motion.set_ease", json!({"property": "filter.0.blur_x", "frame": 1, "easing": "CubicOut"}));
+                    self.run("motion.set_ease", json!({"property": "filter.0.blur_x", "frame": mid + 1, "easing": {"bezier": [0.5, 0.0, 0.3, 1.0]}}));
+                    self.s.mark_saved();
+                    self.show_panel(crate::dock::Panel::MotionEditor);
+                    self.me_prop = anicraft_engine::doc::Property::from_key("filter.0.blur_x").unwrap_or(anicraft_engine::doc::Property::X);
+                    self.me_key = Some(0);
+                    // The filter rows in view.
+                    self.me_vscroll = 6.0;
+                    self.run("timeline.goto", json!({"frame": mid / 2}));
+                    let _ = self.s.execute("edit.deselect", &json!({}));
+                }
+            }
             Some("motionstretch") => {
                 // A motion span stretched by its end (ADR 0083): `motionspan`'s tween made half
                 // as long again, its keys in proportion, and its end being dragged further.

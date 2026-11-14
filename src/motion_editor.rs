@@ -14,11 +14,14 @@
 //! On X and Y, the keys of frames pinned to a motion path point (ADR 0049) are drawn in the
 //! motion colour: they are the point's place and its timing, so dragging one moves the point on
 //! the stage, and removing one unpins it.
+//!
+//! Below the colour effect, each filter of the object (ADR 0092) lists its numbers under the
+//! filter's name (Blur X, Blur Y, Strength…), curves and keys like the other properties.
 
 use crate::a11y::{self, Named};
 use crate::app::App;
 use crate::theme::{SQUARE, T, TARGET, Type, color, font, text, with_type};
-use anicraft_engine::doc::{ColorStyle, Easing, MotionTween, Pin, Property, Props, Track};
+use anicraft_engine::doc::{ColorStyle, Easing, Element, ElementKind, MotionTween, Pin, Property, Props, Track, filter_properties, own_value};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, WidgetType, pos2, vec2};
 use serde_json::json;
 
@@ -60,14 +63,36 @@ pub enum MeDrag {
     Scrub,
 }
 
-/// The motion tween at the playhead on the active layer: its first frame, length and data, and
-/// the colour effect styles it shows (ADR 0056).
-fn current(app: &App) -> Option<(u32, u32, MotionTween, Props, Vec<ColorStyle>)> {
+/// The motion tween at the playhead on the active layer: its first frame, length and data, the
+/// colour effect styles it shows (ADR 0056), and its object.
+fn current(app: &App) -> Option<(u32, u32, MotionTween, Props, Vec<ColorStyle>, Element)> {
     let k = app.s.active_layer()?.keyframe_at(app.s.frame)?;
     let m = k.motion.clone()?;
     let target = m.target_index(&k.elements).and_then(|i| k.elements.get(i))?;
     let styles = m.colour_styles(&target.color);
-    Some((k.start, k.duration, m, Props::of(target), styles))
+    Some((k.start, k.duration, m, Props::of(target), styles, (**target).clone()))
+}
+
+/// A row of the property list: a property, or the name of a filter above its numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Row {
+    Prop(Property),
+    /// A filter's place, name and whether it is on.
+    Filter(u8, &'static str, bool),
+}
+
+/// The rows: [`listed`]'s properties, then each filter of the object with its numbers.
+fn rows_for(used: &[ColorStyle], added: &[ColorStyle], target: &Element) -> Vec<Row> {
+    let mut out: Vec<Row> = listed(used, added).into_iter().map(Row::Prop).collect();
+    let ElementKind::Symbol { filters, .. } = &target.kind else { return out };
+    let mut props = filter_properties(target).into_iter().peekable();
+    for (slot, e) in filters.iter().enumerate() {
+        out.push(Row::Filter(slot as u8, e.filter.label(), e.enabled));
+        while let Some(p) = props.next_if(|p| p.filter().is_some_and(|f| usize::from(f.slot) == slot)) {
+            out.push(Row::Prop(p));
+        }
+    }
+    out
 }
 
 /// The properties the list shows: position and transform, and the colour effect styles the
@@ -139,7 +164,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.rect_filled(body, 0.0, T.panel);
     painter.line_segment([body.left_top(), body.right_top()], Stroke::new(1.0, T.border));
 
-    let Some((start, frames, m, base, used)) = current(app) else {
+    let Some((start, frames, m, base, used, target)) = current(app) else {
         empty_state(app, ui, body);
         return;
     };
@@ -163,17 +188,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.text(pos2(list.left() + 10.0, list.top() + RULER_H * 0.5), Align2::LEFT_CENTER, tr!("Property"), font(Type::Heading), color(Type::Heading));
     painter.text(pos2(list.right() - 44.0, list.top() + RULER_H * 0.5), Align2::RIGHT_CENTER, tr!("Frame {frame}", frame = app.s.frame + 1), font(Type::DataSmall), color(Type::DataSmall));
     let now = m.props_at(&base, offset as f32);
+    // The object at the playhead, for its filters' numbers (ADR 0092).
+    let at = m.apply(&target, offset as f32);
+    // A property's own value (its base) and its value at the playhead.
+    let own = |p: Property| if p.is_filter() { own_value(&target, p).unwrap_or(0.0) } else { base.get(p) };
+    let now_of = |p: Property| if p.is_filter() { own_value(&at, p).unwrap_or(0.0) } else { now.get(p) };
     // Frames pinned to path points: their X and Y keys are the points' places (ADR 0049).
     let pins = m.pinned_anchors(&base);
     let pin_at = |p: Property, f: u32| pins.iter().find(|q| q.frame == f).copied().filter(|_| matches!(p, Property::X | Property::Y));
     let rows_top = list.top() + RULER_H;
     // Rows that don't fit scroll with the wheel over the list.
     let fit = (((list.bottom() - rows_top) / ROW_H).floor() as usize).max(1);
-    let rows = listed(&used, &app.me_styles);
+    let list_rows = rows_for(&used, &app.me_styles, &target);
+    let rows: Vec<Property> = list_rows.iter().filter_map(|r| if let Row::Prop(p) = r { Some(*p) } else { None }).collect();
     if !rows.contains(&app.me_prop) {
         app.me_prop = Property::X;
     }
-    let n = rows.len();
+    let n = list_rows.len();
     if ui.rect_contains_pointer(list) {
         let d = ui.input(|i| i.smooth_scroll_delta.y);
         app.me_vscroll = (app.me_vscroll - d / ROW_H).clamp(0.0, n.saturating_sub(fit) as f32);
@@ -181,9 +212,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     app.me_vscroll = app.me_vscroll.min(n.saturating_sub(fit) as f32);
     let first = app.me_vscroll.floor() as usize;
     let mut last_group = "";
-    for (r, p) in rows.iter().copied().enumerate().skip(first).take(fit) {
+    for (r, item) in list_rows.iter().copied().enumerate().skip(first).take(fit) {
         let y = rows_top + (r - first) as f32 * ROW_H;
         let row = Rect::from_min_size(pos2(list.left(), y), vec2(LIST_W, ROW_H));
+        let p = match item {
+            Row::Prop(p) => p,
+            Row::Filter(_, name, on) => {
+                // A filter's name above its numbers, set apart by a rule (faint when it is off).
+                painter.rect_filled(row, 0.0, T.panel_alt);
+                painter.line_segment([row.left_top(), row.right_top()], Stroke::new(1.0, T.border));
+                let name = crate::i18n::t(name);
+                let label = if on { name.to_string() } else { tr!("{filter} (off)", filter = name) };
+                painter.text(pos2(row.left() + 10.0, row.center().y), Align2::LEFT_CENTER, label, font(Type::Label), if on { color(Type::Label) } else { T.text_faint });
+                painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, T.separator));
+                last_group = "Filters"; // i18n-exempt: a group key (Property::group), not shown
+                continue;
+            }
+        };
         let selected = app.me_prop == p;
         painter.rect_filled(row, 0.0, if selected { T.accent_dim } else if r % 2 == 0 { T.panel } else { T.panel_alt });
         let track = m.track(p);
@@ -200,6 +245,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             painter.text(pos2(row.left() + 84.0, row.center().y), Align2::LEFT_CENTER, tr!("keyed"), font(Type::Caption), T.tween_motion);
         }
         let rr = ui.interact(row, ui.id().with(("me_row", p.key())), Sense::click());
+        let label = match p.filter() {
+            // Named with its filter for screen readers and tips ("Blur: Blur X").
+            Some(f) => tr!("{filter}: {property}", filter = crate::i18n::t(filter_name(&target, f.slot)), property = label),
+            None => label.to_string(),
+        };
+        let label = label.as_str();
         a11y::control(ui, &rr, WidgetType::SelectableLabel, &if track.is_some() { tr!("{property} · keyed", property = label) } else { label.to_string() }, Some(selected));
         if rr.clicked() {
             app.me_prop = p;
@@ -207,7 +258,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         // The value at the playhead: drag or type it to key the property there.
         let field = Rect::from_min_size(pos2(row.right() - 128.0, row.top() + 3.0), vec2(88.0, ROW_H - 6.0));
-        let mut v = now.get(p);
+        let mut v = now_of(p);
         let range = p.range();
         let speed = if matches!(p, Property::X | Property::Y) { 1.0 } else { 0.5 };
         let suffix = if p.unit() == "px" { " px" } else { p.unit() };
@@ -241,7 +292,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if keyed {
                 app.run("motion.remove_key", json!({"property": p.key(), "frame": app.s.frame}));
             } else {
-                app.run("motion.set_key", json!({"property": p.key(), "frame": app.s.frame, "value": now.get(p)}));
+                app.run("motion.set_key", json!({"property": p.key(), "frame": app.s.frame, "value": now_of(p)}));
             }
         }
         painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, T.separator));
@@ -251,10 +302,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // ---- graph -----------------------------------------------------------------------------
     let p = app.me_prop;
     let track = m.track(p);
-    let label = crate::i18n::t(p.label());
+    let label = match p.filter() {
+        Some(f) => tr!("{filter}: {property}", filter = crate::i18n::t(filter_name(&target, f.slot)), property = crate::i18n::t(p.label())),
+        None => crate::i18n::t(p.label()).to_string(),
+    };
     let (lo, hi) = match app.me_drag {
         Some(MeDrag::Key { lo, hi, lane: false, .. } | MeDrag::Handle { lo, hi, .. }) => (lo, hi),
-        _ => value_range(track, base.get(p), frames, p),
+        _ => value_range(track, own(p), frames, p),
     };
     let last = frames.saturating_sub(1).max(1) as f32;
     // Wider on the left: the value labels sit there, clear of the first key.
@@ -274,7 +328,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         let y = y_of(v);
         gp.line_segment([pos2(graph.left(), y), pos2(graph.right(), y)], Stroke::new(1.0, T.separator));
-        gp.text(pos2(graph.left() + 4.0, y - 1.0), Align2::LEFT_BOTTOM, format!("{v:.0}"), font(Type::DataSmall), T.text_faint);
+        gp.text(pos2(graph.left() + 4.0, y - 1.0), Align2::LEFT_BOTTOM, format!("{:.0}", v + 0.0), font(Type::DataSmall), T.text_faint);
         v += step;
     }
     let px_per_frame = inner.width() / last;
@@ -303,14 +357,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let mut x = inner.left();
     while x <= inner.right() + 0.5 {
         let f = f_of(x);
-        let v = track.and_then(|t| t.value_at(f)).unwrap_or(base.get(p));
+        let v = track.and_then(|t| t.value_at(f)).unwrap_or(own(p));
         pts.push(pos2(x, y_of(v)));
         x += 2.0;
     }
     gp.add(egui::Shape::line(pts, Stroke::new(2.0, if track.is_some() { T.tween_motion } else { T.text_faint })));
-    gp.text(pos2(graph.right() - 8.0, graph.top() + 6.0), Align2::RIGHT_TOP, format!("{label} · {}", fmt(p, now.get(p))), font(Type::Data), color(Type::Data));
+    gp.text(pos2(graph.right() - 8.0, graph.top() + 6.0), Align2::RIGHT_TOP, format!("{label} · {}", fmt(p, now_of(p))), font(Type::Data), color(Type::Data));
     if track.is_none() {
-        gp.text(graph.center(), Align2::CENTER_CENTER, tr!("{property} has no keyframes: it stays {value}. Click ◇ or drag its value to key it here.", property = label, value = fmt(p, base.get(p))), font(Type::Caption), color(Type::Caption));
+        gp.text(graph.center(), Align2::CENTER_CENTER, tr!("{property} has no keyframes: it stays {value}. Click ◇ or drag its value to key it here.", property = label, value = fmt(p, own(p))), font(Type::Caption), color(Type::Caption));
     }
 
     // Keys and the selected segment's handles.
@@ -368,7 +422,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let gr = ui.interact(graph_full, ui.id().with("me_graph"), Sense::click_and_drag());
     // Where frames and values are drawn, for tests that point at keys.
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("me_geometry"), (inner, lane, last, lo, hi)));
-    a11y::surface(ui, &gr, &tr!("{property} curve: Left and Right move the picked keys a frame", property = crate::i18n::t(app.me_prop.label())));
+    a11y::surface(ui, &gr, &tr!("{property} curve: Left and Right move the picked keys a frame", property = label));
     keyboard(app, ui, &gr, start);
     let hover = gr.hover_pos();
     let near_key = |pt: Pos2| keys.iter().find(|k| pt.y > lane.bottom() && pos2(x_of(k.0 as f32), y_of(k.1)).distance(pt) <= GRAB).map(|k| k.0);
@@ -542,7 +596,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     {
         // A key on the curve where it is now (the motion doesn't change until it is dragged).
         let f = to_frame(pt.x);
-        let v = track.and_then(|t| t.value_at((f - start) as f32)).unwrap_or(base.get(p));
+        let v = track.and_then(|t| t.value_at((f - start) as f32)).unwrap_or(own(p));
         if app.run("motion.set_key", json!({"property": p.key(), "frame": f, "value": v})).is_some() {
             app.me_key = Some(f - start);
         }
@@ -555,7 +609,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         };
     }
 
-    footer(app, ui, body, track, sel_key, start, &rows);
+    footer(app, ui, body, track, sel_key, start, &rows, &label);
+}
+
+/// The name of the object's filter at `slot` (Animate's, for the list and screen readers).
+fn filter_name(target: &Element, slot: u8) -> &'static str {
+    match &target.kind {
+        ElementKind::Symbol { filters, .. } => filters.get(usize::from(slot)).map_or("Filter", |e| e.filter.label()), // i18n-exempt: translated where drawn (i18n::t)
+        _ => "Filter", // i18n-exempt: translated where drawn (i18n::t)
+    }
 }
 
 /// Picks `keys` (every property's keys on one frame): instead of the pick, or added to it.
@@ -648,7 +710,8 @@ fn diamond(p: &egui::Painter, c: Pos2, r: f32, fill: Color32, stroke: Stroke) {
 }
 
 /// The ease of the selected segment, and the tween's own actions.
-fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, sel_key: Option<u32>, start: u32, rows: &[Property]) {
+#[allow(clippy::too_many_arguments)]
+fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, sel_key: Option<u32>, start: u32, rows: &[Property], label: &str) {
     let bar = Rect::from_min_max(pos2(body.left(), body.bottom() - FOOTER_H), body.right_bottom());
     ui.painter().rect_filled(bar, SQUARE, T.panel_alt);
     ui.painter().line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, T.border));
@@ -656,7 +719,7 @@ fn footer(app: &mut App, ui: &mut egui::Ui, body: Rect, track: Option<&Track>, s
     let ui = &mut child;
     let p = app.me_prop;
     let seg = sel_key.zip(track).and_then(|(f, t)| t.key_at(f).filter(|i| *i + 1 < t.keys.len()).and_then(|i| t.keys.get(i)).map(|k| (f, k.ease.clone())));
-    ui.label(text(Type::Label, tr!("{property} ease", property = crate::i18n::t(p.label()))));
+    ui.label(text(Type::Label, tr!("{property} ease", property = label)));
     match seg {
         Some((f, ease)) => {
             // The presets and the saved eases (ADR 0081); Edit Ease… shapes the segment's curve.
@@ -724,6 +787,24 @@ fn empty_state(app: &mut App, ui: &mut egui::Ui, body: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR 0092: each filter of the object is listed by name, its numbers under it, after the
+    /// colour effect.
+    #[test]
+    fn filters_list_their_numbers_under_their_names() {
+        use anicraft_engine::doc::{ColorEffect, ElementId, Filter, FilterEntry, SymbolId};
+        use anicraft_engine::geom::Affine;
+        let filters = vec![FilterEntry::from(Filter::new("blur").unwrap()), FilterEntry { filter: Filter::new("adjust_color").unwrap(), enabled: false }];
+        let clip = Element { id: ElementId(1), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: SymbolId(1), loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters, events: Vec::new() } };
+        let rows = rows_for(&[], &[], &clip);
+        let names: Vec<String> = rows.iter().skip_while(|r| matches!(r, Row::Prop(p) if !p.is_filter())).map(|r| match r {
+            Row::Filter(slot, name, on) => format!("[{slot} {name} {on}]"),
+            Row::Prop(p) => p.key().into_owned(),
+        }).collect();
+        assert_eq!(names, ["[0 Blur true]", "filter.0.blur_x", "filter.0.blur_y", "[1 Adjust Color false]", "filter.1.brightness", "filter.1.contrast", "filter.1.saturation", "filter.1.hue"]);
+        assert_eq!(filter_name(&clip, 1), "Adjust Color");
+        assert_eq!(filter_name(&clip, 7), "Filter");
+    }
 
     #[test]
     fn grid_steps_are_round_numbers() {
