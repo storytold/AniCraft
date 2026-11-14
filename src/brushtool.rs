@@ -42,6 +42,13 @@ pub struct BrushOptions {
     pub spacing: f32,
     /// Percent of the size the edge wears in.
     pub jitter: f32,
+    /// Percent: the paper grain through the paint (ADR 0093).
+    pub texture: f32,
+    /// Percent of the size dabs are thrown aside.
+    pub scatter: f32,
+    /// What the pen's tilt shapes, where the system reports it.
+    pub tilt_angle: bool,
+    pub tilt_width: bool,
 }
 
 impl Default for BrushOptions {
@@ -77,6 +84,10 @@ impl BrushOptions {
             taper_end: p.taper_end,
             spacing: p.spacing,
             jitter: p.jitter,
+            texture: p.texture,
+            scatter: p.scatter,
+            tilt_angle: p.tilt_angle,
+            tilt_width: p.tilt_width,
         }
     }
 
@@ -101,6 +112,10 @@ impl BrushOptions {
             taper_end: self.taper_end,
             spacing: self.spacing,
             jitter: self.jitter,
+            texture: self.texture,
+            scatter: self.scatter,
+            tilt_angle: self.tilt_angle,
+            tilt_width: self.tilt_width,
         }
     }
 
@@ -180,6 +195,23 @@ pub fn frame_pressure(ctx: &egui::Context) -> Option<f32> {
             _ => None,
         })
     })
+}
+
+/// The pen's tilt this frame, when the toolkit reports it (ADR 0093). egui 0.36's pointer and
+/// touch events carry only pressure, and winit 0.30 reports tilt only on iOS, so on the desktop
+/// this is `None` until they carry it. When it isn't, the Tilt options appear (see
+/// [`App::pen_tilt_seen`]).
+pub fn frame_tilt(ctx: &egui::Context) -> Option<anicraft_engine::geom::brush::Tilt> {
+    // No egui event carries a tilt yet; this is where it is read once one does.
+    let _ = ctx;
+    None
+}
+
+/// Notes a tilt reported this frame, so the Tilt options show from then on.
+pub fn note_tilt(app: &mut App, tilt: Option<anicraft_engine::geom::brush::Tilt>) {
+    if tilt.is_some() {
+        app.pen_tilt_seen = true;
+    }
 }
 
 /// Starts a stroke at stage point `p` at time `now` (seconds). A mouse paints at full

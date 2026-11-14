@@ -152,3 +152,8 @@ was copied: no presets, no shapes and no art brushes.
 * A live preview through the shaping.
 * Sharing brushes inside a document.
 * Animate's brush library import (its format is not public).
+
+## Note (2026-11-13)
+
+ADR 0093 adds tilt (per sample, turning and widening the tip), texture and scatter, and the
+Charcoal and Spatter brushes. Pressured Paint Brush lines are raw now: width profiles merge.

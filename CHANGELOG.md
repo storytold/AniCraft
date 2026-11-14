@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+* **Brushes and erasing, second slice: tilt, textured brushes, erasing inside symbols, profiles
+  in the merge** (ADR 0093, M7).
+  * **Pen tilt** shapes the Brush: it turns the tip with the way the pen leans and paints up
+    to twice as wide as it lies down (the Paint Brush too). A mouse is never affected. Desktop
+    systems don't pass tilt on to AniCraft yet, so the Tilt options stay hidden in Properties
+    until a pen reports it; scripts and MCP send it in `draw.brush` points as
+    `[x, y, pressure, altitude, azimuth]`.
+  * **Textured brushes**, still vector: **Texture** lets a fixed paper grain show through the
+    paint, **Scatter** throws dabs either side of the stroke. New built-in brushes **Charcoal**
+    and **Spatter**.
+  * **Variable-width lines are merged drawing**: a line across one, or the Eraser, cuts it, and
+    each piece keeps the widths it had there. Pressured Paint Brush lines are raw now.
+  * **Erased gradients** keep their gradient in place in every piece.
+  * **Erasing inside symbols**: open a symbol or drawing object (double-click) and the Eraser
+    erases its lines and fills; on the stage it keeps them and the status bar says how.
+  * Fix: the curve fitter could send a handle far off on a tiny, nearly closed stretch.
 * **Surviving graphics card failures, and filters in the Motion Editor** (ADR 0092, M3).
   * **The stage keeps drawing when the graphics card fails mid-session**: the CPU takes it over
     at once, the status bar says so, and the graphics card is tried again after 3, 15, 60 and

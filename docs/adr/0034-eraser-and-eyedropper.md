@@ -141,3 +141,9 @@ was copied.
   styles.
 * An eyedropper cursor.
 * Showing a gradient in the toolbar swatch.
+
+## Note (2026-11-13)
+
+ADR 0093: width-profiled lines and gradient fills erase, each piece keeping its widths or its
+part of the gradient; inside an open symbol or drawing object the Eraser erases its shapes, and
+on the stage `draw.erase` reports what it kept (`kept`) with a hint.
