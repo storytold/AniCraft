@@ -100,8 +100,8 @@ pub fn opt_easing(p: &Value, key: &str) -> Result<Option<Easing>> {
         return Ok(Some(Easing::Classic((s as f32).clamp(-100.0, 100.0))));
     }
     if let Some(Value::Array(b)) = v.get("bezier") {
-        let n: Vec<f32> = b.iter().filter_map(Value::as_f64).filter(|f| f.is_finite()).map(|f| f as f32).collect();
-        if let [x1, y1, x2, y2] = n[..] {
+        let n: Option<Vec<f32>> = b.iter().map(|x| x.as_f64().filter(|f| f.is_finite()).map(|f| f as f32)).collect();
+        if let Some(&[x1, y1, x2, y2]) = n.as_deref() {
             return Ok(Some(Easing::CubicBezier(x1.clamp(0.0, 1.0), y1.clamp(-5.0, 5.0), x2.clamp(0.0, 1.0), y2.clamp(-5.0, 5.0))));
         }
     }
@@ -314,4 +314,19 @@ pub fn opt_stroke_style(p: &Value, base: &anicraft_doc::StrokeStyle, width: f32)
         }
     };
     Ok(Some(st.sanitized()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bezier_rejects_malformed_entries() {
+        for b in [json!([0.25, "oops", 0.1, 0.25, 1.0]), json!([0.25, null, 0.1, 0.25]), json!([0.25, true, 0.1, 0.25]), json!([0.25, 0.1, 0.25]), json!([0.25, 0.1, 0.25, 1.0, 0.5])] {
+            assert!(opt_easing(&json!({"e": {"bezier": b}}), "e").is_err(), "accepted {b}");
+        }
+        let ok = opt_easing(&json!({"e": {"bezier": [0.25, 0.1, 0.25, 1.0]}}), "e").unwrap();
+        assert_eq!(ok, Some(Easing::CubicBezier(0.25, 0.1, 0.25, 1.0)));
+    }
 }
