@@ -416,6 +416,9 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
+    /// What the fake device's stream holds on to.
+    type Opened = (Arc<Mutex<Shared>>, Arc<AtomicBool>);
+
     /// A fake device: the test says when time passes and pulls the buffers itself.
     #[derive(Clone, Default)]
     struct Fake {
@@ -424,7 +427,7 @@ mod tests {
         refuse: Rc<Cell<bool>>,
         opened: Rc<Cell<u32>>,
         rate: Rc<Cell<u32>>,
-        shared: Rc<std::cell::RefCell<Option<(Arc<Mutex<Shared>>, Arc<AtomicBool>)>>>,
+        shared: Rc<std::cell::RefCell<Option<Opened>>>,
     }
 
     impl Output for Fake {
