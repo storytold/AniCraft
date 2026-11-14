@@ -298,6 +298,7 @@ dependencies = [
  "anicraft-svg",
  "anicraft-text",
  "anicraft-xfl",
+ "craft-anicraft-format",
  "gif",
  "image-webp",
  "miniz_oxide 0.8.9",
@@ -1162,6 +1163,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "craft-anicraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b77af389f30bb10de10d8436ca9b39fe94e3bb67#b77af389f30bb10de10d8436ca9b39fe94e3bb67"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
